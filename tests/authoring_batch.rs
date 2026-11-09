@@ -474,7 +474,7 @@ fn batch_fills_evidence_preserves_current_records_and_reauthors_only_changed_inp
         &source,
         fs::read_to_string(&source).unwrap().replace(
             "pub fn beta()",
-            "// FIXME(#123): beta has no test yet.\npub fn beta()",
+            "// :::{fixme} requirements.beta\n// :github: example/app#123\n// Beta has no test yet.\n// :::\npub fn beta()",
         ),
     )
     .unwrap();
@@ -489,7 +489,7 @@ fn batch_fills_evidence_preserves_current_records_and_reauthors_only_changed_inp
     assert!(report.errors.is_empty(), "{:?}", report.errors);
     assert!(!fixture.project.join("evidence/rust").exists());
     let mut beta = fixture.evidence("requirements.beta");
-    beta["determination"] = json!({"FIXME":["#123"]});
+    beta["determination"] = json!({"FIXME":["example/app#123"]});
     beta["rationale"] = "The source explicitly acknowledges the missing beta test.".into();
     fs::write(
         fixture.project.join("evidence/requirements.beta.json"),

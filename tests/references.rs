@@ -250,6 +250,143 @@ fn fenced_commentary_outside_the_book_contributes_to_the_reference_set() {
     assert_eq!(book("Refines the check."), book("Refines another check."));
 }
 
+// {test}`requirements.references.roles`
+// {test}`requirements.references.discovery`
+#[test]
+fn fixme_references_are_fenced_described_and_named_only_outside_the_book() {
+    let temp = project();
+    let root = temp.path();
+    let fx = role("fixme");
+    fs::write(
+        root.join("src/gaps.rs"),
+        format!(
+            "// {fx}`rules.ready`\n\n\
+             // :::{fx} rules.ready\n// :github: example/rules#1\n// :gitlab: example/rules#2\n// :github: example/rules\n// The gap.\n// :::\n\n\
+             // :::{fx} rules.ready\n// :github: example/rules#1\n// :::\n\n\
+             // :::{fx}\n// Only words.\n// :::\n\n\
+             // :::{fx}\n// :github: example/rules#4\n// Tracked here.\n// :::\n\n\
+             // :::{fx} rules.missing\n// Gap.\n// :::\n"
+        ),
+    )
+    .unwrap();
+    fs::write(
+        root.join("md/rules.md"),
+        format!(
+            "::::{{req}} ready\nReady.\n\n:::{fx} rules.ready\nIn a declaration.\n:::\n\n:::{fx}\n:github: example/rules#3\n:::\n::::\n\n:::{fx} rules.ready\nIn the book.\n:::\n"
+        ),
+    )
+    .unwrap();
+    let errors = errors(root);
+    for expected in [
+        "src/gaps.rs:1: inline {fixme} reference to rules.ready must use the fenced form",
+        "src/gaps.rs:3: unsupported {fixme} option :gitlab:",
+        "src/gaps.rs:3: :github: value \"example/rules\" is not of the form <owner>/<repo>#<number>",
+        "src/gaps.rs:10: {fixme} to rules.ready has an empty body",
+        "src/gaps.rs:14: an unnamed {fixme} must name at least one issue",
+        "src/gaps.rs:23: FIXME`rules.missing` has no matching requirement or example",
+        "md/rules.md:4: a named {fixme} to rules.ready must not appear in a requirement or example declaration",
+        "md/rules.md:13: a named {fixme} to rules.ready must appear in a source outside the book",
+    ] {
+        let expected = expected.replace("FIXME", &fx);
+        assert!(has(&errors, &expected), "missing {expected:?}: {errors:#?}");
+    }
+    // An unnamed `{fixme}` with an issue is valid anywhere, including a
+    // requirement body, and is not an edge needing coverage.
+    for line in ["src/gaps.rs:18", "md/rules.md:8"] {
+        assert!(!has(&errors, line), "{line}: {errors:#?}");
+    }
+    // A misplaced named `{fixme}` is reported once, not also as uncovered.
+    assert!(!has(&errors, "` at md/"), "{errors:#?}");
+}
+
+// {test}`requirements.references.procedure`
+// {test}`requirements.references.rust_item_coverage`
+#[test]
+fn a_fixme_does_not_count_as_an_items_reference() {
+    let temp = project();
+    let root = temp.path();
+    let fx = role("fixme");
+    fs::write(
+        root.join("src/lib.rs"),
+        format!(
+            "// :::{fx} rules.ready\n// The gap.\n// :::\nfn gap() {{}}\n\n\
+             // :::{fx}\n// :github: example/rules#1\n// :::\nfn tracked() {{}}\n\n\
+             // {}`rules.ready`\n// :::{fx} rules.ready\n// Another gap.\n// :::\nfn implemented() {{}}\n",
+            role("impl")
+        ),
+    )
+    .unwrap();
+    let errors = errors(root);
+    for expected in [
+        "src/lib.rs:4: function gap has no requirement or example citation",
+        "src/lib.rs:9: function tracked has no requirement or example citation",
+    ] {
+        assert!(has(&errors, expected), "missing {expected:?}: {errors:#?}");
+    }
+    assert!(!has(&errors, "function implemented"), "{errors:#?}");
+}
+
+// {test}`requirements.ci.reference_set`
+#[test]
+fn fixme_edges_and_their_bodies_are_part_of_the_reference_set() {
+    let temp = project();
+    let root = temp.path();
+    let fx = role("fixme");
+    let fixme = |body: &str| format!("// :::{fx} rules.ready\n{body}// :::\nfn run() {{}}\n");
+    let none = digest(root, "fn run() {}\n");
+    let base = digest(
+        root,
+        &fixme("// :github: example/rules#1\n// The empty case fails.\n"),
+    );
+    assert_ne!(base, none, "adding a {{fixme}} changes the reference set");
+    // Reflowing keeps the digest; editing an issue or the description does not.
+    assert_eq!(
+        digest(
+            root,
+            &fixme("// :github: example/rules#1\n// The empty\n//   case fails.\n")
+        ),
+        base
+    );
+    assert_ne!(
+        digest(
+            root,
+            &fixme("// :github: example/rules#2\n// The empty case fails.\n")
+        ),
+        base
+    );
+    assert_ne!(
+        digest(
+            root,
+            &fixme("// :github: example/rules#1\n// The full case fails.\n")
+        ),
+        base
+    );
+    // A different role on the same node is a different edge.
+    assert_ne!(
+        digest(
+            root,
+            &format!(
+                "// :::{} rules.ready\n// :github: example/rules#1\n// The empty case fails.\n// :::\nfn run() {{}}\n",
+                role("impl")
+            )
+        ),
+        base
+    );
+    // An inline `{fixme}` is invalid and is not an edge either.
+    assert_eq!(
+        digest(root, &format!("// {fx}`rules.ready`\nfn run() {{}}\n")),
+        none
+    );
+    // An unnamed `{fixme}` is not an edge.
+    assert_eq!(
+        digest(
+            root,
+            &format!("// :::{fx}\n// :github: example/rules#1\n// :::\nfn run() {{}}\n")
+        ),
+        none
+    );
+}
+
 /// A recorded citation review for `fn[helper]` in `src/lib.rs`.
 // {test}`requirements.references.citation_review`
 fn review(root: &Path, citations: Value, determination: Value) -> Value {
@@ -268,6 +405,7 @@ fn review(root: &Path, citations: Value, determination: Value) -> Value {
 }
 
 // {test}`requirements.references.citation_review`
+// {test}`requirements.ci.outcomes`
 #[test]
 fn citation_reviews_are_required_current_and_not_orphaned() {
     let temp = project();
@@ -319,9 +457,21 @@ fn citation_reviews_are_required_current_and_not_orphaned() {
     write(review(root, citations.clone(), json!(true)));
     assert_eq!(errors_for(path), Vec::<String>::new());
 
-    // A FIXME review is accepted; a false one is reported with its rationale.
-    write(review(root, citations.clone(), json!({"FIXME": ["#4"]})));
-    assert_eq!(errors_for(path), Vec::<String>::new());
+    // A citation review cannot accept a `{fixme}`, so FIXME is reported; a
+    // false review is reported with its rationale.
+    write(review(
+        root,
+        citations.clone(),
+        json!({"FIXME": ["example/rules#4"]}),
+    ));
+    assert!(
+        has(
+            &errors_for(path),
+            "determination is FIXME, but a citation review cannot accept a"
+        ),
+        "{:#?}",
+        errors_for(path)
+    );
     write(review(root, citations.clone(), json!(false)));
     assert!(
         has(

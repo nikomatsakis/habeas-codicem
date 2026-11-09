@@ -1627,12 +1627,14 @@ mod tests {
         fs::write(root.join("md/rules.md"), &source).unwrap();
         fs::write(
             root.join("src/lib.rs"),
-            "// IMPL`rules.false_uncovered`\nfn uncovered() {}\n".replace("IMPL", "{impl}"),
+            "// IMPL`rules.false_uncovered`\nfn uncovered() {}\n\n// :::{fixme} rules.fixme_clean\n// :github: example/rules#9\n// The gap.\n// :::\nfn gap() {}\n"
+                .replace("IMPL", "{impl}"),
         )
         .unwrap();
+        let gap = crate::inputs::outline_input(root, "src/lib.rs", "fn[gap]").unwrap();
         for name in names {
             let determination = if name.starts_with("fixme") {
-                json!({"FIXME": ["#9"]})
+                json!({"FIXME": ["example/rules#9"]})
             } else {
                 json!(false)
             };
@@ -1645,7 +1647,7 @@ mod tests {
                 "requirement": text,
                 "determination": determination,
                 "rationale": format!("The {name} fixture."),
-                "inputs": [],
+                "inputs": if name == "fixme_clean" { json!([gap]) } else { json!([]) },
             });
             if name == "false_malformed" {
                 record["unexpected"] = json!(true);
@@ -1726,15 +1728,23 @@ mod tests {
         fs::write(root.join("md/rules.md"), &source).unwrap();
         fs::write(
             root.join("src/lib.rs"),
-            "// TEST`rules.valid`\nfn valid_case() {}\n".replace("TEST", "{test}"),
+            "// TEST`rules.valid`\nfn valid_case() {}\n\n// :::{fixme} rules.fixme\n// :github: example/rules#7\n// The case is untested.\n// :::\nfn fixme_case() {}\n"
+                .replace("TEST", "{test}"),
         )
         .unwrap();
         let test_input =
             crate::inputs::outline_input(root, "src/lib.rs", "fn[valid_case]").unwrap();
+        let fixme_input =
+            crate::inputs::outline_input(root, "src/lib.rs", "fn[fixme_case]").unwrap();
         for (name, determination, text, inputs) in [
             ("valid", json!(true), body("valid"), json!([test_input])),
             ("pending", json!(false), body("pending"), json!([])),
-            ("fixme", json!({"FIXME": ["#7"]}), body("fixme"), json!([])),
+            (
+                "fixme",
+                json!({"FIXME": ["example/rules#7"]}),
+                body("fixme"),
+                json!([fixme_input]),
+            ),
             (
                 "changed",
                 json!(true),

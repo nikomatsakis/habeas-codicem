@@ -1103,6 +1103,20 @@ pub(crate) struct SourceReference {
     pub(crate) closed: bool,
     /// Whether the source lies in the book's source directory.
     pub(crate) in_book: bool,
+    /// Whether a fenced reference lies in the body of a requirement or
+    /// example declaration.
+    pub(crate) in_declaration: bool,
+}
+
+impl SourceReference {
+    /// Whether a `{fixme}` can be an edge: named, fenced, and outside the
+    /// book. Other placements are validation errors, and an unnamed
+    /// `{fixme}` is never an edge. Every other role can be.
+    // {impl}`requirements.references.roles`
+    pub(crate) fn is_fixme_edge(&self) -> bool {
+        self.kind != ReferenceKind::Fixme
+            || (!self.name.is_empty() && self.commentary.is_some() && !self.in_book)
+    }
 }
 
 /// One edge of a definition's reference set: its origin (an in-source
@@ -1119,11 +1133,11 @@ struct ReferenceSetEntry {
 }
 
 /// The reference-set digest of a definition: SHA-256 over a length-prefixed
-/// encoding of its sorted incoming `{impl}` and `{test}` edges. A reference
-/// contributes the selector of the outline node its comment or text belongs
-/// to (the root node for plain-text files), so moving it within that node
-/// leaves the digest unchanged; an anchor contributes its file and selector
-/// as written. `{cite}` references do not contribute. `root` must be
+/// encoding of its sorted incoming `{impl}`, `{test}`, and `{fixme}` edges.
+/// A reference contributes the selector of the outline node its comment or
+/// text belongs to (the root node for plain-text files), so moving it within
+/// that node leaves the digest unchanged; an anchor contributes its file and
+/// selector as written. `{cite}` references do not contribute. `root` must be
 /// canonical, as reference discovery records canonical paths.
 // {impl}`requirements.ci.reference_set`
 // {impl}`requirements.references.outline_comments`
@@ -1139,8 +1153,15 @@ pub(crate) fn reference_set_digest<'a>(
 
     let mut entries = Vec::new();
     for reference in references {
+        // A `{fixme}` inside a site of a distributed definition would belong
+        // to that site's review instead; distributed definitions have no
+        // sites yet, so every named `{fixme}` is an edge here.
         if reference.name != name
-            || !matches!(reference.kind, ReferenceKind::Impl | ReferenceKind::Test)
+            || !reference.is_fixme_edge()
+            || !matches!(
+                reference.kind,
+                ReferenceKind::Impl | ReferenceKind::Test | ReferenceKind::Fixme
+            )
         {
             continue;
         }
@@ -1293,6 +1314,11 @@ fn validate_references(
                 reference.name
             ));
         }
+        if reference.kind == ReferenceKind::Fixme
+            && !validate_fixme_form(reference, &location, unclosed, errors)
+        {
+            continue;
+        }
         // {impl}`requirements.references.builtin_definitions`
         // {impl}`requirements.references.no_requirement`
         if crate::builtins::is_builtin_name(&reference.name) {
@@ -1374,6 +1400,29 @@ fn validate_references(
                 display_path(root, &evidence_file)
             ));
         }
+        if let Some(entries) = fs::read_to_string(&evidence_file)
+            .ok()
+            .and_then(|content| serde_json::from_str::<Value>(&content).ok())
+            .and_then(|value| Judgment::from_value(value.get("determination")?).ok())
+            .and_then(|judgment| match judgment {
+                Judgment::Fixme(entries) => Some(entries),
+                _ => None,
+            })
+        {
+            let fixmes = references
+                .iter()
+                .copied()
+                .filter(|reference| reference.kind == ReferenceKind::Fixme)
+                .collect::<Vec<_>>();
+            validate_fixme_entries(
+                root,
+                &display_path(root, &evidence_file),
+                name,
+                &entries,
+                &fixmes,
+                errors,
+            );
+        }
         // {impl}`requirements.ci.reference_set`
         if let Some(recorded) = fs::read_to_string(&evidence_file)
             .ok()
@@ -1395,14 +1444,15 @@ fn validate_references(
                 )
         {
             errors.push(format!(
-                "{}: reference set changed: {{impl}} or {{test}} references or anchors of {} {name} were added, removed, or moved to another node",
+                "{}: reference set changed: {{impl}}, {{test}}, or {{fixme}} references or anchors of {} {name} were added, removed, edited, or moved to another node",
                 display_path(root, &evidence_file),
                 definition.kind.noun()
             ));
         }
         let inputs = evidence_input_ranges(root, &evidence_file, definitions, outlines);
         // `{cite}` points from its source to the definition, so it is not part of
-        // the definition's evidence.
+        // the definition's evidence. A `{fixme}` inside a site would be covered
+        // by the site's review instead; there are no sites yet.
         for reference in references
             .into_iter()
             .filter(|reference| reference.kind != ReferenceKind::Cite)
@@ -1459,6 +1509,128 @@ fn validate_references(
         completed: subjects.len(),
         total: Some(subjects.len()),
     });
+}
+
+/// Reports the problems of a `{fixme}`'s form and placement, returning
+/// whether it is a named edge whose name and coverage still need checking.
+/// An unnamed `{fixme}` is not an edge; a misplaced named one is reported
+/// once rather than also as uncovered.
+// {impl}`requirements.references.roles`
+fn validate_fixme_form(
+    reference: &SourceReference,
+    location: &str,
+    unclosed: bool,
+    errors: &mut Vec<String>,
+) -> bool {
+    let name = &reference.name;
+    let Some(body) = reference.commentary.as_deref() else {
+        errors.push(format!(
+            "{location}: inline {{fixme}} reference to {name} must use the fenced form, with a body describing the gap"
+        ));
+        return false;
+    };
+    if !name.is_empty() && reference.in_book {
+        errors.push(if reference.in_declaration {
+            format!(
+                "{location}: a named {{fixme}} to {name} must not appear in a requirement or example declaration; an unnamed :::{{fixme}} with :github: lines may tie it to an issue"
+            )
+        } else {
+            format!(
+                "{location}: a named {{fixme}} to {name} must appear in a source outside the book"
+            )
+        });
+        return false;
+    }
+    if unclosed {
+        return !name.is_empty();
+    }
+    let parsed = crate::fixme::FixmeBody::parse(body);
+    for problem in &parsed.problems {
+        errors.push(format!("{location}: {problem}"));
+    }
+    if name.is_empty() {
+        if parsed.issues.is_empty() {
+            errors.push(format!(
+                "{location}: an unnamed {{fixme}} must name at least one issue with a :github: <owner>/<repo>#<number> line"
+            ));
+        }
+        return false;
+    }
+    if parsed.description.is_empty() {
+        errors.push(format!(
+            "{location}: {{fixme}} to {name} has an empty body; describe the gap it acknowledges"
+        ));
+    }
+    true
+}
+
+/// Reports FIXME strings that no current `{fixme}` to the definition could
+/// have produced: each string must be an issue a `{fixme}` names, as written
+/// after `:github:`, or the description of one naming no issue, listed once;
+/// a `{fixme}` evidently acknowledging a gap, through an issue only it
+/// names, must have all of its issues listed. Whether each gap is real and
+/// acknowledged is the reviewer's judgment and is not reassessed.
+// {impl}`requirements.ci.outcomes`
+fn validate_fixme_entries(
+    root: &Path,
+    label: &str,
+    name: &str,
+    entries: &[String],
+    fixmes: &[&SourceReference],
+    errors: &mut Vec<String>,
+) {
+    let bodies = fixmes
+        .iter()
+        .map(|reference| {
+            crate::fixme::FixmeBody::parse(reference.commentary.as_deref().unwrap_or(""))
+        })
+        .collect::<Vec<_>>();
+    let known = bodies
+        .iter()
+        .flat_map(crate::fixme::FixmeBody::acknowledgments)
+        .collect::<BTreeSet<_>>();
+    let mut seen = BTreeSet::new();
+    for entry in entries {
+        if !seen.insert(entry) {
+            errors.push(format!(
+                "{label}: FIXME entry {entry:?} is listed more than once"
+            ));
+        } else if !known.contains(entry) {
+            errors.push(format!(
+                "{label}: FIXME entry {entry:?} is neither an issue named by a {{fixme}} to {name} nor the body of one naming no issue"
+            ));
+        }
+    }
+    for (index, (reference, body)) in fixmes.iter().zip(&bodies).enumerate() {
+        let unique = |issue: &String| {
+            bodies
+                .iter()
+                .enumerate()
+                .all(|(other, body)| other == index || !body.issues.contains(issue))
+        };
+        let missing = body
+            .issues
+            .iter()
+            .filter(|issue| !entries.contains(issue))
+            .collect::<Vec<_>>();
+        if !missing.is_empty()
+            && body
+                .issues
+                .iter()
+                .any(|issue| entries.contains(issue) && unique(issue))
+        {
+            errors.push(format!(
+                "{label}: FIXME entries omit {} named by the acknowledging {{fixme}} to {name} at {}:{}",
+                missing
+                    .iter()
+                    .map(|issue| format!("{issue:?}"))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                display_path(root, &reference.file),
+                reference.line
+            ));
+        }
+    }
 }
 
 // {impl}`requirements.references.discovery`
@@ -1598,10 +1770,21 @@ fn file_references(file: &Path, content: &str, in_book: bool) -> Vec<SourceRefer
             commentary: None,
             closed: true,
             in_book,
+            in_declaration: false,
         });
     }
-    for fence in crate::fenced::source_fences(file, content) {
+    let fences = crate::fenced::source_fences(file, content);
+    // Declarations are found only where a `{fixme}` needs them.
+    let declarations = if markdown && fences.iter().any(|f| f.kind == ReferenceKind::Fixme) {
+        declaration_line_ranges(content)
+    } else {
+        Vec::new()
+    };
+    for fence in fences {
         references.push(SourceReference {
+            in_declaration: declarations
+                .iter()
+                .any(|range| range.0 < fence.line && fence.line < range.1),
             name: fence.name,
             kind: fence.kind,
             file: file.to_owned(),
@@ -1613,6 +1796,25 @@ fn file_references(file: &Path, content: &str, in_book: bool) -> Vec<SourceRefer
     }
     references.sort_by_key(|reference| reference.line);
     references
+}
+
+/// The one-based opening and closing fence lines of each requirement or
+/// example declaration in Markdown text.
+// {impl}`requirements.references.roles`
+fn declaration_line_ranges(content: &str) -> Vec<(usize, usize)> {
+    let line_of = |offset: usize| content[..offset].bytes().filter(|b| *b == b'\n').count() + 1;
+    definition_blocks(content)
+        .into_iter()
+        .filter(|block| block.kind != DefinitionKind::Term)
+        .map(|block| {
+            let close = if block.closed {
+                line_of(block.body_end)
+            } else {
+                usize::MAX
+            };
+            (line_of(block.start), close)
+        })
+        .collect()
 }
 
 /// Unreadable records and unresolvable inputs contribute no ranges: their

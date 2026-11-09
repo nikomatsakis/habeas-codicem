@@ -149,7 +149,7 @@ impl Fixture {
             ":::{definition} readiness\n:phrase: readiness\n\nSECRET_DEFINITION_TEXT.\n:::\n",
         )
         .unwrap();
-        fs::write(project.join("src/lib.rs"), concat!("// {", "impl}`requirements.ready`\n// FIXME(#125): one acknowledged gap.\npub fn ready() {}\n// {", "test}`requirements.ready`\nfn ready_test() {}\n")).unwrap();
+        fs::write(project.join("src/lib.rs"), concat!("// {", "impl}`requirements.ready`\n// :::{fixme} requirements.ready\n// :github: example/app#125\n// One acknowledged gap.\n// :::\npub fn ready() {}\n// {", "test}`requirements.ready`\nfn ready_test() {}\n")).unwrap();
         fs::write(
             project.join("extra.txt"),
             (1..=12)
@@ -276,7 +276,7 @@ fn ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free() {
             "submit",
             "submit_judgment",
             json!({
-            "determination":{"FIXME":["#125"]},"rationale":"SECRET_RATIONALE: src/lib.rs:2 documents the gap."}),
+            "determination":{"FIXME":["example/app#125"]},"rationale":"SECRET_RATIONALE: src/lib.rs:2 documents the gap."}),
         )]),
     ]);
     let fixture = Fixture::new(&server.endpoint);
@@ -350,16 +350,20 @@ fn ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free() {
     );
 
     let evidence: Value = serde_json::from_slice(&fs::read(&fixture.evidence).unwrap()).unwrap();
-    assert_eq!(evidence["determination"], json!({"FIXME":["#125"]}));
+    assert_eq!(
+        evidence["determination"],
+        json!({"FIXME":["example/app#125"]})
+    );
     assert_eq!(
         evidence["rationale"],
         "SECRET_RATIONALE: src/lib.rs:2 documents the gap."
     );
     assert_eq!(evidence["requirement"], REQUIREMENT);
     let inputs = evidence["inputs"].as_array().unwrap();
-    // The FIXME comment reached the model and is covered by the recorded
-    // input for the function it belongs to.
-    assert!(prompt.contains("// FIXME(#125): one acknowledged gap."));
+    // The `{fixme}` reached the model and is covered by the recorded input
+    // for the function it belongs to.
+    assert!(prompt.contains("// :github: example/app#125"));
+    assert!(prompt.contains("// One acknowledged gap."));
     assert!(
         inputs
             .iter()

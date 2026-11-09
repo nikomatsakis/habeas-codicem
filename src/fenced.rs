@@ -45,7 +45,8 @@ pub(crate) struct SourceFence {
 }
 
 /// Parses an opening reference fence: at least three colons, a role, and one
-/// name, which is a valid definition name or a built-in name.
+/// name, which is a valid definition name or a built-in name. A `{fixme}`
+/// fence may omit its name, which is then empty.
 // {impl}`requirements.references.roles`
 // {impl}`requirements.ci.span`
 // {impl}`requirements.ci.fence_lengths`
@@ -57,6 +58,11 @@ pub(crate) fn opening_fence(line: &str) -> Option<(ReferenceKind, &str, usize)> 
         (ReferenceKind::Impl, rest)
     } else if let Some(rest) = suffix.strip_prefix("{cite}") {
         (ReferenceKind::Cite, rest)
+    } else if let Some(rest) = suffix.strip_prefix("{fixme}") {
+        if rest.trim().is_empty() {
+            return Some((ReferenceKind::Fixme, "", length));
+        }
+        (ReferenceKind::Fixme, rest)
     } else {
         (ReferenceKind::Test, suffix.strip_prefix("{test}")?)
     };

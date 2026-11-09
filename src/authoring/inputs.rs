@@ -76,7 +76,9 @@ impl AssessmentSources {
 
         let mut builtins = Vec::new();
         for (kind, name) in crate::text_references(&subject.text, true) {
-            if kind == ReferenceKind::Term {
+            // A `{fixme}` in a declaration is a validation error when named
+            // and is not an edge when unnamed.
+            if matches!(kind, ReferenceKind::Term | ReferenceKind::Fixme) {
                 continue;
             }
             // A built-in has no declaration; its fixed text is supplied instead.
@@ -119,11 +121,17 @@ impl AssessmentSources {
             subject,
             &references,
         );
-        // `{impl}` and `{test}` point from the subject to their sources; `{cite}`
-        // sites point into the subject and are discoverable with `references`.
+        // `{impl}`, `{test}`, and `{fixme}` point from the subject to their
+        // sources; `{cite}` sites point into the subject and are discoverable
+        // with `references`. A `{fixme}` inside one of the subject's sites
+        // would belong to that site's review; there are no sites yet.
         for reference in references.iter().filter(|reference| {
             reference.name == subject_name
-                && matches!(reference.kind, ReferenceKind::Impl | ReferenceKind::Test)
+                && reference.is_fixme_edge()
+                && matches!(
+                    reference.kind,
+                    ReferenceKind::Impl | ReferenceKind::Test | ReferenceKind::Fixme
+                )
         }) {
             // Generated evidence, including symlink aliases, is omitted by
             // default rather than denied.
@@ -1071,9 +1079,11 @@ pub(super) mod tests {
             ":::{req} ready\n:impl: src/lib.rs#mod[inner]\nThe project MUST be ready.\n:::\n",
         )
         .unwrap();
+        // A `{fixme}` contributes the node its comment belongs to; an
+        // unnamed one is not an edge and contributes nothing.
         fs::write(
             root.path().join("src/lib.rs"),
-            "mod inner {\n    fn unrelated() {}\n}\n",
+            "mod inner {\n    fn unrelated() {}\n}\n\n// :::{fixme} requirements.ready\n// The gap.\n// :::\nfn gap() {}\n\n// :::{fixme}\n// :github: example/app#1\n// :::\nfn tracked() {}\n",
         )
         .unwrap();
         fs::write(
@@ -1107,6 +1117,7 @@ pub(super) mod tests {
                 ("docs/guide.md", "section[Usage]"),
                 // A plain-text file contributes the complete file.
                 ("notes.txt", ""),
+                ("src/lib.rs", "fn[gap]"),
                 ("src/lib.rs", "mod[inner]"),
             ]
         );

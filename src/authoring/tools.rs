@@ -277,8 +277,10 @@ fn references(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Res
     }
     found.retain(|reference| {
         reference.kind != crate::ReferenceKind::Term
-            // A fence that never closes is a validation error, not a site.
+            // A fence that never closes is a validation error, not a site,
+            // and so is a misplaced `{fixme}`.
             && reference.closed
+            && reference.is_fixme_edge()
             && crate::definition_glob::matches(selection, &reference.name)
             && definitions
                 .get(&reference.name)

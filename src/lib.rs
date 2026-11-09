@@ -129,6 +129,9 @@ pub(crate) enum ReferenceKind {
     Cite,
     Test,
     Term,
+    /// An acknowledged gap; only the fenced form is valid, and an unnamed
+    /// fence ties its place to the issues it names without being an edge.
+    Fixme,
 }
 
 // {impl}`requirements.references.book_badges`
@@ -141,6 +144,7 @@ impl ReferenceKind {
             Self::Cite => "cite",
             Self::Test => "test",
             Self::Term => "term",
+            Self::Fixme => "fixme",
         }
     }
 
@@ -152,6 +156,7 @@ impl ReferenceKind {
             Self::Cite => "7151a1",
             Self::Test => "ae5d14",
             Self::Term => "006ba8",
+            Self::Fixme => "b60205",
         }
     }
 }
@@ -444,6 +449,11 @@ fn reference_badge(
     current_path: &Path,
     definitions: &BTreeMap<String, Definition>,
 ) -> Option<String> {
+    // A `{fixme}` has no badge; a named one is invalid in the book and an
+    // unnamed one is not a reference.
+    if kind == ReferenceKind::Fixme {
+        return None;
+    }
     let label = kind.label();
     let badge = shield_badge(label, name, kind.color());
     if let Some(builtin) = builtins::builtin(name) {
@@ -701,7 +711,8 @@ pub(crate) fn definition_blocks(content: &str) -> Vec<DefinitionBlock> {
 
 /// Parse an option line of the form `:name: value`.
 // {impl}`requirements.references.anchors`
-fn option_line(line: &str) -> Option<(&str, &str)> {
+// {impl}`requirements.references.roles`
+pub(crate) fn option_line(line: &str) -> Option<(&str, &str)> {
     let rest = line.trim_start_matches(' ').strip_prefix(':')?;
     let (name, value) = rest.split_once(':')?;
     if name.is_empty()
@@ -800,6 +811,9 @@ pub(crate) fn reference_roles(content: &str, markdown: bool) -> Vec<ReferenceMat
             (ReferenceKind::Test, "{test}`")
         } else if remaining.starts_with("{term}`") {
             (ReferenceKind::Term, "{term}`")
+        } else if remaining.starts_with("{fixme}`") {
+            // Recognized so validation can report the inline form.
+            (ReferenceKind::Fixme, "{fixme}`")
         } else {
             continue;
         };

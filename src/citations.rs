@@ -351,6 +351,12 @@ fn validate_review(
     if rationale.is_some_and(|text| text.trim().is_empty()) {
         errors.push(format!("{label}: rationale must not be empty"));
     }
+    // A citation review judges citations, which no `{fixme}` acknowledges.
+    if matches!(determination, Some(Judgment::Fixme(_))) {
+        errors.push(format!(
+            "{label}: determination is FIXME, but a citation review cannot accept a {{fixme}}; it must be true or false"
+        ));
+    }
     if determination == Some(Judgment::False) {
         errors.push(format!(
             "{label}: determination is false{}",

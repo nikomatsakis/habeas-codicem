@@ -144,7 +144,11 @@ fn missing_function_references(
     // A built-in counts only in a form it permits, such as a fenced
     // `habeas:none` citation with a justification.
     let counts = |kind: crate::ReferenceKind, name: &str, fenced: Option<&str>| {
-        if kind == crate::ReferenceKind::Term {
+        // A `{fixme}` acknowledges a gap; it does not say why the item exists.
+        if matches!(
+            kind,
+            crate::ReferenceKind::Term | crate::ReferenceKind::Fixme
+        ) {
             return false;
         }
         if let Some(builtin) = crate::builtins::builtin(name) {

@@ -6,6 +6,26 @@ use mdbook_preprocessor::book::{Book, BookItem, Chapter};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
+/// A role written so this file's own source does not contain it.
+// {test}`requirements.ci.outcomes`
+fn role(kind: &str) -> String {
+    format!("{{{kind}}}")
+}
+
+/// A fenced `{fixme}` in Rust comments: an opening fence naming `name`,
+/// option lines for `issues`, the `body`, and a closing fence.
+// {test}`requirements.ci.outcomes`
+fn fixme(name: &str, issues: &[&str], body: &str) -> String {
+    let mut text = format!("// :::{} {name}\n", role("fixme"));
+    for issue in issues {
+        text.push_str(&format!("// :github: {issue}\n"));
+    }
+    text.push_str(&format!("// {body}\n// :::\n"));
+    text
+}
+
+/// The example `requirements.timeout`, judged FIXME and acknowledged by a
+/// `{fixme}` in `observed.rs` naming two issues.
 // {test}`requirements.ci.outcomes`
 // {test}`requirements.examples.evidence`
 fn fixture() -> TempDir {
@@ -32,9 +52,17 @@ fn fixture() -> TempDir {
         ),
     )
     .unwrap();
-    let source = "// FIXME(#125): timeout retries are untested; partial-write tests are missing (rust-lang/rust#123).";
-    fs::write(temp.path().join("observed.txt"), format!("{source}\n")).unwrap();
-    let source_input = habeas::outline_input(temp.path(), "observed.txt", "").unwrap();
+    let source = fixme(
+        "requirements.timeout",
+        &["example/io#125", "rust-lang/rust#123"],
+        "Retry-after-timeout and partial-write recovery are untested.",
+    );
+    fs::write(
+        temp.path().join("observed.rs"),
+        format!("{source}const RETRIES: u32 = 1;\n"),
+    )
+    .unwrap();
+    let source_input = habeas::outline_input(temp.path(), "observed.rs", "").unwrap();
     write_record(
         temp.path(),
         "ready",
@@ -119,12 +147,8 @@ fn judgments_round_trip_and_reject_invalid_fixme_shapes() {
 #[test]
 fn fixme_examples_pass_without_test_references_but_true_examples_do_not() {
     let temp = fixture();
-    assert!(
-        habeas::validate_repository(temp.path())
-            .unwrap()
-            .errors
-            .is_empty()
-    );
+    let report = habeas::validate_repository(temp.path()).unwrap();
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
     replace_judgment(temp.path(), "timeout", json!(true));
     let report = habeas::validate_repository(temp.path()).unwrap();
     assert!(
@@ -143,38 +167,144 @@ fn fixme_examples_pass_without_test_references_but_true_examples_do_not() {
     );
 }
 
+/// Writes `source` to `reviewed.rs` and records `judgment` for
+/// `requirements.ready` with that file among its inputs, returning the
+/// validation errors.
+// {test}`requirements.ci.outcomes`
+fn judge_ready(root: &Path, source: &str, judgment: Value) -> Vec<String> {
+    fs::write(root.join("reviewed.rs"), source).unwrap();
+    let path = root.join("evidence/requirements.ready.json");
+    let mut record: Value = serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+    record["determination"] = judgment;
+    record["rationale"] = json!("The fixture's gaps and their locations.");
+    // The new source changes the reference set; record its current digest.
+    record.as_object_mut().unwrap().remove("references");
+    let inputs = record["inputs"].as_array_mut().unwrap();
+    inputs.retain(|input| input.get("file").and_then(Value::as_str) != Some("reviewed.rs"));
+    inputs.push(habeas::outline_input(root, "reviewed.rs", "").unwrap());
+    write_record(root, "ready", record);
+    habeas::validate_repository(root).unwrap().errors
+}
+
 // {test}`requirements.ci.determination`
+// {test}`requirements.ci.outcomes`
 // {test}`requirements.ci.fixme_implementation_gap`
+#[test]
+fn an_acknowledged_implementation_gap_records_its_issue() {
+    let temp = fixture();
+    let source = fixme(
+        "requirements.ready",
+        &["example/queue#125"],
+        "Capacity-zero insertion does not return Full yet.",
+    );
+    let errors = judge_ready(
+        temp.path(),
+        &source,
+        json!({ "FIXME": ["example/queue#125"] }),
+    );
+    assert!(errors.is_empty(), "{errors:?}");
+    // The strings must be the issues as written after `:github:`.
+    for judgment in [json!(["#125"]), json!(["FIXME(example/queue#125)"])] {
+        let errors = judge_ready(temp.path(), &source, json!({ "FIXME": judgment }));
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("is neither an issue named by a {fixme}")),
+            "{errors:?}"
+        );
+    }
+    // A plain FIXME comment acknowledges nothing.
+    let errors = judge_ready(
+        temp.path(),
+        "// FIXME(example/queue#125): capacity-zero insertion does not return Full yet.\n",
+        json!({ "FIXME": ["example/queue#125"] }),
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.contains("\"example/queue#125\" is neither an issue")),
+        "{errors:?}"
+    );
+}
+
+// {test}`requirements.ci.determination`
+// {test}`requirements.ci.outcomes`
 // {test}`requirements.ci.fixme_without_issue`
 #[test]
-fn fixme_requirements_accept_issue_references_and_other_content() {
+fn an_acknowledged_gap_without_an_issue_records_the_body_words() {
     let temp = fixture();
-    for (comment, judgment) in [
+    let source = fixme(
+        "requirements.ready",
+        &[],
+        "Cancellation races are not\n//   tested on Windows.",
+    );
+    let errors = judge_ready(
+        temp.path(),
+        &source,
+        json!({ "FIXME": ["Cancellation races are not tested on Windows."] }),
+    );
+    assert!(errors.is_empty(), "{errors:?}");
+    // An invented issue number, or the words not joined by single spaces,
+    // matches no `{fixme}`.
+    for entry in [
+        "example/tasks#1",
+        "Cancellation races are not  tested on Windows.",
+    ] {
+        let errors = judge_ready(temp.path(), &source, json!({ "FIXME": [entry] }));
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("is neither an issue")),
+            "{entry}: {errors:?}"
+        );
+    }
+}
+
+// {test}`requirements.ci.outcomes`
+// {test}`requirements.ci.fixme_example_test_gaps`
+#[test]
+fn fixme_strings_list_each_issue_of_an_acknowledging_fixme_once() {
+    let temp = fixture();
+    let path = "evidence/requirements.timeout.json";
+    for (judgment, expected) in [
         (
-            "// FIXME(#125): capacity-zero insertion does not return Full yet.",
-            json!({ "FIXME": ["#125"] }),
+            json!(["rust-lang/rust#123"]),
+            "FIXME entries omit \"example/io#125\" named by the acknowledging {fixme} to requirements.timeout at observed.rs:1",
         ),
         (
-            "// FIXME: cancellation races are not tested on Windows.",
-            json!({ "FIXME": ["cancellation races are not tested on Windows"] }),
+            json!(["example/io#125", "rust-lang/rust#123", "example/io#125"]),
+            "FIXME entry \"example/io#125\" is listed more than once",
         ),
     ] {
-        fs::write(temp.path().join("reviewed.txt"), format!("{comment}\n")).unwrap();
-        let path = temp.path().join("evidence/requirements.ready.json");
-        let mut record: Value = serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
-        record["determination"] = judgment;
-        record["inputs"]
-            .as_array_mut()
-            .unwrap()
-            .retain(|input| input.get("file").and_then(Value::as_str) != Some("reviewed.txt"));
-        record["inputs"]
-            .as_array_mut()
-            .unwrap()
-            .push(habeas::outline_input(temp.path(), "reviewed.txt", "").unwrap());
-        write_record(temp.path(), "ready", record);
-        let report = habeas::validate_repository(temp.path()).unwrap();
-        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        replace_judgment(temp.path(), "timeout", json!({ "FIXME": judgment }));
+        let errors = habeas::validate_repository(temp.path()).unwrap().errors;
+        assert!(
+            errors
+                .iter()
+                .any(|error| error == &format!("{path}: {expected}")),
+            "{expected}: {errors:#?}"
+        );
     }
+}
+
+// {test}`requirements.ci.outcomes`
+// {test}`requirements.ci.determination`
+// {test}`requirements.ci.fixme_with_unacknowledged_gap`
+#[test]
+fn an_unacknowledged_gap_beside_an_acknowledged_one_is_false() {
+    let temp = fixture();
+    let source = fixme(
+        "requirements.ready",
+        &["example/queue#125"],
+        "Capacity-zero insertion does not return Full yet.",
+    );
+    let errors = judge_ready(temp.path(), &source, json!(false));
+    assert!(
+        errors.iter().any(|error| error.contains(
+            "evidence/requirements.ready.json: determination is false: The fixture's gaps and their locations."
+        )),
+        "{errors:?}"
+    );
 }
 
 // {test}`requirements.ci.schema`
@@ -211,13 +341,17 @@ fn malformed_fixme_is_invalid_and_reports_the_required_shape() {
 #[test]
 fn fixme_does_not_hide_stale_inputs_or_uncovered_references() {
     let temp = fixture();
-    fs::write(temp.path().join("observed.txt"), "changed source\n").unwrap();
+    let observed = temp.path().join("observed.rs");
+    let source = fs::read_to_string(&observed).unwrap();
+    fs::write(&observed, source.replace("= 1;", "= 2;")).unwrap();
     let report = habeas::validate_repository(temp.path()).unwrap();
     assert!(
         report
             .errors
             .iter()
-            .any(|error| error.contains("outline input changed: observed.txt <root>"))
+            .any(|error| error.contains("outline input changed: observed.rs <root>")),
+        "{:?}",
+        report.errors
     );
     let status = habeas::status_markdown(temp.path(), false).unwrap();
     let row = status
@@ -300,4 +434,41 @@ fn valid_fixme_remains_visible_in_status_info_and_book() {
     assert!(detail.content.contains("evidence-FIXME"));
     assert!(detail.content.contains("## FIXME references"));
     assert!(detail.content.contains("rust-lang/rust#123"));
+}
+
+// {test}`requirements.ci.reference_set`
+// {test}`requirements.references.evidence_coverage`
+#[test]
+fn editing_or_adding_a_fixme_makes_evidence_stale_or_uncovered() {
+    let temp = fixture();
+    let observed = temp.path().join("observed.rs");
+    let source = fs::read_to_string(&observed).unwrap();
+    // Comments do not change the input's hash, but the `{fixme}` body is
+    // part of the reference set.
+    fs::write(&observed, source.replace("are untested", "remain untested")).unwrap();
+    let errors = habeas::validate_repository(temp.path()).unwrap().errors;
+    assert!(
+        errors.iter().any(
+            |error| error.contains("evidence/requirements.timeout.json: reference set changed")
+        ),
+        "{errors:?}"
+    );
+    assert!(
+        !errors
+            .iter()
+            .any(|error| error.contains("outline input changed")),
+        "{errors:?}"
+    );
+    fs::write(&observed, &source).unwrap();
+    fs::write(
+        temp.path().join("other.rs"),
+        fixme("requirements.timeout", &[], "Another gap."),
+    )
+    .unwrap();
+    let errors = habeas::validate_repository(temp.path()).unwrap().errors;
+    assert!(
+        errors.iter().any(|error| error
+            == "evidence/requirements.timeout.json: no input covers {fixme}`requirements.timeout` at other.rs:1"),
+        "{errors:?}"
+    );
 }
