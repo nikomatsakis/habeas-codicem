@@ -273,7 +273,9 @@ assessments judge by the same rules:
   whose body describes that same gap. A plain FIXME or TODO comment is not an
   acknowledgment. In a FIXME determination or an acknowledgments list, give each
   distinct issue its :github: option names once, such as
-  "rust-lang/rust#123", and, for a {fixme} naming no issue, its body text.
+  "rust-lang/rust#123", and, for a {fixme} naming no issue, its body's words
+  joined by single spaces. A {fixme} describing a gap that no longer exists is
+  itself a gap.
 - Explain your judgment in a Markdown rationale with source locations,
   including any acknowledged gaps.
 ```

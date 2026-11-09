@@ -85,7 +85,7 @@ context; they MUST NOT become additional subjects to assess in full.
 :::
 
 :::{req} outcomes
-A requirement or example judgment MUST use one of these outcomes, applying
+Every assessment judgment MUST use one of these outcomes, applying
 {cite}`requirements.ci.review_criteria`:
 
 - `true`: the sources support the subject and its testing obligations.
@@ -98,14 +98,18 @@ A requirement or example judgment MUST use one of these outcomes, applying
 
 The JSON `determination` MUST be `true`, `false`, or an object containing exactly
 `"FIXME"` with a nonempty array of nonempty strings, such as
-`{"FIXME": ["#125", "rust-lang/rust#123"]}`. A gap MUST count as acknowledged
-only by a `{fixme}` reference to the assessed definition under
-{cite}`requirements.references.targets` whose body describes that gap; a plain
+`{"FIXME": ["example/queue#125", "rust-lang/rust#123"]}`. A gap MUST count as
+acknowledged only by a `{fixme}` reference under
+{cite}`requirements.references.targets` whose body describes that gap and that
+references the assessed definition, or, for a citation or site review, the cited
+or distributed requirement; a plain
 `FIXME` comment, another marker such as `TODO`, or prose MUST NOT. The strings
 MUST list each distinct issue reference the acknowledging `{fixme}` references
 name in their option lines, as written after `:github:`, and, for a `{fixme}`
-naming no issue, its body text. A FIXME judgment MUST be grounded in recorded
-evidence inputs.
+naming no issue, its body's words, without comment delimiters, joined by single
+spaces. A `{fixme}` reference describing a gap that no longer exists MUST itself
+be treated as a gap. A FIXME judgment MUST be grounded in recorded evidence
+inputs.
 :::
 
 See [FIXME examples](#fixme-examples) for concrete review judgments and CI results.
