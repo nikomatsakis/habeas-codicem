@@ -99,12 +99,22 @@ impl CitationItem {
 /// selector percent-encoded and `_root` for the root node.
 // {impl}`requirements.references.citation_review`
 pub(crate) fn review_path(file: &str, item: &str) -> String {
-    let selector = if item.is_empty() {
+    format!(
+        "evidence/{CITATIONS_DIR}/{file}/{}.json",
+        encoded_selector(item)
+    )
+}
+
+/// A selector as a review file name: `/` and `%` percent-encoded, and
+/// `_root` for the root node.
+// {impl}`requirements.references.citation_review`
+// {impl}`requirements.references.site_review`
+pub(crate) fn encoded_selector(item: &str) -> String {
+    if item.is_empty() {
         "_root".to_owned()
     } else {
         item.replace('%', "%25").replace('/', "%2F")
-    };
-    format!("evidence/{CITATIONS_DIR}/{file}/{selector}.json")
+    }
 }
 
 /// The single-subject authoring name of a citation review,

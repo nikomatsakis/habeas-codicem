@@ -131,6 +131,8 @@ pub(crate) struct RepositoryInspection {
     pub(crate) root: PathBuf,
     pub(crate) definitions: BTreeMap<String, Declaration>,
     pub(crate) references: Vec<SourceReference>,
+    /// The sites of each distributed requirement.
+    pub(crate) sites: crate::sites::Sites,
     pub(crate) report: EvidenceReport,
     pub(crate) discovery_errors: Vec<String>,
 }
@@ -216,6 +218,13 @@ pub(crate) fn inspect_repository_with_progress(
         .iter()
         .partition(|file| crate::citations::is_review_path(&evidence_root, file));
     let review_files: Vec<PathBuf> = review_files.into_iter().cloned().collect();
+    // Site reviews are validated against the sites of their requirements.
+    // {impl}`requirements.references.site_review`
+    // {impl}`requirements.ci.orphans`
+    let (site_files, ordinary_files): (Vec<_>, Vec<_>) = ordinary_files
+        .into_iter()
+        .partition(|file| crate::sites::is_review_path(&evidence_root, file));
+    let site_files: Vec<PathBuf> = site_files.into_iter().cloned().collect();
 
     // {impl}`requirements.ci.orphans`
     for (completed, file) in ordinary_files.iter().enumerate() {
@@ -280,10 +289,13 @@ pub(crate) fn inspect_repository_with_progress(
     let references = collect_references_with_progress(&root, &files, &mut errors, &mut progress);
     discovery_errors.extend(errors[scanned..].iter().cloned());
     validate_committed_credentials(&root, &mut errors);
+    // {impl}`requirements.references.distributed`
+    let sites = crate::sites::discover(&root, &definitions, &files, &outlines, &mut errors);
     validate_references(
         &root,
         &definitions,
         &references,
+        &sites,
         &outlines,
         &mut errors,
         &mut progress,
@@ -295,6 +307,17 @@ pub(crate) fn inspect_repository_with_progress(
         &references,
         &outlines,
         &review_files,
+        &mut errors,
+        &mut progress,
+    );
+    // {impl}`requirements.references.site_review`
+    crate::sites::validate(
+        &root,
+        &definitions,
+        &references,
+        &sites,
+        &outlines,
+        &site_files,
         &mut errors,
         &mut progress,
     );
@@ -326,6 +349,7 @@ pub(crate) fn inspect_repository_with_progress(
         },
         definitions,
         references,
+        sites,
         discovery_errors,
     })
 }
@@ -419,6 +443,7 @@ fn collect_definitions(
         };
         let namespace = chapter_namespace(relative);
         let blocks = definition_blocks(&content);
+        crate::sites::validate_query_placement(&label, &content, &blocks, errors);
         for block in &blocks {
             let line = content[..block.start]
                 .bytes()
@@ -1148,15 +1173,17 @@ pub(crate) fn reference_set_digest<'a>(
     name: &str,
     definition: &Declaration,
     references: impl IntoIterator<Item = &'a SourceReference>,
+    sites: &crate::sites::Sites,
 ) -> String {
     use sha2::{Digest, Sha256};
 
     let mut entries = Vec::new();
     for reference in references {
-        // A `{fixme}` inside a site of a distributed definition would belong
-        // to that site's review instead; distributed definitions have no
-        // sites yet, so every named `{fixme}` is an edge here.
+        // A `{fixme}` inside a site of a distributed definition belongs to
+        // that site's review instead.
+        // {impl}`requirements.references.site_review`
         if reference.name != name
+            || crate::sites::in_own_site(root, sites, reference)
             || !reference.is_fixme_edge()
             || !matches!(
                 reference.kind,
@@ -1252,17 +1279,44 @@ pub fn reference_set_digest_for(root: &Path, name: &str) -> io::Result<String> {
             )
         })?;
     let mut errors = Vec::new();
-    let references = collect_references(&root, &mut errors);
+    let files = discovered_files(&root, &mut errors);
+    let references = collect_references_with_progress(&root, &files, &mut errors, &mut |_| {});
     if !errors.is_empty() {
         return Err(io::Error::other(errors.join("\n")));
     }
+    let outlines = OutlineCache::default();
+    let sites = definition_sites(&root, name, definition, &files, &outlines)?;
     Ok(reference_set_digest(
         &root,
-        &OutlineCache::default(),
+        &outlines,
         name,
         definition,
         &references,
+        &sites,
     ))
+}
+
+/// The sites of one definition, keyed as in an inspection, so a `{fixme}`
+/// inside one of them can be told apart; empty unless it is distributed.
+// {impl}`requirements.references.site_review`
+pub(crate) fn definition_sites(
+    root: &Path,
+    name: &str,
+    definition: &Declaration,
+    files: &[PathBuf],
+    outlines: &OutlineCache,
+) -> io::Result<crate::sites::Sites> {
+    let mut sites = crate::sites::Sites::new();
+    if definition.kind == DefinitionKind::Requirement
+        && crate::structural::has_query_directive(definition)
+    {
+        sites.insert(
+            name.to_owned(),
+            crate::sites::requirement_sites(root, name, definition, files, outlines)
+                .map_err(io::Error::other)?,
+        );
+    }
+    Ok(sites)
 }
 
 /// Whether a string is a lowercase hexadecimal SHA-256 digest.
@@ -1296,6 +1350,7 @@ fn validate_references(
     root: &Path,
     definitions: &BTreeMap<String, Declaration>,
     references: &[SourceReference],
+    sites: &crate::sites::Sites,
     outlines: &OutlineCache,
     errors: &mut Vec<String>,
     progress: &mut impl FnMut(InspectionProgress),
@@ -1352,7 +1407,12 @@ fn validate_references(
             continue;
         }
         if target.is_some_and(|d| d.kind != DefinitionKind::Term) {
-            if !unclosed {
+            // A `{fixme}` inside one of its definition's sites acknowledges a
+            // gap at that site only, so it is not part of the definition's
+            // coverage or reference set.
+            // {impl}`requirements.references.site_review`
+            // {impl}`requirements.references.evidence_coverage`
+            if !unclosed && !crate::sites::in_own_site(root, sites, reference) {
                 by_definition
                     .entry(reference.name.clone())
                     .or_default()
@@ -1441,6 +1501,7 @@ fn validate_references(
                     name,
                     definition,
                     references.iter().copied(),
+                    sites,
                 )
         {
             errors.push(format!(
@@ -1451,8 +1512,8 @@ fn validate_references(
         }
         let inputs = evidence_input_ranges(root, &evidence_file, definitions, outlines);
         // `{cite}` points from its source to the definition, so it is not part of
-        // the definition's evidence. A `{fixme}` inside a site would be covered
-        // by the site's review instead; there are no sites yet.
+        // the definition's evidence. A `{fixme}` inside a site is covered by
+        // the site's review instead and was left out above.
         for reference in references
             .into_iter()
             .filter(|reference| reference.kind != ReferenceKind::Cite)
@@ -1571,7 +1632,8 @@ fn validate_fixme_form(
 /// names, must have all of its issues listed. Whether each gap is real and
 /// acknowledged is the reviewer's judgment and is not reassessed.
 // {impl}`requirements.ci.outcomes`
-fn validate_fixme_entries(
+// {impl}`requirements.references.site_review`
+pub(crate) fn validate_fixme_entries(
     root: &Path,
     label: &str,
     name: &str,
@@ -1711,7 +1773,7 @@ pub(crate) fn untracked_reference_files(root: &Path) -> io::Result<Vec<PathBuf>>
 // {impl}`requirements.references.discovery`
 // {impl}`requirements.authoring.progress`
 // {impl}`requirements.ci.errors`
-fn collect_references_with_progress(
+pub(crate) fn collect_references_with_progress(
     root: &Path,
     files: &[PathBuf],
     errors: &mut Vec<String>,

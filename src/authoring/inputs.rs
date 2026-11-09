@@ -7,7 +7,9 @@ use serde_json::{Value, json};
 
 use super::access::SourceAccess;
 use crate::citations::CitationItem;
-use crate::evidence::{Declaration, SourceReference, collect_references, load_definitions};
+use crate::evidence::{
+    Declaration, SourceReference, collect_references, discovered_files, load_definitions,
+};
 use crate::github::GithubIssues;
 use crate::inputs::{InputSelector, OutlineCache, ParsedSource, recorded_input};
 use crate::{DefinitionKind, ReferenceKind};
@@ -115,10 +117,18 @@ impl AssessmentSources {
 
         let outlines = OutlineCache::default();
         let mut errors = Vec::new();
-        let references = collect_references(&root, &mut errors);
+        let files = discovered_files(&root, &mut errors);
+        let references = crate::evidence::collect_references_with_progress(
+            &root,
+            &files,
+            &mut errors,
+            &mut |_| {},
+        );
         if !errors.is_empty() {
             return Err(io::Error::other(errors.join("\n")));
         }
+        let sites =
+            crate::evidence::definition_sites(&root, subject_name, subject, &files, &outlines)?;
         // The same edges determine the reference contributions below.
         let reference_set = crate::evidence::reference_set_digest(
             &root,
@@ -126,13 +136,15 @@ impl AssessmentSources {
             subject_name,
             subject,
             &references,
+            &sites,
         );
         // `{impl}`, `{test}`, and `{fixme}` point from the subject to their
         // sources; `{cite}` sites point into the subject and are discoverable
         // with `references`. A `{fixme}` inside one of the subject's sites
-        // would belong to that site's review; there are no sites yet.
+        // belongs to that site's review instead.
         for reference in references.iter().filter(|reference| {
             reference.name == subject_name
+                && !crate::sites::in_own_site(&root, &sites, reference)
                 && reference.is_fixme_edge()
                 && matches!(
                     reference.kind,

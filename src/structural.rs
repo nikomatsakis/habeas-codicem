@@ -26,7 +26,7 @@ use crate::outline::{Outline, Profile};
 // {impl}`requirements.references.distributed`
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct QueryLanguage {
-    profile: &'static Profile,
+    pub(crate) profile: &'static Profile,
     grammar: fn() -> tree_sitter::Language,
 }
 
@@ -263,11 +263,8 @@ pub(crate) struct QueryBody {
     pub(crate) constraints: Option<Value>,
     #[serde(default)]
     pub(crate) within: Option<String>,
-    // Validation checks the snippets; searches only require them.
     #[serde(rename = "match")]
-    #[allow(dead_code)]
     pub(crate) matches: Vec<String>,
-    #[allow(dead_code)]
     pub(crate) no_match: Vec<String>,
 }
 
@@ -305,13 +302,38 @@ pub(crate) struct DeclaredQuery {
     pub(crate) name: String,
     pub(crate) kind: QueryKind,
     pub(crate) body: QueryBody,
+    /// Line of the query's opening fence in its chapter.
+    pub(crate) line: usize,
 }
 
-/// The queries a requirement declaration contains, in declaration order.
+/// The queries a requirement declaration contains, in declaration order,
+/// failing on the first malformed one.
 // {impl}`requirements.references.distributed`
 pub(crate) fn declared_queries(declaration: &Declaration) -> Result<Vec<DeclaredQuery>, String> {
+    let (queries, problems) = parse_queries(declaration);
+    match problems.into_iter().next() {
+        Some(problem) => Err(problem),
+        None => Ok(queries),
+    }
+}
+
+/// Whether a declaration contains a query directive, well-formed or not.
+// {impl}`requirements.references.distributed`
+pub(crate) fn has_query_directive(declaration: &Declaration) -> bool {
+    declaration
+        .raw_lines
+        .iter()
+        .skip(1)
+        .any(|line| query_fence(line).is_some())
+}
+
+/// The well-formed queries a requirement declaration contains, in
+/// declaration order, and a problem for each malformed one.
+// {impl}`requirements.references.distributed`
+pub(crate) fn parse_queries(declaration: &Declaration) -> (Vec<DeclaredQuery>, Vec<String>) {
     let lines = &declaration.raw_lines;
     let mut queries = Vec::new();
+    let mut problems = Vec::new();
     let mut index = 1;
     while index < lines.len() {
         let Some((fence, kind, name)) = query_fence(&lines[index]) else {
@@ -319,36 +341,48 @@ pub(crate) fn declared_queries(declaration: &Declaration) -> Result<Vec<Declared
             continue;
         };
         let line = declaration.line_start + index;
-        let close = lines[index + 1..]
+        let Some(close) = lines[index + 1..]
             .iter()
             .position(|candidate| candidate.trim_end() == fence)
             .map(|offset| index + 1 + offset)
-            .ok_or_else(|| format!("{}:{line}: query {name} is not closed", declaration.file))?;
+        else {
+            problems.push(format!(
+                "{}:{line}: query {name} is not closed",
+                declaration.file
+            ));
+            break;
+        };
         let body = lines[index + 1..close]
             .iter()
             .map(String::as_str)
             .collect::<Vec<_>>();
-        let yaml = yaml_block(&body).ok_or_else(|| {
-            format!(
+        index = close + 1;
+        let Some(yaml) = yaml_block(&body) else {
+            problems.push(format!(
                 "{}:{line}: query {name} must contain exactly one fenced yaml code block",
                 declaration.file
-            )
-        })?;
-        let body: QueryBody = serde_saphyr::from_str(&yaml)
-            .map_err(|error| format!("{}:{line}: query {name}: {error}", declaration.file))?;
-        queries.push(DeclaredQuery {
-            name: name.to_owned(),
-            kind,
-            body,
-        });
-        index = close + 1;
+            ));
+            continue;
+        };
+        match serde_saphyr::from_str::<QueryBody>(&yaml) {
+            Ok(body) => queries.push(DeclaredQuery {
+                name: name.to_owned(),
+                kind,
+                body,
+                line,
+            }),
+            Err(error) => problems.push(format!(
+                "{}:{line}: query {name}: the yaml block must be a mapping of language, paths, exclude, rule, utils, constraints, within, match, and no_match: {error}",
+                declaration.file
+            )),
+        }
     }
-    Ok(queries)
+    (queries, problems)
 }
 
 /// A query directive's opening fence: its colons, kind, and name.
 // {impl}`requirements.references.distributed`
-fn query_fence(line: &str) -> Option<(&str, QueryKind, &str)> {
+pub(crate) fn query_fence(line: &str) -> Option<(&str, QueryKind, &str)> {
     let colons = line.len() - line.trim_start_matches(':').len();
     if colons < 3 {
         return None;
@@ -395,6 +429,29 @@ pub(crate) struct Site {
     pub(crate) item: String,
 }
 
+impl QueryKind {
+    /// The directive's role name, `sites` or `violations`.
+    // {impl}`requirements.references.distributed`
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Sites => "sites",
+            Self::Violations => "violations",
+        }
+    }
+}
+
+/// One match of a declared query in the project, with its site.
+// {impl}`requirements.references.distributed`
+#[derive(Clone, Debug)]
+pub(crate) struct QueryMatch {
+    pub(crate) site: Site,
+    /// Inclusive one-based lines of the match.
+    pub(crate) line_start: usize,
+    pub(crate) line_end: usize,
+    /// The matched source text.
+    pub(crate) text: String,
+}
+
 /// Runs a query a requirement declares, named `<query-name>`, over the
 /// sources reference discovery considers, in their original text, and
 /// returns the distinct sites of its matches in path and source order. A
@@ -409,23 +466,32 @@ pub(crate) fn query_sites(
     queries: &[DeclaredQuery],
     name: &str,
 ) -> Result<Vec<Site>, String> {
+    let mut sites = Vec::new();
+    for found in query_matches(root, files, outlines, queries, name)? {
+        if !sites.contains(&found.site) {
+            sites.push(found.site);
+        }
+    }
+    Ok(sites)
+}
+
+/// Every match of a declared query, with its site, in path and source
+/// order, as [`query_sites`] finds them.
+// {impl}`requirements.references.distributed`
+pub(crate) fn query_matches(
+    root: &Path,
+    files: &[PathBuf],
+    outlines: &OutlineCache,
+    queries: &[DeclaredQuery],
+    name: &str,
+) -> Result<Vec<QueryMatch>, String> {
     let query = queries
         .iter()
         .find(|query| query.name == name)
         .ok_or_else(|| format!("no query named {name:?}"))?;
-    let within = match (query.kind, &query.body.within) {
-        (QueryKind::Sites, None) => None,
-        (QueryKind::Sites, Some(_)) => {
-            return Err(format!("site query {name} must not have within"));
-        }
-        (QueryKind::Violations, None) => {
-            return Err(format!("violation query {name} must have within"));
-        }
-        (QueryKind::Violations, Some(within)) => {
-            let target = queries
-                .iter()
-                .find(|query| &query.name == within && query.kind == QueryKind::Sites)
-                .ok_or_else(|| format!("{name}: within names no site query {within:?}"))?;
+    let within = match within_query(queries, query)? {
+        None => None,
+        Some(target) => {
             let mut sites = BTreeMap::<String, Vec<String>>::new();
             for site in query_sites(root, files, outlines, queries, &target.name)? {
                 sites.entry(site.file).or_default().push(site.item);
@@ -448,7 +514,7 @@ pub(crate) fn query_sites(
         })
         .collect::<Vec<_>>();
     sources.sort();
-    let mut sites = Vec::new();
+    let mut found = Vec::new();
     for (relative, file) in sources {
         if within
             .as_ref()
@@ -464,28 +530,104 @@ pub(crate) fn query_sites(
         }
         let parsed = outlines.parse(root, &relative);
         let parsed = parsed.as_ref().as_ref().map_err(Clone::clone)?;
+        let within_nodes = within.as_ref().map(|within| {
+            let selected = &within[&relative];
+            (0..parsed.outline.nodes.len())
+                .filter(|index| selected.contains(&parsed.outline.nodes[*index].selector))
+                .collect::<Vec<_>>()
+        });
+        let line_of = |byte: usize| text[..byte].matches('\n').count() + 1;
         for range in ranges {
-            let mut node = Some(innermost_node(&parsed.outline, &parsed.source, &range));
-            if let Some(within) = &within {
-                let selected = &within[&relative];
-                while let Some(index) = node
-                    && !selected.contains(&parsed.outline.nodes[index].selector)
-                {
-                    node = parsed.outline.nodes[index].parent;
-                }
-            }
-            if let Some(index) = node {
-                let site = Site {
+            let Some(index) = owning_site(&parsed.outline, &text, &range, within_nodes.as_deref())
+            else {
+                continue;
+            };
+            found.push(QueryMatch {
+                site: Site {
                     file: relative.clone(),
                     item: parsed.outline.nodes[index].selector.clone(),
-                };
-                if !sites.contains(&site) {
-                    sites.push(site);
-                }
-            }
+                },
+                line_start: line_of(range.start),
+                line_end: line_of(range.end.saturating_sub(1).max(range.start)),
+                text: text[range].to_owned(),
+            });
         }
     }
-    Ok(sites)
+    Ok(found)
+}
+
+/// The site query a query's matches must lie within: none for a site
+/// query, and the `within` target, which must be a site query of the same
+/// requirement, for a violation query.
+// {impl}`requirements.references.distributed`
+pub(crate) fn within_query<'a>(
+    queries: &'a [DeclaredQuery],
+    query: &DeclaredQuery,
+) -> Result<Option<&'a DeclaredQuery>, String> {
+    let name = &query.name;
+    match (query.kind, &query.body.within) {
+        (QueryKind::Sites, None) => Ok(None),
+        (QueryKind::Sites, Some(_)) => Err(format!("site query {name} must not have within")),
+        (QueryKind::Violations, None) => Err(format!("violation query {name} must have within")),
+        (QueryKind::Violations, Some(within)) => queries
+            .iter()
+            .find(|query| &query.name == within && query.kind == QueryKind::Sites)
+            .map(Some)
+            .ok_or_else(|| format!("{name}: within names no site query {within:?}")),
+    }
+}
+
+/// The site a match belongs to: the innermost outline node containing it,
+/// or, with `within`, the innermost of those nodes containing it.
+// {impl}`requirements.references.distributed`
+fn owning_site(
+    outline: &Outline,
+    source: &str,
+    range: &Range<usize>,
+    within: Option<&[usize]>,
+) -> Option<usize> {
+    let mut node = Some(innermost_node(outline, source, range));
+    if let Some(within) = within {
+        while let Some(index) = node
+            && !within.contains(&index)
+        {
+            node = outline.nodes[index].parent;
+        }
+    }
+    node
+}
+
+/// How many matches a query has in one snippet of its language, counting a
+/// violation query's matches only inside a site of its `within` query in
+/// the same snippet. A snippet that does not parse is an error.
+// {impl}`requirements.references.distributed`
+pub(crate) fn snippet_matches(
+    queries: &[DeclaredQuery],
+    query: &DeclaredQuery,
+    snippet: &str,
+) -> Result<usize, String> {
+    let rule = StructuralRule::compile(&query.body.language, &query.body.rule_core())?;
+    let outline = crate::outline::parse_with(rule.language().profile, snippet)
+        .map_err(|error| format!("does not parse as {}: {error}", query.body.language))?;
+    let within = match within_query(queries, query)? {
+        None => None,
+        Some(target) => {
+            let site_rule =
+                StructuralRule::compile(&target.body.language, &target.body.rule_core())?;
+            Some(
+                site_rule
+                    .matches(snippet)
+                    .iter()
+                    .map(|range| innermost_node(&outline, snippet, range))
+                    .collect::<Vec<_>>(),
+            )
+        }
+    };
+    Ok(rule
+        .matches(snippet)
+        .iter()
+        .filter(|range| owning_site(&outline, snippet, range, within.as_deref()).is_some())
+        .count())
 }
 
 #[cfg(test)]

@@ -21,6 +21,7 @@ pub mod judgment;
 mod outline;
 mod redaction;
 mod rust_coverage;
+mod sites;
 mod structural;
 mod terms;
 
@@ -372,12 +373,13 @@ fn replace_definitions(
         result.push_str(tag);
         result.push_str(">\n\n");
         // Option lines such as anchors are metadata, not body text.
-        result.push_str(&replace_definitions(
-            &content[block.text_start..block.body_end],
-            namespace,
-            current_path,
-            plan,
-        ));
+        let body = &content[block.text_start..block.body_end];
+        let body = if block.kind == DefinitionKind::Requirement {
+            replace_query_directives(body)
+        } else {
+            body.to_owned()
+        };
+        result.push_str(&replace_definitions(&body, namespace, current_path, plan));
         if let Some(href) = &detail_href {
             result.push_str("\n<p class=\"habeas-see-evidence\"><a href=\"");
             result.push_str(href);
@@ -388,6 +390,41 @@ fn replace_definitions(
     }
 
     result.push_str(&content[cursor..]);
+    result
+}
+
+/// Renders each query directive in a requirement body as a badge naming its
+/// kind and name, followed by its code block. Directives in code blocks
+/// stay literal.
+// {impl}`requirements.references.distributed`
+fn replace_query_directives(body: &str) -> String {
+    let code = code_block_ranges(body);
+    let mut result = String::with_capacity(body.len());
+    let mut closing: Option<String> = None;
+    let mut offset = 0;
+    for line in body.split_inclusive('\n') {
+        let start = offset;
+        offset += line.len();
+        let text = line.trim_end_matches(['\n', '\r']);
+        if code.iter().any(|range| range.contains(&start)) {
+            result.push_str(line);
+            continue;
+        }
+        if closing.as_deref() == Some(text.trim_end()) {
+            closing = None;
+            continue;
+        }
+        if closing.is_none()
+            && let Some((fence, kind, name)) = structural::query_fence(text)
+        {
+            result.push_str("<span class=\"habeas-query-badge\">");
+            result.push_str(&shield_badge(kind.label(), name, "6c4f8a"));
+            result.push_str("</span>\n\n");
+            closing = Some(fence.to_owned());
+            continue;
+        }
+        result.push_str(line);
+    }
     result
 }
 
@@ -618,12 +655,7 @@ fn full_requirement_name(namespace: &str, name: &str) -> String {
 // {impl}`requirements.references.anchors`
 // {impl}`requirements.references.builtin_definitions`
 pub(crate) fn definition_blocks(content: &str) -> Vec<DefinitionBlock> {
-    let code_ranges = Parser::new(content)
-        .into_offset_iter()
-        .filter_map(|(event, range)| {
-            matches!(event, Event::Start(Tag::CodeBlock(_))).then_some(range)
-        })
-        .collect::<Vec<_>>();
+    let code_ranges = code_block_ranges(content);
     let mut lines = Vec::new();
     let mut position = 0;
     for segment in content.split_inclusive('\n') {
@@ -754,6 +786,18 @@ pub(crate) fn without_options(
     }
     text.push_str(&content[cursor..range.end]);
     text
+}
+
+/// The byte ranges of a Markdown text's code blocks, whose contents stay
+/// literal.
+// {impl}`requirements.references.markdown_literals`
+pub(crate) fn code_block_ranges(content: &str) -> Vec<Range<usize>> {
+    Parser::new(content)
+        .into_offset_iter()
+        .filter_map(|(event, range)| {
+            matches!(event, Event::Start(Tag::CodeBlock(_))).then_some(range)
+        })
+        .collect()
 }
 
 // {impl}`requirements.ci.span`
@@ -897,7 +941,7 @@ fn is_escaped(content: &str, position: usize) -> bool {
 }
 
 // {impl}`requirements.ci.identifiers`
-fn valid_name(name: &str) -> bool {
+pub(crate) fn valid_name(name: &str) -> bool {
     !name.is_empty()
         && name.split('.').all(|part| {
             !part.is_empty()
@@ -1502,6 +1546,24 @@ mod tests {
         assert!(rendered.contains("```text\nexample\n```"));
         assert!(rendered.contains("After."));
         assert!(!rendered.contains(":::{req} defined"));
+    }
+
+    // {test}`requirements.references.distributed`
+    #[test]
+    fn query_directives_render_as_badges_followed_by_their_code_blocks() {
+        let source = "::::{req} spread\nEach site MUST hold.\n\n:::{sites} checks\n```yaml\nlanguage: rust\n```\n:::\n\n:::{violations} risky\n```yaml\nwithin: checks\n```\n:::\n\n```text\n:::{sites} literal\n```\n::::\n";
+        let rendered = replace_definitions(source, "requirements", None, None);
+        assert!(
+            rendered.contains("<span class=\"habeas-query-badge\"><img class=\"habeas-shield\" src=\"https://img.shields.io/badge/sites-checks-6c4f8a?style=flat-square&amp;labelColor=555\" alt=\"sites checks\" loading=\"lazy\"></span>\n\n```yaml\nlanguage: rust\n```\n\n<span class=\"habeas-query-badge\">"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("alt=\"violations risky\""), "{rendered}");
+        assert!(!rendered.contains(":::{sites} checks"), "{rendered}");
+        assert!(!rendered.contains("\n:::\n"), "{rendered}");
+        assert!(
+            rendered.contains("```text\n:::{sites} literal\n```"),
+            "{rendered}"
+        );
     }
 
     // {test}`requirements.references.discovery`
