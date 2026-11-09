@@ -139,7 +139,7 @@ fn close_dependencies(
 ) -> (BTreeSet<String>, Vec<String>) {
     let mut visited = BTreeSet::new();
     let mut required = BTreeSet::new();
-    let mut problems = Vec::new();
+    let mut errors = Vec::new();
     while let Some(name) = pending.pop_first() {
         if !visited.insert(name.clone()) {
             continue;
@@ -148,16 +148,17 @@ fn close_dependencies(
             .get(&name)
             .filter(|d| d.kind == DefinitionKind::Term)
         else {
-            problems.push(format!("term {name}: no matching named definition"));
+            errors.push(format!("term {name}: no matching named definition"));
+            // Without a definition there is no body whose terms to expand.
             continue;
         };
         match declaration(&definition.text) {
             Ok((_, body)) => referenced_terms(body, true, &mut pending),
-            Err(problem) => problems.push(problem),
+            Err(problem) => errors.push(problem),
         }
         required.insert(name);
     }
-    (required, problems)
+    (required, errors)
 }
 
 // {impl}`requirements.definitions.selection`

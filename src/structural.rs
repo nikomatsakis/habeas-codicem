@@ -330,10 +330,11 @@ pub(crate) fn has_query_directive(declaration: &Declaration) -> bool {
 /// The well-formed queries a requirement declaration contains, in
 /// declaration order, and a problem for each malformed one.
 // {impl}`requirements.references.distributed`
+// {impl}`requirements.ci.errors`
 pub(crate) fn parse_queries(declaration: &Declaration) -> (Vec<DeclaredQuery>, Vec<String>) {
     let lines = &declaration.raw_lines;
     let mut queries = Vec::new();
-    let mut problems = Vec::new();
+    let mut errors = Vec::new();
     let mut index = 1;
     while index < lines.len() {
         let Some((fence, kind, name)) = query_fence(&lines[index]) else {
@@ -346,10 +347,12 @@ pub(crate) fn parse_queries(declaration: &Declaration) -> (Vec<DeclaredQuery>, V
             .position(|candidate| candidate.trim_end() == fence)
             .map(|offset| index + 1 + offset)
         else {
-            problems.push(format!(
+            errors.push(format!(
                 "{}:{line}: query {name} is not closed",
                 declaration.file
             ));
+            // The rest of the declaration lies inside the unclosed directive,
+            // so no later query can be found in it.
             break;
         };
         let body = lines[index + 1..close]
@@ -358,10 +361,11 @@ pub(crate) fn parse_queries(declaration: &Declaration) -> (Vec<DeclaredQuery>, V
             .collect::<Vec<_>>();
         index = close + 1;
         let Some(yaml) = yaml_block(&body) else {
-            problems.push(format!(
+            errors.push(format!(
                 "{}:{line}: query {name} must contain exactly one fenced yaml code block",
                 declaration.file
             ));
+            // Decoding the body needs its yaml block.
             continue;
         };
         match serde_saphyr::from_str::<QueryBody>(&yaml) {
@@ -371,13 +375,13 @@ pub(crate) fn parse_queries(declaration: &Declaration) -> (Vec<DeclaredQuery>, V
                 body,
                 line,
             }),
-            Err(error) => problems.push(format!(
+            Err(error) => errors.push(format!(
                 "{}:{line}: query {name}: the yaml block must be a mapping of language, paths, exclude, rule, utils, constraints, within, match, and no_match: {error}",
                 declaration.file
             )),
         }
     }
-    (queries, problems)
+    (queries, errors)
 }
 
 /// A query directive's opening fence: its colons, kind, and name.
