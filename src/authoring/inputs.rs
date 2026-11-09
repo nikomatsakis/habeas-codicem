@@ -1389,6 +1389,37 @@ pub(super) mod tests {
             ]
         );
     }
+
+    // {test}`requirements.references.authoring_inputs`
+    #[test]
+    fn references_in_terminology_declarations_contribute_that_declaration() {
+        let root = project();
+        fs::write(
+            root.path().join("md/requirements.md"),
+            format!(
+                ":::{{req}} ready\nThe project MUST be ready.\n:::\n\n:::{{definition}} widget\n:phrase: widget\n\nA part that is ready, as {} shows.\n:::\n",
+                role("test", "requirements.ready")
+            ),
+        )
+        .unwrap();
+        let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        let definitions = sources
+            .mandatory_inputs()
+            .iter()
+            .filter_map(|input| input.get("definition"))
+            .collect::<Vec<_>>();
+        assert_eq!(definitions, [&json!("requirements.widget")]);
+        // The declaration contributes as a whole, not as a Markdown section.
+        assert!(
+            !sources
+                .mandatory_inputs()
+                .iter()
+                .any(|input| input["file"] == "md/requirements.md"),
+            "{:?}",
+            sources.mandatory_inputs()
+        );
+    }
+
     // {test}`requirements.authoring.mandatory_inputs`
     // {test}`requirements.authoring.read_denial`
     #[test]
