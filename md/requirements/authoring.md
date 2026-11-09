@@ -88,7 +88,8 @@ section after its first paragraph, which name the subject, its citations or
 matches, and what to judge against, followed by, for a site review, the filled
 `{{distributed_background}}`, and then the filled "Your task" section;
 `{{site_step}}` with nothing, or, for a site review, the line
-`4. Also set applies to whether the requirement governs the site.`; `{{habeas_background}}` and `{{reference_roles}}` under
+`4. Also set applies to whether the requirement governs the site, as the reviewer's step 1 decides it; if it does not, set real to false.`;
+a verification with `applies` false and `real` true MUST be invalid; `{{habeas_background}}` and `{{reference_roles}}` under
 {cite}`requirements.authoring.habeas_background`;
 `{{judgment_rules}}` under {cite}`requirements.authoring.judgment_rules`; and
 `{{mandatory_inputs}}`:
@@ -115,11 +116,14 @@ rationale describes, as stated; if only a narrower version of a claim holds,
 judge that version and say so. If you notice another gap, mention it, but do not
 let it decide your answer.
 
-1. Set real to true if at least one claimed gap is real and, under the
-   reviewer's criteria, enough on its own to rule out true.
+A claimed gap is real when the sources show it and the reviewer's criteria or
+"How to judge" make it a gap; there, "your task" means the criteria the reviewer
+applied.
+
+1. Set real to true if at least one claimed gap is real.
 2. If any gap is real, set acknowledged to true if every real gap is
-   acknowledged, and list the acknowledgments in acknowledgments. If no gap is
-   real, set acknowledged to false and leave acknowledgments empty.
+   acknowledged, and list the acknowledgments in acknowledgments. Otherwise set
+   acknowledged to false and leave acknowledgments empty.
 3. For each claimed gap, state in your rationale whether it is real and whether
    it is acknowledged, with source locations.
 {{site_step}}
@@ -247,8 +251,9 @@ assessments judge by the same rules:
   gap with FIXME, conventionally FIXME(#125) or FIXME(owner/repo#123). A FIXME
   inside a string literal or test data is not an acknowledgment. Before deciding
   a gap is unacknowledged, search the files of the items it concerns for FIXME.
-  List each acknowledgment by its issue reference, such as #125, or by its
-  comment text if it has none.
+  In a FIXME determination, list each distinct acknowledgment once: its issue
+  reference as written without FIXME( ), such as "#125" or "owner/repo#123", or
+  its comment text if it has none.
 - Explain your judgment in a Markdown rationale with source locations,
   including any acknowledged gaps.
 ```
@@ -298,13 +303,13 @@ requirements or examples the item does not cite, except as step 3 requires.
 2. A citation of a requirement or example the item also references with {impl}
    or {test} is redundant and is a gap.
 3. An item that no requirement or example applies to cites the built-in
-   habeas:none, with commentary justifying why the item exists. For such a
-   citation, judge whether the justification is true; whether any requirement or example
-   applies, which you check by listing their names with the references tool and
-   searching their text with ripgrep for the item's behavior, one applying only
-   if step 1 would call for a reference to it; and whether the item implements
-   end-user-observable behavior, such as output, exit status, files written,
-   errors, or public API, that no requirement specifies.
+   habeas:none, with commentary justifying why the item exists. To check such
+   a citation, list requirement and example names with the references tool and
+   search their text with ripgrep for the item's behavior; one applies if step
+   1 would call for a reference to it. The citation is a gap if its
+   justification is false, if any requirement or example applies, or if the
+   item implements end-user-observable behavior, such as output, exit status,
+   files written, errors, or public API, that no requirement specifies.
 4. For other citations, treat the commentary as context.
 
 # How to judge
@@ -372,7 +377,9 @@ site's callers, or other sites.
    apply. Set applies to false only when the requirement does not govern this
    site; then set determination to true and explain in your rationale why the
    requirement does not apply.
-2. Otherwise set applies to true and judge the site. Violation matches are
+2. Otherwise set applies to true and judge the site: each obligation the
+   requirement states for its sites that the site does not meet is a gap.
+   Violation matches are
    leads, not verdicts: judge each one listed above, saying whether it breaks
    the requirement here and why, but a match may be harmless and the site may
    break the requirement without one.
@@ -854,8 +861,10 @@ carrying an {impl} or {test} reference to it.
 Cited requirements and examples are context: when the subject requires behavior
 under or following a cited requirement, check that the subject's code applies
 that requirement in the subject's case, but do not reassess its own
-implementation or tests. When another requirement carries an {impl} reference to
-the subject, assess only whether its text carries out that part.
+implementation or tests. When another requirement's text carries an {impl} reference
+to the subject, assess only whether that text carries out the obligations it
+covers; do not reassess its implementation or tests, and those obligations need
+no test here.
 
 {{subject_task}}
 
@@ -877,7 +886,8 @@ determination and rationale. That tool call is your final answer.
 Requirement task:
 
 ```text
-1. List each MUST, MUST NOT, and SHOULD clause as an obligation.
+1. List each MUST, MUST NOT, and SHOULD clause as an obligation, with one
+   obligation for each separate condition, form, or property a clause requires.
 2. For each, find the code that carries it out, among the {impl} items and the
    code they call. In your rationale, map each obligation to its code and to
    the tests step 5 requires.
@@ -887,16 +897,18 @@ Requirement task:
    both among the sources the references tool reports for the subject, and with
    a targeted ripgrep for names, strings, or messages its obligations produce;
    do not survey unrelated code.
-4. Unspecified behavior: observable behavior in the {impl} code, such as a new
-   output, error, exit status, or accepted input, that neither the subject nor
-   another requirement the same code marks with {impl} specifies is a gap. Read
-   those requirements before calling it one. The layout and wording of output
-   the text requires is not unspecified behavior.
-5. Testing: every obligation needs a test that exercises it and asserts its
-   outcome, and so does every boundary or failure case the text names, and every
-   branch of the code that produces different observable behavior under the
-   subject. For an obligation without a test, judge whether it is simple enough
-   to need none or impractical to test, and say why.
+4. Unspecified behavior: a distinct observable behavior in the {impl} code,
+   such as an extra output, error, exit status, option, or kind of input, that
+   neither the subject nor another requirement the same code marks with {impl}
+   specifies is a gap. Read those requirements before calling it one. Behavior
+   within what the text describes, even where its examples do not show it, is
+   specified; so are the layout and wording of output the text requires.
+5. Testing: every obligation, and every boundary or failure case the text
+   names, needs a test that runs the code carrying it out and asserts its
+   outcome; calling that code directly counts. Branches for cases the text does
+   not distinguish need no test of their own. An untested obligation is a gap
+   unless its code has no branch or computation that could get it wrong, or a
+   test is impractical to write; say which, and why.
 ```
 
 Distributed task:
