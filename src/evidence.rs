@@ -1086,7 +1086,7 @@ pub(crate) fn display_path(root: &Path, path: &Path) -> String {
         .to_string()
 }
 
-// {impl}`requirements.references.targets`
+// {impl}`requirements.references.roles`
 // {impl}`requirements.ci.reference_set`
 #[derive(Clone, Debug)]
 pub(crate) struct SourceReference {
@@ -1262,7 +1262,7 @@ struct InputRange {
 }
 
 // {impl}`requirements.references.evidence_coverage`
-// {impl}`requirements.references.targets`
+// {impl}`requirements.references.discovery`
 // {impl}`requirements.examples.evidence`
 // {impl}`requirements.definitions.references`
 // {impl}`requirements.definitions.declaration`
@@ -1281,7 +1281,7 @@ fn validate_references(
     let mut by_definition: BTreeMap<String, Vec<&SourceReference>> = BTreeMap::new();
     for reference in references {
         let location = format!("{}:{}", display_path(root, &reference.file), reference.line);
-        // {impl}`requirements.references.targets`
+        // {impl}`requirements.references.roles`
         if reference.commentary.is_some() && !reference.closed {
             errors.push(format!(
                 "{location}: fenced {{{}}} reference to {} has no closing fence with at least as many colons within its comment run or file",
@@ -1455,7 +1455,7 @@ fn validate_references(
     });
 }
 
-// {impl}`requirements.references.targets`
+// {impl}`requirements.references.discovery`
 pub(crate) fn collect_references(root: &Path, errors: &mut Vec<String>) -> Vec<SourceReference> {
     let files = discovered_files(root, errors);
     collect_references_with_progress(root, &files, errors, &mut |_| {})
@@ -1463,7 +1463,7 @@ pub(crate) fn collect_references(root: &Path, errors: &mut Vec<String>) -> Vec<S
 
 /// The project files reference discovery considers under source-access
 /// policy, reporting a failure to read the Git index as a discovery error.
-// {impl}`requirements.references.targets`
+// {impl}`requirements.references.discovery`
 // {impl}`requirements.ci.errors`
 pub(crate) fn discovered_files(root: &Path, errors: &mut Vec<String>) -> Vec<PathBuf> {
     match crate::authoring::access::DiscoverySources::load(root) {
@@ -1530,7 +1530,7 @@ pub(crate) fn untracked_reference_files(root: &Path) -> io::Result<Vec<PathBuf>>
         .collect())
 }
 
-// {impl}`requirements.references.targets`
+// {impl}`requirements.references.discovery`
 // {impl}`requirements.authoring.progress`
 // {impl}`requirements.ci.errors`
 fn collect_references_with_progress(
@@ -1574,7 +1574,7 @@ fn collect_references_with_progress(
 }
 
 /// The inline and fenced references in one text file, in line order.
-// {impl}`requirements.references.targets`
+// {impl}`requirements.references.discovery`
 fn file_references(file: &Path, content: &str, in_book: bool) -> Vec<SourceReference> {
     let markdown = crate::outline::is_markdown_path(file);
     let mut references = Vec::new();
@@ -2155,7 +2155,7 @@ pub(crate) mod tests {
         assert!(errors.is_empty(), "{errors:?}");
     }
 
-    // {test}`requirements.references.targets`
+    // {test}`requirements.references.discovery`
     // {test}`requirements.references.markdown_literals`
     #[test]
     fn every_markdown_extension_keeps_escaped_and_code_roles_literal() {
@@ -2190,7 +2190,7 @@ pub(crate) mod tests {
         );
     }
 
-    // {test}`requirements.references.targets`
+    // {test}`requirements.references.discovery`
     // {test}`requirements.references.evidence_coverage`
     #[test]
     fn reports_unknown_references_and_uncovered_lines() {
@@ -2653,7 +2653,7 @@ pub(crate) mod tests {
         assert_eq!(report.errors.len(), 2, "{errors}");
     }
 
-    // {test}`requirements.references.targets`
+    // {test}`requirements.references.discovery`
     #[test]
     fn reference_discovery_skips_evidence_snapshots_and_build_output() {
         let temp = fixture();
@@ -2917,7 +2917,7 @@ pub(crate) mod tests {
     }
 
     // {test}`requirements.references.evidence_coverage`
-    // {test}`requirements.references.targets`
+    // {test}`requirements.references.roles`
     #[test]
     fn uncovered_cite_is_not_reported_while_uncovered_impl_and_test_are() {
         let temp = fixture();

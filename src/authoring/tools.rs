@@ -1800,7 +1800,7 @@ mod tests {
     }
 
     // {test}`requirements.authoring.reference_index`
-    // {test}`requirements.references.targets`
+    // {test}`requirements.references.discovery`
     #[test]
     fn references_report_only_sites_in_considered_sources() {
         let root = project();

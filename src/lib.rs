@@ -121,7 +121,7 @@ pub(crate) struct Definition {
     pub(crate) kind: DefinitionKind,
 }
 
-// {impl}`requirements.references.targets`
+// {impl}`requirements.references.roles`
 // {impl}`requirements.definitions.references`
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ReferenceKind {
@@ -156,7 +156,7 @@ impl ReferenceKind {
     }
 }
 
-// {impl}`requirements.references.targets`
+// {impl}`requirements.references.roles`
 pub(crate) struct ReferenceMatch<'a> {
     pub(crate) start: usize,
     end: usize,
@@ -759,7 +759,7 @@ fn overlaps_protected(start: usize, end: usize, ranges: &[Range<usize>]) -> bool
         .any(|range| start < range.end && range.start < end)
 }
 
-// {impl}`requirements.references.targets`
+// {impl}`requirements.references.roles`
 // {impl}`requirements.ci.identifiers`
 // {impl}`requirements.references.markdown_literals`
 // {impl}`requirements.definitions.references`
@@ -823,7 +823,7 @@ pub(crate) fn reference_roles(content: &str, markdown: bool) -> Vec<ReferenceMat
 
 /// Every reference in text, inline or fenced, as its role and name, in
 /// source order.
-// {impl}`requirements.references.targets`
+// {impl}`requirements.references.roles`
 pub(crate) fn text_references(content: &str, markdown: bool) -> Vec<(ReferenceKind, String)> {
     let mut references = reference_roles(content, markdown)
         .into_iter()
@@ -842,7 +842,7 @@ pub(crate) fn text_references(content: &str, markdown: bool) -> Vec<(ReferenceKi
 }
 
 // {impl}`requirements.references.markdown_literals`
-// {impl}`requirements.references.targets`
+// {impl}`requirements.references.discovery`
 fn protected_ranges(content: &str) -> Vec<Range<usize>> {
     let mut ranges = Vec::new();
 
@@ -858,7 +858,7 @@ fn protected_ranges(content: &str) -> Vec<Range<usize>> {
 }
 
 // {impl}`requirements.references.markdown_literals`
-// {impl}`requirements.references.targets`
+// {impl}`requirements.references.discovery`
 fn is_protected(position: usize, ranges: &[Range<usize>]) -> bool {
     ranges
         .iter()
@@ -866,7 +866,7 @@ fn is_protected(position: usize, ranges: &[Range<usize>]) -> bool {
 }
 
 // {impl}`requirements.references.markdown_literals`
-// {impl}`requirements.references.targets`
+// {impl}`requirements.references.discovery`
 fn is_escaped(content: &str, position: usize) -> bool {
     content[..position]
         .bytes()
@@ -1425,7 +1425,7 @@ mod tests {
     }
 
     // {test}`requirements.references.markdown_literals`
-    // {test}`requirements.references.targets`
+    // {test}`requirements.references.discovery`
     #[test]
     fn markdown_examples_and_escaped_references_stay_literal() {
         let marker = ["{", "impl}`requirements.ready`"].concat();
@@ -1484,7 +1484,7 @@ mod tests {
         assert!(!rendered.contains(":::{req} defined"));
     }
 
-    // {test}`requirements.references.targets`
+    // {test}`requirements.references.discovery`
     // {test}`requirements.references.markdown_literals`
     #[test]
     fn references_in_requirement_bodies_are_scanned_as_markdown() {

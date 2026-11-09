@@ -470,6 +470,7 @@ async fn configured_record(
 /// disagreeing assessments in a third. Each conversation has its own usage
 /// record; `usage` is the first's.
 // {impl}`requirements.authoring.confirmation`
+// {impl}`requirements.authoring.verifier_outcome`
 // {impl}`requirements.authoring.usage_storage`
 // {impl}`requirements.authoring.mandatory_inputs`
 // {impl}`requirements.authoring.usage_inputs`
@@ -611,13 +612,13 @@ const DEFINITION_PROMPT: &str = "Bring your expert judgment to the task of asses
 // {impl}`requirements.authoring.citation_prompt`
 const CITATION_PROMPT: &str =
     "Bring your expert judgment to the task of reviewing a source item's citations.";
-// {impl}`requirements.authoring.confirmation`
+// {impl}`requirements.authoring.verifier_prompt`
 const VERIFICATION_PROMPT: &str = "Another reviewer judged {{subject_kind}} {{subject_name}} as {{determination}} for these reasons:";
 
 /// An approved prompt template, from its opening line to its closing fence.
 // {impl}`requirements.authoring.initial_prompt`
 // {impl}`requirements.authoring.citation_prompt`
-// {impl}`requirements.authoring.confirmation`
+// {impl}`requirements.authoring.verifier_prompt`
 fn prompt_template(opening: &str) -> &'static str {
     // Keep the approved templates as the sole source of these instructions.
     let chapter = include_str!("../../md/requirements/authoring.md");
@@ -633,7 +634,7 @@ fn prompt_template(opening: &str) -> &'static str {
 /// is left as written.
 // {impl}`requirements.authoring.initial_prompt`
 // {impl}`requirements.authoring.citation_prompt`
-// {impl}`requirements.authoring.confirmation`
+// {impl}`requirements.authoring.verifier_prompt`
 fn fill(template: &str, values: &[(&str, &str)]) -> String {
     let mut result = String::with_capacity(template.len());
     let mut rest = template;
@@ -656,6 +657,9 @@ fn fill(template: &str, values: &[(&str, &str)]) -> String {
 }
 
 // {impl}`requirements.authoring.initial_prompt`
+// {impl}`requirements.authoring.requirement_task`
+// {impl}`requirements.authoring.testing_bar`
+// {impl}`requirements.authoring.example_task`
 // {impl}`requirements.ci.review_criteria`
 // {impl}`requirements.ci.outcomes`
 // {impl}`requirements.examples.evidence`
@@ -689,7 +693,7 @@ fn initial_prompt(sources: &AssessmentSources) -> io::Result<String> {
 }
 
 /// The verifier's prompt for a determination and its rationale.
-// {impl}`requirements.authoring.confirmation`
+// {impl}`requirements.authoring.verifier_prompt`
 fn verification_prompt(
     sources: &AssessmentSources,
     determination: &Judgment,
@@ -733,7 +737,7 @@ fn submission(arguments: &Value) -> io::Result<(Judgment, String)> {
 
 /// Parses a `submit_verification` call: exactly a boolean `confirmed` and a
 /// nonempty `rationale`.
-// {impl}`requirements.authoring.confirmation`
+// {impl}`requirements.authoring.verifier_prompt`
 fn verification(arguments: &Value) -> io::Result<(bool, String)> {
     let object = arguments
         .as_object()
@@ -759,7 +763,7 @@ fn verification(arguments: &Value) -> io::Result<(bool, String)> {
 // {impl}`requirements.authoring.submission`
 // {impl}`requirements.authoring.initial_prompt`
 // {impl}`requirements.ci.outcomes`
-// {impl}`requirements.authoring.confirmation`
+// {impl}`requirements.authoring.verifier_prompt`
 fn tool_definitions_with(submit: &str) -> io::Result<Vec<ToolDefinition>> {
     let mut definitions = tools::definitions();
     if submit == "submit_verification" {
@@ -837,6 +841,7 @@ async fn assess(
 /// Verifies a determination and its rationale in its own conversation,
 /// returning whether the verifier confirmed it and the verifier's rationale.
 // {impl}`requirements.authoring.confirmation`
+// {impl}`requirements.authoring.verifier_prompt`
 async fn verify(
     provider: &impl CompletionProvider,
     sources: &mut AssessmentSources,
@@ -1214,6 +1219,9 @@ mod tests {
     }
 
     // {test}`requirements.ci.review_criteria`
+    // {test}`requirements.authoring.requirement_task`
+    // {test}`requirements.authoring.testing_bar`
+    // {test}`requirements.authoring.example_task`
     #[test]
     fn initial_prompt_carries_the_review_criteria() {
         let project = inputs::tests::project();
@@ -1785,6 +1793,7 @@ mod tests {
     }
 
     // {test}`requirements.authoring.confirmation`
+    // {test}`requirements.authoring.verifier_outcome`
     fn verdict(confirmed: bool, rationale: &str) -> (&'static str, Value) {
         (
             "submit_verification",
@@ -1873,6 +1882,8 @@ mod tests {
     }
 
     // {test}`requirements.authoring.confirmation`
+    // {test}`requirements.authoring.verifier_prompt`
+    // {test}`requirements.authoring.verifier_outcome`
     #[tokio::test]
     async fn disagreeing_assessments_verify_the_less_favorable_one() {
         for (turns, recorded, outcome) in [
@@ -1946,7 +1957,7 @@ mod tests {
         }
     }
 
-    // {test}`requirements.authoring.confirmation`
+    // {test}`requirements.authoring.verifier_prompt`
     #[test]
     fn verifications_accept_exactly_a_boolean_and_a_nonempty_rationale() {
         assert_eq!(
@@ -1976,7 +1987,7 @@ mod tests {
     }
 
     // {test}`requirements.authoring.initial_prompt`
-    // {test}`requirements.authoring.confirmation`
+    // {test}`requirements.authoring.verifier_prompt`
     #[test]
     fn placeholders_are_filled_in_one_pass() {
         assert_eq!(

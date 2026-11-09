@@ -481,10 +481,10 @@ Each reference must name an existing requirement or example, or a built-in defin
 - `{cite}`: the source relies on, supports, or refers to the definition without implementing or testing it.
 
 Only requirements and examples are assessed; code is reviewed as part of the definitions it implements or tests. `{impl}` and `{test}` point from the definition to the source, so the source becomes a mandatory input to the definition's assessment, and that definition's evidence must cover the reference line. `{cite}` points from the source to the definition: a citing requirement or example receives the cited declaration as context, and the citing site needs no evidence coverage. Marking only `{cite}` on code that implements part of a requirement leaves a gap in that requirement's review. In the book, references and definitions become linked badges.
-{cite}`requirements.references.targets` {cite}`requirements.references.evidence_coverage` {cite}`requirements.references.authoring_inputs`
+{cite}`requirements.references.roles` {cite}`requirements.references.evidence_coverage` {cite}`requirements.references.authoring_inputs`
 
 Habeas discovers references in the same sources authoring may read. In a Git worktree, these are the files in the Git index, including staged new files; outside Git, every project file. Either way, the project-root `book` and `evidence` directories, `.git` and `target` directories at any depth, and paths your `[evidence]` configuration disallows are skipped. References in an untracked file are not validated and do not count toward any definition until you stage the file with `git add`; `habeas status` lists untracked files that contain references as a reminder.
-{cite}`requirements.references.targets` {cite}`requirements.cli.status`
+{cite}`requirements.references.discovery` {cite}`requirements.cli.status`
 
 ### Choosing references
 
@@ -496,7 +496,7 @@ For each definition a source item could reference, choose by this procedure. An 
 4. If the item has no reference after applying steps 1 to 3 to every definition, cite the built-in `habeas:none`, justifying why the item exists.
 
 For internal code, state any invariant worth checking, such as a cache that must not change results, as an ordinary requirement and implement it. Otherwise cite `habeas:none`. Do not write grouping requirements that state no checkable obligation just to give internal helpers something to reference.
-{cite}`requirements.references.targets` {cite}`requirements.cli.internal_detail_guidance`
+{cite}`requirements.references.procedure` {cite}`requirements.cli.internal_detail_guidance`
 
 ### Fenced references and commentary
 
@@ -530,7 +530,7 @@ Usage errors use the same report.
 ```
 
 For an `{impl}` or `{test}` reference in a source outside the book, the words of its commentary are part of the definition's reference set, so editing them makes that definition's evidence stale; reflowing them does not. In the book, commentary is part of the declaration text instead.
-{cite}`requirements.references.targets` {cite}`requirements.ci.reference_set` {cite}`requirements.references.book_badges`
+{cite}`requirements.references.roles` {cite}`requirements.ci.reference_set` {cite}`requirements.references.book_badges`
 
 ### Built-in definitions
 

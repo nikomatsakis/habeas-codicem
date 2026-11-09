@@ -40,7 +40,7 @@ determinations MUST remain validation errors under {cite}`requirements.ci.outcom
 :::{req} fixme_issues
 `habeas status` MUST look up, under {cite}`requirements.authoring.github_reads`,
 every issue that a `:github:` option line of a named or unnamed `{fixme}` under
-{cite}`requirements.references.targets` names, and MUST report each `{fixme}`
+{cite}`requirements.references.roles` names, and MUST report each `{fixme}`
 naming an issue that is closed or does not exist as an error, with its file and
 line and the issue. It MUST also report the item that contains that `{fixme}` as
 failing: the outline node containing it, or the requirement or example
@@ -79,7 +79,7 @@ The bundled requirements skill MUST direct agents adding or changing user-visibl
 :impl: assets/skills/habeas-requirements/SKILL.md
 :impl: assets/skills/habeas-bootstrap-requirements/SKILL.md
 :impl: assets/skills/habeas-evidence/SKILL.md
-Habeas's bundled agent skills MUST direct agents reviewing code against requirements to inspect every end-user-observable result and branch, including errors and input handling, and verify both that the code fulfills each applicable requirement and that it introduces no additional end-user-observable behavior without an agreed requirement. They MUST explain the requirement and example review criteria in {cite}`requirements.ci.review_criteria`, including test adequacy and justified absence of tests for requirements, and the three outcomes and documented-gap convention in {cite}`requirements.ci.outcomes`. Agents MUST mark code that implements part of a requirement with `{impl}` and tests that verify it with `{test}`, using `{cite}` only for related code that does neither, under {cite}`requirements.references.targets`. Where requirements interact, agents MUST mark every requirement implemented at the relevant point and explain how their texts jointly account for the behavior. A citation alone MUST NOT count as that explanation.
+Habeas's bundled agent skills MUST direct agents reviewing code against requirements to inspect every end-user-observable result and branch, including errors and input handling, and verify both that the code fulfills each applicable requirement and that it introduces no additional end-user-observable behavior without an agreed requirement. They MUST explain the requirement and example review criteria in {cite}`requirements.ci.review_criteria`, including test adequacy and justified absence of tests for requirements, and the three outcomes and documented-gap convention in {cite}`requirements.ci.outcomes`. Agents MUST mark code that implements part of a requirement with `{impl}` and tests that verify it with `{test}`, using `{cite}` only for related code that does neither, under {cite}`requirements.references.procedure`. Where requirements interact, agents MUST mark every requirement implemented at the relevant point and explain how their texts jointly account for the behavior. A citation alone MUST NOT count as that explanation.
 :::
 
 :::{req} internal_detail_guidance
@@ -87,7 +87,7 @@ Habeas's bundled agent skills MUST direct agents reviewing code against requirem
 :impl: assets/skills/habeas-bootstrap-requirements/SKILL.md
 :impl: assets/skills/habeas-evidence/SKILL.md
 Habeas's bundled agent skills MUST direct agents to choose references by the
-procedure in {cite}`requirements.references.targets`. For internal code, they
+procedure in {cite}`requirements.references.procedure`. For internal code, they
 MUST direct agents to state any invariant worth checking as an ordinary
 requirement and implement it, and otherwise to cite the built-in `habeas:none` in the fenced form, with a
 body justifying why the item exists, under {cite}`requirements.references.no_requirement`. They MUST

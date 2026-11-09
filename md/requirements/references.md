@@ -130,7 +130,7 @@ project-relative path, `<selector>` is its outline selector with every `/` and
 prompt defined by {cite}`requirements.authoring.citation_prompt`. The reviewer MUST assess, for each citation,
 whether the item should be re-checked or kept in sync when the cited definition
 changes, and whether the reference procedure of
-{cite}`requirements.references.targets` calls for `{impl}` or `{test}` instead;
+{cite}`requirements.references.procedure` calls for `{impl}` or `{test}` instead;
 for `habeas:none`, whether its justification is true, no definition applies, and
 the item implements no unspecified end-user-observable behavior. Mandatory inputs,
 under {cite}`requirements.authoring.mandatory_inputs`, MUST be the item's outline
@@ -155,7 +155,7 @@ declaration MAY list `:test:` options, immediately after its opening fence and
 before its body, one per option line, naming a project file path or
 `path#selector` for one outline node under
 {cite}`requirements.references.outline_selectors`. Each anchor MUST be an `{impl}` or `{test}` edge, under
-{cite}`requirements.references.targets`, from the definition to the anchored file or
+{cite}`requirements.references.roles`, from the definition to the anchored file or
 node, for files that cannot or should not carry a reference themselves.
 Paths MUST follow the path rules in {cite}`requirements.ci.schema`. Option lines
 MUST NOT form part of the definition's text for evidence comparison or for
@@ -175,7 +175,7 @@ definition. Habeas's bundled agent skills MUST give this direction.
 
 :::{req} book_badges
 :impl: md/habeas.css
-In a book chapter, each valid `{impl}`, `{cite}`, or `{test}` reference, inline or fenced, MUST render as a Shields.io static badge image with meaningful alt text that displays its role and full name and links to the badge at the corresponding `{req}` or `{example}` definition. Links MUST work across chapters, including nested chapters. A fenced reference MUST render its badge followed by its body as Markdown. Each fenced `{req}` or `{example}` directive MUST render as a Shields.io definition badge image identifying its kind; text outside a directive MUST remain literal. Badge text MUST remain legible regardless of whether its link has been visited. A badge link MUST show a visible indicator when it has keyboard focus and MAY brighten on hover. Badges MAY be laid out inline with the surrounding text, a fenced reference's badge and body MAY be visually set apart from the surrounding text as one block, and a built-in's unlinked badge MAY show a help cursor to signal its hover text. These badges use the syntax defined by {cite}`requirements.references.targets`.
+In a book chapter, each valid `{impl}`, `{cite}`, or `{test}` reference, inline or fenced, MUST render as a Shields.io static badge image with meaningful alt text that displays its role and full name and links to the badge at the corresponding `{req}` or `{example}` definition. Links MUST work across chapters, including nested chapters. A fenced reference MUST render its badge followed by its body as Markdown. Each fenced `{req}` or `{example}` directive MUST render as a Shields.io definition badge image identifying its kind; text outside a directive MUST remain literal. Badge text MUST remain legible regardless of whether its link has been visited. A badge link MUST show a visible indicator when it has keyboard focus and MAY brighten on hover. Badges MAY be laid out inline with the surrounding text, a fenced reference's badge and body MAY be visually set apart from the surrounding text as one block, and a built-in's unlinked badge MAY show a help cursor to signal its hover text. These badges use the syntax defined by {cite}`requirements.references.roles`.
 :::
 
 :::{req} evidence_coverage
@@ -183,7 +183,7 @@ For every `{impl}` and `{test}` reference in a project source file, including on
 :::
 
 :::{req} rust_item_coverage
-During repository validation, Habeas MUST parse every first-party Rust source file: every `.rs` file among the sources reference discovery considers under {cite}`requirements.references.targets`, except those under the project-root `vendor` directory. Every explicitly declared function or method, including trait methods and test helpers, and every struct, enum, and union MUST have a valid `{impl}`, `{cite}`, or `{test}` reference to a defined requirement or named example, or a valid citation of the built-in `habeas:none` under {cite}`requirements.references.no_requirement`, in a Rust comment attached to it or within its body. Comments belong to items under {cite}`requirements.references.outline_comments`; a comment before a field, variant, or attribute inside an item belongs to that item. A named example MUST reference a requirement under {cite}`requirements.examples.definition`. A reference in a string literal, on an enclosing module or impl block, or only in an evidence input MUST NOT count for the items it encloses. Habeas MUST report every unreferenced item with its file, line, kind, and name, and MUST report a Rust parse failure instead of silently skipping the file.
+During repository validation, Habeas MUST parse every first-party Rust source file: every `.rs` file among the sources reference discovery considers under {cite}`requirements.references.discovery`, except those under the project-root `vendor` directory. Every explicitly declared function or method, including trait methods and test helpers, and every struct, enum, and union MUST have a valid `{impl}`, `{cite}`, or `{test}` reference to a defined requirement or named example, or a valid citation of the built-in `habeas:none` under {cite}`requirements.references.no_requirement`, in a Rust comment attached to it or within its body. Comments belong to items under {cite}`requirements.references.outline_comments`; a comment before a field, variant, or attribute inside an item belongs to that item. A named example MUST reference a requirement under {cite}`requirements.examples.definition`. A reference in a string literal, on an enclosing module or impl block, or only in an evidence input MUST NOT count for the items it encloses. Habeas MUST report every unreferenced item with its file, line, kind, and name, and MUST report a Rust parse failure instead of silently skipping the file.
 :::
 
 :::{req} definition_globs
@@ -360,7 +360,7 @@ MUST be one fenced `yaml` code block containing a mapping with only these keys:
 Validation MUST report a query whose body is not such a mapping, whose rule does
 not compile, whose `within` names no site query of the requirement, a violation query without `within`, or one of whose snippets fails to parse or has the wrong match result, and a site query
 that matches nothing in the project. Queries MUST search exactly the sources
-reference discovery considers under {cite}`requirements.references.targets`, in
+reference discovery considers under {cite}`requirements.references.discovery`, in
 their original text.
 
 A match's site MUST be the innermost outline node, under
@@ -420,7 +420,7 @@ list each selected requirement's sites with their determinations.
 
 :::{req} authoring_inputs
 When authoring evidence, the edges defined by
-{cite}`requirements.references.targets` MUST determine the reference
+{cite}`requirements.references.roles` MUST determine the reference
 contributions to the mandatory input set defined by
 {cite}`requirements.authoring.mandatory_inputs`. The target of each edge leaving
 the assessed subject MUST contribute; sources with only edges into the subject

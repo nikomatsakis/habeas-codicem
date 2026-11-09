@@ -21,7 +21,7 @@ pub(crate) enum AssessmentKind {
 impl AssessmentKind {
     // {impl}`requirements.authoring.usage_storage`
     // {impl}`requirements.authoring.initial_prompt`
-    // {impl}`requirements.authoring.confirmation`
+    // {impl}`requirements.authoring.verifier_prompt`
     pub(crate) fn noun(&self) -> &'static str {
         match self {
             Self::Definition(kind) => kind.noun(),
@@ -754,7 +754,7 @@ pub(super) mod tests {
     // {test}`requirements.authoring_input`
     // {test}`requirements.references.authoring_inputs`
     // {test}`requirements.authoring.read_denial`
-    // {test}`requirements.references.targets`
+    // {test}`requirements.references.discovery`
     #[test]
     fn mandatory_git_inputs_require_staging_declarations_sources_and_terms() {
         let root = project();
@@ -926,7 +926,7 @@ pub(super) mod tests {
     }
 
     // {test}`requirements.references.authoring_inputs`
-    // {test}`requirements.references.targets`
+    // {test}`requirements.references.roles`
     // {test}`requirements.authoring.mandatory_inputs`
     #[test]
     fn only_edges_leaving_the_subject_contribute_inputs() {

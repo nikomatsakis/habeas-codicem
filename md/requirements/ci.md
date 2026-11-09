@@ -28,7 +28,7 @@ exactly as stated, and whether its
 tests cover the interesting cases in the design space, including relevant
 boundaries and failure cases. The reviewer MUST also assess whether the
 implementation is marked completely: code that implements part of the
-requirement under {cite}`requirements.references.targets` without an `{impl}`
+requirement under {cite}`requirements.references.roles` without an `{impl}`
 reference to it, including code that refers to it only with `{cite}`, MUST be
 treated as a gap. Behavior in the `{impl}` code that the requirement does not
 specify MUST be accounted for by another definition that the same code
@@ -98,7 +98,7 @@ The JSON `determination` MUST be `true`, `false`, or an object containing exactl
 `"FIXME"` with a nonempty array of nonempty strings, such as
 `{"FIXME": ["example/queue#125", "rust-lang/rust#123"]}`. A gap MUST count as
 acknowledged only by a `{fixme}` reference under
-{cite}`requirements.references.targets` whose body describes that gap and that
+{cite}`requirements.references.roles` whose body describes that gap and that
 references the assessed definition, or, for a site review, the distributed requirement from within that site; a citation review MUST NOT accept a `{fixme}`; a plain
 `FIXME` comment, another marker such as `TODO`, or prose MUST NOT. The strings
 MUST list each distinct issue reference the acknowledging `{fixme}` references
@@ -115,7 +115,7 @@ See [FIXME examples](#fixme-examples) for concrete review judgments and CI resul
 
 
 :::{req} reference_set
-A definition's reference set MUST consist of its current incoming `{impl}`, `{test}`, and `{fixme}` edges, except a `{fixme}` inside a site of the definition under {cite}`requirements.references.site_review`, under {cite}`requirements.references.targets` and
+A definition's reference set MUST consist of its current incoming `{impl}`, `{test}`, and `{fixme}` edges, except a `{fixme}` inside a site of the definition under {cite}`requirements.references.site_review`, under {cite}`requirements.references.roles` and
 {cite}`requirements.references.anchors`: for each edge, its role and the file and
 outline selector of the node the reference belongs to under
 {cite}`requirements.references.outline_comments`, or of the anchored file or

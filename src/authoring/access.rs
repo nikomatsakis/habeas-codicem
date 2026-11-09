@@ -216,7 +216,7 @@ impl SourceAccess {
 /// The project files reference discovery and Rust item coverage consider: the
 /// sources [`SourceAccess`] would let authoring read by default, found without
 /// authoring configuration or Cargo metadata.
-// {impl}`requirements.references.targets`
+// {impl}`requirements.references.discovery`
 // {impl}`requirements.authoring.deterministic_validation`
 pub(crate) struct DiscoverySources {
     root: PathBuf,
@@ -228,7 +228,7 @@ impl DiscoverySources {
     /// Loads the Git index and the workspace `[evidence]` rules. An invalid
     /// workspace configuration is reported by inspection itself, so discovery
     /// then applies no workspace rules rather than failing a second time.
-    // {impl}`requirements.references.targets`
+    // {impl}`requirements.references.discovery`
     // {impl}`requirements.authoring.deterministic_validation`
     // {impl}`requirements.ci.errors`
     pub(crate) fn load(root: &Path) -> io::Result<Self> {
@@ -242,7 +242,7 @@ impl DiscoverySources {
     /// Every considered file, sorted. In a Git worktree these are the indexed
     /// files; outside Git, every file under the project root. Symlinks are not
     /// followed, so no source is counted twice through an alias.
-    // {impl}`requirements.references.targets`
+    // {impl}`requirements.references.discovery`
     // {impl}`requirements.ci.errors`
     pub(crate) fn files(&self, errors: &mut Vec<String>) -> Vec<PathBuf> {
         let mut files: Vec<PathBuf> = match &self.tracked {
@@ -312,7 +312,7 @@ impl DiscoverySources {
 
     /// Whether a project file outside the fixed exclusions is permitted by the
     /// workspace rules: not disallowed.
-    // {impl}`requirements.references.targets`
+    // {impl}`requirements.references.discovery`
     // {impl}`requirements.configuration.evidence_paths`
     fn considers(&self, path: &Path, directory: bool) -> bool {
         if excluded_from_discovery(&self.root, path, directory) {
@@ -324,7 +324,7 @@ impl DiscoverySources {
 
     /// Lists every file outside Git, skipping excluded and disallowed
     /// directories without descending into them.
-    // {impl}`requirements.references.targets`
+    // {impl}`requirements.references.discovery`
     // {impl}`requirements.ci.errors`
     fn walk(&self, errors: &mut Vec<String>) -> Vec<PathBuf> {
         let root = &self.root;
@@ -385,7 +385,7 @@ impl DiscoverySources {
 /// Whether a file, or a directory when `directory` is set, lies in a `.git`
 /// or `target` directory at any depth or in the project-root `book` or
 /// `evidence` directory.
-// {impl}`requirements.references.targets`
+// {impl}`requirements.references.discovery`
 fn excluded_from_discovery(root: &Path, path: &Path, directory: bool) -> bool {
     let Ok(relative) = path.strip_prefix(root) else {
         return true;
@@ -732,7 +732,7 @@ pub(crate) mod tests {
         assert!(access.file(&root, Path::new("outside.txt")).is_err());
     }
 
-    // {test}`requirements.references.targets`
+    // {test}`requirements.references.discovery`
     // {test}`requirements.authoring.credentials`
     #[test]
     fn discovery_considers_indexed_files_except_exclusions_including_credential_configuration() {

@@ -9,13 +9,15 @@ use serde_json::{Value, json};
 use tempfile::TempDir;
 
 /// A role written so this file's own source does not contain it.
-// {test}`requirements.references.targets`
+// {test}`requirements.references.roles`
+// {test}`requirements.references.discovery`
 fn role(kind: &str) -> String {
     format!("{{{kind}}}")
 }
 
 /// A project with one requirement, `rules.ready`, and empty sources.
-// {test}`requirements.references.targets`
+// {test}`requirements.references.roles`
+// {test}`requirements.references.discovery`
 fn project() -> TempDir {
     let temp = TempDir::new().unwrap();
     let root = temp.path();
@@ -28,17 +30,19 @@ fn project() -> TempDir {
     temp
 }
 
-// {test}`requirements.references.targets`
+// {test}`requirements.references.roles`
+// {test}`requirements.references.discovery`
 fn errors(root: &Path) -> Vec<String> {
     habeas::validate_repository(root).unwrap().errors
 }
 
-// {test}`requirements.references.targets`
+// {test}`requirements.references.roles`
+// {test}`requirements.references.discovery`
 fn has(errors: &[String], needle: &str) -> bool {
     errors.iter().any(|error| error.contains(needle))
 }
 
-// {test}`requirements.references.targets`
+// {test}`requirements.references.roles`
 // {test}`requirements.references.builtin_definitions`
 // {test}`requirements.references.no_requirement`
 // {test}`requirements.references.rust_item_coverage`
@@ -447,7 +451,7 @@ fn status_all_lists_habeas_none_citations_with_their_justification() {
 }
 
 /// Runs `git` in `root`, failing the test if it fails.
-// {test}`requirements.references.targets`
+// {test}`requirements.references.discovery`
 fn git(root: &Path, args: &[&str]) {
     let output = std::process::Command::new("git")
         .current_dir(root)
@@ -461,7 +465,7 @@ fn git(root: &Path, args: &[&str]) {
     );
 }
 
-// {test}`requirements.references.targets`
+// {test}`requirements.references.discovery`
 // {test}`requirements.references.rust_item_coverage`
 // {test}`requirements.cli.status`
 #[test]
@@ -507,7 +511,7 @@ fn untracked_sources_are_not_validated_until_staged_and_status_lists_them() {
     );
 }
 
-// {test}`requirements.references.targets`
+// {test}`requirements.references.discovery`
 // {test}`requirements.references.rust_item_coverage`
 // {test}`requirements.configuration.evidence_paths`
 #[test]

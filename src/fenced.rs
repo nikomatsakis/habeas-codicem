@@ -9,7 +9,7 @@ use crate::outline::Outline;
 use crate::{ReferenceKind, colon_fence, overlaps_protected, protected_ranges, reference_roles};
 
 /// One line in which fences may be recognized, with its one-based source line.
-// {impl}`requirements.references.targets`
+// {impl}`requirements.references.roles`
 pub(crate) struct FenceLine<'a> {
     pub(crate) text: &'a str,
     pub(crate) line: usize,
@@ -19,7 +19,7 @@ pub(crate) struct FenceLine<'a> {
 }
 
 /// A fenced reference found among [`FenceLine`]s, by line index.
-// {impl}`requirements.references.targets`
+// {impl}`requirements.references.roles`
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Fence {
     pub(crate) kind: ReferenceKind,
@@ -30,7 +30,7 @@ pub(crate) struct Fence {
 }
 
 /// A fenced reference with its body, as found in a whole source.
-// {impl}`requirements.references.targets`
+// {impl}`requirements.references.roles`
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct SourceFence {
     pub(crate) kind: ReferenceKind,
@@ -46,7 +46,7 @@ pub(crate) struct SourceFence {
 
 /// Parses an opening reference fence: at least three colons, a role, and one
 /// name, which is a valid definition name or a built-in name.
-// {impl}`requirements.references.targets`
+// {impl}`requirements.references.roles`
 // {impl}`requirements.ci.span`
 // {impl}`requirements.ci.fence_lengths`
 // {impl}`requirements.ci.identifiers`
@@ -77,7 +77,7 @@ fn closes(line: &str, length: usize) -> bool {
 
 /// Finds fenced references among lines. A fence closes at the next
 /// unprotected colon-only line with at least as many colons; fences may nest.
-// {impl}`requirements.references.targets`
+// {impl}`requirements.references.roles`
 // {impl}`requirements.ci.fence_lengths`
 pub(crate) fn find_fences(lines: &[FenceLine<'_>]) -> Vec<Fence> {
     let mut fences = Vec::new();
@@ -102,7 +102,7 @@ pub(crate) fn find_fences(lines: &[FenceLine<'_>]) -> Vec<Fence> {
 }
 
 /// The body lines of a fence, joined and trimmed.
-// {impl}`requirements.references.targets`
+// {impl}`requirements.references.roles`
 fn body(lines: &[FenceLine<'_>], fence: &Fence) -> String {
     let end = fence.close.unwrap_or(lines.len());
     lines[fence.open + 1..end]
@@ -149,7 +149,7 @@ pub(crate) struct MarkdownFence {
 }
 
 /// Splits text into lines with their byte ranges, without line endings.
-// {impl}`requirements.references.targets`
+// {impl}`requirements.references.roles`
 fn split_lines(content: &str) -> Vec<(usize, usize, &str)> {
     let mut lines = Vec::new();
     let mut position = 0;
@@ -167,7 +167,7 @@ fn split_lines(content: &str) -> Vec<(usize, usize, &str)> {
 
 /// Fenced references in Markdown text; fences in code or raw HTML remain
 /// literal. Without `markdown`, every line is text, as in a plain-text file.
-// {impl}`requirements.references.targets`
+// {impl}`requirements.references.roles`
 // {impl}`requirements.references.markdown_literals`
 // {impl}`requirements.references.book_badges`
 pub(crate) fn markdown_fences(content: &str, markdown: bool) -> Vec<MarkdownFence> {
@@ -210,7 +210,7 @@ pub(crate) fn markdown_fences(content: &str, markdown: bool) -> Vec<MarkdownFenc
 /// Removes one line's comment delimiters: leading `//`, `///`, `//!`, `/*`,
 /// `/**`, `/*!`, `#`, `<!--`, or a block comment's leading `*`, and a
 /// trailing `*/` or `-->`.
-// {impl}`requirements.references.targets`
+// {impl}`requirements.references.roles`
 pub(crate) fn strip_comment_delimiters(line: &str) -> &str {
     let mut text = line.trim_start();
     for prefix in ["///", "//!", "//", "/**", "/*!", "/*", "<!--", "#"] {
@@ -235,7 +235,7 @@ pub(crate) fn strip_comment_delimiters(line: &str) -> &str {
 
 /// Fenced references in the comment runs of a parsed source. Each fence must
 /// open and close within one run.
-// {impl}`requirements.references.targets`
+// {impl}`requirements.references.roles`
 // {impl}`requirements.references.outline_comments`
 pub(crate) fn comment_fences(source: &str, outline: &Outline) -> Vec<SourceFence> {
     let mut fences = Vec::new();
@@ -275,7 +275,7 @@ pub(crate) fn comment_fences(source: &str, outline: &Outline) -> Vec<SourceFence
 }
 
 /// Fenced references in a whole Markdown or plain-text source.
-// {impl}`requirements.references.targets`
+// {impl}`requirements.references.roles`
 pub(crate) fn text_fences(content: &str, markdown: bool) -> Vec<SourceFence> {
     markdown_fences(content, markdown)
         .into_iter()
@@ -294,7 +294,7 @@ pub(crate) fn text_fences(content: &str, markdown: bool) -> Vec<SourceFence> {
 /// plain-text file, or in the comment runs of another supported language. A
 /// source its grammar cannot parse has no recognized fences; its parse
 /// failure is reported by the checks that outline it.
-// {impl}`requirements.references.targets`
+// {impl}`requirements.references.roles`
 // {impl}`requirements.ci.errors`
 pub(crate) fn source_fences(path: &std::path::Path, content: &str) -> Vec<SourceFence> {
     if !content.contains(":::") {
@@ -316,7 +316,7 @@ pub(crate) fn source_fences(path: &std::path::Path, content: &str) -> Vec<Source
 mod tests {
     use super::*;
 
-    // {test}`requirements.references.targets`
+    // {test}`requirements.references.roles`
     // {test}`requirements.ci.identifiers`
     // {test}`requirements.references.builtin_definitions`
     #[test]
@@ -357,7 +357,7 @@ mod tests {
         }
     }
 
-    // {test}`requirements.references.targets`
+    // {test}`requirements.references.roles`
     // {test}`requirements.ci.fence_lengths`
     #[test]
     fn markdown_fences_close_with_enough_colons_and_skip_code() {
@@ -379,7 +379,7 @@ mod tests {
         assert_eq!(markdown_fences(&content, false).len(), 4);
     }
 
-    // {test}`requirements.references.targets`
+    // {test}`requirements.references.roles`
     #[test]
     fn comment_delimiters_are_removed_per_line() {
         assert_eq!(
@@ -395,7 +395,7 @@ mod tests {
         assert_eq!(strip_comment_delimiters("<!-- ::: -->"), " ::: ");
     }
 
-    // {test}`requirements.references.targets`
+    // {test}`requirements.references.roles`
     // {test}`requirements.references.outline_comments`
     #[test]
     fn comment_fences_close_within_one_comment_run() {

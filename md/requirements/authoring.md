@@ -798,7 +798,7 @@ reuse a cached result less than one hour old instead of contacting GitHub. A mal
 MUST return an explanatory tool error.
 
 When the mandatory inputs contain a `{fixme}` reference under
-{cite}`requirements.references.targets`, the harness MUST look up the state of
+{cite}`requirements.references.roles`, the harness MUST look up the state of
 each issue its `:github:` lines name, in the same way, and MUST supply each state with that input to the model as `open` or `closed`; when GitHub cannot be reached, the issue MUST be assumed open. These states MUST NOT be recorded either. Instead, `habeas status` and `habeas author` MUST treat a recorded FIXME determination as stale, exactly as if one of its inputs had changed, when an issue that one of its acknowledging `{fixme}` references names, or for a site review the `{fixme}` references inside the site, is closed or does not exist; repository validation, which never contacts GitHub, MUST NOT.
 :::
 
@@ -832,13 +832,13 @@ the full name and kind of every requirement and named example in full-name
 order, with empty `sites`. With `selection`, it MUST return the selected definitions
 in full-name order and one flattened `sites` array containing every valid
 `{impl}`, `{cite}`, and `{test}` reference to any match under
-{cite}`requirements.references.targets`, each naming the definition it
+{cite}`requirements.references.discovery`, each naming the definition it
 references, ordered by name, file, and line. An anchor under
 {cite}`requirements.references.anchors` MUST be reported as a site for its
 anchored file without a line. A site in a supported language MUST give the
 selector of its smallest enclosing outline node under
 {cite}`requirements.references.outline_comments`. Only sources reference discovery considers under
-{cite}`requirements.references.targets` MUST contribute sites. If reading such a
+{cite}`requirements.references.discovery` MUST contribute sites. If reading such a
 source fails, the tool MUST return an explanatory tool error naming the source.
 An invalid selection or one matching no definition MUST return an explanatory tool
 error.
