@@ -1,8 +1,8 @@
 {
   "requirement": "The harness MUST expose a `habeas` tool accepting exactly one of these request\nforms. Each form MUST correspond to one existing evidence-input kind:\n\n| Request fields | Evidence input returned | Definition |\n| --- | --- | --- |\n| `file: String`, `line_start: Integer`, optional `line_end: Integer` | Outline inputs for the innermost outline nodes covering the range | {cite}`requirements.ci.outline_inputs` |\n| `file: String`, `item: String` | Outline input | {cite}`requirements.ci.outline_inputs` |\n| `requirements: String` | Requirements input, including its matching names | {cite}`requirements.ci.requirements_inputs` |\n| `definition: String` | Definition input | {cite}`requirements.definitions.inputs` |\n\nSelector arguments MUST use the syntax defined by\n{cite}`requirements.references.outline_selectors`. Reads MUST use the current\nproject working tree, including unstaged changes to tracked files and staged new\nfiles. By default, source inputs MUST stay within the project root after\nresolving symlinks; in a Git worktree, both the requested file and its resolved\ntarget MUST be present in the Git index. Projects outside Git MUST use the same\ncontainment rules without requiring an index. Failure to read an existing\nrepository's index MUST be reported as an error.\nThe project-root `evidence/` directory MUST be excluded from model reads by\ndefault, including symlink aliases. Every source the harness supplies to the\nmodel MUST be redacted under {cite}`requirements.authoring.redaction`. Generated build outputs MUST follow\n{cite}`requirements.authoring.generated_inputs`. Workspace path overrides MUST\nfollow {cite}`requirements.configuration.evidence_paths`, including explicit\npermission for otherwise excluded inputs. A denied mandatory input or explicit\nread MUST abort under {cite}`requirements.authoring.read_denial`.\n\nLine numbers are only a way to request sources; recorded evidence MUST identify\nsources by outline selector and structural hash, never by line number. Request\nline numbers MUST be one-based and inclusive, and omitting `line_end` MUST read\nthrough EOF. A line-range request MUST be resolved to the innermost outline\nnodes covering the requested lines, which are `line` nodes in a file using the\nplain-text profile; the result MUST show the model each node's selector, current\nline range, and source text, and the harness MUST record those nodes as outline\ninputs. The model-facing tool description MUST include the argument conventions\nfrom the cited requirements, including outline selector syntax, definition\nselections, and full definition names, with a short request example for each form.\n\nA successful call MUST return the requested evidence input, populated by the\nharness with the selected source text, using the existing evidence schema.\n{cite}`requirements.ci.schema`\nRequired terminology dependencies MUST be returned alongside it as additional\ndefinition inputs under {cite}`requirements.definitions.authoring_inputs`.\nThe result MUST have this shape:\n\n```text\nHabeasResult {\n    input: EvidenceInput,\n    definitions: Array<DefinitionInput>,\n}\n```\n\n`definitions` MUST be empty when no additional terminology is required. The\nharness MUST record inputs supplied to the model in the assessment's evidence.\nA failed read MUST add no evidence input. Access-policy denials MUST abort\nexcept where {cite}`requirements.authoring.read_denial` makes them ordinary read\nfailures; other failed reads MUST return an explanatory tool error.",
   "determination": true,
-  "rationale": "I found no gaps. Each obligation in `requirements.authoring.source_tools` maps to marked code and a test that runs it.\n\n**Request forms and tool description**\n- **Exactly one form, each mapped to an evidence-input kind.**\n  - `definitions()` in `src/authoring/tools.rs` advertises the `habeas` tool.\n  - `read()` in the same file enforces exactly one form with `check_keys` and routes each to `InputSelector::{Outline, Requirements, Definition}`. Line ranges go through `AssessmentSources::read_lines` in `src/authoring/inputs.rs`.\n  - `reading_records_only_delivered_sources_and_their_terms` rejects empty, incomplete, mixed and unknown-key requests, and accepts the `requirements` and `definition` forms.\n- **Tool description conventions.** The description text carries selector syntax, definition selections, full definition names and one short example per form. `habeas_tool_describes_its_argument_conventions_with_an_example_per_form` asserts each phrase and example, and the parameter set.\n\n**Line-range reads**\n- **Line-range semantics.** `read_lines` and `nodes_for_range`/`nodes_for_lines` implement one-based inclusive ranges, an omitted `line_end` reading through EOF, and innermost covering nodes. The result carries selector, kind, current line range and text via `to_model_input`.\n  - `line_range_reads_record_the_innermost_covering_nodes` tests these, and the EOF case is tested in `reading_records_only_delivered_sources_and_their_terms`.\n  - `plain_text_lines_are_interchangeable_anonymous_nodes` in `src/outline/tests.rs` and the outline tool test cover `line` nodes in plain-text files.\n- **Evidence by selector and hash only.** `to_input` records only the file, selector and hash. The tests assert that no `line_start` or `text` is stored for outline inputs.\n\n**Access policy**\n- **Working-tree reads, Git index and containment.** `SourceAccess::path`, `file` and `tracked_sources` in `src/authoring/access.rs` implement all of these:\n  - reads of the current working tree;\n  - the index requirement for both the requested path and its symlink target;\n  - plain containment outside Git;\n  - an error when the index cannot be read.\n\n  Tests:\n  - `git_tools_allow_staged_and_dirty_sources_but_hide_untracked_files`\n  - `git_symlink_reads_require_both_the_alias_and_target_to_be_tracked`\n  - `outside_symlinks_are_excluded_from_reads_search_and_discovery`\n  - `nested_project_uses_only_its_part_of_the_git_index`\n  - `empty_git_directory_in_an_ancestor_does_not_make_a_project_a_worktree`\n  - `unreadable_git_index_does_not_fall_back_to_untracked_access`\n  - `invalid_git_configuration_does_not_fall_back_to_untracked_access`\n- **`evidence/` exclusion.** `generated_evidence_path` and `omit_generated_evidence` exclude it, including symlink aliases. `generated_evidence_is_excluded_from_reads_search_and_discovery` tests this.\n- **Workspace path overrides and generated outputs.**\n  - `explicit_allow_overrides_defaults_but_disallow_wins_for_alias_targets` and `allowed_ignored_and_external_sources_are_discoverable_but_disallowed_descendants_are_not` test allow and disallow rules.\n  - `cargo_output_is_discovered_and_read_without_building_or_allowing_other_target_files` and `inherited_out_dir_is_ignored_and_metadata_failure_preserves_ordinary_reads` test Cargo build-script outputs and the ignored inherited `OUT_DIR`.\n- **Denial handling.**\n  - `converse` in `src/authoring/mod.rs` aborts on `PermissionDenied`.\n  - `OutsideProject` and `recoverable_outside_request` turn an unpermitted outside-project request into a recoverable tool error.\n  - `unpermitted_requests_outside_the_project_are_recoverable_tool_errors` and `explicit_untracked_reads_abort_without_another_request_or_evidence_write` test both paths. The second also checks that no evidence is written.\n- **Redaction.** `model_inputs_reads_searches_and_citation_prompts_are_redacted` tests it.\n\n**Result shape and recording**\n- **Result shape.** `read()` returns `{input, definitions}` or `{inputs, definitions}`, and `additional_definitions` supplies transitive terminology.\n  - Tests assert a populated `definitions` array (`terms.value`) and an empty `[]` for the `requirements` read.\n  - The `requirements` input includes its `matches`, which `requirements_reads_select_requirements_and_examples_but_not_definitions` asserts.\n  - A selection matching nothing yields an error.\n- **Recording and failures.** `converse` records pending inputs via `record_inputs`. Failed reads add no input, as the outside-project test shows with an empty `recorded_inputs()`. The Bedrock CLI test confirms that a `habeas` read is recorded in the evidence.\n\nUnspecified behavior: the extra errors, such as an out-of-range line or an unknown key, are failed reads, which the text covers.\n\nNo `{fixme}` references are involved.",
-  "references": "b2445c40c54d7894c5f3a348ee3e186ef813543e3a823b2d816aae8fdc9e0849",
+  "rationale": "I found no gaps. Every obligation of `requirements.authoring.source_tools` has marked implementing code and a test that checks its outcome.\n\n**Request forms and result shape**\n- `definitions()` in `src/authoring/tools.rs` advertises the `habeas` tool with the optional fields `file`, `line_start`, `line_end`, `item`, `requirements` and `definition`.\n- `read()` enforces exactly one form with `check_keys` and the branch on which key is present. It maps the forms to `InputSelector::Outline`, `Requirements` and `Definition`, or to the line-range path `read_lines`.\n- `reading_records_only_delivered_sources_and_their_terms` rejects empty, partial, mixed and unknown argument sets, and accepts the valid `requirements` and `definition` forms.\n- Single-input forms return `{input, definitions}`. The test asserts `result[\"input\"]` and `result[\"definitions\"]`.\n- The test `requirements_reads_select_requirements_and_examples_but_not_definitions` asserts `definitions` is `[]` when no terminology is needed, and that a selection matching nothing is an explanatory error.\n- The line-range form returns `{inputs, definitions}`, as the table's \"Outline inputs\" requires. The `HabeasResult { input, … }` shape can only hold one input, so I read that shape as applying to the single-input forms. This is the one place I weighed an ambiguity, and I did not count it as a gap.\n\n**Line ranges**\n- `read_lines` and `nodes_for_range` take one-based inclusive ranges, read through EOF when `line_end` is omitted, and select the innermost covering nodes.\n- Line-range results show each node's selector, kind, line range and text, via `to_model_input`.\n- `line_range_reads_record_the_innermost_covering_nodes` and the EOF assertions in the reading test cover these. They also assert the recorded input holds only the selector and hash, never line numbers or text.\n- Plain-text `line` nodes are covered by `search_merges_context_windows_and_respects_ignore_rules`.\n\n**Working tree, Git index and containment**\n- `SourceAccess::path` and `tracked_sources` implement the rules; the cited code is `src/authoring/access.rs` (`SourceAccess`) and `src/authoring/inputs.rs` (`source_input`).\n- `git_tools_allow_staged_and_dirty_sources_but_hide_untracked_files` covers dirty tracked files and staged new files.\n- `git_symlink_reads_require_both_the_alias_and_target_to_be_tracked` requires both the requested path and its resolved target to be in the index.\n- `outside_symlinks_are_excluded_from_reads_search_and_discovery` and `nested_project_uses_only_its_part_of_the_git_index` cover project containment.\n- `empty_git_directory_in_an_ancestor_does_not_make_a_project_a_worktree` covers the non-Git case without an index.\n- `unreadable_git_index_does_not_fall_back_to_untracked_access` and `invalid_git_configuration_does_not_fall_back_to_untracked_access` show an unreadable index or broken Git setup is reported as an error.\n\n**Exclusions and policy**\n- `generated_evidence_path` and the check in `SourceAccess::path` exclude `evidence/`, including symlink aliases. `generated_evidence_is_excluded_from_reads_search_and_discovery` covers this.\n- Workspace allow and disallow rules are covered by `explicit_allow_overrides_defaults_but_disallow_wins_for_alias_targets`, `disallowed_ancestors_cannot_redirect_reads_into_allowed_targets` and `policy_resolves_symlinks_before_parent_components_without_allowing_wrong_subtrees`.\n- Cargo build-script outputs are covered by `cargo_output_is_discovered_and_read_without_building_or_allowing_other_target_files` and `inherited_out_dir_is_ignored_and_metadata_failure_preserves_ordinary_reads`.\n\n**Redaction**\n- `OutlineCache::parse`, `node_range` and `resolve` redact every source text and definition text that is supplied.\n- `model_inputs_reads_searches_and_citation_prompts_are_redacted` checks habeas reads, mandatory inputs and search results.\n\n**Denial and failure handling**\n- `converse` aborts on `PermissionDenied`, and `dispatch_paged` turns an unpermitted outside-project request into a recoverable error with `recoverable_outside_request`.\n- `unpermitted_requests_outside_the_project_are_recoverable_tool_errors` asserts the recoverable error, that no input is recorded, and that a disallow match, an in-project denial and `evidence/` still abort.\n- `explicit_untracked_reads_abort_without_another_request_or_evidence_write` covers the abort end to end.\n- Failed reads add no evidence: `read()` records inputs only on success, and the `is_err` assertions in the reading test confirm failures return errors.\n\n**Terminology and recording**\n- `additional_definitions` supplies the terminology a read depends on, and `record_inputs` records only what was delivered.\n- The reading test checks that `definitions` includes `terms.value` and that the recorded inputs are exactly the delivered ones.\n\n**Tool description**\n- The `habeas` description includes the selector syntax, the definition-selection and full-name conventions, and one short request example per form.\n- `habeas_tool_describes_its_argument_conventions_with_an_example_per_form` asserts each of these phrases.\n\nI found no unmarked implementing code and no unspecified behavior in the code I read. No {fixme} references apply.",
+  "references": "62de9b7110a492e3264ccc6d59b4c83a4c2cfc42b56091703a0fbabbe4622b5e",
   "inputs": [
     {
       "requirements": "requirements.authoring.source_tools",
@@ -437,32 +437,37 @@
     {
       "file": "src/authoring/mod.rs",
       "item": "fn[converse]",
-      "hash": "79e5e34ae451c703e11fc42faa9257a81c3208683a093270381310d74aeedf3a"
+      "hash": "12de6c27434f14d49e79ec0263ff0125433eb77c29d4aa8114fbbde5541b1cff"
     },
     {
       "file": "src/authoring/tools.rs",
       "item": "fn[definitions]",
-      "hash": "c1ff571dc348929bfef64c73a9e7efb0e423606e2d5a518af384a9844806c23e"
+      "hash": "bffaa08f66913b9f58a727170cf4a45954cc05d0137bd2767db46bdbb233899f"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "fn[dispatch_paged]",
+      "hash": "feb5f6133321446af81bbdb8e27ec6900d9a2495338e4118e45c9790a6ccffea"
     },
     {
       "file": "src/authoring/tools.rs",
       "item": "fn[dispatch]",
-      "hash": "8f6e4f6da5c7638c5ac8d15fd16f663985e967d980ae9cbe92131e82d9141a93"
+      "hash": "758a46cbd9110b234687139f5031a8101f39dce0eb2be6cf5d7036234ae26dbb"
     },
     {
       "file": "src/authoring/tools.rs",
       "item": "fn[read]",
-      "hash": "a7422ff8dfcf3dd9b9244b92541a0452e7729e8b7d6b5f6d8fb8ea92248bda93"
+      "hash": "b6c181bdb647f5969daad3a4bdccea56aa57026e5b81c88a9a573a8071527038"
     },
     {
       "file": "src/authoring/tools.rs",
       "item": "fn[list_files]",
-      "hash": "22c6fcd10294a303c39adebf81ffd0319c244f5e1e5c5f24ef54dd4ebb41377e"
+      "hash": "4b24c90e6646cb91dda9bbc5934ca0365845a792428bdfbfa2cbfaabefafdf9a"
     },
     {
       "file": "src/authoring/tools.rs",
       "item": "fn[search]",
-      "hash": "ce5366ee7650db8254e502c5aa16bd935bd836d58615151be13a67340b5be4f9"
+      "hash": "865b17fbc196e070b7f4b2af0900ae96892794fe6df922591de5f254c550f846"
     },
     {
       "file": "src/authoring/tools.rs",
@@ -472,7 +477,7 @@
     {
       "file": "src/authoring/tools.rs",
       "item": "fn[structural]",
-      "hash": "43b0580fc14fb1ee9a01637d9ec690c72024463fa9676d5a98b1a042b6e99d2d"
+      "hash": "b3d283cec5d1688f5bd40cde90dec52d24d5c487e60dbd69832a1ac7f66a8110"
     },
     {
       "file": "src/authoring/tools.rs",
@@ -502,7 +507,7 @@
     {
       "file": "src/authoring/tools.rs",
       "item": "mod[tests]/fn[model_inputs_reads_searches_and_citation_prompts_are_redacted]",
-      "hash": "86cff07f4068f6c30d43546bc33c8d1ba47e7fce2823d838bbbfa951455a13d1"
+      "hash": "14c558c84e83fa2d5f267e0b5b3306f4777ee6e0b7adb122953ef5714d6a55fd"
     },
     {
       "file": "src/authoring/tools.rs",
@@ -577,7 +582,7 @@
     {
       "file": "tests/authoring_cli.rs",
       "item": "fn[bedrock_cli_uses_selected_profile_region_and_converse_tools]",
-      "hash": "b8257f604063b1413daa651bf8d41bcf97f9b579a86f804357688d6a83b6cafb"
+      "hash": "19a46872447e49c0ef6c680bcb4ba36c8d5978b1e396fd07f6cce57e9fe24a57"
     },
     {
       "file": "tests/live_bedrock.rs",
@@ -598,24 +603,14 @@
       ]
     },
     {
-      "file": "src/authoring/inputs.rs",
-      "item": "mod[tests]/fn[unresolvable_earlier_inputs_do_not_block_reassessment]",
-      "hash": "4088fbdf10f3e04de09cfc9d9cb3ddbcb3950dc985f3269d41c86ad5a9638423"
+      "file": "src/authoring/pages.rs",
+      "item": "mod[tests]/fn[paged_inputs_carry_their_definitions_and_deliver_only_their_own_inputs]",
+      "hash": "0a57ad19f254911a04ed456c5303ebe83d166f38936f887b260f6b79e4c40f2a"
     },
     {
-      "file": "src/authoring/inputs.rs",
-      "item": "mod[tests]/fn[anchored_files_contribute_root_node_inputs]",
-      "hash": "71d85d0577870211fdbc914d456d925a74cdbd73bfb725500020810d58844c5f"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "fn[initial_prompt]",
-      "hash": "56686425872fccc077a654b53dfd9d8abb99b3c40a796f2d786079cf154fd50d"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "mod[tests]/fn[site_reviews_use_their_prompt_and_record_applies_and_the_site]",
-      "hash": "66d01c2dc80c1bca43324eab7c725796c062370db59dad98c249fbb06534925d"
+      "file": "src/authoring/pages.rs",
+      "item": "mod[tests]/fn[reference_results_page_definitions_then_sites]",
+      "hash": "711abcf71b109178def8974bbe76de8e21a3177c966735fe5a1f6bf81a6b5865"
     },
     {
       "file": "src/authoring/tools.rs",
@@ -624,98 +619,58 @@
     },
     {
       "file": "src/authoring/tools.rs",
-      "item": "mod[tests]/fn[outline_lists_nested_nodes_without_text_or_inputs]",
-      "hash": "ffc5a201164ab4e3a377cfac8022d4f090ba8ec386da636135a904a0b2fbbe37"
+      "item": "mod[tests]/fn[search_merges_context_windows_and_respects_ignore_rules]",
+      "hash": "2fa8051cca2d46d6337e91a9309b9dfa14423c3c4a83ad4f363cf70d035f5977"
     },
     {
       "file": "src/authoring/tools.rs",
-      "item": "mod[tests]/fn[ast_grep_returns_innermost_nodes_of_the_language_and_reports_failures]",
-      "hash": "84165a7b6dcb3170b247771e21bd4e7be34ef121294fc399ffe31bd0a3a43c55"
+      "item": "mod[tests]/fn[references_list_names_and_flattened_sites_without_recording_inputs]",
+      "hash": "318774800234951b4558210f0083ba4b8331af1539cdab1d4585a52bff0e38c5"
     },
     {
-      "file": "src/authoring/usage.rs",
-      "item": "impl[UsageLog]/fn[prepared]",
-      "hash": "2f5ee5841328017a9014a674c7d6f031d32007daa3a487758b1e73b0fb43db6d"
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "item": "mod[tests]/fn[input_metadata_counts_components_and_reads_without_persisting_source]",
-      "hash": "0d82f04f7f21e2e73ca527e744aad3908b6c99269ff1662f223fdd2ea691152d"
-    },
-    {
-      "file": "src/citations.rs",
-      "item": "fn[validate_review]",
-      "hash": "af88d0b86093f62c6c4b4366fe2fe8d35bbcb6f46c8e445f1853483e42cac25a"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[validate_input]",
-      "hash": "33ba22d600c5d951631b03507b63324e9b11d8d358cc20011506777f5b322be7"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[collects_missing_orphan_format_false_and_changed_line_errors]",
-      "hash": "b1a25c52c79806b9102798b8514db58bbaa876fa9bf48ce39fdade9402d20d1d"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[failed_checks_do_not_hide_later_independent_checks]",
-      "hash": "d715c3e8e6826109c12aaabfb245ff5369311f5d749d6bbd59c52815f76bf8bf"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[requirements_inputs_track_matched_declarations_in_full_name_order]",
-      "hash": "5640b21be3bd5a71e05fbb1037e11a9740fbe593a9c9467dd7de1d8701ec5fc1"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[schema_rejects_each_malformed_field_and_input_form]",
-      "hash": "9f1231d87c2d1302cbf5f562ee241a7a502a7c15ced6cccfc9348da28f8d3ffa"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[cited_example_with_a_test_and_matching_evidence_validates]",
-      "hash": "61d8ce4bb0fb347a657bdd145897effa7f6b69d151ea4dbc76c78370dca363e3"
-    },
-    {
-      "file": "src/github.rs",
-      "item": "fn[input_ranges]",
-      "hash": "95542da0e7c289b956ec5e52c94e438969d8d270903ffca76aa0ba4f37ced601"
-    },
-    {
-      "file": "src/github.rs",
-      "item": "mod[tests]/fn[inputs_containing_fixmes_carry_their_issue_states]",
-      "hash": "567bfd4f54529e74f0f79a0dc6415135fe44996d99912ca188d47e8d576e93f1"
-    },
-    {
-      "file": "src/index.rs",
-      "item": "mod[tests]/fn[detail_pages_and_info_display_redacted_source]",
-      "hash": "6dda823b8b0e94bd84741c6f881430a4393ccd3cc8d9e87eb9741f1d928eb9bb"
-    },
-    {
-      "file": "src/index.rs",
-      "item": "mod[tests]/fn[detail_inputs_are_grouped_by_current_edges_in_disclosures]",
-      "hash": "ac15a587a055d7b57349d0df12f41f32ade05160ef1df0ae317b2f211dae2db4"
-    },
-    {
-      "file": "src/index.rs",
-      "item": "mod[tests]/fn[detail_page_shows_recorded_text_locations_and_first_matching_group]",
-      "hash": "5c6f38bb6163c7b38ef6f9327d0d0842eb7a232086979379d54f75d6c5d151b1"
+      "file": "src/authoring/tools.rs",
+      "item": "mod[tests]/fn[search_supplies_terminology_clamps_at_eof_and_reports_failures]",
+      "hash": "e790b3d7c7430f6b8465159541f7048ff733c4872f04b86eca9dbb17f2cfee8e"
     },
     {
       "file": "src/inputs.rs",
-      "item": "impl[InputSelector]/fn[to_input]",
-      "hash": "52e389939a712b0c7329c80ee68d123608f1007a7668deff7ab9b97271d6d90c"
+      "item": "use@945e92f43fad",
+      "hash": "945e92f43fad9a4c59b94afe789e6ef9514106d005841b29a86ecf6cee616e26"
     },
     {
-      "file": "src/outline/tests.rs",
-      "item": "fn[plain_text_lines_are_interchangeable_anonymous_nodes]",
-      "hash": "903bba444617c36a46085e4c98caea488135be8d26d47516ab6f808b389a2863"
+      "file": "src/inputs.rs",
+      "item": "use@329c335dba2c",
+      "hash": "329c335dba2cdba11067fef8c3a11caf3c7059e9c3ca39d0f580b295da43c88c"
     },
     {
-      "file": "src/sites.rs",
-      "item": "fn[validate_review]",
-      "hash": "9ec56ad9e7f17036441f83edd96c38e108562e91ecc839dcaf654be9049be8fe"
+      "file": "src/inputs.rs",
+      "item": "use@94c7012d1800",
+      "hash": "94c7012d18006bc204d06850f929668e869b47eba6b9b2d8ef109add66dee46f"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "use@167510602cb3",
+      "hash": "167510602cb34e66d4c8c78e9beeae3cee5655de55ff522a33ded8622af1c7f2"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "enum[InputSelector]",
+      "hash": "08a32d6d16b33bb0240b295f12f62e2fcc9e56aa8fa1b81e3551a705e6ade5f9"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "struct[ParsedSource]",
+      "hash": "60fdf5fdf9a375c3cd8f87afaaa15d7a3796bce2af9fab6835be52f3ba8c3be7"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "impl[OutlineCache]/fn[parse]",
+      "hash": "547220a7cf9e860f93a3e2c1180eec2a232d80cd89e4b5cb63358d5ee9217638"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "impl[ParsedSource]/fn[node_range]",
+      "hash": "5872ecfc8b27bb88b454a9c0b9c0a9cd57cc98bc3b00e2384d1528adc48eecba"
     },
     {
       "file": "src/inputs.rs",
@@ -724,8 +679,8 @@
     },
     {
       "file": "src/inputs.rs",
-      "item": "impl[InputSelector]",
-      "hash": "65872609b4c4184eb51c5f1a3acbd2b3aaab02313acb77a9ddac15ab752a4154"
+      "item": "impl[InputSelector]/fn[resolve]",
+      "hash": "1aedf847e4e2e74844ccedb3ccd88dd42b0805acfbb266f8e7f4bea8574853d3"
     }
   ]
 }

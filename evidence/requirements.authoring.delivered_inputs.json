@@ -1,8 +1,8 @@
 {
   "requirement": "The harness MUST record the sources it supplies to the model, including\nmandatory inputs and additional reads, using the evidence input formats\ndefined by {cite}`requirements.ci.outline_inputs`,\n{cite}`requirements.ci.requirements_inputs`, and\n{cite}`requirements.definitions.inputs`. The harness MUST create these records\nitself so ordinary evidence validation can check them later.",
   "determination": true,
-  "rationale": "I found no gaps. I did not read any source beyond the mandatory inputs.\n\n**Obligation 1: record the sources supplied to the model, mandatory inputs and additional reads, in the evidence input formats.**\n- Mandatory inputs:\n  - `converse` (src/authoring/mod.rs) starts with `pending = sources.mandatory_inputs()`.\n  - After each successful provider response it calls `sources.record_inputs(&pending)` and clears `pending`.\n  - If a request fails and is retried, the pending inputs stay queued, so nothing is recorded for a delivery the model never received.\n- Additional reads:\n  - Every tool delivery goes through `ToolDelivery { result, inputs }`.\n  - `read` handles line-range, outline, requirements and definition reads. `search`, `structural` and `declared_query` handle the search tools. All of them build `inputs` from the `read_lines` / `read_selector` / `additional_definitions` results actually sent to the model.\n  - `converse` appends `delivery.inputs` to `pending` only when `dispatch` succeeds. Failed reads are returned as error results and nothing is recorded for them.\n  - The `pending` inputs are recorded after the next successful response.\n  - `list_files` delivers no inputs.\n- Format:\n  - `AssessmentSources::record_inputs` (src/authoring/inputs.rs) skips built-in fixed text, which is not an evidence input form.\n  - It converts each remaining input with `recorded_input` (src/inputs.rs) and deduplicates.\n  - `recorded_input` reduces an outline input to `file`, `item` and `hash`. This is the outline input form of `requirements.ci.outline_inputs`.\n  - It leaves requirements inputs (`requirements`, `matches`, `text`) and definition inputs (`definition`, `text`) unchanged. These are the forms of `requirements.ci.requirements_inputs` and `requirements.definitions.inputs`.\n\n**Obligation 2: the harness creates the records itself.** The records are built in the harness by `record_inputs` and `recorded_input`, not by the model. `recorded_inputs()` exposes them for the evidence file.\n\n**Tests**\n- `reading_records_only_delivered_sources_and_their_terms` (tools.rs) checks the following:\n  - Outline inputs are recorded with only file, selector and hash.\n  - Repeated deliveries are deduplicated.\n  - Terminology (definitions) is recorded.\n  - Failed reads are errors.\n- `line_range_reads_record_the_innermost_covering_nodes`, `search_supplies_terminology_clamps_at_eof_and_reports_failures` and `ast_grep_returns_innermost_nodes_of_the_language_and_reports_failures` check that recorded inputs from line-range reads, ripgrep and ast_grep contain the delivered outline inputs and definitions, without text.\n- The CLI tests in tests/authoring_cli.rs run the whole conversation. They check that the evidence contains the mandatory requirements input, the definition input and the source outline inputs.\n- They also check that additional reads of `extra.txt` are recorded once, with no `text`, and that failed reads (`absent.txt`) and `list_files` listings are not recorded.\n- One of them also checks that evidence validation accepts the result.\n- The `declared_query` success path and the requirements/definition read forms have no dedicated recording assertion. The recording step is the same unconditional `record_inputs` call as for the other tools, so this is not a gap.",
-  "references": "843ad313eb9a11b4bc8a96355a1be4345029b705a3aa4f68a9dd1a1e87155910",
+  "rationale": "I found no gaps. The obligations and the code and tests that cover them are below.\n\n**Obligations**\n1. Record the mandatory inputs the harness supplies.\n2. Record additional reads the harness supplies.\n3. Record them in the evidence input formats: outline, requirements and definition.\n4. Create the records itself so ordinary evidence validation can check them.\n\n**Mandatory inputs**\n- `converse` in `src/authoring/mod.rs` starts `pending` from `sources.mandatory_inputs()`.\n- After each successful provider response it calls `sources.record_inputs(&pending)` and then clears `pending`.\n- The mandatory inputs are therefore recorded once the model has received them.\n\n**Additional reads**\n- Each tool delivery's `inputs` are added to `pending` and recorded on the next response.\n- That covers the `habeas` reads (`read` in `src/authoring/tools.rs`), `ripgrep` (`search`), `ast_grep` (`structural` and `declared_query`) and paged results (`Listing::inputs`, `ResultPages::deliver` and `delivered` in `src/authoring/pages.rs`).\n- Only the inputs on pages actually delivered are recorded.\n- `list_files` supplies no inputs.\n\n**Formats**\n- `recorded_input` in `src/inputs.rs` reduces an outline input to `file`, `item` and `hash`, which is the stored outline form.\n- Requirements inputs and definition inputs pass through unchanged.\n- `record_inputs` skips built-in fixed text, which is not an evidence input form, and deduplicates.\n\n**Created by the harness**\n- `AssessmentSources` and `record_inputs` build the records in code, not from model output.\n- `evidence[\"inputs\"]` is built from `recorded_inputs()`.\n\n**Tests**\n- `ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free` checks the recorded `fn[ready]` outline input, the `terms.readiness` definition input and the `extra.txt` reads.\n  - The `extra.txt` reads are recorded once and without text.\n  - It then runs `validate_repository` and finds no error for the evidence file.\n  - It also checks that a changed determination is rejected.\n- `stdout_emits_only_evidence_json_without_changing_project_files` asserts that the recorded inputs include a `requirements` input for the subject, a definition input and outline inputs with only `file`, `item` and `hash`.\n- The tool tests in `src/authoring/tools.rs` cover recording from a `habeas` read, a line-range read, `ripgrep` and `ast_grep`:\n  - `reading_records_only_delivered_sources_and_their_terms`\n  - `line_range_reads_record_the_innermost_covering_nodes`\n  - `search_supplies_terminology_clamps_at_eof_and_reports_failures`\n  - `ast_grep_returns_innermost_nodes_of_the_language_and_reports_failures`\n- `only_inputs_on_delivered_pages_are_recorded` in `src/authoring/mod.rs` and the page test in `src/authoring/pages.rs` verify that recording follows delivery across pages.\n- The Bedrock CLI test also checks recorded additional reads.\n\nSkipping built-ins is consistent with the requirement's \"evidence input formats\", so it is not unspecified behavior. All obligations are implemented and tested.",
+  "references": "f0ca26dfbd9b0351b15a0d182bbfbe596fd7e45c143463a3ca930cbc64d0a423",
   "inputs": [
     {
       "requirements": "requirements.authoring.delivered_inputs",
@@ -82,7 +82,32 @@
     {
       "file": "src/authoring/mod.rs",
       "item": "fn[converse]",
-      "hash": "79e5e34ae451c703e11fc42faa9257a81c3208683a093270381310d74aeedf3a"
+      "hash": "12de6c27434f14d49e79ec0263ff0125433eb77c29d4aa8114fbbde5541b1cff"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "mod[tests]/fn[only_inputs_on_delivered_pages_are_recorded]",
+      "hash": "bb7a2a577f525009ebcfed3aac35d2bb6769852ed6638d0c2377520335ba0c7d"
+    },
+    {
+      "file": "src/authoring/pages.rs",
+      "item": "impl[Listing]/fn[inputs]",
+      "hash": "57facf45a72f1fe38ceb7f95f8f7ecca5b97041db07a6b9122a9d947722b4b88"
+    },
+    {
+      "file": "src/authoring/pages.rs",
+      "item": "impl[ResultPages]/fn[deliver]",
+      "hash": "02022aa92d1433470872c223b85e628b41b6a9cd2427bacbe814e3b48b21e34f"
+    },
+    {
+      "file": "src/authoring/pages.rs",
+      "item": "fn[delivered]",
+      "hash": "51759b9d94486c6b0776d1103ee3519194fadbf708bc74c1e81f778503f9d79a"
+    },
+    {
+      "file": "src/authoring/pages.rs",
+      "item": "mod[tests]/fn[paged_inputs_carry_their_definitions_and_deliver_only_their_own_inputs]",
+      "hash": "0a57ad19f254911a04ed456c5303ebe83d166f38936f887b260f6b79e4c40f2a"
     },
     {
       "file": "src/authoring/tools.rs",
@@ -92,22 +117,22 @@
     {
       "file": "src/authoring/tools.rs",
       "item": "fn[read]",
-      "hash": "a7422ff8dfcf3dd9b9244b92541a0452e7729e8b7d6b5f6d8fb8ea92248bda93"
+      "hash": "b6c181bdb647f5969daad3a4bdccea56aa57026e5b81c88a9a573a8071527038"
     },
     {
       "file": "src/authoring/tools.rs",
       "item": "fn[search]",
-      "hash": "ce5366ee7650db8254e502c5aa16bd935bd836d58615151be13a67340b5be4f9"
+      "hash": "865b17fbc196e070b7f4b2af0900ae96892794fe6df922591de5f254c550f846"
     },
     {
       "file": "src/authoring/tools.rs",
       "item": "fn[structural]",
-      "hash": "43b0580fc14fb1ee9a01637d9ec690c72024463fa9676d5a98b1a042b6e99d2d"
+      "hash": "b3d283cec5d1688f5bd40cde90dec52d24d5c487e60dbd69832a1ac7f66a8110"
     },
     {
       "file": "src/authoring/tools.rs",
       "item": "fn[declared_query]",
-      "hash": "085357ab2af6e3fb14f9b81b147112c4fd0a76baa6824b38f685fbf47588ed1f"
+      "hash": "c2a94663c464fb426f5088519fc48f6e5908a92babf60b1b76e8c2db7fc569fa"
     },
     {
       "file": "src/authoring/tools.rs",
@@ -137,7 +162,7 @@
     {
       "file": "tests/authoring_cli.rs",
       "item": "fn[ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free]",
-      "hash": "49118cab66660836298922a3ff111b3238423db854cdf08241ea77b5a68f1ae2"
+      "hash": "2440f5eb6bd8f52e3a8bec38716e26e47c52772f98cd10fd1bde133da4d7468a"
     },
     {
       "file": "tests/authoring_cli.rs",
@@ -147,7 +172,7 @@
     {
       "file": "tests/authoring_cli.rs",
       "item": "fn[bedrock_cli_uses_selected_profile_region_and_converse_tools]",
-      "hash": "b8257f604063b1413daa651bf8d41bcf97f9b579a86f804357688d6a83b6cafb"
+      "hash": "19a46872447e49c0ef6c680bcb4ba36c8d5978b1e396fd07f6cce57e9fe24a57"
     },
     {
       "file": "tests/live_bedrock.rs",
