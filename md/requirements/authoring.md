@@ -249,8 +249,7 @@ assessments judge by the same rules:
 ```text
 - Base every conclusion only on source code you have read: the items in the
   mandatory inputs, or items you read with the habeas tool, ripgrep, or
-  ast_grep. The harness records what those tools return; outline, list_files,
-  and references results are not recorded. Comments state intent; check the
+  ast_grep; outline, list_files, and references only locate items. Comments state intent; check the
   behavior in the code itself.
 - Judge only against the text your task names. Report a gap only where your
   task or these rules define one, for a specific item you have read, giving its
@@ -258,15 +257,17 @@ assessments judge by the same rules:
   looked where your task directs and not found them; name the obligation. Do
   not report other bugs or issues you notice; edge cases the text does not name
   are not gaps.
-- An unmet SHOULD is a gap unless the text or a source comment gives a reason it
-  does not apply. MAY imposes nothing to check. Examples and sample output
+- Where your task judges whether source code meets the text, an unmet SHOULD is
+  a gap unless the text or a source comment gives a reason it does not apply. MAY imposes nothing to check. Examples and sample output
   inside the text illustrate the obligations its prose states; they bind their
   exact form only where the text says the output takes that form.
 - If the text admits two readings that its wording supports equally, not merely
-  one it fails to exclude, and the source code conforms under one but not the
-  other, that ambiguity is a gap. Name the readings in your rationale.
+  one it fails to exclude, and they lead to different conclusions, such as
+  whether code conforms or which role a citation calls for, that ambiguity is a
+  gap. Name the readings in your rationale.
 - These are not gaps: style, performance, logging, how helpers are factored,
-  and robustness the text does not require.
+  robustness the text does not require, and silently ignoring input the text
+  does not mention.
 - A gap is acknowledged only by a {fixme} reference, in the inputs or in a
   source you read, to the requirement or example your task judges against,
   whose body describes that same gap. A plain FIXME or TODO comment is not an
@@ -309,10 +310,7 @@ The mandatory inputs at the end contain the item and the declarations of the
 requirements and examples it cites.
 
 Assess only each listed citation's role. Decide whether the item implements part of a cited
-requirement, not whether it does so correctly: whether the item meets the cited
-text, including its SHOULDs, is never a gap here. If the text supports two
-readings equally and they call for different roles, that ambiguity is a gap;
-name the readings. Do not look for requirements or examples the item does not
+requirement, not whether it does so correctly. Do not look for requirements or examples the item does not
 cite, except as step 3 requires.
 
 1. Apply the reference procedure to each citation, in order: if the item is a
@@ -399,9 +397,8 @@ site's callers, or other sites.
    which query matched; a violation match alone does not make the requirement
    apply. Read the site's callers only when its own code does not settle
    whether the text describes it. Set applies to true when the best-supported
-   reading of that text, or a reading its wording supports equally well,
-   governs the site; a site that fails an obligation under one such reading is
-   then judged by the ambiguity rule in "How to judge". Otherwise set applies
+   reading of that text, or one its wording supports equally well, governs the
+   site. Otherwise set applies
    to false and determination to true, and explain in your rationale why the
    requirement does not apply.
 2. If applies is true, judge the site: each obligation the requirement states
@@ -937,8 +934,8 @@ Requirement task:
    clause into one obligation for each item it joins with "and", "or", or a
    list, and for each separate condition or property it states; do not form
    combinations of items.
-2. For each, find the code that carries it out, among the {impl} items and the
-   code they call. In your rationale, map each obligation to its code and to
+2. For each, find the code that carries it out, among the {impl} items, the
+   code they call, and the code that calls them. In your rationale, map each obligation to its code and to
    the tests step 5 requires.
 3. Marking: code that implements part of the subject without an {impl}
    reference to it, including code that only cites it, is a gap, and so is a
@@ -950,14 +947,15 @@ Requirement task:
    such as an extra output, error, exit status, or option, or acceptance of a
    kind of input, is a gap unless the subject or another requirement the same
    code marks with {impl} specifies it; read those requirements before calling
-   it a gap. Silently skipping input the text does not mention is robustness,
-   not unspecified behavior. Behavior within what the text describes, even
+   it a gap.  Behavior within what the text describes, even
    where its examples do not show it, is specified, and so are the headings,
    layout, and wording the code chooses for output the text requires.
 5. Testing: every obligation, and every boundary or failure case the text
    names, needs a test that runs the code carrying it out and asserts its
    outcome; calling that code directly counts. Branches for cases the text does
-   not distinguish need no test of their own. An untested obligation is a gap
+   not distinguish need no test of their own, but when the code produces output
+   the text governs along separate paths, such as verbose and default modes,
+   each path needs a test. An untested obligation is a gap
    unless the code carrying it out has no conditional and no transformation of
    its own, such as passing a value through unchanged, or running it would need
    network services, real elapsed time, or process-wide state such as

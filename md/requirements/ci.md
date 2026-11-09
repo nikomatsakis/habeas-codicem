@@ -40,20 +40,17 @@ simple enough to need no test or a test is impractical to author, and explain th
 judgment in the rationale.
 
 The reviewer MUST apply these rules in every assessment. MUST and MUST NOT state
-obligations; an unmet SHOULD MUST be treated as a gap unless the subject's text
-or a source comment gives a reason it does not apply; MAY imposes nothing to
+obligations; where the reviewer judges whether source code meets the text, an unmet SHOULD MUST be treated as a gap unless the subject's text or a source comment gives a reason it does not apply; MAY imposes nothing to
 check; examples and sample output in the text illustrate the obligations its
 prose states and bind their exact form only where the text says so. When the subject's
-text admits more than one reasonable reading and the source code conforms under
-one but not another, the ambiguity MUST be treated as a gap and the rationale MUST name
+text admits two readings its wording supports equally and they lead to different conclusions, such as whether code conforms or which role a citation calls for, the ambiguity MUST be treated as a gap and the rationale MUST name
 the readings. A test that verifies the subject without a `{test}` reference to it
 MUST be treated as a marking gap, as for implementing code. A gap MUST be
 reported only for a specific obligation and a specific source item the reviewer
 has read; the reviewer MUST look for unmarked implementations among the sources
 that reference the subject and by targeted search for what its obligations
 produce, not by surveying unrelated code. Style, performance, logging, how
-helpers are factored, and robustness the text does not require MUST NOT be
-treated as gaps, and the reviewer MUST NOT report bugs or issues outside the
+helpers are factored, robustness the text does not require, and silently ignoring input the text does not mention MUST NOT be treated as gaps, and the reviewer MUST NOT report bugs or issues outside the
 subject's text.
 
 For a distributed requirement under {cite}`requirements.references.distributed`,
