@@ -19,19 +19,15 @@ Running `habeas setup` in an existing Cargo and mdBook project MUST add Habeas a
 :::{req} fixme_summary
 `habeas status` MUST group the selected requirement and example judgments marked
 FIXME by issue reference and report how many distinct judgments each issue
-affects. It MUST recognize `#123` and `owner/repo#123` within recorded FIXME
-strings, including `FIXME(...)` and explanatory text. A GitHub issue URL such as
-`https://github.com/owner/repo/issues/123` MUST identify the same issue as
-`owner/repo#123`. Issue numbers MUST be positive, complete numeric tokens with
-leading zeros normalized; repository spelling MUST remain case-sensitive, and
-unqualified and qualified references MUST remain distinct.
+affects. A recorded FIXME string of the form `owner/repo#N` under
+{cite}`requirements.ci.outcomes` MUST identify that issue, compared exactly; any
+other string is a gap description without an issue.
 
 A judgment MUST count at most once for each issue, even when that issue occurs
 repeatedly or in several FIXME strings. A judgment naming several issues MUST
-count in each corresponding group. Judgments with no recognized issue in any
-FIXME string MUST be counted once in a separate "FIXME without an issue" group.
+count in each corresponding group. Judgments with no issue string MUST be counted once in a separate "FIXME without an issue" group.
 Issue groups MUST be ordered by decreasing affected-judgment count, then by
-normalized reference; the group without an issue MUST follow them. A supplied
+reference; the group without an issue MUST follow them. A supplied
 selection MUST restrict these counts to the selected subjects.
 
 `--verbose` MUST list the full name and kind of every judgment in each issue
@@ -43,9 +39,13 @@ determinations MUST remain validation errors under {cite}`requirements.ci.outcom
 
 :::{req} fixme_issues
 `habeas status` MUST look up, under {cite}`requirements.authoring.github_reads`,
-every issue that a `:github:` option line of a `{fixme}` reference under
-{cite}`requirements.references.targets` names, and MUST list each that is closed
-or does not exist, with the file and line of each `{fixme}` naming it. When GitHub cannot be reached, the issue MUST be assumed open.
+every issue that a `:github:` option line of a named or unnamed `{fixme}` under
+{cite}`requirements.references.targets` names, and MUST report each `{fixme}`
+naming an issue that is closed or does not exist as an error, with its file and
+line and the issue. It MUST also report the item that contains that `{fixme}` as
+failing: the outline node containing it, or the requirement or example
+declaration whose body contains it, in the same way it reports an unreferenced
+Rust item. When GitHub cannot be reached, the issue MUST be assumed open.
 Repository validation MUST NOT contact GitHub.
 :::
 

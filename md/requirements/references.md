@@ -26,10 +26,16 @@ Project text files MAY use the `{impl}`, `{cite}`, and `{test}` roles with a bac
   begin with option lines naming issues that track the gap, one per line, in the
   form `:github: <owner>/<repo>#<number>`, such as
   `:github: rust-lang/rust#123`. `github` MUST be the only recognized option.
-  `{fixme}` MAY appear only in sources outside the book. Validation MUST report
+  A named `{fixme}` MAY appear only in sources outside the book. Validation MUST report
   any other option line, a `:github:` value not in that form, an inline
   `{fixme}`, a `{fixme}` in a requirement or example declaration, and a
   `{fixme}` whose body, without option lines and comment delimiters, is empty.
+  An unnamed `{fixme}`, a fence of `:::{fixme}` with no name, MAY appear in any
+  project text, including a requirement or example body, to tie that place to
+  the issues it names. It MUST have at least one `:github:` option line and MAY
+  have a description; it is not a reference edge, acknowledges no gap, needs no
+  coverage, and does not count as a reference for Rust item coverage. Its
+  issues are checked under {cite}`requirements.cli.fixme_issues`.
 
 `{impl}`, `{test}`, and `{fixme}` are edges from the definition to the source. Only requirements and examples are assessed; code is reviewed as part of the definitions it implements or tests. Habeas MUST find these references throughout project source files and MUST fail with the source file and line if a name has no matching `{req}` or `{example}` definition. In Markdown, escaped roles and roles in code examples MUST remain literal. Reference discovery MUST consider exactly the project sources that source-access policy permits under {cite}`requirements.authoring.source_tools`: in a Git worktree, files present in the Git index, including staged new files; outside Git, all project files; in both cases excluding the project-root `book` and `evidence` directories, `.git` and `target` directories at any depth, and paths disallowed by {cite}`requirements.configuration.evidence_paths`. Evidence snapshots and generated build output MUST therefore not be counted as source references.
 
