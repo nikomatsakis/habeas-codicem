@@ -49,8 +49,8 @@ pub(crate) fn definitions() -> Vec<Value> {
             "parameters":{"type":"object","properties":{"file":{"type":"string"}},"required":["file"],"additionalProperties":false}
         }),
         json!({
-            "name":"ripgrep", "description":"Search a project-relative or policy-permitted absolute file or directory (default .) using ripgrep regex syntax, case-sensitive matching, and normal ignore rules (including .gitignore and hidden-file exclusions). Return matching lines plus context lines before and after each match (default 5; zero means matches only). Overlapping windows are merged and returned as the innermost outline nodes containing the matching and context lines (a match in a comment returns the node the comment belongs to), each with its item selector, kind, current line range, and source text; those nodes are recorded as evidence and accompanied by required terminology. No matches returns empty arrays. Results include only eligible sources, and their source text is redacted as habeas reads are. Defaults exclude evidence/ and untracked files; do not request excluded paths. Explicitly allowed paths and existing Cargo build-script outputs are searched even when ignored or hidden. Workspace disallow rules win; denied explicit requests for project paths abort the assessment, while unpermitted paths outside the project return a tool error.",
-            "parameters":{"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string","default":"."},"context":{"type":"integer","minimum":0,"default":5}},"required":["pattern"],"additionalProperties":false}
+            "name":"ripgrep", "description":"Search a project-relative or policy-permitted absolute file or directory (default .) using ripgrep regex syntax, case-sensitive matching, and normal ignore rules (including .gitignore and hidden-file exclusions). Return matching lines plus context lines before and after each match (default 5; zero means matches only). Overlapping windows are merged and returned as the innermost outline nodes containing the matching and context lines (a match in a comment returns the node the comment belongs to), each with its item selector, kind, current line range, and source text; those nodes are recorded as evidence and accompanied by required terminology. No matches returns empty arrays. Results include only eligible sources, and their source text is redacted as habeas reads are. Defaults exclude evidence/ and untracked files; do not request excluded paths. Explicitly allowed paths and existing Cargo build-script outputs are searched even when ignored or hidden. Workspace disallow rules win; denied explicit requests for project paths abort the assessment, while unpermitted paths outside the project return a tool error. With referencing {selection, roles, scope}, search only sources within path that carry a reference in one of roles (impl, test, cite, or fixme; default [impl, test, cite]) to a requirement or example the selection matches (a full name, or a glob where * matches any characters including dots), including :impl: and :test: declaration anchors: scope node searches only the outline nodes that contain or are named by those references, and scope file (the default) their whole files, e.g. {\"pattern\":\"errors\",\"referencing\":{\"selection\":\"requirements.ci.*\",\"roles\":[\"impl\"],\"scope\":\"node\"}}. A selection matching no requirement or example, or an unknown role or scope, returns a tool error.",
+            "parameters":{"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string","default":"."},"context":{"type":"integer","minimum":0,"default":5},"referencing":reference_scope_schema()},"required":["pattern"],"additionalProperties":false}
         }),
         json!({
             "name":"references", "description":"List definitions and the sources that reference them. Without selection, return every requirement and named example name with its kind. With selection (a full requirement or example name, or a glob where * matches any characters including dots, e.g. requirements.cli.*), return the selected definitions plus every {impl}, {cite}, and {test} reference to them: definition name, role, file, line, and item, the selector of the smallest enclosing outline node when the file has a language outline (null otherwise). An :impl: or :test: anchor on a definition names a complete file, or one node as path#selector, and is reported with line null and item null or that selector. {impl} and {test} mark sources that implement or verify the definition; {cite} marks sources that only rely on or refer to it. Results contain no source text and are not evidence inputs; read the sources you rely on with habeas.",
@@ -58,6 +58,16 @@ pub(crate) fn definitions() -> Vec<Value> {
         }),
         crate::github::tool_definition(),
     ]
+}
+
+/// The parameter schema of a `referencing` argument.
+// {impl}`requirements.authoring.text_search`
+fn reference_scope_schema() -> Value {
+    json!({"type":"object","properties":{
+        "selection":{"type":"string"},
+        "roles":{"type":"array","items":{"type":"string","enum":["impl","test","cite","fixme"]},"default":["impl","test","cite"]},
+        "scope":{"type":"string","enum":["node","file"],"default":"file"}
+    },"required":["selection"],"additionalProperties":false})
 }
 
 // {impl}`requirements.authoring.source_tools`
@@ -365,113 +375,47 @@ fn references(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Res
 // {impl}`requirements.definitions.authoring_inputs`
 // {impl}`requirements.authoring.delivered_inputs`
 fn search(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Result<ToolDelivery> {
-    check_keys(args, &["pattern", "path", "context"])?;
+    check_keys(args, &["pattern", "path", "context", "referencing"])?;
     let pattern = string(args, "pattern")?;
     let path = optional_path(args)?;
-    let requested = project_path(sources, path)?;
     let context = if args.contains_key("context") {
         integer(args, "context")?
     } else {
         5
     };
-    let mut searches = vec![(requested.clone(), false)];
-    for extra in sources.access.extra_roots() {
-        let Ok(extra) = sources.access.path(&sources.root, extra) else {
-            continue;
-        };
-        let candidate = if requested.starts_with(&extra) {
-            requested.clone()
-        } else if extra.starts_with(&requested) || requested == sources.root {
-            extra.clone()
-        } else {
-            continue;
-        };
-        if sources.access.path(&sources.root, &candidate).is_ok() {
-            searches.push((candidate, true));
-        }
-    }
-    searches.sort();
-    searches.dedup();
+    let regions = referencing(sources, args)?;
     let matcher = grep_regex::RegexMatcherBuilder::new()
         .case_insensitive(false)
         .build(pattern)
         .map_err(|error| io::Error::other(format!("invalid ripgrep pattern: {error}")))?;
-    let matches = Mutex::new(BTreeMap::<String, Vec<usize>>::new());
-    let failure = Mutex::new(None::<io::Error>);
-    for (path, include_ignored) in searches {
-        let mut walker = ignore::WalkBuilder::new(&path);
-        walker
-            .hidden(!include_ignored)
-            .ignore(!include_ignored)
-            .git_ignore(!include_ignored)
-            .git_global(!include_ignored)
-            .git_exclude(!include_ignored)
-            .parents(!include_ignored)
-            .add_custom_ignore_filename(".rgignore");
-        walker.build_parallel().run(|| {
-            let matcher = &matcher;
-            let matches = &matches;
-            let failure = &failure;
+    let matches = walk_sources(
+        sources,
+        path,
+        &|file, _| regions.as_ref().is_none_or(|regions| regions.has(file)),
+        &|_, path| {
             let mut searcher = grep_searcher::SearcherBuilder::new()
                 .line_number(true)
                 .binary_detection(grep_searcher::BinaryDetection::quit(0))
                 .build();
-            Box::new(move |entry| {
-                let Ok(entry) = entry else {
-                    return ignore::WalkState::Continue;
-                };
-                if !entry.file_type().is_some_and(|kind| kind.is_file()) {
-                    return ignore::WalkState::Continue;
-                }
-                // Apply source-access policy while walking: denied files are
-                // never opened.
-                if sources.access.file(&sources.root, entry.path()).is_err() {
-                    return ignore::WalkState::Continue;
-                }
-                let mut lines = Vec::new();
-                let searched = searcher.search_path(
-                    matcher,
-                    entry.path(),
+            let mut lines = Vec::new();
+            searcher
+                .search_path(
+                    &matcher,
+                    path,
                     grep_searcher::sinks::Lossy(|number, _| {
                         lines.push(number as usize);
                         Ok(true)
                     }),
-                );
-                if let Err(error) = searched {
-                    *failure.lock().expect("search failure lock") = Some(io::Error::new(
+                )
+                .map_err(|error| {
+                    io::Error::new(
                         error.kind(),
-                        format!(
-                            "ripgrep failed to search {}: {error}",
-                            entry.path().display()
-                        ),
-                    ));
-                    return ignore::WalkState::Quit;
-                }
-                if lines.is_empty() {
-                    return ignore::WalkState::Continue;
-                }
-                match relative_path(&sources.root, entry.path()) {
-                    Ok(file) => matches
-                        .lock()
-                        .expect("search results lock")
-                        .entry(file)
-                        .or_default()
-                        .extend(lines),
-                    Err(error) => {
-                        *failure.lock().expect("search failure lock") = Some(error);
-                        return ignore::WalkState::Quit;
-                    }
-                }
-                ignore::WalkState::Continue
-            })
-        });
-    }
-    if let Some(error) = failure.into_inner().expect("search failure lock") {
-        return Err(error);
-    }
-    // Parallel walks finish in any order; the map and per-file sort make results
-    // independent of scheduling.
-    let matches = matches.into_inner().expect("search results lock");
+                        format!("ripgrep failed to search {}: {error}", path.display()),
+                    )
+                })?;
+            Ok((!lines.is_empty()).then_some(lines))
+        },
+    )?;
     let mut inputs = Vec::new();
     for (file, mut lines) in matches {
         let parsed = sources.parse_file(&file)?;
@@ -488,8 +432,18 @@ fn search(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Result<
                     "{file}: ripgrep returned an out-of-range match"
                 )));
             }
-            let start = line.saturating_sub(context).max(1);
-            let end = line.saturating_add(context).min(count);
+            // With node-scoped `referencing`, only lines within a referencing
+            // node are searched, and windows stop at its boundaries.
+            let (first, last) = match regions
+                .as_ref()
+                .map(|regions| regions.region(&file, line, line))
+            {
+                None | Some(Some(None)) => (1, count),
+                Some(Some(Some(region))) => region,
+                Some(None) => continue,
+            };
+            let start = line.saturating_sub(context).max(first);
+            let end = line.saturating_add(context).min(last);
             if let Some(last) = windows.last_mut()
                 && start <= last.1.saturating_add(1)
             {
@@ -510,6 +464,285 @@ fn search(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Result<
     let result = json!({"inputs":inputs,"definitions":definitions});
     inputs.extend(definitions);
     Ok(ToolDelivery { result, inputs })
+}
+
+/// Walks the permitted files under a requested path, and under the explicitly
+/// allowed and generated-output roots it contains or lies in, visiting each
+/// file `include` accepts and collecting the results `visit` returns by
+/// project-relative path. Source-access policy is applied while walking, so
+/// denied files are never opened.
+// {impl}`requirements.authoring.text_search`
+// {impl}`requirements.authoring.source_tools`
+// {impl}`requirements.configuration.evidence_paths`
+// {impl}`requirements.authoring.generated_inputs`
+// {impl}`requirements.authoring.read_denial`
+fn walk_sources<T: Send>(
+    sources: &AssessmentSources,
+    path: &str,
+    include: &(dyn Fn(&str, &Path) -> bool + Sync),
+    visit: &(dyn Fn(&str, &Path) -> io::Result<Option<T>> + Sync),
+) -> io::Result<BTreeMap<String, T>> {
+    let requested = project_path(sources, path)?;
+    let mut searches = vec![(requested.clone(), false)];
+    for extra in sources.access.extra_roots() {
+        let Ok(extra) = sources.access.path(&sources.root, extra) else {
+            continue;
+        };
+        let candidate = if requested.starts_with(&extra) {
+            requested.clone()
+        } else if extra.starts_with(&requested) || requested == sources.root {
+            extra.clone()
+        } else {
+            continue;
+        };
+        if sources.access.path(&sources.root, &candidate).is_ok() {
+            searches.push((candidate, true));
+        }
+    }
+    searches.sort();
+    searches.dedup();
+    let found = Mutex::new(BTreeMap::<String, T>::new());
+    let failure = Mutex::new(None::<io::Error>);
+    for (path, include_ignored) in searches {
+        let mut walker = ignore::WalkBuilder::new(&path);
+        walker
+            .hidden(!include_ignored)
+            .ignore(!include_ignored)
+            .git_ignore(!include_ignored)
+            .git_global(!include_ignored)
+            .git_exclude(!include_ignored)
+            .parents(!include_ignored)
+            .add_custom_ignore_filename(".rgignore");
+        walker.build_parallel().run(|| {
+            let found = &found;
+            let failure = &failure;
+            Box::new(move |entry| {
+                let Ok(entry) = entry else {
+                    return ignore::WalkState::Continue;
+                };
+                if !entry.file_type().is_some_and(|kind| kind.is_file()) {
+                    return ignore::WalkState::Continue;
+                }
+                // Apply source-access policy while walking: denied files are
+                // never opened.
+                if sources.access.file(&sources.root, entry.path()).is_err() {
+                    return ignore::WalkState::Continue;
+                }
+                let visited = relative_path(&sources.root, entry.path()).and_then(|file| {
+                    if include(&file, entry.path()) {
+                        Ok(visit(&file, entry.path())?.map(|result| (file, result)))
+                    } else {
+                        Ok(None)
+                    }
+                });
+                match visited {
+                    Ok(Some((file, result))) => {
+                        found
+                            .lock()
+                            .expect("search results lock")
+                            .insert(file, result);
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        *failure.lock().expect("search failure lock") = Some(error);
+                        return ignore::WalkState::Quit;
+                    }
+                }
+                ignore::WalkState::Continue
+            })
+        });
+    }
+    if let Some(error) = failure.into_inner().expect("search failure lock") {
+        return Err(error);
+    }
+    // Parallel walks finish in any order; the map makes results independent
+    // of scheduling.
+    Ok(found.into_inner().expect("search results lock"))
+}
+
+/// The sources a `referencing` scope restricts a search to, by
+/// project-relative file: the inclusive line ranges of each referencing
+/// outline node, or `None` for the whole file.
+// {impl}`requirements.authoring.text_search`
+struct ReferenceRegions(BTreeMap<String, Option<Vec<(usize, usize)>>>);
+
+impl ReferenceRegions {
+    /// Whether a file carries a selected reference.
+    // {impl}`requirements.authoring.text_search`
+    fn has(&self, file: &str) -> bool {
+        self.0.contains_key(file)
+    }
+
+    /// The searched region containing an inclusive line range: `None` when
+    /// none does, `Some(None)` for a whole file, and otherwise the smallest
+    /// referencing node's lines.
+    // {impl}`requirements.authoring.text_search`
+    fn region(&self, file: &str, first: usize, last: usize) -> Option<Option<(usize, usize)>> {
+        match self.0.get(file)? {
+            None => Some(None),
+            Some(regions) => regions
+                .iter()
+                .filter(|(start, end)| *start <= first && last <= *end)
+                .min_by_key(|(start, end)| end - start)
+                .map(|region| Some(*region)),
+        }
+    }
+
+    /// Adds a referencing node's lines, or a whole file.
+    // {impl}`requirements.authoring.text_search`
+    fn add(&mut self, file: String, lines: Option<(usize, usize)>) {
+        let entry = self.0.entry(file).or_insert_with(|| Some(Vec::new()));
+        match (entry, lines) {
+            (Some(regions), Some(lines)) => regions.push(lines),
+            (entry, None) => *entry = None,
+            (None, Some(_)) => {}
+        }
+    }
+}
+
+/// The regions an optional `referencing` argument selects: the sources that
+/// carry a reference in one of its roles to a requirement or example its
+/// selection matches, including declaration anchors, as referencing nodes or
+/// whole files by its scope.
+// {impl}`requirements.authoring.text_search`
+// {impl}`requirements.references.definition_globs`
+// {impl}`requirements.references.anchors`
+fn referencing(
+    sources: &AssessmentSources,
+    args: &Map<String, Value>,
+) -> io::Result<Option<ReferenceRegions>> {
+    let Some(scope) = args.get("referencing") else {
+        return Ok(None);
+    };
+    let scope = scope
+        .as_object()
+        .ok_or_else(|| io::Error::other("referencing must be an object"))?;
+    for key in scope.keys() {
+        if !["selection", "roles", "scope"].contains(&key.as_str()) {
+            return Err(io::Error::other(format!(
+                "unexpected referencing argument {key:?}"
+            )));
+        }
+    }
+    let selection = scope
+        .get("selection")
+        .and_then(Value::as_str)
+        .ok_or_else(|| io::Error::other("referencing.selection must be a string"))?;
+    crate::definition_glob::validate(selection).map_err(io::Error::other)?;
+    let roles = match scope.get("roles") {
+        None => vec![
+            crate::ReferenceKind::Impl,
+            crate::ReferenceKind::Test,
+            crate::ReferenceKind::Cite,
+        ],
+        Some(Value::Array(roles)) => roles
+            .iter()
+            .map(|role| match role.as_str() {
+                Some("impl") => Ok(crate::ReferenceKind::Impl),
+                Some("test") => Ok(crate::ReferenceKind::Test),
+                Some("cite") => Ok(crate::ReferenceKind::Cite),
+                Some("fixme") => Ok(crate::ReferenceKind::Fixme),
+                _ => Err(io::Error::other(format!(
+                    "unknown referencing role {role}; expected impl, test, cite, or fixme"
+                ))),
+            })
+            .collect::<io::Result<_>>()?,
+        Some(_) => {
+            return Err(io::Error::other(
+                "referencing.roles must be an array of roles",
+            ));
+        }
+    };
+    let whole_files = match scope.get("scope") {
+        None => true,
+        Some(value) => match value.as_str() {
+            Some("file") => true,
+            Some("node") => false,
+            _ => {
+                return Err(io::Error::other(format!(
+                    "unknown referencing scope {value}; expected \"node\" or \"file\""
+                )));
+            }
+        },
+    };
+    let definitions = crate::evidence::load_definitions(&sources.root)?;
+    let selected = |name: &str| {
+        crate::definition_glob::matches(selection, name)
+            && definitions
+                .get(name)
+                .is_some_and(|definition| definition.kind != crate::DefinitionKind::Term)
+    };
+    if !definitions.keys().any(|name| selected(name)) {
+        return Err(io::Error::other(format!(
+            "referencing selection {selection:?} matches no requirement or named example"
+        )));
+    }
+    let mut errors = Vec::new();
+    let found = crate::evidence::collect_references(&sources.root, &mut errors);
+    // A considered source that cannot be read would silently drop its sources.
+    if !errors.is_empty() {
+        return Err(io::Error::other(format!(
+            "cannot restrict the search to referencing sources because reference discovery failed; fix or restore the named source before retrying:\n{}",
+            errors.join("\n")
+        )));
+    }
+    let mut regions = ReferenceRegions(BTreeMap::new());
+    for reference in found {
+        if !reference.closed
+            || !reference.is_fixme_edge()
+            || !roles.contains(&reference.kind)
+            || !selected(&reference.name)
+        {
+            continue;
+        }
+        let file = relative_path(&sources.root, &reference.file)?;
+        let lines = if whole_files {
+            None
+        } else {
+            let parsed = sources.outlines.parse(&sources.root, &file);
+            match parsed.as_ref() {
+                Ok(parsed) => {
+                    let node = &parsed.outline.nodes[parsed.outline.owner_at_line(reference.line)];
+                    Some((node.line_start, node.line_end))
+                }
+                Err(_) => None,
+            }
+        };
+        regions.add(file, lines);
+    }
+    for (name, definition) in &definitions {
+        if !selected(name) {
+            continue;
+        }
+        for anchor in &definition.anchors {
+            if !roles.contains(&anchor.kind) {
+                continue;
+            }
+            // Discovery omits excluded sources rather than aborting.
+            let Ok(path) = sources.access.file(&sources.root, Path::new(&anchor.file)) else {
+                continue;
+            };
+            let file = relative_path(&sources.root, &path)?;
+            let lines = if whole_files || anchor.item.is_empty() {
+                None
+            } else {
+                let parsed = sources.outlines.parse(&sources.root, &file);
+                match parsed.as_ref() {
+                    Ok(parsed) => match parsed.outline.resolve(&anchor.item) {
+                        Ok(index) => {
+                            let node = &parsed.outline.nodes[index];
+                            Some((node.line_start, node.line_end))
+                        }
+                        // An anchor that no longer resolves names no node.
+                        Err(_) => continue,
+                    },
+                    Err(_) => None,
+                }
+            };
+            regions.add(file, lines);
+        }
+    }
+    Ok(Some(regions))
 }
 
 // {impl}`requirements.authoring.source_tools`
@@ -2245,7 +2478,21 @@ mod tests {
                 "properties": {
                     "pattern": {"type": "string"},
                     "path": {"type": "string", "default": "."},
-                    "context": {"type": "integer", "minimum": 0, "default": 5}
+                    "context": {"type": "integer", "minimum": 0, "default": 5},
+                    "referencing": {
+                        "type": "object",
+                        "properties": {
+                            "selection": {"type": "string"},
+                            "roles": {
+                                "type": "array",
+                                "items": {"type": "string", "enum": ["impl", "test", "cite", "fixme"]},
+                                "default": ["impl", "test", "cite"]
+                            },
+                            "scope": {"type": "string", "enum": ["node", "file"], "default": "file"}
+                        },
+                        "required": ["selection"],
+                        "additionalProperties": false
+                    }
                 },
                 "required": ["pattern"],
                 "additionalProperties": false
@@ -2267,6 +2514,12 @@ mod tests {
             "Explicitly allowed paths and existing Cargo build-script outputs are searched even when ignored or hidden",
             "Workspace disallow rules win",
             "denied explicit requests for project paths abort the assessment",
+            "With referencing {selection, roles, scope}",
+            "default [impl, test, cite]",
+            "including :impl: and :test: declaration anchors",
+            "scope node searches only the outline nodes that contain or are named by those references",
+            "scope file (the default) their whole files",
+            "A selection matching no requirement or example, or an unknown role or scope, returns a tool error",
         ] {
             assert!(description.contains(phrase), "{phrase:?} in {description}");
         }
@@ -2379,5 +2632,148 @@ mod tests {
         .err()
         .unwrap();
         assert!(error.to_string().contains("syntax error"), "{error}");
+    }
+
+    /// The items of a search result's source inputs, as `file#item`.
+    // {test}`requirements.authoring.text_search`
+    fn found(delivery: &ToolDelivery) -> Vec<String> {
+        delivery.result["inputs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|input| {
+                format!(
+                    "{}#{}",
+                    input["file"].as_str().unwrap(),
+                    input["item"].as_str().unwrap()
+                )
+            })
+            .collect()
+    }
+
+    /// A project whose sources reference `requirements.ready` and
+    /// `requirements.other` in several roles, each source calling `needle()`.
+    // {test}`requirements.authoring.text_search`
+    fn referencing_project() -> tempfile::TempDir {
+        let root = project();
+        fs::write(
+            root.path().join("md/requirements.md"),
+            ":::{req} ready\nThe project MUST be ready.\n:::\n\n:::{req} other\n:impl: src/other.rs\nOther.\n:::\n\n:::{req} third\nThird.\n:::\n",
+        )
+        .unwrap();
+        fs::write(
+            root.path().join("src/lib.rs"),
+            format!(
+                "// {}\nfn ready() {{\n    needle();\n}}\n\nfn unrelated() {{\n    needle();\n}}\n",
+                role("impl", "requirements.ready")
+            ),
+        )
+        .unwrap();
+        fs::write(
+            root.path().join("src/cite.rs"),
+            format!(
+                "fn before() {{\n    needle();\n}}\n\n// {}\nfn cited() {{\n    needle();\n}}\n",
+                role("cite", "requirements.ready")
+            ),
+        )
+        .unwrap();
+        fs::write(
+            root.path().join("src/other.rs"),
+            "fn elsewhere() {\n    needle();\n}\n",
+        )
+        .unwrap();
+        fs::write(
+            root.path().join("src/plain.rs"),
+            "fn plain() {\n    needle();\n}\n",
+        )
+        .unwrap();
+        root
+    }
+
+    // {test}`requirements.authoring.text_search`
+    // {test}`requirements.references.definition_globs`
+    // {test}`requirements.references.anchors`
+    #[test]
+    fn ripgrep_referencing_searches_only_referencing_files_or_nodes() {
+        let root = referencing_project();
+        let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        let search = |referencing: Value, context: u64| {
+            dispatch(
+                &sources,
+                "ripgrep",
+                &json!({"pattern":"needle","context":context,"referencing":referencing}),
+            )
+        };
+        // By default, every impl, test, or cite reference selects its whole file.
+        assert_eq!(
+            found(&search(json!({"selection":"requirements.ready"}), 0).unwrap()),
+            [
+                "src/cite.rs#fn[before]",
+                "src/cite.rs#fn[cited]",
+                "src/lib.rs#fn[ready]",
+                "src/lib.rs#fn[unrelated]"
+            ]
+        );
+        // Roles narrow the references; a glob selects several definitions,
+        // including declaration anchors.
+        assert_eq!(
+            found(&search(json!({"selection":"requirements.*","roles":["impl"]}), 0).unwrap()),
+            [
+                "src/lib.rs#fn[ready]",
+                "src/lib.rs#fn[unrelated]",
+                "src/other.rs#fn[elsewhere]"
+            ]
+        );
+        // Node scope searches only the nodes the references belong to, and
+        // context windows stop at their boundaries.
+        let node = search(json!({"selection":"requirements.ready","scope":"node"}), 5).unwrap();
+        assert_eq!(
+            found(&node),
+            ["src/cite.rs#fn[cited]", "src/lib.rs#fn[ready]"]
+        );
+        // `path` still limits the search.
+        let limited = dispatch(
+            &sources,
+            "ripgrep",
+            &json!({"pattern":"needle","path":"src/lib.rs","referencing":{"selection":"requirements.*"}}),
+        )
+        .unwrap();
+        assert_eq!(found(&limited).len(), 2);
+        // A matching definition with no references in the roles finds nothing.
+        let none = search(json!({"selection":"requirements.third"}), 0).unwrap();
+        assert_eq!(none.result, json!({"inputs": [], "definitions": []}));
+        for (referencing, message) in [
+            (
+                json!({"selection":"requirements.none"}),
+                "matches no requirement or named example",
+            ),
+            (
+                json!({"selection":"requirements.ready","roles":["bogus"]}),
+                "unknown referencing role",
+            ),
+            (
+                json!({"selection":"requirements.ready","roles":"impl"}),
+                "roles must be an array",
+            ),
+            (
+                json!({"selection":"requirements.ready","scope":"dir"}),
+                "unknown referencing scope",
+            ),
+            (
+                json!({"selection":"requirements.ready","extra":1}),
+                "unexpected referencing argument",
+            ),
+            (
+                json!({"roles":["impl"]}),
+                "referencing.selection must be a string",
+            ),
+            (json!("requirements.ready"), "referencing must be an object"),
+        ] {
+            let error = search(referencing.clone(), 0).err().unwrap();
+            assert!(
+                error.to_string().contains(message),
+                "{referencing}: {error}"
+            );
+        }
     }
 }
