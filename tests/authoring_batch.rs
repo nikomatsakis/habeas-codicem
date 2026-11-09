@@ -2074,6 +2074,67 @@ fn closing_an_acknowledged_issue_makes_the_fixme_record_stale_and_reassessed() {
     }
 }
 
+/// A state root inside the project, directly or through a symlink, is not
+/// used for the GitHub cache: `status` still reads GitHub, uncached, and
+/// `author` refuses the location before writing anything there.
+// {test}`requirements.configuration.state_location`
+#[test]
+fn github_reads_do_not_cache_in_a_state_root_inside_the_project() {
+    let server = Server::start(false, None);
+    let github = FakeGithub::start();
+    let fixture = Fixture::new(&server.endpoint, None);
+    let source = fixture.project.join("src/lib.rs");
+    fs::write(
+        &source,
+        fs::read_to_string(&source).unwrap().replace(
+            "pub fn beta()",
+            "// :::FIXME requirements.beta\n// :github: example/queue#125\n// Zero capacity is untested.\n// :::\npub fn beta()"
+                .replace("FIXME", "{fixme}")
+                .as_str(),
+        ),
+    )
+    .unwrap();
+    let inside = fixture.project.join("state");
+    let mut states = vec![(inside.clone(), inside.clone())];
+    #[cfg(unix)]
+    {
+        let alias = fixture.project.parent().unwrap().join("state-alias");
+        std::os::unix::fs::symlink(&fixture.project, &alias).unwrap();
+        states.push((alias.join("state"), inside.clone()));
+    }
+    for (state, written) in states {
+        let run = |args: &[&str]| {
+            fixture
+                .command()
+                .env("XDG_STATE_HOME", &state)
+                .env("LOCALAPPDATA", &state)
+                .env("HABEAS_GITHUB_API_URL", &github.endpoint)
+                .args(args)
+                .output()
+                .unwrap()
+        };
+        let before = github.requests();
+        let status = run(&["status"]);
+        assert!(
+            status.status.success(),
+            "{}",
+            String::from_utf8_lossy(&status.stderr)
+        );
+        assert!(github.requests() > before, "status still reads GitHub");
+        assert!(!written.exists(), "{state:?}");
+        let author = run(&["author", "--all"]);
+        assert!(!author.status.success());
+        assert!(
+            String::from_utf8_lossy(&author.stderr)
+                .contains("must be outside the project repository"),
+            "{}",
+            String::from_utf8_lossy(&author.stderr)
+        );
+        assert!(!written.exists(), "{state:?}");
+    }
+    assert!(server.subjects().is_empty());
+}
+
 /// Checks that the first assessment of each kind starts before any other of
 /// its kind, and that the others start only once its first request has been
 /// answered, returning the requests of each kind in arrival order.

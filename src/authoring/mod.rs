@@ -330,7 +330,7 @@ pub async fn author_evidence_with_options(
 // {impl}`requirements.configuration.state_location`
 fn usage_state_root(root: &Path) -> io::Result<PathBuf> {
     let state = config::state_root()?;
-    if resolved_location(&state)?.starts_with(root) {
+    if config::state_in_project(&state, root)? {
         return Err(io::Error::other(format!(
             "authoring usage state must be outside the project repository: {}",
             state.display()
@@ -346,22 +346,6 @@ fn usage_state_root(root: &Path) -> io::Result<PathBuf> {
         )
     })?;
     Ok(state)
-}
-
-/// Resolves symlinks in the nearest existing ancestor of `path`, keeping the
-/// components that do not exist yet.
-// {impl}`requirements.authoring.usage_storage`
-// {impl}`requirements.configuration.state_location`
-fn resolved_location(path: &Path) -> io::Result<PathBuf> {
-    let path = std::path::absolute(path)?;
-    let existing = path
-        .ancestors()
-        .find(|ancestor| ancestor.exists())
-        .expect("an absolute path has an existing root");
-    let missing = path
-        .strip_prefix(existing)
-        .expect("ancestor is a prefix of its path");
-    Ok(fs::canonicalize(existing)?.join(missing))
 }
 
 // {impl}`requirements.authoring.batch`

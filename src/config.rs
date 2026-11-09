@@ -726,6 +726,29 @@ pub fn state_root_from(
     }
 }
 
+/// Whether the state root `state` lies inside the project at the canonical
+/// path `root`, once symlinks in its nearest existing ancestor are
+/// resolved. State is never stored there.
+// {impl}`requirements.configuration.state_location`
+pub(crate) fn state_in_project(state: &Path, root: &Path) -> io::Result<bool> {
+    Ok(resolved_location(state)?.starts_with(root))
+}
+
+/// Resolves symlinks in the nearest existing ancestor of `path`, keeping the
+/// components that do not exist yet.
+// {impl}`requirements.configuration.state_location`
+fn resolved_location(path: &Path) -> io::Result<PathBuf> {
+    let path = std::path::absolute(path)?;
+    let existing = path
+        .ancestors()
+        .find(|ancestor| ancestor.exists())
+        .expect("an absolute path has an existing root");
+    let missing = path
+        .strip_prefix(existing)
+        .expect("ancestor is a prefix of its path");
+    Ok(fs::canonicalize(existing)?.join(missing))
+}
+
 // {impl}`requirements.configuration.user_location`
 // {impl}`requirements.configuration.state_location`
 fn absolute_directory(lookup: &impl Fn(&str) -> Option<OsString>, name: &str) -> Option<PathBuf> {

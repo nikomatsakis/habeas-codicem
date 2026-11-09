@@ -101,10 +101,12 @@ impl GithubIssues {
     }
 
     /// Reads GitHub, authenticating with `GITHUB_TOKEN` when it is set and
-    /// caching under the state root. Unit tests never contact GitHub.
+    /// caching under the state root, for the project at `root`. A state root
+    /// inside that project, or one that cannot be determined, leaves reads
+    /// uncached. Unit tests never contact GitHub.
     // {impl}`requirements.authoring.github_reads`
     // {impl}`requirements.configuration.state_location`
-    pub fn from_env() -> Self {
+    pub fn from_env(root: &Path) -> Self {
         if cfg!(test) {
             return Self::offline();
         }
@@ -117,6 +119,11 @@ impl GithubIssues {
             .filter(|token| !token.trim().is_empty());
         let cache = crate::config::state_root()
             .ok()
+            .filter(|state| {
+                fs::canonicalize(root)
+                    .and_then(|root| crate::config::state_in_project(state, &root))
+                    .is_ok_and(|inside| !inside)
+            })
             .map(|state| state.join("github"));
         Self::with_api(api, cache, token)
     }

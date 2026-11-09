@@ -104,7 +104,10 @@ async fn run_batch(
     }
     // A FIXME record whose acknowledging issue closed is stale.
     // {impl}`requirements.authoring.github_reads`
-    crate::github::add_issue_findings(&mut inspection, &crate::github::GithubIssues::from_env());
+    crate::github::add_issue_findings(
+        &mut inspection,
+        &crate::github::GithubIssues::from_env(&root),
+    );
     if let Some(requirement) = sites_of
         && !inspection.sites.contains_key(requirement)
     {
@@ -406,7 +409,10 @@ pub(super) fn subject_is_current(root: &Path, subject: &AuthoringSubject) -> io:
     }
     // A FIXME record whose acknowledging issue closed is stale.
     // {impl}`requirements.authoring.github_reads`
-    crate::github::add_issue_findings(&mut inspection, &crate::github::GithubIssues::from_env());
+    crate::github::add_issue_findings(
+        &mut inspection,
+        &crate::github::GithubIssues::from_env(&root),
+    );
     let path = match subject {
         AuthoringSubject::Definition(name) => {
             if inspection

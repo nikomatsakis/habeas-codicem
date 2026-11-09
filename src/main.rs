@@ -158,7 +158,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     all,
                     selection.as_deref(),
                     verbose,
-                    &habeas::GithubIssues::from_env(),
+                    &habeas::GithubIssues::from_env(&root),
                 )?
                 .as_bytes(),
             )?;

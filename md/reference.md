@@ -443,7 +443,9 @@ Windows. Each issue `<owner>/<repo>#<number>` is one JSON file,
 read from, the Unix time it was `fetched` in seconds, and its `state` (`open`,
 `closed`, or `missing`) and, for an issue that exists, its redacted `title` and
 `body`. An entry less than an hour old is reused; a failed read is not cached.
-Deleting the directory only forces fresh reads.
+Deleting the directory only forces fresh reads. When the state root cannot be
+determined or lies inside the project repository, issues are read without a
+cache, so nothing is written there.
 {cite}`requirements.authoring.github_reads`
 {impl}`requirements.configuration.state_location`
 

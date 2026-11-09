@@ -225,7 +225,7 @@ impl AssessmentSources {
             }
         }
         mandatory.extend(builtins.into_iter().map(builtin_input));
-        let github = GithubIssues::from_env();
+        let github = GithubIssues::from_env(&root);
         let issue_states = crate::github::input_issue_states(
             &root,
             &github,
@@ -323,7 +323,7 @@ impl AssessmentSources {
             }
         }
         mandatory.extend(builtins.iter().map(|name| builtin_input(name)));
-        let github = GithubIssues::from_env();
+        let github = GithubIssues::from_env(&root);
         let issue_states = crate::github::input_issue_states(
             &root,
             &github,
@@ -438,7 +438,7 @@ impl AssessmentSources {
             }
         }
         mandatory.extend(builtins.iter().map(|name| builtin_input(name)));
-        let github = GithubIssues::from_env();
+        let github = GithubIssues::from_env(&root);
         let issue_states = crate::github::input_issue_states(
             &root,
             &github,
