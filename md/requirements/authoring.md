@@ -153,7 +153,9 @@ Call submit_verification exactly once. That tool call is your final answer.
 ```
 
 The harness MUST record the outcome the verification establishes: when `real` is
-false, the more favorable assessment; when `real` and `acknowledged` are true, a
+false, the more favorable assessment, except that for a site review whose
+verifier's `applies` differs from that assessment's, a `true` determination with
+the verifier's rationale; when `real` and `acknowledged` are true, a
 FIXME determination listing the verifier's `acknowledgments`, which MUST then be
 nonempty; and otherwise `false` with the less
 favorable assessment's rationale. For a site review, the recorded `applies` MUST
@@ -200,7 +202,10 @@ The three reference roles:
   an output, or handles a case it specifies, or when it constrains a type's
   fields, variants, serialized form, or validation. Calling code that
   implements it, or producing a value a caller uses to meet it, does not by
-  itself count.
+  itself count. A requirement stating a convention for every output of a kind,
+  such as every validation error, is implemented by the code that carries out
+  the convention as a whole, not by each item that produces one such output. A
+  site of a distributed requirement needs no reference to it for being a site.
 - {test}: the source is a test or test helper designed to verify behavior the
   requirement or example specifies.
 - {cite}: the source relies on or refers to the requirement or example, and
@@ -251,7 +256,8 @@ assessments judge by the same rules:
 - A gap is acknowledged only by a source comment or test that marks that same
   gap with FIXME, conventionally FIXME(#125) or FIXME(owner/repo#123). A FIXME
   inside a string literal or test data is not an acknowledgment. Before deciding
-  a gap is unacknowledged, search the files of the items it concerns for FIXME.
+  a gap is unacknowledged, search for FIXME in the files of the items it
+  concerns and, for a missing test, in the files of the subject's {test} items.
   In a FIXME determination or an acknowledgments list, list each distinct
   acknowledgment once: its issue
   reference as written without FIXME( ), such as "#125" or "owner/repo#123", or
@@ -864,8 +870,8 @@ carrying an {impl} or {test} reference to it.
 Cited requirements and examples are context: when the subject requires behavior
 under or following a cited requirement, check that the subject's code applies
 that requirement in the subject's case, but do not reassess the cited
-requirement's own implementation or tests. The subject's obligation still needs
-its own {impl} marking and test. When another requirement's text carries an {impl} reference
+requirement's own implementation or tests. For a requirement subject, that
+obligation still needs its own {impl} marking and test. When another requirement's text carries an {impl} reference
 to the subject, assess only whether that text carries out the obligations it
 covers; do not reassess its implementation or tests, and those obligations need
 no test here.
@@ -905,19 +911,22 @@ Requirement task:
    do not survey unrelated code.
 4. Unspecified behavior: a distinct observable behavior in the {impl} code,
    such as an extra output, error, exit status, or option, or acceptance of a
-   kind of input, that neither the subject nor another requirement the same code
-   marks with {impl} specifies is a gap. Silently skipping input the text does
-   not mention is robustness, not unspecified behavior. Read those requirements before calling it one. Behavior
-   within what the text describes, even where its examples do not show it, is
-   specified; so are the layout and wording of output the text requires.
+   kind of input, is a gap unless the subject or another requirement the same
+   code marks with {impl} specifies it; read those requirements before calling
+   it a gap. Silently skipping input the text does not mention is robustness,
+   not unspecified behavior. Behavior within what the text describes, even
+   where its examples do not show it, is specified; so are the layout and
+   wording of output the text requires.
 5. Testing: every obligation, and every boundary or failure case the text
    names, needs a test that runs the code carrying it out and asserts its
    outcome; calling that code directly counts. Branches for cases the text does
    not distinguish need no test of their own. An untested obligation is a gap
    unless the code carrying it out has no conditional and no transformation of
    its own, such as passing a value through unchanged, or running it would need
-   external services, timing, or process state that no existing test sets up;
-   say which, and why.
+   network services, real elapsed time, or process-wide state such as
+   environment variables or the current directory, and no test in the project
+   sets that up; say which, and why. Files and directories a test can create do
+   not qualify.
 ```
 
 Distributed task:
