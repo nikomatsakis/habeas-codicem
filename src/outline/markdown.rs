@@ -20,6 +20,7 @@ fn heading_name(node: Node<'_>, source: &str) -> Option<(Vec<String>, usize)> {
 }
 
 /// HTML comment blocks are Markdown's comments.
+// {impl}`requirements.references.outlines`
 // {impl}`requirements.references.outline_comments`
 // {impl}`requirements.references.structural_hash`
 fn is_comment(node: Node<'_>, source: &str) -> bool {

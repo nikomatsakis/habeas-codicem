@@ -812,6 +812,7 @@ fn subject_task(kind: &DefinitionKind) -> String {
 // {impl}`requirements.authoring.distributed_task`
 // {impl}`requirements.authoring.habeas_background`
 // {impl}`requirements.authoring.prompt_parts`
+// {impl}`requirements.ci.review_criteria`
 fn distributed_task(kind: &DefinitionKind, distributed: bool) -> String {
     if *kind == DefinitionKind::Requirement && distributed {
         fill(
@@ -2412,6 +2413,7 @@ mod tests {
     // {test}`requirements.authoring.verifier_prompt`
     // {test}`requirements.authoring.verifier_outcome`
     // {test}`requirements.authoring.habeas_background`
+    // {test}`requirements.authoring.judgment_rules`
     #[tokio::test]
     async fn disagreeing_assessments_verify_the_less_favorable_one() {
         for (turns, recorded, kept, conclusion) in [
@@ -2543,6 +2545,7 @@ mod tests {
 
     // {test}`requirements.authoring.verifier_prompt`
     // {test}`requirements.authoring.habeas_background`
+    // {test}`requirements.authoring.judgment_rules`
     #[test]
     fn verifier_prompts_name_examples_and_citation_reviews() {
         let project = inputs::tests::project();
@@ -2682,6 +2685,7 @@ mod tests {
     // {test}`requirements.references.citation_review`
     // {test}`requirements.authoring.mandatory_inputs`
     // {test}`requirements.authoring.habeas_background`
+    // {test}`requirements.authoring.judgment_rules`
     #[tokio::test]
     async fn citation_reviews_use_their_prompt_and_record_the_item_and_citations() {
         let project = inputs::tests::project();
@@ -2742,6 +2746,7 @@ mod tests {
         for background in [
             approved_text("habeas_background", 0),
             approved_text("habeas_background", 1),
+            approved_text("judgment_rules", 0),
         ] {
             let background = serde_json::to_string(background).unwrap();
             assert!(prompt.contains(background.trim_matches('"')), "{prompt}");
@@ -3079,6 +3084,7 @@ no_match:
     // {test}`requirements.authoring.habeas_background`
     // {test}`requirements.references.site_review`
     // {test}`requirements.authoring.mandatory_inputs`
+    // {test}`requirements.authoring.judgment_rules`
     #[tokio::test]
     async fn site_reviews_use_their_prompt_and_record_applies_and_the_site() {
         let project = crate::sites::tests::project(

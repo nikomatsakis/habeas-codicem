@@ -1181,6 +1181,14 @@ mod tests {
                 .collect::<Vec<_>>()
                 == pipes
         }));
+        for column in 0..2 {
+            let widest = table
+                .iter()
+                .map(|line| line.split('|').nth(column + 1).unwrap().trim().len())
+                .max()
+                .unwrap();
+            assert_eq!(pipes[column + 1] - pipes[column] - 3, widest);
+        }
         assert!(index.sub_items.is_empty());
         assert_eq!(definition.sub_items.len(), 5);
         let ready = definition

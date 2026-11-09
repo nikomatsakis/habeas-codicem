@@ -636,6 +636,7 @@ mod tests {
     use serde_json::json;
 
     // {test}`requirements.authoring.structural_search`
+    // {test}`requirements.references.distributed`
     #[test]
     fn rules_compile_for_every_grammar_and_report_invalid_input() {
         for (language, rule, source, expected) in [
@@ -734,6 +735,7 @@ mod tests {
     }
 
     // {test}`requirements.authoring.structural_search`
+    // {test}`requirements.references.distributed`
     // {test}`requirements.references.outline_comments`
     #[test]
     fn matches_belong_to_the_innermost_node_or_comment_owner() {

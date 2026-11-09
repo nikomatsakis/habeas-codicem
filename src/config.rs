@@ -56,6 +56,7 @@ pub struct WorkspaceAuthoringConfig {
     pub configs: BTreeMap<String, AuthoringConfig>,
 }
 
+// {impl}`requirements.configuration.serialization`
 // {impl}`requirements.configuration.evidence_paths`
 // {impl}`requirements.configuration.feature_sections`
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -134,6 +135,7 @@ pub struct UserAuthoringConfig {
     pub projects: BTreeMap<PathBuf, ProjectSelection>,
 }
 
+// {impl}`requirements.configuration.serialization`
 // {impl}`requirements.authoring.configuration_structure`
 // {impl}`requirements.authoring.configuration_serialization`
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -157,6 +159,7 @@ pub struct AuthoringConfig {
     pub backend: BackendConfig,
 }
 
+// {impl}`requirements.configuration.serialization`
 // {impl}`requirements.authoring.configuration_structure`
 // {impl}`requirements.authoring.configuration_serialization`
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -202,6 +205,7 @@ pub struct OllamaConfig {
     pub options: BTreeMap<String, OptionValue>,
 }
 
+// {impl}`requirements.configuration.serialization`
 // {impl}`requirements.authoring.configuration_structure`
 // {impl}`requirements.authoring.configuration_serialization`
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -218,6 +222,7 @@ pub enum OptionValue {
 /// How each subject is assessed: `confirm` checks a `true` or FIXME result
 /// with further independent conversations; `once` records a single
 /// assessment.
+// {impl}`requirements.configuration.serialization`
 // {impl}`requirements.authoring.configuration_structure`
 // {impl}`requirements.authoring.policy`
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

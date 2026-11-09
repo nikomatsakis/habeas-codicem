@@ -619,6 +619,7 @@ fn commands_report_invalid_arguments_and_unmatched_selectors() {
 }
 
 // {test}`requirements.cli.status_table_alignment`
+// {test}`requirements.cli.shared_status_rendering`
 #[test]
 fn status_tables_align_each_column_to_its_widest_cell() {
     let temp = fixture();
@@ -662,6 +663,21 @@ fn status_tables_align_each_column_to_its_widest_cell() {
         }
         assert_eq!(table[1].split('|').nth(1).unwrap().trim(), "---");
         assert_eq!(table[1].split('|').nth(2).unwrap().trim(), "---");
+    }
+    // The labels are the evidence-state labels the mdBook index also shows.
+    let output = habeas(temp.path(), &["status", "--all"]);
+    let text = String::from_utf8(output.stdout).unwrap();
+    for (name, state) in [
+        ("ready", "Valid"),
+        ("absent", "Missing"),
+        ("pending", "Determination false"),
+        ("malformed", "Invalid"),
+    ] {
+        let row = text
+            .lines()
+            .find(|line| line.starts_with(&format!("| `requirements.{name}` ")))
+            .unwrap_or_else(|| panic!("missing {name} in:\n{text}"));
+        assert_eq!(row.split('|').nth(2).unwrap().trim(), state, "{text}");
     }
 }
 
