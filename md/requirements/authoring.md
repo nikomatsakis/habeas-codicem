@@ -686,7 +686,14 @@ file MUST be handled as a denial under {cite}`requirements.authoring.read_denial
 The harness MUST expose a `ripgrep` tool with this interface:
 
 ```text
-ripgrep({ pattern: String, path: String = ".", context: Integer = 5 }) -> SearchResult
+ripgrep({ pattern: String, path: String = ".", context: Integer = 5,
+          referencing: Optional<ReferenceScope> }) -> SearchResult
+
+ReferenceScope {
+    selection: String,                     // full name or definition glob
+    roles: Array<Role> = ["impl", "test", "cite"],
+    scope: "node" | "file" = "file",
+}
 
 SearchResult {
     inputs: Array<EvidenceInput>,
@@ -711,6 +718,14 @@ recorded as the innermost outline nodes containing them, under
 the comment belongs to under {cite}`requirements.references.outline_comments`.
 Each result MUST include the selected source text for the model.
 Setting `context` to zero MUST return only matching lines.
+With `referencing`, the tool MUST search only sources, within `path`, that carry
+a reference in one of `roles` to a requirement or example the `selection`
+matches under {cite}`requirements.references.definition_globs`, including
+anchors under {cite}`requirements.references.anchors`: with `scope` `node`, only
+the outline nodes that contain or are named by those references, and with
+`file`, their whole files. A selection matching no requirement or example, or an
+unknown role or scope, MUST return an explanatory tool error. Its model-facing
+description MUST explain `referencing`.
 Search results MUST exclude files disallowed by
 {cite}`requirements.authoring.source_tools`; explicitly requesting an excluded
 path MUST be handled as a denial under {cite}`requirements.authoring.read_denial`.
@@ -727,14 +742,16 @@ return an explanatory tool error.
 The harness MUST expose an `ast_grep` tool with this interface:
 
 ```text
-ast_grep({ language: String, rule: Object, path: String = "." }) -> SearchResult
+ast_grep({ language: String, rule: Object, path: String = ".",
+           referencing: Optional<ReferenceScope> }) -> SearchResult
 ast_grep({ query: String }) -> SearchResult
 ```
 
 The second form MUST run the query a distributed requirement declares, named
 `<full-name>/<query-name>`, exactly as validation runs it, including `paths`,
 `exclude`, and `within`, and MUST return each match's site. In the first form,
-`language` MUST follow the `language` key of a query body under
+`referencing` MUST restrict the search as for
+{cite}`requirements.authoring.text_search`, and `language` MUST follow the `language` key of a query body under
 {cite}`requirements.references.distributed`, and `rule` MUST be a JSON object
 holding that body's `rule`, `utils`, and `constraints` keys. The tool MUST search
 the requested permitted file or directory in process, with the same file walking,
