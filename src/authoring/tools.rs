@@ -3010,6 +3010,46 @@ mod tests {
         }
     }
 
+    // {test}`requirements.authoring.text_search`
+    // {test}`requirements.references.anchors`
+    #[test]
+    fn ripgrep_node_scope_searches_only_the_node_a_selector_anchor_names() {
+        let root = referencing_project();
+        fs::write(
+            root.path().join("md/requirements.md"),
+            ":::{req} ready\nThe project MUST be ready.\n:::\n\n:::{req} anchored\n:impl: src/plain.rs#fn[second]\nAnchored.\n:::\n\n:::{req} stale\n:impl: src/plain.rs#fn[gone]\nStale.\n:::\n",
+        )
+        .unwrap();
+        fs::write(
+            root.path().join("src/plain.rs"),
+            "fn plain() {\n    needle();\n}\n\nfn second() {\n    needle();\n}\n",
+        )
+        .unwrap();
+        let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        let search = |selection: &str, scope: &str| {
+            dispatch(
+                &sources,
+                "ripgrep",
+                &json!({"pattern":"needle","context":5,"referencing":{"selection":selection,"scope":scope}}),
+            )
+            .unwrap()
+        };
+        // Node scope searches only the node the anchor names, and the context
+        // window stops at its boundary rather than reaching `plain`.
+        let node = search("requirements.anchored", "node");
+        assert_eq!(found(&node), ["src/plain.rs#fn[second]"]);
+        // File scope searches the anchored file.
+        assert_eq!(
+            found(&search("requirements.anchored", "file")),
+            ["src/plain.rs#fn[plain]", "src/plain.rs#fn[second]"]
+        );
+        // A selector that no longer resolves names no node to search.
+        assert_eq!(
+            found(&search("requirements.stale", "node")),
+            Vec::<String>::new()
+        );
+    }
+
     // {test}`requirements.authoring.result_pages`
     #[test]
     fn next_page_is_advertised_and_paged_tools_explain_their_pages() {
