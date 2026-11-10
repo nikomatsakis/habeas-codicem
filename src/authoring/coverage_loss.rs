@@ -19,66 +19,15 @@ use super::usage::UsageLog;
 use crate::rust_coverage::EvidenceReads;
 
 /// The coverage-loss review prompt: its system prompt and its subject
-/// message, filled like the approved prompt templates.
+/// message, the two text blocks of the approved requirement.
 // {impl}`requirements.authoring.coverage_loss`
 // {impl}`requirements.authoring.prompt_parts`
-pub(crate) const COVERAGE_LOSS_PROMPT: [&str; 2] = [
-    r#"# Task
-
-Review one source item that earlier assessments read but that nothing covers
-any longer. Your finding for each definition should be the one any careful
-reviewer would reach from the same text and sources.
-
-# Background: Habeas terms
-
-{{habeas_background}}
-
-{{reference_roles}}
-
-# Your task
-
-The mandatory inputs at the end contain the item and the declarations of the
-requirements and examples whose earlier assessments read it. Those assessments
-have been replaced by ones that did not read the item, and it carries no
-reference of its own, so validation reports it uncovered. For each listed
-definition, decide whether the item is a root of the definition's
-implementation or is not needed for it.
-
-1. Read the earlier rationale given for the definition to see what the
-   assessment relied on the item for.
-2. Find the items marked {impl} for the definition with the references tool,
-   and follow them: what they call, the types they use, and the implementations
-   of trait methods they call, and what those reach in turn.
-3. The item is a root if it carries out part of the definition, as the
-   reference roles describe, and no item marked {impl} for the definition
-   reaches it. Otherwise it is not needed for the definition: a marked item
-   reaches it, or it carries out no part of the definition.
-4. In each rationale, name the marked items you followed and say how the item
-   is or is not reached; for an item that is not needed, say which of the two
-   reasons applies.
-
-# How to judge
-
-{{judgment_rules}}
-
-# Submitting
-
-Call submit_coverage_review exactly once with findings: one entry for each
-listed definition, with definition (its full name), finding ("root" or
-"not needed"), and a nonempty rationale. That tool call is your final answer."#,
-    r#"# Subject
-
-Item under review: {{item_file}} {{item_selector}}
-Definitions to decide: {{definitions}}
-
-# Earlier rationales
-
-{{rationales}}
-
-# Mandatory inputs
-
-{{mandatory_inputs}}"#,
-];
+fn coverage_loss_prompt() -> [&'static str; 2] {
+    [
+        super::approved_text("coverage_loss", 0),
+        super::approved_text("coverage_loss", 1),
+    ]
+}
 
 /// A definition whose replaced record read a lost item, and that record's
 /// rationale.
@@ -321,8 +270,8 @@ pub(super) fn prompt(lost: &LostItem, mandatory: &str) -> io::Result<super::Prom
         ("mandatory_inputs", mandatory),
     ]);
     Ok(super::Prompt {
-        system: super::fill(COVERAGE_LOSS_PROMPT[0], &values),
-        subject: super::fill(COVERAGE_LOSS_PROMPT[1], &values),
+        system: super::fill(coverage_loss_prompt()[0], &values),
+        subject: super::fill(coverage_loss_prompt()[1], &values),
     })
 }
 

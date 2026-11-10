@@ -107,11 +107,12 @@ same subject that disagree are findings against that goal. They MUST direct agen
 rationales and decide whether one assessment found a real gap or the requirement
 text admits more than one reading, then fix the source or tests, or tighten the
 requirement text, rather than re-running an assessment to obtain a different
-determination. Substantive requirement changes MUST be reviewed with the user
-under {cite}`requirements.cli.requirements_review_skill`. When agents reword a
-requirement for precision, the skills MUST direct them to record the old text,
-new text, reason, and the rationale that prompted the change in the project's
-audit log, such as `audits/requirement-rewordings/`.
+determination. Every change to agreed requirement text, including a rewording for precision,
+MUST be reviewed with the user under
+{cite}`requirements.cli.requirements_review_skill` before it is made, and the
+skills MUST then direct agents to record the old text, new text, reason, and the
+rationale that prompted the change in the project's audit log, such as
+`audits/requirement-rewordings/`.
 :::
 :::{req} distributed_guidance
 :impl: assets/skills/habeas-requirements/SKILL.md

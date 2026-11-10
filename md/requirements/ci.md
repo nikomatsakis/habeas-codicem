@@ -27,10 +27,10 @@ the code marked with `{impl}` implements every stated obligation completely and
 exactly as stated, and whether its
 tests cover the interesting cases in the design space, including relevant
 boundaries and failure cases. The reviewer MUST also assess whether the
-implementation is marked completely: code that implements part of the
-requirement under {cite}`requirements.references.roles` without an `{impl}`
-reference to it, including code that refers to it only with `{cite}`, MUST be
-treated as a gap. Behavior in the `{impl}` code that the requirement does not
+implementation is reachable: code that carries out part of the requirement
+under {cite}`requirements.references.roles` and that no item marked `{impl}` for
+it reaches under {cite}`requirements.references.procedure`, including code that
+refers to it only with `{cite}`, MUST be treated as a gap. Behavior in the `{impl}` code that the requirement does not
 specify MUST be accounted for by another definition that the same code
 implements; otherwise it MUST be treated as a gap. When another requirement implements part of the subject, the
 reviewer MUST assess whether its text carries out that part, and MUST NOT
@@ -45,9 +45,9 @@ check; examples and sample output in the text illustrate the obligations its
 prose states and bind their exact form only where the text says so. When the subject's
 text admits two readings its wording supports equally and they lead to different conclusions, such as whether code conforms or which role a citation calls for, the ambiguity MUST be treated as a gap and the rationale MUST name
 the readings. A test that verifies the subject without a `{test}` reference to it
-MUST be treated as a marking gap, as for implementing code. A gap MUST be
+MUST be treated as a marking gap. A gap MUST be
 reported only for a specific obligation and a specific source item the reviewer
-has read; the reviewer MUST look for unmarked implementations among the sources
+has read; the reviewer MUST look for unreached implementations among the sources
 that reference the subject and by targeted search for what its obligations
 produce, not by surveying unrelated code. Style, performance, logging, how
 helpers are factored, robustness the text does not require, and silently ignoring input the text does not mention MUST NOT be treated as gaps, and the reviewer MUST NOT report bugs or issues outside the
