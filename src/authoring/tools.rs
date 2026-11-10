@@ -1019,6 +1019,42 @@ mod tests {
     use crate::authoring::access::tests::git;
     use crate::authoring::inputs::tests::{project, role};
 
+    // {test}`requirements.authoring.github_reads`
+    #[test]
+    fn a_successful_github_read_records_no_evidence_inputs() {
+        use std::io::{BufRead, BufReader, Write};
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(&mut stream);
+            let mut line = String::new();
+            while reader.read_line(&mut line).unwrap() > 0 && line != "\r\n" {
+                line.clear();
+            }
+            let body =
+                json!({"state":"open","title":"Queue capacity","body":"Details."}).to_string();
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+        });
+        let root = project();
+        let mut sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        sources.github = crate::github::GithubIssues::with_api(endpoint, None, None);
+        let before = sources.recorded_inputs().to_vec();
+        let delivery = dispatch(&sources, "github", &json!({"issue": "example/queue#7"})).unwrap();
+        server.join().unwrap();
+        assert_eq!(delivery.result["reference"], "example/queue#7");
+        assert_eq!(delivery.result["state"], "open");
+        assert_eq!(delivery.result["body"], "Details.");
+        assert!(delivery.inputs.is_empty());
+        sources.record_inputs(&delivery.inputs);
+        assert_eq!(sources.recorded_inputs(), before.as_slice());
+    }
+
     // {test}`requirements.authoring.additional_read`
     // {test}`requirements.authoring.github_reads`
     #[test]
