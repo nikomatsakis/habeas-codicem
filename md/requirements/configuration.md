@@ -165,6 +165,7 @@ allow = ["generated"]
 disallow = ["generated/private"]
 ```
 
+Replace `generated` and `generated/private` with your own paths.
 `generated/private` is excluded even though its parent is allowed. An allow is an
 exception to the defaults, not an exclusive list of every readable path.
 Edit either array to change the policy, or delete the `[evidence]` table to

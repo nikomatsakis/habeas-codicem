@@ -1476,6 +1476,8 @@ fn documented_configuration_examples_identify_their_placeholders() {
         ("\"us-east-1\"", "us-east-1"),
         ("//workstation:", "workstation"),
         ("/absolute/path/to/project", "/absolute/path/to/project"),
+        ("\"generated\"", "generated"),
+        ("\"generated/private\"", "generated/private"),
     ];
     let mut checked = 0;
     for document in [

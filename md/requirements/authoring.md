@@ -1413,6 +1413,7 @@ allow = ["generated"]
 disallow = ["generated/private"]
 ```
 
+Replace `generated` and `generated/private` with your own paths.
 Workspace files can also contain `[authoring.configs.<name>]` tables using the
 same backend structures shown below. Those records override same-named user
 records as a whole. A user's explicit project selection takes precedence over a
