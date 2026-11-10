@@ -20,6 +20,7 @@ use crate::rust_coverage::EvidenceReads;
 
 /// The coverage-loss review prompt: its system prompt and its subject
 /// message, the two text blocks of the approved requirement.
+// {cite}`habeas:util`
 fn coverage_loss_prompt() -> [&'static str; 2] {
     [
         super::approved_text("coverage_loss", 0),
@@ -29,6 +30,7 @@ fn coverage_loss_prompt() -> [&'static str; 2] {
 
 /// A definition whose replaced record read a lost item, and that record's
 /// rationale.
+// {cite}`habeas:util`
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Reader {
     pub(crate) definition: String,
@@ -37,6 +39,7 @@ pub(crate) struct Reader {
 
 /// An item that a replaced record's inputs covered and that is no longer
 /// covered, with the definitions whose replaced records read it.
+// {cite}`habeas:util`
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct LostItem {
     pub(crate) file: String,
@@ -46,11 +49,13 @@ pub(crate) struct LostItem {
 
 impl LostItem {
     /// The review's subject label, `coverage-loss:<file>#<selector>`.
+    // {cite}`habeas:util`
     pub(crate) fn label(&self) -> String {
         format!("coverage-loss:{}#{}", self.file, self.item)
     }
 
     /// The selector as displayed, `<root>` for the root node.
+    // {cite}`habeas:util`
     fn selector_label(&self) -> &str {
         if self.item.is_empty() {
             "<root>"
@@ -63,6 +68,7 @@ impl LostItem {
 /// A record about to be replaced: the definition it assessed (a site
 /// review's requirement; none for a citation review), its rationale, and the
 /// outline inputs it recorded.
+// {cite}`habeas:util`
 pub(crate) struct ReplacedRecord {
     definition: Option<String>,
     rationale: String,
@@ -160,6 +166,7 @@ pub(crate) fn lost_items(root: &Path, replaced: &[ReplacedRecord]) -> io::Result
 }
 
 /// What a coverage-loss review found an item to be for one definition.
+// {cite}`habeas:util`
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CoverageFinding {
     /// A root of the definition's implementation, which needs an `{impl}`.
@@ -170,6 +177,7 @@ pub enum CoverageFinding {
 
 impl CoverageFinding {
     /// The finding as submitted and reported: `root` or `not needed`.
+    // {cite}`habeas:util`
     pub fn label(self) -> &'static str {
         match self {
             Self::Root => "root",
@@ -179,6 +187,7 @@ impl CoverageFinding {
 }
 
 /// One definition's finding and its rationale.
+// {cite}`habeas:util`
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DefinitionFinding {
     pub definition: String,
@@ -187,6 +196,7 @@ pub struct DefinitionFinding {
 }
 
 /// A completed coverage-loss review of one item.
+// {cite}`habeas:util`
 #[derive(Clone, Debug)]
 pub struct CoverageLossReview {
     pub file: String,
@@ -200,6 +210,7 @@ pub struct CoverageLossReview {
 impl CoverageLossReview {
     /// The report of the review: a line naming the item, then each
     /// definition's finding and rationale.
+    // {cite}`habeas:util`
     pub fn report(&self) -> String {
         let mut report = format!(
             "Coverage-loss review of {} {}: no longer covered",
@@ -218,6 +229,7 @@ impl CoverageLossReview {
 }
 
 /// Text on one line, with its whitespace collapsed.
+// {cite}`habeas:util`
 fn one_line(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
@@ -259,6 +271,7 @@ pub(super) fn prompt(lost: &LostItem, mandatory: &str) -> io::Result<super::Prom
 }
 
 /// The `submit_coverage_review` tool.
+// {cite}`habeas:util`
 pub(super) fn tool_definition() -> Value {
     json!({"name": "submit_coverage_review", "description": "Submit your coverage-loss review exactly once: one finding for each listed definition. No other message supplies the result.",
         "parameters": {"type":"object", "additionalProperties": false, "required":["findings"], "properties": {
@@ -471,6 +484,7 @@ fn store(
 /// The latest kept review of an item as `habeas status` shows it beside the
 /// uncovered item, or `None` when there is none or the state root cannot be
 /// determined.
+// {cite}`habeas:util`
 pub(crate) fn status_lines(root: &Path, file: &str, item: &str) -> Option<String> {
     let state = crate::config::state_root().ok()?;
     let text = fs::read_to_string(result_path(&state, root, file, item)).ok()?;
@@ -530,6 +544,7 @@ pub(super) async fn review_losses(
 
 /// The coverage-loss reviews an authoring run completed and those that
 /// failed, with their labels and errors.
+// {cite}`habeas:util`
 #[derive(Clone, Debug, Default)]
 pub struct CoverageLossOutcome {
     pub reviews: Vec<CoverageLossReview>,

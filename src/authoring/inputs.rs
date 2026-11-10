@@ -15,6 +15,7 @@ use crate::inputs::{InputSelector, OutlineCache, ParsedSource, recorded_input};
 use crate::sites::{SiteFixme, SiteItem};
 use crate::{DefinitionKind, ReferenceKind};
 
+// {cite}`habeas:util`
 pub(crate) enum AssessmentKind {
     /// A requirement or example, and whether it is distributed.
     Definition(DefinitionKind, bool),

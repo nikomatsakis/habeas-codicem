@@ -1380,6 +1380,7 @@ mod tests {
         }
     }
 
+    // {cite}`habeas:util`
     struct ThrottledProvider {
         failures: usize,
         status: u16,
@@ -1388,6 +1389,7 @@ mod tests {
     }
 
     impl CompletionProvider for ThrottledProvider {
+        // {cite}`habeas:util`
         async fn complete(&self, request: CompletionRequest) -> io::Result<CompletionResponse> {
             self.requests
                 .borrow_mut()
@@ -1404,12 +1406,14 @@ mod tests {
     }
 
     /// Reads one source on the first turn, then submits.
+    // {cite}`habeas:util`
     struct ReadingProvider {
         read: Value,
         requests: RefCell<Vec<Value>>,
     }
 
     impl CompletionProvider for ReadingProvider {
+        // {cite}`habeas:util`
         async fn complete(&self, request: CompletionRequest) -> io::Result<CompletionResponse> {
             self.requests
                 .borrow_mut()
@@ -1490,11 +1494,13 @@ mod tests {
 
     /// Searches with a paged result, asks for its second page with the
     /// token the first carried, and then submits.
+    // {cite}`habeas:util`
     struct PagingProvider {
         requests: RefCell<Vec<String>>,
     }
 
     impl CompletionProvider for PagingProvider {
+        // {cite}`habeas:util`
         async fn complete(&self, request: CompletionRequest) -> io::Result<CompletionResponse> {
             let last = serde_json::to_string(request.chat_history.last().unwrap()).unwrap();
             self.requests.borrow_mut().push(last.clone());
@@ -1709,6 +1715,7 @@ mod tests {
         assert!(!prompt.contains("{{"), "{prompt}");
     }
 
+    // {cite}`habeas:util`
     fn retry_fixture() -> (
         tempfile::TempDir,
         tempfile::TempDir,
@@ -1805,11 +1812,13 @@ mod tests {
         assert_eq!(log["requests"][0]["outcome"], "failed");
     }
 
+    // {cite}`habeas:util`
     struct HangingProvider {
         requests: RefCell<usize>,
     }
 
     impl CompletionProvider for HangingProvider {
+        // {cite}`habeas:util`
         async fn complete(&self, request: CompletionRequest) -> io::Result<CompletionResponse> {
             *self.requests.borrow_mut() += 1;
             if *self.requests.borrow() == 1 {
@@ -1839,11 +1848,13 @@ mod tests {
     }
     /// Fails with throttling before both requests, answering the first
     /// recovered request with a source read and the second with a judgment.
+    // {cite}`habeas:util`
     struct ThrottledToolProvider {
         requests: RefCell<Vec<(tokio::time::Instant, Value)>>,
     }
 
     impl CompletionProvider for ThrottledToolProvider {
+        // {cite}`habeas:util`
         async fn complete(&self, request: CompletionRequest) -> io::Result<CompletionResponse> {
             let attempt = self.requests.borrow().len();
             self.requests.borrow_mut().push((
@@ -2050,12 +2061,14 @@ mod tests {
 
     /// Returns one scripted response per request; each response is a list of
     /// tool calls.
+    // {cite}`habeas:util`
     struct ScriptedProvider {
         turns: Vec<Vec<(&'static str, Value)>>,
         requests: RefCell<usize>,
     }
 
     impl CompletionProvider for ScriptedProvider {
+        // {cite}`habeas:util`
         async fn complete(&self, _request: CompletionRequest) -> io::Result<CompletionResponse> {
             let turn = *self.requests.borrow();
             *self.requests.borrow_mut() += 1;
@@ -2181,12 +2194,14 @@ mod tests {
 
     /// Answers each request with the next scripted tool call, recording the
     /// requests it receives.
+    // {cite}`habeas:util`
     struct RecordingProvider {
         turns: Vec<(&'static str, Value)>,
         requests: RefCell<Vec<Value>>,
     }
 
     impl RecordingProvider {
+        // {cite}`habeas:util`
         fn new(turns: Vec<(&'static str, Value)>) -> Self {
             Self {
                 turns,
@@ -2195,6 +2210,7 @@ mod tests {
         }
 
         /// The prompt and advertised tool names of each request.
+        // {cite}`habeas:util`
         fn prompts(&self) -> Vec<(String, Vec<String>)> {
             self.requests
                 .borrow()
@@ -2214,6 +2230,7 @@ mod tests {
     }
 
     impl CompletionProvider for RecordingProvider {
+        // {cite}`habeas:util`
         async fn complete(&self, request: CompletionRequest) -> io::Result<CompletionResponse> {
             let turn = self.requests.borrow().len();
             self.requests
@@ -2233,6 +2250,7 @@ mod tests {
         }
     }
 
+    // {cite}`habeas:util`
     fn judgment(determination: Value, rationale: &str) -> (&'static str, Value) {
         (
             "submit_judgment",
@@ -2240,6 +2258,7 @@ mod tests {
         )
     }
 
+    // {cite}`habeas:util`
     fn verdict(real: bool, acknowledgments: &[&str], rationale: &str) -> (&'static str, Value) {
         (
             "submit_verification",
@@ -2250,6 +2269,7 @@ mod tests {
 
     /// Runs one subject's assessment with `turns`, returning the outcome, the
     /// provider, and the subjects of the usage records written.
+    // {cite}`habeas:util`
     async fn confirmed(
         turns: Vec<(&'static str, Value)>,
         confirm: bool,
@@ -2905,6 +2925,7 @@ no_match:
 
     /// A project whose `requirements.rule` cites `requirements.other` and
     /// `habeas:none`, with a root-node site of `requirements.attributes`.
+    // {cite}`habeas:util`
     pub(crate) fn citing_site_project() -> tempfile::TempDir {
         let cites = concat!("{", "cite}`requirements.other` and {", "cite}`habeas:none`");
         let rule = crate::sites::tests::RULE.replace(

@@ -17,6 +17,7 @@ const REQUIREMENT: &str = concat!(
 const MODEL: &str = "fixture:q4_K_M";
 const AUTH: &str = "SECRET_AUTH_VALUE";
 
+// {cite}`habeas:util`
 struct Request {
     headers: String,
     body: Value,
@@ -25,6 +26,7 @@ struct Request {
 /// A request's system prompt and subject message, as Ollama's leading
 /// `system` and `user` messages or Bedrock's `system` blocks and first
 /// message.
+// {cite}`habeas:util`
 fn opening(body: &Value) -> (String, String) {
     let text = |value: &Value| value.as_str().unwrap().to_owned();
     if body.get("system").is_some() {
@@ -44,17 +46,20 @@ fn opening(body: &Value) -> (String, String) {
 
 /// A request's system prompt and subject message joined, for checks that
 /// text reaches the model in either.
+// {cite}`habeas:util`
 fn prompt_text(body: &Value) -> String {
     let (system, subject) = opening(body);
     format!("{system}\n\n{subject}")
 }
 
+// {cite}`habeas:util`
 struct Server {
     endpoint: String,
     thread: JoinHandle<Vec<Request>>,
 }
 
 impl Server {
+    // {cite}`habeas:util`
     fn start(responses: Vec<Value>) -> Self {
         Self::start_with(responses, || {})
     }
@@ -117,6 +122,7 @@ impl Server {
         Self { endpoint, thread }
     }
 
+    // {cite}`habeas:util`
     fn finish(self) -> Vec<Request> {
         self.thread.join().unwrap()
     }
@@ -223,6 +229,7 @@ impl Fixture {
         command
     }
 
+    // {cite}`habeas:util`
     fn usage(&self) -> Value {
         let directory = if cfg!(windows) {
             self.state.join("habeas/state/authoring/usage")
@@ -1716,6 +1723,7 @@ fn bedrock_cli_uses_selected_profile_region_and_converse_tools() {
 
 /// Runs one Bedrock assessment that reads a file and then submits, against
 /// model `model`, returning the two request bodies and the usage record.
+// {cite}`habeas:util`
 fn bedrock_run(model: &str) -> (Vec<Value>, Value) {
     let server = Server::start(vec![
         json!({
@@ -1783,6 +1791,7 @@ fn bedrock_run(model: &str) -> (Vec<Value>, Value) {
 }
 
 /// Removes every `cachePoint` block from a Converse request body.
+// {cite}`habeas:util`
 fn without_cache_points(body: &Value) -> Value {
     let mut body = body.clone();
     let strip = |blocks: &mut Value| {
@@ -1879,6 +1888,7 @@ fn failed_evidence_write_keeps_the_accepted_judgment_in_usage() {
 }
 
 /// Answers one request with an HTTP error status and returns its JSON body.
+// {cite}`habeas:util`
 fn reject_once(status: &'static str, body: &'static str) -> (String, JoinHandle<Value>) {
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let endpoint = format!("http://{}", listener.local_addr().unwrap());
@@ -2083,6 +2093,7 @@ fn both_adapters_send_the_same_prompt_and_tools_with_default_connections() {
 
 /// Asserts that authoring failed before or while recording usage history and
 /// did not report a recorded success.
+// {cite}`habeas:util`
 fn assert_unrecorded_failure(output: &Output, expected: &str) {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -2414,6 +2425,7 @@ const SKILLS: [&str; 3] = [
 
 /// A bundled skill together with the reference files it links to, with line
 /// wrapping collapsed so phrases can be matched across lines.
+// {cite}`habeas:util`
 fn bundled_skill(name: &str) -> String {
     let files: &[&str] = match name {
         "habeas-requirements" => &[
@@ -2439,6 +2451,7 @@ fn bundled_skill(name: &str) -> String {
         .join(" ")
 }
 
+// {cite}`habeas:util`
 fn assert_phrases(name: &str, phrases: &[&str]) {
     let text = bundled_skill(name);
     for phrase in phrases {
@@ -2447,6 +2460,7 @@ fn assert_phrases(name: &str, phrases: &[&str]) {
 }
 
 /// Asserts that the skill contains each phrase, each after the previous one.
+// {cite}`habeas:util`
 fn assert_in_order(name: &str, phrases: &[&str]) {
     let text = bundled_skill(name);
     let mut from = 0;

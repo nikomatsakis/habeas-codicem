@@ -9,11 +9,13 @@ use serde_json::{Value, json};
 use tempfile::TempDir;
 
 /// A role written so this file's own source does not contain it.
+// {cite}`habeas:util`
 fn role(kind: &str) -> String {
     format!("{{{kind}}}")
 }
 
 /// A project with one requirement, `rules.ready`, and empty sources.
+// {cite}`habeas:util`
 fn project() -> TempDir {
     let temp = TempDir::new().unwrap();
     let root = temp.path();
@@ -26,10 +28,12 @@ fn project() -> TempDir {
     temp
 }
 
+// {cite}`habeas:util`
 fn errors(root: &Path) -> Vec<String> {
     habeas::validate_repository(root).unwrap().errors
 }
 
+// {cite}`habeas:util`
 fn has(errors: &[String], needle: &str) -> bool {
     errors.iter().any(|error| error.contains(needle))
 }
@@ -248,6 +252,7 @@ fn project_definitions_cannot_use_reserved_built_in_names() {
 }
 
 /// The digest after writing `source` to `src/lib.rs`.
+// {cite}`habeas:util`
 fn digest(root: &Path, source: &str) -> String {
     fs::write(root.join("src/lib.rs"), source).unwrap();
     habeas::reference_set_digest_for(root, "rules.ready").unwrap()
@@ -433,6 +438,7 @@ fn fixme_edges_and_their_bodies_are_part_of_the_reference_set() {
 }
 
 /// A recorded citation review for `fn[helper]` in `src/lib.rs`.
+// {cite}`habeas:util`
 fn review(root: &Path, citations: Value, determination: Value) -> Value {
     json!({
         "file": "src/lib.rs",
@@ -671,6 +677,7 @@ fn status_all_lists_habeas_none_citations_with_their_justification() {
 }
 
 /// Runs `git` in `root`, failing the test if it fails.
+// {cite}`habeas:util`
 fn git(root: &Path, args: &[&str]) {
     let output = std::process::Command::new("git")
         .current_dir(root)

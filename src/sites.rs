@@ -786,6 +786,7 @@ no_match:
 
     /// A project outside Git whose book declares `chapter` and whose
     /// `src/lib.rs` is `source`.
+    // {cite}`habeas:util`
     pub(crate) fn project(chapter: &str, source: &str) -> tempfile::TempDir {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path();
@@ -799,6 +800,7 @@ no_match:
     }
 
     /// Validation errors and the sites of every distributed requirement.
+    // {cite}`habeas:util`
     pub(crate) fn inspect(root: &Path) -> (Vec<String>, Sites) {
         let inspection = crate::evidence::inspect_repository(root).unwrap();
         (inspection.report.errors, inspection.sites)
@@ -1157,6 +1159,7 @@ no_match: ["struct S;"]
 
     /// The inputs a current review of a site records: the site's outline
     /// node and the requirement's declaration.
+    // {cite}`habeas:util`
     pub(crate) fn site_inputs(root: &Path, item: &str) -> Vec<Value> {
         let definitions = crate::evidence::load_definitions(root).unwrap();
         let outlines = OutlineCache::default();
@@ -1172,6 +1175,7 @@ no_match: ["struct S;"]
 
     /// Writes a site review of `requirements.rule` for an item of
     /// `src/lib.rs`.
+    // {cite}`habeas:util`
     pub(crate) fn write_review(root: &Path, item: &str, fields: Value) {
         let mut record = json!({
             "requirement": "requirements.rule",
@@ -1193,6 +1197,7 @@ no_match: ["struct S;"]
     }
 
     /// The validation errors of one site review.
+    // {cite}`habeas:util`
     fn review_errors(errors: &[String], item: &str) -> Vec<String> {
         let prefix = format!("{}:", review_path("requirements.rule", "src/lib.rs", item));
         errors

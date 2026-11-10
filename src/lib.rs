@@ -916,6 +916,7 @@ mod tests {
     use mdbook_preprocessor::book::{Book, BookItem, Chapter};
     use std::path::Path;
 
+    // {cite}`habeas:util`
     fn book_root() -> tempfile::TempDir {
         let root = tempfile::TempDir::new().unwrap();
         std::fs::create_dir(root.path().join("md")).unwrap();

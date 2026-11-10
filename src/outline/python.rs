@@ -5,6 +5,7 @@ use tree_sitter::Node;
 use super::profile::{KindRule, NameRule, Profile, kind_is_comment, never};
 
 /// Decorators attach to the decorated definition.
+// {cite}`habeas:util`
 fn attaches(node: Node<'_>, _source: &str) -> bool {
     node.kind() == "decorator"
 }

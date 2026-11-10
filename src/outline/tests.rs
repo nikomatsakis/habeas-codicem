@@ -214,6 +214,7 @@ fn hashes_skip_whitespace_and_plain_comments_but_not_doc_comments() {
 }
 
 /// The structural hash of `fn[run]` in a Rust source.
+// {cite}`habeas:util`
 fn run_hash(source: &str) -> String {
     let outline = outline("src/lib.rs", source);
     outline.nodes[outline.resolve("fn[run]").unwrap()]
@@ -1020,6 +1021,7 @@ fn workflow_job_marks_belong_to_the_job_that_follows() {
 }
 
 /// The structural hash of the node at `selector` in a source at `path`.
+// {cite}`habeas:util`
 fn node_hash(path: &str, source: &str, selector: &str) -> String {
     let outline = outline(path, source);
     let index = outline

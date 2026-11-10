@@ -6,6 +6,7 @@ use crate::ReferenceKind;
 
 /// A built-in definition: fixed text, the roles that may reference it, and
 /// whether a reference must be fenced with a nonempty justification.
+// {cite}`habeas:util`
 pub(crate) struct Builtin {
     pub(crate) name: &'static str,
     pub(crate) roles: &'static [ReferenceKind],
@@ -28,11 +29,13 @@ pub(crate) const BUILTINS: &[Builtin] = &[
 ];
 
 /// Whether a name has the reserved built-in form `habeas:<name>`.
+// {cite}`habeas:util`
 pub(crate) fn is_builtin_name(name: &str) -> bool {
     name.strip_prefix("habeas:").is_some_and(crate::valid_name)
 }
 
 /// The built-in definition with a name, if any.
+// {cite}`habeas:util`
 pub(crate) fn builtin(name: &str) -> Option<&'static Builtin> {
     BUILTINS.iter().find(|builtin| builtin.name == name)
 }
@@ -56,6 +59,7 @@ impl Builtin {
     /// Checks a reference to this built-in, returning the problem when its
     /// role or form is not permitted. `fenced` is the reference's body when
     /// written in fenced form.
+    // {cite}`habeas:util`
     pub(crate) fn check(&self, kind: ReferenceKind, fenced: Option<&str>) -> Result<(), String> {
         if !self.roles.contains(&kind) {
             return Err(format!(
@@ -91,6 +95,7 @@ impl Builtin {
 
 /// The first block quote after `marker` in a chapter, without its `> `
 /// prefixes, joined as one paragraph.
+// {cite}`habeas:util`
 fn quoted_text(chapter: &str, marker: &str) -> String {
     let start = chapter.find(marker).expect("approved built-in text");
     chapter[start..]

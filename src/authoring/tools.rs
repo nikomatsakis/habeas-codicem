@@ -971,12 +971,14 @@ fn check_keys(args: &Map<String, Value>, allowed: &[&str]) -> io::Result<()> {
     Ok(())
 }
 
+// {cite}`habeas:util`
 fn string<'a>(args: &'a Map<String, Value>, key: &str) -> io::Result<&'a str> {
     args.get(key)
         .and_then(Value::as_str)
         .ok_or_else(|| io::Error::other(format!("{key} must be a string")))
 }
 
+// {cite}`habeas:util`
 fn integer(args: &Map<String, Value>, key: &str) -> io::Result<usize> {
     args.get(key)
         .and_then(Value::as_u64)
@@ -2996,6 +2998,7 @@ mod tests {
     }
 
     /// A search result's entries; searches record no inputs.
+    // {cite}`habeas:util`
     fn matched(delivery: &ToolDelivery) -> &Vec<Value> {
         assert!(delivery.inputs.is_empty(), "searches record no inputs");
         delivery.result["matches"]
@@ -3004,6 +3007,7 @@ mod tests {
     }
 
     /// The items of a search result's entries, as `file#item`.
+    // {cite}`habeas:util`
     fn found(delivery: &ToolDelivery) -> Vec<String> {
         assert!(delivery.inputs.is_empty(), "searches record no inputs");
         delivery.result["matches"]
@@ -3022,6 +3026,7 @@ mod tests {
 
     /// A project whose sources reference `requirements.ready` and
     /// `requirements.other` in several roles, each source calling `needle()`.
+    // {cite}`habeas:util`
     fn referencing_project() -> tempfile::TempDir {
         let root = project();
         fs::write(

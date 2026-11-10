@@ -105,6 +105,7 @@ pub(crate) fn encoded_selector(item: &str) -> String {
 
 /// The single-subject authoring name of a citation review,
 /// `citations:<file>#<selector>`.
+// {cite}`habeas:util`
 pub(crate) fn subject_label(file: &str, item: &str) -> String {
     format!("citations:{file}#{item}")
 }
@@ -172,6 +173,7 @@ pub(crate) fn citation_items(
 
 /// Whether two citation lists are the same, comparing commentary by its
 /// words so reflowing it does not change the review.
+// {cite}`habeas:util`
 fn same_citations(recorded: &[Citation], current: &[Citation]) -> bool {
     let key = |citations: &[Citation]| {
         let mut keys = citations
@@ -439,6 +441,7 @@ fn parse_citation(value: &Value, label: &str, errors: &mut Vec<String>) -> Optio
 }
 
 /// Whether a path lies in the citation review directory.
+// {cite}`habeas:util`
 pub(crate) fn is_review_path(evidence_root: &Path, path: &Path) -> bool {
     path.strip_prefix(evidence_root)
         .ok()
@@ -448,6 +451,7 @@ pub(crate) fn is_review_path(evidence_root: &Path, path: &Path) -> bool {
 
 /// The `habeas:none` citations outside the book, as file, selector, line,
 /// and justification.
+// {cite}`habeas:util`
 pub(crate) fn none_citations(
     root: &Path,
     definitions: &BTreeMap<String, Declaration>,

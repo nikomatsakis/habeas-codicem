@@ -468,6 +468,7 @@ mod tests {
         }
     }
 
+    // {cite}`habeas:util`
     fn definitions() -> BTreeMap<String, Declaration> {
         BTreeMap::from([
             (

@@ -701,6 +701,7 @@ pub(crate) fn resolve_evidence_file(root: &Path, file: &str) -> io::Result<PathB
 pub(crate) mod tests {
     use super::*;
 
+    // {cite}`habeas:util`
     pub(crate) fn git(root: &Path, args: &[&str]) {
         let output = Command::new("git")
             .current_dir(root)

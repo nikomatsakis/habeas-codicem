@@ -21,6 +21,7 @@ struct Requests {
     timeline: Vec<(String, Instant, Option<Instant>)>,
 }
 
+// {cite}`habeas:util`
 #[derive(Clone, Copy)]
 enum Behavior {
     Judgments {
@@ -40,6 +41,7 @@ enum Behavior {
     ClosedIssueIsFalse,
 }
 
+// {cite}`habeas:util`
 struct Server {
     endpoint: String,
     requests: Arc<(Mutex<Requests>, Condvar)>,
@@ -48,10 +50,12 @@ struct Server {
 }
 
 impl Server {
+    // {cite}`habeas:util`
     fn start(require_overlap: bool, failing_subject: Option<&'static str>) -> Self {
         Self::start_with(require_overlap, Behavior::Judgments { failing_subject })
     }
 
+    // {cite}`habeas:util`
     fn start_with(require_overlap: bool, behavior: Behavior) -> Self {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         listener.set_nonblocking(true).unwrap();
@@ -89,6 +93,7 @@ impl Server {
         }
     }
 
+    // {cite}`habeas:util`
     fn subjects(&self) -> Vec<String> {
         self.requests.0.lock().unwrap().subjects.clone()
     }
@@ -107,6 +112,7 @@ impl Drop for Server {
     }
 }
 
+// {cite}`habeas:util`
 fn serve(
     mut stream: TcpStream,
     requests: Arc<(Mutex<Requests>, Condvar)>,
@@ -300,6 +306,7 @@ fn serve(
     state.active -= 1;
 }
 
+// {cite}`habeas:util`
 struct Fixture {
     _temp: TempDir,
     project: PathBuf,
@@ -310,6 +317,7 @@ struct Fixture {
 }
 
 impl Fixture {
+    // {cite}`habeas:util`
     fn new(endpoint: &str, concurrency: Option<usize>) -> Self {
         let temp = tempfile::tempdir().unwrap();
         let project = temp.path().join("project");
@@ -353,10 +361,12 @@ impl Fixture {
         }
     }
 
+    // {cite}`habeas:util`
     fn run(&self, args: &[&str]) -> Output {
         self.command().args(args).output().unwrap()
     }
 
+    // {cite}`habeas:util`
     fn command(&self) -> Command {
         let mut command = Command::new(env!("CARGO_BIN_EXE_habeas"));
         command
@@ -462,6 +472,7 @@ raise SystemExit(process.returncode if process.returncode >= 0 else 128 - proces
         .unwrap()
     }
 
+    // {cite}`habeas:util`
     fn usage(&self) -> Vec<Value> {
         let path = self.state.join(if cfg!(windows) {
             "habeas/state/authoring/usage"
@@ -1413,6 +1424,7 @@ fn unreadable_reference_sources_fail_the_batch_before_inference() {
 
 /// Replays terminal output onto a screen, handling the carriage returns,
 /// line clears, and cursor movement that progress displays use.
+// {cite}`habeas:util`
 #[cfg(unix)]
 fn final_screen(output: &[u8]) -> String {
     let text = String::from_utf8_lossy(output);
@@ -1949,6 +1961,7 @@ impl FakeGithub {
         }
     }
 
+    // {cite}`habeas:util`
     fn requests(&self) -> usize {
         *self.requests.lock().unwrap()
     }

@@ -5,6 +5,7 @@ use habeas::validate_repository;
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
+// {cite}`habeas:util`
 fn fixture() -> TempDir {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("project");
@@ -52,6 +53,7 @@ fn without_citation_reviews(errors: Vec<String>) -> Vec<String> {
 }
 
 /// The recorded outline input for `item` in `file`.
+// {cite}`habeas:util`
 fn outline(root: &Path, file: &str, item: &str) -> Value {
     habeas::outline_input(root, file, item).unwrap()
 }

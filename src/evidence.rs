@@ -1258,6 +1258,7 @@ pub fn reference_set_digest_for(root: &Path, name: &str) -> io::Result<String> {
 
 /// The sites of one definition, keyed as in an inspection, so a `{fixme}`
 /// inside one of them can be told apart; empty unless it is distributed.
+// {cite}`habeas:util`
 pub(crate) fn definition_sites(
     root: &Path,
     name: &str,
@@ -1892,6 +1893,7 @@ pub(crate) mod tests {
     /// Records the current reference-set digest in every evidence record for
     /// a defined requirement or example that has none, so fixtures that
     /// write records by hand need not compute it.
+    // {cite}`habeas:util`
     pub(crate) fn stamp_reference_sets(root: &Path) {
         let Ok(entries) = fs::read_dir(root.join("evidence")) else {
             return;
@@ -1931,10 +1933,12 @@ pub(crate) mod tests {
     }
 
     /// The recorded outline input for `item` in `file`.
+    // {cite}`habeas:util`
     fn outline(root: &std::path::Path, file: &str, item: &str) -> Value {
         crate::inputs::outline_input(root, file, item).unwrap()
     }
 
+    // {cite}`habeas:util`
     fn fixture() -> TempDir {
         let temp = TempDir::new().unwrap();
         fs::create_dir_all(temp.path().join("md/reqs/foo")).unwrap();
