@@ -1,8 +1,8 @@
 {
   "requirement": "Every source text the harness supplies to a model, including mandatory inputs,\n`habeas` reads, and `ripgrep` results, and every source text Habeas displays in\nthe book or `habeas info`, MUST be redacted:\n\n1. In a workspace `habeas.toml` or user configuration file, the value of every\n   explicit credential field defined by {cite}`requirements.authoring.credentials`\n   MUST be replaced. Such a file that is not valid TOML MUST be replaced whole,\n   with `configuration` as the kind, because its fields cannot be located.\n2. In every source, each match of a built-in rule of the `secretshape` crate MUST\n   be replaced. The replaced region MUST be extended through each adjacent region\n   that the crate's entropy heuristic flags and that only whitespace separates\n   from the region, repeating until no flagged region is adjacent. The heuristic\n   MUST NOT cause redaction on its own.\n\nA replacement MUST read `[REDACTED:<kind>]`, where `<kind>` is the credential\nfield or the rule's name, and MUST keep every line break within the replaced\ntext, so line numbers are unchanged. Outlines MUST be built from the original\nsource, and the structural hash MUST hash each text piece that overlaps a\nredacted region in its redacted form, so evidence never depends on a credential's\nvalue and redaction never changes or breaks a file's outline. The `secretshape` version MUST be pinned exactly; upgrading\nit MAY change redaction and hashes and MUST be treated as a deliberate change.",
-  "determination": false,
-  "rationale": "I found one gap: nothing tests that declaration text is redacted on the model path. Most other obligations are implemented and tested.\n\n**Implemented and tested**\n- **Configuration credential fields:** `Redaction::of_file`, `configuration_regions`, `credential_fields` and `value_fields` in `src/redaction.rs` redact the Bedrock `credentials.*` leaves and the Ollama `api_key` by name.\n  - This applies in any `habeas.toml` and in the user configuration file, including symlink aliases of it.\n  - Tests: `configuration_credential_fields_are_redacted_by_name_whatever_their_values` and `the_user_configuration_file_and_its_aliases_are_configuration_files`.\n- **Invalid TOML:** `configuration_regions` replaces the whole file with kind `configuration`. Test: `invalid_configuration_files_are_redacted_whole_keeping_lines`.\n- **`secretshape` rules and extension:**\n  - `secret_regions` scans with the built-in rules, then extends each match forward and backward through whitespace-adjacent entropy-flagged tokens.\n  - The heuristic never starts a region, because the function returns early when the rule scan finds nothing.\n  - Tests: `tokens_in_code_are_redacted_without_adjacent_code`, `private_keys_are_redacted_from_header_through_body_keeping_lines` (forward), `regions_extend_backward_keep_crlf_and_scan_past_a_mebibyte` (backward) and `heuristic_findings_alone_are_not_redacted`.\n- **Replacement format and line breaks:** `Redaction::slice` and `push_line_breaks` emit `[REDACTED:<kind>]` and keep every line break, including CRLF. Tests: `slices_concatenate_to_the_redacted_whole`, `redaction_never_changes_an_outline`, and the CRLF case in `regions_extend_backward_keep_crlf_and_scan_past_a_mebibyte`.\n- **Outlines and hashes:** the outline is built from the original source (`parse_redacted`, `Builder::piece`, `plain_text`) and hashes use `Redaction::slice`. Tests: `hashes_do_not_depend_on_credential_values` and `redaction_never_changes_an_outline`.\n- **Pin:** `Cargo.toml` has `secretshape = \"=0.1.0\"`. This is static and needs no test.\n- **Model-facing source:**\n  - `OutlineCache::parse` builds `ParsedSource.redacted`.\n  - `SearchNodes::entries`, `initial_prompt`, `CitationItem::model_citations_value`, `SiteItem::matches_value` and the GitHub `fetch` all use redacted text.\n  - Tests: `model_inputs_reads_searches_and_citation_prompts_are_redacted`, `ast_grep_returns_innermost_nodes_of_the_language_and_reports_failures`, `violation_text_reaches_the_model_redacted` and `the_tool_reads_issues_with_the_token_and_redacts_bodies`.\n- **Displayed in the book and `habeas info`:** `render_detail_sections` and `render_input` redact. Test: `detail_pages_and_info_display_redacted_source`.\n\n**Gap: untested declaration redaction on the model path**\n- **Where:** `InputSelector::resolve` in `src/inputs.rs` calls `crate::redaction::redact_lines` for `Definition` inputs and for `Requirements` inputs. These supply the subject's, cited requirements' and terms' text in mandatory inputs and `habeas` requirements/definition reads. `validate_resolved_input` in `src/evidence.rs` also calls `redact_lines`. `redact_lines` has its own conditional and transformation (join, redact, split).\n- **What is missing:** no test puts a credential in a requirement, example or definition declaration and checks the model-facing text.\n  - `model_inputs_reads_searches_and_citation_prompts_are_redacted` puts the token only in `src/lib.rs` and in the config file.\n  - `detail_pages_and_info_display_redacted_source` covers only display, through `redact_text` in `render_detail_sections`.\n  - Nothing else in `src` or `tests` exercises `redact_lines`, so it is untested.\n- **Obligation affected:** \"Every source text the harness supplies to a model, including mandatory inputs ... MUST be redacted.\" This path has a conditional and a transformation, so it does not qualify for the untested-obligation exemption.\n\nI report this as an unacknowledged gap; no `{fixme}` covers it.",
-  "references": "f34265988ce2c0148b248983690ce0b9d11ff05bf667a56634767d0e86afce0b",
+  "determination": true,
+  "rationale": "I found no gap. Every obligation in the text has code that carries it out and a test that asserts its outcome.\n\n**Configuration credential fields (clause 1)**\n- `Redaction::of_file` adds `configuration_regions` when the path is a `habeas.toml` or the user configuration file (`is_configuration_file` / `is_configuration_file_for`, `src/redaction.rs`).\n- `credential_fields` and `item_fields`/`value_fields` collect every value under `authoring.configs.<name>.credentials` and `authoring.configs.<name>.api_key`. The span is the string's contents inside its quotes, and the kind is the field name. This matches the configuration shape in `src/config.rs`.\n- A file that does not parse as TOML becomes one region over the whole text with kind `configuration`.\n- Tests:\n  - `configuration_credential_fields_are_redacted_by_name_whatever_their_values` covers named fields, inline tables, a multi-line string, and a non-configuration `.toml` file left unchanged.\n  - `invalid_configuration_files_are_redacted_whole_keeping_lines` covers invalid TOML.\n  - `the_user_configuration_file_and_its_aliases_are_configuration_files` covers the user configuration file and its aliases.\n\n**`secretshape` rules and entropy extension (clause 2)**\n- `secret_regions` takes matches from the rules-only scanner. It extends each region forward and backward through flagged `high-entropy-token` spans that overlap it or are separated from it only by whitespace.\n- Heuristic findings are used only for extension, and only when a rule finding exists, so the heuristic never causes redaction on its own.\n- Tests:\n  - `private_keys_are_redacted_from_header_through_body_keeping_lines` covers forward and chained extension.\n  - `regions_extend_backward_keep_crlf_and_scan_past_a_mebibyte` covers backward extension.\n  - `heuristic_findings_alone_are_not_redacted` covers the \"MUST NOT cause redaction on its own\" obligation.\n  - `tokens_in_code_are_redacted_without_adjacent_code` covers a plain match.\n\n**Replacement format and line breaks**\n- `Redaction::slice` emits `[REDACTED:<kind>]` followed by `push_line_breaks`, which keeps each `\\n` and `\\r\\n` of the replaced text.\n- The same tests assert the exact markers and unchanged line counts, including CRLF.\n- `slices_concatenate_to_the_redacted_whole` checks that slicing is consistent.\n\n**Outline and structural hash**\n- `parse_redacted` and `Builder` parse the original source. `Builder::piece` hashes each text piece through `redaction.slice`, and `plain_text` does the same for lines. The {impl}-marked entry points are `parse` and `parse_with` in `src/outline/mod.rs`.\n- `hashes_do_not_depend_on_credential_values` checks that hashes do not depend on credential values and still change when code outside a redacted region changes.\n- `redaction_never_changes_an_outline` checks that the outline is unchanged across YAML, Rust, TOML, Markdown and plain text.\n\n**Every source text reaching the model or the book**\n- `OutlineCache::parse` (`src/inputs.rs`) builds `ParsedSource.redacted` from `Redaction::of_file`.\n- Mandatory inputs, `habeas` item and line reads, and requirement and definition text all go through the redacted text (`node_range`, `redact_lines` in `InputSelector::resolve`).\n- `SearchNodes::entries` returns lines from `parsed.redacted`.\n- Citation commentary, site matches, GitHub issue title and body, and coverage-loss rationale go through `redact_text`.\n- The detail page and `habeas info` redact the definition, validation findings, input text, raw JSON and unreadable records in `render_detail_sections` and `render_input`.\n- `validate_resolved_input` compares redacted text.\n- Tests:\n  - `model_inputs_reads_searches_and_citation_prompts_are_redacted`\n  - `declaration_text_reaches_the_model_redacted`\n  - the ast-grep test\n  - `the_tool_reads_issues_with_the_token_and_redacts_bodies`\n  - `detail_pages_and_info_display_redacted_source`\n  - `violation_text_reaches_the_model_redacted`\n\n**Pinning**\n- `Cargo.toml` pins `secretshape = \"=0.1.0\"` with a comment that a new version may change redaction and hashes. A version pin is declarative and needs no test.\n\n**Reachability**\n- The core module `src/redaction.rs` has no reference of its own. It is reached from the {impl} items: `parse` and `parse_with` call `Redaction`, and `render_detail_sections`, `fetch` and `validate_resolved_input` call `redact_text` and `redact_lines`. So it needs none.\n\nI found no unspecified behavior, and no {fixme} applies.",
+  "references": "c2ff83cd5d5c00291224a9e8321a67eaf45afa8a5a9f67524003744fb6c14da3",
   "inputs": [
     {
       "requirements": "requirements.authoring.redaction",
@@ -86,6 +86,11 @@
       "file": "src/authoring/tools.rs",
       "item": "mod[tests]/fn[model_inputs_reads_searches_and_citation_prompts_are_redacted]",
       "hash": "ec0650c2b7c17bec40f218540fac4fe48673651ba231dc64e7cc0ee6d346d06c"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "mod[tests]/fn[declaration_text_reaches_the_model_redacted]",
+      "hash": "0b57b71704550d2c6dd9c0b2e0e1339c33196eabdb806fbfc0058fb9dec34507"
     },
     {
       "file": "src/authoring/tools.rs",
@@ -188,126 +193,6 @@
       "hash": "9d63cf6e5e457e5976049363b829c482a757b5f8f75fe57e229df0cbd6149bed"
     },
     {
-      "file": "src/inputs.rs",
-      "item": "use@a26087e08c80",
-      "hash": "a26087e08c80d5c75559c00d6f08909f5a03a0bd909c8c903061c37b78950102"
-    },
-    {
-      "file": "src/inputs.rs",
-      "item": "use@0aa5aad345a4",
-      "hash": "0aa5aad345a497ea8555581d02720ca86969e0aff012fce65b6f20d384262fb4"
-    },
-    {
-      "file": "src/inputs.rs",
-      "item": "use@3970e6901143",
-      "hash": "3970e6901143920563d8805f9c3cc3a00f3047d12ba98064de8508cf8fd075f2"
-    },
-    {
-      "file": "src/inputs.rs",
-      "item": "use@17891119f0eb",
-      "hash": "17891119f0eb9d10b48f727e590ef4be9050f4cdc2813283f53abf585dfe721a"
-    },
-    {
-      "file": "src/inputs.rs",
-      "item": "use@6e42e0801700",
-      "hash": "6e42e08017009abb18f33fa65d11a99391be1f47814478d1337e25ea5a0189ec"
-    },
-    {
-      "file": "src/inputs.rs",
-      "item": "use@945e92f43fad",
-      "hash": "945e92f43fad9a4c59b94afe789e6ef9514106d005841b29a86ecf6cee616e26"
-    },
-    {
-      "file": "src/inputs.rs",
-      "item": "use@329c335dba2c",
-      "hash": "329c335dba2cdba11067fef8c3a11caf3c7059e9c3ca39d0f580b295da43c88c"
-    },
-    {
-      "file": "src/inputs.rs",
-      "item": "use@94c7012d1800",
-      "hash": "94c7012d18006bc204d06850f929668e869b47eba6b9b2d8ef109add66dee46f"
-    },
-    {
-      "file": "src/inputs.rs",
-      "item": "use@167510602cb3",
-      "hash": "167510602cb34e66d4c8c78e9beeae3cee5655de55ff522a33ded8622af1c7f2"
-    },
-    {
-      "file": "src/inputs.rs",
-      "item": "enum[InputSelector]",
-      "hash": "08a32d6d16b33bb0240b295f12f62e2fcc9e56aa8fa1b81e3551a705e6ade5f9"
-    },
-    {
-      "file": "src/inputs.rs",
-      "item": "struct[SourceRange]",
-      "hash": "00a39f28430d5e153770e7b84515cae45e86675d442339e72386be6b8c178ff6"
-    },
-    {
-      "file": "src/inputs.rs",
-      "item": "struct[ResolvedNode]",
-      "hash": "bf313fc4a64fd3c230d6433e360e30d613feaddc7ff28a17282a8d7d91afe2fa"
-    },
-    {
-      "file": "src/inputs.rs",
-      "item": "struct[ResolvedInput]",
-      "hash": "747340a2a8f82c0e6547761dfa62a27ff890b8cd6eee80eca966088f5b7ae385"
-    },
-    {
-      "file": "src/inputs.rs",
-      "item": "struct[ParsedSource]",
-      "hash": "60fdf5fdf9a375c3cd8f87afaaa15d7a3796bce2af9fab6835be52f3ba8c3be7"
-    },
-    {
-      "file": "src/inputs.rs",
-      "item": "struct[OutlineCache]",
-      "hash": "51cd8476bb8fb67663a9845e54dfd7a7c7104ed0128e9c417c6f9a89960712f7"
-    },
-    {
-      "file": "src/inputs.rs",
-      "item": "impl[OutlineCache]",
-      "hash": "3d341a2ee9eac04b06cfb061e5d8e4be1c1d7c45470e654d500a607e1c173f13"
-    },
-    {
-      "file": "src/inputs.rs",
-      "item": "impl[ParsedSource]",
-      "hash": "1e8736402977d749ed722b0ca3a943de21dc5d0a8617f735f9f34650bc549907"
-    },
-    {
-      "file": "src/inputs.rs",
-      "item": "impl[InputSelector]",
-      "hash": "65872609b4c4184eb51c5f1a3acbd2b3aaab02313acb77a9ddac15ab752a4154"
-    },
-    {
-      "file": "src/inputs.rs",
-      "item": "fn[recorded_input]",
-      "hash": "e367b914f4385dbb6fa5352d25621130a8d501d28d36793e28b80228806689b5"
-    },
-    {
-      "file": "src/inputs.rs",
-      "item": "fn[project_relative]",
-      "hash": "2bacdf705f69e79ecb7e7b649562d949c57508036bb5e1ddc1ea1387c585ebf1"
-    },
-    {
-      "file": "src/inputs.rs",
-      "item": "fn[check_project_file]",
-      "hash": "d229a2e14bc49aad09e4bca7ab3bdab6d475f05819973da2477323152e7aa4e5"
-    },
-    {
-      "file": "src/inputs.rs",
-      "item": "fn[read_project_file]",
-      "hash": "e41f9a27f04e9f92ef30a0f9364eb43397ec3142bd9947b7c34d0d4ea691ba1d"
-    },
-    {
-      "file": "src/inputs.rs",
-      "item": "fn[outline_input]",
-      "hash": "c1b23bc16454f46cd2402e7867e2067b6c69ce6c7051760c3c77847c1f5804dc"
-    },
-    {
-      "file": "src/inputs.rs",
-      "item": "fn[outline_inputs_for_lines]",
-      "hash": "1a71201d6c638e1ad96c8664db6788c9c99992c61d19e49ba3902bed73995d4f"
-    },
-    {
       "file": "src/redaction/tests.rs",
       "item": "use@e843693d3cbe",
       "hash": "e843693d3cbeca2bebfa419b4a2dc5105a0168642b87189c11f2ad16b53a0207"
@@ -341,6 +226,81 @@
       "file": "src/redaction/tests.rs",
       "item": "fn[structure]",
       "hash": "3ac0371170c1501b7677a5a7fbdda44689f2a0359e3967e51e33740a6aaa0105"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "struct[OutlineCache]",
+      "hash": "51cd8476bb8fb67663a9845e54dfd7a7c7104ed0128e9c417c6f9a89960712f7"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "impl[OutlineCache]",
+      "hash": "3d341a2ee9eac04b06cfb061e5d8e4be1c1d7c45470e654d500a607e1c173f13"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "impl[ParsedSource]",
+      "hash": "1e8736402977d749ed722b0ca3a943de21dc5d0a8617f735f9f34650bc549907"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "impl[InputSelector]",
+      "hash": "65872609b4c4184eb51c5f1a3acbd2b3aaab02313acb77a9ddac15ab752a4154"
+    },
+    {
+      "file": "src/outline/mod.rs",
+      "item": "fn[parse_redacted]",
+      "hash": "72a135c94535238cacd27a58ffdfbcc7cb971d61f3c13de0fd10700d44008167"
+    },
+    {
+      "file": "src/outline/mod.rs",
+      "item": "fn[check_errors]",
+      "hash": "da2ab2a4944f8212709160d290704a43a5ee43741fc0068714ab2e5b68ea2b9b"
+    },
+    {
+      "file": "src/outline/mod.rs",
+      "item": "struct[LineIndex]",
+      "hash": "e1a5a4ad0edef6121af519004dca9b24fd7e17b6d5062b41e58b386ca8c126cd"
+    },
+    {
+      "file": "src/outline/mod.rs",
+      "item": "impl[LineIndex]",
+      "hash": "d643cf380f94d005e2f550034eef0ea7389e1966f33920776c99762b9fc871c8"
+    },
+    {
+      "file": "src/outline/mod.rs",
+      "item": "fn[plain_text]",
+      "hash": "4f3b316712177077546712701ceb34834b3fa240a4ac0b80714043abcf49c6ca"
+    },
+    {
+      "file": "src/outline/mod.rs",
+      "item": "fn[root_node]",
+      "hash": "53eb875e672b899cc2ccf95e5171657444a8691c0b97c7a0656f8bd9926b8d59"
+    },
+    {
+      "file": "src/outline/mod.rs",
+      "item": "impl[Builder<'tree,%20'source>]",
+      "hash": "9fcb0ee790cbfcfcfeb2cbf82074ff9c22d94bb5827777df13f85813f995a47d"
+    },
+    {
+      "file": "src/outline/mod.rs",
+      "item": "fn[disambiguate]",
+      "hash": "4f93539b56502754c40a21623f297d7cc4e1e1b6ae2a7f357346031e9db431fa"
+    },
+    {
+      "file": "src/index.rs",
+      "item": "impl[InputLocation]",
+      "hash": "dea18032fc35a91d2f7725791250ff4d1b26d1636aa106c78e5ee06bbbf3e604"
+    },
+    {
+      "file": "src/index.rs",
+      "item": "fn[render_input]",
+      "hash": "d9de115b90fe0cdac7a7972a76b17e61c083627ef27d40859f4e2de9dbb8232d"
+    },
+    {
+      "file": "src/index.rs",
+      "item": "fn[render_source_location]",
+      "hash": "09084dd24dc4bdde067b7ffdd63c45d571ce1f7a2bce75c3f2ef56b2c010af0e"
     }
   ]
 }

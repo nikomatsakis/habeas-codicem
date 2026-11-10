@@ -1,8 +1,8 @@
 {
-  "requirement": "When authoring replaces a record and an item that its previous inputs covered\nunder {cite}`requirements.references.rust_item_coverage` is no longer covered,\nthe harness MUST assess that item in a coverage-loss review: an independent\nconversation with the same source tools, whose mandatory inputs are the item's\noutline node and the declarations of the requirements and examples whose\nprevious records read it, and whose prompt gives each such record's rationale.\nThe reviewer MUST submit, for each of those definitions, whether the item is a\nroot of its implementation or is not needed for it, with a nonempty rationale:\na root when the item carries out part of the definition under\n{cite}`requirements.references.procedure`, even when an item marked `{impl}`\nfor it reaches the item, and not needed otherwise. The result MUST NOT be\nevidence: authoring MUST report it, and `habeas status` MUST show the latest\nresult beside the uncovered item until the item is covered again.\n\nThe review MUST use this prompt, the first block as its system prompt and the\nsecond as its subject message under {cite}`requirements.authoring.prompt_parts`,\nreplacing `{{habeas_background}}` and `{{reference_roles}}` under\n{cite}`requirements.authoring.habeas_background`, `{{judgment_rules}}` under\n{cite}`requirements.authoring.judgment_rules`, `{{item_file}}` and\n`{{item_selector}}` (with `<root>` for the root node), `{{definitions}}` with\nthe definitions' full names as a JSON array, `{{rationales}}` with a `## <full\nname>` heading and the redacted earlier rationale for each, and\n`{{mandatory_inputs}}`:\n\n```text\n# Task\n\nReview one source item that earlier assessments read but that nothing covers\nany longer. Your finding for each definition should be the one any careful\nreviewer would reach from the same text and sources.\n\n# Background: Habeas terms\n\n{{habeas_background}}\n\n{{reference_roles}}\n\n# Your task\n\nThe mandatory inputs at the end contain the item and the declarations of the\nrequirements and examples whose earlier assessments read it. Those assessments\nhave been replaced by ones that did not read the item, and it carries no\nreference of its own, so validation reports it uncovered. For each listed\ndefinition, decide whether the item is a root of the definition's\nimplementation or is not needed for it.\n\n1. Read the earlier rationale given for the definition to see what the\n   assessment relied on the item for.\n2. Decide whether the item carries out part of the definition, as the\n   reference roles describe. Read the items marked {impl} for the definition,\n   found with the references tool, and the code they reach, only as far as\n   needed to decide this.\n3. The item is a root if it carries out part of the definition, even when a\n   marked item reaches it: the earlier read shows a review relied on it, and\n   being reached did not keep it covered. Otherwise it is not needed for the\n   definition.\n4. In each rationale, say what part of the definition the item carries out,\n   or why it carries out none, with source locations.\n\n# How to judge\n\n{{judgment_rules}}\n\n# Submitting\n\nCall submit_coverage_review exactly once with findings: one entry for each\nlisted definition, with definition (its full name), finding (\"root\" or\n\"not needed\"), and a nonempty rationale. That tool call is your final answer.\n```\n\n```text\n# Subject\n\nItem under review: {{item_file}} {{item_selector}}\nDefinitions to decide: {{definitions}}\n\n# Earlier rationales\n\n{{rationales}}\n\n# Mandatory inputs\n\n{{mandatory_inputs}}\n```",
-  "determination": true,
-  "rationale": "I found no gap in the code or the tests for `requirements.authoring.coverage_loss`.\n\n**Reachability.** The marked `{impl}` roots are `fn main` in `src/main.rs` (the summary count and the per-review report) and `with_coverage_loss_review` in `src/commands.rs`. Following the code from `main` reaches the rest:\n- `author_evidence_with_options` → `configured_assessment`\n- `run_batch`\n- the `coverage_loss.rs` functions they call\n\nNone of those need their own reference.\n\n**Obligations, code and tests**\n\n| Obligation | Code | Test |\n|---|---|---|\n| Trigger: an item the replaced record's inputs covered is no longer covered | `ReplacedRecord::read` runs before each write: `configured_assessment` in `src/authoring/mod.rs` (about line 459) and `run_batch` in `src/authoring/batch.rs` (line 233). `lost_items` (`src/authoring/coverage_loss.rs`, lines 93–159) keeps items that are uncovered, were read by a replaced record, and are not read by a current record. A citation-review-only read is left to validation. | `lost_items_are_those_replaced_records_covered_that_nothing_covers_now`, and the two integration tests. |\n| Independent conversation with the same source tools | `review` builds its own `UsageLog` and `AssessmentSources`, then calls `converse`. | The CLI test asserts the tools include `habeas` and `ripgrep` plus `submit_coverage_review`, and not `submit_judgment`. |\n| Mandatory inputs are the item's outline node and the readers' declarations | `AssessmentSources::prepare_coverage_loss` in `src/authoring/inputs.rs` (lines 457–523). | The CLI test asserts the subject contains `fn helper() {}` and the requirement text, and not `fn other()`. |\n| Prompt gives each record's rationale, redacted | `coverage_loss::prompt` builds `## <name>` sections from `redact_text(rationale)`. | The CLI test asserts the previous rationale appears. The call to `redact_text` has no conditional of its own, so I treated it as exempt from a separate test. |\n| Prompt text and placeholders | `coverage_loss_prompt` takes both blocks from this requirement via `approved_text`. `prompt` fills `item_file`, `item_selector` (with `<root>`), `definitions` (a JSON array), `rationales` and `mandatory_inputs`. `shared_blocks` supplies the background, roles and judgment rules. | The CLI test asserts the system text, `Item under review: src/helper.rs fn[helper]` and `Definitions to decide: [\"…\"]`. |\n| One `root`/`not needed` finding per listed definition, with a nonempty rationale | `tool_definition` and `submission` check object shape, listed definitions, duplicates, missing definitions, the finding value, and nonempty rationales. | `submissions_need_one_root_or_not_needed_finding_per_definition` covers each rejection and the accepted case. |\n| Not evidence | `store` writes under the state root, via `result_path`. | The CLI test asserts the new evidence record does not mention `helper`. The `result_path` test checks the location. |\n| Authoring reports the result | Batch mode: `run_batch` prints `review.report()` as each review finishes, and `main` prints the count. Single-subject mode: `main` prints the report and usage path. | The batch test asserts the stderr report and the `; 1 coverage-loss reviews` summary. The CLI test asserts the stdout report. |\n| `habeas status` shows the latest result beside the uncovered item until it is covered again | `with_coverage_loss_review` calls `status_lines`, and only for uncovered findings. | The CLI test asserts the status text. It then adds an `{impl}` reference to the item and asserts the review text is gone. |\n\n**Observations, not gaps**\n- The `<root>` branch in `LostItem::selector_label` has no coverage-loss test. Rust coverage only lists functions, structs, enums and unions, so a root node cannot be a lost item and the branch cannot occur there.\n- Only the first record's rationale is used per definition. The prompt asks for one `## <name>` rationale per definition, so I did not count this as a gap.",
-  "references": "62f2f9d35c780f424806218035b83203776b874b7aacc1634d92dc9793ec3714",
+  "requirement": "When authoring replaces a record and an item that its previous inputs covered\nunder {cite}`requirements.references.rust_item_coverage` is no longer covered,\nthe harness MUST assess that item in a coverage-loss review: an independent\nconversation with the same source tools, whose mandatory inputs under\n{cite}`requirements.authoring.mandatory_inputs` are the item's outline node and\nthe declarations of the requirements and examples whose previous records read\nit, and whose prompt gives each such record's rationale.\nThe reviewer MUST submit, for each of those definitions, whether the item is a\nroot of its implementation or is not needed for it, with a nonempty rationale:\na root when the item carries out part of the definition under\n{cite}`requirements.references.procedure`, even when an item marked `{impl}`\nfor it reaches the item, and not needed otherwise. The result MUST NOT be\nevidence: authoring MUST report it, and `habeas status` MUST show the latest\nresult beside the uncovered item until the item is covered again.\n\nThe review MUST use this prompt, the first block as its system prompt and the\nsecond as its subject message under {cite}`requirements.authoring.prompt_parts`,\nreplacing `{{habeas_background}}` and `{{reference_roles}}` under\n{cite}`requirements.authoring.habeas_background`, `{{judgment_rules}}` under\n{cite}`requirements.authoring.judgment_rules`, `{{item_file}}` and\n`{{item_selector}}` (with `<root>` for the root node), `{{definitions}}` with\nthe definitions' full names as a JSON array, `{{rationales}}` with a `## <full\nname>` heading and the redacted earlier rationale for each, and\n`{{mandatory_inputs}}`:\n\n```text\n# Task\n\nReview one source item that earlier assessments read but that nothing covers\nany longer. Your finding for each definition should be the one any careful\nreviewer would reach from the same text and sources.\n\n# Background: Habeas terms\n\n{{habeas_background}}\n\n{{reference_roles}}\n\n# Your task\n\nThe mandatory inputs at the end contain the item and the declarations of the\nrequirements and examples whose earlier assessments read it. Those assessments\nhave been replaced by ones that did not read the item, and it carries no\nreference of its own, so validation reports it uncovered. For each listed\ndefinition, decide whether the item is a root of the definition's\nimplementation or is not needed for it.\n\n1. Read the earlier rationale given for the definition to see what the\n   assessment relied on the item for.\n2. Decide whether the item carries out part of the definition, as the\n   reference roles describe. Read the items marked {impl} for the definition,\n   found with the references tool, and the code they reach, only as far as\n   needed to decide this.\n3. The item is a root if it carries out part of the definition, even when a\n   marked item reaches it: the earlier read shows a review relied on it, and\n   being reached did not keep it covered. Otherwise it is not needed for the\n   definition.\n4. In each rationale, say what part of the definition the item carries out,\n   or why it carries out none, with source locations.\n\n# How to judge\n\n{{judgment_rules}}\n\n# Submitting\n\nCall submit_coverage_review exactly once with findings: one entry for each\nlisted definition, with definition (its full name), finding (\"root\" or\n\"not needed\"), and a nonempty rationale. That tool call is your final answer.\n```\n\n```text\n# Subject\n\nItem under review: {{item_file}} {{item_selector}}\nDefinitions to decide: {{definitions}}\n\n# Earlier rationales\n\n{{rationales}}\n\n# Mandatory inputs\n\n{{mandatory_inputs}}\n```",
+  "determination": false,
+  "rationale": "**Result: gaps. The implementation is complete, but two stated prompt obligations have no test.**\n\n**Where the code is**\n- `fn[submission]`, `fn[with_coverage_loss_review]` and `fn[main]` carry `{impl}`.\n- The rest of the coverage-loss flow carries no `{impl}` for this requirement. That covers `lost_items`, `prompt`, `review`, `store`, `review_losses`, and the `ReplacedRecord::read` calls in `src/authoring/mod.rs` and `batch.rs`.\n- `fn[main]` calls into the authoring entry points. Those call `review_losses`, which calls `lost_items` and `review`, which call `prompt`, `AssessmentSources::prepare_coverage_loss`, `submission` and `store`. These items are reachable from a marked root, so I did not count the missing references as gaps.\n\n**Obligations and code**\n- **Trigger on replacement.**\n  - `ReplacedRecord::read` captures the old record before it is overwritten, in `configured_assessment` (`mod.rs`) and in `run_batch`.\n  - `lost_items` (`coverage_loss.rs`) keeps items that a replaced record covered, that are unreferenced, and that no current evidence covers.\n  - Test: `lost_items_are_those_replaced_records_covered_that_nothing_covers_now`.\n- **Independent conversation with the source tools.**\n  - `review` runs its own `converse` with its own usage log.\n  - `tool_definitions_with` adds `submit_coverage_review` in place of `submit_judgment`.\n  - Test: `replacing_a_record_reviews_items_it_no_longer_covers_and_status_shows_the_result` checks the tools and the separate request.\n- **Mandatory inputs.**\n  - `prepare_coverage_loss` builds the item node, each reader's declaration once, and the terms.\n  - Test: `coverage_loss_inputs_combine_the_item_reader_declarations_and_terms_once`, which also covers the unresolvable-input abort.\n- **Prompt rationales and placeholders.**\n  - `prompt` fills the system and subject blocks. The tests check the `## <definition>` rationale section, the definitions JSON array, and the shared background and judgment rules.\n  - Tests: `prompts_carry_the_shared_background_and_judgment_rules` and the CLI test.\n- **Findings.**\n  - `submission` requires one `root` or `not needed` finding per listed definition, each with a nonempty rationale.\n  - Test: `submissions_need_one_root_or_not_needed_finding_per_definition`.\n- **Not evidence, reported, shown in status.**\n  - `store` writes under the state root, not `evidence/`. The CLI test asserts the evidence file does not mention the item.\n  - `main` and `run_batch` report each review. Tests: the CLI test and `a_batch_reviews_items_its_replaced_records_no_longer_cover_after_writing_them`.\n  - `with_coverage_loss_review` and `status_lines` show the result beside the uncovered item. The CLI test also checks it disappears once the item is covered again.\n\n**Gaps (untested stated obligations)**\n1. **`<root>` for the root node.**\n   - `LostItem::selector_label` (`coverage_loss.rs`, lines 57–65) branches on an empty selector.\n   - The text requires `{{item_selector}}` to be `<root>` for the root node.\n   - No test builds a `LostItem` with an empty item or checks `<root>`. The prompt test and the CLI test use only `fn[...]` selectors.\n   - The only `<root>` tests I found are for the citation and site `selector_label` functions, which are different code.\n2. **Redacted earlier rationale.**\n   - `prompt` (`coverage_loss.rs`, around line 254) passes each rationale through `crate::redaction::redact_text`. The text requires the redacted earlier rationale.\n   - No coverage-loss test supplies a rationale containing a secret and checks that it is redacted in the prompt. The prompt test uses \"It read fn[lost].\" and the CLI test uses \"PREVIOUS_RATIONALE relied on helper.\"\n   - The tests of `redact_text` itself do not exercise this call site. This obligation is therefore untested at the point where the requirement applies it.\n\nThere are no `{fixme}` references to acknowledge either gap, so the determination is false.",
+  "references": "d7bb83484d57adcd5e0376551f8ac51958626af0208de13518a52582f3ca0f37",
   "inputs": [
     {
       "requirements": "requirements.authoring.coverage_loss",
@@ -14,9 +14,10 @@
         "When authoring replaces a record and an item that its previous inputs covered",
         "under {cite}`requirements.references.rust_item_coverage` is no longer covered,",
         "the harness MUST assess that item in a coverage-loss review: an independent",
-        "conversation with the same source tools, whose mandatory inputs are the item's",
-        "outline node and the declarations of the requirements and examples whose",
-        "previous records read it, and whose prompt gives each such record's rationale.",
+        "conversation with the same source tools, whose mandatory inputs under",
+        "{cite}`requirements.authoring.mandatory_inputs` are the item's outline node and",
+        "the declarations of the requirements and examples whose previous records read",
+        "it, and whose prompt gives each such record's rationale.",
         "The reviewer MUST submit, for each of those definitions, whether the item is a",
         "root of its implementation or is not needed for it, with a nonempty rationale:",
         "a root when the item carries out part of the definition under",
@@ -105,7 +106,28 @@
       ],
       "text": [
         ":::{req} rust_item_coverage",
-        "During repository validation, Habeas MUST parse every first-party Rust source file: every `.rs` file among the sources reference discovery considers under {cite}`requirements.references.discovery`, except those under the project-root `vendor` directory. Every explicitly declared function or method, including trait methods and test helpers, and every struct, enum, and union MUST be covered. An item is covered when it has a valid `{impl}`, `{cite}`, or `{test}` reference to a defined requirement or named example, or a valid citation of the built-in `habeas:none` under {cite}`requirements.references.no_requirement`, in a Rust comment attached to it or within its body; or when its outline node, or an outline node containing it, is recorded with its current hash as an outline input of an evidence record, a citation review, or a site review. Search results are not evidence inputs under {cite}`requirements.authoring.text_search`, so only sources an assessment received as mandatory inputs or read count. Comments belong to items under {cite}`requirements.references.outline_comments`; a comment before a field, variant, or attribute inside an item belongs to that item. A named example MUST reference a requirement under {cite}`requirements.examples.definition`. A reference in a string literal, on an enclosing module or impl block, or only in an evidence input MUST NOT count for the items it encloses. Habeas MUST report every uncovered item with its file, line, kind, and name, and MUST report a Rust parse failure instead of silently skipping the file.",
+        "During repository validation, Habeas MUST parse every first-party Rust source file: every `.rs` file among the sources reference discovery considers under {cite}`requirements.references.discovery`, except those under the project-root `vendor` directory. Every explicitly declared function or method, including trait methods and test helpers, and every struct, enum, and union MUST be covered. An item is covered when it has a valid `{impl}`, `{cite}`, or `{test}` reference to a defined requirement or named example, or a valid citation of the built-in `habeas:util` under {cite}`requirements.references.util`, in a Rust comment attached to it or within its body; or when its outline node, or an outline node containing it, is recorded with its current hash as an outline input of an evidence record, a citation review, or a site review. Search results are not evidence inputs under {cite}`requirements.authoring.text_search`, so only sources an assessment received as mandatory inputs or read count. Comments belong to items under {cite}`requirements.references.outline_comments`; a comment before a field, variant, or attribute inside an item belongs to that item. A named example MUST reference a requirement under {cite}`requirements.examples.definition`. A reference in a string literal, on an enclosing module or impl block, or only in an evidence input MUST NOT count for the items it encloses. Habeas MUST report every uncovered item with its file, line, kind, and name, and MUST report a Rust parse failure instead of silently skipping the file.",
+        ":::"
+      ]
+    },
+    {
+      "requirements": "requirements.authoring.mandatory_inputs",
+      "matches": [
+        "requirements.authoring.mandatory_inputs"
+      ],
+      "text": [
+        ":::{req} mandatory_inputs",
+        "The harness MUST construct each assessment's mandatory input set by combining",
+        "the contributions specified by the requirements applicable to that subject and",
+        "its inputs. A requirement that contributes inputs MUST cite this requirement and",
+        "define which sources it contributes and when. The harness MUST include every",
+        "applicable contribution, deduplicate identical selections, and report",
+        "unresolvable mandatory inputs before inference. The complete set MUST be supplied",
+        "in the initial model request.",
+        "Generated output under project-root `evidence/`, including symlink aliases, MUST",
+        "be omitted from mandatory inputs when the default exclusion applies. An explicit",
+        "workspace allow MUST permit those selections; an explicit disallow MUST abort",
+        "under {cite}`requirements.authoring.read_denial`.",
         ":::"
       ]
     },
@@ -138,8 +160,9 @@
         "4. If the item carries no reference after applying steps 1 to 3 to every",
         "   definition and no assessment reads it under",
         "   {cite}`requirements.references.rust_item_coverage`, it MUST cite the",
-        "   built-in `habeas:none` under {cite}`requirements.references.no_requirement`,",
-        "   justifying why the item exists.",
+        "   built-in `habeas:util` under {cite}`requirements.references.util` when it",
+        "   serves other code. An item that does neither carries out behavior that needs",
+        "   a requirement, or is not needed.",
         "",
         "A `{fixme}` reference is added independently of this procedure, and MUST NOT",
         "count as an item's reference for {cite}`requirements.references.rust_item_coverage`.",
@@ -296,6 +319,11 @@
     },
     {
       "file": "src/authoring/coverage_loss.rs",
+      "item": "fn[submission]",
+      "hash": "751cab59d7490b91edf53b6075241ada515dd4f525941f999e5127f48d6629af"
+    },
+    {
+      "file": "src/authoring/coverage_loss.rs",
       "item": "mod[tests]/fn[submissions_need_one_root_or_not_needed_finding_per_definition]",
       "hash": "1086e19896edd1b8e1688fea7ea804c52f3bc2c73dd6d2819fb19ffe845c865c"
     },
@@ -308,6 +336,16 @@
       "file": "src/authoring/coverage_loss.rs",
       "item": "mod[tests]/fn[results_are_kept_by_project_and_item_under_the_state_root]",
       "hash": "011ef21e79b880095102fc3fde349d291b71e877b1db3476efe3daaf72dc23bd"
+    },
+    {
+      "file": "src/authoring/coverage_loss.rs",
+      "item": "mod[tests]/fn[prompts_carry_the_shared_background_and_judgment_rules]",
+      "hash": "2e554a4c8d9db67f9d762a44fc34bbdc23af36657b28b6b7af8d907917fa3347"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "mod[tests]/fn[coverage_loss_inputs_combine_the_item_reader_declarations_and_terms_once]",
+      "hash": "210e7b5f6b7021d2b0cb4aa7515b8fd11bf69615c7dde042bcf4d08ff34a0679"
     },
     {
       "file": "src/commands.rs",
@@ -332,42 +370,37 @@
     {
       "file": "src/authoring/coverage_loss.rs",
       "item": "",
-      "hash": "008a8b8a6648965a6f6d11f3a3d1c87ebde6a6fea989dc80712227c8077c4ed7"
+      "hash": "6997c6db8d2e46d4d73d70308cb4d49b16d8bc96fe4d5c003d0a56bb0c67263a"
     },
     {
-      "file": "src/authoring/mod.rs",
-      "item": "fn[configured_assessment]",
-      "hash": "6dafc32ab2a9aa52d232753ab1fb559697fc4bd8c4219cbc59c581b759cbb86f"
+      "file": "src/authoring/coverage_loss.rs",
+      "item": "fn[review]",
+      "hash": "ae060e648696bef4b96d1852118ec12ae6a338664327ebb44a782d7cbba3f40f"
     },
     {
-      "file": "src/authoring/mod.rs",
-      "item": "fn[configured_record]",
-      "hash": "53f7e17d3dc1d00bf7fceeb70c1003f4b51381ee4be2d97466da338d42d99f58"
+      "file": "src/authoring/coverage_loss.rs",
+      "item": "fn[result_path]",
+      "hash": "56c6c9807c48a537f8baccd40229c8fb8e2aa92f32e303015f6b4711f7733c9a"
     },
     {
-      "file": "src/authoring/batch.rs",
-      "item": "fn[run_batch]",
-      "hash": "20e4f35b99f63811252bda542d2e93c05e7f3cb8ffdf0b2160da49ace25f2636"
+      "file": "src/authoring/coverage_loss.rs",
+      "item": "fn[store]",
+      "hash": "ec55608afd0863beb80fd5a40a3c92a0762690ae54c0555ce154278ca4c8b2a5"
     },
     {
-      "file": "src/authoring/inputs.rs",
-      "item": "impl[AssessmentSources]/fn[prepare_site]",
-      "hash": "3f2f152c7b16053bd1bc6d96fae1b55682553b236965df9f34837fabdc8d2f93"
+      "file": "src/authoring/coverage_loss.rs",
+      "item": "fn[status_lines]",
+      "hash": "424558e93d74d392a88cacc54e19952b69abf46abd827a2d6bbf02cff9a96c82"
     },
     {
-      "file": "src/authoring/inputs.rs",
-      "item": "impl[AssessmentSources]/fn[prepare_coverage_loss]",
-      "hash": "49c2c71ebd1ccf5064f75e3466c1689ba815fcba7fd473cfd957057a26543e41"
+      "file": "src/authoring/coverage_loss.rs",
+      "item": "fn[review_losses]",
+      "hash": "9ae70f46d6ad2d36db6006f2f68a62003b4c34de1e7fb047a2c78597fac4d228"
     },
     {
-      "file": "src/authoring/inputs.rs",
-      "item": "impl[AssessmentSources]/fn[mandatory_inputs]",
-      "hash": "2763487c6f1f7cf192d22180b6d71da1e5868bfd302380d210868139ee624359"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "impl[AssessmentSources]/fn[model_mandatory_inputs]",
-      "hash": "c64d022bf88a51f9573af169ef2a69b43ca1716b28f579e150b3f9c3b83e3e1b"
+      "file": "src/authoring/coverage_loss.rs",
+      "item": "struct[CoverageLossOutcome]",
+      "hash": "b04bfc273abbc8ae0454d20ebcf6d611bc6007b424acecf1b57e0d251425263f"
     }
   ]
 }

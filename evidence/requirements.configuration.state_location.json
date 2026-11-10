@@ -1,7 +1,7 @@
 {
   "requirement": "Habeas MUST store persistent per-user activity state under\n`$XDG_STATE_HOME/habeas` on Unix when XDG_STATE_HOME is an absolute, nonempty path,\notherwise under `$HOME/.local/state/habeas`. On Windows it MUST use\n`%LOCALAPPDATA%/habeas/state`. `HOME` and `LOCALAPPDATA` MUST likewise be\nabsolute, nonempty paths to be used. Features MUST use a named subdirectory under that\nstate root and document their record formats and locations.\n\nState MUST persist across invocations and MUST NOT be stored in the project\nrepository, the configuration file, or a disposable cache directory. Habeas MUST\ncreate the required directories when recording state. If it cannot determine or\nwrite the state location, the operation requiring that state MUST report the\nfailure and MUST NOT claim that its history was recorded.",
-  "determination": false,
-  "rationale": "One obligation is unmet: the coverage-loss feature does not document its record format or location. Everything else I checked is implemented and tested.\n\n**Obligations and where they are met**\n- **Unix and Windows locations.**\n  - `config::state_root` and `state_root_from` (src/config.rs) pick `$XDG_STATE_HOME/habeas` when it is absolute and nonempty. Otherwise they use `$HOME/.local/state/habeas`. On Windows they use `%LOCALAPPDATA%/habeas/state`.\n  - `absolute_directory` and `required_directory` enforce the absolute, nonempty rule for `HOME` and `LOCALAPPDATA`.\n  - Tests: `locations_use_absolute_xdg_values_and_platform_fallbacks` and `base_directories_must_be_absolute_and_nonempty` (tests/configuration.rs).\n- **Named subdirectory per feature.**\n  - Usage records go under `authoring/usage` (`UsageLog::start`).\n  - Coverage-loss results go under `authoring/coverage-loss` (`coverage_loss::result_path`).\n  - The GitHub cache goes under `github` (`GithubIssues::from_env`).\n  - Test: `results_are_kept_by_project_and_item_under_the_state_root` checks the coverage-loss path.\n- **Not stored in the project repository.**\n  - `usage_state_root` and `state_in_project` / `resolved_location` refuse a state root inside the project, including through symlinks.\n  - `GithubIssues::from_env` skips the cache in that case.\n  - Tests: `undeterminable_unwritable_or_project_state_fails_before_a_model_request`, `state_reaching_the_project_through_a_symlink_is_refused`, and `github_reads_do_not_cache_in_a_state_root_inside_the_project`.\n- **Not in the configuration file or a disposable cache.** State is written only under the state root, never in the configuration file or a cache directory.\n- **Persists across invocations.** Usage records and coverage-loss results are files that stay on disk, and `coverage_loss::status_lines` reads them back in a later run.\n- **Creates the required directories.** `usage_state_root`, `UsageLog::start` and `coverage_loss::store` call `create_dir_all`. The \"cannot create authoring state directory\" case is tested.\n- **Reports failure and does not claim history was recorded.**\n  - `usage_state_root`, `UsageLog::start`, `finish`, `persisted`, `failed` and `author_evidence_with_options` return errors saying \"cannot record usage…\".\n  - Tests: `undeterminable_unwritable_or_project_state_fails_before_a_model_request` and `usage_write_failures_are_reported_without_claiming_recorded_history`.\n\n**Gap: undocumented coverage-loss record**\n- The requirement says features MUST \"document their record formats and locations\".\n- The book documents the usage records: reference.md, plus the \"Usage history\" requirement in authoring.md.\n- The book documents the GitHub cache in detail (location, file naming, fields).\n- The book does not document the coverage-loss results. I searched md/ for `coverage-loss/`, `authoring/` and `reviewed_ms`.\n  - reference.md (around lines 176–181) and the `coverage_loss` requirement in authoring.md only say that a review exists and that `habeas status` shows its latest result.\n  - Neither gives where it is stored (`<state>/authoring/coverage-loss/<project-hash>/<file>/<selector>.json`) or the record fields (`version`, `project_root`, `file`, `item`, `hash`, `reviewed_ms`, `findings`).\n- `coverage_loss::result_path` and `store` (src/authoring/coverage_loss.rs) persist this state, so it is a persistent feature the obligation covers.\n- No `{fixme}` acknowledges the gap.",
+  "determination": true,
+  "rationale": "I found no gap for any obligation in `requirements.configuration.state_location`. The one weak spot is that a failed coverage-loss write has no direct test (see Failure reporting).\n\n**Obligations, code and tests**\n\n- **State root.**\n  - `config::state_root` and `state_root_from` (src/config.rs 659-678) pick `$XDG_STATE_HOME/habeas` on Unix when it is absolute and nonempty.\n  - Otherwise they fall back to `$HOME/.local/state/habeas`, and on Windows they use `%LOCALAPPDATA%/habeas/state`.\n  - `absolute_directory` and `required_directory` (703-723) reject empty and relative values. `HOME` and `LOCALAPPDATA` are required to be absolute, and a failure reads \"cannot determine Habeas directory\".\n  - Tests: `locations_use_absolute_xdg_values_and_platform_fallbacks` and `base_directories_must_be_absolute_and_nonempty` in tests/configuration.rs. They cover valid XDG, empty and relative XDG, the `HOME` fallback, Windows, and invalid `HOME` and `LOCALAPPDATA`.\n- **Named subdirectories, documented formats and locations.**\n  - Authoring usage uses `authoring/usage` (`UsageLog::start`), coverage-loss uses `authoring/coverage-loss` (`result_path`), and the GitHub cache uses `github` (`GithubIssues::from_env`).\n  - md/reference.md documents the location and record format of the GitHub cache and the coverage-loss records.\n  - It documents the usage location and points to the `usage_storage` requirement for the usage record format.\n  - The `result_path` unit test checks the directory layout.\n- **Persistence, and not in the repository, the configuration file or a cache directory.**\n  - State is kept under the state root, never under an XDG cache or config directory.\n  - `usage_state_root` (src/authoring/mod.rs) refuses a state root inside the project. It uses `state_in_project` and `resolved_location`, which resolve symlinks in the nearest existing ancestor, before creating anything.\n  - `GithubIssues::from_env` skips the cache when the state root is inside the project.\n  - Tests:\n    - `undeterminable_unwritable_or_project_state_fails_before_a_model_request` and `state_reaching_the_project_through_a_symlink_is_refused` in tests/authoring_cli.rs.\n    - `github_reads_do_not_cache_in_a_state_root_inside_the_project` in tests/authoring_batch.rs.\n- **Create directories when recording.**\n  - `usage_state_root` and `UsageLog::start` use `create_dir_all`, as does the coverage-loss `store`.\n  - Every authoring test that finds a usage record under the fixture state directory exercises this.\n- **Failure reporting without claiming the history was recorded.**\n  - An undeterminable root errors from `state_root`. An unwritable root errors with \"cannot create authoring state directory\", and `UsageLog::start` errors with \"cannot record usage at …\".\n  - `finish` and `save` failures are surfaced by `author_evidence_with_options` and `PendingAssessment::persisted`. `prepare_assessment` and `PendingAssessment::failed` also report usage-record failures. Failure messages include \"cannot record usage … (evidence written: …)\".\n  - Tests: `undeterminable_unwritable_or_project_state_fails_before_a_model_request` covers undeterminable, unwritable and project-internal state for both the single-subject and `--all` forms. `usage_write_failures_are_reported_without_claiming_recorded_history` asserts a nonzero exit, \"cannot record\" in stderr, and no \"Usage:\" claim on stdout.\n  - The coverage-loss `store` wraps its write error as \"cannot keep the coverage-loss review at …\" and `review` propagates it with `?`. No test forces that write to fail. The branch is only an error-message wrapper and is covered by the same pattern as the usage tests, so I did not count it as a gap.\n\n**Unspecified behavior.** The extra behaviors in the {impl} code are the refusal of a state root inside the project and the uncached GitHub reads. The requirement's own text specifies both (state must not be in the project repository, and the GitHub cache must not be used for such a root). The GitHub cache write is best-effort. That is acceptable because the cache is not history and no operation requires it.\n\nThere are no {fixme} references.",
   "references": "d6fa3e8e26ccae180b2f7e333c1aa1f1783f4219dcb2b5bf3e119c27dc157602",
   "inputs": [
     {
@@ -29,7 +29,7 @@
     {
       "file": "md/reference.md",
       "item": "section[How%20it%20works]/section[Authoring%20evidence%20with%20a%20model]",
-      "hash": "7ac6077405c224c15bcd1d66c49394ba6e7fb7a636f1cad3234524c6bd18b1a7"
+      "hash": "9c4489800bf0e6225f8b313ec36c413b6caba6f65a1bd9cc859cec752ed64ac6"
     },
     {
       "file": "src/authoring/coverage_loss.rs",
@@ -167,27 +167,39 @@
       "hash": "d39c832e45087b364c39229e2def514e750e168eab7df427f9fe2cf94a46dc8f"
     },
     {
-      "file": "md/requirements/authoring.md",
-      "item": "section[Authoring%20evidence]/section[Model%20tools]/section[Look%20up%20definitions%20and%20references:%20`references`]",
-      "hash": "87148e1adb69ebeb91f3e6c1e675d56046e4165ec30950791f3cf6d7df0ee75b"
+      "file": "src/authoring/coverage_loss.rs",
+      "item": "fn[status_lines]",
+      "hash": "424558e93d74d392a88cacc54e19952b69abf46abd827a2d6bbf02cff9a96c82"
+    },
+    {
+      "file": "src/authoring/coverage_loss.rs",
+      "item": "fn[review_losses]",
+      "hash": "9ae70f46d6ad2d36db6006f2f68a62003b4c34de1e7fb047a2c78597fac4d228"
+    },
+    {
+      "file": "src/authoring/coverage_loss.rs",
+      "item": "struct[CoverageLossOutcome]",
+      "hash": "b04bfc273abbc8ae0454d20ebcf6d611bc6007b424acecf1b57e0d251425263f"
+    },
+    {
+      "file": "src/authoring/coverage_loss.rs",
+      "item": "mod[tests]",
+      "hash": "8ae53cb8dae27e406bd36856f78fc566f0d3651baab224982ce5b42e270db3a4"
     },
     {
       "file": "md/requirements/authoring.md",
-      "item": "section[Authoring%20evidence]/section[Model%20tools]/section[Submit%20the%20result:%20`submit_judgment`]",
-      "hash": "6fde020d7fcc9dc55f96d05362c00f071ab64eb963df18077337aa6986f6ca15"
+      "item": "section[Authoring%20evidence]/section[Recording%20results]/section[Usage%20history]",
+      "hash": "546ff5ad3a9765c8afb926c98516916ce4d53e2c4ec32c8410b720f0e135da1e"
     },
     {
-      "definition": "requirements.references.definition_selection",
-      "text": [
-        ":::{definition} definition_selection",
-        ":phrase: definition selection",
-        "",
-        "A full requirement or example name, or a definition glob, identifying the",
-        "requirements and named examples it matches under",
-        "{cite}`requirements.references.definition_globs`. A name without `*` selects",
-        "exactly that definition.",
-        ":::"
-      ]
+      "file": "src/github.rs",
+      "item": "impl[GithubIssues]",
+      "hash": "e4eca8fa1f03b6d2c668ba4f18ad1409cb210a5da880c4f9f0f101b160e8e948"
+    },
+    {
+      "file": "src/github.rs",
+      "item": "impl[Client]",
+      "hash": "71906ecf2c5bb266223e06db234465045589c855fafe64da657995fee53e3608"
     }
   ]
 }

@@ -1,7 +1,7 @@
 {
   "requirement": "A requirement MAY be distributed: it states obligations that each of many sites\nin the sources must uphold on its own, such as a convention every validation\nfunction follows, and MAY also state obligations that particular code carries\nout, which that code implements with `{impl}`. A `{req}` body declares a distributed requirement\nby containing one or more nested query directives: `:::{sites} <name>` for a\nsite query, which finds the places the obligation applies, or\n`:::{violations} <name>` for a violation query, which finds constructs likely to\nbreak it. A requirement with a violation query MUST also have a site query.\nQuery names MUST be single identifier segments under\n{cite}`requirements.ci.identifiers`, unique within the requirement. A query\ndirective outside a `{req}` body MUST be a validation error. Each query body\nMUST be one fenced `yaml` code block containing a mapping with only these keys:\n\n- `language`, required: the name of an outline profile with a grammar under\n  {cite}`requirements.references.outlines`: `rust`, `python`, `typescript`,\n  `tsx`, `css`, `markdown`, `toml`, or `yaml`.\n- `paths`, optional: project-relative files or directories. Only sources at or\n  under one of them are searched; without it, every source of the language is.\n- `exclude`, optional: project-relative files or directories whose sources are\n  not searched, even under `paths`.\n- `rule`, required, with optional `utils` and `constraints`: an ast-grep rule\n  core in the syntax of Habeas's pinned `ast-grep-config` version, matched\n  against the language's pinned grammar.\n- `within`, required for violation queries and not allowed for site queries:\n  the name of a site query in the same requirement.\n- `match` and `no_match`, required: nonempty lists of source snippets in the\n  query's language. Each `match` snippet MUST contain at least one match of the\n  query, and each `no_match` snippet none, where a violation query counts only matches inside a site of its `within` query in the same snippet.\n\nValidation MUST report a query whose body is not such a mapping, whose rule does\nnot compile, whose `within` names no site query of the requirement, a violation query without `within`, or one of whose snippets fails to parse or has the wrong match result, and a site query\nthat matches nothing in the project. Queries MUST search exactly the sources\nreference discovery considers under {cite}`requirements.references.discovery`, in\ntheir original text.\n\nA match's site MUST be the innermost outline node, under\n{cite}`requirements.references.outlines`, whose range contains the match; for a violation query, it MUST instead be the innermost site of its `within` query that contains the match, and a match inside none of that query's\nsites MUST be discarded. A requirement's sites MUST be the distinct sites of all\nits queries' matches. Each site MUST have a site review under\n{cite}`requirements.references.site_review`, and needs no reference to the\nrequirement; being a site MUST NOT count as a reference for\n{cite}`requirements.references.rust_item_coverage`, because a distributed\nrequirement concerns a cross-cutting obligation, not why the item exists.\nUpgrading `ast-grep-config` MAY change matches and MUST be treated as a\ndeliberate change. The book MUST render each query directive as a badge\nnaming its kind and name, followed by its code block.",
   "determination": true,
-  "rationale": "I found no gaps. Each obligation maps to code reachable from an {impl} item and to a test carrying a {test} reference.\n\n**Query parsing and validation** (`src/structural.rs`, `src/sites.rs`)\n- **One fenced yaml block and a mapping with only the allowed keys.** `parse_queries` and `yaml_block` check this. `QueryBody` is a serde struct with `deny_unknown_fields`, and `language`, `rule`, `match` and `no_match` are required. `malformed_queries_are_reported_each_on_its_own` covers a prose body (the \"exactly one fenced yaml code block\" error) and an extra `fix` key (\"unknown field `fix`\").\n- **Single-identifier, unique query names.** `validate_queries` rejects a name that is not a valid single segment and reports duplicates. The `bad.name` and `twice` cases in the same test cover both.\n- **A violation query needs a site query.** `validate_queries` reports this. It is tested by `a_violation_query_needs_a_site_query` and the `loose` case.\n- **`within`.**\n  - `within_query` requires `within` on violation queries, forbids it on site queries, and requires it to name a site query. The `loose`, `keyed` and `astray` cases test these.\n  - The check that `within` names a *site* query, as opposed to any query, is not separately tested. The text names only a missing target, and `astray` covers that.\n- **Rule compilation and language.** `StructuralRule::compile` rejects an unknown language and a rule that does not compile. It is tested in `rules_compile_for_every_grammar_and_report_invalid_input` and the `uncompiled` case. `utils` and `constraints` are tested by `declared_queries_apply_their_utils_and_constraints`.\n- **Snippets.** `snippet_matches` and `validate_queries` check that `match` and `no_match` are nonempty, that each snippet parses, and that each has the right match count. A violation query counts only matches inside a `within` site in the same snippet. `snippets_must_have_the_expected_matches_counting_violations_within_sites` and the `nothing`/`no_match: []` cases test this.\n- **A site query that matches nothing.** `discover` reports this, and the `nothing` and `twice` cases test it.\n- **Query directive outside a `{req}` body.** `validate_query_placement` reports this. It is reached from `collect_definitions`, which `inspect_repository_with_progress` calls. The `outside` case tests it, and the `literal` case checks that code blocks stay literal.\n\n**Search scope** (`query_matches`)\n- `query_matches` searches only the discovered files passed to it. It filters them by language, `paths` and `exclude`, and reads each file's original text from disk.\n- The `paths`/`exclude` behaviour is tested in `ast_grep_queries_run_declared_queries_and_return_their_sites`, which uses `paths: [src]`, `exclude: [src/skip.rs]` and an out-of-path `tests/outside.rs`.\n\n**Sites** (`query_matches`, `owning_site`, `innermost_node`, `collect_sites`)\n- Each match is attributed to the innermost outline node containing it. A violation match is attributed to the innermost `within` site, and a match inside none is discarded. Sites are made distinct by the `(file, item)` key in `collect_sites`.\n- Tests: `sites_are_the_innermost_nodes_of_site_matches_and_violations_within_them`, `matches_belong_to_the_innermost_node_or_comment_owner`, and the tools query test, which checks that violations outside a site are discarded.\n- That sites test also asserts the missing-site-review errors (via `sites::validate` from `inspect_repository_with_progress`). It also asserts that a site is not a reference for Rust item coverage: `check_two` is reported uncovered.\n\n**Rendering and pinning**\n- `replace_query_directives` renders the badge followed by the code block. It is tested by `query_directives_render_as_badges_followed_by_their_code_blocks`, which covers sites, violations, and literal directives inside code.\n- `Cargo.toml` pins `ast-grep-config = \"=0.51.1\"`, so an upgrade must be a deliberate change. This needs no test because nothing in it runs.\n\n**Unspecified behavior**\n- The `ast_grep` authoring query form (`declared_query`) is specified by `requirements.authoring.structural_search`, which the same code marks with {impl}.",
+  "rationale": "I found no gap. Each obligation maps to reachable code and a test that carries a `{test}` reference to the subject.\n\n**Query declaration and validation** (reached from `inspect_repository_with_progress` → `sites::discover`, `collect_definitions`)\n- **Query shape.** `structural::parse_queries` and `yaml_block` enforce the query-body rules.\n  - A query body must be one fenced yaml block. `QueryBody` has `deny_unknown_fields`, `language`, `rule`, `match` and `no_match` are required, and `paths`, `exclude`, `utils`, `constraints` and `within` are optional.\n  - `within_query` rejects `within` on a site query, a violation query without `within`, and a `within` that names no site query.\n  - Test: `malformed_queries_are_reported_each_on_its_own` covers the prose body, unknown key `fix`, `within` on a site query, missing `within` and `within` naming nothing.\n- **Query names.** `sites::validate_queries` requires a single identifier segment via `valid_name` plus a no-dot check, and requires names to be unique within the requirement. Both are covered by the `bad.name` and `twice` cases in the same test.\n- **Violation without a site query.** `validate_queries` reports it. Test: `a_violation_query_needs_a_site_query`.\n- **Rule compilation.** `StructuralRule::compile` runs for every language. Tests: `rules_compile_for_every_grammar_and_report_invalid_input` (all eight grammars, bad rules, unknown language) and the `uncompiled` case in the malformed test.\n- **Snippets.** `snippet_matches` and `validate_queries` check that each `match` snippet has a match, each `no_match` snippet has none, snippets must parse, and the lists must be nonempty. A violation query counts only matches inside a `within` site of the same snippet.\n  - Test: `snippets_must_have_the_expected_matches_counting_violations_within_sites` covers a violation outside any site and a violation inside one.\n  - The malformed test covers the unparseable snippet case.\n- **Site query matching nothing.** `sites::discover` reports it. The `nothing` and `twice` cases in the malformed test cover this.\n- **Directive outside a `{req}` body.** `validate_query_placement`, called from `collect_definitions`, reports it. The malformed test covers the `outside` directive, and the literal directive in a code block is not reported.\n- **`utils`, `constraints`, `paths`, `exclude`.** Tests: `declared_queries_apply_their_utils_and_constraints`, and `ast_grep_queries_run_declared_queries_and_return_their_sites` for paths and exclude.\n\n**Sites**\n- **Search scope.** `query_matches` searches only the files from `discovered_files`, reads them as original text, and applies `paths`/`exclude` through `QueryBody::searches`.\n- **Site assignment.** `innermost_node` and `owning_site` pick the innermost outline node, and a violation match goes to the innermost `within` site. Matches inside no site are discarded, and `collect_sites` takes the distinct sites across all queries.\n  - Tests: `matches_belong_to_the_innermost_node_or_comment_owner`, `sites_are_the_innermost_nodes_of_site_matches_and_violations_within_them`, and the violation/discard assertions in the tools test.\n- **Site reviews and item coverage.** `sites::validate` is called from `inspect_repository_with_progress`. The sites test asserts that every site reports a missing site review.\n  - The same test asserts `check_two` is still reported uncovered, so being a site is not a reference for Rust item coverage.\n- **Pin.** `ast-grep-config` is pinned as `=0.51.1` in `Cargo.toml`. It is a plain version string with no conditional, so it needs no test.\n\n**Book rendering**\n- `lib.rs::replace_query_directives` renders a badge with the kind and name followed by the code block, and leaves code blocks literal. Test: `query_directives_render_as_badges_followed_by_their_code_blocks`.\n\nI found no unspecified behavior in the `{impl}` code.",
   "references": "a195d603b9389e40c146196a60ed68e832da0229e694ac1d5062f6b47b837c2c",
   "inputs": [
     {
@@ -175,7 +175,7 @@
       ],
       "text": [
         ":::{req} rust_item_coverage",
-        "During repository validation, Habeas MUST parse every first-party Rust source file: every `.rs` file among the sources reference discovery considers under {cite}`requirements.references.discovery`, except those under the project-root `vendor` directory. Every explicitly declared function or method, including trait methods and test helpers, and every struct, enum, and union MUST be covered. An item is covered when it has a valid `{impl}`, `{cite}`, or `{test}` reference to a defined requirement or named example, or a valid citation of the built-in `habeas:none` under {cite}`requirements.references.no_requirement`, in a Rust comment attached to it or within its body; or when its outline node, or an outline node containing it, is recorded with its current hash as an outline input of an evidence record, a citation review, or a site review. Search results are not evidence inputs under {cite}`requirements.authoring.text_search`, so only sources an assessment received as mandatory inputs or read count. Comments belong to items under {cite}`requirements.references.outline_comments`; a comment before a field, variant, or attribute inside an item belongs to that item. A named example MUST reference a requirement under {cite}`requirements.examples.definition`. A reference in a string literal, on an enclosing module or impl block, or only in an evidence input MUST NOT count for the items it encloses. Habeas MUST report every uncovered item with its file, line, kind, and name, and MUST report a Rust parse failure instead of silently skipping the file.",
+        "During repository validation, Habeas MUST parse every first-party Rust source file: every `.rs` file among the sources reference discovery considers under {cite}`requirements.references.discovery`, except those under the project-root `vendor` directory. Every explicitly declared function or method, including trait methods and test helpers, and every struct, enum, and union MUST be covered. An item is covered when it has a valid `{impl}`, `{cite}`, or `{test}` reference to a defined requirement or named example, or a valid citation of the built-in `habeas:util` under {cite}`requirements.references.util`, in a Rust comment attached to it or within its body; or when its outline node, or an outline node containing it, is recorded with its current hash as an outline input of an evidence record, a citation review, or a site review. Search results are not evidence inputs under {cite}`requirements.authoring.text_search`, so only sources an assessment received as mandatory inputs or read count. Comments belong to items under {cite}`requirements.references.outline_comments`; a comment before a field, variant, or attribute inside an item belongs to that item. A named example MUST reference a requirement under {cite}`requirements.examples.definition`. A reference in a string literal, on an enclosing module or impl block, or only in an evidence input MUST NOT count for the items it encloses. Habeas MUST report every uncovered item with its file, line, kind, and name, and MUST report a Rust parse failure instead of silently skipping the file.",
         ":::"
       ]
     },
@@ -251,33 +251,113 @@
     },
     {
       "file": "src/structural.rs",
-      "item": "",
-      "hash": "a63d3a2434f098967c528f44ce4487a9a4fd4dbb06ad3c8bf2862bc858409c33"
+      "item": "impl[QueryLanguage/LanguageExt]",
+      "hash": "f6defc13b290ad7338dc7d50eb6095d37a90bbb3fd6309896f1b7e4ef157fcb9"
     },
     {
-      "file": "src/sites.rs",
-      "item": "type[Sites]",
-      "hash": "d7ad4f2e82794fcb135705d4ab71d9b5e4305c3a78568bf6de9193d66d3b9274"
+      "file": "src/structural.rs",
+      "item": "struct[StructuralRule]",
+      "hash": "aac8e7bee1fcaef4c13436f62b864cddf668b95648665a2c69c87d22d63584b0"
     },
     {
-      "file": "src/sites.rs",
-      "item": "fn[in_own_site]",
-      "hash": "a60f96307196cd550ea315dc8f6c8a30a7cc775f6034596b8bdf94fd617204f8"
+      "file": "src/structural.rs",
+      "item": "impl[StructuralRule]",
+      "hash": "95000458cca96a1c58996b77d8f8684c6d34be829cf90a9c279501f44784e06c"
     },
     {
-      "file": "src/sites.rs",
-      "item": "fn[review_path]",
-      "hash": "0cedaa98f96fdd9d333a8315ef19c328816d837f02040a4856e896d57c75a9f3"
+      "file": "src/structural.rs",
+      "item": "fn[error_chain]",
+      "hash": "ca2d7efe36e8034ae2310a263d2c285b4cdd57bce26c0dd45be91b230b566288"
     },
     {
-      "file": "src/sites.rs",
-      "item": "fn[subject_label]",
-      "hash": "2de181b8694523d5cbfdcba31e2de731facf5a80317c2b8c148b64e39e4567a3"
+      "file": "src/structural.rs",
+      "item": "fn[innermost_node]",
+      "hash": "f4101351d5611e07c4c317425f9a8afbb5045bc4758366e73d1b00147f5ba591"
     },
     {
-      "file": "src/sites.rs",
-      "item": "fn[is_review_path]",
-      "hash": "dd0a785f767dcedb02890fcb61b576f6d6372b958285da073ab4a991d3fb76b0"
+      "file": "src/structural.rs",
+      "item": "enum[QueryKind]",
+      "hash": "64fc991ef7a29c68834d786e8f90663c303843aa43255aab1e4b2ace36d93fa9"
+    },
+    {
+      "file": "src/structural.rs",
+      "item": "struct[QueryBody]",
+      "hash": "b1af4fc1939c0cf0bcc1fd2615e288fa658e6cc6c0a871e2cd2ec1e69c208b10"
+    },
+    {
+      "file": "src/structural.rs",
+      "item": "impl[QueryBody]",
+      "hash": "870d237e83d62d87f2309699aeb77926c135125556f97f23666ce3a11941de0c"
+    },
+    {
+      "file": "src/structural.rs",
+      "item": "struct[DeclaredQuery]",
+      "hash": "e5ba66676514dcf4dccd144d0a237708ae0366aaf133557fafbb16deaf619652"
+    },
+    {
+      "file": "src/structural.rs",
+      "item": "fn[declared_queries]",
+      "hash": "8aabbf9ebfe5e1ebf99527fe4054516e446877b8ef00379347c6dc43418a739e"
+    },
+    {
+      "file": "src/structural.rs",
+      "item": "fn[has_query_directive]",
+      "hash": "f27db551f7b164424e67a11c7bf5d5f0cc42f0589ae48ebff91b3d2dcc25f7e6"
+    },
+    {
+      "file": "src/structural.rs",
+      "item": "fn[parse_queries]",
+      "hash": "96f1a821a28e2be27e0416fb500c36ea27fb5f46decab42bb51838046453e190"
+    },
+    {
+      "file": "src/structural.rs",
+      "item": "fn[query_fence]",
+      "hash": "adf09ca05cf126c5decb24401aa7470d2fbbca4e84c9e9a6a8c94e6ab776cbcc"
+    },
+    {
+      "file": "src/structural.rs",
+      "item": "fn[yaml_block]",
+      "hash": "2f9ca7c345f3d51c999bce1d21e96298e299f988e67290633ac7cfe700e25ff6"
+    },
+    {
+      "file": "src/structural.rs",
+      "item": "struct[Site]",
+      "hash": "422c547c0e263e229aaac0dae70d3b1c1b000a462a387258b8b2838f96c76a13"
+    },
+    {
+      "file": "src/structural.rs",
+      "item": "impl[QueryKind]",
+      "hash": "c996f3909f19e553eec837d23da00f55c67399ab1940bba4fab67cd5a776b943"
+    },
+    {
+      "file": "src/structural.rs",
+      "item": "struct[QueryMatch]",
+      "hash": "e2909e52444930aa9dc4cca1698a1123eb78e66e65e794066dce9213d985dfd1"
+    },
+    {
+      "file": "src/structural.rs",
+      "item": "fn[query_sites]",
+      "hash": "8b0d864241fab8934dc4c0c4c7d26f1c78de89d88e2f3608c39abf77bc7bd04c"
+    },
+    {
+      "file": "src/structural.rs",
+      "item": "fn[query_matches]",
+      "hash": "006c937727f056ef86629f0fecc139b75b90fef215ab8a233d0eae5edf824beb"
+    },
+    {
+      "file": "src/structural.rs",
+      "item": "fn[within_query]",
+      "hash": "9556641b1e2fa763fbdc75e9e3540003ebb10afff19f21456fc28410fde2f410"
+    },
+    {
+      "file": "src/structural.rs",
+      "item": "fn[owning_site]",
+      "hash": "d033395dff6d532b2fe105b188accf998426656ac32452448dfe723cdb462ca6"
+    },
+    {
+      "file": "src/structural.rs",
+      "item": "fn[snippet_matches]",
+      "hash": "1323759df1756f2febfc12a1728d23059b35951dc6f6f4da568bb38e7f9ed4d9"
     },
     {
       "file": "src/sites.rs",
@@ -298,11 +378,6 @@
       "file": "src/sites.rs",
       "item": "fn[validate_query_placement]",
       "hash": "1ebb3a0a33a8c8066a3626c6e6f78510d3131b92e43b9c4fb0833ccc3f704975"
-    },
-    {
-      "file": "src/sites.rs",
-      "item": "fn[cited_declarations]",
-      "hash": "ec7884b7640b9dac5f2a6dcee45fad88856705f498a23b2443914962f8f6ed6d"
     }
   ]
 }
