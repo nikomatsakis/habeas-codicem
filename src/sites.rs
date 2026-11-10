@@ -1373,6 +1373,48 @@ no_match: ["struct S;"]
         );
     }
 
+    // {test}`requirements.ci.outcomes`
+    #[test]
+    fn a_site_reviews_fixme_entries_count_only_fixmes_within_that_site() {
+        let fixme = |issue: &str| {
+            format!(
+                "    // :::{{fixme}} requirements.rule\n    // :github: o/r#{issue}\n    // Panics instead of reporting.\n    // :::\n"
+            )
+        };
+        let source = SOURCE
+            .replace(
+                "fn check_two() {}",
+                &format!("fn check_two() {{\n{}}}", fixme("1")),
+            )
+            .replace(
+                "fn other() { panic!(\"y\"); }",
+                &format!("fn other() {{\n{}}}", fixme("2")),
+            );
+        let temp = project(RULE, &source);
+        let root = temp.path();
+        // A {fixme} inside the site acknowledges its gap; one outside every
+        // site, or inside another site, does not.
+        write_review(
+            root,
+            "fn[check_two]",
+            json!({"determination": {"FIXME": ["o/r#1", "o/r#2"]}}),
+        );
+        write_review(
+            root,
+            "fn[check_one]",
+            json!({"determination": {"FIXME": ["o/r#1"]}}),
+        );
+        let (errors, _) = inspect(root);
+        let entry = |item: &str, issue: &str| {
+            review_errors(&errors, item)
+                .iter()
+                .any(|error| error.contains(&format!("FIXME entry \"o/r#{issue}\" is neither")))
+        };
+        assert!(!entry("fn[check_two]", "1"), "{errors:#?}");
+        assert!(entry("fn[check_two]", "2"), "{errors:#?}");
+        assert!(entry("fn[check_one]", "1"), "{errors:#?}");
+    }
+
     // {test}`requirements.references.site_review`
     #[test]
     fn status_and_info_report_site_reviews_by_requirement_file_and_selector() {

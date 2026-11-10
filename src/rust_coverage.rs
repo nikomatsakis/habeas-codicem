@@ -238,6 +238,8 @@ type Unreferenced = Vec<(usize, usize, &'static str, String)>;
 // {impl}`requirements.references.procedure`
 // {impl}`requirements.references.outline_comments`
 // {impl}`requirements.references.roles`
+// {impl}`requirements.definitions.references`
+// {impl}`requirements.references.util`
 pub(crate) fn unreferenced_items(
     source: &str,
     definitions: &BTreeMap<String, Declaration>,
@@ -322,6 +324,7 @@ pub(crate) fn rust_files(root: &Path, sources: &[PathBuf]) -> Vec<PathBuf> {
 }
 
 // {impl}`requirements.ci.errors`
+// {impl}`requirements.references.procedure`
 pub(crate) fn validate_rust_functions(
     root: &Path,
     sources: &[PathBuf],

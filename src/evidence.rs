@@ -173,6 +173,8 @@ pub(crate) fn inspect_repository(root: &Path) -> io::Result<RepositoryInspection
 // {impl}`requirements.configuration.workspace_location`
 // {impl}`requirements.configuration.workspace_structure`
 // {impl}`requirements.configuration.loading`
+// {impl}`requirements.ci.book_source`
+// {impl}`requirements.definitions.declaration`
 pub(crate) fn inspect_repository_with_progress(
     root: &Path,
     mut progress: impl FnMut(InspectionProgress),
@@ -396,6 +398,8 @@ pub(crate) fn book_source_dir(root: &Path, errors: &mut Vec<String>) -> PathBuf 
 // {impl}`requirements.examples.definition`
 // {impl}`requirements.ci.requirements_inputs`
 // {impl}`requirements.ci.errors`
+// {impl}`requirements.ci.identifiers`
+// {impl}`requirements.definitions.declaration`
 fn collect_definitions(
     root: &Path,
     md_root: &Path,
@@ -1294,6 +1298,10 @@ struct InputRange {
 // {impl}`requirements.examples.evidence`
 // {impl}`requirements.ci.reference_set`
 // {impl}`requirements.ci.errors`
+// {impl}`requirements.definitions.references`
+// {impl}`requirements.references.anchors`
+// {impl}`requirements.references.no_requirement`
+// {impl}`requirements.references.util`
 fn validate_references(
     root: &Path,
     definitions: &BTreeMap<String, Declaration>,

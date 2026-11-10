@@ -304,6 +304,7 @@ fn an_unacknowledged_gap_beside_an_acknowledged_one_is_false() {
 // {test}`requirements.ci.outcomes`
 // {test}`requirements.index.state`
 // {test}`requirements.cli.fixme_summary`
+// {test}`requirements.ci.determination`
 #[test]
 fn malformed_fixme_is_invalid_and_reports_the_required_shape() {
     let temp = fixture();
@@ -323,6 +324,44 @@ fn malformed_fixme_is_invalid_and_reports_the_required_shape() {
     assert!(row.contains("Invalid"), "{row}");
     assert!(status.contains("nonempty array"), "{status}");
     assert!(!status.contains("affects"), "{status}");
+}
+
+// {test}`requirements.ci.determination`
+#[test]
+fn fixme_does_not_excuse_missing_or_malformed_evidence() {
+    let temp = fixture();
+    let errors = |root: &Path| habeas::validate_repository(root).unwrap().errors;
+    assert!(errors(temp.path()).is_empty(), "{:?}", errors(temp.path()));
+    let path = temp.path().join("evidence/requirements.timeout.json");
+    let original: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+
+    // A malformed record judged FIXME: an unknown field and a wrong example
+    // text are each still reported.
+    let mut malformed = original.clone();
+    malformed["extra"] = json!(1);
+    malformed["example"] = json!("Timeout handling does not retry.");
+    fs::write(&path, serde_json::to_string_pretty(&malformed).unwrap()).unwrap();
+    let found = errors(temp.path());
+    for expected in ["unexpected field \"extra\"", "example text changed"] {
+        assert!(
+            found.iter().any(
+                |error| error.starts_with("evidence/requirements.timeout.json")
+                    && error.contains(expected)
+            ),
+            "missing {expected:?}: {found:#?}"
+        );
+    }
+
+    // A definition whose gap a {fixme} acknowledges still needs evidence.
+    fs::remove_file(&path).unwrap();
+    let found = errors(temp.path());
+    assert!(
+        found
+            .iter()
+            .any(|error| error
+                .starts_with("evidence/requirements.timeout.json: missing for example")),
+        "{found:#?}"
+    );
 }
 
 // {test}`requirements.ci.outline_inputs`

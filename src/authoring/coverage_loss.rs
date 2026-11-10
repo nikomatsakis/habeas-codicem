@@ -101,17 +101,18 @@ pub(crate) fn lost_items(root: &Path, replaced: &[ReplacedRecord]) -> io::Result
     }
     let root = fs::canonicalize(root)?;
     let definitions = crate::evidence::load_definitions(&root)?;
-    let mut errors = Vec::new();
+    // Any failure aborts, so this is not a validation site.
+    let mut failures = Vec::new();
     let evidence = root.join("evidence");
     let evidence_files = if evidence.is_dir() {
-        crate::evidence::files_with_extension(&root, &evidence, "json", &mut errors)
+        crate::evidence::files_with_extension(&root, &evidence, "json", &mut failures)
     } else {
         Vec::new()
     };
     let current = EvidenceReads::load(&evidence_files);
-    let files = crate::evidence::discovered_files(&root, &mut errors);
-    if !errors.is_empty() {
-        return Err(io::Error::other(errors.join("\n")));
+    let files = crate::evidence::discovered_files(&root, &mut failures);
+    if !failures.is_empty() {
+        return Err(io::Error::other(failures.join("\n")));
     }
     let mut lost = Vec::new();
     for path in crate::rust_coverage::rust_files(&root, &files) {
@@ -270,7 +271,7 @@ pub(super) fn tool_definition() -> Value {
 
 /// Parses a `submit_coverage_review` call: exactly one finding, `root` or
 /// `not needed`, with a nonempty rationale for each of `definitions`.
-// {impl}`requirements.authoring.submission`
+// {impl}`requirements.authoring.coverage_loss`
 pub(super) fn submission(
     arguments: &Value,
     definitions: &[String],
@@ -691,5 +692,37 @@ mod tests {
                 "impl[A]/fn[b]"
             )
         );
+    }
+
+    // {test}`requirements.authoring.habeas_background`
+    // {test}`requirements.authoring.judgment_rules`
+    // {test}`requirements.authoring.coverage_loss`
+    #[test]
+    fn prompts_carry_the_shared_background_and_judgment_rules() {
+        let lost = LostItem {
+            file: "src/lib.rs".into(),
+            item: "fn[lost]".into(),
+            readers: vec![Reader {
+                definition: "requirements.ready".into(),
+                rationale: "It read fn[lost].".into(),
+            }],
+        };
+        let prompt = prompt(&lost, "[\"the mandatory inputs\"]").unwrap();
+        let joined = format!("{}\n{}", prompt.system, prompt.subject);
+        for expected in [
+            super::super::approved_text("habeas_background", 0),
+            super::super::approved_text("habeas_background", 1),
+            super::super::approved_text("judgment_rules", 0),
+            "src/lib.rs",
+            "fn[lost]",
+            "## requirements.ready\n\nIt read fn[lost].",
+            "[\"the mandatory inputs\"]",
+        ] {
+            assert!(
+                joined.contains(expected),
+                "missing {expected:?} in:\n{joined}"
+            );
+        }
+        assert!(!joined.contains("{{"), "{joined}");
     }
 }

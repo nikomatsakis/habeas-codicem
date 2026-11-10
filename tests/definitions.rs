@@ -689,6 +689,122 @@ fn markdown_and_plain_text_inputs_contribute_their_term_references() {
     }
 }
 
+// {test}`requirements.references.markdown_literals`
+// {test}`requirements.definitions.dependencies`
+#[test]
+fn literal_term_roles_in_subject_and_requirements_inputs_need_no_definition() {
+    let temp = fixture();
+    let root = temp.path();
+    let glossary = root.join("md/glossary.md");
+    let mut text = fs::read_to_string(&glossary).unwrap();
+    text.push_str("\n:::{definition} c\n:phrase: gamma\n\nA third term.\n:::\n");
+    fs::write(&glossary, text).unwrap();
+    let literal = "Write `TERM`glossary.c`` as code, \\TERM`glossary.c` escaped, and <span title=\"TERM`glossary.c`\">html</span>.\n\n```text\nTERM`glossary.c`\n```\n";
+    let chapter = |extra: &str| {
+        format!(":::{{req}} ready\nUse TERM`glossary.a`.\n:::\n\n:::{{req}} literal\n{literal}{extra}:::\n")
+            .replace("TERM", "{term}")
+    };
+    fs::write(root.join("md/rules.md"), chapter("")).unwrap();
+    let glossary_ab = || {
+        vec![
+            definition(root, "glossary.a"),
+            definition(root, "glossary.b"),
+        ]
+    };
+    let write = |root: &Path| {
+        // The literal requirement as subject, and as a requirements input of
+        // another requirement.
+        approve(&record(
+            root,
+            "rules.literal",
+            vec![requirements(root, "rules.literal", &["rules.literal"])],
+        ));
+        let mut inputs = vec![requirements(
+            root,
+            "rules.*",
+            &["rules.literal", "rules.ready"],
+        )];
+        inputs.extend(glossary_ab());
+        approve(&record(root, "rules.ready", inputs));
+    };
+    write(root);
+    let errors = validate_repository(root).unwrap().errors;
+    assert!(errors.is_empty(), "{errors:#?}");
+
+    // The same role written as a reference needs the definition in both.
+    fs::write(
+        root.join("md/rules.md"),
+        chapter(&"\nAnd TERM`glossary.c` itself.\n".replace("TERM", "{term}")),
+    )
+    .unwrap();
+    write(root);
+    let errors = validate_repository(root).unwrap().errors;
+    for record in ["rules.literal", "rules.ready"] {
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.starts_with(&format!("evidence/{record}.json"))
+                    && e.contains("expected exactly one definition input for glossary.c, found 0")),
+            "{record}: {errors:#?}"
+        );
+    }
+}
+
+// {test}`requirements.definitions.dependencies`
+#[test]
+fn a_term_referenced_only_by_a_rust_input_comment_needs_its_definition_input() {
+    let temp = fixture();
+    let root = temp.path();
+    let glossary = root.join("md/glossary.md");
+    let mut text = fs::read_to_string(&glossary).unwrap();
+    text.push_str("\n:::{definition} c\n:phrase: gamma\n\nA third term.\n:::\n");
+    fs::write(&glossary, text).unwrap();
+    // Only the function's comment references glossary.c; a reference in a
+    // string literal is not a comment and needs nothing.
+    fs::write(
+        root.join("src/lib.rs"),
+        "// IMPL`rules.ready`\n// Uses TERM`glossary.c`.\npub fn run() {}\n\n// IMPL`rules.ready`\npub fn quoted() -> &'static str {\n    \"TERM`glossary.c`\"\n}\n"
+            .replace("IMPL", "{impl}")
+            .replace("TERM", "{term}"),
+    )
+    .unwrap();
+    let base = |items: &[&str]| {
+        let mut inputs = vec![requirements(root, "rules.*", &["rules.ready"])];
+        for item in items {
+            inputs.push(outline_input(root, "src/lib.rs", item).unwrap());
+        }
+        inputs.push(definition(root, "glossary.a"));
+        inputs.push(definition(root, "glossary.b"));
+        inputs
+    };
+    let missing = "expected exactly one definition input for glossary.c, found 0";
+    // Reading only the function with the string literal needs no glossary.c.
+    approve(&record(root, "rules.ready", base(&["fn[quoted]"])));
+    let errors = validate_repository(root).unwrap().errors;
+    assert!(
+        !errors.iter().any(|e| e.contains("glossary.c")),
+        "{errors:#?}"
+    );
+    // Reading the function whose comment references it requires it.
+    approve(&record(
+        root,
+        "rules.ready",
+        base(&["fn[run]", "fn[quoted]"]),
+    ));
+    let errors = validate_repository(root).unwrap().errors;
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.starts_with("evidence/rules.ready.json") && e.contains(missing)),
+        "{errors:#?}"
+    );
+    let mut inputs = base(&["fn[run]", "fn[quoted]"]);
+    inputs.push(definition(root, "glossary.c"));
+    approve(&record(root, "rules.ready", inputs));
+    let errors = validate_repository(root).unwrap().errors;
+    assert!(errors.is_empty(), "{errors:#?}");
+}
+
 // {test}`requirements.definitions.transitive_cycle`
 // {test}`requirements.definitions.dependencies`
 // {test}`requirements.definitions.references`

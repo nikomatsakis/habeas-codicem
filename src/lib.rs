@@ -111,7 +111,7 @@ pub(crate) struct DefinitionOption {
     pub(crate) value: String,
 }
 
-// {cite}`requirements.cli.mdbook`
+// {cite}`habeas:util`
 pub(crate) struct Definition {
     pub(crate) path: PathBuf,
     pub(crate) text: String,

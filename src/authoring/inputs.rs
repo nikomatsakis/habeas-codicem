@@ -1133,6 +1133,80 @@ pub(super) mod tests {
     }
 
     // {test}`requirements.authoring.mandatory_inputs`
+    // {test}`requirements.authoring.coverage_loss`
+    #[test]
+    fn coverage_loss_inputs_combine_the_item_reader_declarations_and_terms_once() {
+        use crate::authoring::coverage_loss::{LostItem, Reader};
+        let root = project();
+        fs::write(
+            root.path().join("md/terms.md"),
+            ":::{definition} unit\n:phrase: unit\nA unit.\n:::\n",
+        )
+        .unwrap();
+        fs::write(
+            root.path().join("md/requirements.md"),
+            format!(
+                ":::{{req}} ready\nReady uses {}.\n:::\n\n:::{{req}} other\nOther uses {}.\n:::\n",
+                role("term", "terms.unit"),
+                role("term", "terms.unit")
+            ),
+        )
+        .unwrap();
+        fs::write(root.path().join("src/lib.rs"), "fn lost() {}\n").unwrap();
+        let reader = |definition: &str| Reader {
+            definition: definition.to_owned(),
+            rationale: "Read it.".to_owned(),
+        };
+        let lost = |readers: Vec<Reader>| LostItem {
+            file: "src/lib.rs".to_owned(),
+            item: "fn[lost]".to_owned(),
+            readers,
+        };
+        let sources = AssessmentSources::prepare_coverage_loss(
+            root.path(),
+            lost(vec![
+                reader("requirements.ready"),
+                reader("requirements.other"),
+                reader("requirements.ready"),
+            ]),
+        )
+        .unwrap();
+        let inputs = sources.mandatory_inputs();
+        // The item first, each reader's declaration once, and the shared term
+        // once.
+        assert_eq!(inputs[0]["item"], "fn[lost]", "{inputs:#?}");
+        let count =
+            |key: &str, value: &str| inputs.iter().filter(|input| input[key] == value).count();
+        assert_eq!(
+            count("requirements", "requirements.ready"),
+            1,
+            "{inputs:#?}"
+        );
+        assert_eq!(
+            count("requirements", "requirements.other"),
+            1,
+            "{inputs:#?}"
+        );
+        assert_eq!(count("definition", "terms.unit"), 1, "{inputs:#?}");
+        assert_eq!(inputs.len(), 4, "{inputs:#?}");
+
+        // An unresolvable mandatory input aborts preparation.
+        fs::write(
+            root.path().join("habeas.toml"),
+            "version = 1\n[evidence]\ndisallow = ['md/terms.md']\n",
+        )
+        .unwrap();
+        let error = AssessmentSources::prepare_coverage_loss(
+            root.path(),
+            lost(vec![reader("requirements.ready")]),
+        )
+        .err()
+        .unwrap();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied, "{error}");
+        assert!(error.to_string().contains("md/terms.md"), "{error}");
+    }
+
+    // {test}`requirements.authoring.mandatory_inputs`
     // {test}`requirements.references.citation_review`
     #[test]
     fn citation_review_inputs_combine_item_declarations_terms_and_built_ins_once() {

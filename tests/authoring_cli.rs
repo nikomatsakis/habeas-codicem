@@ -2289,6 +2289,21 @@ fn bundled_skills_guide_distributed_requirements_with_do_and_dont_lists() {
     ] {
         assert!(donts.contains(phrase), "Don't list lacks {phrase:?}");
     }
+    // The reference explains distributed requirements: what they are, the
+    // two query kinds, and each query's keys.
+    assert_in_order(
+        "habeas-requirements",
+        &[
+            "# Distributed requirements",
+            "A distributed requirement instead declares queries that find its sites, and Habeas reviews each site separately",
+            "## Queries",
+            "`:::{sites} <name>` selects the places the obligation applies",
+            "`:::{violations} <name>` selects constructs likely to break it",
+            "Each needs `within: <site query>`",
+            "Each body has these keys: `language`",
+            "`within`, required for violation queries; and `match` and `no_match` snippet lists",
+        ],
+    );
     assert_phrases(
         "habeas-requirements",
         &["`habeas author --all` authors a site review for each site"],
@@ -2297,7 +2312,7 @@ fn bundled_skills_guide_distributed_requirements_with_do_and_dont_lists() {
         "habeas-evidence",
         &[
             "1. If it does apply, fix the code at the site.",
-            "2. If the site should not be covered, narrow the site query or tighten the text describing sites",
+            "2. If the site should not be covered, narrow the site query or tighten the text describing sites; if the obligation's text admits a reading under which the site fails, tighten that text",
             "Don't re-run a false site review for a different result.",
         ],
     );

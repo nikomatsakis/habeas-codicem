@@ -606,3 +606,57 @@ fn inaccessible_project_root_is_an_io_error_not_a_report() {
         report.errors
     );
 }
+
+/// Runs `git` in `root`, failing the test if it fails.
+// {cite}`habeas:util`
+fn git(root: &Path, args: &[&str]) {
+    let output = std::process::Command::new("git")
+        .current_dir(root)
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+// {test}`requirements.configuration.evidence_paths`
+#[test]
+fn validation_of_recorded_inputs_is_independent_of_the_git_index() {
+    let temp = fixture();
+    let root = temp.path().join("project");
+    write_inputs(
+        &root,
+        habeas::outline_inputs_for_lines(&root, "data.txt", 1, 2).unwrap(),
+    );
+    assert_eq!(
+        validate_repository(&root).unwrap().errors,
+        Vec::<String>::new()
+    );
+    // In a Git worktree, the recorded file is neither staged nor allowed by
+    // configuration; validation still accepts the current input.
+    git(&root, &["init", "--quiet"]);
+    git(&root, &["add", "Cargo.toml", "book.toml", "md", "evidence"]);
+    let untracked = std::process::Command::new("git")
+        .current_dir(&root)
+        .args(["ls-files", "--error-unmatch", "data.txt"])
+        .output()
+        .unwrap();
+    assert!(
+        !untracked.status.success(),
+        "data.txt must not be in the index"
+    );
+    assert_eq!(
+        validate_repository(&root).unwrap().errors,
+        Vec::<String>::new()
+    );
+    // An edit to it is still detected.
+    fs::write(root.join("data.txt"), "first\nchanged\n").unwrap();
+    let errors = validate_repository(&root).unwrap().errors;
+    assert!(
+        errors.iter().any(|error| error.contains("data.txt")),
+        "{errors:#?}"
+    );
+}

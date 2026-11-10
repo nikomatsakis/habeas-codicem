@@ -1360,6 +1360,61 @@ mod tests {
         );
     }
 
+    // {test}`requirements.authoring.redaction`
+    #[test]
+    fn declaration_text_reaches_the_model_redacted() {
+        let root = project();
+        let token = crate::redaction::tests::github_token();
+        fs::write(
+            root.path().join("md/terms.md"),
+            format!(":::{{definition}} value\n:phrase: value\nA value such as {token}.\n:::\n"),
+        )
+        .unwrap();
+        fs::write(
+            root.path().join("md/requirements.md"),
+            format!(
+                ":::{{req}} ready\nThe project MUST accept {token} as a {}.\n{}\n:::\n\n:::{{req}} other\nOther MUST reject\n{token}\non its own line.\n:::\n",
+                role("term", "terms.value"),
+                role("cite", "requirements.other"),
+            ),
+        )
+        .unwrap();
+        git(root.path(), &["init", "--quiet"]);
+        git(root.path(), &["add", "."]);
+        // The subject, a cited requirement, and a term in the mandatory
+        // inputs and so the prompt, with their line structure kept.
+        let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        let mandatory = Value::Array(sources.mandatory_inputs().to_vec());
+        let text = mandatory.to_string();
+        assert!(!text.contains(&token), "{mandatory:#}");
+        for expected in [
+            "The project MUST accept [REDACTED:GitHub Token] as a",
+            "A value such as [REDACTED:GitHub Token].",
+            "\"Other MUST reject\",\"[REDACTED:GitHub Token]\",\"on its own line.\"",
+        ] {
+            assert!(
+                text.contains(expected),
+                "missing {expected:?}: {mandatory:#}"
+            );
+        }
+        let prompt = super::super::initial_prompt(&sources).unwrap().joined();
+        assert!(!prompt.contains(&token), "{prompt}");
+        // Requirements and definition reads.
+        for arguments in [
+            json!({"requirements":"requirements.*"}),
+            json!({"definition":"terms.value"}),
+        ] {
+            let read = dispatch(&sources, "habeas", &arguments).unwrap();
+            let text = read.result.to_string();
+            assert!(!text.contains(&token), "{arguments}: {:#}", read.result);
+            assert!(
+                text.contains("[REDACTED:GitHub Token]"),
+                "{arguments}: {:#}",
+                read.result
+            );
+        }
+    }
+
     // {test}`requirements.authoring.text_search`
     // {test}`requirements.authoring.additional_read`
     // {test}`requirements.authoring.file_discovery`
