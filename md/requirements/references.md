@@ -427,7 +427,8 @@ the assessed subject MUST contribute; sources with only edges into the subject
 MUST NOT contribute and remain discoverable under
 {cite}`requirements.authoring.reference_index`. A `{cite}` made by the subject
 contributes the cited definition's complete fenced declaration. An anchor under
-{cite}`requirements.references.anchors` contributes the complete anchored file.
+{cite}`requirements.references.anchors` contributes the complete anchored file,
+or for a `path#selector` anchor the anchored node.
 An in-source `{impl}`, `{test}`, or `{fixme}` reference to the subject, except a `{fixme}` inside one of the subject's sites under {cite}`requirements.references.site_review`, contributes the source containing it: for a reference in a supported language, the smallest enclosing
 outline node under {cite}`requirements.references.outline_comments`; for a reference in a Markdown requirement, example, or
 terminology declaration, that complete declaration; for other references, the

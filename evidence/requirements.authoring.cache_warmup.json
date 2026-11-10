@@ -1,7 +1,7 @@
 {
   "requirement": "So that concurrent assessments find their system prompt cached under\n{cite}`requirements.authoring.cache_checkpoints`, a batch MUST start one\nassessment of each kind it contains before any other of that kind, and start the\nothers only once that assessment's first provider request has finished, whether\nor not it succeeded.",
   "determination": true,
-  "rationale": "I found no gaps. The requirement splits into two obligations; each has marked code and tests.\n\n**Obligation 1: start one assessment of each kind before any other of that kind.**\n- `assessment_kind` in `src/authoring/batch.rs` classifies each subject as a requirement, example, citation review or site review.\n- `CacheWarmup::next` in the same file picks the first queued subject whose kind is not currently warming. If the kind is not yet warm, that subject becomes the warming one and is marked `warms`.\n- `run_batch` calls `warmup.next` in its launch loop, and only for subjects `next` returns.\n- Tests:\n  - The unit test `each_kind_starts_one_assessment_until_its_first_request_finishes` checks that one of each kind starts and the rest wait.\n  - The integration tests `a_batch_warms_each_kind_with_one_assessment_before_starting_the_others` and `assert_warmed_first` in `tests/authoring_batch.rs` check the same thing against a real server. Their arrival and answer timestamps check that each kind's first request is answered before any other assessment of that kind arrives.\n\n**Obligation 2: start the others only once that assessment's first provider request has finished, whether or not it succeeded.**\n- `UsageLog::on_first_request` stores a callback.\n- `UsageLog::end_request` in `src/authoring/usage.rs` calls the callback once. It runs for both completed and failed requests, because `converse` calls `end_request` before it examines the response or error.\n- `prepare_assessment` in `src/authoring/mod.rs` installs the callback when the assessment is a warming one.\n- `run_batch` receives the callback's channel message and calls `warmup.warmed`, which moves the kind from warming to warm. The batch then releases the other assessments of that kind. It also drains the channel with `try_recv` before processing a joined task.\n- `CacheWarmup::finished` frees the kind when a warming assessment ends without making any request, so another assessment of that kind takes over as the warming one.\n- Tests:\n  - The usage unit test `the_first_finished_request_is_reported_once_whatever_its_outcome` covers a failed first request, a completed second request, and a single call to the callback.\n  - `a_failed_first_request_still_releases_its_kind` uses a throttled first request. It checks that the other requirements start without waiting for the retry.\n  - The unit test also covers the \"finished without any request\" case.\n\n**Marking and unspecified behavior.** All the relevant code carries `{impl}` or `{test}` references to `requirements.authoring.cache_warmup`. I saw no unmarked behavior beyond what the text specifies.",
+  "rationale": "I found no gaps. I read the code and tests below but did not run any tests.\n\n**Obligations**\n1. A batch MUST start one assessment of each kind before any other of that kind.\n2. The batch MUST start the others only once that assessment's first provider request has finished.\n3. That release MUST happen whether or not the first request succeeded.\n\n**Implementation**\n- **Kind and scheduling.**\n  - `assessment_kind` (src/authoring/batch.rs) assigns each subject its kind: requirement, example, citation review or site review.\n  - `run_batch` calls `CacheWarmup::next` to pick each task to spawn.\n  - `next` takes the first queued subject whose kind is not currently warming. It returns `warms = true` and marks the kind as warming if the kind is not yet warm. This covers obligation 1: the first of a kind starts alone, and other kinds proceed.\n- **Release on the first request.**\n  - The warming task receives a `first_request_finished` callback. `prepare_assessment` (src/authoring/mod.rs) registers it with `usage.on_first_request`.\n  - `UsageLog::end_request` (src/authoring/usage.rs) fires the callback once, using `take()`.\n  - `converse` calls `end_request` after every provider request, including failed ones (`response.as_ref().ok()` gives `None` on error).\n  - That covers obligations 2 and 3, because the callback fires on success or failure before any retry backoff.\n- **Signalling.**\n  - The callback sends the kind over a channel.\n  - `run_batch` drains the channel in the select loop and after each join, and calls `warmup.warmed(kind)`.\n  - `warmed` moves the kind from `warming` to `warm`, so the others of that kind may then start.\n- **No request made.**\n  - `finished` also clears `warming` when a task ends. An assessment that made no provider request therefore releases its kind and another of that kind warms it.\n  - The text does not specify this case. It is a reasonable liveness behavior and not a distinct gap.\n\n**Tests**\n- **Scheduling.** The unit test `each_kind_starts_one_assessment_until_its_first_request_finishes` (batch.rs) checks that one of each kind starts and the rest wait. It also checks release via `warmed`, and replacement via `finished`.\n- **First-request callback.** `the_first_finished_request_is_reported_once_whatever_its_outcome` (usage.rs) checks the callback fires once, for a failed first request (`None` usage), and not again for a second request.\n- **End to end.** The integration tests in tests/authoring_batch.rs run `author --all` against a mock server and use `assert_warmed_first` to check request timing.\n  - `a_batch_warms_each_kind_with_one_assessment_before_starting_the_others` checks that others of a kind arrive only after the first request was answered, and that the others then run together.\n  - `a_failed_first_request_still_releases_its_kind` throttles the first request. It checks that the other requirements start before the retry, so a failure still releases the kind.\n\nAll obligations have {impl} references on the code that carries them out and {test} references on the tests that verify them.",
   "references": "e4eb75aeed8da76cd9562da42d811d1a3d558dd7e0f500cd6fbf45df2659fd43",
   "inputs": [
     {
@@ -38,7 +38,7 @@
     {
       "file": "src/authoring/batch.rs",
       "item": "fn[run_batch]",
-      "hash": "b5c999e7c20f57bae27af0bfef3e33c18e2a9dad9b297b03b0ce4518b3be77fb"
+      "hash": "0b8ea9a87bf1c8632a3e2944b4a24027f4df953902bb0d3f30d0e16d46779a29"
     },
     {
       "file": "src/authoring/batch.rs",
@@ -122,23 +122,38 @@
     },
     {
       "file": "src/authoring/usage.rs",
-      "item": "struct[UsageLog]",
-      "hash": "97e4b7533e5d5763af9043a66f7efb3b1ee2926e342c076d3e5d20d14d4e7500"
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "item": "impl[UsageLog]",
-      "hash": "25091f183b27f1103e70640e06de6c849392e8cbe925243d6d11c75aa9651134"
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "item": "impl[UsageLog]/fn[start]",
-      "hash": "6a5056d590319a065076058afa0aa49378c7d10d048c54f0ea0cecae7a12c091"
-    },
-    {
-      "file": "src/authoring/usage.rs",
       "item": "impl[UsageLog]/fn[prepared]",
       "hash": "2f5ee5841328017a9014a674c7d6f031d32007daa3a487758b1e73b0fb43db6d"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "impl[UsageLog]/fn[begin_request]",
+      "hash": "b8fda53efe81ae7f8eefa5a83482a89bab71e2871480b183a7a7476fd98377fc"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "mod[tests]/fn[input_metadata_counts_components_and_reads_without_persisting_source]",
+      "hash": "0d82f04f7f21e2e73ca527e744aad3908b6c99269ff1662f223fdd2ea691152d"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "mod[tests]/fn[token_totals_keep_subsets_separate_and_missing_counters_unknown]",
+      "hash": "effa7e378d3894b50e1d7961873579a030801077ba1d1e500d6d0c2d768b3b9d"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "mod[tests]/fn[partial_failure_retains_available_totals_and_optional_measurements]",
+      "hash": "ca4c66b03ccee76bdf4e29484650d1f71de21c2c45eac7b944a537aaddd2a39c"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "mod[tests]/fn[cancelled_request_persists_elapsed_time_and_incomplete_totals]",
+      "hash": "2c080f3d1db000b36fa9454392742bf9efc9775d599eb54cee3ebd87e7c99977"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "mod[tests]/fn[completed_requests_and_the_run_record_elapsed_time]",
+      "hash": "ac1b77ebdc426848487304a971bc85e7493cb8f87248dafbfe1fcf64106bae0a"
     }
   ]
 }

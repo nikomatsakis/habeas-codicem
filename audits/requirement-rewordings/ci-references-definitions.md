@@ -420,3 +420,20 @@ that omit a second report of a failure another check makes and lacked the mark:
 graceful-degradation site an implementing site, so later reviews may keep
 finding unmarked ones; narrowing which code carries out this convention is a
 substantive change to review with the user.
+
+## requirements.references.authoring_inputs (selector anchors)
+
+Old text:
+
+> An anchor under {cite}`requirements.references.anchors` contributes the complete anchored file.
+
+New text:
+
+> An anchor under {cite}`requirements.references.anchors` contributes the complete anchored file, or for a `path#selector` anchor the anchored node.
+
+Reason: the old wording read literally as the whole file even for a
+`path#selector` anchor, while the anchors requirement names an "anchored file or
+node" and the code contributes only the node. The user chose the node.
+
+Prompted by: the reassessment of `evidence/requirements.references.authoring_inputs.json`,
+which called the anchor behavior ambiguous between those two readings.

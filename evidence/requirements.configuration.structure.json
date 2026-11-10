@@ -1,7 +1,7 @@
 {
   "requirement": "The user configuration file MUST be UTF-8 TOML serializing UserConfig. It MUST\ncontain `version = 1` and MAY contain the documented feature tables. The common\nroot MUST contain only the schema version and those feature tables; feature\nsettings MUST NOT occupy unscoped root keys. A user file containing only\n`version = 1` MUST be valid common configuration.\n\nWorkspace configuration MUST follow {cite}`requirements.configuration.workspace_structure`.\nThe absence of an optional feature section MUST be distinguishable\nfrom that feature's explicit settings and interpreted according to its own\nrequirements.",
   "determination": true,
-  "rationale": "I found no gaps. The code carries out each obligation and a test covers each one.\n\n**Obligations and the code that carries them out**\n- **UTF-8 TOML serializing UserConfig:**\n  - `UserConfig` (src/config.rs:15-25) is the serde type.\n  - `UserConfig::parse` and `parse_document` decode the text as TOML.\n  - `load_user_config` reads with `fs::read_to_string`, so non-UTF-8 content is rejected with the path in the error.\n  - `to_toml` validates and then serializes.\n- **MUST contain `version = 1`:**\n  - `version` is a required field.\n  - `UserConfig::validate` rejects any value other than 1.\n- **MAY contain the documented feature tables:** `authoring` is an optional field.\n- **Root has only the version and feature tables; feature settings not at unscoped root keys:** `#[serde(deny_unknown_fields)]` on `UserConfig` rejects any other root key, including a feature setting such as `default` placed at the root.\n- **A file containing only `version = 1` is valid:** `authoring` has `#[serde(default)]`, so the file parses and validates.\n- **Workspace configuration follows `workspace_structure`:** this is a cited requirement, so it is context and I did not reassess its implementation.\n- **Absent section distinguishable from explicit settings:**\n  - `Option<UserAuthoringConfig>` with `skip_serializing_if = \"Option::is_none\"` keeps an absent section absent.\n  - `resolve_authoring_with_workspace_from` interprets the absent section by the authoring feature's own rules, returning a \"no authoring configuration\" error when neither file has one.\n  - `load_user_config` returns `Ok(None)` for a missing file.\n\n**Tests**\n- `absent_and_minimal_configuration_are_distinct_and_read_only` (tests/configuration.rs:68) checks these cases:\n  - A missing file gives `None`.\n  - A file with only `version = 1` loads with `authoring == None`.\n  - The file is left unchanged.\n  - The file round-trips through `to_toml` and `parse`.\n- `invalid_schema_and_feature_values_report_the_configuration_path` (:344) checks these cases:\n  - `version = 2`.\n  - `version = '1'`.\n  - An empty file.\n  - An unknown root key.\n  - Several invalid `[authoring]` forms.\n  - Each error names the file.\n- `unreadable_configuration_files_are_reported_instead_of_skipped` (:1112) covers a non-UTF-8 user file and a directory in place of the file. Both errors name the path.\n- `feature_sections_are_scoped_and_absent_sections_use_defaults` (:1149) checks these cases:\n  - `[evidence]` is rejected in a user file.\n  - A bare `version = 1` file has `authoring == None`.\n  - Feature settings placed at the root or in the wrong table are rejected.\n\n**Marking and unspecified behavior:** I found no code that implements the requirement without an `{impl}` reference. I found no unspecified behavior and no `{fixme}` references.",
+  "rationale": "I found no gaps. Each obligation maps to marked code and to a test that asserts its outcome.\n\n**Obligations and the code that carries them out**\n- **UTF-8 TOML serializing `UserConfig`.**\n  - `UserConfig` (`src/config.rs:15-25`) is a serde struct with `deny_unknown_fields`.\n  - `load_user_config` reads with `fs::read_to_string`, so non-UTF-8 content is rejected.\n  - `UserConfig::parse` runs `parse_document` and `decode`.\n  - `UserConfig::to_toml` serializes the struct.\n- **Must contain `version = 1`.** `version` is a required field with no serde default. `UserConfig::validate` rejects any value other than 1.\n- **May contain the documented feature tables.** The optional `authoring` field is skipped on serialization when it is `None`.\n- **Root contains only the version and feature tables, and feature settings never sit at unscoped root keys.** `deny_unknown_fields` on `UserConfig` rejects any other root key. Nested structs also use `deny_unknown_fields`, so feature settings must stay inside their tables.\n- **A file with only `version = 1` is valid.** `authoring` defaults to `None` and `validate` passes.\n- **Workspace configuration follows `workspace_structure`.** `WorkspaceConfig`, `WorkspaceConfig::parse`, `validate_workspace_common`, `load_workspace_config` and `workspace_document` carry their own `{impl}` references to `workspace_structure`. They reject unknown root keys and any version other than 1, and they report the file and setting. `parse_document` reports line and column for syntax errors. Per the task, I did not reassess these.\n- **An absent feature section is distinguishable from explicit settings.** `Option<UserAuthoringConfig>` gives `None` for absence and `Some` for explicit settings, including an empty `configs = {}`. Interpretation is left to each feature, for example `resolve_authoring_with_workspace_from` and `load_workspace_evidence`.\n\n**Tests**\n- `absent_and_minimal_configuration_are_distinct_and_read_only` (`tests/configuration.rs:68`):\n  - It checks that an absent file gives `None`.\n  - It checks that a `version = 1`-only file loads with `authoring` as `None`.\n  - It checks that the file is not rewritten.\n  - It checks that the serialization round-trips.\n- `invalid_schema_and_feature_values_report_the_configuration_path` (`tests/configuration.rs:345`):\n  - It rejects version 2, the string `'1'`, a missing version, and an unknown root key, among other invalid inputs.\n  - It confirms that `[authoring]` with `configs = {}` is a valid `Some` with empty configs, distinct from `None`.\n- `unreadable_configuration_files_are_reported_instead_of_skipped` (`tests/configuration.rs:1113`) covers a non-UTF-8 user file, which produces an error naming the file.\n- `feature_sections_are_scoped_and_absent_sections_use_defaults` (`tests/configuration.rs:1150`):\n  - It rejects root-level feature settings in the workspace file.\n  - It rejects the `[evidence]` table in the user file.\n  - It rejects misplaced keys inside `[authoring]`.\n  - It confirms that an absent authoring section leaves `authoring` as `None`.\n\nNo unspecified behavior found. No `{fixme}` references apply.",
   "references": "e4dfcf9117f39209660f030eae5b5562edaadba499a1c1a7427991064f4663f7",
   "inputs": [
     {
@@ -97,12 +97,7 @@
     {
       "file": "src/config.rs",
       "item": "",
-      "hash": "dcb93584e804f0b6b39978ae808384eaed176201ef5c9ff589e9545f62f3e3e3"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "fn[workspace_document]",
-      "hash": "d298d9e7fb995bd5faa02227f14616fde1089e738f3c1d6e06c702f393fcc234"
+      "hash": "3b1169d12b28e59c9e61b14dedd009d01702ac9b6aa0710c14c27a396027afb4"
     },
     {
       "file": "src/config.rs",
@@ -126,18 +121,8 @@
     },
     {
       "file": "src/config.rs",
-      "item": "fn[resolve_authoring_with_workspace_from]",
-      "hash": "78f64359f19af54cb5323bbe810082cbe8ccf6e628ae840ff81adca43e22c159"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "fn[validate_name]",
-      "hash": "af0948a34f5166ccd17835a39b74af55f7a62fed82117089110d5ae2f399cc4e"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "fn[invalid]",
-      "hash": "c0f6cd2771b08d4c6edca4148d7cd4d9928d07ceeb0e04d11867d60c85592c41"
+      "item": "fn[credential_values]",
+      "hash": "55703ef2a699aecbc46d7379809fd1d1c18da759bc9bb5d86e391307a83bb23b"
     }
   ]
 }

@@ -1,8 +1,8 @@
 {
   "requirement": "The harness MUST expose a `ripgrep` tool with this interface:\n\n```text\nripgrep({ pattern: String, path: String = \".\", context: Integer = 5,\n          referencing: Optional<ReferenceScope> }) -> SearchResult\n\nReferenceScope {\n    selection: String,                     // full name or definition glob\n    roles: Array<Role> = [\"impl\", \"test\", \"cite\"],\n    scope: \"node\" | \"file\" = \"file\",\n}\n\nSearchResult {\n    inputs: Array<EvidenceInput>,\n    definitions: Array<DefinitionInput>,\n}\n```\n\nThe tool MUST search the requested permitted file or directory using\nripgrep's regular-expression syntax and default case-sensitive search and ignore\nrules. It MUST search in process using ripgrep's library crates, without\nrequiring an external `rg` executable, and MUST apply source-access policy while\nwalking files rather than filtering results afterwards. It MAY search files in\nparallel; results MUST be ordered by path and then line regardless of\nparallelism, so the same sources always produce the same inputs. Explicitly allowed paths and discovered generated-output directories MUST\nbe searched even when ignored or hidden; workspace disallow rules still apply.\nIts model-facing description MUST explain those conventions. `context`\nMUST be nonnegative and specify how many lines before and after each matching\nline to include, defaulting to five on each side. Windows MUST stop at file\nboundaries, and overlapping windows in the same file MUST be merged. Each match and its context lines MUST be returned and\nrecorded as the innermost outline nodes containing them, under\n{cite}`requirements.ci.outline_inputs`; a match in a comment belongs to the node\nthe comment belongs to under {cite}`requirements.references.outline_comments`.\nEach result MUST include the selected source text for the model.\nSetting `context` to zero MUST return only matching lines.\nWith `referencing`, the tool MUST search only sources, within `path`, that carry\na reference in one of `roles` to a requirement or example the `selection`\nmatches under {cite}`requirements.references.definition_globs`, including\nanchors under {cite}`requirements.references.anchors`: with `scope` `node`, only\nthe outline nodes that contain or are named by those references, and with\n`file`, their whole files. A selection matching no requirement or example, or an\nunknown role or scope, MUST return an explanatory tool error. Its model-facing\ndescription MUST explain `referencing`.\nSearch results MUST exclude files disallowed by\n{cite}`requirements.authoring.source_tools`; explicitly requesting an excluded\npath MUST be handled as a denial under {cite}`requirements.authoring.read_denial`.\nRequired terminology MUST be included under\n{cite}`requirements.definitions.authoring_inputs`. Returned source inputs supplied\nto the model MUST be recorded under {cite}`requirements.authoring.delivered_inputs`.\nNo matches MUST return empty arrays; invalid arguments or a failed search MUST\nreturn an explanatory tool error.",
-  "determination": false,
-  "rationale": "I found one gap: a missing test. Everything else in `requirements.authoring.text_search` is implemented, marked, and tested.\n\n**Implementation and marking**\n- **Interface:** `definitions()` and `reference_scope_schema()` in `src/authoring/tools.rs` define the `ripgrep` interface, defaults, role/scope enums and model-facing description. `ripgrep_tool_is_advertised_with_its_interface_and_conventions` asserts the schema and the description phrases.\n- **Search engine:** `search()` uses `grep_regex` and `grep_searcher` in process. Matching is case-sensitive. `walk_sources()` uses `ignore::WalkBuilder`, applies `sources.access.file` while walking, and searches allowed or generated roots with hidden and ignore rules off.\n- **Ordering:** `walk_sources()` collects into a `BTreeMap`. `parallel_search_orders_results_by_path_and_line` tests this.\n- **Windows and nodes:** `search()` sorts and dedups match lines, clamps windows at 1 and the file's line count, and merges overlapping windows. `read_lines(..., comments=true)` then returns the innermost outline nodes and comment owners via `nodes_for_lines`. `search_merges_context_windows_and_respects_ignore_rules`, `search_returns_innermost_nodes_and_comment_owners` and `search_supplies_terminology_clamps_at_eof_and_reports_failures` test default context, merging, zero context, EOF clamping, no matches giving empty arrays, bad patterns, and negative or non-integer `context`.\n- **Source text, terminology and recording:** Source text is supplied through `to_model_input`. Terminology and recording are tested in `search_supplies_terminology_clamps_at_eof_and_reports_failures`.\n- **Access policy:** Several tests cover exclusion of `evidence/`, outside symlinks, untracked files, disallow rules, and the abort versus recoverable-error split. They are `generated_evidence_is_excluded...`, `outside_symlinks...`, `git_tools_allow_staged...`, `allowed_ignored_and_external...`, `cargo_output_is_discovered...`, `unpermitted_requests_outside...`, and the CLI abort test.\n- **`referencing` argument:**\n  - `referencing()` validates the glob, roles and scope.\n  - It errors when the selection matches no requirement or example.\n  - It selects the files or nodes of in-source references, plus declaration anchors.\n  - `ripgrep_referencing_searches_only_referencing_files_or_nodes` tests default roles, role narrowing, globs, file-level anchors, node scope with window boundaries, `path` limiting, and the error cases.\n\n**Gap: node scope with a selector anchor is untested**\n- The text says that with `scope` `node`, only \"the outline nodes that contain or are named by those references\" are searched. Declaration anchors of the form `path#selector` name a node.\n- `referencing()` has a dedicated branch for this case. It resolves `anchor.item` through `parsed.outline.resolve` and uses that node's line range. If the selector no longer resolves, it skips the anchor.\n- I searched `src/` for a `path#selector` anchor in a `ripgrep` or `ast_grep` test and found none. The `referencing_project` fixture only uses a file-level anchor (`:impl: src/other.rs`).\n- The only node-scope assertion uses `requirements.ready`, which has no anchors.\n- The `path#selector` anchors that do appear in tests are in the mandatory-inputs test, the `references` tool test and the evidence-coverage test. None of them runs `ripgrep` with node scope.\n- So the node-scoped anchor behaviour has no test and no `{fixme}` acknowledges it.",
-  "references": "6a62795eefa7bd9ea88a444b761e6a4242ab22c1328d6b87031f07eb462f1063",
+  "determination": true,
+  "rationale": "I found no gap. I read the supplied items only and did not run a separate search for unmarked code or tests. Each obligation maps to code with a {impl} reference and to a test with a {test} reference.\n\n**Interface and description**\n- `definitions()` in `src/authoring/tools.rs` advertises `ripgrep` with `pattern`, `path`, `context` (minimum 0, default 5) and `referencing`.\n- `reference_scope_schema()` gives `referencing` its `selection`, `roles` and `scope` properties and defaults.\n- The description explains the conventions: regex syntax, case-sensitive matching, ignore rules, context, merging, innermost nodes, comment owners, allowed and generated paths, disallow rules, aborts on denial, and `referencing`.\n- `ripgrep_tool_is_advertised_with_its_interface_and_conventions` asserts both the parameter schema and these description phrases.\n\n**Search behaviour**\n- Searching in process with ripgrep's crates: `search()` uses `grep_regex`, `grep_searcher` and `ignore::WalkBuilder`.\n- Policy applied while walking: `walk_sources()` calls `sources.access.file()` on each entry before opening it. Tests cover this: `generated_evidence_is_excluded_…`, `git_tools_allow_staged_and_dirty_sources_but_hide_untracked_files`, `outside_symlinks_are_excluded_…` and `allowed_ignored_and_external_sources_…`.\n- Ordering by path and then line despite parallelism: results are collected in a `BTreeMap`, and line windows are sorted before inputs are read. `parallel_search_orders_results_by_path_and_line` checks this over 40 files and repeated runs.\n- Allowed paths and Cargo output searched even when ignored or hidden, with disallow still applying: `walk_sources` uses extra roots with ignore filters off. Tests: `allowed_ignored_and_external_…`, `cargo_output_is_discovered_…` and `search_supplies_terminology_…`.\n- Nonnegative `context`, default 5, windows clamped at file boundaries, and overlapping windows merged: `search()` handles these. `search_merges_context_windows_and_respects_ignore_rules` covers merging, `context:-1` rejected, and `context:0` returning only the matching line. `search_supplies_terminology_clamps_at_eof_and_reports_failures` covers the EOF clamp.\n- Innermost outline nodes and comment owners: `read_lines(..., comments = true)` calls `nodes_for_range` and `nodes_for_lines`. `search_returns_innermost_nodes_and_comment_owners` verifies both.\n- Source text in each result: `to_model_input` adds kind, line range and text. The tests assert the text.\n- Empty arrays when nothing matches: tested with `{\"inputs\":[],\"definitions\":[]}`.\n- Invalid arguments and failed searches return explanatory errors: `check_keys`, `string`, `integer` and the regex builder produce them. Tested for a missing pattern, a wrong type, a bad regex, a non-integer `context`, an extra key, and an unparsable matched file.\n\n**`referencing`**\n- `referencing()` validates the glob, roles and scope, errors when the selection matches no requirement or example, and includes anchors.\n- Scope `file` yields whole files. Scope `node` yields the owning node or the anchored node, and context windows are clamped to that node.\n- `ripgrep_referencing_searches_only_referencing_files_or_nodes` covers default roles, role narrowing, globs, node scope, `path` limiting, no references found, and every error case.\n- `ripgrep_node_scope_searches_only_the_node_a_selector_anchor_names` covers anchors, including a stale selector.\n\n**Denial, terminology, recording**\n- Disallowed files are excluded, and an explicit request for one is treated as a denial. `SourceAccess::path` and `converse` abort on `PermissionDenied`. Tests: `git_tools_allow_staged_and_dirty_sources…` and `tests/authoring_cli.rs::explicit_untracked_reads_abort…`.\n- Terminology is included and recorded: `Listing::inputs` and `additional_definitions`. `search_supplies_terminology_…` checks the definitions in the result and the recorded inputs.\n- Delivered inputs are recorded by `record_inputs` in `converse`, and the same test checks that the recorded set includes the outline input.",
+  "references": "cef7391c2bc858b55658f929b70787d5e2b814e80320c84d60faa2c9c74e836e",
   "inputs": [
     {
       "requirements": "requirements.authoring.text_search",
@@ -320,7 +320,7 @@
     {
       "file": "src/authoring/inputs.rs",
       "item": "impl[AssessmentSources]/fn[read_selector]",
-      "hash": "e66f1dfa093cb61f38915097e1c6c90c507539e2a3087b999eccab7251fb0778"
+      "hash": "e5ff48c5bcdbcb06de716561d49f5ada66bf4360db5a17d1b99f6d153ad26550"
     },
     {
       "file": "src/authoring/inputs.rs",
@@ -513,6 +513,11 @@
       "hash": "d6b5540b98b00eac1d77ecad099ecff95adef5be3cde537bc94e9aa4d8c70b08"
     },
     {
+      "file": "src/authoring/tools.rs",
+      "item": "mod[tests]/fn[ripgrep_node_scope_searches_only_the_node_a_selector_anchor_names]",
+      "hash": "9d9eb1126d0e768c4d216bde41614dbaac8538e560f36942e708e8fdeb611ed8"
+    },
+    {
       "file": "src/inputs.rs",
       "item": "impl[ParsedSource]/fn[nodes_for_range]",
       "hash": "f7e912b83a6bfedf37bfb1070d2605d97964a8c14beb8fd1138e38455e2fb044"
@@ -531,46 +536,6 @@
       "file": "tests/authoring_cli.rs",
       "item": "fn[explicit_untracked_reads_abort_without_another_request_or_evidence_write]",
       "hash": "917a481fee92cedc52d116a852238a147477a198d398c2e603847630372af815"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "struct[SourceReference]",
-      "hash": "c052b078a69e126fdde7935f8f6437412da50c5611dc51667212bb571b390788"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "impl[SourceReference]",
-      "hash": "1fc53c2bcba25c21b5e5677d2df9f4653bbd292d1d101a5fa75917e31070f0f0"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "struct[ReferenceSetEntry]",
-      "hash": "1cade0bf6d72c2076106d5066d0e702d0bfa1f0c71b0d648edd6ec8bf074c1c8"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "mod[tests]/fn[references_contribute_their_owning_outline_nodes]",
-      "hash": "30c7da230a451f1c7bedaae87f420403c4dc4802fd681615d304a0c5818d04f8"
-    },
-    {
-      "file": "md/requirements/authoring.md",
-      "item": "section[Authoring%20evidence]/section[Model%20tools]/section[Search%20file%20contents:%20`ripgrep`]",
-      "hash": "76295a6029706829fdeb489c5d880f889959a745efbedf251a55b15f70f957ad"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "mod[tests]/fn[references_report_anchors_as_file_or_node_sites]",
-      "hash": "bd29c2fa110ed2c54197782e38fb1b9cf3db78f2a5e482aa35f907939882ae45"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[selector_anchors_are_covered_by_inputs_selecting_the_node_or_an_ancestor]",
-      "hash": "2e0d8ba541b1f11189298c285577b913477f7739e6318d07dc0f4a413cbd7b00"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[reference_set_digest_tracks_impl_and_test_edges_by_node]",
-      "hash": "674393cb7c46582bc8d642a6ad3fb57ae58611d1160d414012bde1a8ceda7f7a"
     }
   ]
 }

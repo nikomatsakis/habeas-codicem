@@ -1,7 +1,7 @@
 {
   "requirement": "`habeas status` MUST look up, under {cite}`requirements.authoring.github_reads`,\nevery issue that a `:github:` option line of a named or unnamed `{fixme}` under\n{cite}`requirements.references.roles` names, and MUST report each `{fixme}`\nnaming an issue that is closed or does not exist as an error, with its file and\nline and the issue. It MUST also report the item that contains that `{fixme}` as\nfailing: the outline node containing it, or the requirement or example\ndeclaration whose body contains it, in the same way it reports an unreferenced\nRust item. When GitHub cannot be reached, the issue MUST be assumed open.\nRepository validation MUST NOT contact GitHub.",
   "determination": true,
-  "rationale": "I found no gaps. Every obligation has code carrying an {impl} reference and a test that asserts its outcome.\n\n**Obligations, code and tests**\n\n1. **Look up every issue named by a `:github:` line of a named or unnamed `{fixme}`.**\n   - `fixme_issues` in `src/github.rs` keeps every closed `{fixme}` fence that names at least one issue. It does not filter on a reference name, so unnamed fences are included.\n   - `add_issue_findings` passes all those issues to `GithubIssues::read_all`. The cache and fetch code under `read_all` is covered by `requirements.authoring.github_reads`, so I did not reassess it.\n   - `status_markdown_with_github` in `src/commands.rs` calls `add_issue_findings`. `main` in `src/main.rs` calls `status_markdown_with_github` with `GithubIssues::from_env()`.\n   - The unit test `closed_and_missing_issues_fail_their_fixmes_items_and_acknowledged_records` in `src/github.rs` covers a named `{fixme}` in Rust and an unnamed one in a requirement body.\n\n2. **Report each `{fixme}` naming a closed or missing issue as an error, with its file, line and issue.**\n   - `add_issue_findings` emits `file:line: {fixme} names <issue>, which is closed` or `... does not exist`. `IssueRead::not_open` classifies the issue as closed or missing, and `fetch` maps 404 and 410 to `Missing`.\n   - The unit test asserts exactly `src/lib.rs:1: {fixme} names o/r#1, which is closed` and `md/rules.md:6: ... does not exist`. It also asserts that the open issue produces no finding.\n   - The end-to-end test `closing_an_acknowledged_issue_makes_the_fixme_record_stale_and_reassessed` in `tests/authoring_batch.rs` runs the real `habeas status` and checks the same message.\n\n3. **Report the containing item as failing, in the way an unreferenced Rust item is reported.**\n   - `containing_item` returns the requirement or example declaration whose body contains the `{fixme}`, or else the outline node that owns it, or else the file.\n   - The finding has the form `file:line: <kind> <name> fails: ...`, which carries file, line, kind and name like the `rust_item_coverage` report.\n   - The unit test asserts `src/lib.rs:6: fn ready fails: ...` and `md/rules.md:3: requirement rules.ready fails: ...`. The end-to-end test asserts `src/lib.rs:9: fn beta fails: ...`.\n   - The example-declaration branch is the same code as the requirement branch, so it needs no separate test.\n\n4. **Assume the issue is open when GitHub cannot be reached.**\n   - `IssueRead::Failed` makes `not_open` return `None`, and `GithubIssues::offline` yields `Failed` for every issue.\n   - The unit test checks that an offline client and an unreachable endpoint (`http://127.0.0.1:9`) both add no findings.\n\n5. **Repository validation MUST NOT contact GitHub.**\n   - Only `status_markdown_with_github` calls `add_issue_findings`. `inspect_repository` and `validate_repository` do not.\n   - The unit test asserts `github.count() == 0` after inspection. The end-to-end test asserts that the request count is unchanged after `habeas::validate_repository`, and that validation reports no errors.\n\n**Marking and unspecified behavior**\n\n- The implementing items all carry {impl} references, and the tests carry {test} references.\n- The extra stale-record findings in `add_issue_findings` come from `requirements.authoring.github_reads`. The site-review variant is marked with {impl} `requirements.references.site_review`.\n- I found no unmarked implementing code and no unspecified observable behavior beyond what these requirements describe.",
+  "rationale": "I found no gaps. Each obligation maps to marked code and to a test that runs it.\n\n**Obligations and the code that carries them out**\n\n1. **Look up every issue named by a `:github:` line of a named or unnamed `{fixme}`, through the shared cache.**\n   - `fixme_issues` (src/github.rs:415) collects every closed `{fixme}` fence that names an issue. It does not filter on whether the fence has a name, so unnamed fixmes are included.\n   - `GithubIssues::read_all` (src/github.rs:150) reads the issues through the cache.\n   - `add_issue_findings` (src/github.rs:526) is called from `status_markdown_with_github` (src/commands.rs:41), which `main` invokes for `Status` with `GithubIssues::from_env`.\n2. **Report each `{fixme}` naming a closed or nonexistent issue as an error, with file, line and issue.**\n   - `IssueRead::not_open` (src/github.rs:66) returns \"is closed\" or \"does not exist\".\n   - `add_issue_findings` emits `\"{file}:{line}: {fixme} names {issue}, which {reason}\"`.\n3. **Report the containing item as failing, in the same way as an unreferenced Rust item.**\n   - `containing_item` (src/github.rs:642) returns the requirement or example declaration whose body contains the `{fixme}`, or else the outline node that owns it. It falls back to the file when there is no outline.\n   - The message `\"{file}:{line}: {kind} {name} fails: its {fixme} at line N names ...\"` follows the shape of the Rust-coverage error `\"{label}:{line}: {kind} {name} has no requirement ...\"` in `validate_rust_functions`.\n4. **Assume the issue is open when GitHub cannot be reached.**\n   - `IssueRead::Failed` yields `None` from `not_open`.\n   - `GithubIssues::offline` and the disabled client return `Failed`.\n5. **Repository validation must not contact GitHub.** `add_issue_findings` is wired only into the status path. `inspect_repository` and `validate_repository` never call it.\n\n**Tests**\n\n- `closed_and_missing_issues_fail_their_fixmes_items_and_acknowledged_records` (src/github.rs:925), with its `project()` fixture, covers these cases:\n  - a closed issue on a function `{fixme}`, with the file, line and issue reported;\n  - a missing issue on an unnamed `{fixme}` in a requirement body, with the requirement declaration reported as failing;\n  - an open issue, which produces no finding;\n  - `offline()` and a refused connection, which both add nothing, so the issue is treated as open;\n  - inspection making zero GitHub requests (`github.count() == 0`).\n- `closing_an_acknowledged_issue_makes_the_fixme_record_stale_and_reassessed` (tests/authoring_batch.rs:1982) runs the real `habeas status` binary against a fake GitHub server. It asserts that the output contains the file and line error and the `fn beta fails` item error. It also asserts that `validate_repository` accepts the project and makes no further GitHub requests.\n\n**Unspecified behavior**\n\nThe extra stale-record findings in `add_issue_findings` are specified by `requirements.authoring.github_reads`, which the same code marks with `{impl}`.",
   "references": "950a7f46a4810b6175382a912b353bb3170d72f0f909535772715b242aa0f99f",
   "inputs": [
     {
@@ -164,7 +164,7 @@
     {
       "file": "src/main.rs",
       "item": "fn[main]",
-      "hash": "75f28ab9453d12b34d5e949ff16ce37c6148eecf1bc37759faf1dad80937a250"
+      "hash": "b80c1755ddd2f03f73839c71f01b1177146dcc83310183bd29ba90c426a72f2c"
     },
     {
       "file": "tests/authoring_batch.rs",
@@ -175,6 +175,41 @@
       "file": "src/authoring/mod.rs",
       "item": "mod[tests]/fn[site_reviews_use_their_prompt_and_record_applies_and_the_site]",
       "hash": "66d01c2dc80c1bca43324eab7c725796c062370db59dad98c249fbb06534925d"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "impl[AssessmentSources]/fn[prepare_citation]",
+      "hash": "249aff3e790b0d413c6aa7ac93da2b61087d7aae4240e9f500e9833327edba79"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "mod[tests]/fn[verifier_prompts_name_examples_and_citation_reviews]",
+      "hash": "9a62719c0a8d7b92593602b1ba02a3b5652ff559ec6a5b8763ed183d231b1763"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "mod[tests]/fn[citation_reviews_use_their_prompt_and_record_the_item_and_citations]",
+      "hash": "5f7c94b0b4df4f73f377aba9207452394c0c335ce15ae069ee6de73ac1f5f85a"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "mod[tests]/fn[subjects_of_one_kind_share_a_byte_identical_system_prompt]",
+      "hash": "9e4e2c1b38ea8798a439c6eae5c85cdbce1c96cc90221d0c55ed975f1b6165de"
+    },
+    {
+      "file": "src/citations.rs",
+      "item": "fn[validate]",
+      "hash": "02fabf643b64cacc8c98be398fd3127ffc488052d93355fd4611458876421930"
+    },
+    {
+      "file": "src/citations.rs",
+      "item": "fn[validate_review]",
+      "hash": "af88d0b86093f62c6c4b4366fe2fe8d35bbcb6f46c8e445f1853483e42cac25a"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[collect_definitions]",
+      "hash": "61473bcdb7cfaa2f9a00fdf816a5995234a8e1a86063965cb6e0f4f0394361ec"
     },
     {
       "file": "md/reference.md",
@@ -192,11 +227,6 @@
       "hash": "2b12927ad04f3ff94c5a5668a10f2e20692a1dbd92b0ec5e08fe2a578c10ace1"
     },
     {
-      "file": "md/requirements/references.md",
-      "item": "section[References%20and%20Rust%20items]",
-      "hash": "361779d667adae92c89da84f58a95340ddd7c61cad8b488ba700fc427a563f18"
-    },
-    {
       "definition": "requirements.references.definition_selection",
       "text": [
         ":::{definition} definition_selection",
@@ -210,34 +240,29 @@
       ]
     },
     {
-      "file": "src/github.rs",
-      "item": "impl[GithubIssues]",
-      "hash": "ebc0369638f538393828c6a63d941d4f8cce6fa34bdbc112ad735b40e4b2be46"
+      "file": "src/sites.rs",
+      "item": "mod[tests]/fn[sites_are_the_innermost_nodes_of_site_matches_and_violations_within_them]",
+      "hash": "d6080718b02346c839d93eab024fdc5da2b67b4ae87510648d29429974c3eb3b"
     },
     {
-      "file": "src/github.rs",
-      "item": "impl[Client]",
-      "hash": "71906ecf2c5bb266223e06db234465045589c855fafe64da657995fee53e3608"
+      "file": "src/evidence.rs",
+      "item": "mod[tests]/fn[inspection_progress_preserves_validation_and_finishes_each_phase]",
+      "hash": "d786929a98bd067cf7e7d36e66e5d96d07a71ad18adb5c1ed8ef357d446685ad"
     },
     {
-      "file": "src/github.rs",
-      "item": "fn[fetch]",
-      "hash": "699793741d2bd0d4290442a66f5495e36d08d44eafb4f90867b544c7263173d9"
+      "file": "src/rust_coverage.rs",
+      "item": "fn[validate_rust_functions]",
+      "hash": "4153358d65ac0e56d727e87689e3ce1f0c2f4e4bf223c3f5513b87cf49fbeac7"
     },
     {
-      "file": "src/github.rs",
-      "item": "fn[split_issue]",
-      "hash": "a95d5ac844416e2e42247df84cca075cf111d178898664b1c63174a360aa93a9"
+      "file": "src/rust_coverage.rs",
+      "item": "mod[tests]/fn[reports_all_files_and_parse_failures]",
+      "hash": "b850a1b2c3124538acf3bff1cf7a60a447ace09577a5ce534b64fbadfeb9e334"
     },
     {
-      "file": "src/github.rs",
-      "item": "fn[tool]",
-      "hash": "f538cbe6e5790c8a724e8e47f3874fb88f66f83a3cacb9dba27f9b8f511870e6"
-    },
-    {
-      "file": "src/github.rs",
-      "item": "fn[tool_definition]",
-      "hash": "f511dc212090debf5c80739eee2a72427663a51618a6e7c37f04f6d70da19aab"
+      "file": "src/sites.rs",
+      "item": "mod[tests]/fn[malformed_queries_are_reported_each_on_its_own]",
+      "hash": "dbc768e7707fe4daa3162be389bcb57da701790ccdef284622b7e4ccb6afbb65"
     }
   ]
 }
