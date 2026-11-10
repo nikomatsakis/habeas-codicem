@@ -1302,6 +1302,7 @@ struct InputRange {
 // {impl}`requirements.definitions.references`
 // {impl}`requirements.references.anchors`
 // {impl}`requirements.references.util`
+// {impl}`requirements.ci.outcomes`
 fn validate_references(
     root: &Path,
     definitions: &BTreeMap<String, Declaration>,

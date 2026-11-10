@@ -2059,6 +2059,7 @@ mod tests {
             "A gap is acknowledged only by a {fixme} reference",
             "a {fixme} naming a\n  closed issue no longer acknowledges its gap",
             "including\n  any acknowledged gaps",
+            "A {fixme} describing a gap that no longer exists is\n  itself a gap.",
         ] {
             assert!(
                 prompt.contains(guidance),
