@@ -874,6 +874,69 @@ pub(crate) mod tests {
         }
     }
 
+    // {test}`requirements.configuration.evidence_paths`
+    #[test]
+    fn explicit_allow_overrides_the_build_output_refusal() {
+        let root = tempfile::tempdir().unwrap();
+        for directory in ["target/doc", "book"] {
+            fs::create_dir_all(root.path().join(directory)).unwrap();
+            fs::write(root.path().join(directory).join("page.html"), "built\n").unwrap();
+        }
+        let root = fs::canonicalize(root.path()).unwrap();
+        for file in ["target/doc/page.html", "book/page.html"] {
+            let error = SourceAccess::load(&root)
+                .unwrap()
+                .file(&root, Path::new(file))
+                .unwrap_err();
+            assert!(error.to_string().contains("holds build output"), "{error}");
+        }
+        fs::write(
+            root.join("habeas.toml"),
+            "version = 1\n[evidence]\nallow = ['target/doc', 'book/page.html']\n",
+        )
+        .unwrap();
+        let access = SourceAccess::load(&root).unwrap();
+        for file in ["target/doc/page.html", "book/page.html"] {
+            assert!(access.file(&root, Path::new(file)).is_ok(), "{file}");
+        }
+    }
+
+    // {test}`requirements.configuration.evidence_paths`
+    #[test]
+    fn evidence_rules_are_literal_paths_not_globs() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join("src")).unwrap();
+        fs::write(root.path().join("src/lib.rs"), "pub fn lib() {}\n").unwrap();
+        fs::write(root.path().join("notes.txt"), "notes\n").unwrap();
+        git(root.path(), &["init", "--quiet"]);
+        git(root.path(), &["add", "src/lib.rs"]);
+        fs::write(
+            root.path().join("habeas.toml"),
+            "version = 1\n[evidence]\nallow = ['*.txt', 'note?.txt']\ndisallow = ['src/*', 'src/[a-z]*.rs']\n",
+        )
+        .unwrap();
+        let root = fs::canonicalize(root.path()).unwrap();
+        let access = SourceAccess::load(&root).unwrap();
+        // No pattern matches: the tracked file stays readable and the
+        // untracked one stays refused by the default rules.
+        assert!(access.file(&root, Path::new("src/lib.rs")).is_ok());
+        assert!(access.file(&root, Path::new("notes.txt")).is_err());
+        #[cfg(unix)]
+        {
+            // A rule names exactly the path written, metacharacters included.
+            fs::write(root.join("*.txt"), "literal\n").unwrap();
+            fs::write(root.join("src/*"), "literal\n").unwrap();
+            let access = SourceAccess::load(&root).unwrap();
+            assert!(access.file(&root, Path::new("*.txt")).is_ok());
+            let error = access.file(&root, Path::new("src/*")).unwrap_err();
+            assert!(
+                error.to_string().contains("disallowed by habeas.toml rule"),
+                "{error}"
+            );
+            assert!(access.file(&root, Path::new("src/lib.rs")).is_ok());
+        }
+    }
+
     // {test}`requirements.authoring.credentials`
     // {test}`requirements.configuration.evidence_paths`
     // {test}`requirements.authoring.read_denial`
