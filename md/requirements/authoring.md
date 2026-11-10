@@ -230,10 +230,11 @@ The reference roles:
   implementing it. A requirement stating a convention for every output of a
   kind, such as every validation error, is implemented by the code that carries
   out the convention as a whole, not by each item that produces one such output.
-  Only a root needs the reference: an item a reviewer starts from, which no
-  other item marked {impl} for the same requirement calls or uses. Code a
-  reviewer reaches by following a marked item, through calls, the types it uses,
-  or the implementations of trait methods it calls, needs none. A site of a
+  Only a root needs the reference: an item that no other item marked {impl}
+  for the same requirement reaches. Code a reviewer reaches by following a
+  marked item, through what it calls, the types it uses, or the implementations
+  of trait methods it calls, needs none; nor does a test helper reached from a
+  test marked {test}. A site of a
   distributed requirement needs no reference to it for being a site.
 - {test}: the source is a test or test helper designed to verify behavior the
   requirement or example specifies.
@@ -336,8 +337,8 @@ of a cited requirement, not whether it does so correctly. Do not look for
 requirements or examples the item does not cite, except as step 3 requires.
 
 1. Apply the reference procedure to each citation, in order: if the item is a
-   test or test helper designed to verify the cited requirement or example, it
-   calls for {test}; otherwise, if it is a root of the cited definition's
+   test designed to verify the cited requirement or example, it calls for
+   {test}; otherwise, if it is a root of the cited definition's
    implementation as the reference roles describe, it calls for {impl};
    otherwise the citation is right if a change to the cited text could
    require changing the item, as when the item relies on behavior the text
@@ -888,6 +889,20 @@ NOT become evidence inputs; the model requests the sources it relies on with the
 
 ### Submit the result: `submit_judgment`
 
+:::{req} coverage_loss
+When authoring replaces a record and an item that its previous inputs covered
+under {cite}`requirements.references.rust_item_coverage` is no longer covered,
+the harness MUST assess that item in a coverage-loss review: an independent
+conversation with the same source tools, whose mandatory inputs are the item's
+outline node and the declarations of the requirements and examples whose
+previous records read it, and whose prompt gives each such record's rationale.
+The reviewer MUST submit, for each of those definitions, whether the item is a
+root of its implementation under {cite}`requirements.references.procedure` or
+is not needed for it, with a nonempty rationale. The result MUST NOT be
+evidence: authoring MUST report it, and `habeas status` MUST show the latest
+result beside the uncovered item until the item is covered again.
+:::
+
 :::{req} result_pages
 A result of the `habeas` line-range form, `list_files`, `outline`, `ripgrep`,
 `ast_grep`, or `references` whose serialized JSON exceeds 32 KiB MUST be
@@ -1054,9 +1069,11 @@ marking, and unspecified behavior:
    they call, and the code that calls them. In your rationale, map each
    obligation to its code and to the tests step 5 requires.
 3. Reachability: the code that carries out each obligation must be reachable
-   from the subject's {impl} items by following the code: what they call, what
-   calls them, the types they use, and the implementations of trait methods
-   they call, including by searching for those implementations. Code reachable
+   from the subject's {impl} items by following the code: what they call, the
+   types they use, and the implementations of trait methods they call,
+   including by searching for those implementations, and what those reach in
+   turn. Reading their callers for context does not make the callers
+   reachable. Code reachable
    this way needs no reference of its own; do not report it for lacking one.
    Code you could find only by searching elsewhere, such as for a message an
    obligation produces, is a gap: name the item that should carry an {impl}

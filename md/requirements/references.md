@@ -52,16 +52,18 @@ definitions it implements or tests.
 A source item MUST choose its references under {cite}`requirements.references.roles`
 for each candidate definition by this procedure, and MAY carry several:
 
-1. If the item is a test or test helper designed to verify the definition, it
-   MUST use `{test}`.
+1. If the item is a test designed to verify the definition, it MUST use
+   `{test}`. A test helper a reviewer reaches by following such a test needs no
+   reference to the definition.
 2. Otherwise, if the item is a root of the definition's implementation, it
-   MUST use `{impl}`. A root is an item a reviewer starts from: code that
-   carries out part of the definition and that no other item marked `{impl}`
-   for it calls or uses, or a type whose shape, meaning fields, variants,
-   serialized form, or validation, the definition constrains. Code a reviewer
-   reaches by following a root, through calls, types it uses, or the
-   implementations of trait methods it calls, needs no reference to the
-   definition. An item that is a site of a distributed definition
+   MUST use `{impl}`. Code or a type carries out part of a definition when it
+   makes a decision, performs a check, produces an output, or handles a case
+   the definition specifies, or when the definition constrains its shape:
+   fields, variants, serialized form, or validation. A root is such an item
+   that no other item marked `{impl}` for the definition reaches, where an item
+   reaches what it calls, the types it uses, and the implementations of trait
+   methods it calls, and what those reach in turn. An item reached from a root
+   needs no reference to the definition. An item that is a site of a distributed definition
    under {cite}`requirements.references.distributed` needs no reference to it;
    its site review covers it.
 3. Otherwise, if the item should be re-checked or kept in sync when the
