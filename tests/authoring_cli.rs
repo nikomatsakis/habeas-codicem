@@ -991,6 +991,8 @@ fn bundled_skills_direct_the_reference_procedure_and_habeas_none_instead_of_waiv
             "designed to verify the requirement or example, use `{test}`",
             "if the item is a root of the requirement's implementation, use `{impl}`",
             "re-checked or kept in sync when the requirement or example changes, use `{cite}`",
+            "cite the built-in `habeas:util` when the item serves the code that calls it and carries out no requirement itself",
+            "If no code reaches the item, it is dead code: report it to the user instead of deleting it unasked",
             "cite the built-in `habeas:none` in fenced form, with a body justifying why the item exists",
         ],
     );
@@ -1008,6 +1010,7 @@ fn bundled_skills_direct_the_reference_procedure_and_habeas_none_instead_of_waiv
         "habeas-evidence",
         &[
             "references by the procedure in the habeas-requirements skill",
+            "or `habeas:util` for a helper that serves its callers",
             "citing `habeas:none` in fenced form with a justification only when nothing applies",
         ],
     );
@@ -2574,7 +2577,9 @@ fn bundled_skills_mark_roots_and_handle_uncovered_items() {
             "reports uncovered after `habeas author --all`",
             "If `habeas status` shows a coverage-loss review beside the item, act on each finding",
             "`root`: add `{impl}` of that definition to the item",
-            "`not needed`: before changing anything, determine from its rationale and the code whether the item is dead code or the earlier read was mistaken",
+            "`not needed`: before changing anything, determine from its rationale and the code whether the item is dead code, serves its callers, or the earlier read was mistaken",
+            "Report dead code to the user instead of deleting it unasked",
+            "An item that serves the code calling it, carrying out no requirement itself, gets `` // {cite}`habeas:util` ``",
             "add references by the procedure in the habeas-requirements skill",
             "never re-run or `--force` authoring just to get an item read",
         ],

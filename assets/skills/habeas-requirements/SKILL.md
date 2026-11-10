@@ -1,6 +1,6 @@
 ---
 name: habeas-requirements
-description: Use before adding, changing, or moving code, tests, or requirements in a project that tracks requirements with Habeas (a `habeas.toml`, `{req}` directives in its mdBook, or `{impl}`/`{test}`/`{cite}` references in code), even when the user only asks for a feature, bug fix, refactor, or CLI change and never says "requirement". Covers agreeing requirements and examples with the user, writing `{req}`, `{example}`, and `{definition}` directives, and choosing `{impl}`, `{test}`, `{cite}`, or `habeas:none` references. To run the authoring harness or fix evidence and validation failures, use habeas-evidence; to build an initial requirement set for an existing codebase, use habeas-bootstrap-requirements.
+description: Use before adding, changing, or moving code, tests, or requirements in a project that tracks requirements with Habeas (a `habeas.toml`, `{req}` directives in its mdBook, or `{impl}`/`{test}`/`{cite}` references in code), even when the user only asks for a feature, bug fix, refactor, or CLI change and never says "requirement". Covers agreeing requirements and examples with the user, writing `{req}`, `{example}`, and `{definition}` directives, and choosing `{impl}`, `{test}`, `{cite}`, `habeas:util`, or `habeas:none` references. To run the authoring harness or fix evidence and validation failures, use habeas-evidence; to build an initial requirement set for an existing codebase, use habeas-bootstrap-requirements.
 ---
 
 # Habeas requirements
@@ -165,7 +165,17 @@ example it could reference; an item may carry several:
 3. Otherwise, if the item should be re-checked or kept in sync when the
    requirement or example changes, use `{cite}`.
 4. If nothing gives the item a reference, and after `habeas author` nothing
-   reads it either (see Gotchas), cite the built-in `habeas:none` in fenced
+   reads it either (see Gotchas), cite the built-in `habeas:util` when the item
+   serves the code that calls it and carries out no requirement itself; it
+   needs no justification or citation review, since the roots that reach it
+   are reviewed:
+
+   ```text
+   // {cite}`habeas:util`
+   ```
+
+   If no code reaches the item, it is dead code: report it to the user instead
+   of deleting it unasked. Otherwise, cite the built-in `habeas:none` in fenced
    form, with a body justifying why the item exists:
 
    ```text

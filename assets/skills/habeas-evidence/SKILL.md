@@ -98,13 +98,16 @@ reports uncovered after `habeas author --all`:
    it replaces read the item and the new one does not.
    - `root`: add `{impl}` of that definition to the item.
    - `not needed`: before changing anything, determine from its rationale and
-     the code whether the item is dead code or the earlier read was mistaken.
-     Report dead code to the user instead of deleting it unasked; otherwise
+     the code whether the item is dead code, serves its callers, or the
+     earlier read was mistaken. Report dead code to the user instead of
+     deleting it unasked. An item that serves the code calling it, carrying
+     out no requirement itself, gets `` // {cite}`habeas:util` ``. Otherwise
      continue with step 2.
-2. Otherwise, add references by the procedure in the habeas-requirements skill,
-   citing `habeas:none` in fenced form with a justification only when nothing
-   applies: often `{cite}`, when the item should be re-checked as the
-   definition changes.
+2. Otherwise, add references by the procedure in the habeas-requirements skill:
+   often `{cite}`, when the item should be re-checked as the definition
+   changes, or `habeas:util` for a helper that serves its callers, citing
+   `habeas:none` in fenced form with a justification only when nothing
+   applies.
 
 Whether an assessment reads an item varies between runs, so never re-run or
 `--force` authoring just to get an item read; it would not stay covered.
@@ -131,7 +134,8 @@ false determination. A `{fixme}` counts only while each issue it names is open: 
 
 ### Citation reviews
 
-Every source item outside the book with a `{cite}` gets a citation review. It
+Every source item outside the book with a `{cite}` other than `habeas:util`
+gets a citation review. It
 checks that each citation is sensible and should not be `{impl}` or `{test}`, and
 that each `habeas:none` justification holds. Fix a false review by
 changing the references or the item.
