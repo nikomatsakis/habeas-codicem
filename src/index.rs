@@ -1956,6 +1956,14 @@ mod tests {
                 .content
                 .contains("| [`rules.missing`](rules/rules.missing.html) (example)")
         );
+        // The requirement's row is identified as one too.
+        assert!(
+            index
+                .content
+                .contains("| [`rules.ready`](rules/rules.ready.html) (requirement)"),
+            "{}",
+            index.content
+        );
         let pending = rules
             .sub_items
             .iter()
