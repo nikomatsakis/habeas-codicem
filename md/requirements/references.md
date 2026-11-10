@@ -54,19 +54,23 @@ for each candidate definition by this procedure, and MAY carry several:
 
 1. If the item is a test or test helper designed to verify the definition, it
    MUST use `{test}`.
-2. Otherwise, if fulfilling the definition depends on the item, it MUST use
-   `{impl}`. For code, this means it makes a decision, performs a check,
-   produces an output, or handles a case the definition specifies. For a type,
-   this means the definition constrains its shape: fields, variants, serialized
-   form, or validation. An item that is a site of a distributed definition
+2. Otherwise, if the item is a root of the definition's implementation, it
+   MUST use `{impl}`. A root is an item a reviewer starts from: code that
+   carries out part of the definition and that no other item marked `{impl}`
+   for it calls or uses, or a type whose shape, meaning fields, variants,
+   serialized form, or validation, the definition constrains. Code a reviewer
+   reaches by following a root, through calls, types it uses, or the
+   implementations of trait methods it calls, needs no reference to the
+   definition. An item that is a site of a distributed definition
    under {cite}`requirements.references.distributed` needs no reference to it;
    its site review covers it.
 3. Otherwise, if the item should be re-checked or kept in sync when the
    definition changes, it MUST use `{cite}`.
 4. If the item carries no reference after applying steps 1 to 3 to every
-   definition, it MUST cite the built-in `habeas:none` under
-   {cite}`requirements.references.no_requirement`, justifying why the item
-   exists.
+   definition and no assessment reads it under
+   {cite}`requirements.references.rust_item_coverage`, it MUST cite the
+   built-in `habeas:none` under {cite}`requirements.references.no_requirement`,
+   justifying why the item exists.
 
 A `{fixme}` reference is added independently of this procedure, and MUST NOT
 count as an item's reference for {cite}`requirements.references.rust_item_coverage`.
@@ -183,7 +187,7 @@ For every `{impl}` and `{test}` reference in a project source file, including on
 :::
 
 :::{req} rust_item_coverage
-During repository validation, Habeas MUST parse every first-party Rust source file: every `.rs` file among the sources reference discovery considers under {cite}`requirements.references.discovery`, except those under the project-root `vendor` directory. Every explicitly declared function or method, including trait methods and test helpers, and every struct, enum, and union MUST have a valid `{impl}`, `{cite}`, or `{test}` reference to a defined requirement or named example, or a valid citation of the built-in `habeas:none` under {cite}`requirements.references.no_requirement`, in a Rust comment attached to it or within its body. Comments belong to items under {cite}`requirements.references.outline_comments`; a comment before a field, variant, or attribute inside an item belongs to that item. A named example MUST reference a requirement under {cite}`requirements.examples.definition`. A reference in a string literal, on an enclosing module or impl block, or only in an evidence input MUST NOT count for the items it encloses. Habeas MUST report every unreferenced item with its file, line, kind, and name, and MUST report a Rust parse failure instead of silently skipping the file.
+During repository validation, Habeas MUST parse every first-party Rust source file: every `.rs` file among the sources reference discovery considers under {cite}`requirements.references.discovery`, except those under the project-root `vendor` directory. Every explicitly declared function or method, including trait methods and test helpers, and every struct, enum, and union MUST be covered. An item is covered when it has a valid `{impl}`, `{cite}`, or `{test}` reference to a defined requirement or named example, or a valid citation of the built-in `habeas:none` under {cite}`requirements.references.no_requirement`, in a Rust comment attached to it or within its body; or when its outline node, or an outline node containing it, is recorded with its current hash as an outline input of an evidence record, a citation review, or a site review. Search results are not evidence inputs under {cite}`requirements.authoring.text_search`, so only sources an assessment received as mandatory inputs or read count. Comments belong to items under {cite}`requirements.references.outline_comments`; a comment before a field, variant, or attribute inside an item belongs to that item. A named example MUST reference a requirement under {cite}`requirements.examples.definition`. A reference in a string literal, on an enclosing module or impl block, or only in an evidence input MUST NOT count for the items it encloses. Habeas MUST report every uncovered item with its file, line, kind, and name, and MUST report a Rust parse failure instead of silently skipping the file.
 :::
 
 :::{req} definition_globs

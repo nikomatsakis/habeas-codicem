@@ -44,7 +44,7 @@ every issue that a `:github:` option line of a named or unnamed `{fixme}` under
 naming an issue that is closed or does not exist as an error, with its file and
 line and the issue. It MUST also report the item that contains that `{fixme}` as
 failing: the outline node containing it, or the requirement or example
-declaration whose body contains it, in the same way it reports an unreferenced
+declaration whose body contains it, in the same way it reports an uncovered
 Rust item. When GitHub cannot be reached, the issue MUST be assumed open.
 Repository validation MUST NOT contact GitHub.
 :::

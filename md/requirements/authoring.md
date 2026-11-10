@@ -230,7 +230,11 @@ The reference roles:
   implementing it. A requirement stating a convention for every output of a
   kind, such as every validation error, is implemented by the code that carries
   out the convention as a whole, not by each item that produces one such output.
-  A site of a distributed requirement needs no reference to it for being a site.
+  Only a root needs the reference: an item a reviewer starts from, which no
+  other item marked {impl} for the same requirement calls or uses. Code a
+  reviewer reaches by following a marked item, through calls, the types it uses,
+  or the implementations of trait methods it calls, needs none. A site of a
+  distributed requirement needs no reference to it for being a site.
 - {test}: the source is a test or test helper designed to verify behavior the
   requirement or example specifies.
 - {cite}: the source relies on or refers to the requirement or example, and
@@ -262,9 +266,10 @@ assessments judge by the same rules:
 
 ```text
 - Base every conclusion only on source code you have read: the items in the
-  mandatory inputs, or items you read with the habeas tool, ripgrep, or
-  ast_grep; outline, list_files, and references only locate items. Comments
-  state intent; check the behavior in the code itself.
+  mandatory inputs, or items you read with the habeas tool. ripgrep, ast_grep,
+  outline, list_files, and references only locate items; read any item whose
+  code your conclusion relies on. Comments state intent; check the behavior in
+  the code itself.
 - Judge only against the text your task names. Report a gap only where your task
   or these rules define one, for a specific item you have read, giving its
   location. Missing code or tests for an obligation is a gap only after you have
@@ -332,8 +337,9 @@ requirements or examples the item does not cite, except as step 3 requires.
 
 1. Apply the reference procedure to each citation, in order: if the item is a
    test or test helper designed to verify the cited requirement or example, it
-   calls for {test}; otherwise, if it implements part of it, it calls for
-   {impl}; otherwise the citation is right if a change to the cited text could
+   calls for {test}; otherwise, if it is a root of the cited definition's
+   implementation as the reference roles describe, it calls for {impl};
+   otherwise the citation is right if a change to the cited text could
    require changing the item, as when the item relies on behavior the text
    specifies or must agree with a form or value it defines; read the item's
    callers only when the item's own code does not settle this. A citation for
@@ -616,6 +622,13 @@ affected assessment.
 Malformed tool arguments and ordinary read failures MUST retain their existing
 recoverable tool-error behavior.
 
+A dispatched model request naming a path inside the book's build directory,
+`book` unless `book.toml` sets `[build] build-dir`, or inside the project-root
+`target` directory, that no workspace allow rule or generated-output rule
+permits MUST also be treated as an ordinary read failure. Its tool error MUST
+say that the path holds build output and that the sources it is built from
+are elsewhere in the project.
+
 A dispatched model request naming a path outside the project root, before
 symlinks are resolved, that no workspace allow rule or generated-output rule
 permits MUST be treated as an ordinary read failure rather than an abort: it
@@ -711,7 +724,7 @@ file MUST be handled as a denial under {cite}`requirements.authoring.read_denial
 The harness MUST expose a `ripgrep` tool with this interface:
 
 ```text
-ripgrep({ pattern: String, path: String = ".", context: Integer = 5,
+ripgrep({ pattern: String, path: String = ".", context: Integer = 2,
           referencing: Optional<ReferenceScope> }) -> SearchResult
 
 ReferenceScope {
@@ -720,9 +733,15 @@ ReferenceScope {
     scope: "node" | "file" = "file",
 }
 
-SearchResult {
-    inputs: Array<EvidenceInput>,
-    definitions: Array<DefinitionInput>,
+SearchResult { matches: Array<SearchMatch> }
+
+SearchMatch {
+    file: String,
+    item: String,        // selector of the innermost outline node
+    kind: String,
+    line_start: Integer, // the node's current lines
+    line_end: Integer,
+    lines: Array<{ line: Integer, text: String }>,
 }
 ```
 
@@ -736,13 +755,17 @@ parallelism, so the same sources always produce the same inputs. Explicitly allo
 be searched even when ignored or hidden; workspace disallow rules still apply.
 Its model-facing description MUST explain those conventions. `context`
 MUST be nonnegative and specify how many lines before and after each matching
-line to include, defaulting to five on each side. Windows MUST stop at file
-boundaries, and overlapping windows in the same file MUST be merged. Each match and its context lines MUST be returned and
-recorded as the innermost outline nodes containing them, under
-{cite}`requirements.ci.outline_inputs`; a match in a comment belongs to the node
-the comment belongs to under {cite}`requirements.references.outline_comments`.
-Each result MUST include the selected source text for the model.
-Setting `context` to zero MUST return only matching lines.
+line to include, defaulting to two on each side. Windows MUST stop at file
+boundaries, and overlapping windows in the same file MUST be merged. The result
+MUST give one entry for each innermost outline node containing a match, where a
+match in a comment belongs to the node the comment belongs to under
+{cite}`requirements.references.outline_comments`: the node's file, selector
+under {cite}`requirements.references.outline_selectors`, kind, and current line
+range, and its matching and context lines with their line numbers, redacted
+under {cite}`requirements.authoring.redaction`. Search results MUST NOT become
+evidence inputs and MUST NOT include definitions; the model-facing description
+MUST tell the model to read with the `habeas` tool any node whose code its
+conclusion relies on. Setting `context` to zero MUST return only matching lines.
 With `referencing`, the tool MUST search only sources, within `path`, that carry
 a reference in one of `roles` to a requirement or example the `selection`
 matches under {cite}`requirements.references.definition_globs`, including
@@ -754,10 +777,7 @@ description MUST explain `referencing`.
 Search results MUST exclude files disallowed by
 {cite}`requirements.authoring.source_tools`; explicitly requesting an excluded
 path MUST be handled as a denial under {cite}`requirements.authoring.read_denial`.
-Required terminology MUST be included under
-{cite}`requirements.definitions.authoring_inputs`. Returned source inputs supplied
-to the model MUST be recorded under {cite}`requirements.authoring.delivered_inputs`.
-No matches MUST return empty arrays; invalid arguments or a failed search MUST
+No matches MUST return an empty array; invalid arguments or a failed search MUST
 return an explanatory tool error.
 :::
 
@@ -781,17 +801,15 @@ The second form MUST run the query a distributed requirement declares, named
 holding that body's `rule`, `utils`, and `constraints` keys. The tool MUST search
 the requested permitted file or directory in process, with the same file walking,
 ordering, and source-access policy as {cite}`requirements.authoring.text_search`,
-over files of that language. Each match MUST be returned and recorded as the
-innermost outline node containing it, under {cite}`requirements.ci.outline_inputs`,
-with the selected source text for the model. Its model-facing description MUST
+over files of that language. Each match MUST be returned as the entry of the
+innermost outline node containing it, in the `SearchResult` form and under the
+rules of {cite}`requirements.authoring.text_search`, with the matched lines as
+its lines; search results MUST NOT become evidence inputs. Its model-facing description MUST
 explain the rule syntax and the `context` and `selector` form for fragments that
 do not parse as standalone code. Explicitly requesting an excluded path MUST be
-handled as a denial under {cite}`requirements.authoring.read_denial`. Required
-terminology MUST be included under {cite}`requirements.definitions.authoring_inputs`,
-and returned source inputs MUST be recorded under
-{cite}`requirements.authoring.delivered_inputs`. No matches MUST return empty
-arrays; an invalid language or rule, or a failed search, MUST return an
-explanatory tool error.
+handled as a denial under {cite}`requirements.authoring.read_denial`. No matches
+MUST return an empty array; an invalid language or rule, or a failed search,
+MUST return an explanatory tool error.
 :::
 
 ### Read GitHub issues: `github`
@@ -1035,12 +1053,15 @@ marking, and unspecified behavior:
 2. For each, find the code that carries it out, among the {impl} items, the code
    they call, and the code that calls them. In your rationale, map each
    obligation to its code and to the tests step 5 requires.
-3. Marking: code that implements part of the subject without an {impl} reference
-   to it, including code that only cites it, is a gap, and so is a test that
-   verifies the subject without a {test} reference to it. Look for both among
-   the sources the references tool reports for the subject, and with a targeted
-   ripgrep for names, strings, or messages its obligations produce; do not
-   survey unrelated code.
+3. Reachability: the code that carries out each obligation must be reachable
+   from the subject's {impl} items by following the code: what they call, what
+   calls them, the types they use, and the implementations of trait methods
+   they call, including by searching for those implementations. Code reachable
+   this way needs no reference of its own; do not report it for lacking one.
+   Code you could find only by searching elsewhere, such as for a message an
+   obligation produces, is a gap: name the item that should carry an {impl}
+   reference. Each test step 5 requires must carry a {test} reference to the
+   subject; one you could find only by searching is a gap.
 4. Unspecified behavior: a distinct observable behavior in the {impl} code, such
    as an extra output, error, exit status, or option, or acceptance of a kind of
    input, is a gap unless the subject or another requirement the same code marks
