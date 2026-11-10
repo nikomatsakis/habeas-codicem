@@ -1,8 +1,8 @@
 {
   "requirement": "When preparing the mandatory input set defined by\n{cite}`requirements.authoring.mandatory_inputs`, every terminology definition\nreferenced by the subject or any contributed source MUST contribute its complete\nfenced declaration, including its phrase option. Definitions referenced by those\ndefinitions MUST also be included transitively, without duplicates or\nnontermination on cycles.\n\nWhen an additional source read introduces a terminology dependency, the same\ncomplete, transitive definition set MUST be supplied to the model and recorded\nbefore accepting a submission.",
-  "determination": false,
-  "rationale": "**Verdict:** the implementation looks complete. One required test is not tagged to this requirement, so I am marking it a gap.\n\n**Obligations and the code that carries them out**\n\n1. **Complete fenced declaration, including the phrase option, for every term the subject or any contributed source references.**\n   - `AssessmentSources::prepare` in `src/authoring/inputs.rs` builds the contributed inputs.\n   - It then calls `definition_inputs` with `Some(&subject.text)`.\n   - `terms::dependencies` in `src/terms.rs` calls `direct_references`, which scans the subject text and the text of every contributed input:\n     - Markdown requirement bodies.\n     - Rust comments only.\n     - Other files, whole.\n     - Definition inputs.\n   - Each resulting term becomes an `InputSelector::Definition` and goes through `source_input`, which supplies the full declaration.\n   - Tests:\n     - `bundle_combines_direct_references_terms_and_current_existing_selectors` checks a term referenced by the subject.\n     - `mandatory_git_inputs_require_staging_declarations_sources_and_terms` checks a term referenced by a contributed source (`terms.ready`).\n     - `definitions_introduced_by_a_read_are_supplied_and_recorded_before_submission` checks that each definition's text starts with `:::{definition}` and its second line starts with `:phrase:`.\n\n2. **Transitive inclusion, without duplicates, and termination on cycles.**\n   - `close_dependencies` in `src/terms.rs` expands to a fixed point using a visited set and a `BTreeSet`.\n   - `prepare` also skips inputs already present with `!mandatory.contains`.\n   - Both the bundle test and the `mod.rs` test use two terms that reference each other. They assert exactly two definition inputs, each once, in the order `[\"terms.unit\", \"terms.value\"]`.\n\n3. **Additional source read: the same complete, transitive set supplied to the model.**\n   - `tools::read` calls `additional_definitions`.\n   - `ResultPages::deliver` calls `additional_definitions` for a whole result and `definitions_each` plus `page_definitions` for a paged result.\n   - `converse` returns the delivery result to the model.\n   - Tests:\n     - `reading_records_only_delivered_sources_and_their_terms` covers item reads and line-range reads.\n     - The `mod.rs` test asserts the second request contains the definition text.\n\n4. **Recorded before accepting a submission.**\n   - `converse` extends `pending` with `delivery.inputs`, which includes the definitions.\n   - On the next response it calls `sources.record_inputs(&pending)` before handling any submission.\n   - The `mod.rs` test asserts the evidence inputs hold the definitions once each.\n\n**Gap**\n- A paged read delivers definitions through a separate path from a whole read. `definitions_each` supplies them per input, and `page_definitions` dedups within a page and excludes entries the page already holds.\n- The only test that exercises this path is `paged_inputs_carry_their_definitions_and_deliver_only_their_own_inputs` in `src/authoring/pages.rs`.\n- That test carries `{test}` references only to `requirements.authoring.result_pages` and `requirements.authoring.delivered_inputs`. It has no `{test}` reference to `requirements.definitions.authoring_inputs`.\n- Per the rules, a required test that can be found only by searching is a gap. That test should be tagged to this requirement.\n\nNo `{fixme}` references exist for this requirement, so the gap is unacknowledged.",
-  "references": "14c7ef0c96f8472ed2c85fd4cfc67b442a313153732e6c85ac641ac687a1ba6e",
+  "determination": true,
+  "rationale": "I found no gap. Each obligation below is traced to its code and to a test.\n\n**Obligations**\n1. Every terminology definition referenced by the subject or any contributed source must contribute its complete fenced declaration, including the phrase option.\n2. Definitions those definitions reference must also be included transitively.\n3. The transitive set must have no duplicates.\n4. The transitive expansion must terminate on cycles.\n5. When an additional source read introduces a terminology dependency, the same complete transitive set must be supplied to the model.\n6. That set must also be recorded before a submission is accepted.\n\n**Code**\n- **Obligations 1–4, initial set.** `AssessmentSources::prepare` (`src/authoring/inputs.rs`) builds the contributed inputs. It then calls `definition_inputs` with those inputs and the subject text.\n  - `definition_inputs` calls `terms::dependencies` (`src/terms.rs`). `direct_references` collects `{term}` references from the subject text and from each contributed input. For a Rust source it scans only comments, for a Markdown source the whole text, and for a declaration its bodies.\n  - `close_dependencies` expands them to a fixed point with a `BTreeSet` pending set and a `visited` set. That gives transitivity and no duplicates, and it terminates on cycles.\n  - Each resulting definition becomes a `Definition` selector read through `source_input`. That yields the complete declaration, with the `:::{definition}` fence and the `:phrase:` line.\n  - `prepare` also skips any definition already in `mandatory`.\n  - Built-in texts contain no terms (grep of `src/builtins.rs` found no match), so skipping them in the term scan loses nothing.\n- **Obligation 5.** `tools::read` calls `sources.additional_definitions` for each non-line-range read, and `ResultPages::deliver` does the same for line-range reads and listings. Both use `definition_inputs`, so the result is the same transitive closure. Each delivery carries the definitions alongside the inputs. For paged results, `definitions_each` and `page_definitions` attach each page's definitions to that page.\n- **Obligation 6.** In `converse` (`src/authoring/mod.rs`), `pending.extend(delivery.inputs)` includes the definitions. `sources.record_inputs(&pending)` runs when the next response arrives, before any submission is parsed. `record_inputs` deduplicates, and `additional_definitions` filters out inputs already recorded.\n\n**Tests**\n- **Obligation 1 and initial transitivity.** `bundle_combines_direct_references_terms_and_current_existing_selectors` (`src/authoring/inputs.rs`) uses a `unit` ↔ `value` cycle with the subject referencing one term. It asserts exactly 2 definition inputs. `mandatory_git_inputs_require_staging_declarations_sources_and_terms` covers a term referenced only from a contributed source, and covers the case where the definition's file is not staged.\n- **Obligations 2–6 on a read.** `definitions_introduced_by_a_read_are_supplied_and_recorded_before_submission` (`src/authoring/mod.rs`) drives a read whose source uses `terms.value`, whose definition uses `terms.unit`, which uses `terms.value` again. It checks that the recorded evidence holds both definitions once each, that each carries the `:::{definition}` fence and the `:phrase:` line, and that the second request delivers them while the first did not.\n- **Page-level supply.** `paged_inputs_carry_their_definitions_and_deliver_only_their_own_inputs` (`src/authoring/pages.rs`) covers paged delivery.\n- **Read-tool supply.** `reading_records_only_delivered_sources_and_their_terms` (`src/authoring/tools.rs`) covers the read tool. It checks the definitions in the result, the phrase line, and recording that deduplicates.\n\nI found no unspecified extra behavior and no unacknowledged gaps.",
+  "references": "d84596f6144eca7a86bf39fd1006964e6b12510f9a2faba3563b51592329370e",
   "inputs": [
     {
       "requirements": "requirements.definitions.authoring_inputs",
@@ -71,9 +71,19 @@
       "hash": "37e48cc1515b97a14a38ca10ba6cbcbc9388841b3da9abc899d1466ae928e302"
     },
     {
+      "file": "src/authoring/pages.rs",
+      "item": "mod[tests]/fn[paged_inputs_carry_their_definitions_and_deliver_only_their_own_inputs]",
+      "hash": "6846d09edade9cbacb45808f6f703b3c5d23cf56d27821f5edb5951a9c9634eb"
+    },
+    {
       "file": "src/authoring/tools.rs",
       "item": "mod[tests]/fn[reading_records_only_delivered_sources_and_their_terms]",
       "hash": "fe35b5d12bf4cd194a0ce12ced24327763fce5f7b5752169939715c93e2831c9"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "impl[AssessmentSources]",
+      "hash": "296f29086149ee2ca094aca94495646de5cd85b92adf4a2cca891377f15f55cc"
     },
     {
       "file": "src/authoring/inputs.rs",
@@ -181,41 +191,6 @@
       "hash": "ca6b407a66154ba8111e1d5cf7973b5e03b13f7232baeaaac569ea80d2866ef6"
     },
     {
-      "file": "src/authoring/inputs.rs",
-      "item": "impl[AssessmentSources]",
-      "hash": "296f29086149ee2ca094aca94495646de5cd85b92adf4a2cca891377f15f55cc"
-    },
-    {
-      "file": "src/authoring/pages.rs",
-      "item": "impl[Listing]",
-      "hash": "2994d22bdccf43fcdf522d678e07152150c8b92487df38a06412dd4336589f75"
-    },
-    {
-      "file": "src/authoring/pages.rs",
-      "item": "struct[ResultPages]",
-      "hash": "0e26fc8e153e91d8ea66cc5b270f9179842233b2a974355c5055b96f15352d55"
-    },
-    {
-      "file": "src/authoring/pages.rs",
-      "item": "impl[ResultPages]",
-      "hash": "054fc9c2c238d8c171669fd65febb4eafae9c906a932495057c0439ba9d29d7c"
-    },
-    {
-      "file": "src/authoring/pages.rs",
-      "item": "fn[delivered]",
-      "hash": "51759b9d94486c6b0776d1103ee3519194fadbf708bc74c1e81f778503f9d79a"
-    },
-    {
-      "file": "src/authoring/pages.rs",
-      "item": "fn[page_definitions]",
-      "hash": "dc3de2ab56815a8e69f36f4bb66cbc8a6b1e48d5a857812c449027d6466c3e41"
-    },
-    {
-      "file": "src/authoring/pages.rs",
-      "item": "fn[paginate]",
-      "hash": "a5bd384b27325444852337f29a9841738bc0cb0ac3568966a69c33cee32291d3"
-    },
-    {
       "file": "src/authoring/tools.rs",
       "item": "fn[reference_scope_schema]",
       "hash": "13e1a5353e7ee828a12a9466893f7649ba2ced4a1c7844e60a8622f2e21d90ea"
@@ -261,19 +236,24 @@
       "hash": "547a8222c0aa3ef5b5844675be612e0690a23cd79bb1f7901fd8a3ac4ec9e760"
     },
     {
-      "file": "src/authoring/tools.rs",
-      "item": "fn[search]",
-      "hash": "5f043c14c80c5dac1610f3c0add854edd22e785a20a3ac707fbe24c4fcb424aa"
+      "file": "src/authoring/pages.rs",
+      "item": "impl[Listing]",
+      "hash": "2994d22bdccf43fcdf522d678e07152150c8b92487df38a06412dd4336589f75"
     },
     {
       "file": "src/authoring/pages.rs",
-      "item": "mod[tests]/fn[large_listings_and_outlines_page_whole_entries_in_order]",
-      "hash": "3373f9c0050a35dd273d118c61b3635b92181f1716eeff487d0fceef4548c6a0"
+      "item": "struct[ResultPages]",
+      "hash": "0e26fc8e153e91d8ea66cc5b270f9179842233b2a974355c5055b96f15352d55"
     },
     {
       "file": "src/authoring/pages.rs",
-      "item": "mod[tests]/fn[paged_inputs_carry_their_definitions_and_deliver_only_their_own_inputs]",
-      "hash": "6846d09edade9cbacb45808f6f703b3c5d23cf56d27821f5edb5951a9c9634eb"
+      "item": "impl[ResultPages]",
+      "hash": "054fc9c2c238d8c171669fd65febb4eafae9c906a932495057c0439ba9d29d7c"
+    },
+    {
+      "file": "src/authoring/pages.rs",
+      "item": "fn[delivered]",
+      "hash": "51759b9d94486c6b0776d1103ee3519194fadbf708bc74c1e81f778503f9d79a"
     }
   ]
 }
