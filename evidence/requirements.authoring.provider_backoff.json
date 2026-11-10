@@ -1,7 +1,7 @@
 {
   "requirement": "When a provider reports a transient failure, the harness MUST wait and retry\nthe same completion request. Transient failures are throttling, reported\nthrough HTTP 429 or a Bedrock `ThrottlingException`; temporary unavailability,\nreported through HTTP 500, 502, 503, or 504 or a Bedrock\n`ServiceUnavailableException`, `InternalServerException`, or\n`ModelNotReadyException`; and a request with no response after ten minutes,\nwhich the harness MUST abandon. The retry MUST retain its prompt, history,\ntools, and pending inputs. It MUST NOT\nrestart the assessment or repeat already completed tool calls. A permanent\ninput/context-length error, authentication failure, or invalid request MUST\nremain an error; mentioning tokens in an error message alone MUST NOT trigger\nretries.\n\nThe backoff window MUST start at one second and double after each consecutive\ntransient failure, up to sixty seconds. Each delay MUST be randomly selected\nbetween half and all of that window to spread parallel retries. An available\nprovider `Retry-After` value, in seconds or HTTP-date form, MUST be honored as a\nminimum delay even when longer than the window. A successful response MUST reset\nbackoff for the next completion request. There MUST be no retry-attempt limit;\ninterruption MUST cancel both the wait and further retries.\n\nEach attempt MUST be recorded under {cite}`requirements.authoring.usage_requests`.\nHidden SDK retries MUST remain disabled so the harness can account for attempts.\nTransient retries MUST NOT be reported as finished judgments or terminal\nassessment errors while recovery is still in progress. Pending inputs MUST be\nrecorded as evidence only after the request succeeds.\n{cite}`requirements.authoring.provider` {cite}`requirements.authoring.delivered_inputs`",
   "determination": true,
-  "rationale": "I found no gap. Each obligation maps to code reachable from the `{impl}` items, and each has a test carrying a `{test}` reference to the subject.\n\n**Implementation (`converse` in `src/authoring/mod.rs`, `ProviderBackoff` in `src/authoring/providers.rs`)**\n- **Transient classification.**\n  - `ProviderBackoff::next_delay` treats a request as transient when the HTTP status is 429, 500, 502, 503 or 504. It also does so when the Bedrock code is `ThrottlingException`, `ServiceUnavailableException`, `InternalServerException` or `ModelNotReadyException`.\n  - It also treats an `io::ErrorKind::TimedOut` error as transient.\n  - Anything else returns `None`, so the error is returned. This covers 400 `ValidationException`, 403 and a message that only mentions tokens.\n- **Ten-minute abandonment.** `REQUEST_TIMEOUT` is 600 seconds. `converse` wraps `provider.complete` in `tokio::time::timeout`, which drops the future, and it turns the timeout into a `TimedOut` error that is retried.\n- **Wait and retry, no attempt limit.** On `Some(delay)`, `converse` sleeps and then `continue`s. The loop has no attempt counter.\n- **Retry keeps its content.**\n  - Each attempt sends `request.clone()`, so the prompt, history and tools are unchanged.\n  - `pending` is cleared only after success, and `sources.record_inputs(&pending)` also runs only after success.\n  - A retry never restarts the assessment and never re-dispatches tool calls, because tools run only after a successful response.\n- **Window and jitter.** The window starts at 1s and doubles after each transient failure, capped at 60s. The delay is `fastrand::u64(millis/2..=millis)` of the current window.\n- **Retry-After.** `retry_after` parses seconds or an HTTP-date. `next_delay` returns `jittered.max(minimum)`, so the provider value is a minimum even when it exceeds the window.\n- **Reset on success.** `converse` sets `backoff = ProviderBackoff::default()` after a successful response.\n- **Interruption.** `converse` is a plain future, so dropping it cancels both the sleep and further requests.\n- **Per-attempt recording.** `usage.begin_request` and `usage.end_request` run for every attempt, including failed ones.\n- **No hidden SDK retries.**\n  - `bedrock_sdk_loader` sets `RetryConfig::disabled()`, and `bedrock_sdk_config` (which carries the `{impl}`) uses it.\n  - For Ollama, the comment in `RigProvider::connect` says Rig's reqwest transport has no retry layer, and I found nothing contradicting it.\n- **Not reported as terminal.** A transient failure only records the request outcome as \"failed\" in the usage log. It does not return an error or a judgment.\n- **Rig error preserved.** `provider_failure` wraps the Rig `ProviderError` unchanged, so `next_delay` can read its status, code and headers.\n\n**Tests**\n- **Transient classes, permanent errors, token-mention message, timeout.** `retries_throttling_unavailability_and_timeouts_but_not_permanent_errors` and `transient_bedrock_codes_retry_whatever_their_http_status` cover these cases.\n- **Window growth, jitter bounds, no limit.** `jittered_backoff_grows_to_a_ceiling_without_limiting_attempts` runs 100 attempts.\n- **Retry-After.** `retry_after_accepts_seconds_and_dates_without_shortening_provider_delay` covers seconds, HTTP-date, a past date and an invalid value. It also checks that `next_delay` returns 90s.\n- **SDK retries disabled.** `bedrock_sdk_retries_are_disabled` asserts `max_attempts` is 1.\n- **Rig error carries the report.** `rig_failures_keep_their_provider_report_for_backoff`.\n- **Identical retries, recorded attempts, inputs recorded after success.** `throttled_requests_retry_unchanged_and_record_every_attempt` checks 9 identical requests, 8 \"failed\" outcomes and the recorded inputs.\n- **Permanent error not retried.** `permanent_provider_failure_returns_without_waiting_or_retrying`.\n- **Cancellation.** `cancelling_during_backoff_prevents_another_request` shows one request only and no recorded inputs.\n- **Ten-minute timeout.** `unanswered_requests_are_abandoned_and_retried`.\n- **Reset, history kept, tools not repeated.** `success_resets_backoff_and_retries_keep_history_without_repeating_tools` checks the reset to the 1s window and the same history on retry. It also checks that the `habeas` tool ran once and that its input was recorded afterwards.\n\nThe cited requirements (`usage_requests`, `provider`, `delivered_inputs`) are context only. `converse` applies them by recording every attempt and by recording inputs after success.",
+  "rationale": "I found no gaps. Every obligation has code reachable from the `{impl}` items and a test that asserts its outcome. This rests on reading the `{impl}` code and the vendored Bedrock error mapping, not on running anything.\n\n**Reachability.** `converse` (src/authoring/mod.rs) carries the `{impl}`. It reaches `ProviderBackoff::next_delay` and `retry_after` (src/authoring/providers.rs), `REQUEST_TIMEOUT`, and `usage.begin_request`/`end_request`. `bedrock_sdk_config` also carries an `{impl}` and reaches `bedrock_sdk_loader`, which disables SDK retries.\n\n**Obligations, code and tests**\n\n- **Wait and retry the same request.**\n  - Code: `converse` clones `request` on every attempt and, on a transient error, sleeps for `next_delay` and loops.\n  - Tests: `throttled_requests_retry_unchanged_and_record_every_attempt` asserts all 9 requests are identical.\n- **Transient set.**\n  - Code: `next_delay` retries HTTP 429, 500, 502, 503, 504 and the Bedrock codes `ThrottlingException`, `ServiceUnavailableException`, `InternalServerException` and `ModelNotReadyException`. The vendored `rig-bedrock` `sdk_error` and `reply` keep the status and code on the `ProviderError`.\n  - Tests: `retries_throttling_unavailability_and_timeouts_but_not_permanent_errors`, `transient_bedrock_codes_retry_whatever_their_http_status` and `rig_failures_keep_their_provider_report_for_backoff`.\n- **Abandon a request with no response after ten minutes.**\n  - Code: `converse` wraps `provider.complete` in `tokio::time::timeout(REQUEST_TIMEOUT)` (600 s) and turns expiry into a `TimedOut` error. `next_delay` treats `TimedOut` as transient.\n  - Tests: `unanswered_requests_are_abandoned_and_retried`.\n- **Retry keeps prompt, history, tools and pending inputs; no assessment restart; no repeated tool calls.**\n  - Code: the `continue` stays inside the same loop, so history and `pending` are untouched.\n  - Tests: `success_resets_backoff_and_retries_keep_history_without_repeating_tools` asserts the same history is resent and the `habeas` tool ran once.\n- **Permanent errors stay errors; \"tokens\" in a message does not trigger a retry.**\n  - Code: `next_delay` returns `None` for non-transient reports, and for non-`ProviderError` errors that are not timeouts. `converse` then returns the error.\n  - Tests: the permanent-error cases (400 `ValidationException`, 403, 501, no status) and the \"Too many tokens; HTTP 429\" string case in `retries_throttling_...`. `permanent_provider_failure_returns_without_waiting_or_retrying` checks one request and no wait.\n- **Window starts at 1 s, doubles up to 60 s.**\n  - Code: `window` starts at 1 s and is doubled then capped at 60 s.\n  - Tests: `jittered_backoff_grows_to_a_ceiling_without_limiting_attempts` covers 100 attempts.\n- **Each delay random between half and all of the window.**\n  - Code: `fastrand::u64(millis/2..=millis)`.\n  - Tests: the same test asserts the delay lies in `window/2..=window`.\n- **`Retry-After` in seconds or HTTP-date form honored as a minimum, even above the window.**\n  - Code: `retry_after` parses both forms, and `next_delay` returns `jittered.max(minimum)`.\n  - Tests: `retry_after_accepts_seconds_and_dates_without_shortening_provider_delay` covers seconds, a future date, a past date, an invalid value, and 90 s exceeding the window.\n- **A successful response resets backoff.**\n  - Code: `backoff = ProviderBackoff::default()` after success in `converse`.\n  - Tests: `success_resets_backoff_and_retries_keep_history_without_repeating_tools` checks the second throttled request again waits at most 1 s.\n- **No retry-attempt limit.**\n  - Code: the loop has no counter.\n  - Tests: the 100-attempt test above.\n- **Interruption cancels the wait and further retries.**\n  - Code: the sleep is an await inside `converse`, and the ctrl-c `select!` in `author_evidence_with_options` and `prepare_assessment` drops that future.\n  - Tests: `cancelling_during_backoff_prevents_another_request` shows no further request and a single failed attempt logged.\n- **Each attempt recorded under `usage_requests`.**\n  - Code: `begin_request` and `end_request` wrap every attempt, including failed and timed-out ones.\n  - Tests: the throttled-request test asserts `request_count` 9, with 8 `failed` and 1 `completed`; the timeout test asserts the same pattern for 2 requests.\n- **Hidden SDK retries disabled.**\n  - Code: `bedrock_sdk_loader` calls `RetryConfig::disabled()`. For Ollama, a code comment says Rig's reqwest transport has no hidden retry layer; I did not read the Rig transport itself.\n  - Tests: `bedrock_sdk_retries_are_disabled` asserts `max_attempts` is 1.\n- **Transient retries not reported as judgments or terminal errors.**\n  - Code: transient errors `continue` instead of returning.\n  - Tests: the retry tests above, which end in a successful judgment.\n- **Pending inputs recorded only after success.**\n  - Code: `sources.record_inputs(&pending)` runs only after a successful response.\n  - Tests: the cancellation test asserts `recorded_inputs()` is empty. The throttled-request test asserts every input has `sent_in_request` 8, and the tool test asserts the read input is recorded after the retried request succeeds.\n\nI found no unspecified extra behavior in the `{impl}` code.",
   "references": "eba764efb2a743451a869d773c46c1ab72c34ed4983b0e4579853f812b66b31c",
   "inputs": [
     {
@@ -94,7 +94,7 @@
     {
       "file": "src/authoring/mod.rs",
       "item": "fn[converse]",
-      "hash": "12de6c27434f14d49e79ec0263ff0125433eb77c29d4aa8114fbbde5541b1cff"
+      "hash": "91b233ba0dffb3e843685d68dd936b7b134fe8cfc47a6096bff42891be25d6ff"
     },
     {
       "file": "src/authoring/mod.rs",
@@ -199,7 +199,7 @@
     {
       "file": "src/authoring/providers.rs",
       "item": "trait[CompletionProvider]",
-      "hash": "8620761019b85df2703ec5a986f1fba64c3ec480849bcc25d9e2240092528164"
+      "hash": "7740e093d70282a0cba399b7aa8ca8144cecc7e867facefee60e9bb244275d77"
     },
     {
       "file": "src/authoring/providers.rs",
@@ -244,7 +244,7 @@
     {
       "file": "src/authoring/providers.rs",
       "item": "impl[RigProvider/CompletionProvider]",
-      "hash": "0c115a009f74ee8e439f8e2f88ab15c59f69cb5bd157af81aa23c71e22249780"
+      "hash": "48b04dec980a94d2a61b5afaa85bb9f6d1d6791ed93613db6972977b0e988518"
     },
     {
       "file": "src/authoring/providers.rs",
@@ -253,8 +253,13 @@
     },
     {
       "file": "src/authoring/providers.rs",
+      "item": "const[DEFAULT_BEDROCK_MAX_TOKENS]",
+      "hash": "7771b138f2adc95a6e477f96b27f6f9947828a1183504d7b2bd1bf72329aa7cc"
+    },
+    {
+      "file": "src/authoring/providers.rs",
       "item": "fn[apply_bedrock_options]",
-      "hash": "dad4f93bc7be7a135e932670c9a35592a5244c07057a70e8c2020b36df1345dd"
+      "hash": "f469a46a9d4ff0bdb10ee9b7acff7bdc793b65f5a1247eaaf9133c7e46e63025"
     },
     {
       "file": "src/authoring/providers.rs",
@@ -274,7 +279,82 @@
     {
       "file": "src/authoring/providers.rs",
       "item": "mod[tests]",
-      "hash": "a35151b91a5c67935166058142a0c446287596fd4c0e3633a43c74f3dc33172c"
+      "hash": "76db5500b7f77c5fa8f31b915ef8625215572af458574ab799e7c69c0b46c775"
+    },
+    {
+      "file": "vendor/rig-bedrock/src/types/errors.rs",
+      "item": "use@91955d583cbb",
+      "hash": "91955d583cbbc65de8398f1ad26f52be99879bf66b95c3a4af241a17d918b54c"
+    },
+    {
+      "file": "vendor/rig-bedrock/src/types/errors.rs",
+      "item": "use@f23c2cbc382f",
+      "hash": "f23c2cbc382f4c9d6e5e772c80c2d36c4de0854488a8dfc84338da1ccdb0a79d"
+    },
+    {
+      "file": "vendor/rig-bedrock/src/types/errors.rs",
+      "item": "use@59c01dd69d06",
+      "hash": "59c01dd69d06192b36f40cb0826d04ae8d7c2ee648f1c3c394291769e3a6232d"
+    },
+    {
+      "file": "vendor/rig-bedrock/src/types/errors.rs",
+      "item": "use@36004768e609",
+      "hash": "36004768e609c764cdec317e08fe2e411f75a96c197839308024bff4d7c951a8"
+    },
+    {
+      "file": "vendor/rig-bedrock/src/types/errors.rs",
+      "item": "use@9c41c488e0f8",
+      "hash": "9c41c488e0f8b8c293d74af9185061c919f0521529a56eed9cdd47bd8824b689"
+    },
+    {
+      "file": "vendor/rig-bedrock/src/types/errors.rs",
+      "item": "use@b28682977b80",
+      "hash": "b28682977b800057ef5b1a651da2dd4c978fa24d74aa60468df7339c7c11946b"
+    },
+    {
+      "file": "vendor/rig-bedrock/src/types/errors.rs",
+      "item": "const[UNEXPECTED]",
+      "hash": "702774dd69d07b0717e54377e97cff14f96f0b7f70115540126a8688c24af154"
+    },
+    {
+      "file": "vendor/rig-bedrock/src/types/errors.rs",
+      "item": "fn[sdk_error]",
+      "hash": "c41965e8b178d83dfaf884dcdcbd0ca0790b6338bd4e960a59524927fb073622"
+    },
+    {
+      "file": "vendor/rig-bedrock/src/types/errors.rs",
+      "item": "fn[exception]",
+      "hash": "fa190df30371bef8ded60b8ca8518d45e091f8bd31b0deaee4acfca055adb449"
+    },
+    {
+      "file": "vendor/rig-bedrock/src/types/errors.rs",
+      "item": "const[STREAM_FAILED]",
+      "hash": "1b33767242bd33ed0a4b5515a75565f34efb53b461c0320d3aa5eb59db84d79b"
+    },
+    {
+      "file": "vendor/rig-bedrock/src/types/errors.rs",
+      "item": "fn[raw_body]",
+      "hash": "ddac87ce19c9711280719bc5d30a3c351ef51536446803fb55c14ad192f01571"
+    },
+    {
+      "file": "vendor/rig-bedrock/src/types/errors.rs",
+      "item": "fn[transient_exception]",
+      "hash": "25190ce5f0d34d0c8726a27ee2238afd89407f7407a912e6c5a6f4d0d33b2d4b"
+    },
+    {
+      "file": "vendor/rig-bedrock/src/types/errors.rs",
+      "item": "fn[reply]",
+      "hash": "5de2bcb6318be90fb5a76fc89322b13cf7aa33777b689a345c3b80d56a093ea9"
+    },
+    {
+      "file": "vendor/rig-bedrock/src/types/errors.rs",
+      "item": "mod[tests]",
+      "hash": "d4f588c5e797c2da513a2e099e5cbe1c8f2ea3ea01ab5e30a10833bab5c94f14"
+    },
+    {
+      "file": "vendor/rig-bedrock/src/types/errors.rs",
+      "item": "mod[request_id_tests]",
+      "hash": "1c9b8731b8ee6e9df20bb823bd081fd76616dfbf801fa5d9bea76f8748449ffc"
     }
   ]
 }

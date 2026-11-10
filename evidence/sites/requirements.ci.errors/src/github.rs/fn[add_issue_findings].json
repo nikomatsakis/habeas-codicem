@@ -9,7 +9,7 @@
   "applies": true,
   "fixmes": [],
   "determination": true,
-  "rationale": "**Applies.** `add_issue_findings` (src/github.rs:521-633) is repository-validation code that collects errors in a local `let mut errors = BTreeSet::new()` (line 536). It is not in a `tests` module. It matches the `error_accumulators` site query and is a site of `requirements.ci.errors`.\n\n**Obligations.** After one check fails, the site must still run every later check that doesn't depend on the failed one, including later checks in the same loop iteration. It must not report one failure twice.\n\n**Violation matches (early exits).**\n- **Line 530, `return`.** This runs only when no `{fixme}` references name any issue. Every later check (closed-issue findings, stale evidence records, stale site reviews) is driven by `fixmes`, so none of them has anything to run on. No error has been recorded at that point, so this skips no check after a failure.\n- **Lines 540, 568, 577, 585, 610 and 618, `continue`.** Each one skips an iteration that has no failure to report:\n  - the issue is open (540);\n  - the definition is a Term (556);\n  - the evidence has no FIXME entries (568);\n  - the reference belongs to another requirement, is not a fixme edge, or sits inside the requirement's own site (577);\n  - the `{fixme}` doesn't acknowledge any recorded entry (585);\n  - the site review isn't a FIXME record (610);\n  - the `{fixme}` isn't inside the site (618).\n  \n  None of these follows a recorded error, and none skips an independent check. The two checks within one iteration of the first loop, the `{fixme}` finding and the containing-item finding, both run because the error is only inserted, not returned.\n- **Lines 563 and 606, `value.get(\"determination\")?`.** These sit inside closures, so `?` only ends that `Option` chain. An unreadable or malformed evidence file makes that record yield nothing, and the loops go on to the next definition and site. Reporting such a file is a different check and is not skipped here.\n\n**No duplicate reports.** The `{fixme}` finding and the item-fails finding for the same closed issue are two distinct messages. `requirements.cli.fixme_issues` (md/requirements/cli.md:40-49) requires both. The stale-record and stale-site-review messages are also distinct. `in_own_site` (line 577) keeps a `{fixme}` inside a site from being reported twice. The `BTreeSet` also removes identical strings.\n\nThe site meets the requirement, so there are no gaps and no `{fixme}` is needed.",
+  "rationale": "**Applies.** `add_issue_findings` (src/github.rs:521-633) is a repository-validation function. It declares `let mut errors = BTreeSet::new()` and finally does `inspection.report.errors.extend(errors)`. That is the `errors` local variable the site query selects. It is not authoring code that collects errors only to abort.\n\n**Obligations and how the site meets them.** A site MUST still run every later check that does not depend on a failed check's result. That includes later checks in the same loop iteration. A site MUST NOT report one failure twice.\n\nThe function runs three checks:\n1. A loop over `fixmes` reports each `{fixme}` naming a closed or missing issue, and the containing item.\n2. A loop over definitions reports stale FIXME evidence records.\n3. A loop over sites reports stale site reviews.\n\nEach check only adds to `errors`. No check returns early after a failure, so a failure in one never stops a later one.\n\n**Violation matches, judged one by one.**\n- **Line 530 `return`:** It runs only when `fixmes` is empty. All three checks iterate over `fixmes` or depend on it, so there is nothing to skip. No failure has been recorded yet. Harmless.\n- **Line 540 `continue`:** It runs when the issue is open, so no failure occurred. The next issue is checked independently. Harmless.\n- **Line 556 `continue`:** It skips `Term` definitions, which have no evidence file. That is not a failure. Harmless.\n- **Lines 563 and 606 `?`:** Both are inside closures returning `Option`. They make an unreadable or undecodable evidence or review file yield no FIXME entries, which skips that one definition or site. Reporting malformed evidence is another check's job. The rest of the loop and the later checks still run. Harmless.\n- **Lines 568, 577, 585, 610, 618 `continue`:**\n  - They skip a definition or site with no FIXME record.\n  - They skip a reference that is not that definition's acknowledging edge, or is inside its own site.\n  - They skip a body that does not acknowledge the record.\n  - They skip a site whose FIXME is not inside the site.\n  - In each case, what follows depends on that condition. Later checks for other items still run.\n\n**No duplicate reporting.** The first loop emits two messages for one closed issue: one for the `{fixme}`, and one for the containing item failing. `requirements.cli.fixme_issues` (md/requirements/cli.md) requires both the `{fixme}` error and the failing containing item, so these are two required reports. The stale-record and stale-site messages are distinct strings. The `BTreeSet` also removes any identical repeats.\n\nI found no gap.",
   "inputs": [
     {
       "file": "src/github.rs",
@@ -142,35 +142,25 @@
       ]
     },
     {
-      "requirements": "requirements.authoring.github_reads",
-      "matches": [
-        "requirements.authoring.github_reads"
-      ],
+      "file": "md/requirements/authoring.md",
+      "item": "section[Authoring%20evidence]/section[Model%20tools]/section[Read%20GitHub%20issues:%20`github`]",
+      "hash": "5f68de22b787179fce01a42e94fa6f2997a6b63de19cde140d099c5a7543976e"
+    },
+    {
+      "file": "md/requirements/cli.md",
+      "item": "section[Command-line%20interface]",
+      "hash": "632b572fa6d932bf54d218250106d05606a73fb92d8698236218dfceae5d8ad6"
+    },
+    {
+      "definition": "requirements.references.definition_selection",
       "text": [
-        ":::{req} github_reads",
-        "The harness MUST expose a `github` tool with this interface:",
+        ":::{definition} definition_selection",
+        ":phrase: definition selection",
         "",
-        "```text",
-        "github({ issue: String }) -> Issue",
-        "",
-        "Issue { reference: String, state: \"open\" | \"closed\", title: String, body: String }",
-        "```",
-        "",
-        "`issue` MUST have the form `<owner>/<repo>#<number>`. The tool MUST read the issue",
-        "or pull request through the GitHub API, authenticating with the `GITHUB_TOKEN`",
-        "environment variable when that is set, and MUST return its body redacted under",
-        "{cite}`requirements.authoring.redaction`. GitHub reads cannot be reproduced",
-        "later, so their results MUST NOT be recorded as evidence inputs and MUST NOT",
-        "make evidence stale. Every GitHub read by Habeas, including this tool's, the",
-        "lookups below, and those of {cite}`requirements.cli.fixme_issues`, MUST go",
-        "through one cache under the state root of",
-        "{cite}`requirements.configuration.state_location`, keyed by issue, and MUST",
-        "reuse a cached result less than one hour old instead of contacting GitHub. A malformed reference, a missing issue, or a failed request",
-        "MUST return an explanatory tool error.",
-        "",
-        "When the mandatory inputs contain a `{fixme}` reference under",
-        "{cite}`requirements.references.roles`, the harness MUST look up the state of",
-        "each issue its `:github:` lines name, in the same way, and MUST supply each state with that input to the model as `open` or `closed`; when GitHub cannot be reached, the issue MUST be assumed open. These states MUST NOT be recorded either. Instead, `habeas status` and `habeas author` MUST treat a recorded FIXME determination as stale, exactly as if one of its inputs had changed, when an issue that one of its acknowledging `{fixme}` references names, or for a site review the `{fixme}` references inside the site, is closed or does not exist; repository validation, which never contacts GitHub, MUST NOT.",
+        "A full requirement or example name, or a definition glob, identifying the",
+        "requirements and named examples it matches under",
+        "{cite}`requirements.references.definition_globs`. A name without `*` selects",
+        "exactly that definition.",
         ":::"
       ]
     }

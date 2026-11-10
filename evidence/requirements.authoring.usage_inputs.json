@@ -1,7 +1,7 @@
 {
   "requirement": "Usage MUST record mandatory input counts and sizes by evidence kind, in UTF-8\nbytes and lines, and the same information for additional inputs requested through\n`habeas` or `ripgrep`. A requirements input MUST also record its number of matched declarations.\nUsage MUST distinguish unique inputs from repeated reads, successful from\nfailed reads, and prepared inputs from those actually sent to the model.\nFile-discovery calls MUST count as tool calls without recording directory\nlistings as evidence or source inputs.",
   "determination": true,
-  "rationale": "I found no gap against `requirements.authoring.usage_inputs`.\n\n**Reachability.** The only {impl} item is `configured_record` in `src/authoring/mod.rs`. It reaches the code that does the work, by this chain:\n- `configured_record` calls `assess_subject`.\n- `assess_subject` calls `usage.prepared(\"mandatory\", …)` and then `assess`.\n- `assess` reaches `converse`, which does the per-request and per-tool bookkeeping.\n\nAll of the code below is reachable from that chain.\n\n**Obligations, code and tests**\n- **Mandatory inputs: counts and sizes by evidence kind, in UTF-8 bytes and lines.**\n  - `UsageLog::prepared` (`src/authoring/usage.rs`) classifies each input as outline, requirements, builtin or definition.\n  - It records `bytes` as the sum of `str::len` (UTF-8 bytes) plus the newline separators, and `lines` as the number of text entries.\n  - Test: `input_metadata_counts_components_and_reads_without_persisting_source` asserts kind `outline`, bytes `\"λ\\nDO_NOT_LOG_SOURCE\".len()` (this includes a multibyte character) and lines 2. The CLI test asserts a mandatory `definition` input with bytes > 0.\n- **Additional inputs requested through `habeas` or `ripgrep`: the same information.**\n  - `converse` calls `usage.prepared(call.function.name, &delivery.inputs)` for every successful tool delivery, so the origin is the tool name.\n  - Test: the usage unit test records `prepared(\"habeas\", …)` and asserts origin `habeas` and the same fields. The CLI test asserts habeas-origin inputs. It also shows that `ripgrep` only locates lines and delivers no inputs, which is consistent with the requirement.\n- **A requirements input records its number of matched declarations.**\n  - `components` is `matches.len()`, or 1 for other kinds.\n  - Test: the unit test asserts `components == 2` for a requirements input with two matches.\n  - The assertion does not check the kind string `requirements` directly. I treat that as minor, because the branch is simple and the `components` assertion exercises the requirements input.\n- **Unique inputs distinguished from repeated reads.**\n  - `unique` is set from `seen.insert(...)`.\n  - Tests: the unit test asserts the first input is unique and the repeat is not. The CLI test asserts a habeas-origin input with `unique == false`.\n- **Successful reads distinguished from failed reads.**\n  - `UsageLog::tool` and `skipped_tool` keep `tool_calls` and `tool_failures` counters.\n  - In `converse`, a failed read is counted as a failure and adds no input.\n  - Tests: the CLI test asserts `tool_calls.habeas == 3` and `tool_failures.habeas == 1`. `tool_outcomes_are_distinct_and_unknown_names_do_not_leak_model_text` asserts the failure and skipped counters.\n- **Prepared inputs distinguished from those actually sent.**\n  - Inputs are recorded at preparation.\n  - `begin_request` sets `submitted_in_request`.\n  - `end_request` sets `sent_in_request` only when the response carried usage, that is, on success.\n  - Tests: the unit test asserts null → submitted → sent. `failed_submission_can_be_confirmed_on_a_later_attempt` covers a failed attempt followed by a retry. `throttled_requests_retry_unchanged_and_record_every_attempt` covers the same across eight failures.\n- **File-discovery calls count as tool calls but are not recorded as inputs.**\n  - `list_files` goes through `usage.tool`, and its delivery carries no inputs.\n  - Tests: the CLI test asserts `tool_calls.list_files == 1` and no usage input with origin `list_files`. The unit test counts `list_files` as a tool call with empty `inputs`.\n\nNo unspecified observable behavior turned up. The extra `builtin` kind covers fixed text that is not evidence.",
+  "rationale": "I found no gap, and no {fixme} applies. The requirement's only {impl} root is `configured_record` (src/authoring/mod.rs). From there the code reaches `assess_subject`, which calls `usage.prepared(\"mandatory\", …)`. It also reaches `assess` and `converse`, which call `usage.tool`, `usage.skipped_tool`, `usage.prepared`, `begin_request` and `end_request`. All of that is reachable, so none of it needs its own reference.\n\n**Obligations and the code that carries them out**\n- **Mandatory input counts and sizes by evidence kind, in UTF-8 bytes and lines.**\n  - `UsageLog::prepared` (src/authoring/usage.rs) classifies each input as `outline`, `requirements`, `builtin` or `definition`.\n  - It records `bytes` as the sum of `str::len` over the text lines plus the newline separators.\n  - It records `lines` as `text.len()`.\n  - Each input gets its own `InputUsage`, so counts and sizes are available per kind.\n- **The same information for additional inputs requested through `habeas` or `ripgrep`.**\n  - `converse` calls `usage.prepared(call.function.name, &delivery.inputs)` for every successful tool call, with the tool name as `origin`.\n  - `habeas` reads deliver inputs through `tools::read`, so they are recorded.\n  - `ripgrep` yields no inputs, so none are recorded for it. `requirements.authoring.text_search` states that search results MUST NOT become evidence inputs, so this is consistent.\n- **A requirements input records its number of matched declarations.** `components` is the length of the input's `matches` array. Every other kind gets 1.\n- **Unique inputs versus repeated reads.** `unique` is set from `self.seen.insert(input.to_string())`.\n- **Successful versus failed reads.** `converse` calls `usage.tool(name, false)` and `usage.prepared` on success. On error it calls `usage.tool(name, true)` and records no input. The log keeps separate `tool_calls` and `tool_failures` counts.\n- **Prepared versus actually sent to the model.**\n  - `begin_request` sets `submitted_in_request`.\n  - `end_request` sets `sent_in_request` only when the provider returned usage, which means the request completed.\n  - Failed attempts leave `sent_in_request` unset, and a later successful attempt sets it.\n- **File-discovery calls count as tool calls without recording directory listings as inputs.**\n  - `list_files` returns `Listing::array`, which delivers no inputs.\n  - `converse` still calls `usage.tool(\"list_files\", …)`, so the call is counted.\n\n**Tests**\n- `input_metadata_counts_components_and_reads_without_persisting_source` (usage.rs) asserts kind, bytes, lines, components, unique and repeated reads, the `habeas` origin, and the unset-then-set `submitted_in_request` and `sent_in_request`.\n- `failed_submission_can_be_confirmed_on_a_later_attempt` (usage.rs) and `throttled_requests_retry_unchanged_and_record_every_attempt` (mod.rs) cover prepared versus sent across failed and retried requests.\n- `tool_outcomes_are_distinct_and_unknown_names_do_not_leak_model_text` (usage.rs) covers tool-call and failure counts, including `list_files`, with no inputs recorded.\n- The end-to-end `ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free` (tests/authoring_cli.rs) asserts these on a real run:\n  - the `habeas` failure count and the `list_files` and `ripgrep` call counts;\n  - no usage inputs with `list_files` or `ripgrep` origin;\n  - a repeated `habeas` read recorded as non-unique and sent in request 1;\n  - a mandatory `definition` input with nonzero bytes.\n\nAll of these tests carry {test} references to the requirement. The `requirements` kind itself is not asserted by name. The `components == 2` assertion exercises it, and the kind branch is a trivial `get(\"requirements\")` check, so I do not count this as a gap.",
   "references": "3293201470f0a495844ee51c868342042be1d70cde1ada5dd186412b131c1992",
   "inputs": [
     {
@@ -149,7 +149,159 @@
     {
       "file": "src/authoring/mod.rs",
       "item": "fn[converse]",
-      "hash": "12de6c27434f14d49e79ec0263ff0125433eb77c29d4aa8114fbbde5541b1cff"
+      "hash": "91b233ba0dffb3e843685d68dd936b7b134fe8cfc47a6096bff42891be25d6ff"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "fn[reference_scope_schema]",
+      "hash": "13e1a5353e7ee828a12a9466893f7649ba2ced4a1c7844e60a8622f2e21d90ea"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "fn[dispatch_paged]",
+      "hash": "feb5f6133321446af81bbdb8e27ec6900d9a2495338e4118e45c9790a6ccffea"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "fn[dispatch]",
+      "hash": "758a46cbd9110b234687139f5031a8101f39dce0eb2be6cf5d7036234ae26dbb"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "fn[read]",
+      "hash": "b6c181bdb647f5969daad3a4bdccea56aa57026e5b81c88a9a573a8071527038"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "fn[outline]",
+      "hash": "5eb14d15129383bfca790a02f199d2aa2fe7683a2a4d519f44ae8af387668a37"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "fn[outline_entries]",
+      "hash": "3b22131310e880e9df837e973cd3c32d83ed76e77452e17b9239f0fb25da675d"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "fn[list_files]",
+      "hash": "4b24c90e6646cb91dda9bbc5934ca0365845a792428bdfbfa2cbfaabefafdf9a"
+    },
+    {
+      "requirements": "requirements.authoring.delivered_inputs",
+      "matches": [
+        "requirements.authoring.delivered_inputs"
+      ],
+      "text": [
+        ":::{req} delivered_inputs",
+        "The harness MUST record the sources it supplies to the model, including",
+        "mandatory inputs and additional reads, using the evidence input formats",
+        "defined by {cite}`requirements.ci.outline_inputs`,",
+        "{cite}`requirements.ci.requirements_inputs`, and",
+        "{cite}`requirements.definitions.inputs`. The harness MUST create these records",
+        "itself so ordinary evidence validation can check them later.",
+        ":::"
+      ]
+    },
+    {
+      "requirements": "requirements.authoring.text_search",
+      "matches": [
+        "requirements.authoring.text_search"
+      ],
+      "text": [
+        ":::{req} text_search",
+        "The harness MUST expose a `ripgrep` tool with this interface:",
+        "",
+        "```text",
+        "ripgrep({ pattern: String, path: String = \".\", context: Integer = 2,",
+        "          referencing: Optional<ReferenceScope> }) -> SearchResult",
+        "",
+        "ReferenceScope {",
+        "    selection: String,                     // full name or definition glob",
+        "    roles: Array<Role> = [\"impl\", \"test\", \"cite\"],",
+        "    scope: \"node\" | \"file\" = \"file\",",
+        "}",
+        "",
+        "SearchResult { matches: Array<SearchMatch> }",
+        "",
+        "SearchMatch {",
+        "    file: String,",
+        "    item: String,        // selector of the innermost outline node",
+        "    kind: String,",
+        "    line_start: Integer, // the node's current lines",
+        "    line_end: Integer,",
+        "    lines: Array<{ line: Integer, text: String }>,",
+        "}",
+        "```",
+        "",
+        "The tool MUST search the requested permitted file or directory using",
+        "ripgrep's regular-expression syntax and default case-sensitive search and ignore",
+        "rules. It MUST search in process using ripgrep's library crates, without",
+        "requiring an external `rg` executable, and MUST apply source-access policy while",
+        "walking files rather than filtering results afterwards. It MAY search files in",
+        "parallel; results MUST be ordered by path and then line regardless of",
+        "parallelism, so the same sources always produce the same inputs. Explicitly allowed paths and discovered generated-output directories MUST",
+        "be searched even when ignored or hidden; workspace disallow rules still apply.",
+        "Its model-facing description MUST explain those conventions. `context`",
+        "MUST be nonnegative and specify how many lines before and after each matching",
+        "line to include, defaulting to two on each side. Windows MUST stop at file",
+        "boundaries, and overlapping windows in the same file MUST be merged. The result",
+        "MUST give one entry for each innermost outline node containing a match, where a",
+        "match in a comment belongs to the node the comment belongs to under",
+        "{cite}`requirements.references.outline_comments`: the node's file, selector",
+        "under {cite}`requirements.references.outline_selectors`, kind, and current line",
+        "range, and its matching and context lines with their line numbers, redacted",
+        "under {cite}`requirements.authoring.redaction`. Search results MUST NOT become",
+        "evidence inputs and MUST NOT include definitions; the model-facing description",
+        "MUST tell the model to read with the `habeas` tool any node whose code its",
+        "conclusion relies on. Setting `context` to zero MUST return only matching lines.",
+        "With `referencing`, the tool MUST search only sources, within `path`, that carry",
+        "a reference in one of `roles` to a requirement or example the `selection`",
+        "matches under {cite}`requirements.references.definition_globs`, including",
+        "anchors under {cite}`requirements.references.anchors`: with `scope` `node`, only",
+        "the outline nodes that contain or are named by those references, and with",
+        "`file`, their whole files. A selection matching no requirement or example, or an",
+        "unknown role or scope, MUST return an explanatory tool error. Its model-facing",
+        "description MUST explain `referencing`.",
+        "Search results MUST exclude files disallowed by",
+        "{cite}`requirements.authoring.source_tools`; explicitly requesting an excluded",
+        "path MUST be handled as a denial under {cite}`requirements.authoring.read_denial`.",
+        "No matches MUST return an empty array; invalid arguments or a failed search MUST",
+        "return an explanatory tool error.",
+        ":::"
+      ]
+    },
+    {
+      "requirements": "requirements.authoring.file_discovery",
+      "matches": [
+        "requirements.authoring.file_discovery"
+      ],
+      "text": [
+        ":::{req} file_discovery",
+        "The harness MUST expose a `list_files` tool with this interface:",
+        "",
+        "```text",
+        "list_files({ path: String = \".\" }) -> Array<DirectoryEntry>",
+        "",
+        "DirectoryEntry {",
+        "    path: String,",
+        "    kind: \"file\" | \"directory\",",
+        "}",
+        "```",
+        "",
+        "The tool MUST list the immediate children of the requested directory, returning",
+        "project-relative paths where possible and absolute paths for permitted external",
+        "files. Its root listing MUST also expose available generated-output directories",
+        "and configured external allow paths. The model can list a returned",
+        "directory in another call to explore further. A failed listing MUST return an",
+        "explanatory tool error unless access was denied, which MUST be handled under",
+        "{cite}`requirements.authoring.read_denial`. Directory listings MUST NOT become evidence inputs.",
+        "Listings MUST omit files excluded by {cite}`requirements.authoring.source_tools`.",
+        "In a Git worktree, directories MUST have at least one eligible source",
+        "descendant to be listed unless explicitly allowed or discovered as generated",
+        "output. Explicitly requesting an excluded path MUST return an",
+        "authoring error under {cite}`requirements.authoring.read_denial`.",
+        ":::"
+      ]
     }
   ]
 }
