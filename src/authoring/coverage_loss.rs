@@ -740,4 +740,31 @@ mod tests {
         }
         assert!(!joined.contains("{{"), "{joined}");
     }
+
+    // {test}`requirements.authoring.coverage_loss`
+    #[test]
+    fn prompts_name_the_root_node_and_redact_earlier_rationales() {
+        let token = ["ghp_", "abcdefghijklmnopqrstuvwxyz0123456789"].concat();
+        let lost = LostItem {
+            file: "notes.txt".into(),
+            item: String::new(),
+            readers: vec![Reader {
+                definition: "requirements.ready".into(),
+                rationale: format!("It read the file, which holds {token}."),
+            }],
+        };
+        let prompt = prompt(&lost, "[]").unwrap();
+        let joined = format!("{}\n{}", prompt.system, prompt.subject);
+        assert!(
+            joined.contains("Item under review: notes.txt <root>"),
+            "{joined}"
+        );
+        assert!(!joined.contains(&token), "{joined}");
+        assert!(
+            joined.contains(
+                "## requirements.ready\n\nIt read the file, which holds [REDACTED:GitHub Token]."
+            ),
+            "{joined}"
+        );
+    }
 }
