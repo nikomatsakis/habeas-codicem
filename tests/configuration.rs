@@ -1463,6 +1463,70 @@ fn documented_configuration_examples_name_the_file_to_edit() {
     assert!(checked >= 8, "{checked}");
 }
 
+// {test}`requirements.configuration.documentation`
+#[test]
+fn documented_configuration_examples_identify_their_placeholders() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    // Values the examples use that a reader must replace, as they appear in
+    // TOML, with the name the prose gives them.
+    let named = [
+        ("MODEL_ID", "MODEL_ID"),
+        ("MODEL_TAG", "MODEL_TAG"),
+        ("\"research\"", "research"),
+        ("\"us-east-1\"", "us-east-1"),
+        ("//workstation:", "workstation"),
+        ("/absolute/path/to/project", "/absolute/path/to/project"),
+    ];
+    let mut checked = 0;
+    for document in [
+        "md/reference.md",
+        "md/requirements/configuration.md",
+        "md/requirements/authoring.md",
+    ] {
+        let text = fs::read_to_string(root.join(document)).unwrap();
+        let mut pieces = text.split("```toml\n");
+        let mut before = pieces.next().unwrap();
+        for block in pieces {
+            let (source, after) = block.split_once("\n```").unwrap();
+            // The paragraph introducing the example and the one after it.
+            let context = format!(
+                "{}\n{}",
+                before.trim_end().rsplit("\n\n").next().unwrap_or_default(),
+                after.trim_start().split("\n\n").next().unwrap_or_default()
+            );
+            let every_uppercase = context.contains("replace every uppercase placeholder");
+            let mut placeholders: Vec<(&str, bool)> = named
+                .iter()
+                .filter(|(found, _)| source.contains(found))
+                .map(|(_, name)| (*name, name.chars().all(|c| !c.is_ascii_lowercase())))
+                .collect();
+            // Every all-uppercase string value is a placeholder.
+            for line in source.lines() {
+                if let Some((_, value)) = line.split_once(" = \"") {
+                    let value = value.trim_end_matches('"');
+                    if !value.is_empty()
+                        && value
+                            .chars()
+                            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+                        && !placeholders.iter().any(|(name, _)| *name == value)
+                    {
+                        placeholders.push((value, true));
+                    }
+                }
+            }
+            for (placeholder, uppercase) in placeholders {
+                assert!(
+                    (uppercase && every_uppercase) || context.contains(&format!("`{placeholder}`")),
+                    "{document}: {placeholder} is not identified:\n{context}\n{source}"
+                );
+            }
+            checked += 1;
+            before = after;
+        }
+    }
+    assert!(checked >= 15, "{checked}");
+}
+
 // {test}`requirements.configuration.user_location`
 // {test}`requirements.configuration.state_location`
 #[test]
