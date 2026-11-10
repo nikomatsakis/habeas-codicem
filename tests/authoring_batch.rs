@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
+// {cite}`habeas:util`
 #[derive(Default)]
 struct Requests {
     subjects: Vec<String>,
@@ -99,6 +100,7 @@ impl Server {
     }
 
     /// Each request's subject, arrival, and answer, in arrival order.
+    // {cite}`habeas:util`
     fn timeline(&self) -> Vec<(String, Instant, Option<Instant>)> {
         self.requests.0.lock().unwrap().timeline.clone()
     }
@@ -2126,6 +2128,7 @@ fn github_reads_do_not_cache_in_a_state_root_inside_the_project() {
 /// Checks that the first assessment of each kind starts before any other of
 /// its kind, and that the others start only once its first request has been
 /// answered, returning the requests of each kind in arrival order.
+// {cite}`habeas:util`
 fn assert_warmed_first(server: &Server) -> Vec<Vec<(String, Instant, Option<Instant>)>> {
     let timeline = server.timeline();
     let mut kinds = Vec::new();

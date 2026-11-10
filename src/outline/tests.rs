@@ -331,6 +331,7 @@ fn reflowing_inner_and_block_doc_comments_keeps_the_hash() {
 }
 
 /// The selector of the node owning the comment containing `needle`.
+// {cite}`habeas:util`
 fn comment_owner(outline: &Outline, source: &str, needle: &str) -> String {
     let start = source.find(needle).unwrap();
     let comment = outline

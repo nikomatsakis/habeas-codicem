@@ -10,6 +10,8 @@ use serde_json::{Map, Value};
 use crate::config::{BackendConfig, BedrockConfig};
 
 pub(super) trait CompletionProvider {
+    /// Sends one request and returns the model's response.
+    // {cite}`habeas:util`
     async fn complete(&self, request: CompletionRequest) -> io::Result<CompletionResponse>;
 
     /// The output-token limit each request asks for, when one is known.
