@@ -1282,6 +1282,16 @@ async fn converse<T>(
         sources.record_inputs(&pending);
         pending.clear();
         if matches!(response.finish_reason(), Some(FinishReason::Length)) {
+            // Rig reports a context-window overflow as `Length` too; Bedrock's
+            // raw reply tells the two apart, and continuing would only grow
+            // the conversation further.
+            if response.raw.get("stopReason").and_then(Value::as_str)
+                == Some("model_context_window_exceeded")
+            {
+                return Err(io::Error::other(
+                    "the model's response was incomplete: the conversation exceeded the model's context window",
+                ));
+            }
             if continued {
                 return Err(io::Error::other(
                     "the model's response was incomplete: it reached the output limit again after one continuation",

@@ -1982,6 +1982,20 @@ fn a_second_response_at_the_output_limit_fails_the_assessment() {
     assert_eq!(usage["outcome"], "failed");
 }
 
+// {test}`requirements.authoring.output_limit`
+#[test]
+fn a_context_window_overflow_fails_without_a_continuation() {
+    let mut overflow = cut_off_submission("overflow");
+    overflow["stopReason"] = json!("model_context_window_exceeded");
+    let (output, bodies, usage) = bedrock_exchange("fixture-uncached-model", vec![overflow]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "{stderr}");
+    assert!(stderr.contains("context window"), "{stderr}");
+    assert_eq!(bodies.len(), 1);
+    assert_eq!(usage["request_count"], 1);
+    assert_eq!(usage["outcome"], "failed");
+}
+
 // {test}`requirements.authoring.persistence`
 // {test}`requirements.authoring.usage_storage`
 #[test]
