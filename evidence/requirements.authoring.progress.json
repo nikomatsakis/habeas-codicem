@@ -1,8 +1,8 @@
 {
   "requirement": "When stderr is an interactive terminal, `habeas author --all` MUST display an\nupdating progress bar with elapsed time, percentage, finished and total assessment\ncounts, active and queued counts, and separate counts for `true`, `false`, `FIXME`,\nand authoring errors. The total MUST count only subjects selected for assessment;\ncurrent accepted records remain in the unchanged count. A finished assessment\nMUST advance progress whether it writes a judgment or reports an authoring error.\nProgress measures completed work, not satisfaction of requirements.\n\nInspection MUST also show a progress bar for each phase with a known amount of\nwork, including evidence files, reference source files and coverage, Rust\nfunction coverage, and assessment selection. The display MUST label the current phase\nand show its completed and total checks; its percentage measures that phase's\nchecks, not estimated time or overall inspection completion. Discovery and other\nphases whose totals are not yet known MUST use an indeterminate activity display.\nInspection progress MUST NOT change validation results or invoke inference.\nEnabled reports MUST remain readable alongside progress. An\ninterrupted batch MUST retain its actual progress without counting unstarted\nassessments as finished. Empty batches and early errors MUST clear the temporary\ndisplay. When stderr is redirected or `TERM=dumb`, the command MUST retain its\nplain line-oriented reports without terminal control sequences. `NO_COLOR` MUST\ndisable color without disabling progress on a supported terminal. The existing\nstdout completion summary and exit-status rules MUST remain unchanged.\n{cite}`requirements.authoring.batch`\n{cite}`requirements.authoring.reporting`",
-  "determination": false,
-  "rationale": "I found one gap: the \"site reviews\" inspection phase has no test. Everything else in the requirement is implemented and tested.\n\n**Obligations and their code**\n- **Terminal progress bar for `author --all`.** `BatchProgress::new` in `src/authoring/progress.rs` creates the bar only when stderr is a terminal and `TERM` is not `dumb`. `start` and `refresh` show elapsed time, percentage, `pos/len finished`, active and queued counts, and separate true, false, FIXME and error counts.\n- **Total counts only selected subjects.** `run_batch` in `src/authoring/batch.rs` calls `progress.start(subjects.len())`, and `select_subjects` counts current records as unchanged rather than selected.\n- **Every finished assessment advances progress.** `completed` and `failed` increment their counters, and `refresh` sets the position from those counters.\n- **Inspection phases.**\n  - `src/evidence.rs` reports the evidence files phase, the reference source files phase (`collect_references_with_progress`) and the reference coverage phase (`validate_references`).\n  - `src/citations.rs` reports the citation reviews phase, `src/sites.rs` the site reviews phase, `src/rust_coverage.rs` the Rust function coverage phase, and `select_subjects` the assessment selection phase.\n  - `BatchProgress::inspect` labels the phase with \"Phase: …\" and shows `percent pos/len`, using `write_percentage` so 199/200 does not round to 100%.\n  - Discovery phases and the counted phases' initial calls report `total: None`, which gives the spinner-only activity display.\n  - Inspection only reports progress, so it does not change validation results or invoke inference.\n- **Reports readable, interruption, empty batches, early errors.** `println` goes through `bar.println`. `finish` abandons the bar when interrupted, so unstarted work is not counted. `Drop` clears an unfinished bar.\n- **Redirected stderr, `TERM=dumb`, `NO_COLOR`, stdout summary.** Without a bar, `println` falls back to plain `eprintln!`. `progress_style` strips color styling when `NO_COLOR` is set. The stdout summary and exit status are untouched.\n\n**Tests found**\n- **PTY and batch tests in `tests/authoring_batch.rs`.**\n  - `terminal_progress_distinguishes_judgments_from_authoring_errors` checks counts, `NO_COLOR` and the 6/6 finish.\n  - `verbose_false_rationale_is_readable_above_terminal_progress` checks that reports stay readable above the bar.\n  - `dumb_terminal_keeps_plain_batch_diagnostics` and `failed_assessment_keeps_other_results_and_reports_failure` cover `TERM=dumb` and redirected stderr.\n  - `interrupted_terminal_progress_keeps_unstarted_work_incomplete` covers interruption.\n  - `empty_batches_and_early_errors_clear_the_terminal_display` covers empty batches and early errors.\n  - `batch_fills_evidence_preserves_current_records_and_reauthors_only_changed_inputs` includes a PTY no-op run with no `0/0 finished` display.\n- **Unit tests for the phases.**\n  - `inspection_progress_preserves_validation_and_finishes_each_phase`, `citation_review_validation_reports_counted_progress` and `inspection_progress_reports_empty_phases_as_complete` in `src/evidence.rs`.\n  - `rust_function_coverage_reports_counted_progress_per_file` in `src/rust_coverage.rs`.\n  - `selection_counts_definitions_and_citation_reviews_in_one_phase` in `src/authoring/batch.rs`.\n  - Two tests in `src/authoring/progress.rs`: `inspection_displays_counts_when_same_phase_discovers_its_total` and `percentage_does_not_round_unfinished_work_up_to_one_hundred`.\n\n**Gap: no test for the \"site reviews\" phase**\n- `sites::validate` (`src/sites.rs`, `SITE_STAGE = \"site reviews\"`) reports its own counted progress: one check per site and per review file. It is a separate phase with a known amount of work, so the requirement (\"a progress bar for each phase with a known amount of work\") covers it.\n- A ripgrep over `src` and `tests` for `\"site reviews\"`, `SITE_STAGE`, `InspectionProgress` and `update.stage` found no test that exercises this phase's progress updates. The citation reviews phase, by contrast, has its own test.\n- The other phase tests do not cover it: the `inspection_progress_*` tests list only evidence files, reference source files, reference coverage and citation reviews.\n- Its counting and advance logic is its own code path, so it is an untested obligation. No `{fixme}` acknowledges it.",
-  "references": "7c1deae68fb1307f997e5b65282262a70b8945f71ac618b05420b36ee032f897",
+  "determination": true,
+  "rationale": "I found no gaps. I judged from the provided inputs and did not run any extra searches for unmarked code or tests.\n\n**Authoring bar (terminal stderr)**\n- `BatchProgress::new` in `src/authoring/progress.rs` draws the bar only when stderr is a terminal and `TERM` is not `dumb`.\n- `start` and `refresh` render elapsed time, percentage, `pos/len finished`, \"N active · M queued\", and separate true, false, FIXME and errors counts.\n- `run_batch` in `src/authoring/batch.rs` calls `progress.start(subjects.len())`. Only the selected subjects reach that call, because `select_subjects` counts current records as `unchanged` and leaves them out.\n- This is a plain pass-through of the selection result. `batch_fills_evidence_preserves_current_records…` asserts the \"5 skipped as current\" summary, and the no-op PTY run asserts there is no \"0/0 finished\" display.\n- `completed` and `failed` increment the counters. `refresh` sets the position to the sum of those counters, so both judgments and authoring errors advance progress. The `JoinError` path in `run_batch` also goes through `failed`.\n- `terminal_progress_distinguishes_judgments_from_authoring_errors` is a PTY test that checks 6/6, 100%, true 3, false 1, FIXME 1, errors 1, 0 active and 0 queued.\n\n**Inspection phases**\n- Counted phases (`inspect_repository_with_progress` in `src/evidence.rs` and the validators it calls):\n  - evidence files\n  - reference source files\n  - reference coverage\n  - Rust function coverage (`validate_rust_functions`)\n  - citation reviews (`citations::validate`)\n  - site reviews (`sites::validate`)\n  - assessment selection (`select_subjects`)\n- Discovery phases (\"discovering requirements\", \"discovering source references\") report `total: None`.\n- `BatchProgress::inspect` labels each phase \"Phase: …\". It shows a percentage and `pos/len` only when the total is known, and otherwise shows a spinner. It switches style when a phase's total becomes known.\n- The percentage is `pos*100/len`, capped at 100, so it measures that phase's checks.\n- Tests cover these cases:\n  - `inspection_displays_counts_when_same_phase_discovers_its_total`\n  - `percentage_does_not_round_unfinished_work_up_to_one_hundred`\n  - `inspection_progress_preserves_validation_and_finishes_each_phase`, which compares results with plain `inspect_repository`\n  - `citation_review_validation_reports_counted_progress`\n  - `site_review_validation_reports_counted_progress`\n  - `rust_function_coverage_reports_counted_progress_per_file`\n  - `selection_counts_definitions_and_citation_reviews_in_one_phase`\n- Progress is only a callback, so it cannot change validation results or invoke inference.\n\n**Reports, interruption, early exit, plain output, colour**\n- `println` routes reports through `bar.println` when the bar is shown and through `eprintln!` otherwise. `verbose_false_rationale_is_readable_above_terminal_progress` checks readability on a PTY.\n- On interruption, `finish(true, …)` calls `abandon()` and sets the prefix \"Stopped\", so unstarted work is not counted as finished. `assert_interruption_stops_the_batch` checks \"Stopped\", no 100%, no 6/6 finished, and the \"assessments not started\" report.\n- Empty batches and early errors (discovery or configuration) return before `start`. `Drop` then calls `finish_and_clear`. `empty_batches_and_early_errors_clear_the_terminal_display` replays the terminal screen and checks that the transient text is gone.\n- With redirected stderr or `TERM=dumb`, `bar` is `None`. `failed_assessment_keeps_other_results…` asserts there is no ESC or CR on redirected stderr. `dumb_terminal_keeps_plain_batch_diagnostics` asserts there is no ESC and the plain \"Authoring 6 assessments…\" line.\n- `progress_style` strips colour directives when `NO_COLOR` is set, while the bar is still drawn. The PTY test sets `NO_COLOR` together with `CLICOLOR_FORCE` and asserts there are no SGR colour sequences but there are redraw sequences.\n- The stdout summary and the exit status are asserted unchanged in the PTY and plain tests.",
+  "references": "a3aa98322fb28c270bf6ae71a966387d38519148849be7e8014587d4d8d5ba5d",
   "inputs": [
     {
       "requirements": "requirements.authoring.progress",
@@ -329,6 +329,11 @@
       "hash": "01d48a473708794a755f90987cccd1fefc091957222a149948157156f886ddef"
     },
     {
+      "file": "src/sites.rs",
+      "item": "mod[tests]/fn[site_review_validation_reports_counted_progress]",
+      "hash": "8c031b67041a0c7e1cc9c6775b296cd22dba91f80ae86a68a9bdfa17768e4d4c"
+    },
+    {
       "file": "tests/authoring_batch.rs",
       "item": "impl[Server]/fn[start_with]",
       "hash": "1b354fd94cb0193f19cb5a86ceadc69d382a437dc6847142cb4aa91e7ad2cefb"
@@ -397,41 +402,6 @@
       "file": "tests/authoring_batch.rs",
       "item": "fn[empty_batches_and_early_errors_clear_the_terminal_display]",
       "hash": "2d71d38782fa0a7a19ff40b32128a9d2701a84167329df4d63572a8033076dac"
-    },
-    {
-      "file": "src/authoring/batch.rs",
-      "item": "use@781570f9932b",
-      "hash": "781570f9932b991a59c57f56ffd3c4d99d928730a55c3eb7c02d0569b66d6bcb"
-    },
-    {
-      "file": "src/authoring/batch.rs",
-      "item": "fn[author_sites_with_options]",
-      "hash": "6e7344c480582c07c88d0cba1a89895dc9457a0553f7830e6a87922a391ccc84"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "fn[favorability]",
-      "hash": "c4482545812fee2c571f5cb0a09cdd1c5f82ac1ca680f2099e9b7322748b0faf"
-    },
-    {
-      "file": "src/authoring/progress.rs",
-      "item": "use@699a40c6ec6a",
-      "hash": "699a40c6ec6a447abf626396186de8476f03f5595005e7677faa0e2360c52327"
-    },
-    {
-      "file": "src/citations.rs",
-      "item": "use@912d08177aee",
-      "hash": "912d08177aee601d215d9332d6cd9eafbe3ba3053a8cb432298bed3b40482080"
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "item": "fn[bundled_skills_guide_distributed_requirements_with_do_and_dont_lists]",
-      "hash": "c10e49e0a33142ca4df6a90970b798e0913be0eea608d64d93f4ee0833d743ff"
-    },
-    {
-      "file": "src/sites.rs",
-      "item": "use@912d08177aee",
-      "hash": "912d08177aee601d215d9332d6cd9eafbe3ba3053a8cb432298bed3b40482080"
     }
   ]
 }

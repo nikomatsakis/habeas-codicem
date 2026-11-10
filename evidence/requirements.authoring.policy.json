@@ -1,7 +1,7 @@
 {
   "requirement": "Every `habeas author` form MUST assess its subjects under an assessment policy,\n`confirm` or `once`. The policy MUST come from `--policy <name>` when given,\notherwise from the selected configuration's `policy`, and otherwise MUST be\n`confirm`. Under `confirm`, each subject MUST be assessed as\n{cite}`requirements.authoring.confirmation` specifies. Under `once`, each subject\nMUST receive a single assessment, whose result is recorded; it uses fewer tokens\nand less time, such as with a slow local model. An unknown policy name MUST be\nrejected as invalid configuration or arguments. The completion report MUST name\nthe policy used, and each usage record MUST identify it.",
   "determination": true,
-  "rationale": "I found no gaps. Each obligation in `requirements.authoring.policy` has marked code and a test.\n\n**Obligations and the code that carries them out**\n- **Every `author` form assesses under `confirm` or `once`.**\n  - `AssessmentPolicy` in `src/config.rs` has exactly the variants `Confirm` and `Once`.\n  - The single-subject path (`author_evidence_with_options` → `configured_assessment`) and the batch path (`run_batch`, which `author_all_with_options` calls) both resolve a policy and pass it to `assess_subject`.\n  - The `sites:` form (`author_sites_with_options`) also goes through `run_batch`.\n  - Citation and site reviews are batch subjects, so they take the same path.\n- **The policy comes from `--policy`, then the configuration's `policy`, then `confirm`.**\n  - `ResolvedAuthoringConfig::effective_policy` is `explicit.or(self.policy).unwrap_or_default()`, and the default is `Confirm`.\n  - `AuthoringConfig.policy` carries the configured value.\n  - `Command::Author` in `src/main.rs` declares the `--policy` flag.\n- **Under `confirm`, the subject is assessed as the confirmation requirement specifies.** `assess_subject` runs the second conversation and, on disagreement, a verification. That requirement has its own review.\n- **Under `once`, a single assessment is recorded.** In `assess_subject`, `policy == AssessmentPolicy::Once` returns the first result immediately, so no follow-up conversations run.\n- **An unknown policy name is rejected.**\n  - `AssessmentPolicy::from_str` returns an \"unknown assessment policy\" error for `--policy`.\n  - The serde enum rejects an unknown `policy` in the TOML configuration.\n- **The completion report names the policy.**\n  - Single-subject output includes `; policy {policy}`.\n  - The batch summary appends `; policy {policy}` when `outcome.policy` is set.\n  - `outcome.policy` stays `None` only when nothing was assessed, so no policy was used.\n- **Each usage record identifies the policy.** `configured_record` sets `usage.record.policy`, `followup_log` copies it into the second and third conversations' records, and `UsageRecord.policy` is serialized.\n\n**Tests**\n- `tests/authoring_batch.rs::policy_comes_from_the_flag_then_the_configuration_then_defaults_to_confirm` covers these cases:\n  - The default is `confirm` and makes 2 conversations.\n  - `--policy once` makes 1 conversation.\n  - The flag overrides the configuration in both directions.\n  - The configuration's `once` applies when no flag is given.\n  - The completion report names the policy, for single-subject and batch summaries.\n  - Every usage record has the right `policy`.\n  - An unknown flag value and an unknown configured value are both rejected, with no model request made.\n- `tests/configuration.rs::authoring_policy_defaults_to_confirm_and_round_trips` covers these cases:\n  - `effective_policy` precedence.\n  - TOML round-tripping.\n  - Rejection of invalid values.\n  - `FromStr` and `Display`.\n\nAll relevant code carries `{impl}` references and both tests carry `{test}` references. I found no unmarked implementation and no unspecified behavior.",
+  "rationale": "I found no gaps. Each obligation has marked code and a test.\n\n**Policy resolution (flag, then configuration, then `confirm`)**\n- Code: `AssessmentPolicy` in `src/config.rs` has the `Confirm` default and a lowercase serde form. `ResolvedAuthoringConfig::effective_policy` computes `explicit.or(self.policy).unwrap_or_default()`.\n- The `Command::Author` `--policy` option in `src/main.rs` is passed into `AuthoringOptions`.\n- Both entry points apply it. `configured_assessment` handles the single-subject form and `run_batch` handles `--all` and `sites:`. Citation reviews run through the same batch path.\n- Tests: `policy_comes_from_the_flag_then_the_configuration_then_defaults_to_confirm` in `tests/authoring_batch.rs` covers all four sources and precedence cases. `authoring_policy_defaults_to_confirm_and_round_trips` in `tests/configuration.rs` covers `effective_policy` and the serialized form.\n\n**`confirm` assesses as the confirmation requirement specifies**\n- `assess_subject` in `src/authoring/mod.rs` runs the second conversation and, when they disagree, the third. This obligation defers to `requirements.authoring.confirmation`, which I did not reassess.\n- The same test shows `confirm` produces 2 conversations. `confirm_runs_a_second_assessment_with_its_own_usage_record` and `confirm_with_all_runs_a_second_assessment_for_each_batch_subject` cover the single and `--all` forms.\n\n**`once` makes a single recorded assessment**\n- Code: `assess_subject` returns the first result immediately when `policy == AssessmentPolicy::Once`.\n- Test: the policy test asserts exactly 1 conversation for the `once` cases, from both the flag and the configuration.\n\n**Unknown policy name is rejected as invalid arguments or configuration**\n- Code: `AssessmentPolicy::from_str` returns an error for an unknown name, and clap uses it for `--policy`. Serde deserialization of the enum rejects an unknown value in the configuration.\n- Tests: the `--policy twice` case, the configured `'twice'` case for both the single and `--all` forms, and no model requests made. `tests/configuration.rs` also checks that `'twice'`, `'Confirm'` and `true` fail to parse.\n\n**Completion report names the policy**\n- Code: `main.rs` prints `; policy {policy}` in the single-subject summary and in the batch summary from `BatchOutcome.policy`. `run_batch` also prints the policy in its start line.\n- Tests: the single-subject case asserts `; policy {expected}`. The batch case asserts the exact line `6 authored; 0 skipped as current; 0 failed; policy once`.\n- When nothing is assessed (everything current), the batch summary omits the policy. No policy was used then, and no configuration is resolved, so I don't count this as a gap.\n\n**Each usage record identifies the policy**\n- Code: `UsageRecord.policy` in `src/authoring/usage.rs` is set in `configured_record`. `followup_log` copies it into the second and third conversations' records.\n- Test: the policy test asserts that every usage record produced for each run has `policy == expected`, with the right number of records for each policy.\n\nThe `sites:` form reuses `run_batch`, so it has no separate policy path.",
   "references": "bf55453e7f3835daba2d8a6c957834ed4600c710788af094b298831a88d3aaa0",
   "inputs": [
     {
@@ -78,12 +78,12 @@
     {
       "file": "src/authoring/mod.rs",
       "item": "fn[author_evidence_with_options]",
-      "hash": "7154b67da369f73bb49156dcd48acc7e9c8d66b35748841b589090c324492da4"
+      "hash": "1b5c50fbac4e4ba0543db0104db58a6e37c690cf2ad9fa0caf58f098e02eb656"
     },
     {
       "file": "src/authoring/mod.rs",
       "item": "fn[prepare_assessment]",
-      "hash": "fe0a06d1fa628f40067017caa9c57722efc1c67604d4a56771cbf0d748f6ca70"
+      "hash": "e186d250a7d7946631e1f4b942654657f6ebf9d8d270889cb0583065b7e08752"
     },
     {
       "file": "src/authoring/mod.rs",
@@ -103,7 +103,7 @@
     {
       "file": "src/authoring/mod.rs",
       "item": "fn[followup_log]",
-      "hash": "c268208f4722ea257fe95f076809a40d04b0602da92d508ab237b973a6f6c494"
+      "hash": "c9d18028d450c37323b297bef599d54bc770282adbb75f879be02d01213fa075"
     },
     {
       "file": "src/authoring/usage.rs",
@@ -166,14 +166,99 @@
       "hash": "2eca52c3ce61a8081a91c5eeb130769273d5c12332337df1cdf6125a61b124bb"
     },
     {
+      "file": "src/authoring/access.rs",
+      "item": "impl[PathPolicy]/fn[check_disallow]",
+      "hash": "cd6d3d914a9da2f58116fbbbce20e2e5f89eb02a3c2a73eed083dba8c9d24589"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "struct[SourceAccess]",
+      "hash": "0391484a788006167b470a88094e4eb6a0c4d8dd96a8fe51df087021928006e6"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "impl[SourceAccess]/fn[load]",
+      "hash": "0506d2909787bf76d7b35644037013d3528b765387c41936113b696c2c339aaa"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "impl[SourceAccess]/fn[path]",
+      "hash": "0150396844273da1aa3e490d9555b75ce3d48d31e49955e22bf209ba9e82f5b9"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "impl[SourceAccess]/fn[omit_generated_evidence]",
+      "hash": "fbe332f0aadcbd5a242be70fdf733e8dd91a384206174d6f45941bf4d30464f2"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "impl[SourceAccess]/fn[has_source_under]",
+      "hash": "5cd20bff921efc9e95b0522656f46f470541445339c2724d6622135be35168a6"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "impl[SourceAccess]/fn[extra_roots]",
+      "hash": "dd2943dd0a21f08f25c0a2dfb3540b5d18e0ee1415ae6efdba20e34c62a21ad2"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "struct[DiscoverySources]",
+      "hash": "d41ede64ceca6cda2eedddc6f88391e3b8f5a84145ae93206993582d0e5b6bc5"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "impl[DiscoverySources]/fn[load]",
+      "hash": "56207181948908057dd7fc60fb1b8920bb421d522f64b255914bf4c95eb0ed67"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "impl[DiscoverySources]/fn[considers]",
+      "hash": "a6f20995e472ab624000c4900d7026807fef17837fb9cbe1c2816d6509dfa8e7"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "struct[OutsideProject]",
+      "hash": "a39110b420c9d60137437420603681a78dab255826c42bb3abf75fe150e80888"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "struct[PolicyDenial]",
+      "hash": "d978d7071e3dc1426fb83069c97767038dc86a9d1777183a498fe1051cd34e0e"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "fn[recoverable_os_denial]",
+      "hash": "fae2c51d8a39059ef6c6eb68c3518216c2e1f83c2982f3b83fc68be89b37db56"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "fn[resolve_evidence_file]",
+      "hash": "9418006962cb9105a2ab4972bf23159a668c8b08d8994df21d81362cf800473b"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "mod[tests]/fn[policy_resolves_symlinks_before_parent_components_without_allowing_wrong_subtrees]",
+      "hash": "2f2d8e111030ceb4fe779808eb183f8865ca9106498fbabc52491a9b61890fff"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "const[DISAGREEMENT_NOTE]",
+      "hash": "7e1e8ef3f943610413af785c2c30f69f62292b01d7fcb2f4c9a77566461142df"
+    },
+    {
       "file": "src/authoring/batch.rs",
       "item": "fn[author_sites_with_options]",
       "hash": "6e7344c480582c07c88d0cba1a89895dc9457a0553f7830e6a87922a391ccc84"
     },
     {
-      "file": "src/authoring/usage.rs",
-      "item": "impl[UsageLog]/fn[start]",
-      "hash": "6a5056d590319a065076058afa0aa49378c7d10d048c54f0ea0cecae7a12c091"
+      "file": "tests/authoring_batch.rs",
+      "item": "fn[confirm_runs_a_second_assessment_with_its_own_usage_record]",
+      "hash": "0f9626cebdda1ddd01edf8bd95d0f38b88875600bfc5bd4888c2b9734be7adce"
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "item": "fn[confirm_with_all_runs_a_second_assessment_for_each_batch_subject]",
+      "hash": "e423b22d139b7e2d2f83d2fd74643c8f9dd0b42f797291ea615994037e6daa5c"
     }
   ]
 }
