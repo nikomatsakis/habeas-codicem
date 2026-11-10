@@ -78,6 +78,8 @@ pub(crate) struct SourceAccess {
     tracked: Option<BTreeSet<PathBuf>>,
     policy: PathPolicy,
     generated: Vec<PathBuf>,
+    /// The book's build directory and the project-root `target` directory.
+    build_output: Vec<PathBuf>,
 }
 
 impl SourceAccess {
@@ -89,6 +91,7 @@ impl SourceAccess {
             tracked: tracked_sources(root)?,
             policy: PathPolicy::load(root)?,
             generated: generated_roots(root),
+            build_output: build_output_dirs(root),
         })
     }
 
@@ -118,6 +121,24 @@ impl SourceAccess {
             return Ok(target);
         }
         let lexical_request = normalize(&root.join(relative));
+        // Build output is not source; a directory holding permitted
+        // generated output stays listable.
+        if self
+            .build_output
+            .iter()
+            .any(|directory| lexical_request.starts_with(directory))
+            && !self
+                .extra_roots()
+                .any(|extra| extra.starts_with(&lexical_request) || extra.starts_with(&target))
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                OutsideProject(format!(
+                    "{} holds build output; the sources it is built from are elsewhere in the project, so read those instead",
+                    relative.display()
+                )),
+            ));
+        }
         if !lexical_request.starts_with(root) {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
@@ -437,8 +458,9 @@ pub(crate) fn normalize(path: &Path) -> PathBuf {
 
 // {impl}`requirements.authoring.read_denial`
 /// A denial of a request that names a path outside the project and is not
-/// permitted by workspace or generated-output policy. Mandatory inputs abort on
-/// it; a model's dispatched request receives it as a recoverable tool error.
+/// permitted by workspace or generated-output policy, or of a path holding
+/// build output. Mandatory inputs abort on it; a model's dispatched request
+/// receives it as a recoverable tool error.
 // {impl}`requirements.authoring.read_denial`
 // {impl}`requirements.authoring.source_tools`
 #[derive(Debug)]
@@ -599,6 +621,24 @@ fn tracked_sources(root: &Path) -> io::Result<Option<BTreeSet<PathBuf>>> {
         })
         .collect::<io::Result<_>>()?;
     Ok(Some(tracked))
+}
+
+/// The directories holding the project's build output: the book's build
+/// directory, `book` unless `book.toml` sets `[build] build-dir`, and the
+/// project-root `target` directory.
+// {impl}`requirements.authoring.read_denial`
+fn build_output_dirs(root: &Path) -> Vec<PathBuf> {
+    let book = fs::read_to_string(root.join("book.toml"))
+        .ok()
+        .and_then(|text| text.parse::<toml_edit::DocumentMut>().ok())
+        .and_then(|book| {
+            book.get("build")?
+                .get("build-dir")?
+                .as_str()
+                .map(str::to_owned)
+        })
+        .unwrap_or_else(|| "book".to_owned());
+    vec![normalize(&root.join(book)), root.join("target")]
 }
 
 // {impl}`requirements.authoring.generated_inputs`

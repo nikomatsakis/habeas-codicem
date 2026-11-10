@@ -34,7 +34,7 @@ pub(crate) fn definitions() -> Vec<Value> {
     let mut definitions = vec![
         json!({
             "name": "habeas",
-            "description": "Read project source as evidence. Supply exactly one request form: file + line_start (optional line_end), file + item, requirements, or definition. Do not combine forms. Paths may be project-relative or absolute when permitted by the evidence policy. A line range is one-based and inclusive (omitted line_end reads through EOF) and returns {inputs, definitions}: the innermost outline nodes covering those lines, each with its item selector, kind, current line_start and line_end, and source text, e.g. {\"file\":\"src/lib.rs\",\"line_start\":10,\"line_end\":20}. Line numbers only locate sources; evidence records each node's selector and structural hash. The item form reads one outline node and returns {input, definitions}, e.g. {\"file\":\"src/lib.rs\",\"item\":\"impl[Thing]/fn[run]\"}; use the outline tool to list a file's selectors. Selectors are /-separated paths from the file's root: kind[name] for named nodes (Rust trait impls use impl[Thing/Trait]), kind@hash for anonymous nodes such as use declarations and plain-text lines (line@hash), and #N (one-based) for otherwise identical siblings; the empty item selects the whole file. Characters %, [, ], /, #, @ and whitespace in names are percent-encoded UTF-8 bytes. The requirements form takes a definition selection: a full requirement or example name, or a glob matching complete names where * matches any characters including dots, e.g. {\"requirements\":\"requirements.cli.*\"}. Definition reads use the full terminology name, e.g. {\"definition\":\"glossary.command\"}. Required terminology is returned alongside the selected input. Defaults permit project files (Git-tracked in Git worktrees) and existing Cargo build-script output directories; evidence/ is excluded. Returned source text is redacted: credential values and credential-shaped text read [REDACTED:<kind>], with line numbers unchanged. The nearest habeas.toml can explicitly allow other paths or disallow paths; disallow wins. Denied reads of project paths abort the assessment and report to the operator; a path outside the project that no rule permits returns an ordinary tool error. Paths outside the project may be absolute when allowed.",
+            "description": "Read project source as evidence. Supply exactly one request form: file + line_start (optional line_end), file + item, requirements, or definition. Do not combine forms. Paths may be project-relative or absolute when permitted by the evidence policy. A line range is one-based and inclusive (omitted line_end reads through EOF) and returns {inputs, definitions}: the innermost outline nodes covering those lines, each with its item selector, kind, current line_start and line_end, and source text, e.g. {\"file\":\"src/lib.rs\",\"line_start\":10,\"line_end\":20}. Line numbers only locate sources; evidence records each node's selector and structural hash. The item form reads one outline node and returns {input, definitions}, e.g. {\"file\":\"src/lib.rs\",\"item\":\"impl[Thing]/fn[run]\"}; use the outline tool to list a file's selectors. Selectors are /-separated paths from the file's root: kind[name] for named nodes (Rust trait impls use impl[Thing/Trait]), kind@hash for anonymous nodes such as use declarations and plain-text lines (line@hash), and #N (one-based) for otherwise identical siblings; the empty item selects the whole file. Characters %, [, ], /, #, @ and whitespace in names are percent-encoded UTF-8 bytes. The requirements form takes a definition selection: a full requirement or example name, or a glob matching complete names where * matches any characters including dots, e.g. {\"requirements\":\"requirements.cli.*\"}. Definition reads use the full terminology name, e.g. {\"definition\":\"glossary.command\"}. Required terminology is returned alongside the selected input. Defaults permit project files (Git-tracked in Git worktrees) and existing Cargo build-script output directories; evidence/ is excluded. Returned source text is redacted: credential values and credential-shaped text read [REDACTED:<kind>], with line numbers unchanged. The nearest habeas.toml can explicitly allow other paths or disallow paths; disallow wins. Denied reads of project paths abort the assessment and report to the operator; a path outside the project that no rule permits returns an ordinary tool error, as does a path in the book's build directory or the project-root target directory, which hold build output (existing Cargo build-script outputs excepted); read the sources they are built from instead. Paths outside the project may be absolute when allowed.",
             "parameters": {"type":"object", "properties": {
                 "file":{"type":"string"},
                 "line_start":{"type":"integer","minimum":1},
@@ -2078,17 +2078,16 @@ mod tests {
             read.result["input"]["text"],
             json!(["pub fn generated_needle() {}"])
         );
-        assert_eq!(
-            dispatch(
-                &sources,
-                "habeas",
-                &json!({"file":"target/debug/build/fixture-hash/root-output", "line_start":1})
-            )
-            .err()
-            .unwrap()
-            .kind(),
-            io::ErrorKind::PermissionDenied
-        );
+        // Other build output under target is an ordinary read failure.
+        let error = dispatch(
+            &sources,
+            "habeas",
+            &json!({"file":"target/debug/build/fixture-hash/root-output", "line_start":1}),
+        )
+        .err()
+        .unwrap();
+        assert_ne!(error.kind(), io::ErrorKind::PermissionDenied, "{error}");
+        assert!(error.to_string().contains("holds build output"), "{error}");
         fs::write(
             root.path().join("habeas.toml"),
             "version = 1\n[evidence]\ndisallow = ['target/debug/build/fixture-hash/out']\n",
@@ -2510,6 +2509,63 @@ mod tests {
         .err()
         .unwrap();
         assert_eq!(error.kind(), io::ErrorKind::PermissionDenied, "{error}");
+    }
+
+    // {test}`requirements.authoring.read_denial`
+    #[test]
+    fn requests_for_book_or_target_output_are_ordinary_read_failures() {
+        let root = project();
+        for (book, built) in [("", "book"), ("[build]\nbuild-dir = 'site'\n", "site")] {
+            fs::write(
+                root.path().join("book.toml"),
+                format!("[book]\nsrc = 'md'\n{book}"),
+            )
+            .unwrap();
+            for directory in [built, "target"] {
+                fs::create_dir_all(root.path().join(directory).join("nested")).unwrap();
+                fs::write(
+                    root.path().join(directory).join("nested/page.html"),
+                    "fn built_needle() {}\n",
+                )
+                .unwrap();
+            }
+            let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+            for directory in [built, "target"] {
+                let file = format!("{directory}/nested/page.html");
+                for (name, arguments) in [
+                    ("habeas", json!({"file": file, "line_start": 1})),
+                    ("habeas", json!({"file": file, "item": ""})),
+                    ("outline", json!({"file": file})),
+                    ("list_files", json!({"path": directory})),
+                    ("ripgrep", json!({"pattern": "needle", "path": directory})),
+                ] {
+                    let error = dispatch(&sources, name, &arguments).err().unwrap();
+                    assert_ne!(
+                        error.kind(),
+                        io::ErrorKind::PermissionDenied,
+                        "{name} {arguments}: {error}"
+                    );
+                    assert!(
+                        error.to_string().contains("holds build output")
+                            && error.to_string().contains(
+                                "the sources it is built from are elsewhere in the project"
+                            ),
+                        "{name} {arguments}: {error}"
+                    );
+                }
+            }
+        }
+        // With a build-dir set, `book` is an ordinary project directory.
+        fs::write(root.path().join("book/source.txt"), "plain\n").unwrap();
+        let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        assert!(
+            dispatch(
+                &sources,
+                "habeas",
+                &json!({"file":"book/source.txt","line_start":1})
+            )
+            .is_ok()
+        );
     }
 
     // {test}`requirements.authoring.read_denial`
