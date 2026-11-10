@@ -467,6 +467,8 @@ fn status_lists_nonvalid_requirements_and_all_option_in_name_order() {
 fn status_preserves_repository_wide_rust_findings_in_every_form() {
     let temp = fixture();
     let nested = temp.path().join("src/nested");
+    // `main` is read by an evidence record; this item is read by none.
+    fs::write(temp.path().join("src/extra.rs"), "fn unread() {}\n").unwrap();
     for flags in [
         [].as_slice(),
         ["--all"].as_slice(),
@@ -486,8 +488,12 @@ fn status_preserves_repository_wide_rust_findings_in_every_form() {
             );
             assert!(
                 text.contains(
-                    "src/main.rs:1: function main has no requirement or example citation"
+                    "src/extra.rs:1: function unread is uncovered: it has no requirement or example reference, and no evidence record or review read it"
                 ),
+                "{args:?}: {text}"
+            );
+            assert!(
+                !text.contains("function main is uncovered"),
                 "{args:?}: {text}"
             );
             assert!(!text.contains("attestation"), "{args:?}: {text}");

@@ -1,6 +1,6 @@
 # Habeas Codicem
 
-Habeas connects mdBook requirements and examples to exact source evidence. A Cargo test checks definition coverage, determinations, recorded lines, `{impl}`, `{cite}`, and `{test}` references, and unreferenced Rust functions.
+Habeas connects mdBook requirements and examples to exact source evidence. A Cargo test checks definition coverage, determinations, recorded lines, `{impl}`, `{cite}`, and `{test}` references, and uncovered Rust items.
 
 ## Install
 

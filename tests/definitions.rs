@@ -496,7 +496,7 @@ fn references_to_a_definition_of_another_kind_are_reported() {
     // A reference to a term does not cover the Rust item.
     assert!(
         errors.iter().any(|error| error
-            .contains("src/lib.rs:5: function uses has no requirement or example citation")),
+            .contains("src/lib.rs:5: function uses is uncovered: it has no requirement or example reference, and no evidence record or review read it")),
         "{errors:#?}"
     );
 }
@@ -747,12 +747,15 @@ fn outline_inputs_capture_terms_without_counting_them_as_citations() {
         "// TERM`glossary.a`\npub fn run() {}\n".replace("TERM", "{term}"),
     )
     .unwrap();
+    // Removing a citation comment leaves the node's hash unchanged, so the
+    // record reading it would still cover it.
+    fs::remove_file(&path).unwrap();
     assert!(
         validate_repository(root)
             .unwrap()
             .errors
             .iter()
-            .any(|e| e.contains("run") && e.contains("no requirement or example citation"))
+            .any(|e| e.contains("run") && e.contains("is uncovered"))
     );
 }
 

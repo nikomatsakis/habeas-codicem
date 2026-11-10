@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -128,8 +128,119 @@ pub(crate) fn comments(source: &str) -> Vec<Range<usize>> {
     ranges
 }
 
+/// The outline inputs recorded by every evidence record, citation review,
+/// and site review, as `file -> item -> hashes`, read once per validation.
+/// An item is covered when its node or an enclosing node is recorded here
+/// with its current hash.
+// {impl}`requirements.references.rust_item_coverage`
+#[derive(Default)]
+pub(crate) struct EvidenceReads(HashMap<String, HashMap<String, HashSet<String>>>);
+
+impl EvidenceReads {
+    /// Reads the outline inputs of the given evidence files. A file that
+    /// cannot be read or parsed contributes nothing; evidence validation
+    /// reports it.
+    // {impl}`requirements.references.rust_item_coverage`
+    pub(crate) fn load(files: &[PathBuf]) -> Self {
+        let mut reads = Self::default();
+        for file in files {
+            let Ok(text) = fs::read_to_string(file) else {
+                continue;
+            };
+            let Ok(record) = serde_json::from_str::<serde_json::Value>(&text) else {
+                continue;
+            };
+            reads.add_record(&record);
+        }
+        reads
+    }
+
+    /// Adds the outline inputs of one record.
+    // {impl}`requirements.references.rust_item_coverage`
+    pub(crate) fn add_record(&mut self, record: &serde_json::Value) {
+        for input in record
+            .get("inputs")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let field = |name: &str| input.get(name).and_then(serde_json::Value::as_str);
+            if let (Some(file), Some(item), Some(hash)) =
+                (field("file"), field("item"), field("hash"))
+            {
+                self.0
+                    .entry(file.to_owned())
+                    .or_default()
+                    .entry(item.to_owned())
+                    .or_default()
+                    .insert(hash.to_owned());
+            }
+        }
+    }
+
+    /// Whether node `index` of `file`'s outline, or a node containing it, is
+    /// recorded with its current hash.
+    // {impl}`requirements.references.rust_item_coverage`
+    pub(crate) fn covers(&self, file: &str, outline: &outline::Outline, index: usize) -> bool {
+        let Some(items) = self.0.get(file) else {
+            return false;
+        };
+        let mut current = Some(index);
+        while let Some(index) = current {
+            let node = &outline.nodes[index];
+            if items
+                .get(&node.selector)
+                .is_some_and(|hashes| hashes.contains(&node.structural_hash))
+            {
+                return true;
+            }
+            current = node.parent;
+        }
+        false
+    }
+}
+
+/// An item Rust item coverage reports: its file, outline selector, and the
+/// validation error naming it.
+// {impl}`requirements.references.rust_item_coverage`
+// {impl}`requirements.authoring.coverage_loss`
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct UncoveredItem {
+    pub(crate) file: String,
+    pub(crate) item: String,
+    pub(crate) error: String,
+}
+
+/// The validation error for an uncovered item.
+// {impl}`requirements.references.rust_item_coverage`
+fn uncovered_error(label: &str, line: usize, kind: &str, name: &str) -> String {
+    format!(
+        "{label}:{line}: {kind} {name} is uncovered: it has no requirement or example reference, and no evidence record or review read it"
+    )
+}
+
 /// Lists functions, methods, structs, enums, and unions with no valid
 /// reference in a comment belonging to them, as `(line, kind, name)`.
+// {impl}`requirements.references.rust_item_coverage`
+#[cfg(test)]
+fn missing_function_references(
+    source: &str,
+    definitions: &BTreeMap<String, Declaration>,
+) -> Result<Vec<(usize, &'static str, String)>, OutlineError> {
+    let (_, missing) = unreferenced_items(source, definitions)?;
+    Ok(missing
+        .into_iter()
+        .map(|(_, line, kind, name)| (line, kind, name))
+        .collect())
+}
+
+/// Items without a valid reference, as `(node, line, kind, name)`.
+// {impl}`requirements.references.rust_item_coverage`
+type Unreferenced = Vec<(usize, usize, &'static str, String)>;
+
+/// The functions, methods, structs, enums, and unions of a Rust source with
+/// no valid reference in a comment belonging to them, with the source's
+/// outline.
 // {impl}`requirements.references.rust_item_coverage`
 // {impl}`requirements.references.no_requirement`
 // {impl}`requirements.definitions.references`
@@ -137,10 +248,10 @@ pub(crate) fn comments(source: &str) -> Vec<Range<usize>> {
 // {impl}`requirements.references.procedure`
 // {impl}`requirements.references.outline_comments`
 // {impl}`requirements.references.roles`
-fn missing_function_references(
+pub(crate) fn unreferenced_items(
     source: &str,
     definitions: &BTreeMap<String, Declaration>,
-) -> Result<Vec<(usize, &'static str, String)>, OutlineError> {
+) -> Result<(outline::Outline, Unreferenced), OutlineError> {
     let outline = outline::parse_with(&outline::RUST_PROFILE, source)?;
     let mut cited = vec![false; outline.nodes.len()];
     // A built-in counts only in a form it permits, such as a fenced
@@ -182,22 +293,31 @@ fn missing_function_references(
             cited[owner] = true;
         }
     }
-    Ok(outline
+    let missing = outline
         .nodes
         .iter()
         .zip(cited)
-        .filter_map(|(node, cited)| {
-            let kind = match node.kind {
-                "fn" => "function",
-                "struct" => "struct",
-                "enum" => "enum",
-                "union" => "union",
-                _ => return None,
-            };
+        .enumerate()
+        .filter_map(|(index, (node, cited))| {
+            let kind = item_kind(node.kind)?;
             let name = node.display_name()?;
-            (!cited).then_some((node.declaration_line, kind, name))
+            (!cited).then_some((index, node.declaration_line, kind, name))
         })
-        .collect())
+        .collect();
+    Ok((outline, missing))
+}
+
+/// The kind coverage reports for an outline node kind that must be covered:
+/// functions and methods, structs, enums, and unions.
+// {impl}`requirements.references.rust_item_coverage`
+pub(crate) fn item_kind(kind: &str) -> Option<&'static str> {
+    Some(match kind {
+        "fn" => "function",
+        "struct" => "struct",
+        "enum" => "enum",
+        "union" => "union",
+        _ => return None,
+    })
 }
 
 /// The first-party Rust files among the sources reference discovery
@@ -220,10 +340,12 @@ pub(crate) fn validate_rust_functions(
     root: &Path,
     sources: &[PathBuf],
     definitions: &BTreeMap<String, Declaration>,
+    reads: &EvidenceReads,
     errors: &mut Vec<String>,
     discovery_errors: &mut Vec<String>,
     progress: &mut impl FnMut(InspectionProgress),
-) {
+) -> Vec<UncoveredItem> {
+    let mut uncovered = Vec::new();
     progress(InspectionProgress {
         stage: RUST_COVERAGE_STAGE,
         completed: 0,
@@ -247,12 +369,19 @@ pub(crate) fn validate_rust_functions(
                 continue;
             }
         };
-        match missing_function_references(&source, definitions) {
-            Ok(missing) => {
-                for (line, kind, name) in missing {
-                    errors.push(format!(
-                        "{label}:{line}: {kind} {name} has no requirement or example citation"
-                    ));
+        match unreferenced_items(&source, definitions) {
+            Ok((outline, missing)) => {
+                for (index, line, kind, name) in missing {
+                    if reads.covers(&label, &outline, index) {
+                        continue;
+                    }
+                    let error = uncovered_error(&label, line, kind, &name);
+                    errors.push(error.clone());
+                    uncovered.push(UncoveredItem {
+                        file: label.clone(),
+                        item: outline.nodes[index].selector.clone(),
+                        error,
+                    });
                 }
             }
             Err(error) => {
@@ -270,6 +399,7 @@ pub(crate) fn validate_rust_functions(
         completed: total,
         total: Some(total),
     });
+    uncovered
 }
 
 // {impl}`requirements.references.rust_item_coverage`
@@ -612,6 +742,7 @@ fn outer() {
             project.path(),
             &crate::evidence::discovered_files(project.path(), &mut Vec::new()),
             &definitions(),
+            &super::EvidenceReads::default(),
             &mut errors,
             &mut Vec::new(),
             &mut |_| {},
@@ -627,11 +758,11 @@ fn outer() {
             );
         }
         assert!(errors.iter().any(|error| {
-            error.contains("src/lib.rs:1: function uncited has no requirement or example citation")
+            error.contains("src/lib.rs:1: function uncited is uncovered: it has no requirement or example reference, and no evidence record or review read it")
         }));
         assert!(errors.iter().any(|error| {
             error.contains(
-                "src/evidence/check.rs:1: function nested_source has no requirement or example citation",
+                "src/evidence/check.rs:1: function nested_source is uncovered: it has no requirement or example reference, and no evidence record or review read it",
             )
         }));
         assert!(
@@ -654,6 +785,7 @@ fn outer() {
             project.path(),
             &crate::evidence::discovered_files(project.path(), &mut Vec::new()),
             &definitions(),
+            &super::EvidenceReads::default(),
             &mut Vec::new(),
             &mut Vec::new(),
             &mut |update| updates.push((update.stage, update.completed, update.total)),

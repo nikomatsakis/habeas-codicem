@@ -93,10 +93,10 @@ fn fenced_references_in_comments_and_built_in_rules_are_validated() {
         "src/lib.rs:14: built-in habeas:none may only be referenced with {cite}",
         "src/lib.rs:19: CITE`habeas:other` has no matching built-in definition",
         "src/lib.rs:24: fenced {cite} reference to rules.ready has no closing fence",
-        "src/lib.rs:7: function inline has no requirement or example citation",
-        "src/lib.rs:17: function wrong_role has no requirement or example citation",
-        "src/lib.rs:22: function unknown has no requirement or example citation",
-        "src/lib.rs:28: function unclosed has no requirement or example citation",
+        "src/lib.rs:7: function inline is uncovered: it has no requirement or example reference, and no evidence record or review read it",
+        "src/lib.rs:17: function wrong_role is uncovered: it has no requirement or example reference, and no evidence record or review read it",
+        "src/lib.rs:22: function unknown is uncovered: it has no requirement or example reference, and no evidence record or review read it",
+        "src/lib.rs:28: function unclosed is uncovered: it has no requirement or example reference, and no evidence record or review read it",
     ] {
         let expected = expected.replace("CITE", &cr);
         assert!(has(&errors, &expected), "missing {expected:?}: {errors:#?}");
@@ -319,8 +319,8 @@ fn a_fixme_does_not_count_as_an_items_reference() {
     .unwrap();
     let errors = errors(root);
     for expected in [
-        "src/lib.rs:4: function gap has no requirement or example citation",
-        "src/lib.rs:9: function tracked has no requirement or example citation",
+        "src/lib.rs:4: function gap is uncovered: it has no requirement or example reference, and no evidence record or review read it",
+        "src/lib.rs:9: function tracked is uncovered: it has no requirement or example reference, and no evidence record or review read it",
     ] {
         assert!(has(&errors, expected), "missing {expected:?}: {errors:#?}");
     }
@@ -677,7 +677,7 @@ fn untracked_sources_are_not_validated_until_staged_and_status_lists_them() {
     assert!(
         has(
             &errors,
-            "src/extra.rs:4: function uncited has no requirement or example citation"
+            "src/extra.rs:4: function uncited is uncovered: it has no requirement or example reference, and no evidence record or review read it"
         ),
         "{errors:#?}"
     );
@@ -738,5 +738,73 @@ fn disallowed_paths_are_skipped_and_projects_outside_git_scan_every_file() {
     assert!(
         !status.contains("Untracked files with references"),
         "{status}"
+    );
+}
+
+// {test}`requirements.references.rust_item_coverage`
+// {test}`requirements.references.procedure`
+#[test]
+fn items_an_assessment_read_with_their_current_hash_are_covered() {
+    let temp = project();
+    let root = temp.path();
+    let source = "fn read_directly() {}\n\nstruct Thing;\n\nimpl Thing {\n    fn method(&self) {}\n}\n\nfn changed() {}\n\nfn unread() {}\n";
+    fs::write(root.join("src/lib.rs"), source).unwrap();
+    let input = |item: &str| habeas::outline_input(root, "src/lib.rs", item).unwrap();
+    let mut stale = input("fn[changed]");
+    stale["hash"] = json!("0".repeat(64));
+    // An ordinary record reads one item; a citation review reads the impl
+    // block containing a method; a site review records a stale hash.
+    fs::write(
+        root.join("evidence/rules.ready.json"),
+        json!({"inputs": [input("fn[read_directly]")]}).to_string(),
+    )
+    .unwrap();
+    fs::create_dir_all(root.join("evidence/citations/src/lib.rs")).unwrap();
+    fs::write(
+        root.join("evidence/citations/src/lib.rs/struct[Thing].json"),
+        json!({"inputs": [input("impl[Thing]"), input("struct[Thing]")]}).to_string(),
+    )
+    .unwrap();
+    fs::create_dir_all(root.join("evidence/sites/rules.ready/src/lib.rs")).unwrap();
+    fs::write(
+        root.join("evidence/sites/rules.ready/src/lib.rs/fn[changed].json"),
+        json!({"inputs": [stale]}).to_string(),
+    )
+    .unwrap();
+    let uncovered = |errors: &[String]| {
+        errors
+            .iter()
+            .filter(|error| error.contains(" is uncovered: "))
+            .map(|error| error.split(':').take(3).collect::<Vec<_>>().join(":"))
+            .collect::<Vec<_>>()
+    };
+    let found = errors(root);
+    assert_eq!(
+        uncovered(&found),
+        [
+            "src/lib.rs:9: function changed is uncovered",
+            "src/lib.rs:11: function unread is uncovered"
+        ],
+        "{found:#?}"
+    );
+    // Editing a read item leaves its recorded hash stale, so it is no
+    // longer covered; so does editing a method inside a read impl block.
+    fs::write(
+        root.join("src/lib.rs"),
+        source
+            .replace("fn read_directly() {}", "fn read_directly() { 1; }")
+            .replace("fn method(&self) {}", "fn method(&self) { 2; }"),
+    )
+    .unwrap();
+    let found = errors(root);
+    assert_eq!(
+        uncovered(&found),
+        [
+            "src/lib.rs:1: function read_directly is uncovered",
+            "src/lib.rs:6: function method is uncovered",
+            "src/lib.rs:9: function changed is uncovered",
+            "src/lib.rs:11: function unread is uncovered"
+        ],
+        "{found:#?}"
     );
 }

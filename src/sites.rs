@@ -939,7 +939,7 @@ no_match:
         assert!(
             errors
                 .iter()
-                .any(|error| error.contains("function check_two has no requirement")),
+                .any(|error| error.contains("function check_two is uncovered")),
             "{errors:?}"
         );
     }
