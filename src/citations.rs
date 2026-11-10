@@ -114,6 +114,7 @@ pub(crate) fn subject_label(file: &str, item: &str) -> String {
 /// reference validation and are not reviewed.
 // {impl}`requirements.references.outline_comments`
 // {impl}`requirements.references.builtin_definitions`
+// {impl}`requirements.references.util`
 pub(crate) fn citation_items(
     root: &Path,
     definitions: &BTreeMap<String, Declaration>,
@@ -160,6 +161,12 @@ pub(crate) fn citation_items(
             commentary: reference.commentary.clone().unwrap_or_default(),
         });
     }
+    // An item whose only citations are of `habeas:util` needs no review.
+    items.retain(|_, item| {
+        item.citations
+            .iter()
+            .any(|citation| citation.name != "habeas:util")
+    });
     items
 }
 

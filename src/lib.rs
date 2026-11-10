@@ -933,6 +933,7 @@ mod tests {
             ":::{req} other\nOther.\n:::\n\n",
             ":::{cite} habeas:none\nNothing applies.\n:::\n\n",
             "Inline CITE`habeas:none` stays literal.\n\n",
+            "Inline CITE`habeas:util` is a badge.\n\n",
             ":::{cite} rules.missing\nUnknown.\n:::\n\n",
             "```text\n:::{cite} rules.other\n:::\n```\n",
         ]
@@ -965,6 +966,14 @@ mod tests {
             rendered.contains(&format!(
                 "<span class=\"habeas-req-badge habeas-req-ref-cite habeas-builtin\" title=\"{}\"><img",
                 super::escape_html(none.text())
+            )),
+            "{rendered}"
+        );
+        let util = crate::builtins::builtin("habeas:util").unwrap();
+        assert!(
+            rendered.contains(&format!(
+                "<span class=\"habeas-req-badge habeas-req-ref-cite habeas-builtin\" title=\"{}\"><img",
+                super::escape_html(util.text())
             )),
             "{rendered}"
         );

@@ -13,11 +13,19 @@ pub(crate) struct Builtin {
 }
 
 /// Every built-in definition.
-pub(crate) const BUILTINS: &[Builtin] = &[Builtin {
-    name: "habeas:none",
-    roles: &[ReferenceKind::Cite],
-    requires_justification: true,
-}];
+// {impl}`requirements.references.util`
+pub(crate) const BUILTINS: &[Builtin] = &[
+    Builtin {
+        name: "habeas:none",
+        roles: &[ReferenceKind::Cite],
+        requires_justification: true,
+    },
+    Builtin {
+        name: "habeas:util",
+        roles: &[ReferenceKind::Cite],
+        requires_justification: false,
+    },
+];
 
 /// Whether a name has the reserved built-in form `habeas:<name>`.
 pub(crate) fn is_builtin_name(name: &str) -> bool {
@@ -32,14 +40,15 @@ pub(crate) fn builtin(name: &str) -> Option<&'static Builtin> {
 impl Builtin {
     /// The built-in's fixed text, as quoted in its requirement.
     // {impl}`requirements.references.no_requirement`
+    // {impl}`requirements.references.util`
     pub(crate) fn text(&self) -> &'static str {
         static NONE: OnceLock<String> = OnceLock::new();
+        static UTIL: OnceLock<String> = OnceLock::new();
+        // Keep the approved requirement text as the sole source.
+        let chapter = include_str!("../md/requirements/references.md");
         match self.name {
-            "habeas:none" => NONE.get_or_init(|| {
-                // Keep the approved requirement text as the sole source.
-                let chapter = include_str!("../md/requirements/references.md");
-                quoted_text(chapter, ":::{req} no_requirement")
-            }),
+            "habeas:none" => NONE.get_or_init(|| quoted_text(chapter, ":::{req} no_requirement")),
+            "habeas:util" => UTIL.get_or_init(|| quoted_text(chapter, ":::{req} util")),
             _ => unreachable!("every built-in has text"),
         }
     }
@@ -130,12 +139,47 @@ mod tests {
         // The reference documentation quotes the same text.
         let documented = quoted_text(
             include_str!("../md/reference.md"),
-            "There is one built-in, `habeas:none`.",
+            "The built-in `habeas:none` has this text:",
         );
         assert_eq!(documented, none.text());
         assert!(builtin("habeas:other").is_none());
+        assert!(is_builtin_name("habeas:util"));
         assert!(is_builtin_name("habeas:other"));
         assert!(!is_builtin_name("habeas:"));
         assert!(!is_builtin_name("other:none"));
+    }
+
+    // {test}`requirements.references.util`
+    // {test}`requirements.references.builtin_definitions`
+    #[test]
+    fn habeas_util_has_its_approved_text_and_permits_inline_or_fenced_citations() {
+        let util = builtin("habeas:util").unwrap();
+        assert!(
+            util.text()
+                .starts_with("Cite this on an item that serves the code that calls it")
+        );
+        assert!(
+            util.text()
+                .ends_with("judges what it does as part of that root.")
+        );
+        assert!(util.check(ReferenceKind::Cite, None).is_ok());
+        assert!(util.check(ReferenceKind::Cite, Some("")).is_ok());
+        assert!(
+            util.check(ReferenceKind::Cite, Some("Formats a line for its caller."))
+                .is_ok()
+        );
+        for role in [ReferenceKind::Impl, ReferenceKind::Test] {
+            assert!(
+                util.check(role, None)
+                    .unwrap_err()
+                    .contains("built-in habeas:util may only be referenced with {cite}")
+            );
+        }
+        // The reference documentation quotes the same text.
+        let documented = quoted_text(
+            include_str!("../md/reference.md"),
+            "The built-in `habeas:util` has this text:",
+        );
+        assert_eq!(documented, util.text());
     }
 }

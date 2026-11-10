@@ -110,6 +110,59 @@ fn fenced_references_in_comments_and_built_in_rules_are_validated() {
     assert!(!has(&errors, "evidence/habeas:none"), "{errors:#?}");
 }
 
+// {test}`requirements.references.util`
+// {test}`requirements.references.citation_review`
+// {test}`requirements.references.rust_item_coverage`
+#[test]
+fn habeas_util_citations_cover_their_item_without_a_citation_review() {
+    let temp = project();
+    let root = temp.path();
+    let cr = role("cite");
+    let source = format!(
+        "// {cr}`habeas:util`\nfn inline() {{}}\n\n\
+         // :::{cr} habeas:util\n// Formats output for its caller.\n// :::\nfn fenced() {{}}\n\n\
+         // :::{cr} habeas:util\n// :::\nfn bare() {{}}\n\n\
+         // {cr}`habeas:util`\n// {cr}`rules.ready`\nfn mixed() {{}}\n\n\
+         // {im}`habeas:util`\nfn implemented() {{}}\n\n\
+         // {te}`habeas:util`\nfn tested() {{}}\n",
+        im = role("impl"),
+        te = role("test"),
+    );
+    fs::write(root.join("src/lib.rs"), source).unwrap();
+    let errors = errors(root);
+    // Inline and fenced citations, with or without commentary, cover their
+    // item and need no citation review.
+    for item in ["inline", "fenced", "bare"] {
+        assert!(!has(&errors, &format!("function {item} ")), "{errors:#?}");
+        assert!(
+            !has(
+                &errors,
+                &format!("missing citation review for src/lib.rs fn[{item}]")
+            ),
+            "{errors:#?}"
+        );
+    }
+    // Another citation on the same item still needs its review.
+    assert!(
+        has(&errors, "missing citation review for src/lib.rs fn[mixed]"),
+        "{errors:#?}"
+    );
+    // Only {cite} may reference it.
+    for line in [17, 20] {
+        let expected = format!(
+            "src/lib.rs:{line}: built-in habeas:util may only be referenced with {}",
+            role("cite")
+        );
+        assert!(has(&errors, &expected), "missing {expected:?}: {errors:#?}");
+    }
+    assert!(
+        has(&errors, "function implemented is uncovered"),
+        "{errors:#?}"
+    );
+    assert!(has(&errors, "function tested is uncovered"), "{errors:#?}");
+    assert!(!has(&errors, "evidence/habeas:util"), "{errors:#?}");
+}
+
 // {test}`requirements.references.builtin_definitions`
 // {test}`requirements.references.no_requirement`
 #[test]
