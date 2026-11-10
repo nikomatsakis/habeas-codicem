@@ -1012,7 +1012,8 @@ once, the harness MUST report an error and leave existing evidence unchanged.
 The harness MUST check the complete model response for multiple submissions
 before accepting one. Invalid submission arguments MUST also fail the assessment.
 A valid single submission MUST finish the assessment; there is no submission
-repair or resubmission loop. An assessment that fails before accepting a valid
+repair or resubmission loop, except the one continuation after a response cut
+off at its output limit under {cite}`requirements.authoring.output_limit`. An assessment that fails before accepting a valid
 judgment MUST emit no evidence JSON to stdout.
 :::
 
@@ -1452,6 +1453,19 @@ when explicitly allowed.
 When a Bedrock configuration sets no `maxTokens` option, each provider request
 MUST ask for at most 16,384 output tokens. A configured `maxTokens` MUST be used
 as given.
+
+When a response stops because it reached the output limit, the harness MUST
+continue the same conversation once, adding this user message with `<limit>`
+replaced by the limit:
+
+```text
+Your previous response reached the <limit>-token output limit and was cut off,
+so its tool call was incomplete. Keep within the limit: make your rationale
+shorter, then call the tool again.
+```
+
+A second response that reaches the limit MUST fail the assessment as an
+incomplete response.
 :::
 
 :::{req} prompt_parts
