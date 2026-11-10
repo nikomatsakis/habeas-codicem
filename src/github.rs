@@ -81,6 +81,19 @@ pub struct GithubIssues {
     client: Option<Arc<Client>>,
 }
 
+/// Whether a `HABEAS_GITHUB_API_URL` value has the only accepted form,
+/// `http://127.0.0.1:<port>`, optionally with a trailing slash.
+// {impl}`requirements.authoring.github_reads`
+fn is_loopback_api_url(url: &str) -> bool {
+    url.strip_prefix("http://127.0.0.1:")
+        .map(|rest| rest.strip_suffix('/').unwrap_or(rest))
+        .is_some_and(|port| {
+            !port.is_empty()
+                && port.bytes().all(|byte| byte.is_ascii_digit())
+                && port.parse::<u16>().is_ok_and(|port| port != 0)
+        })
+}
+
 /// One configured GitHub API endpoint.
 // {impl}`requirements.authoring.github_reads`
 #[derive(Debug)]
@@ -93,6 +106,7 @@ struct Client {
 
 impl GithubIssues {
     /// Reads nothing: every issue counts as unreachable and so as open.
+    // {cite}`habeas:util`
     pub fn offline() -> Self {
         Self { client: None }
     }
@@ -109,7 +123,7 @@ impl GithubIssues {
         }
         let api = std::env::var(API_URL_VARIABLE)
             .ok()
-            .filter(|url| url.starts_with("http://127.0.0.1:"))
+            .filter(|url| is_loopback_api_url(url))
             .unwrap_or_else(|| GITHUB_API.to_owned());
         let token = std::env::var("GITHUB_TOKEN")
             .ok()
@@ -738,6 +752,35 @@ mod tests {
     }
 
     // {test}`requirements.authoring.github_reads`
+    #[test]
+    fn only_loopback_api_urls_with_a_port_are_accepted() {
+        for url in [
+            "http://127.0.0.1:8080",
+            "http://127.0.0.1:1/",
+            "http://127.0.0.1:65535",
+        ] {
+            assert!(is_loopback_api_url(url), "{url} should be accepted");
+        }
+        for url in [
+            "https://api.github.com",
+            "http://example.com:8080",
+            "https://127.0.0.1:8080",
+            "http://localhost:8080",
+            "http://127.0.0.1",
+            "http://127.0.0.1:",
+            "http://127.0.0.1:0",
+            "http://127.0.0.1:abc",
+            "http://127.0.0.1:65536",
+            "http://127.0.0.1:+80",
+            "http://127.0.0.1:80/api",
+            "http://127.0.0.1:80@evil.example/",
+            "http://127.0.0.10:80",
+        ] {
+            assert!(!is_loopback_api_url(url), "{url} should be ignored");
+        }
+    }
+
+    // {test}`requirements.authoring.github_reads`
     // {test}`requirements.authoring.redaction`
     #[test]
     fn the_tool_reads_issues_with_the_token_and_redacts_bodies() {
@@ -881,6 +924,7 @@ mod tests {
     /// A project whose `{fixme}`s name `o/r#1` (closed), `o/r#2` (open),
     /// and `o/r#3` (missing): a named one on a function, acknowledged by a
     /// FIXME record, and an unnamed one in a requirement's body.
+    // {cite}`habeas:util`
     fn project() -> tempfile::TempDir {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path();

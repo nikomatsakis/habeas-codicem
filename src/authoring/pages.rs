@@ -367,6 +367,7 @@ mod tests {
 
     // {test}`requirements.authoring.result_pages`
     // {test}`requirements.authoring.delivered_inputs`
+    // {test}`requirements.definitions.authoring_inputs`
     #[test]
     fn paged_inputs_carry_their_definitions_and_deliver_only_their_own_inputs() {
         let root = project();

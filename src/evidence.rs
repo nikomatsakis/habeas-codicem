@@ -1280,6 +1280,7 @@ pub(crate) fn definition_sites(
 }
 
 /// Whether a string is a lowercase hexadecimal SHA-256 digest.
+// {cite}`habeas:util`
 fn is_sha256_hex(value: &str) -> bool {
     value.len() == 64
         && value
@@ -1287,6 +1288,7 @@ fn is_sha256_hex(value: &str) -> bool {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
+// {cite}`habeas:util`
 struct InputRange {
     file: PathBuf,
     line_start: usize,

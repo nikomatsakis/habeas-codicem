@@ -1996,6 +1996,79 @@ fn a_context_window_overflow_fails_without_a_continuation() {
     assert_eq!(usage["outcome"], "failed");
 }
 
+/// An Ollama reply that stopped at the output limit partway through a
+/// submission.
+// {cite}`habeas:util`
+fn ollama_cut_off_reply() -> Value {
+    let mut cut = reply(vec![call(
+        "cut",
+        "submit_judgment",
+        json!({"determination":true}),
+    )]);
+    cut["done_reason"] = json!("length");
+    cut
+}
+
+// {test}`requirements.authoring.output_limit`
+#[test]
+fn a_stop_at_an_output_limit_that_is_not_known_fails_the_assessment() {
+    // The fixture's Ollama configuration sets no `num_predict`, so the
+    // limit the response reached is not known.
+    let server = Server::start(vec![ollama_cut_off_reply()]);
+    let fixture = Fixture::new(&server.endpoint);
+    let output = fixture.run(&["author", SUBJECT]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("incomplete") && stderr.contains("does not set"),
+        "{stderr}"
+    );
+    assert_eq!(server.finish().len(), 1);
+    assert_eq!(
+        fs::read_to_string(&fixture.evidence).unwrap(),
+        fixture.original
+    );
+    let usage = fixture.usage();
+    assert_eq!(usage["request_count"], 1);
+    assert_eq!(usage["outcome"], "failed");
+}
+
+// {test}`requirements.authoring.output_limit`
+#[test]
+fn a_configured_ollama_num_predict_is_the_known_output_limit() {
+    let server = Server::start(vec![
+        ollama_cut_off_reply(),
+        reply(vec![call(
+            "submit",
+            "submit_judgment",
+            json!({"determination":true,"rationale":"Short."}),
+        )]),
+    ]);
+    let fixture = Fixture::new(&server.endpoint);
+    let config_path = fixture.config.join("habeas/config.toml");
+    let config = fs::read_to_string(&config_path).unwrap();
+    fs::write(&config_path, format!("{config}num_predict = 512\n")).unwrap();
+    let output = fixture.run(&["author", SUBJECT]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let requests = server.finish();
+    assert_eq!(requests.len(), 2);
+    let last = requests[1].body["messages"]
+        .as_array()
+        .unwrap()
+        .last()
+        .unwrap()
+        .to_string();
+    assert!(
+        last.contains("reached the 512-token output limit"),
+        "{last}"
+    );
+    assert_eq!(fixture.usage()["outcome"], "completed");
+}
+
 // {test}`requirements.authoring.persistence`
 // {test}`requirements.authoring.usage_storage`
 #[test]
