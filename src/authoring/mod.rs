@@ -3091,6 +3091,35 @@ no_match:
         assert_eq!(mandatory[1]["requirements"], "requirements.rule");
         assert_eq!(mandatory.len(), 2, "{mandatory:#?}");
 
+        // The subject message names the requirement, the site's file and
+        // selector, and each query match with its kind, name and lines.
+        let matches =
+            json!([{"kind": "sites", "query": "checkers", "line_start": 2, "line_end": 6}])
+                .to_string();
+        let mandatory_inputs =
+            serde_json::to_string_pretty(&sources.model_mandatory_inputs()).unwrap();
+        let expected_subject = fill(
+            approved_text("site_prompt", 1),
+            &[
+                ("requirement_name", "requirements.rule"),
+                ("site_file", "src/lib.rs"),
+                ("site_selector", "fn[check_two]"),
+                ("matches", &matches),
+                ("mandatory_inputs", &mandatory_inputs),
+            ],
+        );
+        let initial = initial_prompt(&sources).unwrap();
+        assert_eq!(initial.subject, expected_subject);
+        assert!(
+            initial
+                .subject
+                .starts_with(&format!(
+                    "# Subject\n\nSite under review: src/lib.rs fn[check_two]\nRequirement: requirements.rule\nMatches: {matches}\n"
+                )),
+            "{}",
+            initial.subject
+        );
+
         let state = tempfile::tempdir().unwrap();
         let mut usage = UsageLog::start(state.path(), root, &subject.label()).unwrap();
         let provider = RecordingProvider::new(vec![(
@@ -3102,19 +3131,18 @@ no_match:
         let (prompt, tools) = &prompts[0];
         let prompt = serde_json::from_str::<Value>(prompt).unwrap();
         let text = prompt.to_string();
-        let matches =
-            json!([{"kind": "sites", "query": "checkers", "line_start": 2, "line_end": 6}])
-                .to_string();
-        let expected_task = fill(
-            approved_text("site_prompt", 0),
-            &[
-                ("requirement_name", "requirements.rule"),
-                ("site_file", "src/lib.rs"),
-                ("site_selector", "fn[check_two]"),
-                ("matches", &matches),
-            ],
+        assert!(
+            text.contains(
+                serde_json::to_string(&initial.subject)
+                    .unwrap()
+                    .trim_matches('"')
+            ),
+            "the subject message reaches the model"
         );
-        let heading = expected_task.split("\n\n# Background").next().unwrap();
+        let heading = approved_text("site_prompt", 0)
+            .split("\n\n# Background")
+            .next()
+            .unwrap();
         assert!(
             text.contains(serde_json::to_string(heading).unwrap().trim_matches('"')),
             "{heading}\n{text}"

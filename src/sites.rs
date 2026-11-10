@@ -865,7 +865,17 @@ no_match:
             ],
         };
         let value = site.matches_value();
-        assert!(value[0].get("text").is_none(), "{value}");
+        assert_eq!(
+            value[0],
+            json!({"kind": "sites", "query": "q", "line_start": 1, "line_end": 1})
+        );
+        assert_eq!(value[1]["kind"], "violations");
+        assert_eq!(site.selector_label(), "fn[check]");
+        let root_site = SiteItem {
+            item: String::new(),
+            ..site.clone()
+        };
+        assert_eq!(root_site.selector_label(), "<root>");
         assert_eq!(value[1]["text"], "connect(\"[REDACTED:GitHub Token]\")");
         assert!(!value.to_string().contains(&token), "{value}");
     }
@@ -1242,6 +1252,41 @@ no_match: ["struct S;"]
                 .iter()
                 .any(|error| error.contains("hash")),
             "{errors:#?}"
+        );
+    }
+
+    // {test}`requirements.authoring.progress`
+    #[test]
+    fn site_review_validation_reports_counted_progress() {
+        let temp = project(RULE, SOURCE);
+        let root = temp.path();
+        write_review(root, "fn[other]", json!({}));
+        let mut updates = Vec::new();
+        let inspected =
+            crate::evidence::inspect_repository_with_progress(root, |update| updates.push(update))
+                .unwrap();
+        assert_eq!(
+            inspected.report.errors,
+            crate::evidence::inspect_repository(root)
+                .unwrap()
+                .report
+                .errors
+        );
+        let phase: Vec<_> = updates
+            .iter()
+            .filter(|update| update.stage == "site reviews")
+            .map(|update| (update.completed, update.total))
+            .collect();
+        // Three sites, then one orphaned review file.
+        assert_eq!(
+            phase,
+            [
+                (0, Some(4)),
+                (1, Some(4)),
+                (2, Some(4)),
+                (3, Some(4)),
+                (4, Some(4))
+            ]
         );
     }
 
