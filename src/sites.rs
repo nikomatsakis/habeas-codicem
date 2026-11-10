@@ -946,6 +946,56 @@ no_match:
 
     // {test}`requirements.references.distributed`
     #[test]
+    fn declared_queries_apply_their_utils_and_constraints() {
+        // Without `utils` the rule cannot compile, and without `constraints`
+        // it would also select `other` and fail its `no_match` snippet.
+        let chapter = r#":::::{req} rule
+Each checker MUST report problems instead of panicking.
+
+::::{sites} checkers
+```yaml
+language: rust
+rule:
+  all:
+    - pattern: "fn $NAME() { $$$BODY }"
+    - matches: function
+utils:
+  function: { kind: function_item }
+constraints:
+  NAME: { regex: "^check_" }
+match:
+  - "fn check_one() {}"
+no_match:
+  - "fn other() {}"
+  - "struct check_one;"
+```
+::::
+:::::
+"#;
+        let temp = project(chapter, SOURCE);
+        let (errors, sites) = inspect(temp.path());
+        assert!(
+            !errors
+                .iter()
+                .any(|error| error.contains("query") || error.contains("snippet")),
+            "{errors:#?}"
+        );
+        let found = sites["requirements.rule"]
+            .iter()
+            .map(|site| site.item.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            found,
+            [
+                "fn[check_one]",
+                "fn[check_two]",
+                "mod[inner]/fn[check_three]"
+            ]
+        );
+    }
+
+    // {test}`requirements.references.distributed`
+    #[test]
     fn malformed_queries_are_reported_each_on_its_own() {
         let chapter = r#":::::{req} rule
 Text.
