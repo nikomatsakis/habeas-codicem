@@ -466,3 +466,15 @@ evidence input".
 
 Reason: searches became locate-only. Prompted by the reassessment of
 `evidence/requirements.authoring.additional_read.json`.
+
+## requirements.references.no_requirement (removed)
+
+`habeas:none` and its requirement are removed; `habeas:util` now also covers
+items that serve code outside the project, such as a trait implementation a
+library calls. Procedure step 4, `rust_item_coverage`, `citation_review`, the
+citation prompt's step 3, and `cli.internal_detail_guidance` drop it.
+
+Reason: after the roots rule, every uncovered item in this repository was either
+test support or production code a marked root reaches, so `habeas:util` covers
+the use; the user chose to remove `habeas:none`. An item that neither carries out
+a requirement nor serves other code needs a requirement or is not needed.

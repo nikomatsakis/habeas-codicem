@@ -89,8 +89,9 @@ Habeas's bundled agent skills MUST direct agents reviewing code against requirem
 Habeas's bundled agent skills MUST direct agents to choose references by the
 procedure in {cite}`requirements.references.procedure`. For internal code, they
 MUST direct agents to state any invariant worth checking as an ordinary
-requirement and implement it, and otherwise to cite the built-in `habeas:none` in the fenced form, with a
-body justifying why the item exists, under {cite}`requirements.references.no_requirement`. They MUST
+requirement and implement it, to cite the built-in `habeas:util` under
+{cite}`requirements.references.util` on an item that only serves other code, and
+to report to the user an item that does neither. They MUST
 NOT suggest grouping requirements, such as `internal.config_parsing`, that state
 no checkable obligation.
 :::

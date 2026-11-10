@@ -347,15 +347,7 @@ requirements or examples the item does not cite, except as step 3 requires.
    which this calls for a different role, or for no reference at all, is a gap.
 2. A citation of a requirement or example the item also references with {impl}
    or {test} is redundant and is a gap.
-3. An item that no requirement or example applies to cites the built-in
-   habeas:none, with commentary justifying why the item exists. To check such a
-   citation, list requirement and example names with the references tool and
-   search their text with ripgrep for the item's behavior; one applies if step 1
-   would call for a reference to it. The citation is a gap if its justification
-   is false, if any requirement or example applies, or if the item implements
-   end-user-observable behavior, such as output, exit status, files written,
-   errors, or public API, that no requirement specifies.
-4. For other citations, treat the commentary as context.
+3. For each citation, treat the commentary as context.
 
 # How to judge
 
