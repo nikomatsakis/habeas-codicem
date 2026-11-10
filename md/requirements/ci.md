@@ -58,10 +58,12 @@ the reviewer MUST also assess the requirement and its queries. Each obligation
 MUST be either one that each site upholds on its own, checked by its review under
 {cite}`requirements.references.site_review`, or one that particular code carries
 out, assessed as above through its `{impl}` and `{test}` references; an
-obligation neither covers MUST be treated as a gap. The site queries MUST select
-every place the text's description of a site covers and no place outside the
-requirement's stated scope. Each query's `match` snippets MUST show each
-alternative way it selects, and its `no_match` snippets MUST include at least one near miss for each selection condition, each `has`, `inside`, `not`, `regex`, and `within`: a construct that differs from a match only in failing that condition. Because queries are heuristics, the reviewer MUST
+obligation neither covers MUST be treated as a gap. The reviewer MUST judge whether
+each query's conditions are adequate and adequately tested: the site queries
+MUST select every place the text's description of a site covers and no place
+outside the requirement's stated scope, and each query's `match` and `no_match`
+snippets MUST test its conditions as tests of code would, judged as such; a
+condition without a snippet of its own MUST NOT by itself be treated as a gap. Because queries are heuristics, the reviewer MUST
 judge them by a preponderance of the evidence, asking whether it is more likely
 than not that the site queries find the places the requirement applies: a
 specific place in the sources that a site query misses or wrongly selects MUST be

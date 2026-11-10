@@ -2285,7 +2285,7 @@ fn bundled_skills_guide_distributed_requirements_with_do_and_dont_lists() {
         "Separate obligations each site upholds from obligations particular code carries out, and mark that code `{impl}`.",
         "check that the site queries select every place the obligation applies and no others",
         "Write a violation query, with `within` naming the site query, for every kind of construct that could break the obligation",
-        "Give every query a `match` snippet for each alternative way it selects, and a `no_match` near miss for each selection condition",
+        "Give every query `match` and `no_match` snippets that test its conditions the way you would test code",
         "Describe sites exactly as the site queries select them. When a query relies on a convention, such as how a variable is named, state the convention as an obligation",
         "Present the queries and snippets with the requirement text when reviewing it with the user.",
         "Run `habeas author --all` to author the site reviews.",

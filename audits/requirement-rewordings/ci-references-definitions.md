@@ -437,3 +437,32 @@ node" and the code contributes only the node. The user chose the node.
 
 Prompted by: the reassessment of `evidence/requirements.references.authoring_inputs.json`,
 which called the anchor behavior ambiguous between those two readings.
+
+## requirements.ci.review_criteria, requirements.authoring.distributed_task, requirements.cli.distributed_guidance (query snippets)
+
+Old text: each query's `no_match` snippets had to include a near miss for each
+selection condition (`has`, `inside`, `not`, `regex`, `within`), and `match`
+snippets one per `any` alternative.
+
+New text: the reviewer judges whether each query's conditions are adequate and
+adequately tested by its snippets, as tests of code are judged; a condition
+without a snippet of its own is not by itself a gap.
+
+Reason: some conditions, such as a `stopBy` or a condition under `not`, have no
+near miss that can be a `no_match` snippet, because the snippet itself contains
+a match. The user judged the per-condition rule too detailed and asked for a
+single assessment of whether the conditions are adequate and adequately tested.
+
+Prompted by: the reassessment of `evidence/requirements.ci.errors.json`, which
+reported missing near misses for the name regex under `not` and the `stopBy`.
+
+## requirements.authoring.additional_read (locate-only searches)
+
+Old text: "the search returns and records the innermost Rust item containing each match".
+
+New text: "the search returns the selector and line range of the innermost Rust
+item containing each match, with the matching and context lines, and creates no
+evidence input".
+
+Reason: searches became locate-only. Prompted by the reassessment of
+`evidence/requirements.authoring.additional_read.json`.

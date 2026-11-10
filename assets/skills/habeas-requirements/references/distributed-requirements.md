@@ -115,10 +115,11 @@ that contains it.
   carries out, and mark that code `{impl}`.
 - State the requirement's scope in its text, and use `paths` and `exclude` for
   scope a rule cannot see, such as authoring code outside validation.
-- Give every query a `match` snippet for each alternative way it selects, and a
-  `no_match` near miss for each selection condition: a construct that differs
-  from a match only in failing that condition, such as the right type with the
-  wrong name. Each `has`, `inside`, and `not` clause, each regex, and a violation query's `within` is a selection condition needing a near miss; each `any` alternative needs its own `match` snippet instead. This applies to violation queries too.
+- Give every query `match` and `no_match` snippets that test its conditions the
+  way you would test code: `match` snippets for what it selects, and `no_match`
+  snippets for nearby code it must not select, such as the right type with the
+  wrong name. A condition needs no snippet of its own. This applies to violation
+  queries too.
 - Write a violation query, with `within` naming the site query, for every kind
   of construct that could break the obligation, such as each early exit in a
   function that must keep going.

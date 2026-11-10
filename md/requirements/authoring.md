@@ -893,9 +893,10 @@ NOT become evidence inputs; the model requests the sources it relies on with the
 When authoring replaces a record and an item that its previous inputs covered
 under {cite}`requirements.references.rust_item_coverage` is no longer covered,
 the harness MUST assess that item in a coverage-loss review: an independent
-conversation with the same source tools, whose mandatory inputs are the item's
-outline node and the declarations of the requirements and examples whose
-previous records read it, and whose prompt gives each such record's rationale.
+conversation with the same source tools, whose mandatory inputs under
+{cite}`requirements.authoring.mandatory_inputs` are the item's outline node and
+the declarations of the requirements and examples whose previous records read
+it, and whose prompt gives each such record's rationale.
 The reviewer MUST submit, for each of those definitions, whether the item is a
 root of its implementation or is not needed for it, with a nonempty rationale:
 a root when the item carries out part of the definition under
@@ -1208,12 +1209,11 @@ its queries:
    and search briefly for the construct the text describes to find places the
    queries miss. Obligations that decide which places are sites, such as how a
    variable is named, are checked by this search.
-8. Each query's match snippets must show each alternative way it selects, and
-   its no_match snippets must include a near miss for each selection condition:
-   a construct that differs from a match only in failing that condition. Each
-   has, inside, and not clause, each regex, and a violation query's within is a
-   selection condition, needing a near miss; each any alternative needs its own
-   match snippet instead. This applies to violation queries too.
+8. Judge whether each query's conditions are adequately tested by its
+   snippets, as you would judge tests of code: its match snippets should show
+   what it selects, and its no_match snippets nearby code it must not select.
+   A condition without a snippet of its own is not by itself a gap. This
+   applies to violation queries too.
 
 Queries are heuristics, so judge them by a preponderance of the evidence: is it
 more likely than not that the site queries find the places the requirement
@@ -1754,7 +1754,8 @@ requirement, both functions, and the required definition as evidence inputs.
 :::{example} additional_read
 The model calls `list_files` to find a directory, then `ripgrep` to find matching
 lines in a Rust file. The listing creates no evidence input; the search returns
-and records the innermost Rust item containing each match. An `outline` request
+the selector and line range of the innermost Rust item containing each match,
+with the matching and context lines, and creates no evidence input. An `outline` request
 for that file lists its items without content and creates no evidence input. A
 `habeas` request with the file and one item's selector returns and records that
 item, along with any required terminology. A line-range request omitting

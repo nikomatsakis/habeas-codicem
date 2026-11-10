@@ -129,7 +129,7 @@ requirement that its sites do not uphold. They
 MUST direct agents to write site queries that select every place the obligation
 applies and no others, violation queries for every kind of construct that could
 break it, and
-`match` and `no_match` snippets for every query that include near misses. They
+`match` and `no_match` snippets for every query that adequately test its conditions. They
 MUST direct agents to describe sites exactly as the site queries select them,
 stating as an obligation any convention the queries rely on, such as how a list
 is named, and to state only per-site obligations that a reviewer can check at the
