@@ -538,19 +538,19 @@ pub(crate) fn add_issue_findings(inspection: &mut RepositoryInspection, github: 
     let reads = github.read_all(fixmes.iter().flat_map(|(_, issues)| issues.iter().cloned()));
     let not_open = |issue: &String| reads.get(issue).and_then(IssueRead::not_open);
     let outlines = crate::inputs::OutlineCache::default();
-    let mut findings = BTreeSet::new();
+    let mut errors = BTreeSet::new();
     for (reference, issues) in &fixmes {
         let file = display_path(&root, &reference.file);
         for issue in issues {
             let Some(reason) = not_open(issue) else {
                 continue;
             };
-            findings.insert(format!(
+            errors.insert(format!(
                 "{file}:{}: {{fixme}} names {issue}, which {reason}",
                 reference.line
             ));
             let (line, item) = containing_item(inspection, &outlines, &file, reference);
-            findings.insert(format!(
+            errors.insert(format!(
                 "{file}:{line}: {item} fails: its {{fixme}} at line {} names {issue}, which {reason}",
                 reference.line
             ));
@@ -592,7 +592,7 @@ pub(crate) fn add_issue_findings(inspection: &mut RepositoryInspection, github: 
             }
             for issue in issues {
                 if let Some(reason) = not_open(issue) {
-                    findings.insert(format!(
+                    errors.insert(format!(
                         "{relative}: stale: issue {issue}, named by the acknowledging {{fixme}} to {name} at {}:{}, {reason}; reassess the record",
                         display_path(&root, &reference.file),
                         reference.line
@@ -626,7 +626,7 @@ pub(crate) fn add_issue_findings(inspection: &mut RepositoryInspection, github: 
             }
             for issue in issues {
                 if let Some(reason) = not_open(issue) {
-                    findings.insert(format!(
+                    errors.insert(format!(
                         "{relative}: stale: issue {issue}, named by the {{fixme}} to {} inside the site at {}:{}, {reason}; reassess the review",
                         site.requirement,
                         display_path(&root, &reference.file),
@@ -636,7 +636,7 @@ pub(crate) fn add_issue_findings(inspection: &mut RepositoryInspection, github: 
             }
         }
     }
-    inspection.report.errors.extend(findings);
+    inspection.report.errors.extend(errors);
 }
 
 /// The line and description of the item containing a `{fixme}`: the
