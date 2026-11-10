@@ -831,6 +831,9 @@ MUST return an explanatory tool error.
 When the mandatory inputs contain a `{fixme}` reference under
 {cite}`requirements.references.roles`, the harness MUST look up the state of
 each issue its `:github:` lines name, in the same way, and MUST supply each state with that input to the model as `open` or `closed`; when GitHub cannot be reached, the issue MUST be assumed open. These states MUST NOT be recorded either. Instead, `habeas status` and `habeas author` MUST treat a recorded FIXME determination as stale, exactly as if one of its inputs had changed, when an issue that one of its acknowledging `{fixme}` references names, or for a site review the `{fixme}` references inside the site, is closed or does not exist; repository validation, which never contacts GitHub, MUST NOT.
+
+The harness MAY take the GitHub API base URL from `HABEAS_GITHUB_API_URL`,
+accepting only `http://127.0.0.1:<port>`, so that tests can use a local server.
 :::
 
 ### Look up definitions and references: `references`
@@ -1454,8 +1457,9 @@ When a Bedrock configuration sets no `maxTokens` option, each provider request
 MUST ask for at most 16,384 output tokens. A configured `maxTokens` MUST be used
 as given.
 
-When a response stops because it reached the output limit, the harness MUST
-continue the same conversation once, adding this user message with `<limit>`
+When a response stops because it reached a known output limit, the harness MUST
+continue the same conversation once, adding a user message with an error result
+for each tool call in the cut-off response, followed by this text with `<limit>`
 replaced by the limit:
 
 ```text
@@ -1464,8 +1468,12 @@ so its tool call was incomplete. Keep within the limit: make your rationale
 shorter, then call the tool again.
 ```
 
-A second response that reaches the limit MUST fail the assessment as an
-incomplete response.
+A second response that reaches the limit, or a response that stops at an
+output limit that is not known, MUST fail the assessment as an incomplete
+response. Where the provider reports whether a response stopped at the output
+limit or because the conversation exceeded the model's context window, the
+harness SHOULD continue only the former and fail the assessment on the latter;
+where it does not, the stop MUST be treated as reaching the output limit.
 :::
 
 :::{req} prompt_parts
