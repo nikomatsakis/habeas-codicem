@@ -1450,12 +1450,8 @@ when explicitly allowed.
 
 :::{req} output_limit
 When a Bedrock configuration sets no `maxTokens` option, each provider request
-MUST ask for at most 16,384 output tokens. When a response stops because it
-reached that limit, the harness MUST send the same request again once with a
-limit of 32,768 and use that response instead; a response that reaches the
-higher limit too MUST fail the assessment as an incomplete response. A
-configured `maxTokens` MUST be used as given, without this retry. Both requests
-MUST be recorded under {cite}`requirements.authoring.usage_requests`.
+MUST ask for at most 16,384 output tokens. A configured `maxTokens` MUST be used
+as given.
 :::
 
 :::{req} prompt_parts
