@@ -6,8 +6,8 @@ description: Use before adding, changing, or moving code, tests, or requirements
 # Habeas requirements
 
 Habeas traces requirements, written in a project's mdBook, to the code and tests
-that implement and verify them. `habeas author` has a model assess each one;
-`cargo test --workspace` checks the results.
+that implement and verify them. `habeas author` has a model, the reviewer,
+assess each one; `cargo test --workspace` checks the results.
 
 ## Workflow
 
@@ -40,8 +40,9 @@ that implement and verify them. `habeas author` has a model assess each one;
       gaps it reports.
 
 If implementation shows that an approved obligation must change substantively,
-review the revised text with the user before coding the change. Log a precision
-rewording of an agreed requirement as the habeas-evidence Rules say. A bug fix whose
+review the revised text with the user before coding the change. Review every
+other change to agreed text with the user first too, even a rewording for
+precision, then log it as the habeas-evidence Rules say. A bug fix whose
 behavior an existing requirement already specifies needs no new requirement:
 confirm the requirement covers it, then fix the code and check its tests and
 references. A refactor that changes no behavior needs no review, but references
@@ -128,35 +129,53 @@ before drafting.
 
 Write each reference with a full name, in a comment on the relevant source line
 or on the book line: `` {impl}`requirements.forwarding.quit` ``, `` {test}`…` ``,
-or `` {cite}`…` ``. Choose
-each item's references by this procedure, applied to every requirement or
+or `` {cite}`…` ``.
+
+The reviewer starts from the `{impl}` and `{test}` items for a requirement and
+follows the code: what an item calls, the types it uses, and the
+implementations of trait methods it calls, and what those reach in turn. That
+is what an item *reaches*; its callers don't count, though the reviewer may
+read them for context. An item *carries out* part of a requirement when it
+makes a decision, performs a check, produces an output, or handles a case the
+requirement specifies; a type does when the requirement constrains its fields,
+variants, serialized form, or validation. A *root* of a requirement is an item
+that carries out part of it and that no other `{impl}` item for that
+requirement reaches: mark the outermost item carrying out each obligation, and
+leave what it reaches, functions and types alike, without a reference to that
+requirement. Roots are per requirement: a helper reached from one
+requirement's root may be a root of another.
+
+Choose each item's references by this procedure, applied to every requirement or
 example it could reference; an item may carry several:
 
-1. If the item is a test or test helper designed to verify the requirement or
-   example, use `{test}`. Incidental setup that a test happens to exercise does
-   not count; a test that verifies one without `{test}` is a gap.
-2. Otherwise, if fulfilling it depends on the item, use `{impl}`. Code qualifies
-   when it makes a decision, performs a check, produces an output, or handles a
-   case the requirement specifies; a type qualifies when the requirement
-   constrains its fields, variants, serialized form, or validation. Code that only checks it is consistent with
-   a requirement, such as recognizing a form the requirement defines to decide
-   whether to run other behavior, gets `{cite}`, not `{impl}`. Calling code
-   that implements it does not count, so a dispatcher that only routes to the
-   implementation gets `{cite}` of what it dispatches to, or `habeas:none`. A
-   requirement that refines another's obligation can `{impl}` it. A site of a
-   distributed requirement needs no reference to that requirement; its site
-   review covers it, but it still needs references for anything else it
-   implements.
+1. If the item is a test designed to verify the requirement or example, use
+   `{test}`. Helpers a test reaches need no reference. Incidental setup that a
+   test happens to exercise does not count; a test that verifies one without
+   `{test}` is a gap.
+2. Otherwise, if the item is a root of the requirement's implementation, use
+   `{impl}`. Code that only checks it is consistent with a requirement, such as
+   recognizing a form the requirement defines to decide whether to run other
+   behavior, gets `{cite}`, not `{impl}`. Calling code that implements it does
+   not count, so a dispatcher that only routes to the implementation gets
+   `{cite}` of what it dispatches to, or nothing for it. A requirement that
+   refines another's obligation can `{impl}` it. A site of a distributed
+   requirement needs no reference to that requirement; its site review reads
+   it, but a site that is a root of another requirement still gets `{impl}` of
+   that one.
 3. Otherwise, if the item should be re-checked or kept in sync when the
    requirement or example changes, use `{cite}`.
-4. If nothing gives the item a reference, cite the built-in `habeas:none` in
-   fenced form, with a body justifying why the item exists:
+4. If nothing gives the item a reference, and after `habeas author` nothing
+   reads it either (see Gotchas), cite the built-in `habeas:none` in fenced
+   form, with a body justifying why the item exists:
 
    ```text
    // :::{cite} habeas:none
    // Joins the outline builders' line splitting; no requirement concerns how.
    // :::
    ```
+
+Don't remove an existing `{impl}` or `habeas:none` from code a root reaches
+unless the user asks.
 
 For internal code with an invariant worth checking, such as a cache that must
 not change results, propose a requirement stating the invariant and implement it
@@ -166,9 +185,10 @@ obligation, such as one covering an area's internal helpers. An item citing
 specifies.
 
 `{impl}` and `{test}` make the item an input to the assessment, and its evidence
-must cover them. `{cite}` needs no coverage and does not count as implementing
-anything; citation reviews (habeas-evidence) check it should not be `{impl}` or
-`{test}`.
+must cover them; the reviewer reads the code they reach from there. `{cite}`
+needs no coverage and does not count as implementing anything; a citation
+review, a separate assessment of each item carrying `{cite}` (habeas-evidence),
+checks it should not be `{impl}` or `{test}`.
 
 Any reference may be fenced to attach commentary: `:::{impl} name`, the
 commentary, and a closing `:::`. In a source comment, keep both fences in one run
@@ -194,8 +214,10 @@ requirement's review treats these as gaps:
 
 - an obligation the code marked `{impl}` does not implement completely and
   exactly as stated;
-- code that implements part of the requirement without `{impl}`, including code
-  that only cites it, and a test that verifies it without `{test}`;
+- code that carries out part of the requirement but that the reviewer cannot
+  reach from its `{impl}` items and found only by searching, including code
+  that only cites it (the rationale names the item that should carry
+  `{impl}`), and a test that verifies it without `{test}`;
 - observable behavior in `{impl}` code that no requirement implemented there
   specifies;
 - obligations, boundaries, and failure cases no test runs and asserts. A test
@@ -214,6 +236,12 @@ the habeas-evidence skill.
 ## Gotchas
 
 - In Rust, every explicit function or method, including trait methods and test
-  helpers, and every struct, enum, and union needs its own reference in an
-  attached comment or its body. A reference on an enclosing module or `impl`
-  does not cover it, and there is no waiver.
+  helpers, and every struct, enum, and union must be covered: by its own
+  reference in an attached comment or its body, or by a current evidence
+  record, citation review, or site review that read it or an outline node
+  (a function, `impl`, module, or other selectable item) enclosing it. A
+  reference on an enclosing module or `impl` is not the item's own reference.
+  Search results (ripgrep and ast_grep matches) only locate code and cover
+  nothing. Reads exist only after `habeas author`, so author before treating an
+  item as uncovered; for an item still uncovered after that, see "Uncovered
+  Rust items" in the habeas-evidence skill. There is no waiver.

@@ -1,6 +1,6 @@
 ---
 name: habeas-bootstrap-requirements
-description: Use when adopting Habeas in an existing codebase, when validation reports unreferenced items across most of a project's code, or when the user asks for a requirements coverage audit. Inventories tests, Rust items, and user-visible behavior; proposes an initial requirement set for the user's approval; tags every test and item; and drives `habeas author --all` and validation to full coverage. For a single behavior change, use habeas-requirements; to refresh evidence or fix a few validation failures, use habeas-evidence.
+description: Use when adopting Habeas in an existing codebase, when validation reports uncovered items across most of a project's code, or when the user asks for a requirements coverage audit. Inventories tests, Rust items, and user-visible behavior; proposes an initial requirement set for the user's approval; tags every test and each requirement's root items; and drives `habeas author --all` and validation to full coverage. For a single behavior change, use habeas-requirements; to refresh evidence or fix a few validation failures, use habeas-evidence.
 ---
 
 # Bootstrap requirements
@@ -39,16 +39,20 @@ to a subagent to keep it out of your context.
 - [ ] 5. Install the agreed requirements in the area's chapter, one file per
       area, such as `md/requirements/cli.md` for `requirements.cli.*`; add a
       new chapter to `SUMMARY.md` and `git add` it.
-- [ ] 6. Tag the area's tests and items (below). In the first area, if step 1
+- [ ] 6. Tag the area's tests and root items (below). In the first area, if step 1
       had no requirement to try, run `habeas author <full-name>` on one of the
       area's requirements to confirm authoring works before going on.
 - [ ] 7. Run `cargo test --workspace`, which makes no model calls, and fix the
-      reference and coverage errors in this area's files. Unreferenced items in
-      areas not yet bootstrapped wait for their own pass; never give them
-      placeholder references. Tell the user how many definitions
-      `habeas status` says need authoring, then follow the habeas-evidence
-      workflow for this area's definitions until each passes or is on the gap
-      list with a reason. Full validation can pass only after the last area.
+      reference errors in this area's files. Leave uncovered items for now:
+      assessments that read reached code cover it, and none have run yet.
+      Uncovered items in areas not yet bootstrapped wait for their own pass;
+      never give them placeholder references. Tell the user how many
+      definitions `habeas status` says need authoring, then follow the
+      habeas-evidence workflow for this area's definitions, running
+      `habeas author <full-name>` for each, or `habeas author --all`, which
+      authors everything needing it and costs more, until each passes or is on
+      the gap list with a reason, and this area's items are covered. Full
+      validation can pass only after the last area.
 - [ ] 8. Have a fresh subagent recount both inventories from the source and tests
       without your lists, and reconcile any differences.
 - [ ] 9. Report (below).
@@ -62,10 +66,13 @@ references.
 - **Tests:** every first-party runnable test or test case, including integration
   tests and parameterized cases. Record the behavior each test checks; fill in
   requirement names once they are installed.
-- **Items and behavior:** in Rust projects, every item `cargo test --workspace`
-  reports as unreferenced. Add by hand the observable surface: public APIs,
-  commands, handlers, UI actions, configuration, outputs, errors, and distinct
-  observable branches. One tagged entry point does not cover deeper code.
+- **Items and behavior:** in Rust projects, every function, method, struct,
+  enum, and union, listed from the source rather than from validation's
+  uncovered items, since an assessment's read can cover an item whose
+  behavior no requirement states. Add by hand the observable surface: public
+  APIs, commands, handlers, UI actions, configuration, outputs, errors, and
+  distinct observable branches. A tagged entry point doesn't mean every observable branch beneath
+  it has a requirement.
 - **Gap list:** each item or behavior you cannot yet map, with its location, the
   reason, and the open question.
 
@@ -98,8 +105,10 @@ habeas-requirements skill's
 
 ## Tagging
 
-Give every inventoried test and item its references by the procedure in the
-habeas-requirements skill. Every test must end up with a `{test}` reference to a requirement or example,
+Give every inventoried test and each requirement's roots their references by
+the procedure in the habeas-requirements skill: `{test}` on tests and `{impl}`
+on roots; code a root or test reaches needs none. Map each other inventoried
+item to the requirement whose root reaches it. Every test must end up with a `{test}` reference to a requirement or example,
 attached to the test as the habeas-requirements skill describes; a test whose behavior no agreed requirement states goes on the gap
 list, never `habeas:none`. For a parameterized test, put the reference on the
 case source or the generating declaration; one file-level tag must not stand in
@@ -112,7 +121,7 @@ mis-tagging.
 
 ```text
 Tests mapped: <mapped>/<total>
-Items mapped: <mapped>/<total>  (habeas:none: <count>, from `habeas status --all`)
+Items mapped: <referenced or reached from a mapped root>/<total>  (covered only by reads: <count>; habeas:none: <count>, from `habeas status --all`)
 Independent recount: <agrees | differences and how reconciled>
 Gaps:
 - <item or behavior> (<file>:<line>): <reason>; <open question>

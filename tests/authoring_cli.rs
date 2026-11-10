@@ -978,7 +978,7 @@ fn bundled_skills_direct_the_agent_to_the_authoring_harness() {
     assert_phrases(
         "habeas-requirements",
         &[
-            "`habeas author` has a model assess each one",
+            "`habeas author` has a model, the reviewer, assess each one",
             "Follow the habeas-evidence workflow to author evidence and fix the gaps it reports",
             "Never write evidence JSON, rationales, determinations, or inputs yourself, and never ask another agent to",
         ],
@@ -1002,10 +1002,10 @@ fn bundled_skills_direct_the_reference_procedure_and_habeas_none_instead_of_waiv
     assert_in_order(
         "habeas-requirements",
         &[
+            "a type does when the requirement constrains its fields, variants, serialized form, or validation",
             "Choose each item's references by this procedure",
             "designed to verify the requirement or example, use `{test}`",
-            "if fulfilling it depends on the item, use `{impl}`",
-            "fields, variants, serialized form, or validation",
+            "if the item is a root of the requirement's implementation, use `{impl}`",
             "re-checked or kept in sync when the requirement or example changes, use `{cite}`",
             "cite the built-in `habeas:none` in fenced form, with a body justifying why the item exists",
         ],
@@ -1016,7 +1016,7 @@ fn bundled_skills_direct_the_reference_procedure_and_habeas_none_instead_of_waiv
             "propose a requirement stating the invariant and implement it with `{impl}`",
             "Don't propose grouping requirements that state no checkable obligation",
             "must not implement observable behavior that no requirement specifies",
-            "there is no waiver",
+            "There is no waiver",
         ],
     );
     // The other skills refer to the procedure rather than restate it.
@@ -1082,6 +1082,18 @@ fn bundled_skills_treat_disagreeing_assessments_as_findings() {
         &[
             "record the old text, new text, reason, and the rationale that prompted the change in the project's audit log, such as `audits/requirement-rewordings/`",
         ],
+    );
+    // A rewording for precision is reviewed with the user before it is logged.
+    assert_in_order(
+        "habeas-requirements",
+        &[
+            "Review every other change to agreed text with the user first too, even a rewording for precision",
+            "then log it as the habeas-evidence Rules say",
+        ],
+    );
+    assert_phrases(
+        "habeas-evidence",
+        &["When the user agrees to reword a requirement for precision"],
     );
     // The other skills point to it rather than restate it.
     for name in ["habeas-requirements", "habeas-bootstrap-requirements"] {
@@ -2495,7 +2507,7 @@ fn bundled_skills_direct_behavior_review_against_requirements() {
         &[
             "## What the review checks",
             "does not implement completely and exactly as stated",
-            "code that implements part of the requirement without `{impl}`, including code that only cites it",
+            "code that carries out part of the requirement but that the reviewer cannot reach from its `{impl}` items and found only by searching, including code that only cites it",
             "observable behavior in `{impl}` code that no requirement implemented there specifies",
             "obligations, boundaries, and failure cases no test runs and asserts",
             "A test may be omitted only for code with no logic of its own",
@@ -2526,7 +2538,7 @@ fn bundled_skills_direct_behavior_review_against_requirements() {
         "habeas-requirements",
         &[
             "designed to verify the requirement or example, use `{test}`",
-            "if fulfilling it depends on the item, use `{impl}`",
+            "if the item is a root of the requirement's implementation, use `{impl}`",
             "`{cite}` needs no coverage and does not count as implementing anything",
         ],
     );
@@ -2552,6 +2564,73 @@ fn bundled_skills_direct_behavior_review_against_requirements() {
             "Where one behavior follows from several requirements, mark each with `{impl}` where it applies and explain how they combine",
         ],
     );
+}
+
+// {test}`requirements.cli.behavior_review_guidance`
+// {test}`requirements.cli.internal_detail_guidance`
+// {test}`requirements.cli.skill_structure`
+#[test]
+fn bundled_skills_mark_roots_and_handle_uncovered_items() {
+    const ROOT: &str = "A *root* of a requirement is an item that carries out part of it and that no other `{impl}` item for that requirement reaches";
+    // habeas-requirements is the home of roots: reach goes downward only, and
+    // types and test helpers follow the same rule.
+    assert_in_order(
+        "habeas-requirements",
+        &[
+            "what an item calls, the types it uses, and the implementations of trait methods it calls, and what those reach in turn",
+            "its callers don't count",
+            ROOT,
+            "leave what it reaches, functions and types alike, without a reference to that requirement",
+            "Roots are per requirement",
+            "Helpers a test reaches need no reference",
+            "Don't remove an existing `{impl}` or `habeas:none` from code a root reaches unless the user asks",
+        ],
+    );
+    // Coverage comes from a reference or a current read, never a search, and
+    // reads exist only after authoring; `habeas:none` only when neither applies.
+    assert_phrases(
+        "habeas-requirements",
+        &[
+            "If nothing gives the item a reference, and after `habeas author` nothing reads it either",
+            "or by a current evidence record, citation review, or site review that read it or an outline node",
+            "Search results (ripgrep and ast_grep matches) only locate code and cover nothing",
+            "Reads exist only after `habeas author`, so author before treating an item as uncovered",
+            "the rationale names the item that should carry `{impl}`",
+        ],
+    );
+    // habeas-evidence handles items still uncovered after authoring, acting on
+    // the coverage-loss review.
+    assert_phrases(
+        "habeas-evidence",
+        &[
+            "Leave uncovered Rust items until after step 4",
+            "When a rationale names code the reviewer found only by searching, add `{impl}` to the item it names",
+            "Editing an item without a reference makes every record that read it stale",
+        ],
+    );
+    assert_in_order(
+        "habeas-evidence",
+        &[
+            "### Uncovered Rust items",
+            "reports uncovered after `habeas author --all`",
+            "If `habeas status` shows a coverage-loss review beside the item, act on each finding",
+            "`root`: add `{impl}` of that definition to the item",
+            "`not needed`: before changing anything, determine from its rationale and the code whether the item is dead code or the earlier read was mistaken",
+            "add references by the procedure in the habeas-requirements skill",
+            "never re-run or `--force` authoring just to get an item read",
+        ],
+    );
+    assert_phrases(
+        "habeas-bootstrap-requirements",
+        &[
+            "`{test}` on tests and `{impl}` on roots; code a root or test reaches needs none",
+            "Leave uncovered items for now",
+        ],
+    );
+    // The other skills refer to the definition of a root rather than restate it.
+    for name in ["habeas-evidence", "habeas-bootstrap-requirements"] {
+        assert!(!bundled_skill(name).contains(ROOT), "{name} restates roots");
+    }
 }
 
 // {test}`requirements.cli.bootstrap_skill`
@@ -2588,10 +2667,10 @@ fn bootstrap_skill_is_bundled_and_directs_complete_inventories() {
             "Record the behavior each test checks; fill in requirement names once they are installed",
             "Every test must end up with a `{test}` reference to a requirement or example",
             // Map every end-user-visible source unit.
-            "every item `cargo test --workspace` reports as unreferenced",
+            "every function, method, struct, enum, and union, listed from the source rather than from validation's uncovered items",
             "public APIs, commands, handlers, UI actions, configuration, outputs, errors, and distinct observable branches",
-            "One tagged entry point does not cover deeper code",
-            "Give every inventoried test and item its references",
+            "A tagged entry point doesn't mean every observable branch beneath it has a requirement",
+            "Give every inventoried test and each requirement's roots their references",
         ],
     );
     // Report gaps; no claim of completeness before an independent recount.
@@ -2638,7 +2717,7 @@ fn bundled_skills_require_agreed_requirements_before_code() {
     assert_phrases(
         "habeas-evidence",
         &[
-            "Review a change to an agreed requirement's text with the user first, as the habeas-requirements skill describes",
+            "Review every change to an agreed requirement's text with the user first, as the habeas-requirements skill describes, even a rewording for precision",
         ],
     );
     // Inferred requirements are reviewed with the user, area by area, before
@@ -2653,7 +2732,7 @@ fn bundled_skills_require_agreed_requirements_before_code() {
             "a general request to bootstrap is not agreement to specific text",
             "don't commit a requirement or tag code against it until the user agrees to its text",
             "Install the agreed requirements in the area's chapter",
-            "Tag the area's tests and items",
+            "Tag the area's tests and root items",
         ],
     );
     // Missing or false evidence is acceptable; no placeholder evidence.

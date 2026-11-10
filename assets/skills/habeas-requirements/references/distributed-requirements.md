@@ -142,11 +142,11 @@ that contains it.
   reading other sites; narrow it to the site, such as "does not report one
   failure twice".
 - Don't reference the distributed requirement from a site just because it is a
-  site; sites need none. Being a site also does not satisfy Rust item coverage,
-  so each site still needs its own references for what it implements, and a
-  site that carries out one of the requirement's other obligations, such as the
-  function that reports the collected errors, gets `{impl}` of it like any
-  other implementing code.
+  site; sites need none. A site review reads its site, which covers it for Rust
+  item coverage, but a site that is a root of another requirement gets
+  `{impl}` of that one, and a site that carries out one of this requirement's
+  other obligations, such as the function that reports the collected errors,
+  gets `{impl}` of this one like any other root.
 - Don't re-run a false site review for a different result; fix the site, or
   tighten the queries or the text, as "Site reviews" in the habeas-evidence
   skill describes.

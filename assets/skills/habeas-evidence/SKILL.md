@@ -1,6 +1,6 @@
 ---
 name: habeas-evidence
-description: Use when Habeas evidence needs creating or refreshing, or when `cargo test` or `habeas status` reports Habeas findings such as missing, stale, or false evidence, uncovered `{impl}` or `{test}` lines, unreferenced Rust items, FIXME judgments, citation or site reviews, or disagreeing assessments, even if the user only says "the habeas test is failing". Covers running `habeas author` and fixing the code, tests, or references it flags. To design new or changed requirements before coding, use habeas-requirements; to derive an initial requirement set when most of a codebase is unreferenced, use habeas-bootstrap-requirements.
+description: Use when Habeas evidence needs creating or refreshing, or when `cargo test` or `habeas status` reports Habeas findings such as missing, stale, or false evidence, uncovered `{impl}` or `{test}` lines, uncovered Rust items, coverage-loss reviews, FIXME judgments, citation or site reviews, or disagreeing assessments, even if the user only says "the habeas test is failing". Covers running `habeas author` and fixing the code, tests, or references it flags. To design new or changed requirements before coding, use habeas-requirements; to derive an initial requirement set when most of a codebase has no references, use habeas-bootstrap-requirements.
 ---
 
 # Habeas evidence
@@ -24,12 +24,15 @@ Run commands from the project root, the directory with `book.toml` and
       FIXME issue group. `habeas info <selection>` shows one definition's text,
       judgment, rationale, inputs, and validation findings. A selection is a full
       name or a glob in which `*` matches any characters, including dots.
-- [ ] 3. Fix what the findings name (see "Fixing findings").
+- [ ] 3. Fix what the findings name (see "Fixing findings"). Leave uncovered
+      Rust items until after step 4: an assessment that reads an item covers
+      it.
 - [ ] 4. `habeas author --all` assesses every definition whose evidence is
       missing, stale, or invalid, keeps current records, and reports how many it
       skipped as current; `-v` prints each false judgment's rationale.
       `habeas author <full-name>` does one.
-- [ ] 5. `cargo test --workspace`. If findings remain that you can fix, return to
+- [ ] 5. `cargo test --workspace`. Handle items still uncovered as "Uncovered
+      Rust items" says. If findings remain that you can fix, return to
       step 2. Also check `habeas status` for recorded disagreements (see
       "Disagreeing assessments"). Stop and report to the user each finding that needs their
       decision, such as a new or changed requirement, a gap to defer, or a
@@ -46,14 +49,15 @@ Run commands from the project root, the directory with `book.toml` and
   as an independent assessment that the harness records. If authoring cannot
   run, follow the matching Gotcha below; when the fix needs the user, such as
   missing credentials or configuration, stop and report the blocker.
-- Never re-run an assessment to get a different result, or change a judgment to
-  make validation pass. Fix the source, tests, references, or requirement text.
+- Never re-run an assessment to get a different result or to get an item read,
+  or change a judgment to make validation pass. Fix the source, tests,
+  references, or requirement text.
 - Don't read evidence files into your context. Use `habeas status` and
   `habeas info`; to survey many rationales at once, ask a subagent to read them
   and return short findings.
-- Review a change to an agreed requirement's text with the user first, as the
-  habeas-requirements skill describes.
-- When you reword an agreed requirement for precision, whether a false
+- Review every change to an agreed requirement's text with the user first, as
+  the habeas-requirements skill describes, even a rewording for precision.
+- When the user agrees to reword a requirement for precision, whether a false
   rationale, a site review, or a disagreement prompted it, record the old text, new text,
   reason, and the rationale that prompted the change in the project's audit
   log, such as `audits/requirement-rewordings/`; if the project has none, ask
@@ -69,15 +73,41 @@ Run commands from the project root, the directory with `book.toml` and
 | missing or stale evidence | `habeas author --all` |
 | false judgment | read its rationale with `habeas info <name>`, fix the gap it names, then `habeas author --all` |
 | uncovered `{impl}` or `{test}` line | check the reference names the right definition, then re-author that definition |
-| unreferenced Rust item | add references by the procedure in the habeas-requirements skill, citing `habeas:none` in fenced form with a justification only when nothing applies |
+| uncovered Rust item | see "Uncovered Rust items" below |
 | orphaned citation or site review | `habeas author --all` deletes it |
 | orphaned requirement or example evidence | its definition was renamed or removed; `git rm` the file the finding names (removing an orphan is not editing evidence), then `habeas author --all` |
 | untracked file with references | `git add` it |
 
 A false rationale points to the gaps that skill's "What the review checks"
-lists. Behavior with no requirement needs one agreed with the user. Each
+lists. Behavior with no requirement needs one agreed with the user. When a
+rationale names code the reviewer found only by searching, add `{impl}` to the
+item it names, which makes that item a root; don't restructure the code or add
+`{cite}` to make it reachable. Each
 determination stands alone: a false requirement does not fail the definitions it
 implements, tests, or cites, so fix each failing definition on its own.
+
+### Uncovered Rust items
+
+An item is covered by its own reference or by a current record or review that
+read it (habeas-requirements, "Gotchas"). For each item `habeas status` still
+reports uncovered after `habeas author --all`:
+
+1. If `habeas status` shows a coverage-loss review beside the item, act on
+   each finding.
+   `habeas author` runs this review, an independent assessment, when a record
+   it replaces read the item and the new one does not.
+   - `root`: add `{impl}` of that definition to the item.
+   - `not needed`: before changing anything, determine from its rationale and
+     the code whether the item is dead code or the earlier read was mistaken.
+     Report dead code to the user instead of deleting it unasked; otherwise
+     continue with step 2.
+2. Otherwise, add references by the procedure in the habeas-requirements skill,
+   citing `habeas:none` in fenced form with a justification only when nothing
+   applies: often `{cite}`, when the item should be re-checked as the
+   definition changes.
+
+Whether an assessment reads an item varies between runs, so never re-run or
+`--force` authoring just to get an item read; it would not stay covered.
 
 ### FIXME
 
@@ -160,7 +190,10 @@ section of `habeas status` after each `habeas author` run.
   changes its selector and makes the evidence stale or invalid. Changing code, doc comments,
   or docstrings makes it stale, and so does adding, removing, or changing the
   role of an `{impl}`, `{test}`, or `{fixme}` reference, or editing its
-  fenced commentary.
+  fenced commentary. Editing an item without a reference makes every record
+  that read it stale, and the item stays uncovered until they are reassessed;
+  make related edits to shared helpers together before authoring, and fix an
+  item that is uncovered and whose readers are stale with `habeas author --all`.
 - `habeas author --all` skips current records. After a fix the hash does not
   see, such as one made only in an ordinary comment, run
   `habeas author --force <full-name>`; never use `--force` to retry unchanged
