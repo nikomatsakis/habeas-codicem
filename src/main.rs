@@ -237,6 +237,14 @@ fn main() -> Result<(), Box<dyn Error>> {
                 if let Some(policy) = outcome.policy {
                     summary.push_str(&format!("; policy {policy}"));
                 }
+                // Each review was reported as it finished; count them.
+                // {impl}`requirements.authoring.coverage_loss`
+                if !outcome.coverage_loss.reviews.is_empty() {
+                    summary.push_str(&format!(
+                        "; {} coverage-loss reviews",
+                        outcome.coverage_loss.reviews.len()
+                    ));
+                }
                 println!("{summary}");
                 if !outcome.failures.is_empty() {
                     return Err(io::Error::other(
@@ -294,6 +302,23 @@ fn main() -> Result<(), Box<dyn Error>> {
                     "{summary}\nEvidence: stdout\nUsage: {}",
                     outcome.usage_path.display()
                 );
+            }
+            // {impl}`requirements.authoring.coverage_loss`
+            for review in &outcome.coverage_loss.reviews {
+                println!(
+                    "{}\nUsage: {}",
+                    review.report(),
+                    review.usage_path.display()
+                );
+            }
+            for (label, error) in &outcome.coverage_loss.failures {
+                eprintln!("{label}: {error}");
+            }
+            if !outcome.coverage_loss.failures.is_empty() {
+                return Err(io::Error::other(
+                    "a coverage-loss review failed; the evidence was written",
+                )
+                .into());
             }
             Ok(())
         }

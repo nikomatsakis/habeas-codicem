@@ -26,6 +26,10 @@ pub struct BatchOutcome {
     pub deleted: Vec<String>,
     /// The policy assessments ran under, when any ran.
     pub policy: Option<AssessmentPolicy>,
+    /// The coverage-loss reviews the replaced records called for; failed
+    /// reviews are also among `failures`.
+    // {impl}`requirements.authoring.coverage_loss`
+    pub coverage_loss: super::CoverageLossOutcome,
 }
 
 /// The inspection phase that selects definitions and citation reviews.
@@ -135,7 +139,11 @@ async fn run_batch(
         unchanged,
         deleted,
         policy: None,
+        coverage_loss: super::CoverageLossOutcome::default(),
     };
+    // The records this batch replaced, read before each write.
+    // {impl}`requirements.authoring.coverage_loss`
+    let mut replaced = Vec::new();
     // With nothing to assess, no configuration or credentials are resolved.
     // {impl}`requirements.authoring.configuration`
     if subjects.is_empty() {
@@ -244,8 +252,12 @@ async fn run_batch(
             if let Some(reason) = *stop_reason {
                 return Err(pending.failed(io::Error::new(io::ErrorKind::Interrupted, reason)));
             }
+            let previous = super::coverage_loss::ReplacedRecord::read(&root, &pending.subject);
             match write_record(&root, &pending) {
-                Ok(path) => pending.persisted(path),
+                Ok(path) => {
+                    replaced.extend(previous);
+                    pending.persisted(path)
+                }
                 Err(error) => Err(pending.failed(error)),
             }
         });
@@ -270,6 +282,34 @@ async fn run_batch(
         }
     }
     progress.finish(cancellation.borrow().is_some(), subjects.len());
+    // Once every record is written, review the items they no longer cover.
+    // {impl}`requirements.authoring.coverage_loss`
+    if cancellation.borrow().is_none() {
+        let reviews = tokio::select! {
+            reviews = super::coverage_loss::review_losses(&root, &config, &replaced, |result| {
+                match result {
+                    Ok(review) => progress.println(&review.report()),
+                    Err((label, error)) => progress.println(&format!("{label}: {error}")),
+                }
+            }) => reviews,
+            _ = &mut interrupt, if listening => Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "evidence authoring cancelled",
+            )),
+        };
+        match reviews {
+            Ok(reviews) => {
+                outcome.failures.extend(reviews.failures.iter().cloned());
+                outcome.coverage_loss = reviews;
+            }
+            Err(error) => {
+                progress.println(&format!("coverage-loss reviews: {error}"));
+                outcome
+                    .failures
+                    .push(("coverage-loss reviews".into(), error.to_string()));
+            }
+        }
+    }
     Ok(outcome)
 }
 

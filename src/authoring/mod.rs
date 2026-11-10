@@ -2,6 +2,7 @@
 
 pub(crate) mod access;
 mod batch;
+pub(crate) mod coverage_loss;
 mod inputs;
 mod pages;
 mod progress;
@@ -10,6 +11,9 @@ mod tools;
 mod usage;
 
 pub use batch::{BatchOutcome, author_all, author_all_with_options, author_sites_with_options};
+pub use coverage_loss::{
+    CoverageFinding, CoverageLossOutcome, CoverageLossReview, DefinitionFinding,
+};
 
 use std::fs;
 use std::io::{self, Write};
@@ -44,6 +48,9 @@ pub struct AuthoringOutcome {
     /// The assessment policy the subject was assessed under.
     // {impl}`requirements.authoring.policy`
     pub policy: AssessmentPolicy,
+    /// The coverage-loss reviews replacing the subject's record called for.
+    // {impl}`requirements.authoring.coverage_loss`
+    pub coverage_loss: CoverageLossOutcome,
 }
 
 /// The opening of the note a recorded rationale ends with when its
@@ -422,6 +429,7 @@ pub(crate) async fn prepare_assessment(
                     .expect("validated judgment rationale")
                     .to_owned(),
                 policy,
+                coverage_loss: CoverageLossOutcome::default(),
             };
             Ok(PendingAssessment {
                 subject: subject.clone(),
@@ -476,9 +484,12 @@ async fn configured_assessment(
     let (determination, evidence) =
         configured_record(root, &parsed, &config, policy, usage).await?;
     let json = format!("{}\n", serde_json::to_string_pretty(&evidence)?);
+    let mut replaced = Vec::new();
     let evidence_path = match output {
         EvidenceOutput::File => {
             let path = parsed.evidence_path(root);
+            // {impl}`requirements.authoring.coverage_loss`
+            replaced.extend(coverage_loss::ReplacedRecord::read(root, &parsed));
             fs::create_dir_all(path.parent().expect("evidence parent"))?;
             fs::write(&path, json)?;
             Some(path)
@@ -492,6 +503,14 @@ async fn configured_assessment(
     };
     usage.record.evidence_written = true;
     usage.save()?;
+    // A review's failure is reported with the outcome; the record stays.
+    let coverage_loss = match coverage_loss::review_losses(root, &config, &replaced, |_| {}).await {
+        Ok(outcome) => outcome,
+        Err(error) => CoverageLossOutcome {
+            reviews: Vec::new(),
+            failures: vec![("coverage-loss reviews".into(), error.to_string())],
+        },
+    };
     Ok(AuthoringOutcome {
         subject: subject.into(),
         backend: usage.record.backend.clone().expect("configured backend"),
@@ -504,6 +523,7 @@ async fn configured_assessment(
             .expect("validated judgment rationale")
             .to_owned(),
         policy,
+        coverage_loss,
     })
 }
 
@@ -525,10 +545,7 @@ async fn configured_record(
     usage: &mut UsageLog,
 ) -> io::Result<(Judgment, Value)> {
     let model = config.model_ref();
-    let backend = match model.backend {
-        BackendKind::Bedrock => "bedrock",
-        BackendKind::Ollama => "ollama",
-    };
+    let backend = backend_name(&model);
     usage.record.backend = Some(backend.into());
     usage.record.model = Some(model.model.clone());
     usage.record.policy = Some(policy.name());
@@ -546,6 +563,15 @@ async fn configured_record(
         })?;
     let state = usage_state_root(root)?;
     assess_subject(&provider, root, &state, subject, sources, usage, policy).await
+}
+
+/// The backend name usage records give a model's backend.
+// {impl}`requirements.authoring.usage_storage`
+fn backend_name(model: &config::ModelRef) -> &'static str {
+    match model.backend {
+        BackendKind::Bedrock => "bedrock",
+        BackendKind::Ollama => "ollama",
+    }
 }
 
 /// Assesses a subject and, under the `confirm` policy, confirms a `true` or FIXME result
@@ -918,6 +944,8 @@ fn initial_prompt(sources: &AssessmentSources) -> io::Result<Prompt> {
             ]);
             Prompt::filled("site_prompt", &values)
         }
+        // {impl}`requirements.authoring.coverage_loss`
+        AssessmentKind::CoverageLoss(lost) => coverage_loss::prompt(lost, &mandatory)?,
     })
 }
 
@@ -1133,7 +1161,9 @@ fn site_verification(arguments: &Value) -> io::Result<Verification> {
 // {impl}`requirements.authoring.site_prompt`
 fn tool_definitions_with(submit: &str, site: bool) -> io::Result<Vec<ToolDefinition>> {
     let mut definitions = tools::definitions();
-    let mut submission = if submit == "submit_verification" {
+    let mut submission = if submit == "submit_coverage_review" {
+        coverage_loss::tool_definition()
+    } else if submit == "submit_verification" {
         json!({"name": "submit_verification", "description": "Submit your verification exactly once. No other message supplies the result.",
             "parameters": {"type":"object", "additionalProperties": false, "required":["real","acknowledged","acknowledgments","rationale"], "properties": {
                 "real":{"type":"boolean"},
@@ -1197,6 +1227,9 @@ fn record(
         AssessmentKind::Citation(item) => json!({"file": item.file, "item": item.item,
             "citations": item.citations_value(), "determination": judgment.to_value(),
             "rationale": rationale, "inputs": sources.recorded_inputs()}),
+        // A coverage-loss review is never evidence; it has no record.
+        AssessmentKind::CoverageLoss(lost) => json!({"file": lost.file, "item": lost.item,
+            "rationale": rationale}),
     }
 }
 

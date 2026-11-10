@@ -269,14 +269,28 @@ fn serve(
         })
     } else {
         let mut arguments = json!({"determination": determination, "rationale": rationale});
+        let mut tool = "submit_judgment";
         if prompt.contains("Site under review: ") {
             arguments["applies"] = json!(true);
+        }
+        // A coverage-loss review finds the item not needed for each
+        // definition it lists.
+        if let Some(listed) = prompt
+            .lines()
+            .find_map(|line| line.strip_prefix("Definitions to decide: "))
+        {
+            let listed: Vec<String> = serde_json::from_str(listed).unwrap();
+            tool = "submit_coverage_review";
+            arguments = json!({"findings": listed.iter().map(|definition| json!({
+                "definition": definition, "finding": "not needed",
+                "rationale": format!("Fixture review for {subject}."),
+            })).collect::<Vec<_>>()});
         }
         json!({
             "model":"fixture-model", "created_at":"2026-01-01T00:00:00Z",
             "message":{"role":"assistant", "content":"", "tool_calls":[{
                 "id":"judgment", "type":"function", "function":{
-                    "name":"submit_judgment", "arguments":arguments
+                    "name":tool, "arguments":arguments
                 }
             }]},
             "done":true, "done_reason":"stop", "prompt_eval_count":11, "eval_count":7
@@ -2214,4 +2228,60 @@ fn a_failed_first_request_still_releases_its_kind() {
         .collect::<Vec<_>>();
     assert_eq!(others.len(), 3);
     assert!(others.iter().all(|(_, arrived, _)| *arrived < retry.1));
+}
+
+// {test}`requirements.authoring.coverage_loss`
+#[test]
+fn a_batch_reviews_items_its_replaced_records_no_longer_cover_after_writing_them() {
+    let server = Server::start(false, None);
+    let fixture = Fixture::new(&server.endpoint, None);
+    let output = fixture.run(&["author", "--all"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let authored = server.subjects().len();
+    // A record read an uncited item and is now stale; its replacement does
+    // not read the item.
+    fs::write(fixture.project.join("src/helper.rs"), "fn helper() {}\n").unwrap();
+    let path = fixture.project.join("evidence/requirements.alpha.json");
+    let mut record: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    record["inputs"]
+        .as_array_mut()
+        .unwrap()
+        .push(habeas::outline_input(&fixture.project, "src/helper.rs", "fn[helper]").unwrap());
+    record["rationale"] = json!("PREVIOUS_ALPHA_RATIONALE");
+    record["determination"] = json!(false);
+    record["requirement"] = json!("Changed so the record is stale.");
+    fs::write(&path, record.to_string()).unwrap();
+    let output = fixture.run(&["author", "--all"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let subjects = server.subjects();
+    // One reassessment, then the review of the item it no longer reads.
+    assert_eq!(
+        subjects[authored..],
+        [
+            "requirement requirements.alpha".to_owned(),
+            "src/helper.rs fn[helper]".to_owned()
+        ],
+        "{subjects:?}"
+    );
+    // Each review is reported as it finishes, with batch diagnostics.
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(
+            "Coverage-loss review of src/helper.rs fn[helper]: no longer covered\n  requirements.alpha: not needed: Fixture review for src/helper.rs fn[helper]."
+        ),
+        "{stderr}"
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("1 authored; ") && stdout.contains("; 1 coverage-loss reviews"),
+        "{stdout}"
+    );
 }

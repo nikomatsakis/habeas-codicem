@@ -2665,3 +2665,118 @@ fn bundled_skills_require_agreed_requirements_before_code() {
         ],
     );
 }
+
+// {test}`requirements.authoring.coverage_loss`
+// {test}`requirements.references.rust_item_coverage`
+#[test]
+fn replacing_a_record_reviews_items_it_no_longer_covers_and_status_shows_the_result() {
+    let server = Server::start(vec![
+        reply(vec![call(
+            "submit",
+            "submit_judgment",
+            json!({"determination": true, "rationale": "Ready is implemented."}),
+        )]),
+        reply(vec![call(
+            "review",
+            "submit_coverage_review",
+            json!({"findings": [{
+                "definition": SUBJECT,
+                "finding": "root",
+                "rationale": "helper carries out\nreadiness itself.",
+            }]}),
+        )]),
+    ]);
+    let fixture = Fixture::new(&server.endpoint);
+    fs::write(
+        fixture.project.join("src/helper.rs"),
+        "fn helper() {}\n\nfn other() {}\n",
+    )
+    .unwrap();
+    // The record being replaced read `helper`, so it was covered.
+    let read = habeas::outline_input(&fixture.project, "src/helper.rs", "fn[helper]").unwrap();
+    fs::write(
+        &fixture.evidence,
+        json!({"requirement": REQUIREMENT, "determination": false,
+            "rationale": "PREVIOUS_RATIONALE relied on helper.", "inputs": [read]})
+        .to_string(),
+    )
+    .unwrap();
+    let uncovered = "src/helper.rs:1: function helper is uncovered";
+    let status = fixture.run(&["status"]);
+    let text = String::from_utf8_lossy(&status.stdout).into_owned();
+    assert!(!text.contains(uncovered), "{text}");
+
+    let output = fixture.run(&["author", SUBJECT]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // The review is reported, with each definition's finding.
+    assert!(
+        stdout.contains(&format!(
+            "Coverage-loss review of src/helper.rs fn[helper]: no longer covered\n  {SUBJECT}: root: helper carries out readiness itself."
+        )),
+        "{stdout}"
+    );
+    let requests = server.finish();
+    assert_eq!(requests.len(), 2);
+    // An independent conversation with the source tools and its own
+    // submission tool; its mandatory inputs are the item and the
+    // declaration, and its prompt gives the replaced record's rationale.
+    let (system, subject) = opening(&requests[1].body);
+    assert!(
+        system.contains("decide whether the item is a root of the definition's"),
+        "{system}"
+    );
+    assert!(
+        subject.contains("Item under review: src/helper.rs fn[helper]"),
+        "{subject}"
+    );
+    assert!(
+        subject.contains(&format!("Definitions to decide: [\"{SUBJECT}\"]")),
+        "{subject}"
+    );
+    assert!(
+        subject.contains("PREVIOUS_RATIONALE relied on helper."),
+        "{subject}"
+    );
+    assert!(subject.contains("fn helper() {}"), "{subject}");
+    assert!(subject.contains("SECRET_REQUIREMENT_TEXT"), "{subject}");
+    assert!(!subject.contains("fn other()"), "{subject}");
+    let tools = requests[1].body["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|tool| tool["function"]["name"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert!(tools.contains(&"habeas") && tools.contains(&"ripgrep"));
+    assert!(tools.contains(&"submit_coverage_review"));
+    assert!(!tools.contains(&"submit_judgment"));
+    // The result is not evidence: the new record does not mention it.
+    let evidence = fs::read_to_string(&fixture.evidence).unwrap();
+    assert!(!evidence.contains("helper"), "{evidence}");
+
+    // Status shows the latest result beside the uncovered item...
+    let status = fixture.run(&["status"]);
+    let text = String::from_utf8_lossy(&status.stdout).into_owned();
+    assert!(
+        text.contains(&format!(
+            "{uncovered}: it has no requirement or example reference, and no evidence record or review read it\n  latest coverage-loss review:\n    {SUBJECT}: root: helper carries out readiness itself."
+        )),
+        "{text}"
+    );
+    // ...until the item is covered again.
+    fs::write(
+        fixture.project.join("src/helper.rs"),
+        concat!(
+            "// {",
+            "impl}`requirements.ready`\nfn helper() {}\n\nfn other() {}\n"
+        ),
+    )
+    .unwrap();
+    let status = fixture.run(&["status"]);
+    let text = String::from_utf8_lossy(&status.stdout).into_owned();
+    assert!(!text.contains("coverage-loss review"), "{text}");
+}

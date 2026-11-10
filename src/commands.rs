@@ -219,13 +219,31 @@ pub fn status_markdown_with_github(
         output.push_str(&escape_html(
             &other_findings
                 .into_iter()
-                .map(String::as_str)
+                .map(|error| with_coverage_loss_review(&inspection, error))
                 .collect::<Vec<_>>()
                 .join("\n\n"),
         ));
         output.push_str("</code></pre>\n");
     }
     Ok(output)
+}
+
+/// A finding as `habeas status` shows it: an uncovered item's finding is
+/// followed by the latest coverage-loss review of the item, if any.
+// {impl}`requirements.authoring.coverage_loss`
+// {impl}`requirements.cli.status`
+fn with_coverage_loss_review(
+    inspection: &crate::evidence::RepositoryInspection,
+    error: &str,
+) -> String {
+    inspection
+        .uncovered
+        .iter()
+        .find(|item| item.error == error)
+        .and_then(|item| {
+            crate::authoring::coverage_loss::status_lines(&inspection.root, &item.file, &item.item)
+        })
+        .map_or_else(|| error.to_owned(), |review| format!("{error}\n{review}"))
 }
 
 /// The "Disagreements" section of `habeas status`: each selected definition,

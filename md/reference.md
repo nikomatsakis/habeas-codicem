@@ -173,6 +173,14 @@ code: each ripgrep or ast-grep match is returned as the innermost outline node
 containing it with the matching lines and their context, and the model reads with
 `habeas` any node it relies on. Searches, listings, outlines, and reference
 lookups are not recorded as evidence.
+When authoring replaces a record and an item the old record read is no longer
+covered, Habeas runs a coverage-loss review: an independent conversation that
+decides, for each requirement or example whose old record read the item, whether
+the item is a root of its implementation or is not needed for it. The review is
+not evidence. Authoring reports it, and `habeas status` shows the latest result
+beside the uncovered item until the item is covered again.
+{cite}`requirements.authoring.coverage_loss`
+
 Choose a model that supports tool calls, either on Amazon Bedrock or an accessible
 Ollama server. The server can run on another machine; Habeas does not need a GPU.
 {cite}`requirements.authoring.invocation` {cite}`requirements.authoring.provider`

@@ -178,6 +178,13 @@ impl EvidenceReads {
         }
     }
 
+    /// Whether any outline input of `file` is recorded.
+    // {impl}`requirements.references.rust_item_coverage`
+    // {impl}`requirements.authoring.coverage_loss`
+    pub(crate) fn has_file(&self, file: &str) -> bool {
+        self.0.contains_key(file)
+    }
+
     /// Whether node `index` of `file`'s outline, or a node containing it, is
     /// recorded with its current hash.
     // {impl}`requirements.references.rust_item_coverage`

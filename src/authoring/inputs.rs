@@ -24,6 +24,9 @@ pub(crate) enum AssessmentKind {
     /// A site of a distributed requirement and the `{fixme}` references
     /// naming the requirement inside it.
     Site(SiteItem, Vec<SiteFixme>),
+    /// An item a replaced record covered that is no longer covered.
+    // {impl}`requirements.authoring.coverage_loss`
+    CoverageLoss(super::coverage_loss::LostItem),
 }
 
 impl AssessmentKind {
@@ -36,6 +39,7 @@ impl AssessmentKind {
             Self::Definition(kind, _) => kind.noun(),
             Self::Citation(_) => "citation review",
             Self::Site(..) => "site review",
+            Self::CoverageLoss(_) => "coverage-loss review",
         }
     }
 }
@@ -452,6 +456,76 @@ impl AssessmentSources {
             access,
             subject_name,
             subject_kind: AssessmentKind::Site(site, fixmes),
+            subject_text: String::new(),
+            outlines,
+            reference_set: String::new(),
+            mandatory,
+            issue_states,
+            github,
+            recorded: Vec::new(),
+        })
+    }
+
+    /// Prepares the coverage-loss review of an item. Its mandatory inputs
+    /// are the item's outline node, the declarations of the requirements and
+    /// examples whose replaced records read it, and the terminology they use;
+    /// those records' rationales are supplied in the prompt.
+    // {impl}`requirements.authoring.coverage_loss`
+    // {impl}`requirements.authoring.mandatory_inputs`
+    // {impl}`requirements.authoring.read_denial`
+    pub(crate) fn prepare_coverage_loss(
+        root: &Path,
+        lost: super::coverage_loss::LostItem,
+    ) -> io::Result<Self> {
+        let root = fs::canonicalize(root)?;
+        let access = SourceAccess::load(&root)?;
+        let definitions = load_definitions(&root)?;
+        let outlines = OutlineCache::default();
+        let mut selectors = vec![InputSelector::Outline {
+            file: lost.file.clone(),
+            item: lost.item.clone(),
+        }];
+        for reader in &lost.readers {
+            insert_selector(
+                &mut selectors,
+                InputSelector::Requirements {
+                    requirements: reader.definition.clone(),
+                },
+            );
+        }
+        let mut mandatory = Vec::new();
+        for selector in selectors {
+            mandatory.push(source_input(
+                &root,
+                &access,
+                &definitions,
+                &outlines,
+                &selector,
+            )?);
+        }
+        for input in definition_inputs(&root, &access, &definitions, &outlines, &mandatory, None)? {
+            if !mandatory.contains(&input) {
+                mandatory.push(input);
+            }
+        }
+        let mut errors = Vec::new();
+        let references = collect_references(&root, &mut errors);
+        if !errors.is_empty() {
+            return Err(io::Error::other(errors.join("\n")));
+        }
+        let github = GithubIssues::from_env(&root);
+        let issue_states = crate::github::input_issue_states(
+            &root,
+            &github,
+            &references,
+            &definitions,
+            &mandatory,
+        );
+        Ok(Self {
+            root,
+            access,
+            subject_name: lost.label(),
+            subject_kind: AssessmentKind::CoverageLoss(lost),
             subject_text: String::new(),
             outlines,
             reference_set: String::new(),

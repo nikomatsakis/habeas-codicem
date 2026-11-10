@@ -133,6 +133,9 @@ pub(crate) struct RepositoryInspection {
     pub(crate) references: Vec<SourceReference>,
     /// The sites of each distributed requirement.
     pub(crate) sites: crate::sites::Sites,
+    /// The Rust items reported uncovered, in report order.
+    // {impl}`requirements.authoring.coverage_loss`
+    pub(crate) uncovered: Vec<crate::rust_coverage::UncoveredItem>,
     pub(crate) report: EvidenceReport,
     pub(crate) discovery_errors: Vec<String>,
 }
@@ -325,7 +328,7 @@ pub(crate) fn inspect_repository_with_progress(
     // An item an evidence record or review read is covered.
     // {impl}`requirements.references.rust_item_coverage`
     let reads = crate::rust_coverage::EvidenceReads::load(&evidence_files);
-    crate::rust_coverage::validate_rust_functions(
+    let uncovered = crate::rust_coverage::validate_rust_functions(
         &root,
         &files,
         &definitions,
@@ -354,6 +357,7 @@ pub(crate) fn inspect_repository_with_progress(
         definitions,
         references,
         sites,
+        uncovered,
         discovery_errors,
     })
 }
