@@ -64,7 +64,6 @@ fn unclosed_fences_still_report_unknown_names() {
 
 // {test}`requirements.references.roles`
 // {test}`requirements.references.builtin_definitions`
-// {test}`requirements.references.no_requirement`
 // {test}`requirements.references.rust_item_coverage`
 // {test}`requirements.references.procedure`
 #[test]
@@ -73,45 +72,53 @@ fn fenced_references_in_comments_and_built_in_rules_are_validated() {
     let root = temp.path();
     let cr = role("cite");
     let source = format!(
-        "// :::{cr} habeas:none\n// Glue that formats output.\n// :::\nfn glue() {{}}\n\n\
+        "// :::{cr} habeas:util\n// Glue that formats output.\n// :::\nfn glue() {{}}\n\n\
          // {cr}`habeas:none`\nfn inline() {{}}\n\n\
-         // :::{cr} habeas:none\n// {cr}`rules.ready`\n// :::\nfn empty() {{}}\n\n\
-         // :::{im} habeas:none\n// Wrong role.\n// :::\nfn wrong_role() {{}}\n\n\
+         // :::{cr} habeas:util\n// {cr}`rules.ready`\n// :::\nfn empty() {{}}\n\n\
+         // :::{im} habeas:util\n// Wrong role.\n// :::\nfn wrong_role() {{}}\n\n\
          // :::{cr} habeas:other\n// Unknown.\n// :::\nfn unknown() {{}}\n\n\
-         // :::{cr} rules.ready\n// never closed\n\n// :::\nfn unclosed() {{}}\n",
+         // :::{cr} rules.ready\n// never closed\n\n// :::\nfn unclosed() {{}}\n\n\
+         // :::{cr} habeas:none\n// Formats output.\n// :::\nfn fenced_none() {{}}\n",
         im = role("impl"),
     );
     fs::write(root.join("src/lib.rs"), source).unwrap();
     let errors = errors(root);
     for expected in [
-        "src/lib.rs:6: built-in habeas:none must be cited in fenced form",
-        "src/lib.rs:9: fenced citation of built-in habeas:none has an empty justification",
-        "src/lib.rs:14: built-in habeas:none may only be referenced with {cite}",
+        // `habeas:none` was removed: it is an unknown name in either form.
+        "src/lib.rs:6: CITE`habeas:none` has no matching built-in definition",
+        "src/lib.rs:30: CITE`habeas:none` has no matching built-in definition",
+        "src/lib.rs:14: built-in habeas:util may only be referenced with {cite}",
         "src/lib.rs:19: CITE`habeas:other` has no matching built-in definition",
         "src/lib.rs:24: fenced {cite} reference to rules.ready has no closing fence",
         "src/lib.rs:7: function inline is uncovered: it has no requirement or example reference, and no evidence record or review read it",
         "src/lib.rs:17: function wrong_role is uncovered: it has no requirement or example reference, and no evidence record or review read it",
         "src/lib.rs:22: function unknown is uncovered: it has no requirement or example reference, and no evidence record or review read it",
         "src/lib.rs:28: function unclosed is uncovered: it has no requirement or example reference, and no evidence record or review read it",
+        "src/lib.rs:33: function fenced_none is uncovered: it has no requirement or example reference, and no evidence record or review read it",
     ] {
         let expected = expected.replace("CITE", &cr);
         assert!(has(&errors, &expected), "missing {expected:?}: {errors:#?}");
     }
-    // A justified fenced citation of habeas:none covers its function, as
-    // does an inline reference in a fence body.
+    // A fenced citation of habeas:util covers its function, as does an
+    // inline reference in a fence body.
     assert!(!has(&errors, "function glue"), "{errors:#?}");
     assert!(!has(&errors, "function empty"), "{errors:#?}");
-    // Only valid citations need reviews.
+    // Only valid citations other than habeas:util need reviews.
     assert!(has(
         &errors,
-        "missing citation review for src/lib.rs fn[glue]"
+        "missing citation review for src/lib.rs fn[empty]"
     ));
-    assert!(!has(
-        &errors,
-        "missing citation review for src/lib.rs fn[inline]"
-    ));
+    for item in ["glue", "inline", "fenced_none"] {
+        assert!(
+            !has(
+                &errors,
+                &format!("missing citation review for src/lib.rs fn[{item}]")
+            ),
+            "{errors:#?}"
+        );
+    }
     // Built-ins need no evidence.
-    assert!(!has(&errors, "evidence/habeas:none"), "{errors:#?}");
+    assert!(!has(&errors, "evidence/habeas:"), "{errors:#?}");
 }
 
 // {test}`requirements.references.util`
@@ -168,43 +175,42 @@ fn habeas_util_citations_cover_their_item_without_a_citation_review() {
 }
 
 // {test}`requirements.references.builtin_definitions`
-// {test}`requirements.references.no_requirement`
 #[test]
 fn built_ins_have_no_evidence_index_entry_or_status_and_are_validated_in_the_book() {
     let temp = project();
     let root = temp.path();
     let cr = role("cite");
     let chapter = format!(
-        "# Rules\n\n:::{{req}} ready\nReady.\n:::\n\nSee {cr}`habeas:none`.\n\n:::{im} habeas:none\nWrong role.\n:::\n\n:::{cr} habeas:none\nJustified.\n:::\n\n# Index\n\n:::{{requirements-index}}\n:::\n",
+        "# Rules\n\n:::{{req}} ready\nReady.\n:::\n\nSee {cr}`habeas:none`.\n\n:::{im} habeas:util\nWrong role.\n:::\n\n:::{cr} habeas:util\nServes its callers.\n:::\n\n# Index\n\n:::{{requirements-index}}\n:::\n",
         im = role("impl"),
     );
     fs::write(root.join("md/rules.md"), &chapter).unwrap();
     // An evidence file for a built-in is not permitted: it is an orphan.
     fs::write(
-        root.join("evidence/habeas:none.json"),
+        root.join("evidence/habeas:util.json"),
         json!({"requirement": "x", "determination": true, "rationale": "x", "inputs": []})
             .to_string(),
     )
     .unwrap();
     let errors = errors(root);
     for expected in [
-        "md/rules.md:7: built-in habeas:none must be cited in fenced form",
-        "md/rules.md:9: built-in habeas:none may only be referenced with {impl}",
+        // `habeas:none` was removed, so it is an unknown built-in.
+        "md/rules.md:7: CITE`habeas:none` has no matching built-in definition",
+        "md/rules.md:9: built-in habeas:util may only be referenced with {impl}",
     ] {
-        let expected = expected.replace("{impl}", &role("cite"));
+        let expected = expected
+            .replace("{impl}", &role("cite"))
+            .replace("CITE", &cr);
         assert!(has(&errors, &expected), "missing {expected:?}: {errors:#?}");
     }
     assert!(
-        has(&errors, "evidence/habeas:none.json"),
+        has(&errors, "evidence/habeas:util.json"),
         "an evidence file for a built-in must be reported: {errors:#?}"
     );
-    // The justified fenced citation in the book is valid, and no built-in
+    // The fenced citation in the book is valid, and no built-in
     // needs evidence.
     assert!(!has(&errors, "md/rules.md:13"), "{errors:#?}");
-    assert!(
-        !has(&errors, "missing evidence for habeas:none"),
-        "{errors:#?}"
-    );
+    assert!(!has(&errors, "missing evidence for habeas:"), "{errors:#?}");
 
     // Built-ins are not definitions in status or the requirements index.
     let status = habeas::status_markdown(root, true).unwrap();
@@ -226,7 +232,7 @@ fn built_ins_have_no_evidence_index_entry_or_status_and_are_validated_in_the_boo
     let (_, content) = &rendered[0];
     let index = &content[content.find("# Index").unwrap()..];
     assert!(index.contains("rules.ready"), "{index}");
-    assert!(!index.contains("habeas:none"), "{index}");
+    assert!(!index.contains("habeas:util"), "{index}");
 }
 
 // {test}`requirements.references.builtin_definitions`
@@ -464,7 +470,7 @@ fn citation_reviews_are_required_current_and_not_orphaned() {
     let cr = role("cite");
     let helper = |body: &str| {
         format!(
-            "// {cr}`rules.ready`\n// :::{cr} habeas:none\n// {body}\n// :::\nfn helper() {{\n    work();\n}}\n"
+            "// {cr}`rules.ready`\n// :::{cr} habeas:util\n// {body}\n// :::\nfn helper() {{\n    work();\n}}\n"
         )
     };
     fs::write(root.join("src/lib.rs"), helper("Formats output.")).unwrap();
@@ -501,7 +507,7 @@ fn citation_reviews_are_required_current_and_not_orphaned() {
 
     let citations = json!([
         {"role": "cite", "name": "rules.ready", "commentary": ""},
-        {"role": "cite", "name": "habeas:none", "commentary": "Formats output."}
+        {"role": "cite", "name": "habeas:util", "commentary": "Formats output."}
     ]);
     fs::create_dir_all(root.join("evidence/citations/src/lib.rs")).unwrap();
     let write = |record: Value| fs::write(root.join(path), record.to_string()).unwrap();
@@ -646,33 +652,6 @@ fn review_paths_encode_selectors() {
             "evidence/citations/src/lib.rs/impl[%255Bu8;%25204%255D]%2Ffn[edge].json: missing citation review for src/lib.rs impl[%5Bu8;%204%5D]/fn[edge]"
         ),
         "{encoded:#?}"
-    );
-}
-
-// {test}`requirements.references.no_requirement`
-#[test]
-fn status_all_lists_habeas_none_citations_with_their_justification() {
-    let temp = project();
-    let root = temp.path();
-    fs::write(
-        root.join("src/lib.rs"),
-        format!(
-            "// :::{} habeas:none\n// Glue that formats\n// output.\n// :::\nfn glue() {{}}\n",
-            role("cite")
-        ),
-    )
-    .unwrap();
-    let status = habeas::status_markdown(root, true).unwrap();
-    assert!(
-        status.contains(
-            "## `habeas:none` citations\n\n- `src/lib.rs` `fn[glue]` (line 1): Glue that formats output.\n"
-        ),
-        "{status}"
-    );
-    assert!(
-        !habeas::status_markdown(root, false)
-            .unwrap()
-            .contains("`habeas:none` citations")
     );
 }
 

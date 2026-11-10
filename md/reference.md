@@ -581,9 +581,9 @@ For each definition a source item could reference, choose by this procedure. An 
 1. If the item is a test or test helper designed to verify the definition, use `{test}`.
 2. Otherwise, if fulfilling the definition depends on the item, use `{impl}`. For code, this means it makes a decision, performs a check, produces an output, or handles a case the definition specifies. For a type, it means the definition constrains its shape: its fields, variants, serialized form, or validation.
 3. Otherwise, if the item should be re-checked or kept in sync when the definition changes, use `{cite}`.
-4. If the item has no reference after applying steps 1 to 3 to every definition, and no assessment reads it, cite the built-in `habeas:util` when it serves the code that calls it, and otherwise cite the built-in `habeas:none`, justifying why the item exists.
+4. If the item has no reference after applying steps 1 to 3 to every definition, and no assessment reads it, cite the built-in `habeas:util` when it serves other code. An item that does neither carries out behavior that needs a requirement, or is not needed.
 
-For internal code, state any invariant worth checking, such as a cache that must not change results, as an ordinary requirement and implement it. Otherwise cite `habeas:util` for a helper that serves its callers, or `habeas:none` for an item that is neither implementation nor utility. Do not write grouping requirements that state no checkable obligation just to give internal helpers something to reference.
+For internal code, state any invariant worth checking, such as a cache that must not change results, as an ordinary requirement and implement it. Otherwise cite `habeas:util` for an item that only serves other code. An item that does neither needs a requirement, or is not needed. Do not write grouping requirements that state no checkable obligation just to give internal helpers something to reference.
 {cite}`requirements.references.procedure` {cite}`requirements.cli.internal_detail_guidance`
 
 ### Fenced references and commentary
@@ -624,34 +624,12 @@ For an `{impl}` or `{test}` reference in a source outside the book, the words of
 
 Built-in definitions are named `habeas:<name>` and are available in every project without a declaration. Each has fixed text and permits only certain roles. Built-ins have no evidence files and do not appear in the requirements index or `habeas status`. Project definitions cannot use names beginning with `habeas:`. In the book, a reference to a built-in renders as a badge without a link; hovering over it shows the built-in's text.
 
-There are two built-ins, `habeas:none` and `habeas:util`. The built-in `habeas:none` has this text:
+There is one built-in, `habeas:util`. The built-in `habeas:util` has this text:
 
-> Cite this only when no requirement or example applies to the item under the
-> reference procedure. The citation MUST use the fenced form, and its body MUST
-> justify why the item exists. An item with an invariant worth checking, such as
-> a cache that must not change results, needs a requirement stating that
-> invariant instead. An item citing this MUST NOT implement end-user-observable
-> behavior that no requirement specifies.
-
-Only `{cite}` may reference it, and only in fenced form whose body, without comment delimiters and other references, justifies the item:
-
-```rust
-// :::{cite} habeas:none
-// Splits lines for the outline builders; no requirement concerns how.
-// :::
-fn split_lines(text: &str) -> Vec<&str> {
-    text.lines().collect()
-}
-```
-
-A justified `habeas:none` citation counts as a reference for Rust item coverage. `habeas status --all` lists every `habeas:none` citation with its item and justification.
-{cite}`requirements.references.builtin_definitions` {cite}`requirements.references.no_requirement`
-
-The built-in `habeas:util` has this text:
-
-> Cite this on an item that serves the code that calls it and carries out no
-> requirement or example itself: it has no obligations and no end-user-observable
-> behavior of its own. A review that reaches it from a root judges what it does
+> Cite this on an item that serves other code, including code outside the
+> project such as a library calling a trait implementation it requires, and
+> carries out no requirement or example itself: it has no obligations and no
+> end-user-observable behavior of its own. A review that reaches it from a root judges what it does
 > as part of that root.
 
 Only `{cite}` may reference it, inline or fenced, with or without commentary:
@@ -668,7 +646,7 @@ A `habeas:util` citation counts as a reference for Rust item coverage. An item w
 
 ### Citation reviews
 
-Every source item outside the book that carries a `{cite}` reference, inline or fenced, other than a citation of `habeas:util`, needs a citation review. The item is the outline node its reference belongs to, or the whole file for a plain-text source. The review assesses whether each citation is sensible, meaning the item should be re-checked or kept in sync when the cited definition changes, and whether the procedure above calls for `{impl}` or `{test}` instead. For `habeas:none`, it assesses whether the justification is true, whether any definition applies, and whether the item implements end-user-observable behavior that no requirement specifies. A citation in a requirement or example declaration is reviewed as part of that definition's own assessment instead.
+Every source item outside the book that carries a `{cite}` reference, inline or fenced, other than a citation of `habeas:util`, needs a citation review. The item is the outline node its reference belongs to, or the whole file for a plain-text source. The review assesses whether each citation is sensible, meaning the item should be re-checked or kept in sync when the cited definition changes, and whether the procedure above calls for `{impl}` or `{test}` instead. A citation in a requirement or example declaration is reviewed as part of that definition's own assessment instead.
 
 The review of an item at `src/lib.rs` with selector `impl[Thing]/fn[run]` is recorded at `evidence/citations/src/lib.rs/impl[Thing]%2Ffn[run].json`: the file's project-relative path, then the selector with every `/` and `%` percent-encoded, or `_root` for the root node. It has these fields:
 
@@ -696,7 +674,7 @@ The bundled skill MUST explain how to author evidence.
 
 ### Rust items
 
-For Rust, Habeas parses first-party source files, which are the `.rs` files among the sources reference discovery considers, except under the project-root `vendor` directory. It requires every explicit function or method, including trait methods and test helpers, and every struct, enum, and union to be covered: to have a requirement or named example reference in an attached comment or its body, or to have been read by an assessment, meaning its outline node or one containing it is recorded with its current hash as an outline input of an evidence record, a citation review, or a site review. Search results are not evidence inputs, so only what an assessment received or read counts. Each named example references a requirement. A reference on an enclosing `impl` or module, in a string literal, or only in an evidence input does not count as the item's reference. Validation reports each uncovered item with its file, line, kind, and name. A Rust source file that cannot be parsed is reported as an error. For a helper that serves the code calling it, cite `habeas:util`; for another item no requirement or example applies to, cite `habeas:none` in fenced form with a justification, as described under [Built-in definitions](#built-in-definitions). {cite}`requirements.references.rust_item_coverage` {cite}`requirements.cli.internal_detail_guidance`
+For Rust, Habeas parses first-party source files, which are the `.rs` files among the sources reference discovery considers, except under the project-root `vendor` directory. It requires every explicit function or method, including trait methods and test helpers, and every struct, enum, and union to be covered: to have a requirement or named example reference in an attached comment or its body, or to have been read by an assessment, meaning its outline node or one containing it is recorded with its current hash as an outline input of an evidence record, a citation review, or a site review. Search results are not evidence inputs, so only what an assessment received or read counts. Each named example references a requirement. A reference on an enclosing `impl` or module, in a string literal, or only in an evidence input does not count as the item's reference. Validation reports each uncovered item with its file, line, kind, and name. A Rust source file that cannot be parsed is reported as an error. For an item that serves other code, including a trait implementation a library calls, cite `habeas:util`, as described under [Built-in definitions](#built-in-definitions). {cite}`requirements.references.rust_item_coverage` {cite}`requirements.cli.internal_detail_guidance`
 
 Rust selectors use syntactic ancestry within one repository-relative file, under the Rust outline profile below. Examples include `mod[local]/fn[run]`, `impl[Thing]/fn[run]`, `impl[Thing/Trait]/fn[run]`, `trait[Trait]/fn[read]`, `extern[C]/fn[puts]`, and `fn[outer]/fn[inner]`. An impl is named by its self type and optional trait as written, so `impl<T> Trait for Wrapper<T>` is `impl[Wrapper<T>/Trait]`. `use` declarations and item-position macro invocations are anonymous, such as `use@3f2a9c01b7de`. Modules are never resolved across files. {cite}`requirements.references.rust_item_selectors`
 
@@ -790,8 +768,7 @@ selected definition, and a site review when its requirement is selected.
 
 Use `--verbose` to list the actual judgments in each group, with their full names,
 kinds, and recorded FIXME strings. `--all` shows every matching definition and its
-evidence state, and lists every `habeas:none` citation with its item and
-justification. Stale or invalid FIXME evidence still reports its validation
+evidence state. Stale or invalid FIXME evidence still reports its validation
 findings. Use `habeas info <selection>` to print matching detail pages as Markdown,
 including current texts, rationales, inputs, FIXME references, and findings. Both
 commands take a definition selection: a full name selects exactly that definition,

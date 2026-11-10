@@ -127,13 +127,11 @@ pub(crate) fn citation_items(
         if reference.kind != ReferenceKind::Cite || reference.in_book || !reference.closed {
             continue;
         }
-        let resolves = crate::builtins::builtin(&reference.name).is_some_and(|builtin| {
-            builtin
-                .check(reference.kind, reference.commentary.as_deref())
-                .is_ok()
-        }) || definitions
-            .get(&reference.name)
-            .is_some_and(|definition| definition.kind != crate::DefinitionKind::Term);
+        let resolves = crate::builtins::builtin(&reference.name)
+            .is_some_and(|builtin| builtin.check(reference.kind).is_ok())
+            || definitions
+                .get(&reference.name)
+                .is_some_and(|definition| definition.kind != crate::DefinitionKind::Term);
         if !resolves {
             continue;
         }
@@ -447,28 +445,4 @@ pub(crate) fn is_review_path(evidence_root: &Path, path: &Path) -> bool {
         .ok()
         .and_then(|relative| relative.components().next())
         .is_some_and(|first| first.as_os_str() == CITATIONS_DIR)
-}
-
-/// The `habeas:none` citations outside the book, as file, selector, line,
-/// and justification.
-// {cite}`habeas:util`
-pub(crate) fn none_citations(
-    root: &Path,
-    definitions: &BTreeMap<String, Declaration>,
-    references: &[SourceReference],
-    outlines: &OutlineCache,
-) -> Vec<(CitationItem, String)> {
-    let mut found = Vec::new();
-    for item in citation_items(root, definitions, references, outlines).into_values() {
-        for citation in &item.citations {
-            if citation.name == "habeas:none" {
-                found.push((
-                    item.clone(),
-                    crate::fenced::justification(&citation.commentary),
-                ));
-            }
-        }
-    }
-    found.sort_by(|left, right| (&left.0.file, left.0.line).cmp(&(&right.0.file, right.0.line)));
-    found
 }

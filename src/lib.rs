@@ -425,13 +425,8 @@ fn replace_references(
             continue;
         }
         let body = &content[fence.body.clone()];
-        let Some(badge) = reference_badge(
-            fence.kind,
-            &fence.name,
-            Some(body),
-            current_path,
-            definitions,
-        ) else {
+        let Some(badge) = reference_badge(fence.kind, &fence.name, current_path, definitions)
+        else {
             continue;
         };
         result.push_str(&replace_inline_references(
@@ -456,15 +451,13 @@ fn replace_references(
 
 /// The badge for a valid `{impl}`, `{cite}`, or `{test}` reference: a link to
 /// a project definition, or an unlinked badge whose hover text gives a
-/// built-in's text. `fenced` is the body of a fenced reference. Returns
-/// `None` for a reference that must remain literal.
+/// built-in's text. Returns `None` for a reference that must remain literal.
 // {impl}`requirements.references.safe_badges`
 // {impl}`requirements.index.navigation`
 // {impl}`requirements.examples.index`
 fn reference_badge(
     kind: ReferenceKind,
     name: &str,
-    fenced: Option<&str>,
     current_path: &Path,
     definitions: &BTreeMap<String, Definition>,
 ) -> Option<String> {
@@ -476,7 +469,7 @@ fn reference_badge(
     let label = kind.label();
     let badge = shield_badge(label, name, kind.color());
     if let Some(builtin) = builtins::builtin(name) {
-        builtin.check(kind, fenced).ok()?;
+        builtin.check(kind).ok()?;
         return Some(format!(
             "<span class=\"habeas-req-badge habeas-req-ref-{label} habeas-builtin\" title=\"{}\">{badge}</span>",
             escape_html(builtin.text())
@@ -527,13 +520,9 @@ fn replace_inline_references(
                 }
                 _ => result.push_str(&content[reference.start..reference.end]),
             }
-        } else if let Some(badge) = reference_badge(
-            reference.kind,
-            reference.name,
-            None,
-            current_path,
-            definitions,
-        ) {
+        } else if let Some(badge) =
+            reference_badge(reference.kind, reference.name, current_path, definitions)
+        {
             result.push_str(&badge);
         } else {
             result.push_str(&content[reference.start..reference.end]);
@@ -932,7 +921,8 @@ mod tests {
         let content = [
             "::::{req} ready\nReady MUST hold.\n\n:::{cite} rules.other\nThe *other* rule.\n:::\n::::\n\n",
             ":::{req} other\nOther.\n:::\n\n",
-            ":::{cite} habeas:none\nNothing applies.\n:::\n\n",
+            ":::{cite} habeas:util\nServes its caller.\n:::\n\n",
+            ":::{cite} habeas:none\nRemoved.\n:::\n\n",
             "Inline CITE`habeas:none` stays literal.\n\n",
             "Inline CITE`habeas:util` is a badge.\n\n",
             ":::{cite} rules.missing\nUnknown.\n:::\n\n",
@@ -962,14 +952,6 @@ mod tests {
         assert!(rendered.contains("See evidence"), "{rendered}");
 
         // A built-in has no link; its hover text is its full text.
-        let none = crate::builtins::builtin("habeas:none").unwrap();
-        assert!(
-            rendered.contains(&format!(
-                "<span class=\"habeas-req-badge habeas-req-ref-cite habeas-builtin\" title=\"{}\"><img",
-                super::escape_html(none.text())
-            )),
-            "{rendered}"
-        );
         let util = crate::builtins::builtin("habeas:util").unwrap();
         assert!(
             rendered.contains(&format!(
@@ -978,9 +960,18 @@ mod tests {
             )),
             "{rendered}"
         );
-        assert!(rendered.contains("Nothing applies."), "{rendered}");
+        let badge = "<p><span class=\"habeas-req-badge habeas-req-ref-cite habeas-builtin\"";
+        let fenced = rendered.find(badge).expect(&rendered);
+        assert!(
+            rendered[fenced..].find("Serves its caller.").is_some(),
+            "{rendered}"
+        );
         assert!(!rendered.contains("href=\"habeas"), "{rendered}");
         // Invalid forms, unknown names, and code examples remain literal.
+        assert!(
+            rendered.contains(":::{cite} habeas:none\nRemoved.\n:::"),
+            "{rendered}"
+        );
         assert!(
             rendered.contains(&"Inline CITE`habeas:none` stays literal.".replace("CITE", "{cite}"))
         );

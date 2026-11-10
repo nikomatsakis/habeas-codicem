@@ -1226,11 +1226,11 @@ pub(super) mod tests {
             ),
         )
         .unwrap();
-        let none = ["// :::", "{cite} habeas:none\n// Glue.\n// :::\n"].concat();
+        let util = ["// :::", "{cite} habeas:util\n// Glue.\n// :::\n"].concat();
         fs::write(
             root.path().join("src/lib.rs"),
             format!(
-                "// {}\n// {}\n// {}\n{none}{none}fn helper() {{}}\n",
+                "// {}\n// {}\n// {}\n{util}{util}fn helper() {{}}\n",
                 role("cite", "requirements.ready"),
                 role("cite", "requirements.ready"),
                 role("cite", "requirements.other"),
@@ -1256,7 +1256,7 @@ pub(super) mod tests {
             "{inputs:#?}"
         );
         assert_eq!(count("definition", "terms.unit"), 1, "{inputs:#?}");
-        assert_eq!(count("builtin", "habeas:none"), 1, "{inputs:#?}");
+        assert_eq!(count("builtin", "habeas:util"), 1, "{inputs:#?}");
         assert_eq!(inputs.len(), 5, "{inputs:#?}");
 
         // An unresolvable mandatory input aborts preparation.
@@ -1442,9 +1442,9 @@ pub(super) mod tests {
         assert_eq!(
             mandatory
                 .iter()
-                .filter(|input| input["builtin"] == "habeas:none")
+                .filter(|input| input["builtin"] == "habeas:util")
                 .collect::<Vec<_>>(),
-            [&builtin_input("habeas:none")]
+            [&builtin_input("habeas:util")]
         );
         assert!(
             mandatory

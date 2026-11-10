@@ -6,9 +6,10 @@
 use std::ops::Range;
 
 use crate::outline::Outline;
-use crate::{ReferenceKind, colon_fence, overlaps_protected, protected_ranges, reference_roles};
+use crate::{ReferenceKind, colon_fence, overlaps_protected, protected_ranges};
 
 /// One line in which fences may be recognized, with its one-based source line.
+// {cite}`habeas:util`
 pub(crate) struct FenceLine<'a> {
     pub(crate) text: &'a str,
     pub(crate) line: usize,
@@ -18,6 +19,7 @@ pub(crate) struct FenceLine<'a> {
 }
 
 /// A fenced reference found among [`FenceLine`]s, by line index.
+// {cite}`habeas:util`
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Fence {
     pub(crate) kind: ReferenceKind,
@@ -108,27 +110,6 @@ fn body(lines: &[FenceLine<'_>], fence: &Fence) -> String {
         .to_owned()
 }
 
-/// A body without its inline references and the fence lines of nested
-/// fenced references, trimmed: what remains as justification.
-pub(crate) fn justification(body: &str) -> String {
-    let mut text = String::with_capacity(body.len());
-    let mut cursor = 0;
-    for reference in reference_roles(body, false) {
-        text.push_str(&body[cursor..reference.start]);
-        cursor = reference.end;
-    }
-    text.push_str(&body[cursor..]);
-    text.lines()
-        .filter(|line| {
-            opening_fence(line).is_none()
-                && colon_fence(line).is_none_or(|(rest, _)| !rest.trim().is_empty())
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-        .trim()
-        .to_owned()
-}
-
 /// A fenced reference in Markdown, with byte offsets for rendering.
 pub(crate) struct MarkdownFence {
     pub(crate) kind: ReferenceKind,
@@ -141,6 +122,7 @@ pub(crate) struct MarkdownFence {
 }
 
 /// Splits text into lines with their byte ranges, without line endings.
+// {cite}`habeas:util`
 fn split_lines(content: &str) -> Vec<(usize, usize, &str)> {
     let mut lines = Vec::new();
     let mut position = 0;
@@ -199,6 +181,7 @@ pub(crate) fn markdown_fences(content: &str, markdown: bool) -> Vec<MarkdownFenc
 /// Removes one line's comment delimiters: leading `//`, `///`, `//!`, `/*`,
 /// `/**`, `/*!`, `#`, `<!--`, or a block comment's leading `*`, and a
 /// trailing `*/` or `-->`.
+// {cite}`habeas:util`
 pub(crate) fn strip_comment_delimiters(line: &str) -> &str {
     let mut text = line.trim_start();
     for prefix in ["///", "//!", "//", "/**", "/*!", "/*", "<!--", "#"] {
@@ -261,6 +244,7 @@ pub(crate) fn comment_fences(source: &str, outline: &Outline) -> Vec<SourceFence
 }
 
 /// Fenced references in a whole Markdown or plain-text source.
+// {cite}`habeas:util`
 pub(crate) fn text_fences(content: &str, markdown: bool) -> Vec<SourceFence> {
     markdown_fences(content, markdown)
         .into_iter()
@@ -311,8 +295,8 @@ mod tests {
             Some((ReferenceKind::Impl, "requirements.ready", 3))
         );
         assert_eq!(
-            opening_fence("::::{cite} habeas:none"),
-            Some((ReferenceKind::Cite, "habeas:none", 4))
+            opening_fence("::::{cite} habeas:util"),
+            Some((ReferenceKind::Cite, "habeas:util", 4))
         );
         // A syntactically built-in name is recognized so validation can report
         // an unknown built-in rather than leaving it literal.
@@ -383,7 +367,7 @@ mod tests {
     // {test}`requirements.references.outline_comments`
     #[test]
     fn comment_fences_close_within_one_comment_run() {
-        let source = "// :::{cite} habeas:none\n// Exists for its caller.\n// :::\nfn a() {}\n\n// :::{cite} habeas:none\n// never closed here\n\n// :::\nfn b() {}\n/*\n * :::{impl} requirements.ready\n * Checks it.\n * :::\n */\nfn c() {}\n".to_owned();
+        let source = "// :::{cite} habeas:util\n// Exists for its caller.\n// :::\nfn a() {}\n\n// :::{cite} habeas:util\n// never closed here\n\n// :::\nfn b() {}\n/*\n * :::{impl} requirements.ready\n * Checks it.\n * :::\n */\nfn c() {}\n".to_owned();
         let outline = crate::outline::parse(std::path::Path::new("lib.rs"), &source).unwrap();
         let fences = comment_fences(&source, &outline);
         assert_eq!(fences.len(), 3, "{fences:?}");
@@ -396,17 +380,5 @@ mod tests {
         assert_eq!(fences[2].kind, ReferenceKind::Impl);
         assert_eq!(fences[2].body, "Checks it.");
         assert_eq!(outline.nodes[fences[2].owner.unwrap()].selector, "fn[c]");
-    }
-
-    // {test}`requirements.references.no_requirement`
-    #[test]
-    fn justification_excludes_references_and_nested_fences() {
-        let cite = concat!("{", "cite}`requirements.ready`");
-        assert_eq!(justification(&format!("  {cite}  ")), "");
-        assert_eq!(justification(":::{cite} a.b\n:::"), "");
-        assert_eq!(
-            justification(&format!("Keeps {cite} fast.")),
-            "Keeps  fast."
-        );
     }
 }

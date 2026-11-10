@@ -110,18 +110,19 @@ the procedure in the habeas-requirements skill: `{test}` on tests and `{impl}`
 on roots; code a root or test reaches needs none. Map each other inventoried
 item to the requirement whose root reaches it. Every test must end up with a `{test}` reference to a requirement or example,
 attached to the test as the habeas-requirements skill describes; a test whose behavior no agreed requirement states goes on the gap
-list, never `habeas:none`. For a parameterized test, put the reference on the
+list, never `habeas:util`. For a parameterized test, put the reference on the
 case source or the generating declaration; one file-level tag must not stand in
 for unrelated tests. Where one behavior follows from several requirements,
 mark each with `{impl}` where it applies and explain how they combine, as the
-habeas-requirements skill describes. Many `habeas:none` citations on other items suggest
-mis-tagging.
+habeas-requirements skill describes. An item that neither carries out a
+requirement nor serves other code goes on the gap list: it needs a requirement
+or is not needed.
 
 ## Report
 
 ```text
 Tests mapped: <mapped>/<total>
-Items mapped: <referenced or reached from a mapped root>/<total>  (covered only by reads: <count>; habeas:none: <count>, from `habeas status --all`)
+Items mapped: <referenced or reached from a mapped root>/<total>  (covered only by reads: <count>)
 Independent recount: <agrees | differences and how reconciled>
 Gaps:
 - <item or behavior> (<file>:<line>): <reason>; <open question>

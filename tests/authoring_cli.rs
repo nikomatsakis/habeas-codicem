@@ -987,7 +987,7 @@ fn bundled_skills_direct_the_agent_to_the_authoring_harness() {
 // {test}`requirements.cli.internal_detail_guidance`
 // {test}`requirements.cli.skill_structure`
 #[test]
-fn bundled_skills_direct_the_reference_procedure_and_habeas_none_instead_of_waivers() {
+fn bundled_skills_direct_the_reference_procedure_and_report_items_without_one() {
     // habeas-requirements is the home of the reference procedure; its steps
     // come in order.
     assert_in_order(
@@ -998,9 +998,11 @@ fn bundled_skills_direct_the_reference_procedure_and_habeas_none_instead_of_waiv
             "designed to verify the requirement or example, use `{test}`",
             "if the item is a root of the requirement's implementation, use `{impl}`",
             "re-checked or kept in sync when the requirement or example changes, use `{cite}`",
-            "cite the built-in `habeas:util` when the item serves the code that calls it and carries out no requirement itself",
+            "cite the built-in `habeas:util` when the item serves other code and carries out no requirement itself",
+            "such as a library calling a trait implementation it requires",
+            "An item that does neither needs a requirement or is not needed; report it to the user instead of adding a reference",
             "If no code reaches the item, it is dead code: report it to the user instead of deleting it unasked",
-            "cite the built-in `habeas:none` in fenced form, with a body justifying why the item exists",
+            "Otherwise it carries out behavior that needs a requirement: report it with a proposed requirement for that behavior",
         ],
     );
     assert_phrases(
@@ -1008,7 +1010,7 @@ fn bundled_skills_direct_the_reference_procedure_and_habeas_none_instead_of_waiv
         &[
             "propose a requirement stating the invariant and implement it with `{impl}`",
             "Don't propose grouping requirements that state no checkable obligation",
-            "must not implement observable behavior that no requirement specifies",
+            "Code must not implement observable behavior that no requirement specifies",
             "There is no waiver",
         ],
     );
@@ -1018,7 +1020,7 @@ fn bundled_skills_direct_the_reference_procedure_and_habeas_none_instead_of_waiv
         &[
             "references by the procedure in the habeas-requirements skill",
             "or `habeas:util` for a helper that serves its callers",
-            "citing `habeas:none` in fenced form with a justification only when nothing applies",
+            "Report an item that does neither to the user: it needs a requirement or is not needed",
         ],
     );
     assert_phrases(
@@ -2574,11 +2576,11 @@ fn bundled_skills_mark_roots_and_handle_uncovered_items() {
             "leave what it reaches, functions and types alike, without a reference to that requirement",
             "Roots are per requirement",
             "Helpers a test reaches need no reference",
-            "Don't remove an existing `{impl}` or `habeas:none` from code a root reaches unless the user asks",
+            "Don't remove an existing `{impl}` from code a root reaches unless the user asks",
         ],
     );
     // Coverage comes from a reference or a current read, never a search, and
-    // reads exist only after authoring; `habeas:none` only when neither applies.
+    // reads exist only after authoring.
     assert_phrases(
         "habeas-requirements",
         &[
@@ -2608,7 +2610,7 @@ fn bundled_skills_mark_roots_and_handle_uncovered_items() {
             "`root`: add `{impl}` of that definition to the item",
             "`not needed`: before changing anything, determine from its rationale and the code whether the item is dead code, serves its callers, or the earlier read was mistaken",
             "Report dead code to the user instead of deleting it unasked",
-            "An item that serves the code calling it, carrying out no requirement itself, gets `` // {cite}`habeas:util` ``",
+            "An item that serves other code, carrying out no requirement itself, gets `` // {cite}`habeas:util` ``",
             "add references by the procedure in the habeas-requirements skill",
             "never re-run or `--force` authoring just to get an item read",
         ],

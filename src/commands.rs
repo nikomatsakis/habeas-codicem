@@ -23,7 +23,6 @@ pub fn status_markdown_filtered(root: &Path, all: bool, glob: Option<&str>) -> i
 
 // {impl}`requirements.cli.shared_status_rendering`
 // {impl}`requirements.references.definition_globs`
-// {impl}`requirements.references.no_requirement`
 pub fn status_markdown_with_options(
     root: &Path,
     all: bool,
@@ -154,30 +153,6 @@ pub fn status_markdown_with_github(
         .iter()
         .filter(|error| !associated_errors.contains(error.as_str()))
         .collect::<Vec<_>>();
-    if all {
-        let outlines = crate::inputs::OutlineCache::default();
-        let citations = crate::citations::none_citations(
-            &inspection.root,
-            &inspection.definitions,
-            &inspection.references,
-            &outlines,
-        );
-        if !citations.is_empty() {
-            output.push_str("\n## `habeas:none` citations\n\n");
-            for (item, justification) in citations {
-                output.push_str(&format!(
-                    "- `{}` `{}` (line {}): {}\n",
-                    item.file,
-                    item.selector_label(),
-                    item.line,
-                    justification
-                        .split_whitespace()
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                ));
-            }
-        }
-    }
     match crate::evidence::untracked_reference_files(&inspection.root) {
         Ok(untracked) if untracked.is_empty() => {}
         Ok(untracked) => {

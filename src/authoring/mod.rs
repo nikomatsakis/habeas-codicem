@@ -2498,7 +2498,7 @@ mod tests {
         fs::write(&requirements, book).unwrap();
         fs::write(
             project.path().join("src/lib.rs"),
-            format!("// {cite}\n// :::{{cite}} habeas:none\n// Formats output.\n// :::\nfn helper() {{}}\n"),
+            format!("// {cite}\n// :::{{cite}} habeas:util\n// Formats output.\n// :::\nfn helper() {{}}\n"),
         )
         .unwrap();
         for (subject, header, named) in [
@@ -2633,7 +2633,7 @@ mod tests {
         fs::write(
             project.path().join("src/lib.rs"),
             format!(
-                "// {cite}\n// :::{{cite}} habeas:none\n// Formats output for the caller.\n// :::\nfn helper() {{}}\n"
+                "// {cite}\n// :::{{cite}} habeas:util\n// Formats output for the caller.\n// :::\nfn helper() {{}}\n"
             ),
         )
         .unwrap();
@@ -2649,12 +2649,12 @@ mod tests {
         assert_eq!(mandatory[0]["file"], "src/lib.rs");
         assert_eq!(mandatory[0]["item"], "fn[helper]");
         assert_eq!(mandatory[1]["requirements"], "requirements.ready");
-        assert_eq!(mandatory[2]["builtin"], "habeas:none");
+        assert_eq!(mandatory[2]["builtin"], "habeas:util");
         assert!(
             mandatory[2]["text"][0]
                 .as_str()
                 .unwrap()
-                .starts_with("Cite this only when")
+                .starts_with("Cite this on an item that serves")
         );
 
         let state = tempfile::tempdir().unwrap();
@@ -2681,7 +2681,10 @@ mod tests {
             "{prompt}"
         );
         assert!(prompt.contains("The project MUST be ready."), "{prompt}");
-        assert!(prompt.contains("Cite this only when"), "{prompt}");
+        assert!(
+            prompt.contains("Cite this on an item that serves"),
+            "{prompt}"
+        );
         // Prompts are recorded as serialized requests.
         for background in [
             approved_text("habeas_background", 0),
@@ -2695,7 +2698,7 @@ mod tests {
 
         let citations = json!([
             {"role": "cite", "name": "requirements.ready", "commentary": ""},
-            {"role": "cite", "name": "habeas:none", "commentary": "Formats output for the caller."}
+            {"role": "cite", "name": "habeas:util", "commentary": "Formats output for the caller."}
         ]);
         assert_eq!(record["file"], "src/lib.rs");
         assert_eq!(record["item"], "fn[helper]");
@@ -2803,7 +2806,7 @@ mod tests {
         let source = project.path().join("src/lib.rs");
         let mut text = fs::read_to_string(&source).unwrap();
         text.push_str(&format!(
-            "\n// {cite}\nfn cites_one() {{}}\n\n// {cite}\n// :::{{cite}} habeas:none\n// Formats output.\n// :::\nfn cites_two() {{}}\n"
+            "\n// {cite}\nfn cites_one() {{}}\n\n// {cite}\n// :::{{cite}} habeas:util\n// Formats output.\n// :::\nfn cites_two() {{}}\n"
         ));
         fs::write(&source, text).unwrap();
         for (first, second) in [
@@ -2924,10 +2927,10 @@ no_match:
 "##;
 
     /// A project whose `requirements.rule` cites `requirements.other` and
-    /// `habeas:none`, with a root-node site of `requirements.attributes`.
+    /// `habeas:util`, with a root-node site of `requirements.attributes`.
     // {cite}`habeas:util`
     pub(crate) fn citing_site_project() -> tempfile::TempDir {
-        let cites = concat!("{", "cite}`requirements.other` and {", "cite}`habeas:none`");
+        let cites = concat!("{", "cite}`requirements.other` and {", "cite}`habeas:util`");
         let rule = crate::sites::tests::RULE.replace(
             "instead of panicking.",
             &format!("instead of panicking, as {cites} describe."),
@@ -3003,7 +3006,7 @@ no_match:
         assert_eq!(
             mandatory
                 .iter()
-                .filter(|input| input["builtin"] == "habeas:none")
+                .filter(|input| input["builtin"] == "habeas:util")
                 .count(),
             1,
             "{mandatory:#?}"

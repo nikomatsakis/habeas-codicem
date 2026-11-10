@@ -246,9 +246,8 @@ pub(crate) fn unreferenced_items(
 ) -> Result<(outline::Outline, Unreferenced), OutlineError> {
     let outline = outline::parse_with(&outline::RUST_PROFILE, source)?;
     let mut cited = vec![false; outline.nodes.len()];
-    // A built-in counts only in a form it permits, such as a fenced
-    // `habeas:none` citation with a justification.
-    let counts = |kind: crate::ReferenceKind, name: &str, fenced: Option<&str>| {
+    // A built-in counts only in a role it permits.
+    let counts = |kind: crate::ReferenceKind, name: &str| {
         // A `{fixme}` acknowledges a gap; it does not say why the item exists.
         if matches!(
             kind,
@@ -257,7 +256,7 @@ pub(crate) fn unreferenced_items(
             return false;
         }
         if let Some(builtin) = crate::builtins::builtin(name) {
-            return builtin.check(kind, fenced).is_ok();
+            return builtin.check(kind).is_ok();
         }
         definitions.get(name).is_some_and(|d| match d.kind {
             crate::DefinitionKind::Requirement => true,
@@ -272,7 +271,7 @@ pub(crate) fn unreferenced_items(
     for comment in &outline.comments {
         if reference_roles(&source[comment.byte_start..comment.byte_end], false)
             .iter()
-            .any(|role| counts(role.kind, role.name, None))
+            .any(|role| counts(role.kind, role.name))
         {
             cited[comment.owner] = true;
         }
@@ -280,7 +279,7 @@ pub(crate) fn unreferenced_items(
     for fence in crate::fenced::comment_fences(source, &outline) {
         if let Some(owner) = fence.owner
             && fence.closed
-            && counts(fence.kind, &fence.name, Some(&fence.body))
+            && counts(fence.kind, &fence.name)
         {
             cited[owner] = true;
         }

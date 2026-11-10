@@ -1301,7 +1301,6 @@ struct InputRange {
 // {impl}`requirements.ci.errors`
 // {impl}`requirements.definitions.references`
 // {impl}`requirements.references.anchors`
-// {impl}`requirements.references.no_requirement`
 // {impl}`requirements.references.util`
 fn validate_references(
     root: &Path,
@@ -1339,9 +1338,7 @@ fn validate_references(
                 // Its form problems are already reported.
                 Some(_) if unclosed || !edge => {}
                 Some(builtin) => {
-                    if let Err(problem) =
-                        builtin.check(reference.kind, reference.commentary.as_deref())
-                    {
+                    if let Err(problem) = builtin.check(reference.kind) {
                         errors.push(format!("{location}: {problem}"));
                     }
                 }

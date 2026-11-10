@@ -1,6 +1,6 @@
 ---
 name: habeas-requirements
-description: Use before adding, changing, or moving code, tests, or requirements in a project that tracks requirements with Habeas (a `habeas.toml`, `{req}` directives in its mdBook, or `{impl}`/`{test}`/`{cite}` references in code), even when the user only asks for a feature, bug fix, refactor, or CLI change and never says "requirement". Covers agreeing requirements and examples with the user, writing `{req}`, `{example}`, and `{definition}` directives, and choosing `{impl}`, `{test}`, `{cite}`, `habeas:util`, or `habeas:none` references. To run the authoring harness or fix evidence and validation failures, use habeas-evidence; to build an initial requirement set for an existing codebase, use habeas-bootstrap-requirements.
+description: Use before adding, changing, or moving code, tests, or requirements in a project that tracks requirements with Habeas (a `habeas.toml`, `{req}` directives in its mdBook, or `{impl}`/`{test}`/`{cite}` references in code), even when the user only asks for a feature, bug fix, refactor, or CLI change and never says "requirement". Covers agreeing requirements and examples with the user, writing `{req}`, `{example}`, and `{definition}` directives, and choosing `{impl}`, `{test}`, `{cite}`, or `habeas:util` references. To run the authoring harness or fix evidence and validation failures, use habeas-evidence; to build an initial requirement set for an existing codebase, use habeas-bootstrap-requirements.
 ---
 
 # Habeas requirements
@@ -166,33 +166,29 @@ example it could reference; an item may carry several:
    requirement or example changes, use `{cite}`.
 4. If nothing gives the item a reference, and after `habeas author` nothing
    reads it either (see Gotchas), cite the built-in `habeas:util` when the item
-   serves the code that calls it and carries out no requirement itself; it
-   needs no justification or citation review, since the roots that reach it
-   are reviewed:
+   serves other code and carries out no requirement itself; that includes code
+   outside the project, such as a library calling a trait implementation it
+   requires. It needs no justification or citation review, since the roots
+   that reach it are reviewed:
 
    ```text
    // {cite}`habeas:util`
    ```
 
-   If no code reaches the item, it is dead code: report it to the user instead
-   of deleting it unasked. Otherwise, cite the built-in `habeas:none` in fenced
-   form, with a body justifying why the item exists:
+   An item that does neither needs a requirement or is not needed; report it
+   to the user instead of adding a reference. If no code reaches the item, it
+   is dead code: report it to the user instead of deleting it unasked.
+   Otherwise it carries out behavior that needs a requirement: report it with a
+   proposed requirement for that behavior.
 
-   ```text
-   // :::{cite} habeas:none
-   // Joins the outline builders' line splitting; no requirement concerns how.
-   // :::
-   ```
-
-Don't remove an existing `{impl}` or `habeas:none` from code a root reaches
-unless the user asks.
+Don't remove an existing `{impl}` from code a root reaches unless the user
+asks.
 
 For internal code with an invariant worth checking, such as a cache that must
 not change results, propose a requirement stating the invariant and implement it
 with `{impl}`. Don't propose grouping requirements that state no checkable
-obligation, such as one covering an area's internal helpers. An item citing
-`habeas:none` must not implement observable behavior that no requirement
-specifies.
+obligation, such as one covering an area's internal helpers. Code must not
+implement observable behavior that no requirement specifies.
 
 `{impl}` and `{test}` make the item an input to the assessment, and its evidence
 must cover them; the reviewer reads the code they reach from there. `{cite}`
