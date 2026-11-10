@@ -20,8 +20,8 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use rig_core::completion::{CompletionRequest, ToolDefinition};
-use rig_core::message::{Message, ToolResultContent, turn_failure};
+use rig_core::completion::{CompletionRequest, FinishReason, ToolDefinition};
+use rig_core::message::{Message, ToolResultContent, UserContent, turn_failure};
 use serde_json::{Value, json};
 use tokio::sync::watch;
 
@@ -1234,6 +1234,7 @@ async fn verify(
 // {impl}`requirements.definitions.authoring_inputs`
 // {impl}`requirements.authoring.prompt_parts`
 // {impl}`requirements.authoring.result_pages`
+// {impl}`requirements.authoring.output_limit`
 async fn converse<T>(
     provider: &impl CompletionProvider,
     sources: &mut AssessmentSources,
@@ -1248,6 +1249,8 @@ async fn converse<T>(
     let mut backoff = providers::ProviderBackoff::default();
     // Pages are kept only until this assessment finishes.
     let mut pages = pages::ResultPages::default();
+    // Whether the one continuation after a cut-off response has been used.
+    let mut continued = false;
     loop {
         let index = usage.begin_request()?;
         let started = Instant::now();
@@ -1278,6 +1281,24 @@ async fn converse<T>(
         backoff = providers::ProviderBackoff::default();
         sources.record_inputs(&pending);
         pending.clear();
+        if matches!(response.finish_reason(), Some(FinishReason::Length)) {
+            if continued {
+                return Err(io::Error::other(
+                    "the model's response was incomplete: it reached the output limit again after one continuation",
+                ));
+            }
+            let limit = provider.output_limit().ok_or_else(|| {
+                io::Error::other(
+                    "the model's response was incomplete: it reached an output limit the configuration does not set",
+                )
+            })?;
+            continued = true;
+            request
+                .chat_history
+                .extend(cut_off_continuation(&response, limit, usage));
+            usage.save()?;
+            continue;
+        }
         if let Some(error) = turn_failure(
             &response.choice,
             Some(&response.stop()),
@@ -1347,6 +1368,34 @@ async fn converse<T>(
         usage.save()?;
         request.chat_history.push(Message::tool_results(results));
     }
+}
+
+/// The messages that continue a conversation after `response` was cut off
+/// at `limit` output tokens: the response as it stands, then one user
+/// message answering each of its incomplete calls without running it and
+/// asking for a shorter response.
+// {cite}`habeas:util`
+fn cut_off_continuation(
+    response: &rig_core::completion::CompletionResponse,
+    limit: u64,
+    usage: &mut UsageLog,
+) -> Vec<Message> {
+    let mut content = Vec::new();
+    for call in response.tool_calls() {
+        usage.skipped_tool(call.function.name.as_str());
+        // Converse requires every call in history to have a result.
+        content.push(UserContent::ToolResult(call.error_result(vec![
+            ToolResultContent::text("not run: the call was cut off at the output limit"),
+        ])));
+    }
+    content.push(UserContent::text(
+        approved_text("output_limit", 0).replace("<limit>", &limit.to_string()),
+    ));
+    response
+        .message()
+        .into_iter()
+        .chain([Message::User { content }])
+        .collect()
 }
 
 #[cfg(test)]

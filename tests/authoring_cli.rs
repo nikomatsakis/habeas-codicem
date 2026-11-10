@@ -1542,6 +1542,7 @@ fn missing_or_stale_evidence_fails_validation_without_contacting_the_provider() 
 // {test}`requirements.authoring.source_tools`
 // {test}`requirements.authoring.submission`
 // {test}`requirements.authoring.delivered_inputs`
+// {test}`requirements.authoring.output_limit`
 #[test]
 fn bedrock_cli_uses_selected_profile_region_and_converse_tools() {
     for typed in [false, true] {
@@ -1633,6 +1634,8 @@ fn bedrock_cli_uses_selected_profile_region_and_converse_tools() {
             body["inferenceConfig"],
             json!({"temperature":0.25,"maxTokens":321,"topP":0.75,"stopSequences":["END"]})
         );
+        // A configured maxTokens is used as given on every request.
+        assert_eq!(requests[1].body["inferenceConfig"]["maxTokens"], 321);
         assert_eq!(body["additionalModelRequestFields"], json!({"top_k":12}));
         let prompt = prompt_text(body);
         assert!(
@@ -1727,27 +1730,44 @@ fn bedrock_cli_uses_selected_profile_region_and_converse_tools() {
 /// model `model`, returning the two request bodies and the usage record.
 // {cite}`habeas:util`
 fn bedrock_run(model: &str) -> (Vec<Value>, Value) {
-    let server = Server::start(vec![
-        json!({
-            "output":{"message":{"role":"assistant","content":[
-                {"reasoningContent":{"reasoningText":{"text":"Read the extra source.","signature":"sig"}}},
-                {"toolUse":
-                {"toolUseId":"read","name":"habeas","input":{"file":"extra.txt","line_start":1}}}]}},
-            "stopReason":"tool_use",
-            "usage":{"inputTokens":7,"outputTokens":5,"totalTokens":1012,
-                "cacheReadInputTokens":0,"cacheWriteInputTokens":1000},
-            "metrics":{"latencyMs":1}
-        }),
-        json!({
-            "output":{"message":{"role":"assistant","content":[{"toolUse":
-                {"toolUseId":"submit","name":"submit_judgment","input":
-                    {"determination":true,"rationale":"The supplied sources support the subject."}}}]}},
-            "stopReason":"tool_use",
-            "usage":{"inputTokens":9,"outputTokens":5,"totalTokens":1214,
-                "cacheReadInputTokens":1000,"cacheWriteInputTokens":200},
-            "metrics":{"latencyMs":1}
-        }),
-    ]);
+    let (output, bodies, usage) = bedrock_exchange(
+        model,
+        vec![
+            json!({
+                "output":{"message":{"role":"assistant","content":[
+                    {"reasoningContent":{"reasoningText":{"text":"Read the extra source.","signature":"sig"}}},
+                    {"toolUse":
+                    {"toolUseId":"read","name":"habeas","input":{"file":"extra.txt","line_start":1}}}]}},
+                "stopReason":"tool_use",
+                "usage":{"inputTokens":7,"outputTokens":5,"totalTokens":1012,
+                    "cacheReadInputTokens":0,"cacheWriteInputTokens":1000},
+                "metrics":{"latencyMs":1}
+            }),
+            json!({
+                "output":{"message":{"role":"assistant","content":[{"toolUse":
+                    {"toolUseId":"submit","name":"submit_judgment","input":
+                        {"determination":true,"rationale":"The supplied sources support the subject."}}}]}},
+                "stopReason":"tool_use",
+                "usage":{"inputTokens":9,"outputTokens":5,"totalTokens":1214,
+                    "cacheReadInputTokens":1000,"cacheWriteInputTokens":200},
+                "metrics":{"latencyMs":1}
+            }),
+        ],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    (bodies, usage)
+}
+
+/// Runs one Bedrock assessment against model `model` whose endpoint answers
+/// with `responses` in turn, returning the command output, the request
+/// bodies, and the usage record.
+// {cite}`habeas:util`
+fn bedrock_exchange(model: &str, responses: Vec<Value>) -> (Output, Vec<Value>, Value) {
+    let server = Server::start(responses);
     let fixture = Fixture::new(&server.endpoint);
     fs::write(
         fixture.config.join("habeas/config.toml"),
@@ -1779,17 +1799,12 @@ fn bedrock_run(model: &str) -> (Vec<Value>, Value) {
         .args(["author", SUBJECT])
         .output()
         .unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
     let bodies = server
         .finish()
         .into_iter()
         .map(|request| request.body)
         .collect();
-    (bodies, fixture.usage())
+    (output, bodies, fixture.usage())
 }
 
 /// Removes every `cachePoint` block from a Converse request body.
@@ -1851,6 +1866,120 @@ fn claude_requests_carry_cache_checkpoints_and_record_cache_usage() {
     assert_eq!(requests[1]["tokens"]["cache_creation_input"], 200);
     assert_eq!(usage["tokens"]["cached_input"], 1000);
     assert_eq!(usage["tokens"]["cache_creation_input"], 1200);
+}
+
+// {test}`requirements.authoring.output_limit`
+#[test]
+fn bedrock_requests_without_max_tokens_ask_for_at_most_16k_output_tokens() {
+    for model in [
+        "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+        "fixture-uncached-model",
+    ] {
+        let (bodies, usage) = bedrock_run(model);
+        assert_eq!(usage["outcome"], "completed");
+        assert_eq!(bodies.len(), 2);
+        for body in &bodies {
+            assert_eq!(
+                body["inferenceConfig"],
+                json!({"maxTokens":16384}),
+                "{body}"
+            );
+            assert!(body.get("additionalModelRequestFields").is_none(), "{body}");
+        }
+    }
+}
+
+/// A Converse response that stopped at the output limit partway through a
+/// submission whose rationale was cut off.
+// {cite}`habeas:util`
+fn cut_off_submission(id: &str) -> Value {
+    json!({
+        "output":{"message":{"role":"assistant","content":[
+            {"text":"Submitting."},
+            {"toolUse":{"toolUseId":id,"name":"submit_judgment","input":{"determination":true}}}
+        ]}},
+        "stopReason":"max_tokens",
+        "usage":{"inputTokens":7,"outputTokens":16384,"totalTokens":16391},
+        "metrics":{"latencyMs":1}
+    })
+}
+
+/// The user message Habeas sends after a response cut off at 16,384 tokens.
+const LIMIT_NOTE: &str = "Your previous response reached the 16384-token output limit and was cut off,\nso its tool call was incomplete. Keep within the limit: make your rationale\nshorter, then call the tool again.";
+
+// {test}`requirements.authoring.output_limit`
+// {test}`requirements.authoring.submission`
+#[test]
+fn a_response_cut_off_at_the_output_limit_is_continued_once() {
+    let (output, bodies, usage) = bedrock_exchange(
+        "fixture-uncached-model",
+        vec![
+            cut_off_submission("cut"),
+            json!({
+                "output":{"message":{"role":"assistant","content":[{"toolUse":
+                    {"toolUseId":"submit","name":"submit_judgment","input":
+                        {"determination":true,"rationale":"Short."}}}]}},
+                "stopReason":"tool_use",
+                "usage":{"inputTokens":9,"outputTokens":5,"totalTokens":14},
+                "metrics":{"latencyMs":1}
+            }),
+        ],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(bodies.len(), 2);
+    // The same conversation continues: the cut-off turn as sent, then one
+    // user message answering its incomplete call and carrying the note.
+    let first = bodies[0]["messages"].as_array().unwrap();
+    let second = bodies[1]["messages"].as_array().unwrap();
+    assert_eq!(second.len(), first.len() + 2);
+    assert_eq!(&second[..first.len()], first.as_slice());
+    let cut = &second[first.len()];
+    assert_eq!(cut["role"], "assistant");
+    assert_eq!(cut["content"][1]["toolUse"]["toolUseId"], "cut");
+    let note = &second[first.len() + 1];
+    assert_eq!(note["role"], "user");
+    let content = note["content"].as_array().unwrap();
+    assert_eq!(content.len(), 2, "{note}");
+    assert_eq!(content[0]["toolResult"]["toolUseId"], "cut");
+    assert!(
+        content[0]["toolResult"].to_string().contains("not run"),
+        "{note}"
+    );
+    assert_eq!(content[1]["text"], LIMIT_NOTE);
+    // Both requests are recorded, and the cut-off call never ran.
+    assert_eq!(usage["request_count"], 2);
+    assert_eq!(usage["requests"].as_array().unwrap().len(), 2);
+    assert_eq!(usage["tool_calls"]["submit_judgment"], 2);
+    assert_eq!(usage["tool_skipped"]["submit_judgment"], 1);
+    assert_eq!(usage["outcome"], "completed");
+}
+
+// {test}`requirements.authoring.output_limit`
+#[test]
+fn a_second_response_at_the_output_limit_fails_the_assessment() {
+    let (output, bodies, usage) = bedrock_exchange(
+        "fixture-uncached-model",
+        vec![cut_off_submission("cut"), cut_off_submission("again")],
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "{stderr}");
+    assert!(stderr.contains("incomplete"), "{stderr}");
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("1 authored"));
+    assert_eq!(bodies.len(), 2);
+    let last = bodies[1]["messages"]
+        .as_array()
+        .unwrap()
+        .last()
+        .unwrap()
+        .clone();
+    assert_eq!(last["content"][1]["text"], LIMIT_NOTE);
+    assert_eq!(usage["request_count"], 2);
+    assert_eq!(usage["tool_skipped"]["submit_judgment"], 1);
+    assert_eq!(usage["outcome"], "failed");
 }
 
 // {test}`requirements.authoring.persistence`

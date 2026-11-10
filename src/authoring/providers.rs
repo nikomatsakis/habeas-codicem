@@ -11,6 +11,12 @@ use crate::config::{BackendConfig, BedrockConfig};
 
 pub(super) trait CompletionProvider {
     async fn complete(&self, request: CompletionRequest) -> io::Result<CompletionResponse>;
+
+    /// The output-token limit each request asks for, when one is known.
+    // {cite}`habeas:util`
+    fn output_limit(&self) -> Option<u64> {
+        None
+    }
 }
 
 pub(super) struct ProviderBackoff {
@@ -198,6 +204,25 @@ impl CompletionProvider for RigProvider {
         }
         Ok(response)
     }
+
+    /// Bedrock's configured `maxTokens` or the default; Ollama's
+    /// `num_predict` when it sets a positive limit.
+    // {cite}`habeas:util`
+    fn output_limit(&self) -> Option<u64> {
+        if self.bedrock {
+            Some(
+                self.options
+                    .get("maxTokens")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(DEFAULT_BEDROCK_MAX_TOKENS),
+            )
+        } else {
+            self.options
+                .get("num_predict")
+                .and_then(Value::as_u64)
+                .filter(|limit| *limit > 0)
+        }
+    }
 }
 
 fn normalize_bedrock_client_calls(response: &mut CompletionResponse) -> io::Result<()> {
@@ -235,6 +260,12 @@ fn normalize_bedrock_client_calls(response: &mut CompletionResponse) -> io::Resu
     Ok(())
 }
 
+/// The output-token limit a Bedrock request asks for when its
+/// configuration sets no `maxTokens`. Habeas never sets a typed thinking
+/// budget, so Rig's budget-below-`max_tokens` check is not reached.
+const DEFAULT_BEDROCK_MAX_TOKENS: u64 = 16_384;
+
+// {cite}`habeas:util`
 fn apply_bedrock_options(
     request: &mut CompletionRequest,
     options: &mut Map<String, Value>,
@@ -263,6 +294,8 @@ fn apply_bedrock_options(
                 )
             })?;
         request.max_tokens = Some(tokens);
+    } else {
+        request.max_tokens = Some(DEFAULT_BEDROCK_MAX_TOKENS);
     }
     if let Some(value) = options.remove("topP") {
         request.options.top_p = Some(
@@ -311,12 +344,14 @@ mod tests {
     use rig_core::message::{Opaque, Origin, Reasoning, Text};
     use serde_json::json;
 
+    // {cite}`habeas:util`
     fn provider_error(status: Option<u16>, code: Option<&str>) -> ProviderError {
         ProviderError::from_provider_body("Too many tokens")
             .with_provider_status(status.map(|status| status.try_into().unwrap()))
             .with_provider_code(code.map(str::to_owned))
     }
 
+    // {cite}`habeas:util`
     fn with_retry_after(error: ProviderError, value: &str) -> ProviderError {
         let mut headers = error
             .provider_response_headers()
@@ -535,13 +570,14 @@ mod tests {
 
     // {test}`requirements.authoring.configuration_storage`
     // {test}`requirements.authoring.rig_configuration_mapping`
+    // {test}`requirements.authoring.output_limit`
     #[test]
-    fn bedrock_native_option_types_are_checked_without_supplying_defaults() {
+    fn bedrock_native_option_types_are_checked_and_only_max_tokens_is_defaulted() {
         let mut request = CompletionRequest::new("prompt");
         let mut options = Map::from_iter([("top_k".into(), json!(12))]);
         apply_bedrock_options(&mut request, &mut options).unwrap();
         assert!(request.temperature.is_none());
-        assert!(request.max_tokens.is_none());
+        assert_eq!(request.max_tokens, Some(16_384));
         assert!(request.options.is_default());
         assert_eq!(options["top_k"], 12);
         for value in [

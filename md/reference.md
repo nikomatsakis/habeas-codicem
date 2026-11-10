@@ -430,7 +430,13 @@ stopSequences = ["END"]
 ```
 
 These values are illustrative choices, not Habeas defaults. Omit any setting to
-leave it to the provider. For Ollama, native options such as `num_ctx` and `seed`
+leave it to the provider, except `maxTokens`: without it, each Bedrock request
+asks for at most 16,384 output tokens. A configured `maxTokens` is used as given;
+raise it when a model's answers are cut off, and keep it above any thinking
+budget set in the model-specific fields. When a response is cut off at the
+limit, Habeas runs none of its tool calls and continues the conversation once,
+asking for a shorter rationale; a second cut-off response fails the assessment
+as incomplete. {cite}`requirements.authoring.output_limit` For Ollama, native options such as `num_ctx` and `seed`
 go in the same options table; Rig places them in Ollama's native request.
 {cite}`requirements.authoring.configuration_storage`
 {cite}`requirements.authoring.rig_configuration_mapping`
