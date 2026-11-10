@@ -6,8 +6,6 @@ use mdbook_preprocessor::book::{Book, Chapter};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
-// {test}`requirements.definitions.dependencies`
-// {test}`requirements.definitions.declaration`
 fn fixture() -> TempDir {
     let temp = tempfile::tempdir().unwrap();
     fs::create_dir_all(temp.path().join("md")).unwrap();
@@ -31,7 +29,6 @@ fn fixture() -> TempDir {
 
 /// The raw fenced declaration of a fixture definition, as evidence records
 /// it: `rules.ready` is the `ready` block in `md/rules.md`.
-// {test}`requirements.definitions.inputs`
 // {test}`requirements.ci.requirements_inputs`
 fn declaration(root: &Path, name: &str) -> Vec<String> {
     let (file, local) = name.split_once('.').unwrap();
@@ -52,7 +49,6 @@ fn declaration(root: &Path, name: &str) -> Vec<String> {
         .collect()
 }
 
-// {test}`requirements.definitions.inputs`
 fn definition(root: &Path, name: &str) -> Value {
     json!({ "definition": name, "text": declaration(root, name) })
 }
@@ -70,7 +66,6 @@ fn requirements(root: &Path, selection: &str, matches: &[&str]) -> Value {
 
 /// Writes a pending evidence record for the requirement or example `name`
 /// containing exactly `inputs`, and returns its path.
-// {test}`requirements.definitions.inputs`
 fn record(root: &Path, name: &str, inputs: Vec<Value>) -> PathBuf {
     let lines = declaration(root, name);
     let kind = if lines[0].starts_with(":::{example}") {
@@ -93,7 +88,6 @@ fn record(root: &Path, name: &str, inputs: Vec<Value>) -> PathBuf {
 
 /// Records the fixture requirement with its selection and the complete
 /// definition cycle it depends on.
-// {test}`requirements.definitions.dependencies`
 fn capture(root: &Path) {
     record(
         root,
@@ -106,7 +100,6 @@ fn capture(root: &Path) {
     );
 }
 
-// {test}`requirements.definitions.inputs`
 fn approve(path: &Path) {
     let mut record: Value = serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
     record["determination"] = json!(true);

@@ -49,19 +49,15 @@ pub struct AuthoringOutcome {
     // {impl}`requirements.authoring.policy`
     pub policy: AssessmentPolicy,
     /// The coverage-loss reviews replacing the subject's record called for.
-    // {impl}`requirements.authoring.coverage_loss`
     pub coverage_loss: CoverageLossOutcome,
 }
 
 /// The opening of the note a recorded rationale ends with when its
 /// assessments disagreed under the `confirm` policy.
-// {impl}`requirements.authoring.confirmation`
 // {impl}`requirements.cli.status`
 pub(crate) const DISAGREEMENT_NOTE: &str = "**Confirmation:** the assessments disagreed";
 
-// {impl}`requirements.authoring.reporting`
 // {impl}`requirements.authoring.policy`
-// {impl}`requirements.authoring.refresh`
 #[derive(Clone, Copy, Debug, Default)]
 pub struct AuthoringOptions {
     pub verbose: bool,
@@ -77,8 +73,6 @@ pub struct AuthoringOptions {
 // The `Definition` variant is the one requirement or named example given on the
 // command line: the subject the command assesses and reports.
 // :::
-// {impl}`requirements.references.citation_review`
-// {impl}`requirements.references.site_review`
 #[derive(Clone, Debug)]
 pub(crate) enum AuthoringSubject {
     Definition(String),
@@ -126,10 +120,6 @@ impl AuthoringSubject {
         }
     }
 
-    // {impl}`requirements.authoring.batch`
-    // {impl}`requirements.authoring.usage_storage`
-    // {impl}`requirements.references.citation_review`
-    // {impl}`requirements.references.site_review`
     pub(crate) fn label(&self) -> String {
         match self {
             Self::Definition(name) => name.clone(),
@@ -144,8 +134,6 @@ impl AuthoringSubject {
 
     /// Where the subject's record is written.
     // {impl}`requirements.authoring.persistence`
-    // {impl}`requirements.references.citation_review`
-    // {impl}`requirements.references.site_review`
     pub(crate) fn evidence_path(&self, root: &Path) -> PathBuf {
         match self {
             Self::Definition(name) => root.join("evidence").join(format!("{name}.json")),
@@ -162,7 +150,6 @@ impl AuthoringSubject {
     /// it, known before configuration and sources are prepared so that an
     /// early failure still records it. `None` when no requirement or example
     /// has the name, or the book cannot be read.
-    // {impl}`requirements.authoring.usage_storage`
     fn kind_noun(&self, root: &Path) -> Option<&'static str> {
         match self {
             Self::Definition(name) => crate::evidence::load_definitions(root)
@@ -177,8 +164,6 @@ impl AuthoringSubject {
 
     /// Prepares the subject's sources and mandatory inputs.
     // {impl}`requirements.authoring.mandatory_inputs`
-    // {impl}`requirements.references.citation_review`
-    // {impl}`requirements.references.site_review`
     fn sources(&self, root: &Path) -> io::Result<AssessmentSources> {
         match self {
             Self::Definition(name) => AssessmentSources::prepare(root, name),
@@ -201,7 +186,6 @@ pub(crate) struct PendingAssessment {
 }
 
 impl PendingAssessment {
-    // {impl}`requirements.authoring.batch`
     // {impl}`requirements.authoring.persistence`
     // {impl}`requirements.authoring.usage_storage`
     // {impl}`requirements.configuration.state_location`
@@ -217,10 +201,8 @@ impl PendingAssessment {
         Ok(self.outcome)
     }
 
-    // {impl}`requirements.authoring.batch`
     // {impl}`requirements.authoring.usage_storage`
     // {impl}`requirements.configuration.state_location`
-    // {impl}`requirements.authoring.read_denial`
     pub(crate) fn failed(mut self, error: io::Error) -> io::Error {
         let outcome = if error.kind() == io::ErrorKind::Interrupted {
             "cancelled"
@@ -266,7 +248,6 @@ pub async fn author_evidence(
 // {impl}`requirements.authoring.usage_storage`
 // {impl}`requirements.configuration.state_location`
 // {impl}`requirements.authoring.read_denial`
-// {impl}`requirements.authoring.refresh`
 pub async fn author_evidence_with_output(
     root: &Path,
     subject: &str,
@@ -287,12 +268,8 @@ pub async fn author_evidence_with_output(
 /// without resolving configuration or invoking a model when, under
 /// `--missing`, its evidence is current. `--stdout` implies `--force`.
 // {impl}`requirements.authoring.invocation`
-// {impl}`requirements.authoring.usage_storage`
 // {impl}`requirements.configuration.state_location`
-// {impl}`requirements.authoring.read_denial`
-// {impl}`requirements.authoring.confirmation`
 // {impl}`requirements.authoring.policy`
-// {impl}`requirements.authoring.refresh`
 pub async fn author_evidence_with_options(
     root: &Path,
     subject: &str,
@@ -353,7 +330,6 @@ pub async fn author_evidence_with_options(
 
 /// Resolves the usage state root, refusing a location inside the project
 /// before any state directory is created.
-// {impl}`requirements.authoring.usage_storage`
 // {impl}`requirements.configuration.state_location`
 fn usage_state_root(root: &Path) -> io::Result<PathBuf> {
     let state = config::state_root()?;
@@ -375,14 +351,9 @@ fn usage_state_root(root: &Path) -> io::Result<PathBuf> {
     Ok(state)
 }
 
-// {impl}`requirements.authoring.batch`
 // {impl}`requirements.authoring.usage_storage`
 // {impl}`requirements.configuration.state_location`
-// {impl}`requirements.authoring.read_denial`
-// {impl}`requirements.authoring.concurrency`
-// {impl}`requirements.authoring.confirmation`
 // {impl}`requirements.authoring.policy`
-// {impl}`requirements.authoring.cache_warmup`
 pub(crate) async fn prepare_assessment(
     root: &Path,
     subject: &AuthoringSubject,
@@ -462,12 +433,9 @@ pub(crate) async fn prepare_assessment(
 }
 
 // {impl}`requirements.authoring.invocation`
-// {impl}`requirements.authoring.configuration_precedence`
 // {impl}`requirements.authoring.rig_configuration_mapping`
-// {impl}`requirements.authoring.usage_storage`
 // {impl}`requirements.authoring.persistence`
 // {impl}`requirements.configuration.loading`
-// {impl}`requirements.authoring.confirmation`
 // {impl}`requirements.authoring.policy`
 // {impl}`requirements.authoring.configuration`
 async fn configured_assessment(
@@ -488,7 +456,6 @@ async fn configured_assessment(
     let evidence_path = match output {
         EvidenceOutput::File => {
             let path = parsed.evidence_path(root);
-            // {impl}`requirements.authoring.coverage_loss`
             replaced.extend(coverage_loss::ReplacedRecord::read(root, &parsed));
             fs::create_dir_all(path.parent().expect("evidence parent"))?;
             fs::write(&path, json)?;
@@ -528,14 +495,9 @@ async fn configured_assessment(
 }
 
 // {impl}`requirements.authoring.invocation`
-// {impl}`requirements.authoring.configuration_precedence`
-// {impl}`requirements.authoring.rig_configuration_mapping`
-// {impl}`requirements.authoring.usage_storage`
 // {impl}`requirements.authoring.mandatory_inputs`
 // {impl}`requirements.authoring.usage_inputs`
 // {impl}`requirements.authoring.provider`
-// {impl}`requirements.authoring.read_denial`
-// {impl}`requirements.authoring.confirmation`
 // {impl}`requirements.authoring.policy`
 async fn configured_record(
     root: &Path,
@@ -566,7 +528,6 @@ async fn configured_record(
 }
 
 /// The backend name usage records give a model's backend.
-// {impl}`requirements.authoring.usage_storage`
 fn backend_name(model: &config::ModelRef) -> &'static str {
     match model.backend {
         BackendKind::Bedrock => "bedrock",
@@ -578,11 +539,8 @@ fn backend_name(model: &config::ModelRef) -> &'static str {
 /// in an independent second conversation, verifying the less favorable of
 /// disagreeing assessments in a third. Each conversation has its own usage
 /// record; `usage` is the first's.
-// {impl}`requirements.authoring.confirmation`
 // {impl}`requirements.authoring.verifier_outcome`
-// {impl}`requirements.authoring.usage_storage`
 // {impl}`requirements.authoring.mandatory_inputs`
-// {impl}`requirements.authoring.usage_inputs`
 // {impl}`requirements.authoring.policy`
 async fn assess_subject(
     provider: &impl CompletionProvider,
@@ -691,7 +649,6 @@ async fn assess_subject(
 /// Orders assessments: `false` is less favorable than FIXME, and FIXME
 /// than `true`; between site reviews with the same determination, the one
 /// with `applies` true is less favorable.
-// {impl}`requirements.authoring.confirmation`
 fn favorability(assessment: &(Judgment, Value)) -> (u8, bool) {
     let kind = match assessment.0 {
         Judgment::False => 0,
@@ -702,8 +659,6 @@ fn favorability(assessment: &(Judgment, Value)) -> (u8, bool) {
 }
 
 /// Starts the usage record of a further conversation about a subject.
-// {impl}`requirements.authoring.confirmation`
-// {impl}`requirements.authoring.usage_storage`
 // {impl}`requirements.authoring.policy`
 fn followup_log(
     state: &Path,
@@ -722,9 +677,6 @@ fn followup_log(
 }
 
 /// Fresh sources for an independent conversation, recorded in its usage.
-// {impl}`requirements.authoring.confirmation`
-// {impl}`requirements.authoring.usage_inputs`
-// {impl}`requirements.authoring.usage_storage`
 fn followup_sources(
     root: &Path,
     subject: &AuthoringSubject,
@@ -738,8 +690,6 @@ fn followup_sources(
 }
 
 /// Finishes a further conversation's usage record with its outcome.
-// {impl}`requirements.authoring.confirmation`
-// {impl}`requirements.authoring.usage_storage`
 fn finish_followup<T>(mut usage: UsageLog, purpose: &str, result: io::Result<T>) -> io::Result<T> {
     let outcome = match &result {
         Ok(_) => "completed",
@@ -758,8 +708,6 @@ fn finish_followup<T>(mut usage: UsageLog, purpose: &str, result: io::Result<T>)
 /// The `index`th text block of approved requirement `name` in the authoring
 /// chapter, which is the sole source of these instructions.
 // {impl}`requirements.authoring.initial_prompt`
-// {impl}`requirements.authoring.citation_prompt`
-// {impl}`requirements.authoring.verifier_prompt`
 // {impl}`requirements.authoring.habeas_background`
 // {impl}`requirements.authoring.judgment_rules`
 fn approved_text(name: &str, index: usize) -> &'static str {
@@ -797,8 +745,6 @@ fn distributed_background() -> &'static str {
 /// itself contains a placeholder, such as a requirement quoting a template,
 /// is left as written.
 // {impl}`requirements.authoring.initial_prompt`
-// {impl}`requirements.authoring.citation_prompt`
-// {impl}`requirements.authoring.verifier_prompt`
 fn fill(template: &str, values: &[(&str, &str)]) -> String {
     let mut result = String::with_capacity(template.len());
     let mut rest = template;
@@ -825,7 +771,6 @@ fn fill(template: &str, values: &[(&str, &str)]) -> String {
 // {impl}`requirements.authoring.requirement_task`
 // {impl}`requirements.authoring.testing_bar`
 // {impl}`requirements.authoring.example_task`
-// {impl}`requirements.ci.review_criteria`
 fn subject_task(kind: &DefinitionKind) -> String {
     match kind {
         DefinitionKind::Requirement => format!(
@@ -845,8 +790,6 @@ fn subject_task(kind: &DefinitionKind) -> String {
 // {impl}`requirements.authoring.initial_prompt`
 // {impl}`requirements.authoring.distributed_task`
 // {impl}`requirements.authoring.habeas_background`
-// {impl}`requirements.authoring.prompt_parts`
-// {impl}`requirements.ci.review_criteria`
 fn distributed_task(kind: &DefinitionKind, distributed: bool) -> String {
     if *kind == DefinitionKind::Requirement && distributed {
         fill(
@@ -860,7 +803,6 @@ fn distributed_task(kind: &DefinitionKind, distributed: bool) -> String {
 
 /// A conversation's opening: the system prompt, the same for every
 /// assessment of its kind, and the subject message that follows it.
-// {impl}`requirements.authoring.prompt_parts`
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Prompt {
     system: String,
@@ -869,11 +811,7 @@ struct Prompt {
 
 impl Prompt {
     /// Fills the system and subject blocks of approved prompt `name`.
-    // {impl}`requirements.authoring.prompt_parts`
     // {impl}`requirements.authoring.initial_prompt`
-    // {impl}`requirements.authoring.citation_prompt`
-    // {impl}`requirements.authoring.site_prompt`
-    // {impl}`requirements.authoring.verifier_prompt`
     fn filled(name: &str, values: &[(&str, &str)]) -> Self {
         Self {
             system: fill(approved_text(name, 0), values),
@@ -883,7 +821,6 @@ impl Prompt {
 
     /// The opening request: the system prompt as a leading system message,
     /// then the subject message as the user's.
-    // {impl}`requirements.authoring.prompt_parts`
     fn request(self) -> CompletionRequest {
         CompletionRequest::new(Message::user(self.subject)).preamble(self.system)
     }
@@ -903,11 +840,9 @@ impl Prompt {
 // {impl}`requirements.authoring.mandatory_inputs`
 // {impl}`requirements.authoring.citation_prompt`
 // {impl}`requirements.authoring.redaction`
-// {impl}`requirements.references.citation_review`
 // {impl}`requirements.authoring.github_reads`
 // {impl}`requirements.authoring.site_prompt`
 // {impl}`requirements.authoring.habeas_background`
-// {impl}`requirements.authoring.prompt_parts`
 fn initial_prompt(sources: &AssessmentSources) -> io::Result<Prompt> {
     let mandatory = serde_json::to_string_pretty(&sources.model_mandatory_inputs())?;
     let mut values = shared_blocks().to_vec();
@@ -944,13 +879,11 @@ fn initial_prompt(sources: &AssessmentSources) -> io::Result<Prompt> {
             ]);
             Prompt::filled("site_prompt", &values)
         }
-        // {impl}`requirements.authoring.coverage_loss`
         AssessmentKind::CoverageLoss(lost) => coverage_loss::prompt(lost, &mandatory)?,
     })
 }
 
 /// The body of a filled prompt's `# heading` section, up to the next heading.
-// {impl}`requirements.authoring.verifier_prompt`
 fn prompt_section<'a>(prompt: &'a str, heading: &str) -> &'a str {
     let opening = format!("# {heading}\n\n");
     let Some(start) = prompt.find(&opening) else {
@@ -964,7 +897,6 @@ fn prompt_section<'a>(prompt: &'a str, heading: &str) -> &'a str {
 /// after the "# Subject" heading and before "# Mandatory inputs", then, for a
 /// site review, the account of distributed requirements, and then its "Your
 /// task" section.
-// {impl}`requirements.authoring.verifier_prompt`
 // {impl}`requirements.authoring.habeas_background`
 fn review_instructions(prompt: &Prompt, site: bool) -> String {
     let named = prompt_section(&prompt.subject, "Subject").trim();
@@ -980,11 +912,9 @@ fn review_instructions(prompt: &Prompt, site: bool) -> String {
 }
 
 /// The verifier's added step for a site review.
-// {impl}`requirements.authoring.verifier_prompt`
 const SITE_STEP: &str = "4. Also set applies to whether the requirement governs the site, as the reviewer's step 1 decides it; if it does not, set real to false.";
 
 /// The verifier's prompt for a determination and its rationale.
-// {impl}`requirements.authoring.verifier_prompt`
 // {impl}`requirements.authoring.github_reads`
 // {impl}`requirements.authoring.habeas_background`
 // {impl}`requirements.authoring.prompt_parts`
@@ -1015,7 +945,6 @@ fn verification_prompt(
     Ok(Prompt::filled("verifier_prompt", &values))
 }
 
-// {impl}`requirements.authoring.submission`
 fn submission(arguments: &Value) -> io::Result<(Judgment, String)> {
     let object = arguments
         .as_object()
@@ -1064,7 +993,6 @@ fn site_submission(arguments: &Value) -> io::Result<(Judgment, String, bool)> {
 
 /// A verifier's findings about the claimed gaps of an assessment, and, for a
 /// site review, whether the requirement applies to the site.
-// {impl}`requirements.authoring.verifier_prompt`
 #[derive(Debug, PartialEq)]
 struct Verification {
     real: bool,
@@ -1077,8 +1005,6 @@ struct Verification {
 /// Parses a `submit_verification` call: exactly booleans `real` and
 /// `acknowledged`, an array of nonempty `acknowledgments`, which must be
 /// nonempty when both are true, and a nonempty `rationale`.
-// {impl}`requirements.authoring.verifier_prompt`
-// {impl}`requirements.authoring.verifier_outcome`
 fn verification(arguments: &Value) -> io::Result<Verification> {
     const FIELDS: [&str; 4] = ["real", "acknowledged", "acknowledgments", "rationale"];
     let invalid = |message: &str| io::Error::other(format!("submit_verification {message}"));
@@ -1129,8 +1055,6 @@ fn verification(arguments: &Value) -> io::Result<Verification> {
 
 /// Parses a site review's `submit_verification` call: the four fields and a
 /// boolean `applies`; `applies` false with `real` true is invalid.
-// {impl}`requirements.authoring.verifier_prompt`
-// {impl}`requirements.authoring.verifier_outcome`
 fn site_verification(arguments: &Value) -> io::Result<Verification> {
     let invalid = |message: &str| io::Error::other(format!("submit_verification {message}"));
     let object = arguments
@@ -1154,10 +1078,8 @@ fn site_verification(arguments: &Value) -> io::Result<Verification> {
 }
 
 /// The source tools and one submission tool.
-// {impl}`requirements.authoring.submission`
 // {impl}`requirements.authoring.initial_prompt`
 // {impl}`requirements.ci.outcomes`
-// {impl}`requirements.authoring.verifier_prompt`
 // {impl}`requirements.authoring.site_prompt`
 fn tool_definitions_with(submit: &str, site: bool) -> io::Result<Vec<ToolDefinition>> {
     let mut definitions = tools::definitions();
@@ -1204,10 +1126,6 @@ fn tool_definitions() -> io::Result<Vec<ToolDefinition>> {
 /// The record a judgment produces: definition evidence, or a citation
 /// review with the item's file, selector, and citations.
 // {impl}`requirements.authoring.persistence`
-// {impl}`requirements.ci.schema`
-// {impl}`requirements.ci.reference_set`
-// {impl}`requirements.references.citation_review`
-// {impl}`requirements.references.site_review`
 fn record(
     sources: &AssessmentSources,
     judgment: &Judgment,
@@ -1236,11 +1154,9 @@ fn record(
 // {impl}`requirements.authoring.submission`
 // {impl}`requirements.authoring.initial_prompt`
 // {impl}`requirements.authoring.persistence`
-// {impl}`requirements.authoring.usage_storage`
 // {impl}`requirements.authoring.mandatory_inputs`
 // {impl}`requirements.ci.reference_set`
 // {impl}`requirements.ci.schema`
-// {impl}`requirements.references.citation_review`
 async fn assess(
     provider: &impl CompletionProvider,
     sources: &mut AssessmentSources,
@@ -1279,7 +1195,6 @@ async fn assess(
 
 /// Verifies a determination and its rationale in its own conversation,
 /// returning the verifier's findings.
-// {impl}`requirements.authoring.confirmation`
 // {impl}`requirements.authoring.verifier_prompt`
 async fn verify(
     provider: &impl CompletionProvider,
@@ -1308,23 +1223,15 @@ async fn verify(
 /// One conversation: sends the prompt with the source tools and the named
 /// submission tool, delivers tool results until the model submits exactly
 /// once, and returns the parsed submission.
-// {impl}`requirements.authoring.submission`
 // {impl}`requirements.authoring.delivered_inputs`
-// {impl}`requirements.authoring.usage_inputs`
 // {impl}`requirements.authoring.usage_requests`
-// {impl}`requirements.authoring.usage_storage`
 // {impl}`requirements.authoring.mandatory_inputs`
-// {impl}`requirements.authoring.read_denial`
 // {impl}`requirements.authoring.provider_backoff`
 // {impl}`requirements.authoring.submission_count`
 // {impl}`requirements.authoring.source_tools`
 // {impl}`requirements.authoring.file_discovery`
 // {impl}`requirements.authoring.text_search`
-// {impl}`requirements.ci.authoring_inputs`
-// {impl}`requirements.authoring.rig_configuration_mapping`
 // {impl}`requirements.definitions.authoring_inputs`
-// {impl}`requirements.authoring.confirmation`
-// {impl}`requirements.authoring.concurrency`
 // {impl}`requirements.authoring.prompt_parts`
 // {impl}`requirements.authoring.result_pages`
 async fn converse<T>(
@@ -1473,7 +1380,6 @@ mod tests {
         }
     }
 
-    // {test}`requirements.authoring.provider_backoff`
     struct ThrottledProvider {
         failures: usize,
         status: u16,
@@ -1482,8 +1388,6 @@ mod tests {
     }
 
     impl CompletionProvider for ThrottledProvider {
-        // {test}`requirements.authoring.provider_backoff`
-        // {test}`requirements.authoring.usage_requests`
         async fn complete(&self, request: CompletionRequest) -> io::Result<CompletionResponse> {
             self.requests
                 .borrow_mut()
@@ -1500,16 +1404,12 @@ mod tests {
     }
 
     /// Reads one source on the first turn, then submits.
-    // {test}`requirements.definitions.authoring_inputs`
-    // {test}`requirements.authoring.read_denial`
     struct ReadingProvider {
         read: Value,
         requests: RefCell<Vec<Value>>,
     }
 
     impl CompletionProvider for ReadingProvider {
-        // {test}`requirements.definitions.authoring_inputs`
-        // {test}`requirements.authoring.read_denial`
         async fn complete(&self, request: CompletionRequest) -> io::Result<CompletionResponse> {
             self.requests
                 .borrow_mut()
@@ -1590,13 +1490,11 @@ mod tests {
 
     /// Searches with a paged result, asks for its second page with the
     /// token the first carried, and then submits.
-    // {test}`requirements.authoring.result_pages`
     struct PagingProvider {
         requests: RefCell<Vec<String>>,
     }
 
     impl CompletionProvider for PagingProvider {
-        // {test}`requirements.authoring.result_pages`
         async fn complete(&self, request: CompletionRequest) -> io::Result<CompletionResponse> {
             let last = serde_json::to_string(request.chat_history.last().unwrap()).unwrap();
             self.requests.borrow_mut().push(last.clone());
@@ -1811,7 +1709,6 @@ mod tests {
         assert!(!prompt.contains("{{"), "{prompt}");
     }
 
-    // {test}`requirements.authoring.provider_backoff`
     fn retry_fixture() -> (
         tempfile::TempDir,
         tempfile::TempDir,
@@ -1908,13 +1805,11 @@ mod tests {
         assert_eq!(log["requests"][0]["outcome"], "failed");
     }
 
-    // {test}`requirements.authoring.provider_backoff`
     struct HangingProvider {
         requests: RefCell<usize>,
     }
 
     impl CompletionProvider for HangingProvider {
-        // {test}`requirements.authoring.provider_backoff`
         async fn complete(&self, request: CompletionRequest) -> io::Result<CompletionResponse> {
             *self.requests.borrow_mut() += 1;
             if *self.requests.borrow() == 1 {
@@ -1944,13 +1839,11 @@ mod tests {
     }
     /// Fails with throttling before both requests, answering the first
     /// recovered request with a source read and the second with a judgment.
-    // {test}`requirements.authoring.provider_backoff`
     struct ThrottledToolProvider {
         requests: RefCell<Vec<(tokio::time::Instant, Value)>>,
     }
 
     impl CompletionProvider for ThrottledToolProvider {
-        // {test}`requirements.authoring.provider_backoff`
         async fn complete(&self, request: CompletionRequest) -> io::Result<CompletionResponse> {
             let attempt = self.requests.borrow().len();
             self.requests.borrow_mut().push((
@@ -2157,14 +2050,12 @@ mod tests {
 
     /// Returns one scripted response per request; each response is a list of
     /// tool calls.
-    // {test}`requirements.authoring.submission`
     struct ScriptedProvider {
         turns: Vec<Vec<(&'static str, Value)>>,
         requests: RefCell<usize>,
     }
 
     impl CompletionProvider for ScriptedProvider {
-        // {test}`requirements.authoring.submission`
         async fn complete(&self, _request: CompletionRequest) -> io::Result<CompletionResponse> {
             let turn = *self.requests.borrow();
             *self.requests.borrow_mut() += 1;
@@ -2290,15 +2181,12 @@ mod tests {
 
     /// Answers each request with the next scripted tool call, recording the
     /// requests it receives.
-    // {test}`requirements.authoring.confirmation`
-    // {test}`requirements.authoring.citation_prompt`
     struct RecordingProvider {
         turns: Vec<(&'static str, Value)>,
         requests: RefCell<Vec<Value>>,
     }
 
     impl RecordingProvider {
-        // {test}`requirements.authoring.confirmation`
         fn new(turns: Vec<(&'static str, Value)>) -> Self {
             Self {
                 turns,
@@ -2307,7 +2195,6 @@ mod tests {
         }
 
         /// The prompt and advertised tool names of each request.
-        // {test}`requirements.authoring.confirmation`
         fn prompts(&self) -> Vec<(String, Vec<String>)> {
             self.requests
                 .borrow()
@@ -2327,7 +2214,6 @@ mod tests {
     }
 
     impl CompletionProvider for RecordingProvider {
-        // {test}`requirements.authoring.confirmation`
         async fn complete(&self, request: CompletionRequest) -> io::Result<CompletionResponse> {
             let turn = self.requests.borrow().len();
             self.requests
@@ -2347,7 +2233,6 @@ mod tests {
         }
     }
 
-    // {test}`requirements.authoring.confirmation`
     fn judgment(determination: Value, rationale: &str) -> (&'static str, Value) {
         (
             "submit_judgment",
@@ -2355,8 +2240,6 @@ mod tests {
         )
     }
 
-    // {test}`requirements.authoring.confirmation`
-    // {test}`requirements.authoring.verifier_outcome`
     fn verdict(real: bool, acknowledgments: &[&str], rationale: &str) -> (&'static str, Value) {
         (
             "submit_verification",
@@ -2367,7 +2250,6 @@ mod tests {
 
     /// Runs one subject's assessment with `turns`, returning the outcome, the
     /// provider, and the subjects of the usage records written.
-    // {test}`requirements.authoring.confirmation`
     async fn confirmed(
         turns: Vec<(&'static str, Value)>,
         confirm: bool,
@@ -2978,7 +2860,6 @@ mod tests {
 
     /// Runs the review of site `fn[check_one]` of `requirements.rule` with
     /// `turns`, returning the outcome and the provider.
-    // {test}`requirements.authoring.confirmation`
     // {test}`requirements.references.site_review`
     async fn site_confirmed(
         turns: Vec<(&'static str, Value)>,
@@ -3005,7 +2886,6 @@ mod tests {
 
     /// A requirement whose only site query selects inner attributes, which
     /// belong to their file's root node.
-    // {test}`requirements.references.site_review`
     const ATTRIBUTES: &str = r##"::::{req} attributes
 Crate attributes MUST be justified.
 
@@ -3025,7 +2905,6 @@ no_match:
 
     /// A project whose `requirements.rule` cites `requirements.other` and
     /// `habeas:none`, with a root-node site of `requirements.attributes`.
-    // {test}`requirements.references.site_review`
     pub(crate) fn citing_site_project() -> tempfile::TempDir {
         let cites = concat!("{", "cite}`requirements.other` and {", "cite}`habeas:none`");
         let rule = crate::sites::tests::RULE.replace(

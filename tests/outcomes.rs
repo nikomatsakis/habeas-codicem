@@ -7,14 +7,12 @@ use serde_json::{Value, json};
 use tempfile::TempDir;
 
 /// A role written so this file's own source does not contain it.
-// {test}`requirements.ci.outcomes`
 fn role(kind: &str) -> String {
     format!("{{{kind}}}")
 }
 
 /// A fenced `{fixme}` in Rust comments: an opening fence naming `name`,
 /// option lines for `issues`, the `body`, and a closing fence.
-// {test}`requirements.ci.outcomes`
 fn fixme(name: &str, issues: &[&str], body: &str) -> String {
     let mut text = format!("// :::{} {name}\n", role("fixme"));
     for issue in issues {
@@ -26,7 +24,6 @@ fn fixme(name: &str, issues: &[&str], body: &str) -> String {
 
 /// The example `requirements.timeout`, judged FIXME and acknowledged by a
 /// `{fixme}` in `observed.rs` naming two issues.
-// {test}`requirements.ci.outcomes`
 // {test}`requirements.examples.evidence`
 fn fixture() -> TempDir {
     let temp = TempDir::new().unwrap();
@@ -90,8 +87,6 @@ fn fixture() -> TempDir {
     temp
 }
 
-// {test}`requirements.ci.schema`
-// {test}`requirements.ci.reference_set`
 fn write_record(root: &Path, name: &str, mut value: Value) {
     if value.get("references").is_none() {
         value["references"] =
@@ -104,7 +99,6 @@ fn write_record(root: &Path, name: &str, mut value: Value) {
     .unwrap();
 }
 
-// {test}`requirements.ci.outcomes`
 fn replace_judgment(root: &Path, name: &str, judgment: Value) {
     let path = root.join(format!("evidence/requirements.{name}.json"));
     let mut record: Value = serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
@@ -170,7 +164,6 @@ fn fixme_examples_pass_without_test_references_but_true_examples_do_not() {
 /// Writes `source` to `reviewed.rs` and records `judgment` for
 /// `requirements.ready` with that file among its inputs, returning the
 /// validation errors.
-// {test}`requirements.ci.outcomes`
 fn judge_ready(root: &Path, source: &str, judgment: Value) -> Vec<String> {
     fs::write(root.join("reviewed.rs"), source).unwrap();
     let path = root.join("evidence/requirements.ready.json");

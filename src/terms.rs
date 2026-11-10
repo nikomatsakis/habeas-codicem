@@ -7,7 +7,6 @@ use crate::evidence::Declaration;
 use crate::inputs::{InputSelector, OutlineCache};
 use crate::{DefinitionKind, ReferenceKind, reference_roles};
 
-// {impl}`requirements.definitions.declaration`
 pub(crate) fn declaration(text: &str) -> Result<(&str, &str), String> {
     let text = text.trim_start();
     let (option, body) = text.split_once('\n').unwrap_or((text, ""));
@@ -31,8 +30,6 @@ pub(crate) fn declaration(text: &str) -> Result<(&str, &str), String> {
     Ok((phrase, body))
 }
 
-// {impl}`requirements.definitions.dependencies`
-// {impl}`requirements.definitions.references`
 fn referenced_terms(text: &str, markdown: bool, names: &mut BTreeSet<String>) {
     names.extend(
         reference_roles(text, markdown)
@@ -43,7 +40,6 @@ fn referenced_terms(text: &str, markdown: bool, names: &mut BTreeSet<String>) {
 }
 
 // {impl}`requirements.definitions.dependencies`
-// {impl}`requirements.definitions.selection`
 pub(crate) fn dependencies(
     root: &Path,
     declarations: &BTreeMap<String, Declaration>,
@@ -60,11 +56,8 @@ pub(crate) fn dependencies(
 }
 
 /// Terms referenced directly by the subject text or the record's inputs.
-// {impl}`requirements.definitions.dependencies`
-// {impl}`requirements.definitions.selection`
 // {impl}`requirements.references.markdown_literals`
 // Malformed or unresolvable inputs are skipped: their own checks report them.
-// {impl}`requirements.ci.errors`
 fn direct_references(
     root: &Path,
     declarations: &BTreeMap<String, Declaration>,
@@ -131,7 +124,6 @@ fn direct_references(
 /// Expands referenced terms to a fixed point. Returns the resolvable
 /// definitions and one problem per unresolvable term, continuing past each
 /// problem so every one is found.
-// {impl}`requirements.definitions.dependencies`
 // {impl}`requirements.ci.errors`
 fn close_dependencies(
     declarations: &BTreeMap<String, Declaration>,
@@ -161,8 +153,6 @@ fn close_dependencies(
     (required, errors)
 }
 
-// {impl}`requirements.definitions.selection`
-// {impl}`requirements.definitions.dependencies`
 // {impl}`requirements.ci.errors`
 pub(crate) fn validate_dependencies(
     root: &Path,
@@ -194,8 +184,6 @@ pub(crate) fn validate_dependencies(
     }
 }
 
-// {impl}`requirements.definitions.references`
-// {impl}`requirements.definitions.declaration`
 pub(crate) fn escaped_phrase(phrase: &str) -> String {
     let mut output = String::new();
     for ch in phrase.chars() {

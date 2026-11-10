@@ -19,7 +19,6 @@ const TOKEN_LENGTH: usize = 16;
 
 /// A source-tool result made of whole entries, which is paged when its
 /// serialized JSON exceeds [`PAGE_LIMIT`].
-// {impl}`requirements.authoring.result_pages`
 pub(crate) struct Listing {
     /// The keys of the result's entry arrays, in order; none for a result
     /// that is a bare array, whose pages hold it under `entries`.
@@ -34,7 +33,6 @@ pub(crate) struct Listing {
 impl Listing {
     /// A result that is a bare array of `entries`, such as a listing or an
     /// outline.
-    // {impl}`requirements.authoring.result_pages`
     pub(crate) fn array(entries: Vec<Value>) -> Self {
         Self {
             arrays: &[],
@@ -44,7 +42,6 @@ impl Listing {
     }
 
     /// A result of evidence `inputs` and their additional definitions.
-    // {impl}`requirements.authoring.result_pages`
     // {impl}`requirements.authoring.delivered_inputs`
     pub(crate) fn inputs(inputs: Vec<Value>) -> Self {
         Self {
@@ -55,7 +52,6 @@ impl Listing {
     }
 
     /// A result holding one array per key, in the order of `arrays`.
-    // {impl}`requirements.authoring.result_pages`
     pub(crate) fn object(arrays: &'static [&'static str], values: Vec<Vec<Value>>) -> Self {
         Self {
             arrays,
@@ -69,7 +65,6 @@ impl Listing {
     }
 
     /// The result, or one page of it, holding `entries` with `definitions`.
-    // {impl}`requirements.authoring.result_pages`
     fn render(
         &self,
         entries: &[&Value],
@@ -106,7 +101,6 @@ impl Listing {
 
 /// The pages of this assessment's paged results not yet returned, by token.
 /// Each assessment has its own, dropped when it finishes.
-// {impl}`requirements.authoring.result_pages`
 #[derive(Default)]
 pub(crate) struct ResultPages {
     pages: HashMap<String, (Value, Vec<Value>)>,
@@ -116,7 +110,6 @@ impl ResultPages {
     /// Returns `listing` whole when its JSON is within [`PAGE_LIMIT`], and
     /// otherwise its first page, keeping the rest for `next_page`. Only the
     /// returned page's inputs are delivered.
-    // {impl}`requirements.authoring.result_pages`
     // {impl}`requirements.authoring.delivered_inputs`
     pub(crate) fn deliver(
         &mut self,
@@ -172,7 +165,6 @@ impl ResultPages {
     }
 
     /// The page a `next_page` token names, in the shape of the first.
-    // {impl}`requirements.authoring.result_pages`
     pub(crate) fn next_page(&self, token: &str) -> io::Result<ToolDelivery> {
         let (result, inputs) = self.pages.get(token).ok_or_else(|| {
             io::Error::other(format!(
@@ -186,7 +178,6 @@ impl ResultPages {
     }
 
     /// A fresh opaque token of [`TOKEN_LENGTH`] characters.
-    // {impl}`requirements.authoring.result_pages`
     fn token(&self) -> String {
         loop {
             let token = format!("{:016x}", fastrand::u64(..));
@@ -200,7 +191,6 @@ impl ResultPages {
 
 /// The inputs a delivered result or page records: its entries, when they are
 /// inputs, then their definitions.
-// {impl}`requirements.authoring.result_pages`
 // {impl}`requirements.authoring.delivered_inputs`
 fn delivered(listing: &Listing, entries: Vec<Value>, definitions: Vec<Value>) -> Vec<Value> {
     if !listing.evidence {
@@ -213,7 +203,6 @@ fn delivered(listing: &Listing, entries: Vec<Value>, definitions: Vec<Value>) ->
 
 /// The definitions accompanying a page's entries, each once, in order,
 /// leaving out any the page holds as an entry.
-// {impl}`requirements.authoring.result_pages`
 fn page_definitions(entries: &[&Value], accompanying: &[Vec<Value>]) -> Vec<Value> {
     let mut definitions = Vec::new();
     for definition in accompanying.iter().flatten() {
@@ -229,7 +218,6 @@ fn page_definitions(entries: &[&Value], accompanying: &[Vec<Value>]) -> Vec<Valu
 /// except that an entry exceeding it forms a page of its own. Sizes are
 /// counted from above: every element's comma and every accompanying
 /// definition are counted, so a page never exceeds its estimate.
-// {impl}`requirements.authoring.result_pages`
 fn paginate(
     listing: &Listing,
     values: &[&Value],
@@ -290,7 +278,6 @@ mod tests {
 
     /// Follows a paged result to its end, checking each page's size and
     /// counts, and returns every page's delivery.
-    // {test}`requirements.authoring.result_pages`
     fn all_pages(pages: &ResultPages, first: ToolDelivery) -> Vec<ToolDelivery> {
         let page = &first.result["page"];
         let total = page["total_entries"].as_u64().unwrap();

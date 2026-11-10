@@ -64,7 +64,6 @@ pub(crate) enum DefinitionKind {
 
 impl DefinitionKind {
     // {impl}`requirements.examples.evidence`
-    // {impl}`requirements.definitions.declaration`
     pub(crate) fn noun(self) -> &'static str {
         match self {
             Self::Requirement => "requirement",
@@ -73,9 +72,7 @@ impl DefinitionKind {
         }
     }
 
-    // {impl}`requirements.references.book_badges`
     // {impl}`requirements.examples.index`
-    // {impl}`requirements.definitions.declaration`
     pub(crate) fn badge(self) -> &'static str {
         match self {
             Self::Requirement => "req",
@@ -84,16 +81,13 @@ impl DefinitionKind {
         }
     }
 
-    // {impl}`requirements.references.book_badges`
     // {impl}`requirements.examples.index`
-    // {impl}`requirements.definitions.references`
     // {impl}`requirements.index.navigation`
     pub(crate) fn anchor(self, name: &str) -> String {
         format!("habeas-{}-{name}", self.badge())
     }
 }
 
-// {impl}`requirements.references.anchors`
 pub(crate) struct DefinitionBlock {
     pub(crate) start: usize,
     pub(crate) end: usize,
@@ -109,7 +103,6 @@ pub(crate) struct DefinitionBlock {
 
 /// An option line such as `:impl: src/skill.md` immediately after the opening
 /// fence of a `{req}` or `{example}` directive.
-// {impl}`requirements.references.anchors`
 pub(crate) struct DefinitionOption {
     pub(crate) start: usize,
     pub(crate) end: usize,
@@ -125,8 +118,6 @@ pub(crate) struct Definition {
     pub(crate) kind: DefinitionKind,
 }
 
-// {impl}`requirements.references.roles`
-// {impl}`requirements.definitions.references`
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ReferenceKind {
     Impl,
@@ -140,8 +131,6 @@ pub(crate) enum ReferenceKind {
 
 // {impl}`requirements.references.book_badges`
 impl ReferenceKind {
-    // {impl}`requirements.references.book_badges`
-    // {impl}`requirements.definitions.references`
     pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Impl => "impl",
@@ -152,8 +141,6 @@ impl ReferenceKind {
         }
     }
 
-    // {impl}`requirements.references.book_badges`
-    // {impl}`requirements.definitions.references`
     fn color(self) -> &'static str {
         match self {
             Self::Impl => "237346",
@@ -165,7 +152,6 @@ impl ReferenceKind {
     }
 }
 
-// {impl}`requirements.references.roles`
 pub(crate) struct ReferenceMatch<'a> {
     pub(crate) start: usize,
     end: usize,
@@ -173,7 +159,6 @@ pub(crate) struct ReferenceMatch<'a> {
     pub(crate) kind: ReferenceKind,
 }
 
-// {impl}`requirements.cli.mdbook`
 // {impl}`requirements.examples.definition`
 // {impl}`requirements.definitions.declaration`
 // {impl}`requirements.definitions.references`
@@ -271,8 +256,6 @@ pub fn preprocess_book(book: &mut Book, root: &Path) -> io::Result<()> {
     Ok(())
 }
 
-// {impl}`requirements.ci.identifiers`
-// {impl}`requirements.ci.coverage`
 fn chapter_namespace(path: &Path) -> String {
     let path = path.with_extension("");
     let mut parts: Vec<_> = path
@@ -297,11 +280,7 @@ fn chapter_namespace(path: &Path) -> String {
 // {impl}`requirements.index.navigation`
 // {impl}`requirements.references.book_badges`
 // {impl}`requirements.examples.definition`
-// {impl}`requirements.definitions.declaration`
-// {impl}`requirements.definitions.references`
 // {impl}`requirements.examples.index`
-// {impl}`requirements.references.anchors`
-// {impl}`requirements.ci.identifiers`
 fn replace_definitions(
     content: &str,
     namespace: &str,
@@ -479,8 +458,6 @@ fn replace_references(
 /// a project definition, or an unlinked badge whose hover text gives a
 /// built-in's text. `fenced` is the body of a fenced reference. Returns
 /// `None` for a reference that must remain literal.
-// {impl}`requirements.references.book_badges`
-// {impl}`requirements.references.builtin_definitions`
 // {impl}`requirements.references.safe_badges`
 // {impl}`requirements.index.navigation`
 // {impl}`requirements.examples.index`
@@ -519,8 +496,6 @@ fn reference_badge(
     ))
 }
 
-// {impl}`requirements.references.book_badges`
-// {impl}`requirements.definitions.references`
 // {impl}`requirements.index.navigation`
 // {impl}`requirements.examples.index`
 fn replace_inline_references(
@@ -570,8 +545,6 @@ fn replace_inline_references(
     result
 }
 
-// {impl}`requirements.references.book_badges`
-// {impl}`requirements.references.safe_badges`
 // {impl}`requirements.index.detail_format`
 pub(crate) fn shield_badge(label: &str, message: &str, color: &str) -> String {
     let url = format!(
@@ -587,7 +560,6 @@ pub(crate) fn shield_badge(label: &str, message: &str, color: &str) -> String {
     )
 }
 
-// {impl}`requirements.references.safe_badges`
 fn shield_path_component(value: &str) -> String {
     let mut encoded = String::with_capacity(value.len());
     for byte in value.bytes() {
@@ -604,7 +576,6 @@ fn shield_path_component(value: &str) -> String {
 
 // {impl}`requirements.index.navigation`
 // Relative chapter links, including `../` from nested chapters.
-// {impl}`requirements.references.book_badges`
 pub(crate) fn chapter_href(current: &Path, target: &Path, anchor: Option<&str>) -> String {
     let current_dir = current
         .parent()
@@ -638,8 +609,6 @@ pub(crate) fn chapter_href(current: &Path, target: &Path, anchor: Option<&str>) 
     href.replace(".md", "%2Emd")
 }
 
-// {impl}`requirements.ci.identifiers`
-// {impl}`requirements.ci.coverage`
 fn full_requirement_name(namespace: &str, name: &str) -> String {
     if namespace.is_empty() {
         name.to_owned()
@@ -648,14 +617,8 @@ fn full_requirement_name(namespace: &str, name: &str) -> String {
     }
 }
 
-// {impl}`requirements.ci.span`
-// {impl}`requirements.ci.identifiers`
-// {impl}`requirements.references.markdown_literals`
 // {impl}`requirements.examples.definition`
-// {impl}`requirements.definitions.declaration`
 // {impl}`requirements.ci.fence_lengths`
-// {impl}`requirements.references.anchors`
-// {impl}`requirements.references.builtin_definitions`
 pub(crate) fn definition_blocks(content: &str) -> Vec<DefinitionBlock> {
     let code_ranges = code_block_ranges(content);
     let mut lines = Vec::new();
@@ -709,7 +672,6 @@ pub(crate) fn definition_blocks(content: &str) -> Vec<DefinitionBlock> {
         } else {
             (content.len(), content.len(), false)
         };
-        // {impl}`requirements.references.anchors`
         let mut options = Vec::new();
         let mut text_start = body_start;
         if kind != DefinitionKind::Term {
@@ -747,8 +709,6 @@ pub(crate) fn definition_blocks(content: &str) -> Vec<DefinitionBlock> {
 }
 
 /// Parse an option line of the form `:name: value`.
-// {impl}`requirements.references.anchors`
-// {impl}`requirements.references.roles`
 pub(crate) fn option_line(line: &str) -> Option<(&str, &str)> {
     let rest = line.trim_start_matches(' ').strip_prefix(':')?;
     let (name, value) = rest.split_once(':')?;
@@ -764,8 +724,6 @@ pub(crate) fn option_line(line: &str) -> Option<(&str, &str)> {
 }
 
 /// The text of `range` without the option lines of any definition block in it.
-// {impl}`requirements.references.anchors`
-// {impl}`requirements.ci.requirement_text`
 pub(crate) fn without_options(
     content: &str,
     range: Range<usize>,
@@ -792,7 +750,6 @@ pub(crate) fn without_options(
 
 /// The byte ranges of a Markdown text's code blocks, whose contents stay
 /// literal.
-// {impl}`requirements.references.markdown_literals`
 pub(crate) fn code_block_ranges(content: &str) -> Vec<Range<usize>> {
     Parser::new(content)
         .into_offset_iter()
@@ -802,8 +759,6 @@ pub(crate) fn code_block_ranges(content: &str) -> Vec<Range<usize>> {
         .collect()
 }
 
-// {impl}`requirements.ci.span`
-// {impl}`requirements.ci.fence_lengths`
 fn colon_fence(line: &str) -> Option<(&str, usize)> {
     let trimmed = line.trim_start_matches(' ');
     if line.len() - trimmed.len() > 3 {
@@ -813,20 +768,12 @@ fn colon_fence(line: &str) -> Option<(&str, usize)> {
     (length >= 3).then_some((&trimmed[length..], length))
 }
 
-// {impl}`requirements.references.markdown_literals`
 fn overlaps_protected(start: usize, end: usize, ranges: &[Range<usize>]) -> bool {
     ranges
         .iter()
         .any(|range| start < range.end && range.start < end)
 }
 
-// {impl}`requirements.references.roles`
-// {impl}`requirements.ci.identifiers`
-// {impl}`requirements.references.markdown_literals`
-// {impl}`requirements.definitions.references`
-// {impl}`requirements.definitions.declaration`
-// {impl}`requirements.references.builtin_definitions`
-// {impl}`requirements.references.discovery`
 pub(crate) fn reference_roles(content: &str, markdown: bool) -> Vec<ReferenceMatch<'_>> {
     let protected = if markdown {
         let mut ranges = protected_ranges(content);
@@ -888,7 +835,6 @@ pub(crate) fn reference_roles(content: &str, markdown: bool) -> Vec<ReferenceMat
 
 /// Every reference in text, inline or fenced, as its role and name, in
 /// source order.
-// {impl}`requirements.references.roles`
 pub(crate) fn text_references(content: &str, markdown: bool) -> Vec<(ReferenceKind, String)> {
     let mut references = reference_roles(content, markdown)
         .into_iter()
@@ -906,8 +852,6 @@ pub(crate) fn text_references(content: &str, markdown: bool) -> Vec<(ReferenceKi
         .collect()
 }
 
-// {impl}`requirements.references.markdown_literals`
-// {impl}`requirements.references.discovery`
 fn protected_ranges(content: &str) -> Vec<Range<usize>> {
     let mut ranges = Vec::new();
 
@@ -922,16 +866,12 @@ fn protected_ranges(content: &str) -> Vec<Range<usize>> {
     ranges
 }
 
-// {impl}`requirements.references.markdown_literals`
-// {impl}`requirements.references.discovery`
 fn is_protected(position: usize, ranges: &[Range<usize>]) -> bool {
     ranges
         .iter()
         .any(|range| range.start <= position && position < range.end)
 }
 
-// {impl}`requirements.references.markdown_literals`
-// {impl}`requirements.references.discovery`
 fn is_escaped(content: &str, position: usize) -> bool {
     content[..position]
         .bytes()
@@ -942,7 +882,6 @@ fn is_escaped(content: &str, position: usize) -> bool {
         == 1
 }
 
-// {impl}`requirements.ci.identifiers`
 pub(crate) fn valid_name(name: &str) -> bool {
     !name.is_empty()
         && name.split('.').all(|part| {
@@ -953,7 +892,6 @@ pub(crate) fn valid_name(name: &str) -> bool {
         })
 }
 
-// {impl}`requirements.references.safe_badges`
 fn escape_html(value: &str) -> String {
     let mut escaped = String::with_capacity(value.len());
     for character in value.chars() {
@@ -978,7 +916,6 @@ mod tests {
     use mdbook_preprocessor::book::{Book, BookItem, Chapter};
     use std::path::Path;
 
-    // {test}`requirements.index.detail_pages`
     fn book_root() -> tempfile::TempDir {
         let root = tempfile::TempDir::new().unwrap();
         std::fs::create_dir(root.path().join("md")).unwrap();
@@ -1359,7 +1296,6 @@ mod tests {
     }
 
     /// The shipped stylesheet's rules, as selector lists and declarations.
-    // {test}`requirements.references.book_badges`
     fn stylesheet_rules() -> Vec<(Vec<String>, Vec<String>)> {
         include_str!("../md/habeas.css")
             .split('}')

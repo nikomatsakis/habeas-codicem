@@ -11,7 +11,6 @@ use crate::reference_roles;
 // {impl}`requirements.authoring.progress`
 const RUST_COVERAGE_STAGE: &str = "Rust function coverage";
 
-// {impl}`requirements.definitions.dependencies`
 fn quoted_end(bytes: &[u8], start: usize) -> usize {
     let mut position = start + 1;
     while position < bytes.len() {
@@ -24,7 +23,6 @@ fn quoted_end(bytes: &[u8], start: usize) -> usize {
     bytes.len()
 }
 
-// {impl}`requirements.definitions.dependencies`
 fn char_end(source: &str, start: usize) -> Option<usize> {
     let bytes = source.as_bytes();
     let mut position = start + 1;
@@ -50,7 +48,6 @@ fn char_end(source: &str, start: usize) -> Option<usize> {
     (bytes.get(position) == Some(&b'\'')).then_some(position + 1)
 }
 
-// {impl}`requirements.definitions.dependencies`
 fn raw_string_end(bytes: &[u8], start: usize) -> Option<usize> {
     let mut position = match bytes.get(start..) {
         Some([b'r', ..]) => start + 1,
@@ -81,7 +78,6 @@ fn raw_string_end(bytes: &[u8], start: usize) -> Option<usize> {
 
 /// Byte ranges of the comments in Rust source, skipping string and character
 /// literals; used to find term references in recorded Rust inputs.
-// {impl}`requirements.definitions.dependencies`
 pub(crate) fn comments(source: &str) -> Vec<Range<usize>> {
     let bytes = source.as_bytes();
     let mut ranges = Vec::new();
@@ -132,7 +128,6 @@ pub(crate) fn comments(source: &str) -> Vec<Range<usize>> {
 /// and site review, as `file -> item -> hashes`, read once per validation.
 /// An item is covered when its node or an enclosing node is recorded here
 /// with its current hash.
-// {impl}`requirements.references.rust_item_coverage`
 #[derive(Default)]
 pub(crate) struct EvidenceReads(HashMap<String, HashMap<String, HashSet<String>>>);
 
@@ -140,7 +135,6 @@ impl EvidenceReads {
     /// Reads the outline inputs of the given evidence files. A file that
     /// cannot be read or parsed contributes nothing; evidence validation
     /// reports it.
-    // {impl}`requirements.references.rust_item_coverage`
     pub(crate) fn load(files: &[PathBuf]) -> Self {
         let mut reads = Self::default();
         for file in files {
@@ -156,7 +150,6 @@ impl EvidenceReads {
     }
 
     /// Adds the outline inputs of one record.
-    // {impl}`requirements.references.rust_item_coverage`
     pub(crate) fn add_record(&mut self, record: &serde_json::Value) {
         for input in record
             .get("inputs")
@@ -179,15 +172,12 @@ impl EvidenceReads {
     }
 
     /// Whether any outline input of `file` is recorded.
-    // {impl}`requirements.references.rust_item_coverage`
-    // {impl}`requirements.authoring.coverage_loss`
     pub(crate) fn has_file(&self, file: &str) -> bool {
         self.0.contains_key(file)
     }
 
     /// Whether node `index` of `file`'s outline, or a node containing it, is
     /// recorded with its current hash.
-    // {impl}`requirements.references.rust_item_coverage`
     pub(crate) fn covers(&self, file: &str, outline: &outline::Outline, index: usize) -> bool {
         let Some(items) = self.0.get(file) else {
             return false;
@@ -209,8 +199,6 @@ impl EvidenceReads {
 
 /// An item Rust item coverage reports: its file, outline selector, and the
 /// validation error naming it.
-// {impl}`requirements.references.rust_item_coverage`
-// {impl}`requirements.authoring.coverage_loss`
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct UncoveredItem {
     pub(crate) file: String,
@@ -219,7 +207,6 @@ pub(crate) struct UncoveredItem {
 }
 
 /// The validation error for an uncovered item.
-// {impl}`requirements.references.rust_item_coverage`
 fn uncovered_error(label: &str, line: usize, kind: &str, name: &str) -> String {
     format!(
         "{label}:{line}: {kind} {name} is uncovered: it has no requirement or example reference, and no evidence record or review read it"
@@ -242,15 +229,11 @@ fn missing_function_references(
 }
 
 /// Items without a valid reference, as `(node, line, kind, name)`.
-// {impl}`requirements.references.rust_item_coverage`
 type Unreferenced = Vec<(usize, usize, &'static str, String)>;
 
 /// The functions, methods, structs, enums, and unions of a Rust source with
 /// no valid reference in a comment belonging to them, with the source's
 /// outline.
-// {impl}`requirements.references.rust_item_coverage`
-// {impl}`requirements.references.no_requirement`
-// {impl}`requirements.definitions.references`
 // {impl}`requirements.references.builtin_definitions`
 // {impl}`requirements.references.procedure`
 // {impl}`requirements.references.outline_comments`
@@ -316,7 +299,6 @@ pub(crate) fn unreferenced_items(
 
 /// The kind coverage reports for an outline node kind that must be covered:
 /// functions and methods, structs, enums, and unions.
-// {impl}`requirements.references.rust_item_coverage`
 pub(crate) fn item_kind(kind: &str) -> Option<&'static str> {
     Some(match kind {
         "fn" => "function",
@@ -329,7 +311,6 @@ pub(crate) fn item_kind(kind: &str) -> Option<&'static str> {
 
 /// The first-party Rust files among the sources reference discovery
 /// considers: every `.rs` file outside the project-root `vendor` directory.
-// {impl}`requirements.references.rust_item_coverage`
 pub(crate) fn rust_files(root: &Path, sources: &[PathBuf]) -> Vec<PathBuf> {
     let vendor = root.join("vendor");
     sources
@@ -340,8 +321,6 @@ pub(crate) fn rust_files(root: &Path, sources: &[PathBuf]) -> Vec<PathBuf> {
         .collect()
 }
 
-// {impl}`requirements.references.rust_item_coverage`
-// {impl}`requirements.authoring.progress`
 // {impl}`requirements.ci.errors`
 pub(crate) fn validate_rust_functions(
     root: &Path,
@@ -409,7 +388,6 @@ pub(crate) fn validate_rust_functions(
     uncovered
 }
 
-// {impl}`requirements.references.rust_item_coverage`
 fn display_path(root: &Path, path: &Path) -> String {
     path.strip_prefix(root)
         .unwrap_or(path)
@@ -487,7 +465,6 @@ mod tests {
         }
     }
 
-    // {test}`requirements.references.rust_item_coverage`
     fn definitions() -> BTreeMap<String, Declaration> {
         BTreeMap::from([
             (

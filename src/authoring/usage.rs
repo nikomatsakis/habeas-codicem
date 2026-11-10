@@ -11,8 +11,6 @@ use serde_json::Value;
 
 static SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
-// {impl}`requirements.authoring.usage_storage`
-// {impl}`requirements.authoring.usage_requests`
 #[derive(Serialize)]
 pub(super) struct UsageRecord {
     version: u32,
@@ -42,7 +40,6 @@ pub(super) struct UsageRecord {
     tokens: TokenCounts,
 }
 
-// {impl}`requirements.authoring.usage_inputs`
 #[derive(Serialize)]
 struct InputUsage {
     origin: String,
@@ -55,7 +52,6 @@ struct InputUsage {
     sent_in_request: Option<usize>,
 }
 
-// {impl}`requirements.authoring.usage_requests`
 #[derive(Serialize)]
 struct RequestUsage {
     outcome: String,
@@ -63,7 +59,6 @@ struct RequestUsage {
     tokens: TokenCounts,
 }
 
-// {impl}`requirements.authoring.usage_requests`
 #[derive(Default, Serialize)]
 struct TokenCounts {
     input: Option<u64>,
@@ -87,7 +82,6 @@ pub(super) struct UsageLog {
 }
 
 impl UsageLog {
-    // {impl}`requirements.authoring.usage_storage`
     // {impl}`requirements.authoring.usage_requests`
     // {impl}`requirements.configuration.state_location`
     pub(super) fn start(state: &Path, root: &Path, subject: &str) -> io::Result<Self> {
@@ -147,7 +141,6 @@ impl UsageLog {
         Ok(log)
     }
 
-    // {impl}`requirements.authoring.usage_inputs`
     pub(super) fn prepared(&mut self, origin: &str, inputs: &[Value]) {
         for input in inputs {
             let kind = if input.get("item").is_some() {
@@ -186,8 +179,6 @@ impl UsageLog {
         }
     }
 
-    // {impl}`requirements.authoring.usage_inputs`
-    // {impl}`requirements.authoring.usage_requests`
     pub(super) fn begin_request(&mut self) -> io::Result<usize> {
         let index = self.record.requests.len();
         for input in &mut self.record.inputs {
@@ -210,14 +201,10 @@ impl UsageLog {
 
     /// Calls `finished` once this conversation's first provider request
     /// has finished, whether or not it succeeded.
-    // {impl}`requirements.authoring.cache_warmup`
     pub(super) fn on_first_request(&mut self, finished: impl FnOnce() + Send + 'static) {
         self.first_request_finished = Some(Box::new(finished));
     }
 
-    // {impl}`requirements.authoring.usage_requests`
-    // {impl}`requirements.authoring.usage_inputs`
-    // {impl}`requirements.authoring.cache_warmup`
     pub(super) fn end_request(
         &mut self,
         index: usize,
@@ -251,8 +238,6 @@ impl UsageLog {
         self.save()
     }
 
-    // {impl}`requirements.authoring.usage_requests`
-    // {impl}`requirements.authoring.usage_inputs`
     pub(super) fn tool(&mut self, name: &str, failed: bool) {
         let name = tool_name(name);
         *self.record.tool_calls.entry(name.to_owned()).or_default() += 1;
@@ -266,8 +251,6 @@ impl UsageLog {
         }
     }
 
-    // {impl}`requirements.authoring.usage_requests`
-    // {impl}`requirements.authoring.usage_inputs`
     pub(super) fn skipped_tool(&mut self, name: &str) {
         let name = tool_name(name);
         *self.record.tool_calls.entry(name.to_owned()).or_default() += 1;
@@ -275,7 +258,6 @@ impl UsageLog {
         self.record.tool_call_count += 1;
     }
 
-    // {impl}`requirements.authoring.usage_storage`
     // {impl}`requirements.configuration.state_location`
     // {impl}`requirements.authoring.usage_requests`
     pub(super) fn finish(&mut self, outcome: &str) -> io::Result<()> {
@@ -293,7 +275,6 @@ impl UsageLog {
         self.save()
     }
 
-    // {impl}`requirements.authoring.usage_storage`
     // {impl}`requirements.configuration.state_location`
     pub(super) fn save(&self) -> io::Result<()> {
         let mut file = OpenOptions::new()
@@ -306,7 +287,6 @@ impl UsageLog {
 }
 
 impl TokenCounts {
-    // {impl}`requirements.authoring.usage_requests`
     fn from_usage(usage: &Usage) -> Self {
         Self {
             input: usage.input_tokens,
@@ -318,7 +298,6 @@ impl TokenCounts {
         }
     }
 
-    // {impl}`requirements.authoring.usage_requests`
     fn sum(requests: &[RequestUsage]) -> Self {
         if requests.is_empty() {
             return Self::default();
@@ -346,7 +325,6 @@ impl TokenCounts {
         }
     }
 
-    // {impl}`requirements.authoring.usage_requests`
     fn sum_counter(
         requests: &[RequestUsage],
         counter: fn(&Self) -> Option<u64>,
@@ -366,10 +344,6 @@ impl TokenCounts {
     }
 }
 
-// {impl}`requirements.authoring.usage_requests`
-// {impl}`requirements.authoring.usage_storage`
-// {impl}`requirements.authoring.usage_inputs`
-// {impl}`requirements.authoring.result_pages`
 fn tool_name(name: &str) -> &str {
     match name {
         "habeas" | "ripgrep" | "ast_grep" | "github" | "list_files" | "outline" | "references"
@@ -378,7 +352,6 @@ fn tool_name(name: &str) -> &str {
     }
 }
 
-// {impl}`requirements.authoring.usage_storage`
 fn timestamp() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -392,7 +365,6 @@ mod tests {
     use serde_json::json;
     use std::time::Duration;
 
-    // {test}`requirements.authoring.usage_storage`
     fn persisted(log: &UsageLog) -> Value {
         serde_json::from_str(&fs::read_to_string(&log.path).unwrap()).unwrap()
     }

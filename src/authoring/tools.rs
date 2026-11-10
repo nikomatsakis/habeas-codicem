@@ -17,17 +17,13 @@ pub(crate) struct ToolDelivery {
     pub(crate) inputs: Vec<Value>,
 }
 
-// {impl}`requirements.authoring.source_tools`
 // {impl}`requirements.authoring.file_discovery`
-// {impl}`requirements.authoring.text_search`
 // {impl}`requirements.authoring.structural_search`
 // {impl}`requirements.configuration.evidence_paths`
 // {impl}`requirements.authoring.generated_inputs`
-// {impl}`requirements.authoring.read_denial`
 // {impl}`requirements.authoring.outline_tool`
 // {impl}`requirements.authoring.reference_index`
 // {impl}`requirements.authoring.github_reads`
-// {impl}`requirements.authoring.result_pages`
 pub(crate) fn definitions() -> Vec<Value> {
     // Providers such as Anthropic require a plain object at the schema root.
     // Describe the alternative forms here and enforce them in read().
@@ -88,7 +84,6 @@ pub(crate) fn definitions() -> Vec<Value> {
 
 /// How a tool's description explains paging: `subject` names the results
 /// that page, and `entries` what a page holds.
-// {impl}`requirements.authoring.result_pages`
 fn paged_note(subject: &str, entries: &str) -> String {
     let limit = super::pages::PAGE_LIMIT / 1024;
     // Only evidence inputs are accompanied by definitions.
@@ -103,8 +98,6 @@ fn paged_note(subject: &str, entries: &str) -> String {
 }
 
 /// The parameter schema of a `referencing` argument.
-// {impl}`requirements.authoring.text_search`
-// {impl}`requirements.authoring.structural_search`
 fn reference_scope_schema() -> Value {
     json!({"type":"object","properties":{
         "selection":{"type":"string"},
@@ -113,15 +106,11 @@ fn reference_scope_schema() -> Value {
     },"required":["selection"],"additionalProperties":false})
 }
 
-// {impl}`requirements.authoring.source_tools`
 // {impl}`requirements.authoring.file_discovery`
-// {impl}`requirements.authoring.text_search`
 // {impl}`requirements.authoring.structural_search`
 // {impl}`requirements.authoring.outline_tool`
 // {impl}`requirements.authoring.reference_index`
-// {impl}`requirements.authoring.read_denial`
 // {impl}`requirements.authoring.github_reads`
-// {impl}`requirements.authoring.result_pages`
 pub(crate) fn dispatch_paged(
     sources: &AssessmentSources,
     pages: &mut ResultPages,
@@ -159,7 +148,6 @@ pub(crate) fn dispatch_paged(
 
 /// Dispatches one tool call in an assessment of its own, whose pages are
 /// dropped once the call returns.
-// {test}`requirements.authoring.source_tools`
 #[cfg(test)]
 pub(crate) fn dispatch(
     sources: &AssessmentSources,
@@ -170,11 +158,7 @@ pub(crate) fn dispatch(
 }
 
 /// A read's delivery, or, for the line-range form, its result to page.
-// {impl}`requirements.authoring.source_tools`
-// {impl}`requirements.definitions.authoring_inputs`
 // {impl}`requirements.authoring.delivered_inputs`
-// {impl}`requirements.authoring.read_denial`
-// {impl}`requirements.authoring.result_pages`
 fn read(
     sources: &AssessmentSources,
     args: &Map<String, Value>,
@@ -216,9 +200,7 @@ fn read(
 }
 
 // {impl}`requirements.authoring.outline_tool`
-// {impl}`requirements.authoring.read_denial`
 // {impl}`requirements.references.outlines`
-// {impl}`requirements.authoring.result_pages`
 fn outline(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Result<Listing> {
     check_keys(args, &["file"])?;
     let file = string(args, "file")?;
@@ -251,11 +233,8 @@ fn outline_entries(outline: &crate::outline::Outline, parent: usize) -> Vec<Valu
 }
 
 // {impl}`requirements.authoring.file_discovery`
-// {impl}`requirements.authoring.source_tools`
 // {impl}`requirements.configuration.evidence_paths`
 // {impl}`requirements.authoring.generated_inputs`
-// {impl}`requirements.authoring.read_denial`
-// {impl}`requirements.authoring.result_pages`
 fn list_files(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Result<Listing> {
     check_keys(args, &["path"])?;
     let path = optional_path(args)?;
@@ -320,10 +299,8 @@ fn list_files(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Res
 // {impl}`requirements.authoring.result_pages`
 const REFERENCE_ARRAYS: &[&str] = &["definitions", "sites"];
 
-// {impl}`requirements.authoring.reference_index`
 // {impl}`requirements.references.definition_globs`
 // {impl}`requirements.references.anchors`
-// {impl}`requirements.authoring.result_pages`
 fn references(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Result<Listing> {
     check_keys(args, &["selection"])?;
     let selection = if args.contains_key("selection") {
@@ -435,12 +412,8 @@ fn references(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Res
     ))
 }
 
-// {impl}`requirements.authoring.text_search`
-// {impl}`requirements.authoring.source_tools`
 // {impl}`requirements.configuration.evidence_paths`
 // {impl}`requirements.authoring.generated_inputs`
-// {impl}`requirements.authoring.read_denial`
-// {impl}`requirements.authoring.result_pages`
 fn search(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Result<Listing> {
     check_keys(args, &["pattern", "path", "context", "referencing"])?;
     let pattern = string(args, "pattern")?;
@@ -524,15 +497,11 @@ fn search(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Result<
 /// The entries of one file's search result being collected: each innermost
 /// outline node containing a match, with its matching lines and the context
 /// lines around them.
-// {impl}`requirements.authoring.text_search`
-// {impl}`requirements.authoring.structural_search`
 #[derive(Default)]
 struct SearchNodes(BTreeMap<usize, (BTreeSet<usize>, BTreeSet<usize>)>);
 
 impl SearchNodes {
     /// Adds a match on `lines` in a node, with `context` lines around it.
-    // {impl}`requirements.authoring.text_search`
-    // {impl}`requirements.authoring.structural_search`
     fn add(
         &mut self,
         index: usize,
@@ -549,8 +518,6 @@ impl SearchNodes {
     /// are merged across the file: each line appears once, with the node it
     /// matches in, or else with the first node whose window holds it. These
     /// are not evidence inputs.
-    // {impl}`requirements.authoring.text_search`
-    // {impl}`requirements.authoring.structural_search`
     // {impl}`requirements.authoring.redaction`
     // {impl}`requirements.references.outline_selectors`
     fn entries(self, file: &str, parsed: &crate::inputs::ParsedSource) -> Vec<Value> {
@@ -594,12 +561,8 @@ impl SearchNodes {
 /// file `include` accepts and collecting the results `visit` returns by
 /// project-relative path. Source-access policy is applied while walking, so
 /// denied files are never opened.
-// {impl}`requirements.authoring.text_search`
-// {impl}`requirements.authoring.structural_search`
-// {impl}`requirements.authoring.source_tools`
 // {impl}`requirements.configuration.evidence_paths`
 // {impl}`requirements.authoring.generated_inputs`
-// {impl}`requirements.authoring.read_denial`
 fn walk_sources<T: Send>(
     sources: &AssessmentSources,
     path: &str,
@@ -687,14 +650,10 @@ fn walk_sources<T: Send>(
 /// The sources a `referencing` scope restricts a search to, by
 /// project-relative file: the inclusive line ranges of each referencing
 /// outline node, or `None` for the whole file.
-// {impl}`requirements.authoring.text_search`
-// {impl}`requirements.authoring.structural_search`
 struct ReferenceRegions(BTreeMap<String, Option<Vec<(usize, usize)>>>);
 
 impl ReferenceRegions {
     /// Whether a file carries a selected reference.
-    // {impl}`requirements.authoring.text_search`
-    // {impl}`requirements.authoring.structural_search`
     fn has(&self, file: &str) -> bool {
         self.0.contains_key(file)
     }
@@ -702,8 +661,6 @@ impl ReferenceRegions {
     /// The searched region containing an inclusive line range: `None` when
     /// none does, `Some(None)` for a whole file, and otherwise the smallest
     /// referencing node's lines.
-    // {impl}`requirements.authoring.text_search`
-    // {impl}`requirements.authoring.structural_search`
     fn region(&self, file: &str, first: usize, last: usize) -> Option<Option<(usize, usize)>> {
         match self.0.get(file)? {
             None => Some(None),
@@ -716,8 +673,6 @@ impl ReferenceRegions {
     }
 
     /// Adds a referencing node's lines, or a whole file.
-    // {impl}`requirements.authoring.text_search`
-    // {impl}`requirements.authoring.structural_search`
     fn add(&mut self, file: String, lines: Option<(usize, usize)>) {
         let entry = self.0.entry(file).or_insert_with(|| Some(Vec::new()));
         match (entry, lines) {
@@ -732,8 +687,6 @@ impl ReferenceRegions {
 /// carry a reference in one of its roles to a requirement or example its
 /// selection matches, including declaration anchors, as referencing nodes or
 /// whole files by its scope.
-// {impl}`requirements.authoring.text_search`
-// {impl}`requirements.authoring.structural_search`
 // {impl}`requirements.references.definition_globs`
 // {impl}`requirements.references.anchors`
 fn referencing(
@@ -874,12 +827,8 @@ fn referencing(
     Ok(Some(regions))
 }
 
-// {impl}`requirements.authoring.structural_search`
-// {impl}`requirements.authoring.source_tools`
 // {impl}`requirements.configuration.evidence_paths`
 // {impl}`requirements.authoring.generated_inputs`
-// {impl}`requirements.authoring.read_denial`
-// {impl}`requirements.authoring.result_pages`
 fn structural(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Result<Listing> {
     if args.contains_key("query") {
         check_keys(args, &["query"])?;
@@ -947,9 +896,7 @@ fn structural(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Res
 /// Runs a query a distributed requirement declares, named
 /// `<full-name>/<query-name>`, as validation runs it, returning each match's
 /// site as a search entry with the matched lines.
-// {impl}`requirements.authoring.structural_search`
 // {impl}`requirements.references.distributed`
-// {impl}`requirements.authoring.result_pages`
 fn declared_query(sources: &AssessmentSources, query: &str) -> io::Result<Listing> {
     let (requirement, name) = query.rsplit_once('/').ok_or_else(|| {
         io::Error::other(format!(
@@ -1010,12 +957,9 @@ fn declared_query(sources: &AssessmentSources, query: &str) -> io::Result<Listin
 }
 
 /// The line ranges of a declared query's matches in one site.
-// {impl}`requirements.authoring.structural_search`
 type SearchMatchLines = Vec<std::ops::RangeInclusive<usize>>;
 
-// {impl}`requirements.authoring.source_tools`
 // {impl}`requirements.authoring.file_discovery`
-// {impl}`requirements.authoring.text_search`
 fn check_keys(args: &Map<String, Value>, allowed: &[&str]) -> io::Result<()> {
     for key in args.keys() {
         if !allowed.contains(&key.as_str()) {
@@ -1027,16 +971,12 @@ fn check_keys(args: &Map<String, Value>, allowed: &[&str]) -> io::Result<()> {
     Ok(())
 }
 
-// {impl}`requirements.authoring.source_tools`
-// {impl}`requirements.authoring.text_search`
 fn string<'a>(args: &'a Map<String, Value>, key: &str) -> io::Result<&'a str> {
     args.get(key)
         .and_then(Value::as_str)
         .ok_or_else(|| io::Error::other(format!("{key} must be a string")))
 }
 
-// {impl}`requirements.authoring.source_tools`
-// {impl}`requirements.authoring.text_search`
 fn integer(args: &Map<String, Value>, key: &str) -> io::Result<usize> {
     args.get(key)
         .and_then(Value::as_u64)
@@ -1045,7 +985,6 @@ fn integer(args: &Map<String, Value>, key: &str) -> io::Result<usize> {
 }
 
 // {impl}`requirements.authoring.file_discovery`
-// {impl}`requirements.authoring.text_search`
 fn optional_path(args: &Map<String, Value>) -> io::Result<&str> {
     if args.contains_key("path") {
         string(args, "path")
@@ -1055,18 +994,12 @@ fn optional_path(args: &Map<String, Value>) -> io::Result<&str> {
 }
 
 // {impl}`requirements.authoring.file_discovery`
-// {impl}`requirements.authoring.text_search`
 // {impl}`requirements.ci.input_containment`
-// {impl}`requirements.authoring.source_tools`
-// {impl}`requirements.configuration.evidence_paths`
-// {impl}`requirements.authoring.read_denial`
 fn project_path(sources: &AssessmentSources, relative: &str) -> io::Result<PathBuf> {
     sources.access.path(&sources.root, Path::new(relative))
 }
 
 // {impl}`requirements.authoring.file_discovery`
-// {impl}`requirements.authoring.text_search`
-// {impl}`requirements.configuration.evidence_paths`
 fn relative_path(root: &Path, path: &Path) -> io::Result<String> {
     path.strip_prefix(root)
         .unwrap_or(path)
@@ -3008,8 +2941,6 @@ mod tests {
     }
 
     /// A search result's entries; searches record no inputs.
-    // {test}`requirements.authoring.text_search`
-    // {test}`requirements.authoring.structural_search`
     fn matched(delivery: &ToolDelivery) -> &Vec<Value> {
         assert!(delivery.inputs.is_empty(), "searches record no inputs");
         delivery.result["matches"]
@@ -3018,8 +2949,6 @@ mod tests {
     }
 
     /// The items of a search result's entries, as `file#item`.
-    // {test}`requirements.authoring.text_search`
-    // {test}`requirements.authoring.structural_search`
     fn found(delivery: &ToolDelivery) -> Vec<String> {
         assert!(delivery.inputs.is_empty(), "searches record no inputs");
         delivery.result["matches"]
@@ -3038,8 +2967,6 @@ mod tests {
 
     /// A project whose sources reference `requirements.ready` and
     /// `requirements.other` in several roles, each source calling `needle()`.
-    // {test}`requirements.authoring.text_search`
-    // {test}`requirements.authoring.structural_search`
     fn referencing_project() -> tempfile::TempDir {
         let root = project();
         fs::write(

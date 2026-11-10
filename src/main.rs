@@ -7,7 +7,6 @@ use std::path::PathBuf;
 mod hook;
 mod setup;
 
-// {impl}`requirements.cli.clap`
 #[derive(Parser)]
 #[command(name = "habeas")]
 struct Cli {
@@ -15,14 +14,12 @@ struct Cli {
     command: Command,
 }
 
-// {impl}`requirements.cli.clap`
 #[derive(Subcommand)]
 enum Command {
     Mdbook {
         #[command(subcommand)]
         command: Option<MdbookCommand>,
     },
-    // {impl}`requirements.cli.setup_local_path`
     Setup {
         #[arg(long, value_name = "crate-dir")]
         path: Option<PathBuf>,
@@ -42,12 +39,9 @@ enum Command {
     },
     // The single-subject syntax, its alias, and the `--all` exclusions.
     // {impl}`requirements.authoring.invocation`
-    // {impl}`requirements.authoring.batch`
     // `--config <name>` selects a configuration for this invocation.
-    // {impl}`requirements.authoring.configuration_precedence`
     // `--missing` and `--force` choose which selected subjects are assessed;
     // `--stdout` implies `--force`, so it excludes `--missing`.
-    // {impl}`requirements.authoring.refresh`
     // `--policy <name>` selects the assessment policy for every form.
     // {impl}`requirements.authoring.policy`
     #[command(alias = "author-evidence", group(ArgGroup::new("author_target").required(true).multiple(false).args(["subject", "all"])))]
@@ -84,13 +78,11 @@ enum Command {
     },
 }
 
-// {impl}`requirements.cli.clap`
 #[derive(Subcommand)]
 enum MdbookCommand {
     Supports { renderer: String },
 }
 
-// {impl}`requirements.cli.clap`
 #[derive(Subcommand)]
 enum HookCommand {
     SessionStart,

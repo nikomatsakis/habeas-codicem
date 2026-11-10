@@ -16,17 +16,12 @@ pub fn status_markdown(root: &Path, all: bool) -> io::Result<String> {
     status_markdown_filtered(root, all, None)
 }
 
-// {impl}`requirements.cli.status`
-// {impl}`requirements.cli.fixme_summary`
 // {impl}`requirements.definitions.selection`
 pub fn status_markdown_filtered(root: &Path, all: bool, glob: Option<&str>) -> io::Result<String> {
     status_markdown_with_options(root, all, glob, false)
 }
 
-// {impl}`requirements.cli.status`
-// {impl}`requirements.cli.fixme_summary`
 // {impl}`requirements.cli.shared_status_rendering`
-// {impl}`requirements.definitions.selection`
 // {impl}`requirements.references.definition_globs`
 // {impl}`requirements.references.no_requirement`
 pub fn status_markdown_with_options(
@@ -41,14 +36,7 @@ pub fn status_markdown_with_options(
 /// Renders `habeas status`, reading the issues `{fixme}` references name
 /// through `github`. The other status functions read no issues, so every
 /// issue counts as open.
-// {impl}`requirements.cli.status`
-// {impl}`requirements.cli.fixme_summary`
-// {impl}`requirements.cli.fixme_issues`
 // {impl}`requirements.authoring.github_reads`
-// {impl}`requirements.cli.shared_status_rendering`
-// {impl}`requirements.definitions.selection`
-// {impl}`requirements.references.definition_globs`
-// {impl}`requirements.references.no_requirement`
 pub fn status_markdown_with_github(
     root: &Path,
     all: bool,
@@ -116,7 +104,6 @@ pub fn status_markdown_with_github(
             "All matching definitions have valid evidence.\n"
         });
     } else {
-        // {impl}`requirements.cli.shared_status_rendering`
         output.push_str(&render_evidence_table(&rows));
     }
 
@@ -167,7 +154,6 @@ pub fn status_markdown_with_github(
         .iter()
         .filter(|error| !associated_errors.contains(error.as_str()))
         .collect::<Vec<_>>();
-    // {impl}`requirements.references.no_requirement`
     if all {
         let outlines = crate::inputs::OutlineCache::default();
         let citations = crate::citations::none_citations(
@@ -231,7 +217,6 @@ pub fn status_markdown_with_github(
 /// A finding as `habeas status` shows it: an uncovered item's finding is
 /// followed by the latest coverage-loss review of the item, if any.
 // {impl}`requirements.authoring.coverage_loss`
-// {impl}`requirements.cli.status`
 fn with_coverage_loss_review(
     inspection: &crate::evidence::RepositoryInspection,
     error: &str,
@@ -251,7 +236,6 @@ fn with_coverage_loss_review(
 /// assessments disagreed, which validation accepts. A citation review is
 /// selected when one of its citations names a selected definition, and a site
 /// review when its requirement is selected; without a selection, all are.
-// {impl}`requirements.cli.status`
 // {impl}`requirements.authoring.confirmation`
 fn disagreements(
     root: &Path,
@@ -322,7 +306,6 @@ fn disagreements(
     )
 }
 
-// {impl}`requirements.cli.info`
 // {impl}`requirements.definitions.selection`
 // {impl}`requirements.references.definition_globs`
 pub fn info_markdown(root: &Path, selector: &str) -> io::Result<String> {
@@ -415,7 +398,6 @@ mod tests {
 
     /// Writes a record at `relative` whose rationale may carry the
     /// disagreement note.
-    // {test}`requirements.cli.status`
     fn write_record(root: &Path, relative: &str, determination: serde_json::Value, note: bool) {
         let path = root.join(relative);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();

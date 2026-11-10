@@ -1,7 +1,6 @@
 use serde_json::{Value, json};
 
 /// A requirement or example assessment, independent of source freshness.
-// {impl}`requirements.ci.outcomes`
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Judgment {
     True,
@@ -10,8 +9,6 @@ pub enum Judgment {
 }
 
 impl Judgment {
-    // {impl}`requirements.ci.outcomes`
-    // {impl}`requirements.ci.schema`
     pub fn from_value(value: &Value) -> Result<Self, String> {
         match value {
             Value::Bool(true) => Ok(Self::True),
@@ -50,7 +47,6 @@ impl Judgment {
         }
     }
 
-    // {impl}`requirements.authoring.usage_storage`
     pub fn kind(&self) -> &'static str {
         match self {
             Self::True => "true",
@@ -60,8 +56,6 @@ impl Judgment {
     }
 
     // {impl}`requirements.index.detail_format`
-    // {impl}`requirements.cli.status`
-    // {impl}`requirements.cli.fixme_summary`
     pub fn fixme_entries(&self) -> &[String] {
         match self {
             Self::Fixme(entries) => entries,

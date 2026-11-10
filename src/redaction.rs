@@ -18,7 +18,6 @@ use toml_edit::{Item, Value};
 const HEURISTIC: &str = "high-entropy-token";
 
 /// One replaced byte range of a source and the kind its marker names.
-// {impl}`requirements.authoring.redaction`
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Region {
     pub(crate) span: Range<usize>,
@@ -26,7 +25,6 @@ pub(crate) struct Region {
 }
 
 /// The redacted regions of one source text: sorted, disjoint, and nonempty.
-// {impl}`requirements.authoring.redaction`
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Redaction {
     regions: Vec<Region>,
@@ -35,8 +33,6 @@ pub(crate) struct Redaction {
 /// An explicit credential value in a configuration file: its full setting
 /// name, such as `authoring.configs.cloud.credentials.access_key_id`, and the
 /// byte range of the value's contents.
-// {impl}`requirements.authoring.credentials`
-// {impl}`requirements.authoring.redaction`
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct CredentialField {
     pub(crate) setting: String,
@@ -47,7 +43,6 @@ pub(crate) struct CredentialField {
 impl Redaction {
     /// Redaction by `secretshape` rules alone, for text that is not a Habeas
     /// configuration file.
-    // {impl}`requirements.authoring.redaction`
     pub(crate) fn of_text(source: &str) -> Self {
         Self::merge(secret_regions(source))
     }
@@ -55,7 +50,6 @@ impl Redaction {
     /// Redaction of a file: `secretshape` rules everywhere, plus the explicit
     /// credential fields when the file is a workspace `habeas.toml` or the
     /// user configuration file.
-    // {impl}`requirements.authoring.redaction`
     pub(crate) fn of_file(path: &Path, source: &str) -> Self {
         let mut regions = secret_regions(source);
         if is_configuration_file(path) {
@@ -65,7 +59,6 @@ impl Redaction {
     }
 
     /// Sorts regions and joins overlapping ones under the first one's kind.
-    // {impl}`requirements.authoring.redaction`
     fn merge(mut regions: Vec<Region>) -> Self {
         regions.retain(|region| !region.span.is_empty());
         regions.sort_by_key(|region| (region.span.start, region.span.end));
@@ -81,7 +74,6 @@ impl Redaction {
         Self { regions: merged }
     }
 
-    // {impl}`requirements.authoring.redaction`
     pub(crate) fn is_empty(&self) -> bool {
         self.regions.is_empty()
     }
@@ -90,8 +82,6 @@ impl Redaction {
     /// to the slice containing the region's first byte and its line breaks
     /// to every slice it overlaps, so slices of adjacent ranges concatenate
     /// to the redacted form of their union.
-    // {impl}`requirements.authoring.redaction`
-    // {impl}`requirements.references.structural_hash`
     pub(crate) fn slice<'a>(&self, source: &'a str, range: Range<usize>) -> Cow<'a, str> {
         let first = self
             .regions
@@ -124,7 +114,6 @@ impl Redaction {
     }
 
     /// The redacted form of the whole source.
-    // {impl}`requirements.authoring.redaction`
     pub(crate) fn apply<'a>(&self, source: &'a str) -> Cow<'a, str> {
         self.slice(source, 0..source.len())
     }
@@ -132,7 +121,6 @@ impl Redaction {
 
 /// Redacts text that is not a configuration file, such as a declaration or
 /// a citation's commentary.
-// {impl}`requirements.authoring.redaction`
 pub(crate) fn redact_text(text: &str) -> Cow<'_, str> {
     let redaction = Redaction::of_text(text);
     if redaction.is_empty() {
@@ -142,7 +130,6 @@ pub(crate) fn redact_text(text: &str) -> Cow<'_, str> {
 }
 
 /// Redacts each line of a line list as one text, keeping the line count.
-// {impl}`requirements.authoring.redaction`
 pub(crate) fn redact_lines(lines: &[String]) -> Vec<String> {
     let text = lines.join("\n");
     match redact_text(&text) {
@@ -152,7 +139,6 @@ pub(crate) fn redact_lines(lines: &[String]) -> Vec<String> {
 }
 
 /// Pushes the line breaks in `text`, keeping `\r\n` pairs.
-// {impl}`requirements.authoring.redaction`
 fn push_line_breaks(output: &mut String, text: &str) {
     let bytes = text.as_bytes();
     for (index, byte) in bytes.iter().enumerate() {
@@ -167,7 +153,6 @@ fn push_line_breaks(output: &mut String, text: &str) {
 
 /// Rule-only and heuristic scanners over the whole input; `secretshape`
 /// otherwise stops scanning after its default input cap.
-// {impl}`requirements.authoring.redaction`
 fn scanners() -> &'static (Scanner, Scanner) {
     static SCANNERS: OnceLock<(Scanner, Scanner)> = OnceLock::new();
     SCANNERS.get_or_init(|| {
@@ -183,7 +168,6 @@ fn scanners() -> &'static (Scanner, Scanner) {
 /// Regions of `secretshape` rule matches, each extended through adjacent
 /// heuristic findings separated from it only by whitespace. A heuristic
 /// finding never starts a region.
-// {impl}`requirements.authoring.redaction`
 fn secret_regions(source: &str) -> Vec<Region> {
     let (rules, heuristics) = scanners();
     let findings = rules.scan(source);
@@ -235,14 +219,12 @@ fn secret_regions(source: &str) -> Vec<Region> {
 
 /// Whether a file is a workspace `habeas.toml` or the user configuration
 /// file, whose explicit credential fields are redacted by name.
-// {impl}`requirements.authoring.redaction`
 fn is_configuration_file(path: &Path) -> bool {
     is_configuration_file_for(path, crate::config::user_config_path().ok().as_deref())
 }
 
 /// [`is_configuration_file`] with the user configuration path given: a file
 /// named `habeas.toml`, the user file itself, or an alias resolving to it.
-// {impl}`requirements.authoring.redaction`
 fn is_configuration_file_for(path: &Path, user: Option<&Path>) -> bool {
     if path.file_name().is_some_and(|name| name == "habeas.toml") {
         return true;
@@ -258,7 +240,6 @@ fn is_configuration_file_for(path: &Path, user: Option<&Path>) -> bool {
 /// Regions of the explicit credential fields of a configuration file. A file
 /// that does not parse as TOML cannot be searched by field, so all of it is
 /// redacted with the kind `configuration`.
-// {impl}`requirements.authoring.redaction`
 fn configuration_regions(source: &str) -> Vec<Region> {
     match credential_fields(source) {
         Some(fields) => fields
@@ -278,8 +259,6 @@ fn configuration_regions(source: &str) -> Vec<Region> {
 /// The explicit credential fields of a Habeas configuration document: every
 /// value under an authoring configuration's `credentials`, and its `api_key`.
 /// Returns `None` when the document is not valid TOML.
-// {impl}`requirements.authoring.credentials`
-// {impl}`requirements.authoring.redaction`
 pub(crate) fn credential_fields(source: &str) -> Option<Vec<CredentialField>> {
     let document = toml_edit::Document::parse(source).ok()?;
     let mut fields = Vec::new();
@@ -306,7 +285,6 @@ pub(crate) fn credential_fields(source: &str) -> Option<Vec<CredentialField>> {
 }
 
 /// Collects the leaf values under a credential item, each named by its key.
-// {impl}`requirements.authoring.redaction`
 fn item_fields(
     source: &str,
     item: &Item,
@@ -334,7 +312,6 @@ fn item_fields(
 
 /// Collects the leaf values of a credential value. A string is redacted
 /// inside its quotes so the replacement stays readable TOML.
-// {impl}`requirements.authoring.redaction`
 fn value_fields(
     source: &str,
     value: &Value,

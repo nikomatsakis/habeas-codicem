@@ -20,8 +20,6 @@ use crate::rust_coverage::EvidenceReads;
 
 /// The coverage-loss review prompt: its system prompt and its subject
 /// message, the two text blocks of the approved requirement.
-// {impl}`requirements.authoring.coverage_loss`
-// {impl}`requirements.authoring.prompt_parts`
 fn coverage_loss_prompt() -> [&'static str; 2] {
     [
         super::approved_text("coverage_loss", 0),
@@ -31,7 +29,6 @@ fn coverage_loss_prompt() -> [&'static str; 2] {
 
 /// A definition whose replaced record read a lost item, and that record's
 /// rationale.
-// {impl}`requirements.authoring.coverage_loss`
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Reader {
     pub(crate) definition: String,
@@ -40,7 +37,6 @@ pub(crate) struct Reader {
 
 /// An item that a replaced record's inputs covered and that is no longer
 /// covered, with the definitions whose replaced records read it.
-// {impl}`requirements.authoring.coverage_loss`
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct LostItem {
     pub(crate) file: String,
@@ -50,14 +46,11 @@ pub(crate) struct LostItem {
 
 impl LostItem {
     /// The review's subject label, `coverage-loss:<file>#<selector>`.
-    // {impl}`requirements.authoring.coverage_loss`
-    // {impl}`requirements.authoring.usage_storage`
     pub(crate) fn label(&self) -> String {
         format!("coverage-loss:{}#{}", self.file, self.item)
     }
 
     /// The selector as displayed, `<root>` for the root node.
-    // {impl}`requirements.authoring.coverage_loss`
     fn selector_label(&self) -> &str {
         if self.item.is_empty() {
             "<root>"
@@ -70,7 +63,6 @@ impl LostItem {
 /// A record about to be replaced: the definition it assessed (a site
 /// review's requirement; none for a citation review), its rationale, and the
 /// outline inputs it recorded.
-// {impl}`requirements.authoring.coverage_loss`
 pub(crate) struct ReplacedRecord {
     definition: Option<String>,
     rationale: String,
@@ -80,7 +72,6 @@ pub(crate) struct ReplacedRecord {
 impl ReplacedRecord {
     /// Reads the record a subject's authoring is about to replace, if one
     /// exists and parses.
-    // {impl}`requirements.authoring.coverage_loss`
     pub(crate) fn read(root: &Path, subject: &AuthoringSubject) -> Option<Self> {
         let text = fs::read_to_string(subject.evidence_path(root)).ok()?;
         let record = serde_json::from_str::<Value>(&text).ok()?;
@@ -103,7 +94,6 @@ impl ReplacedRecord {
 /// that the records replacing them are written, in path and source order.
 /// An item only a citation review read names no definition to decide, and is
 /// left to validation.
-// {impl}`requirements.authoring.coverage_loss`
 // {impl}`requirements.references.rust_item_coverage`
 pub(crate) fn lost_items(root: &Path, replaced: &[ReplacedRecord]) -> io::Result<Vec<LostItem>> {
     if replaced.is_empty() {
@@ -169,7 +159,6 @@ pub(crate) fn lost_items(root: &Path, replaced: &[ReplacedRecord]) -> io::Result
 }
 
 /// What a coverage-loss review found an item to be for one definition.
-// {impl}`requirements.authoring.coverage_loss`
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CoverageFinding {
     /// A root of the definition's implementation, which needs an `{impl}`.
@@ -180,7 +169,6 @@ pub enum CoverageFinding {
 
 impl CoverageFinding {
     /// The finding as submitted and reported: `root` or `not needed`.
-    // {impl}`requirements.authoring.coverage_loss`
     pub fn label(self) -> &'static str {
         match self {
             Self::Root => "root",
@@ -190,7 +178,6 @@ impl CoverageFinding {
 }
 
 /// One definition's finding and its rationale.
-// {impl}`requirements.authoring.coverage_loss`
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DefinitionFinding {
     pub definition: String,
@@ -199,7 +186,6 @@ pub struct DefinitionFinding {
 }
 
 /// A completed coverage-loss review of one item.
-// {impl}`requirements.authoring.coverage_loss`
 #[derive(Clone, Debug)]
 pub struct CoverageLossReview {
     pub file: String,
@@ -213,7 +199,6 @@ pub struct CoverageLossReview {
 impl CoverageLossReview {
     /// The report of the review: a line naming the item, then each
     /// definition's finding and rationale.
-    // {impl}`requirements.authoring.coverage_loss`
     pub fn report(&self) -> String {
         let mut report = format!(
             "Coverage-loss review of {} {}: no longer covered",
@@ -232,14 +217,11 @@ impl CoverageLossReview {
 }
 
 /// Text on one line, with its whitespace collapsed.
-// {impl}`requirements.authoring.coverage_loss`
 fn one_line(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// The prompt of a coverage-loss review.
-// {impl}`requirements.authoring.coverage_loss`
-// {impl}`requirements.authoring.prompt_parts`
 // {impl}`requirements.authoring.habeas_background`
 // {impl}`requirements.authoring.judgment_rules`
 pub(super) fn prompt(lost: &LostItem, mandatory: &str) -> io::Result<super::Prompt> {
@@ -276,8 +258,6 @@ pub(super) fn prompt(lost: &LostItem, mandatory: &str) -> io::Result<super::Prom
 }
 
 /// The `submit_coverage_review` tool.
-// {impl}`requirements.authoring.coverage_loss`
-// {impl}`requirements.authoring.submission`
 pub(super) fn tool_definition() -> Value {
     json!({"name": "submit_coverage_review", "description": "Submit your coverage-loss review exactly once: one finding for each listed definition. No other message supplies the result.",
         "parameters": {"type":"object", "additionalProperties": false, "required":["findings"], "properties": {
@@ -290,7 +270,6 @@ pub(super) fn tool_definition() -> Value {
 
 /// Parses a `submit_coverage_review` call: exactly one finding, `root` or
 /// `not needed`, with a nonempty rationale for each of `definitions`.
-// {impl}`requirements.authoring.coverage_loss`
 // {impl}`requirements.authoring.submission`
 pub(super) fn submission(
     arguments: &Value,
@@ -368,8 +347,6 @@ pub(super) fn submission(
 
 /// Runs one item's review in its own conversation with its own usage record,
 /// and keeps its result under the state root.
-// {impl}`requirements.authoring.coverage_loss`
-// {impl}`requirements.authoring.usage_storage`
 pub(super) async fn review(
     provider: &impl CompletionProvider,
     root: &Path,
@@ -431,7 +408,6 @@ pub(super) async fn review(
 
 /// Where an item's latest coverage-loss review result is kept: under the
 /// state root, by project and then by the item's file and selector.
-// {impl}`requirements.authoring.coverage_loss`
 // {impl}`requirements.configuration.state_location`
 pub(crate) fn result_path(state: &Path, root: &Path, file: &str, item: &str) -> PathBuf {
     use sha2::{Digest, Sha256};
@@ -449,7 +425,6 @@ pub(crate) fn result_path(state: &Path, root: &Path, file: &str, item: &str) -> 
 }
 
 /// Writes an item's latest review result, replacing an earlier one.
-// {impl}`requirements.authoring.coverage_loss`
 // {impl}`requirements.configuration.state_location`
 fn store(
     state: &Path,
@@ -495,8 +470,6 @@ fn store(
 /// The latest kept review of an item as `habeas status` shows it beside the
 /// uncovered item, or `None` when there is none or the state root cannot be
 /// determined.
-// {impl}`requirements.authoring.coverage_loss`
-// {impl}`requirements.cli.status`
 pub(crate) fn status_lines(root: &Path, file: &str, item: &str) -> Option<String> {
     let state = crate::config::state_root().ok()?;
     let text = fs::read_to_string(result_path(&state, root, file, item)).ok()?;
@@ -516,7 +489,6 @@ pub(crate) fn status_lines(root: &Path, file: &str, item: &str) -> Option<String
 /// Reviews each item the replaced records no longer cover, connecting to
 /// the configured provider only when there is one. Each review's failure is
 /// returned with its label rather than stopping the others.
-// {impl}`requirements.authoring.coverage_loss`
 // {impl}`requirements.authoring.provider`
 pub(super) async fn review_losses(
     root: &Path,
@@ -557,7 +529,6 @@ pub(super) async fn review_losses(
 
 /// The coverage-loss reviews an authoring run completed and those that
 /// failed, with their labels and errors.
-// {impl}`requirements.authoring.coverage_loss`
 #[derive(Clone, Debug, Default)]
 pub struct CoverageLossOutcome {
     pub reviews: Vec<CoverageLossReview>,

@@ -30,8 +30,6 @@ pub(crate) use rust::PROFILE as RUST_PROFILE;
 pub(crate) use selector::{HASH_DIGITS, Label, Segment, SelectorError, parse_selector};
 
 /// One outline node. Line numbers are one-based and inclusive.
-// {impl}`requirements.references.outlines`
-// {impl}`requirements.references.outline_selectors`
 #[derive(Clone, Debug)]
 pub(crate) struct OutlineNode {
     /// Short outline kind, such as `fn`; empty for the root.
@@ -64,16 +62,13 @@ pub(crate) struct OutlineNode {
 
 impl OutlineNode {
     /// The name as displayed, with parts joined by `/`.
-    // {impl}`requirements.references.outlines`
     // {impl}`requirements.authoring.outline_tool`
-    // {impl}`requirements.references.rust_item_coverage`
     pub(crate) fn display_name(&self) -> Option<String> {
         self.name.as_ref().map(|parts| parts.join("/"))
     }
 }
 
 /// One comment and the outline node it belongs to.
-// {impl}`requirements.references.outline_comments`
 #[derive(Clone, Debug)]
 pub(crate) struct OutlineComment {
     pub(crate) byte_start: usize,
@@ -88,7 +83,6 @@ pub(crate) struct OutlineComment {
 }
 
 /// A parsed outline.
-// {impl}`requirements.references.outlines`
 #[derive(Clone, Debug)]
 pub(crate) struct Outline {
     pub(crate) profile: &'static Profile,
@@ -99,7 +93,6 @@ pub(crate) struct Outline {
 }
 
 /// A source that its grammar cannot parse.
-// {impl}`requirements.references.outlines`
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct OutlineError {
     pub(crate) line: usize,
@@ -107,7 +100,6 @@ pub(crate) struct OutlineError {
 }
 
 impl fmt::Display for OutlineError {
-    // {impl}`requirements.references.outlines`
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(formatter, "line {}: {}", self.line, self.message)
     }
@@ -116,7 +108,6 @@ impl fmt::Display for OutlineError {
 impl std::error::Error for OutlineError {}
 
 /// A selector that does not resolve.
-// {impl}`requirements.references.outline_selectors`
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ResolveError {
     Invalid(SelectorError),
@@ -158,8 +149,6 @@ pub(crate) fn parse_with(profile: &'static Profile, source: &str) -> Result<Outl
 
 /// Parses the original source with a given profile, hashing each text piece
 /// that overlaps a redacted region in its redacted form.
-// {impl}`requirements.references.outlines`
-// {impl}`requirements.authoring.redaction`
 // {impl}`requirements.references.structural_hash`
 pub(crate) fn parse_redacted(
     profile: &'static Profile,
@@ -186,8 +175,6 @@ pub(crate) fn parse_redacted(
 }
 
 /// Reports the first syntax error in a tree.
-// {impl}`requirements.references.outlines`
-// {impl}`requirements.ci.outline_inputs`
 fn check_errors(tree: &Tree, lines: &LineIndex) -> Result<(), OutlineError> {
     let root = tree.root_node();
     if !root.has_error() {
@@ -219,14 +206,12 @@ fn check_errors(tree: &Tree, lines: &LineIndex) -> Result<(), OutlineError> {
 }
 
 /// Byte offsets of line starts.
-// {impl}`requirements.references.outlines`
 struct LineIndex {
     starts: Vec<usize>,
     count: usize,
 }
 
 impl LineIndex {
-    // {impl}`requirements.references.outlines`
     fn new(source: &str) -> Self {
         let mut starts = vec![0];
         starts.extend(
@@ -247,13 +232,11 @@ impl LineIndex {
     }
 
     /// One-based line containing a byte offset.
-    // {impl}`requirements.references.outlines`
     fn line(&self, byte: usize) -> usize {
         self.starts.partition_point(|start| *start <= byte).max(1)
     }
 
     /// Inclusive line range of a byte range.
-    // {impl}`requirements.references.outlines`
     fn range(&self, start: usize, end: usize) -> (usize, usize) {
         (
             self.line(start),
@@ -263,10 +246,7 @@ impl LineIndex {
 }
 
 /// The plain-text profile: one anonymous `line` node per non-blank line.
-// {impl}`requirements.references.outlines`
 // {impl}`requirements.references.outline_selectors`
-// {impl}`requirements.references.structural_hash`
-// {impl}`requirements.authoring.redaction`
 fn plain_text(
     profile: &'static Profile,
     source: &str,
@@ -318,8 +298,6 @@ fn plain_text(
 }
 
 /// The root node for the whole file; its segment and selector are empty.
-// {impl}`requirements.references.outlines`
-// {impl}`requirements.references.outline_selectors`
 fn root_node(
     source: &str,
     lines: &LineIndex,
@@ -344,7 +322,6 @@ fn root_node(
 }
 
 /// An outline node before hashing and selector assignment.
-// {impl}`requirements.references.outlines`
 struct Draft<'tree> {
     kind: &'static str,
     name: Option<Vec<String>>,
@@ -355,7 +332,6 @@ struct Draft<'tree> {
 }
 
 /// A comment before ownership is assigned.
-// {impl}`requirements.references.outline_comments`
 struct DraftComment {
     byte_start: usize,
     byte_end: usize,
@@ -363,7 +339,6 @@ struct DraftComment {
 }
 
 /// Walks a grammar tree into outline drafts.
-// {impl}`requirements.references.outlines`
 struct Builder<'tree, 'source> {
     profile: &'static Profile,
     source: &'source str,
@@ -375,7 +350,6 @@ struct Builder<'tree, 'source> {
 }
 
 impl<'tree, 'source> Builder<'tree, 'source> {
-    // {impl}`requirements.references.outlines`
     fn new(
         profile: &'static Profile,
         source: &'source str,
@@ -402,20 +376,15 @@ impl<'tree, 'source> Builder<'tree, 'source> {
         builder
     }
 
-    // {impl}`requirements.references.outlines`
-    // {impl}`requirements.references.outline_comments`
-    // {impl}`requirements.references.structural_hash`
     fn is_comment(&self, node: Node<'_>) -> bool {
         (self.profile.is_comment)(node, self.source)
     }
 
     /// Whether a grammar node maps to an outline node.
-    // {impl}`requirements.references.outlines`
     fn maps(&self, node: Node<'_>) -> bool {
         !self.is_comment(node) && self.profile.rule(node).is_some()
     }
 
-    // {impl}`requirements.references.outline_comments`
     fn record_comment(&mut self, node: Node<'_>) {
         self.comments.push(DraftComment {
             byte_start: node.start_byte(),
@@ -426,7 +395,6 @@ impl<'tree, 'source> Builder<'tree, 'source> {
 
     /// Records comments anywhere under a node that is not walked as outline
     /// structure, such as an attached attribute.
-    // {impl}`requirements.references.outline_comments`
     fn record_comments_within(&mut self, node: Node<'_>) {
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
@@ -440,7 +408,6 @@ impl<'tree, 'source> Builder<'tree, 'source> {
 
     /// Names a mapped node, returning its parts and the byte where the name
     /// is declared.
-    // {impl}`requirements.references.outlines`
     fn name(&self, rule: NameRule, node: Node<'_>) -> Option<(Vec<String>, usize)> {
         let named = |child: Node<'_>| {
             (
@@ -462,9 +429,6 @@ impl<'tree, 'source> Builder<'tree, 'source> {
         }
     }
 
-    // {impl}`requirements.references.outlines`
-    // {impl}`requirements.references.structural_hash`
-    // {impl}`requirements.references.outline_comments`
     fn walk(&mut self, node: Node<'tree>, parent: usize) {
         let mut cursor = node.walk();
         let children = node.children(&mut cursor).collect::<Vec<_>>();
@@ -513,8 +477,6 @@ impl<'tree, 'source> Builder<'tree, 'source> {
         }
     }
 
-    // {impl}`requirements.references.outlines`
-    // {impl}`requirements.references.structural_hash`
     fn push(
         &mut self,
         kind: &'static str,
@@ -541,7 +503,6 @@ impl<'tree, 'source> Builder<'tree, 'source> {
     }
 
     /// Computes a draft's structural or identity hash.
-    // {impl}`requirements.references.structural_hash`
     fn hash(&self, index: usize, identity: bool) -> String {
         let draft = &self.drafts[index];
         let mut encoder = Encoder::new();
@@ -551,7 +512,6 @@ impl<'tree, 'source> Builder<'tree, 'source> {
         encoder.finish()
     }
 
-    // {impl}`requirements.references.structural_hash`
     fn encode(&self, encoder: &mut Encoder, node: Node<'_>, index: usize, identity: bool) {
         if identity
             && self
@@ -597,8 +557,6 @@ impl<'tree, 'source> Builder<'tree, 'source> {
     }
 
     /// A text piece of the source in its redacted form.
-    // {impl}`requirements.authoring.redaction`
-    // {impl}`requirements.references.structural_hash`
     fn piece(&self, start: usize, end: usize) -> std::borrow::Cow<'source, str> {
         self.redaction.slice(self.source, start..end)
     }
@@ -606,10 +564,7 @@ impl<'tree, 'source> Builder<'tree, 'source> {
     /// Builds the root and outline nodes, linking parents and children, and
     /// assigns hashes, selectors, line ranges including attached siblings,
     /// and comment owners.
-    // {impl}`requirements.references.outlines`
     // {impl}`requirements.references.outline_selectors`
-    // {impl}`requirements.references.outline_comments`
-    // {impl}`requirements.references.structural_hash`
     fn finish(self, lines: &LineIndex) -> Outline {
         let mut nodes = Vec::with_capacity(self.drafts.len());
         nodes.push(root_node(
@@ -667,7 +622,6 @@ impl<'tree, 'source> Builder<'tree, 'source> {
 
 /// Adds `#N` to sibling segments that would otherwise be identical, except
 /// `line` nodes, and builds full selectors.
-// {impl}`requirements.references.outline_selectors`
 fn disambiguate(nodes: &mut [OutlineNode]) {
     for parent in 0..nodes.len() {
         let mut groups = BTreeMap::<String, Vec<usize>>::new();
@@ -697,7 +651,6 @@ fn disambiguate(nodes: &mut [OutlineNode]) {
 
 /// Groups comments into runs, assigns each run's owner under the comment
 /// rules, and widens owners' line ranges to cover their comments.
-// {impl}`requirements.references.outline_comments`
 fn assign_comments(
     nodes: &mut [OutlineNode],
     mut drafts: Vec<DraftComment>,
@@ -776,7 +729,6 @@ fn assign_comments(
 }
 
 /// Whether a comment follows code on its first line.
-// {impl}`requirements.references.outline_comments`
 fn trails_code(source: &str, byte: usize) -> bool {
     let line_start = source[..byte].rfind('\n').map_or(0, |index| index + 1);
     !source[line_start..byte].trim().is_empty()
@@ -785,7 +737,6 @@ fn trails_code(source: &str, byte: usize) -> bool {
 /// The owner of a comment that follows code on `line`: the innermost node
 /// containing that line, by the line ranges in `base`. When several sibling
 /// nodes share the line, the last one starting before the comment wins.
-// {impl}`requirements.references.outline_comments`
 fn trailing_owner(
     nodes: &[OutlineNode],
     base: &[(usize, usize)],
@@ -810,7 +761,6 @@ fn trailing_owner(
 
 /// The end of a node's last non-comment token, so trailing comments that a
 /// grammar folds into the node do not count as inside it.
-// {impl}`requirements.references.outline_comments`
 fn content_end(node: Node<'_>) -> usize {
     let mut cursor = node.walk();
     let children: Vec<Node<'_>> = node.children(&mut cursor).collect();
@@ -825,7 +775,6 @@ fn content_end(node: Node<'_>) -> usize {
 /// its line: the next child starting after it within the smallest node
 /// containing it, else that container. A run that binds to its container,
 /// such as a Rust inner doc comment, always belongs to the container.
-// {impl}`requirements.references.outline_comments`
 fn run_owner(nodes: &[OutlineNode], bytes: (usize, usize), binds_to_container: bool) -> usize {
     let mut container = 0;
     while let Some(child) = nodes[container]
@@ -850,7 +799,6 @@ fn run_owner(nodes: &[OutlineNode], bytes: (usize, usize), binds_to_container: b
 impl Outline {
     /// Resolves a selector to a node index; the empty selector is the root.
     /// A `line` segment resolves to the first line with that content.
-    // {impl}`requirements.references.outline_selectors`
     pub(crate) fn resolve(&self, selector: &str) -> Result<usize, ResolveError> {
         let segments = parse_selector(selector).map_err(ResolveError::Invalid)?;
         let mut current = 0;
@@ -869,7 +817,6 @@ impl Outline {
     /// The innermost nodes whose line ranges cover a line: covering nodes
     /// none of whose children cover it. Several siblings can share a line.
     // {impl}`requirements.references.outlines`
-    // {impl}`requirements.references.outline_comments`
     pub(crate) fn innermost_at_line(&self, line: usize) -> Vec<usize> {
         let covers = |index: usize| {
             self.nodes[index].line_start <= line && line <= self.nodes[index].line_end
@@ -896,7 +843,6 @@ impl Outline {
     }
 
     /// The owners of comments touching a line.
-    // {impl}`requirements.references.outline_comments`
     pub(crate) fn comment_owners_at_line(&self, line: usize) -> Vec<usize> {
         let mut owners = self
             .comments
@@ -911,8 +857,6 @@ impl Outline {
     /// The smallest node a line's source belongs to: the owner of a comment
     /// on that line, otherwise the smallest innermost node covering it, and
     /// the root when no other node covers it.
-    // {impl}`requirements.references.outline_comments`
-    // {impl}`requirements.references.authoring_inputs`
     pub(crate) fn owner_at_line(&self, line: usize) -> usize {
         if let Some(owner) = self.comment_owners_at_line(line).first() {
             return *owner;
@@ -932,9 +876,6 @@ impl Outline {
     /// The innermost nodes for a set of lines, without nodes whose ancestor
     /// is also selected, in source order. With `comments`, a line in a
     /// comment belongs to the comment's owner.
-    // {impl}`requirements.references.outline_comments`
-    // {impl}`requirements.authoring.text_search`
-    // {impl}`requirements.authoring.source_tools`
     pub(crate) fn nodes_for_lines(
         &self,
         lines: impl IntoIterator<Item = usize>,
@@ -971,7 +912,6 @@ impl Outline {
 
     /// A node's source lines, over its full line range, without line endings.
     // {impl}`requirements.references.outlines`
-    // {impl}`requirements.ci.outline_inputs`
     pub(crate) fn node_lines(&self, source: &str, index: usize) -> Vec<String> {
         let node = &self.nodes[index];
         source

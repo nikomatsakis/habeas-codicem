@@ -2,12 +2,10 @@ use std::path::Path;
 
 use super::{Outline, parse};
 
-// {test}`requirements.references.outlines`
 fn outline(path: &str, source: &str) -> Outline {
     parse(Path::new(path), source).unwrap_or_else(|error| panic!("{path}: {error}"))
 }
 
-// {test}`requirements.references.outlines`
 fn selectors(outline: &Outline) -> Vec<String> {
     outline.nodes[1..]
         .iter()
@@ -15,7 +13,6 @@ fn selectors(outline: &Outline) -> Vec<String> {
         .collect()
 }
 
-// {test}`requirements.references.outlines`
 fn summary(outline: &Outline) -> Vec<String> {
     outline.nodes[1..]
         .iter()
@@ -217,7 +214,6 @@ fn hashes_skip_whitespace_and_plain_comments_but_not_doc_comments() {
 }
 
 /// The structural hash of `fn[run]` in a Rust source.
-// {test}`requirements.references.structural_hash`
 fn run_hash(source: &str) -> String {
     let outline = outline("src/lib.rs", source);
     outline.nodes[outline.resolve("fn[run]").unwrap()]
@@ -334,7 +330,6 @@ fn reflowing_inner_and_block_doc_comments_keeps_the_hash() {
 }
 
 /// The selector of the node owning the comment containing `needle`.
-// {test}`requirements.references.outline_comments`
 fn comment_owner(outline: &Outline, source: &str, needle: &str) -> String {
     let start = source.find(needle).unwrap();
     let comment = outline
@@ -1025,7 +1020,6 @@ fn workflow_job_marks_belong_to_the_job_that_follows() {
 }
 
 /// The structural hash of the node at `selector` in a source at `path`.
-// {test}`requirements.references.structural_hash`
 fn node_hash(path: &str, source: &str, selector: &str) -> String {
     let outline = outline(path, source);
     let index = outline

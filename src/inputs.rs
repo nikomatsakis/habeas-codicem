@@ -10,7 +10,6 @@ use crate::evidence::Declaration;
 use crate::outline::{self, Outline, ResolveError};
 use crate::redaction::Redaction;
 
-// {impl}`requirements.ci.schema`
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum InputSelector {
     Outline { file: String, item: String },
@@ -18,7 +17,6 @@ pub(crate) enum InputSelector {
     Requirements { requirements: String },
 }
 
-// {impl}`requirements.references.evidence_coverage`
 // {impl}`requirements.index.detail_format`
 #[derive(Clone, Debug)]
 pub(crate) struct SourceRange {
@@ -29,7 +27,6 @@ pub(crate) struct SourceRange {
 }
 
 /// The outline node an outline input currently selects.
-// {impl}`requirements.ci.outline_inputs`
 // {impl}`requirements.index.detail_format`
 #[derive(Clone, Debug)]
 pub(crate) struct ResolvedNode {
@@ -40,8 +37,6 @@ pub(crate) struct ResolvedNode {
     pub(crate) hash: String,
 }
 
-// {impl}`requirements.ci.outline_inputs`
-// {impl}`requirements.ci.requirements_inputs`
 pub(crate) struct ResolvedInput {
     pub(crate) ranges: Vec<SourceRange>,
     /// Current source text; recorded only for requirements and definition inputs.
@@ -51,7 +46,6 @@ pub(crate) struct ResolvedInput {
 }
 
 /// A parsed source file.
-// {impl}`requirements.ci.outline_inputs`
 pub(crate) struct ParsedSource {
     /// Canonical path.
     pub(crate) path: PathBuf,
@@ -63,7 +57,6 @@ pub(crate) struct ParsedSource {
 }
 
 /// Parsed outlines, cached per file for one validation or authoring run.
-// {impl}`requirements.ci.outline_inputs`
 #[derive(Default)]
 pub(crate) struct OutlineCache {
     files: Mutex<HashMap<PathBuf, Arc<Result<ParsedSource, String>>>>,
@@ -71,10 +64,6 @@ pub(crate) struct OutlineCache {
 
 impl OutlineCache {
     /// Reads and parses a permitted file, or returns the cached result.
-    // {impl}`requirements.ci.outline_inputs`
-    // {impl}`requirements.ci.input_containment`
-    // {impl}`requirements.references.outlines`
-    // {impl}`requirements.authoring.redaction`
     pub(crate) fn parse(&self, root: &Path, file: &str) -> Arc<Result<ParsedSource, String>> {
         let key = root.join(file);
         if let Some(parsed) = self.files.lock().expect("outline cache lock").get(&key) {
@@ -104,7 +93,6 @@ impl OutlineCache {
 
 impl ParsedSource {
     /// Resolves a selector to exactly one node.
-    // {impl}`requirements.ci.outline_inputs`
     // {impl}`requirements.references.outline_selectors`
     pub(crate) fn resolve(&self, file: &str, item: &str) -> Result<usize, String> {
         match self.outline.resolve(item) {
@@ -129,8 +117,6 @@ impl ParsedSource {
     /// range. Blank lines between nodes would otherwise select their common
     /// ancestor, so they are skipped unless every requested line is blank.
     /// With `comments`, comment lines select the comments' owners.
-    // {impl}`requirements.authoring.source_tools`
-    // {impl}`requirements.authoring.text_search`
     // {impl}`requirements.references.outline_comments`
     pub(crate) fn nodes_for_range(
         &self,
@@ -160,8 +146,6 @@ impl ParsedSource {
     }
 
     /// A node's current inclusive line range and redacted source text.
-    // {impl}`requirements.ci.outline_inputs`
-    // {impl}`requirements.authoring.redaction`
     pub(crate) fn node_range(&self, file: &str, index: usize) -> (SourceRange, Vec<String>) {
         let node = &self.outline.nodes[index];
         (
@@ -177,8 +161,6 @@ impl ParsedSource {
 }
 
 impl InputSelector {
-    // {impl}`requirements.ci.schema`
-    // {impl}`requirements.definitions.inputs`
     pub(crate) fn from_input(input: &Value) -> Option<Self> {
         let object = input.as_object()?;
         if let Some(item) = object.get("item").and_then(Value::as_str) {
@@ -200,8 +182,6 @@ impl InputSelector {
     /// The recorded evidence input: selectors and hashes, never outline
     /// source text or line numbers.
     // {impl}`requirements.definitions.inputs`
-    // {impl}`requirements.ci.schema`
-    // {impl}`requirements.ci.outline_inputs`
     pub(crate) fn to_input(&self, resolved: &ResolvedInput) -> Value {
         match self {
             Self::Outline { file, item } => json!({
@@ -222,8 +202,6 @@ impl InputSelector {
 
     /// The input as shown to the model: the recorded input plus, for an
     /// outline input, the node's kind, current line range, and source text.
-    // {impl}`requirements.authoring.source_tools`
-    // {impl}`requirements.authoring.text_search`
     // {impl}`requirements.authoring.mandatory_inputs`
     pub(crate) fn to_model_input(&self, resolved: &ResolvedInput) -> Value {
         let mut input = self.to_input(resolved);
@@ -241,13 +219,6 @@ impl InputSelector {
         input
     }
 
-    // {impl}`requirements.ci.outline_inputs`
-    // {impl}`requirements.ci.requirements_inputs`
-    // {impl}`requirements.definitions.inputs`
-    // {impl}`requirements.definitions.selection`
-    // {impl}`requirements.references.definition_globs`
-    // {impl}`requirements.ci.input_containment`
-    // {impl}`requirements.authoring.redaction`
     pub(crate) fn resolve(
         &self,
         root: &Path,
@@ -334,7 +305,6 @@ impl InputSelector {
 /// The recorded form of a model-facing input: outline inputs keep only
 /// `file`, `item`, and `hash`.
 // {impl}`requirements.authoring.delivered_inputs`
-// {impl}`requirements.ci.schema`
 pub(crate) fn recorded_input(input: &Value) -> Value {
     match input.as_object() {
         Some(object) if object.contains_key("item") => json!({
@@ -349,7 +319,6 @@ pub(crate) fn recorded_input(input: &Value) -> Value {
 /// The recorded form of a file path: an absolute path inside the project at
 /// the canonical `root` becomes relative to the project for portability. Relative paths, and
 /// paths that leave the project, are kept as given.
-// {impl}`requirements.ci.schema`
 pub(crate) fn project_relative(root: &Path, file: &str) -> String {
     let path = Path::new(file);
     if !path.is_absolute() {
@@ -376,13 +345,10 @@ pub(crate) fn project_relative(root: &Path, file: &str) -> String {
     }
 }
 
-// {impl}`requirements.ci.input_containment`
-// {impl}`requirements.configuration.evidence_paths`
 fn check_project_file(root: &Path, file: &str) -> Result<PathBuf, String> {
     crate::authoring::access::resolve_evidence_file(root, file).map_err(|error| error.to_string())
 }
 
-// {impl}`requirements.ci.input_containment`
 pub(crate) fn read_project_file(root: &Path, file: &str) -> Result<(PathBuf, String), String> {
     let path = check_project_file(root, file)?;
     let content =
@@ -394,7 +360,6 @@ pub(crate) fn read_project_file(root: &Path, file: &str) -> Result<(PathBuf, Str
 /// `root`, and returns the evidence input recording it: `{file, item, hash}`.
 /// The empty selector selects the whole file. Intended for tools and tests
 /// that construct evidence records.
-// {impl}`requirements.ci.outline_inputs`
 // {impl}`requirements.ci.schema`
 pub fn outline_input(root: &Path, file: &str, item: &str) -> std::io::Result<Value> {
     let root = fs::canonicalize(root)?;

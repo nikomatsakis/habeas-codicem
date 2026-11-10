@@ -11,8 +11,6 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
-// {test}`requirements.authoring.concurrency`
-// {test}`requirements.authoring.cache_warmup`
 #[derive(Default)]
 struct Requests {
     subjects: Vec<String>,
@@ -23,7 +21,6 @@ struct Requests {
     timeline: Vec<(String, Instant, Option<Instant>)>,
 }
 
-// {test}`requirements.authoring.batch`
 #[derive(Clone, Copy)]
 enum Behavior {
     Judgments {
@@ -43,7 +40,6 @@ enum Behavior {
     ClosedIssueIsFalse,
 }
 
-// {test}`requirements.authoring.batch`
 struct Server {
     endpoint: String,
     requests: Arc<(Mutex<Requests>, Condvar)>,
@@ -52,16 +48,10 @@ struct Server {
 }
 
 impl Server {
-    // {test}`requirements.authoring.batch`
-    // {test}`requirements.authoring.concurrency`
     fn start(require_overlap: bool, failing_subject: Option<&'static str>) -> Self {
         Self::start_with(require_overlap, Behavior::Judgments { failing_subject })
     }
 
-    // {test}`requirements.authoring.batch`
-    // {test}`requirements.authoring.concurrency`
-    // {test}`requirements.authoring.read_denial`
-    // {test}`requirements.authoring.progress`
     fn start_with(require_overlap: bool, behavior: Behavior) -> Self {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         listener.set_nonblocking(true).unwrap();
@@ -99,13 +89,11 @@ impl Server {
         }
     }
 
-    // {test}`requirements.authoring.batch`
     fn subjects(&self) -> Vec<String> {
         self.requests.0.lock().unwrap().subjects.clone()
     }
 
     /// Each request's subject, arrival, and answer, in arrival order.
-    // {test}`requirements.authoring.cache_warmup`
     fn timeline(&self) -> Vec<(String, Instant, Option<Instant>)> {
         self.requests.0.lock().unwrap().timeline.clone()
     }
@@ -119,11 +107,6 @@ impl Drop for Server {
     }
 }
 
-// {test}`requirements.authoring.batch`
-// {test}`requirements.authoring.concurrency`
-// {test}`requirements.authoring.read_denial`
-// {test}`requirements.authoring.progress`
-// {test}`requirements.authoring.reporting`
 fn serve(
     mut stream: TcpStream,
     requests: Arc<(Mutex<Requests>, Condvar)>,
@@ -317,7 +300,6 @@ fn serve(
     state.active -= 1;
 }
 
-// {test}`requirements.authoring.batch`
 struct Fixture {
     _temp: TempDir,
     project: PathBuf,
@@ -328,8 +310,6 @@ struct Fixture {
 }
 
 impl Fixture {
-    // {test}`requirements.authoring.batch`
-    // {test}`requirements.authoring.concurrency`
     fn new(endpoint: &str, concurrency: Option<usize>) -> Self {
         let temp = tempfile::tempdir().unwrap();
         let project = temp.path().join("project");
@@ -373,15 +353,10 @@ impl Fixture {
         }
     }
 
-    // {test}`requirements.authoring.batch`
-    // {test}`requirements.authoring.concurrency`
     fn run(&self, args: &[&str]) -> Output {
         self.command().args(args).output().unwrap()
     }
 
-    // {test}`requirements.authoring.batch`
-    // {test}`requirements.authoring.concurrency`
-    // {test}`requirements.authoring.read_denial`
     fn command(&self) -> Command {
         let mut command = Command::new(env!("CARGO_BIN_EXE_habeas"));
         command
@@ -396,16 +371,11 @@ impl Fixture {
         command
     }
 
-    // {test}`requirements.authoring.progress`
-    // {test}`requirements.authoring.batch`
     #[cfg(unix)]
     fn run_in_pty(&self, interrupt: bool, term: &str) -> Output {
         self.run_in_pty_with_args(interrupt, term, &["author", "--all"])
     }
 
-    // {test}`requirements.authoring.progress`
-    // {test}`requirements.authoring.reporting`
-    // {test}`requirements.authoring.batch`
     #[cfg(unix)]
     fn run_in_pty_with_args(&self, interrupt: bool, term: &str, args: &[&str]) -> Output {
         // Keep stdout piped: the bar belongs to stderr and must detect that
@@ -485,7 +455,6 @@ raise SystemExit(process.returncode if process.returncode >= 0 else 128 - proces
             .expect("PTY progress tests require python3 on Unix")
     }
 
-    // {test}`requirements.authoring.batch`
     fn evidence(&self, name: &str) -> Value {
         serde_json::from_slice(
             &fs::read(self.project.join(format!("evidence/{name}.json"))).unwrap(),
@@ -493,8 +462,6 @@ raise SystemExit(process.returncode if process.returncode >= 0 else 128 - proces
         .unwrap()
     }
 
-    // {test}`requirements.authoring.usage_storage`
-    // {test}`requirements.authoring.batch`
     fn usage(&self) -> Vec<Value> {
         let path = self.state.join(if cfg!(windows) {
             "habeas/state/authoring/usage"
@@ -941,8 +908,6 @@ fn interrupted_terminal_progress_keeps_unstarted_work_incomplete() {
     }
 }
 
-// {test}`requirements.authoring.progress`
-// {test}`requirements.authoring.batch`
 #[cfg(unix)]
 fn assert_interruption_stops_the_batch(overlap: bool, concurrency: usize) {
     let server = Server::start_with(overlap, Behavior::WaitAfterFirst);
@@ -1448,7 +1413,6 @@ fn unreadable_reference_sources_fail_the_batch_before_inference() {
 
 /// Replays terminal output onto a screen, handling the carriage returns,
 /// line clears, and cursor movement that progress displays use.
-// {test}`requirements.authoring.progress`
 #[cfg(unix)]
 fn final_screen(output: &[u8]) -> String {
     let text = String::from_utf8_lossy(output);
@@ -1932,7 +1896,6 @@ fn policy_comes_from_the_flag_then_the_configuration_then_defaults_to_confirm() 
 /// A local stand-in for the GitHub API serving one issue,
 /// `example/queue#125`, whose state a test can change; other issues do not
 /// exist.
-// {test}`requirements.ci.fixme_closed_issue`
 // {test}`requirements.authoring.github_reads`
 struct FakeGithub {
     endpoint: String,
@@ -1941,7 +1904,6 @@ struct FakeGithub {
 }
 
 impl FakeGithub {
-    // {test}`requirements.ci.fixme_closed_issue`
     // {test}`requirements.authoring.github_reads`
     fn start() -> Self {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
@@ -1987,7 +1949,6 @@ impl FakeGithub {
         }
     }
 
-    // {test}`requirements.ci.fixme_closed_issue`
     fn requests(&self) -> usize {
         *self.requests.lock().unwrap()
     }
@@ -2152,7 +2113,6 @@ fn github_reads_do_not_cache_in_a_state_root_inside_the_project() {
 /// Checks that the first assessment of each kind starts before any other of
 /// its kind, and that the others start only once its first request has been
 /// answered, returning the requests of each kind in arrival order.
-// {test}`requirements.authoring.cache_warmup`
 fn assert_warmed_first(server: &Server) -> Vec<Vec<(String, Instant, Option<Instant>)>> {
     let timeline = server.timeline();
     let mut kinds = Vec::new();

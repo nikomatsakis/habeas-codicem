@@ -10,30 +10,16 @@ use mdbook_preprocessor::book::{Book, BookItem, Chapter};
 use mdbook_preprocessor::config::Config;
 use tempfile::TempDir;
 
-// {test}`requirements.cli.mdbook`
-// {test}`requirements.layout.project`
-// {test}`requirements.layout.repository_links`
-// {test}`requirements.integration.ci`
-// {test}`requirements.integration.release`
-// {test}`requirements.integration.symposium_cli`
 fn repository_file(path: &str) -> String {
     fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(path)).unwrap()
 }
 
-// {test}`requirements.cli.mdbook`
-// {test}`requirements.layout.project`
-// {test}`requirements.layout.repository_links`
-// {test}`requirements.integration.ci`
-// {test}`requirements.integration.release`
-// {test}`requirements.integration.symposium_cli`
 fn repository_toml(path: &str) -> toml::Table {
     repository_file(path).parse().unwrap()
 }
 
 /// The lines of one top-level job in a GitHub Actions workflow, from its
 /// `  <name>:` line to the next top-level job.
-// {test}`requirements.integration.ci`
-// {test}`requirements.integration.release`
 fn workflow_job(workflow: &str, name: &str) -> String {
     let header = format!("  {name}:");
     // The header may carry a trailing comment, such as a reference.

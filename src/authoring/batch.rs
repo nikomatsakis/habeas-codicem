@@ -14,8 +14,6 @@ use crate::config::{self, AssessmentPolicy};
 use crate::evidence::{InspectionProgress, RepositoryInspection, inspect_repository_with_progress};
 use crate::index::{EvidenceState, LoadedDetailEvidence};
 
-// {impl}`requirements.authoring.batch`
-// {impl}`requirements.authoring.refresh`
 // {impl}`requirements.authoring.policy`
 pub struct BatchOutcome {
     pub completed: Vec<AuthoringOutcome>,
@@ -28,7 +26,6 @@ pub struct BatchOutcome {
     pub policy: Option<AssessmentPolicy>,
     /// The coverage-loss reviews the replaced records called for; failed
     /// reviews are also among `failures`.
-    // {impl}`requirements.authoring.coverage_loss`
     pub coverage_loss: super::CoverageLossOutcome,
 }
 
@@ -45,18 +42,10 @@ pub async fn author_all(root: &Path, selection: Option<&str>) -> io::Result<Batc
     author_all_with_options(root, selection, AuthoringOptions::default()).await
 }
 
-// {impl}`requirements.authoring.batch`
-// {impl}`requirements.authoring.concurrency`
-// {impl}`requirements.authoring.configuration_precedence`
-// {impl}`requirements.authoring.read_denial`
-// {impl}`requirements.authoring.progress`
-// {impl}`requirements.authoring.reporting`
 // {impl}`requirements.ci.authoring_inputs`
 // {impl}`requirements.configuration.loading`
-// {impl}`requirements.authoring.confirmation`
 // {impl}`requirements.references.citation_review`
 // {impl}`requirements.authoring.github_reads`
-// {impl}`requirements.authoring.refresh`
 // {impl}`requirements.authoring.policy`
 pub async fn author_all_with_options(
     root: &Path,
@@ -69,7 +58,6 @@ pub async fn author_all_with_options(
 /// Authors the site reviews of one distributed requirement, as
 /// `habeas author sites:<full-name>`, under the batch's refresh rules.
 // {impl}`requirements.references.site_review`
-// {impl}`requirements.authoring.refresh`
 pub async fn author_sites_with_options(
     root: &Path,
     requirement: &str,
@@ -81,16 +69,7 @@ pub async fn author_sites_with_options(
 
 /// Runs a batch over every subject, or, with `sites_of`, over the site
 /// reviews of one distributed requirement.
-// {impl}`requirements.authoring.batch`
-// {impl}`requirements.authoring.concurrency`
-// {impl}`requirements.authoring.read_denial`
-// {impl}`requirements.authoring.progress`
-// {impl}`requirements.authoring.reporting`
-// {impl}`requirements.authoring.confirmation`
-// {impl}`requirements.references.citation_review`
-// {impl}`requirements.references.site_review`
 // {impl}`requirements.authoring.github_reads`
-// {impl}`requirements.authoring.refresh`
 // {impl}`requirements.authoring.policy`
 // {impl}`requirements.authoring.cache_warmup`
 async fn run_batch(
@@ -142,7 +121,6 @@ async fn run_batch(
         coverage_loss: super::CoverageLossOutcome::default(),
     };
     // The records this batch replaced, read before each write.
-    // {impl}`requirements.authoring.coverage_loss`
     let mut replaced = Vec::new();
     // With nothing to assess, no configuration or credentials are resolved.
     // {impl}`requirements.authoring.configuration`
@@ -283,7 +261,6 @@ async fn run_batch(
     }
     progress.finish(cancellation.borrow().is_some(), subjects.len());
     // Once every record is written, review the items they no longer cover.
-    // {impl}`requirements.authoring.coverage_loss`
     if cancellation.borrow().is_none() {
         let reviews = tokio::select! {
             reviews = super::coverage_loss::review_losses(&root, &config, &replaced, |result| {
@@ -316,7 +293,6 @@ async fn run_batch(
 /// The kind of a subject's assessment, whose system prompt every
 /// assessment of that kind shares: requirement, example, citation review, or
 /// site review.
-// {impl}`requirements.authoring.cache_warmup`
 // {impl}`requirements.authoring.prompt_parts`
 fn assessment_kind(inspection: &RepositoryInspection, subject: &AuthoringSubject) -> &'static str {
     match subject {
@@ -332,7 +308,6 @@ fn assessment_kind(inspection: &RepositoryInspection, subject: &AuthoringSubject
 /// Which assessment kinds have warmed their prompt cache: a kind's first
 /// assessment starts alone, and the others of its kind wait until its first
 /// provider request has finished, while other kinds proceed.
-// {impl}`requirements.authoring.cache_warmup`
 #[derive(Default)]
 struct CacheWarmup {
     /// Kinds whose first assessment is running but has not yet finished its
@@ -346,7 +321,6 @@ impl CacheWarmup {
     /// Takes the first queued subject that may start now, and whether it
     /// warms its kind: a subject of a warm kind, or the first of a kind
     /// with none warming.
-    // {impl}`requirements.authoring.cache_warmup`
     fn next(
         &mut self,
         queue: &mut Vec<(&'static str, AuthoringSubject)>,
@@ -363,7 +337,6 @@ impl CacheWarmup {
     }
 
     /// Records that a kind's first provider request has finished.
-    // {impl}`requirements.authoring.cache_warmup`
     fn warmed(&mut self, kind: &'static str) {
         self.warming.remove(kind);
         self.warm.insert(kind);
@@ -372,7 +345,6 @@ impl CacheWarmup {
     /// Records that an assessment of a kind finished. One that finished
     /// without a provider request warmed nothing, so another of its kind
     /// takes its place.
-    // {impl}`requirements.authoring.cache_warmup`
     fn finished(&mut self, kind: &'static str) {
         self.warming.remove(kind);
     }
@@ -380,9 +352,6 @@ impl CacheWarmup {
 
 /// Deletes each citation or site review whose item or site no longer exists,
 /// returning their project-relative paths.
-// {impl}`requirements.authoring.batch`
-// {impl}`requirements.references.citation_review`
-// {impl}`requirements.references.site_review`
 fn delete_orphaned_reviews(
     root: &Path,
     inspection: &RepositoryInspection,
@@ -429,7 +398,6 @@ fn delete_orphaned_reviews(
 
 /// Whether a record is current: valid, an accepted FIXME, or a false
 /// judgment whose subject and inputs are unchanged.
-// {impl}`requirements.authoring.refresh`
 fn current(evidence: &LoadedDetailEvidence) -> bool {
     matches!(
         evidence.state(),
@@ -440,7 +408,6 @@ fn current(evidence: &LoadedDetailEvidence) -> bool {
 /// Whether one named subject's evidence is current, so that `--missing`
 /// keeps it without resolving configuration. A subject naming no current
 /// definition, item, or site is not current; its assessment reports it.
-// {impl}`requirements.authoring.refresh`
 // {impl}`requirements.authoring.invocation`
 pub(super) fn subject_is_current(root: &Path, subject: &AuthoringSubject) -> io::Result<bool> {
     let mut inspection = crate::evidence::inspect_repository(root)?;
@@ -506,11 +473,6 @@ pub(super) fn subject_is_current(root: &Path, subject: &AuthoringSubject) -> io:
 /// assessment, or with `sites_of` only that requirement's site reviews,
 /// counting current records as unchanged, and reports selection as one
 /// counted phase. With `force`, every subject is selected.
-// {impl}`requirements.authoring.batch`
-// {impl}`requirements.authoring.progress`
-// {impl}`requirements.references.citation_review`
-// {impl}`requirements.references.site_review`
-// {impl}`requirements.authoring.refresh`
 fn select_subjects(
     root: &Path,
     inspection: &RepositoryInspection,
@@ -528,7 +490,6 @@ fn select_subjects(
         total: None,
     });
     // Every source item outside the book with citations needs a review.
-    // {impl}`requirements.references.citation_review`
     let outlines = crate::inputs::OutlineCache::default();
     let (definitions, items) = if sites_of.is_some() {
         (Default::default(), Default::default())
@@ -586,7 +547,6 @@ fn select_subjects(
         advance(progress);
     }
     // Every site of a distributed requirement needs a review.
-    // {impl}`requirements.references.site_review`
     for site in sites {
         let evidence =
             LoadedDetailEvidence::load_path(root, &site.review_path(), &inspection.report);
@@ -604,8 +564,6 @@ fn select_subjects(
     (subjects, unchanged)
 }
 
-// {impl}`requirements.authoring.batch`
-// {impl}`requirements.authoring.read_denial`
 fn cancel_on_error(cancel: &watch::Sender<Option<&'static str>>, error: &io::Error) {
     if error.kind() == io::ErrorKind::Interrupted {
         stop(cancel);
@@ -614,7 +572,6 @@ fn cancel_on_error(cancel: &watch::Sender<Option<&'static str>>, error: &io::Err
 
 /// Records an interruption that has already arrived, without waiting. The
 /// first poll registers the listener.
-// {impl}`requirements.authoring.batch`
 async fn observe_interrupt(
     interrupt: std::pin::Pin<&mut impl std::future::Future<Output = io::Result<()>>>,
     listening: &mut bool,
@@ -636,7 +593,6 @@ async fn observe_interrupt(
 }
 
 /// Signals every assessment and the launcher that the batch is stopping.
-// {impl}`requirements.authoring.batch`
 fn stop(cancel: &watch::Sender<Option<&'static str>>) {
     cancel.send_if_modified(|current| {
         if current.is_none() {
@@ -648,7 +604,6 @@ fn stop(cancel: &watch::Sender<Option<&'static str>>) {
     });
 }
 
-// {impl}`requirements.authoring.batch`
 // {impl}`requirements.authoring.persistence`
 fn write_record(root: &Path, pending: &PendingAssessment) -> io::Result<PathBuf> {
     let path = pending.subject.evidence_path(root);

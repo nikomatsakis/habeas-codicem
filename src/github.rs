@@ -40,7 +40,6 @@ pub(crate) struct Issue {
 
 /// The outcome of reading one issue.
 // {impl}`requirements.authoring.github_reads`
-// {impl}`requirements.cli.fixme_issues`
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum IssueRead {
     Found(Issue),
@@ -66,7 +65,6 @@ impl IssueRead {
     /// Why the issue no longer counts as open, or `None` while it does or
     /// cannot be read.
     // {impl}`requirements.authoring.github_reads`
-    // {impl}`requirements.cli.fixme_issues`
     fn not_open(&self) -> Option<&'static str> {
         match self {
             Self::Found(issue) if !issue.open => Some("is closed"),
@@ -95,7 +93,6 @@ struct Client {
 
 impl GithubIssues {
     /// Reads nothing: every issue counts as unreachable and so as open.
-    // {impl}`requirements.cli.fixme_issues`
     pub fn offline() -> Self {
         Self { client: None }
     }
@@ -151,7 +148,6 @@ impl GithubIssues {
     /// there is one. This blocks; it runs its requests on its own thread so
     /// it may be called from within an asynchronous runtime.
     // {impl}`requirements.authoring.github_reads`
-    // {impl}`requirements.cli.fixme_issues`
     pub(crate) fn read_all(
         &self,
         issues: impl IntoIterator<Item = String>,
@@ -414,7 +410,6 @@ pub(crate) fn tool_definition() -> Value {
 
 /// The closed `{fixme}` fences of a reference list and the issues each
 /// names.
-// {impl}`requirements.cli.fixme_issues`
 // {impl}`requirements.authoring.github_reads`
 fn fixme_issues(references: &[SourceReference]) -> Vec<(&SourceReference, Vec<String>)> {
     references
@@ -527,7 +522,6 @@ fn input_ranges(
 /// closed or nonexistent issue and the item containing it, and each FIXME
 /// record an acknowledging `{fixme}` of which names one, which is stale.
 /// Issues that cannot be read count as open.
-// {impl}`requirements.cli.fixme_issues`
 // {impl}`requirements.authoring.github_reads`
 pub(crate) fn add_issue_findings(inspection: &mut RepositoryInspection, github: &GithubIssues) {
     let root = inspection.root.clone();
@@ -603,7 +597,6 @@ pub(crate) fn add_issue_findings(inspection: &mut RepositoryInspection, github: 
     }
     // A site review's FIXME record is stale when an issue a `{fixme}` inside
     // the site names is closed or missing.
-    // {impl}`requirements.references.site_review`
     for site in inspection.sites.values().flatten() {
         let relative = site.review_path();
         let fixme = fs::read_to_string(root.join(&relative))
@@ -642,7 +635,6 @@ pub(crate) fn add_issue_findings(inspection: &mut RepositoryInspection, github: 
 /// The line and description of the item containing a `{fixme}`: the
 /// requirement or example declaration whose body contains it, or else the
 /// outline node it belongs to.
-// {impl}`requirements.cli.fixme_issues`
 fn containing_item(
     inspection: &RepositoryInspection,
     outlines: &crate::inputs::OutlineCache,
@@ -889,7 +881,6 @@ mod tests {
     /// A project whose `{fixme}`s name `o/r#1` (closed), `o/r#2` (open),
     /// and `o/r#3` (missing): a named one on a function, acknowledged by a
     /// FIXME record, and an unnamed one in a requirement's body.
-    // {test}`requirements.cli.fixme_issues`
     fn project() -> tempfile::TempDir {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path();

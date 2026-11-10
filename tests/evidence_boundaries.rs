@@ -5,9 +5,6 @@ use habeas::validate_repository;
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
-// {test}`requirements.ci.outline_inputs`
-// {test}`requirements.ci.input_containment`
-// {test}`requirements.ci.orphans`
 fn fixture() -> TempDir {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("project");
@@ -26,7 +23,6 @@ fn fixture() -> TempDir {
     temp
 }
 
-// {test}`requirements.ci.schema`
 // {test}`requirements.ci.reference_set`
 fn write_inputs(root: &Path, inputs: Vec<Value>) {
     fs::write(
@@ -56,7 +52,6 @@ fn without_citation_reviews(errors: Vec<String>) -> Vec<String> {
 }
 
 /// The recorded outline input for `item` in `file`.
-// {test}`requirements.ci.outline_inputs`
 fn outline(root: &Path, file: &str, item: &str) -> Value {
     habeas::outline_input(root, file, item).unwrap()
 }

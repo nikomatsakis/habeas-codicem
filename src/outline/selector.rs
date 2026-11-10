@@ -3,11 +3,9 @@
 use std::fmt;
 
 /// Number of identity-hash hex digits in an anonymous segment.
-// {impl}`requirements.references.outline_selectors`
 pub(crate) const HASH_DIGITS: usize = 12;
 
 /// Percent-encodes `%`, `[`, `]`, `/`, `#`, `@`, and whitespace as UTF-8 bytes.
-// {impl}`requirements.references.outline_selectors`
 pub(crate) fn encode_name(name: &str) -> String {
     let mut encoded = String::with_capacity(name.len());
     for character in name.chars() {
@@ -25,7 +23,6 @@ pub(crate) fn encode_name(name: &str) -> String {
 
 /// Reverses [`encode_name`], rejecting malformed escapes and unescaped
 /// delimiters.
-// {impl}`requirements.references.outline_selectors`
 pub(crate) fn decode_name(encoded: &str) -> Result<String, SelectorError> {
     let bytes = encoded.as_bytes();
     let mut decoded = Vec::with_capacity(bytes.len());
@@ -63,7 +60,6 @@ pub(crate) fn decode_name(encoded: &str) -> Result<String, SelectorError> {
 }
 
 /// A segment's label: a name, made of `/`-joined parts, or an identity hash.
-// {impl}`requirements.references.outline_selectors`
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Label {
     Named(Vec<String>),
@@ -71,7 +67,6 @@ pub(crate) enum Label {
 }
 
 /// One parsed selector segment.
-// {impl}`requirements.references.outline_selectors`
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Segment {
     pub(crate) kind: String,
@@ -81,7 +76,6 @@ pub(crate) struct Segment {
 
 impl Segment {
     /// The segment without its `#N` ordinal.
-    // {impl}`requirements.references.outline_selectors`
     pub(crate) fn base(kind: &str, label: &Label) -> String {
         match label {
             Label::Named(parts) => format!(
@@ -98,7 +92,6 @@ impl Segment {
 }
 
 impl fmt::Display for Segment {
-    // {impl}`requirements.references.outline_selectors`
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(&Self::base(&self.kind, &self.label))?;
         if let Some(ordinal) = self.ordinal {
@@ -109,7 +102,6 @@ impl fmt::Display for Segment {
 }
 
 /// An invalid selector.
-// {impl}`requirements.references.outline_selectors`
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct SelectorError {
     pub(crate) selector: String,
@@ -117,7 +109,6 @@ pub(crate) struct SelectorError {
 }
 
 impl SelectorError {
-    // {impl}`requirements.references.outline_selectors`
     pub(crate) fn new(selector: &str, message: impl Into<String>) -> Self {
         Self {
             selector: selector.to_owned(),
@@ -127,7 +118,6 @@ impl SelectorError {
 }
 
 impl fmt::Display for SelectorError {
-    // {impl}`requirements.references.outline_selectors`
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             formatter,
@@ -140,7 +130,6 @@ impl fmt::Display for SelectorError {
 impl std::error::Error for SelectorError {}
 
 /// Splits a selector at `/` outside brackets.
-// {impl}`requirements.references.outline_selectors`
 fn split_segments(selector: &str) -> Result<Vec<&str>, SelectorError> {
     let mut segments = Vec::new();
     let mut depth = false;
@@ -166,7 +155,6 @@ fn split_segments(selector: &str) -> Result<Vec<&str>, SelectorError> {
 }
 
 /// Parses one segment.
-// {impl}`requirements.references.outline_selectors`
 fn parse_segment(selector: &str, segment: &str) -> Result<Segment, SelectorError> {
     let kind_end = segment
         .find(|character: char| !(character.is_ascii_alphanumeric() || "_-".contains(character)))
@@ -232,7 +220,6 @@ fn parse_segment(selector: &str, segment: &str) -> Result<Segment, SelectorError
 }
 
 /// Parses a selector; the empty selector has no segments and selects the root.
-// {impl}`requirements.references.outline_selectors`
 pub(crate) fn parse_selector(selector: &str) -> Result<Vec<Segment>, SelectorError> {
     if selector.is_empty() {
         return Ok(Vec::new());

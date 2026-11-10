@@ -152,7 +152,6 @@ struct DetailEvidence<'a> {
 impl LoadedDetailEvidence {
     // {impl}`requirements.index.state`
     // {impl}`requirements.ci.outcomes`
-    // {impl}`requirements.cli.fixme_summary`
     pub(crate) fn load(root: &Path, name: &str, report: &EvidenceReport) -> Self {
         Self::load_path(root, &format!("evidence/{name}.json"), report)
     }
@@ -160,8 +159,6 @@ impl LoadedDetailEvidence {
     /// Loads the record at a project-relative path, with the validation
     /// errors reported for it, such as a citation review.
     // {impl}`requirements.index.state`
-    // {impl}`requirements.references.citation_review`
-    // {impl}`requirements.ci.outcomes`
     pub(crate) fn load_path(root: &Path, relative: &str, report: &EvidenceReport) -> Self {
         let evidence_path = root.join(relative);
         let prefix = format!("{relative}:");
@@ -221,7 +218,6 @@ impl LoadedDetailEvidence {
         }
     }
 
-    // {impl}`requirements.index.state`
     pub(crate) fn state(&self) -> EvidenceState {
         self.state
     }
@@ -234,7 +230,6 @@ impl LoadedDetailEvidence {
     /// The recorded determination's kind, when the record has a valid
     /// determination, and whether its rationale states that its assessments
     /// disagreed under the `confirm` policy.
-    // {impl}`requirements.cli.status`
     pub(crate) fn disagreement(&self) -> Option<&'static str> {
         let record = serde_json::from_str::<Value>(self.record.as_deref()?).ok()?;
         let rationale = record.get("rationale")?.as_str()?;
@@ -245,15 +240,12 @@ impl LoadedDetailEvidence {
         Some(judgment.kind())
     }
 
-    // {impl}`requirements.cli.status`
     // {impl}`requirements.index.detail_format`
-    // {impl}`requirements.cli.fixme_summary`
     pub(crate) fn fixme_entries(&self) -> &[String] {
         &self.fixme_entries
     }
 
     // {impl}`requirements.index.detail_format`
-    // {impl}`requirements.cli.info`
     fn borrowed(&self) -> DetailEvidence<'_> {
         DetailEvidence {
             state: self.state,
@@ -346,7 +338,6 @@ impl DetailPlan {
         })
     }
 
-    // {impl}`requirements.index.navigation`
     pub(crate) fn detail_path(&self, name: &str) -> Option<&Path> {
         self.detail_paths.get(name).map(PathBuf::as_path)
     }
@@ -524,7 +515,6 @@ fn render_detail_page(
     )
 }
 
-// {impl}`requirements.cli.info`
 pub(crate) fn render_cli_detail_page(
     name: &str,
     source: &str,
@@ -596,7 +586,6 @@ struct DefinitionEdges {
 
 impl DefinitionEdges {
     // {impl}`requirements.index.detail_format`
-    // {impl}`requirements.references.anchors`
     fn current(name: &str, sources: &RenderSources<'_>) -> Self {
         let mut edges = Self::default();
         for reference in sources.references {
@@ -687,7 +676,6 @@ impl DefinitionEdges {
 
 // {impl}`requirements.index.detail_format`
 // {impl}`requirements.index.invalid_detail`
-// {impl}`requirements.cli.info`
 // {impl}`requirements.index.state`
 // {impl}`requirements.examples.index`
 // {impl}`requirements.authoring.redaction`
@@ -826,7 +814,6 @@ impl InputLocation {
 // {impl}`requirements.index.detail_format`
 // {impl}`requirements.definitions.inputs`
 // {impl}`requirements.ci.outline_inputs`
-// {impl}`requirements.authoring.redaction`
 fn render_input(
     content: &mut String,
     index: usize,

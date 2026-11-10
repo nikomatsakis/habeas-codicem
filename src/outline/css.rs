@@ -6,7 +6,6 @@ use super::profile::{KindRule, NameRule, Profile, kind_is_comment, never, normal
 
 /// Names an at-rule by its normalised prelude: the text between the at-keyword
 /// and the block.
-// {impl}`requirements.references.outlines`
 fn prelude_name(node: Node<'_>, source: &str) -> Option<(Vec<String>, usize)> {
     let keyword = node.child(0)?;
     let mut cursor = node.walk();
@@ -19,15 +18,12 @@ fn prelude_name(node: Node<'_>, source: &str) -> Option<(Vec<String>, usize)> {
     (!prelude.is_empty()).then(|| (vec![prelude], start))
 }
 
-// {impl}`requirements.references.outlines`
 // {impl}`requirements.references.outline_comments`
-// {impl}`requirements.references.structural_hash`
 fn is_comment(node: Node<'_>, source: &str) -> bool {
     kind_is_comment(node, source) || node.kind() == "js_comment"
 }
 
 /// Names a rule set by its normalised selector list.
-// {impl}`requirements.references.outlines`
 fn selectors_name(node: Node<'_>, source: &str) -> Option<(Vec<String>, usize)> {
     let mut cursor = node.walk();
     let selectors = node
@@ -39,7 +35,6 @@ fn selectors_name(node: Node<'_>, source: &str) -> Option<(Vec<String>, usize)> 
     ))
 }
 
-// {impl}`requirements.references.outlines`
 const KINDS: &[KindRule] = &[
     KindRule::new("rule_set", "rule", NameRule::Custom(selectors_name)),
     KindRule::new("media_statement", "media", NameRule::Custom(prelude_name)),
@@ -55,7 +50,6 @@ const KINDS: &[KindRule] = &[
     ),
 ];
 
-// {impl}`requirements.references.outlines`
 // {impl}`requirements.references.outline_comments`
 // {impl}`requirements.references.structural_hash`
 pub(crate) static PROFILE: Profile = Profile {

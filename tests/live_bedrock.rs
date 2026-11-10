@@ -11,7 +11,6 @@ use serde_json::Value;
 const SUBJECT: &str = "requirements.parity";
 const REQUIREMENT: &str = "The is_even function in src/parity.rs MUST return true exactly when its unsigned integer argument is even. Its implementation and tests are in that file.";
 
-// {test}`requirements.integration.live_bedrock_test`
 fn report(message: impl std::fmt::Display) {
     // Direct stderr writes remain visible when libtest captures passing tests.
     let _ = writeln!(io::stderr().lock(), "{message}");
@@ -19,13 +18,11 @@ fn report(message: impl std::fmt::Display) {
 
 /// The configuration the live test uses, and the `habeas.toml` text that gives
 /// the fixture project the checkout's workspace authoring configurations.
-// {test}`requirements.integration.live_bedrock_test`
 struct LiveSelection {
     config: ResolvedAuthoringConfig,
     workspace: Option<String>,
 }
 
-// {test}`requirements.integration.live_bedrock_test`
 // {test}`requirements.authoring.configuration_precedence`
 fn selected_config() -> Result<Option<LiveSelection>, Box<dyn Error>> {
     let root = fs::canonicalize(env!("CARGO_MANIFEST_DIR"))?;
@@ -41,7 +38,6 @@ fn selected_config() -> Result<Option<LiveSelection>, Box<dyn Error>> {
 /// workspace configuration of `root`: an explicit name, else the selection
 /// authoring would make for `root` when it is Bedrock, else the first Bedrock
 /// configuration in name order.
-// {test}`requirements.integration.live_bedrock_test`
 // {test}`requirements.authoring.configuration_precedence`
 fn select_config(
     path: &Path,
@@ -126,7 +122,6 @@ fn select_config(
     Ok(Some(LiveSelection { config, workspace }))
 }
 
-// {test}`requirements.integration.live_bedrock_test`
 // {test}`requirements.authoring.configuration_precedence`
 // {test}`requirements.authoring.credentials`
 fn credentials_available(config: &BedrockConfig) -> bool {
@@ -273,7 +268,6 @@ fn live_bedrock_authoring() {
     );
 }
 
-// {test}`requirements.integration.live_bedrock_test`
 fn skip_probe(root: &Path) -> Command {
     let mut command = Command::new(std::env::current_exe().unwrap());
     command.args(["--exact", "live_bedrock_authoring"]);

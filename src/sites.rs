@@ -17,7 +17,6 @@ use crate::structural::{DeclaredQuery, QueryKind};
 use crate::{DefinitionKind, ReferenceKind};
 
 /// The directory under `evidence/` holding site reviews.
-// {impl}`requirements.references.site_review`
 pub(crate) const SITES_DIR: &str = "sites";
 
 /// The inspection phase that validates site reviews.
@@ -25,8 +24,6 @@ pub(crate) const SITES_DIR: &str = "sites";
 const SITE_STAGE: &str = "site reviews";
 
 /// One query match at a site.
-// {impl}`requirements.references.site_review`
-// {impl}`requirements.authoring.site_prompt`
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct SiteMatch {
     pub(crate) kind: QueryKind,
@@ -38,8 +35,6 @@ pub(crate) struct SiteMatch {
 
 /// One site of a distributed requirement: the innermost outline node
 /// containing a match of one of its queries.
-// {impl}`requirements.references.distributed`
-// {impl}`requirements.references.site_review`
 #[derive(Clone, Debug)]
 pub(crate) struct SiteItem {
     pub(crate) requirement: String,
@@ -56,14 +51,11 @@ pub(crate) struct SiteItem {
 
 impl SiteItem {
     /// The review's path relative to the project root.
-    // {impl}`requirements.references.site_review`
     pub(crate) fn review_path(&self) -> String {
         review_path(&self.requirement, &self.file, &self.item)
     }
 
     /// The selector as displayed, `<root>` for the root node.
-    // {impl}`requirements.references.site_review`
-    // {impl}`requirements.authoring.site_prompt`
     pub(crate) fn selector_label(&self) -> &str {
         if self.item.is_empty() {
             "<root>"
@@ -73,7 +65,6 @@ impl SiteItem {
     }
 
     /// The sorted names of the queries with a match at the site.
-    // {impl}`requirements.references.site_review`
     pub(crate) fn queries(&self) -> Vec<String> {
         self.matches
             .iter()
@@ -85,8 +76,6 @@ impl SiteItem {
 
     /// The matches as the model receives them: each query's kind and name
     /// and the match's lines, and, for a violation match, its redacted text.
-    // {impl}`requirements.authoring.site_prompt`
-    // {impl}`requirements.authoring.redaction`
     pub(crate) fn matches_value(&self) -> Value {
         Value::Array(
             self.matches
@@ -109,7 +98,6 @@ impl SiteItem {
     }
 
     /// Whether a reference lies inside the site's node.
-    // {impl}`requirements.references.site_review`
     pub(crate) fn contains(&self, root: &Path, reference: &SourceReference) -> bool {
         display_path(root, &reference.file) == self.file
             && self.line_start <= reference.line
@@ -118,7 +106,6 @@ impl SiteItem {
 
     /// The `{fixme}` references naming the requirement inside the site,
     /// which acknowledge gaps at this site only.
-    // {impl}`requirements.references.site_review`
     pub(crate) fn fixmes<'a>(
         &self,
         root: &Path,
@@ -138,12 +125,10 @@ impl SiteItem {
 }
 
 /// The sites of each distributed requirement, by full name.
-// {impl}`requirements.references.distributed`
 pub(crate) type Sites = BTreeMap<String, Vec<SiteItem>>;
 
 /// Whether a reference is a `{fixme}` naming a distributed requirement from
 /// inside one of its sites, so it belongs to that site's review alone.
-// {impl}`requirements.references.site_review`
 pub(crate) fn in_own_site(root: &Path, sites: &Sites, reference: &SourceReference) -> bool {
     reference.kind == ReferenceKind::Fixme
         && sites
@@ -153,7 +138,6 @@ pub(crate) fn in_own_site(root: &Path, sites: &Sites, reference: &SourceReferenc
 
 /// `evidence/sites/<full-name>/<file>/<selector>.json`, with the selector
 /// encoded as for citation reviews.
-// {impl}`requirements.references.site_review`
 pub(crate) fn review_path(requirement: &str, file: &str, item: &str) -> String {
     format!(
         "evidence/{SITES_DIR}/{requirement}/{file}/{}.json",
@@ -162,14 +146,11 @@ pub(crate) fn review_path(requirement: &str, file: &str, item: &str) -> String {
 }
 
 /// `sites:<full-name>/<file>#<selector>`.
-// {impl}`requirements.references.site_review`
 pub(crate) fn subject_label(requirement: &str, file: &str, item: &str) -> String {
     format!("sites:{requirement}/{file}#{item}")
 }
 
 /// Whether a path lies in the site review directory.
-// {impl}`requirements.references.site_review`
-// {impl}`requirements.ci.orphans`
 pub(crate) fn is_review_path(evidence_root: &Path, path: &Path) -> bool {
     path.strip_prefix(evidence_root)
         .ok()
@@ -198,7 +179,6 @@ pub(crate) fn requirement_sites(
 }
 
 /// Groups query matches by site, in path and selector order.
-// {impl}`requirements.references.distributed`
 fn collect_sites(
     root: &Path,
     name: &str,
@@ -246,7 +226,6 @@ fn collect_sites(
 /// Validates every requirement's query directives and finds each
 /// distributed requirement's sites. A query that is malformed, or whose
 /// `within` query is, finds no sites.
-// {impl}`requirements.references.distributed`
 // {impl}`requirements.ci.errors`
 pub(crate) fn discover(
     root: &Path,
@@ -294,7 +273,6 @@ pub(crate) fn discover(
 /// segment, a violation query needs a site query to lie `within`, each rule
 /// must compile, and each `match` snippet must contain a match and each
 /// `no_match` snippet none.
-// {impl}`requirements.references.distributed`
 // {impl}`requirements.ci.errors`
 fn validate_queries<'a>(
     name: &str,
@@ -391,7 +369,6 @@ fn validate_queries<'a>(
 
 /// Reports query directives outside a `{req}` body in one chapter. Text in
 /// code blocks stays literal.
-// {impl}`requirements.references.distributed`
 // {impl}`requirements.ci.errors`
 pub(crate) fn validate_query_placement(
     label: &str,
@@ -428,7 +405,6 @@ pub(crate) fn validate_query_placement(
 }
 
 /// The declarations a requirement cites, which every site review receives.
-// {impl}`requirements.references.site_review`
 pub(crate) fn cited_declarations(
     declaration: &Declaration,
     definitions: &BTreeMap<String, Declaration>,
@@ -449,7 +425,6 @@ pub(crate) fn cited_declarations(
 
 /// One acknowledgment inside a site as recorded: the outline node it
 /// belongs to and its body.
-// {impl}`requirements.references.site_review`
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct SiteFixme {
     pub(crate) item: String,
@@ -457,14 +432,12 @@ pub(crate) struct SiteFixme {
 }
 
 impl SiteFixme {
-    // {impl}`requirements.references.site_review`
     pub(crate) fn to_value(&self) -> Value {
         json!({"item": self.item, "commentary": self.commentary})
     }
 
     /// The comparison key: the node and the body's words, so reflowing the
     /// body does not make the review stale.
-    // {impl}`requirements.references.site_review`
     fn key(&self) -> (String, Vec<String>) {
         (
             self.item.clone(),
@@ -478,7 +451,6 @@ impl SiteFixme {
 
 /// The `{fixme}` references naming the requirement inside a site, in source
 /// order, as recorded in its review.
-// {impl}`requirements.references.site_review`
 pub(crate) fn site_fixmes(
     root: &Path,
     site: &SiteItem,
@@ -507,7 +479,6 @@ pub(crate) fn site_fixmes(
 
 /// Whether two lists of site `{fixme}` references are the same, by node and
 /// body words.
-// {impl}`requirements.references.site_review`
 fn same_fixmes(recorded: &[SiteFixme], current: &[SiteFixme]) -> bool {
     let key = |fixmes: &[SiteFixme]| {
         let mut keys = fixmes.iter().map(SiteFixme::key).collect::<Vec<_>>();
@@ -520,9 +491,7 @@ fn same_fixmes(recorded: &[SiteFixme], current: &[SiteFixme]) -> bool {
 /// Validates site reviews: each current site needs a current, accepted
 /// review, and every review file must name a current site. `files` are the
 /// review files already listed with the rest of `evidence/`.
-// {impl}`requirements.references.site_review`
 // {impl}`requirements.ci.outcomes`
-// {impl}`requirements.authoring.progress`
 // {impl}`requirements.ci.errors`
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn validate(
@@ -576,8 +545,6 @@ pub(crate) fn validate(
 }
 
 /// Validates one review file against its current site.
-// {impl}`requirements.references.site_review`
-// {impl}`requirements.ci.outcomes`
 // {impl}`requirements.ci.errors`
 fn validate_review(
     root: &Path,
@@ -782,7 +749,6 @@ pub(crate) mod tests {
 
     /// A requirement with a site query selecting `check_` functions and a
     /// violation query for panics within them.
-    // {test}`requirements.references.distributed`
     pub(crate) const RULE: &str = r#":::::{req} rule
 Each checker MUST report problems instead of panicking.
 
@@ -816,12 +782,10 @@ no_match:
 
     /// Sources with three checker sites, one panicking directly and one
     /// through a nested function, and a panic outside every site.
-    // {test}`requirements.references.distributed`
     pub(crate) const SOURCE: &str = "fn check_one() { panic!(\"x\"); }\nfn check_two() {}\nfn other() { panic!(\"y\"); }\nmod inner {\n    fn check_three() {\n        fn nested() { panic!(\"z\"); }\n    }\n}\n";
 
     /// A project outside Git whose book declares `chapter` and whose
     /// `src/lib.rs` is `source`.
-    // {test}`requirements.references.distributed`
     pub(crate) fn project(chapter: &str, source: &str) -> tempfile::TempDir {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path();
@@ -835,7 +799,6 @@ no_match:
     }
 
     /// Validation errors and the sites of every distributed requirement.
-    // {test}`requirements.references.distributed`
     pub(crate) fn inspect(root: &Path) -> (Vec<String>, Sites) {
         let inspection = crate::evidence::inspect_repository(root).unwrap();
         (inspection.report.errors, inspection.sites)
@@ -1194,7 +1157,6 @@ no_match: ["struct S;"]
 
     /// The inputs a current review of a site records: the site's outline
     /// node and the requirement's declaration.
-    // {test}`requirements.references.site_review`
     pub(crate) fn site_inputs(root: &Path, item: &str) -> Vec<Value> {
         let definitions = crate::evidence::load_definitions(root).unwrap();
         let outlines = OutlineCache::default();
@@ -1210,7 +1172,6 @@ no_match: ["struct S;"]
 
     /// Writes a site review of `requirements.rule` for an item of
     /// `src/lib.rs`.
-    // {test}`requirements.references.site_review`
     pub(crate) fn write_review(root: &Path, item: &str, fields: Value) {
         let mut record = json!({
             "requirement": "requirements.rule",
@@ -1232,7 +1193,6 @@ no_match: ["struct S;"]
     }
 
     /// The validation errors of one site review.
-    // {test}`requirements.references.site_review`
     fn review_errors(errors: &[String], item: &str) -> Vec<String> {
         let prefix = format!("{}:", review_path("requirements.rule", "src/lib.rs", item));
         errors

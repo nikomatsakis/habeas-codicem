@@ -15,8 +15,6 @@ use crate::inputs::{InputSelector, OutlineCache, ParsedSource, recorded_input};
 use crate::sites::{SiteFixme, SiteItem};
 use crate::{DefinitionKind, ReferenceKind};
 
-// {impl}`requirements.references.citation_review`
-// {impl}`requirements.references.site_review`
 pub(crate) enum AssessmentKind {
     /// A requirement or example, and whether it is distributed.
     Definition(DefinitionKind, bool),
@@ -25,15 +23,11 @@ pub(crate) enum AssessmentKind {
     /// naming the requirement inside it.
     Site(SiteItem, Vec<SiteFixme>),
     /// An item a replaced record covered that is no longer covered.
-    // {impl}`requirements.authoring.coverage_loss`
     CoverageLoss(super::coverage_loss::LostItem),
 }
 
 impl AssessmentKind {
-    // {impl}`requirements.authoring.usage_storage`
     // {impl}`requirements.authoring.initial_prompt`
-    // {impl}`requirements.authoring.verifier_prompt`
-    // {impl}`requirements.references.site_review`
     pub(crate) fn noun(&self) -> &'static str {
         match self {
             Self::Definition(kind, _) => kind.noun(),
@@ -72,9 +66,7 @@ impl AssessmentSources {
     // {impl}`requirements.examples.authoring_inputs`
     // {impl}`requirements.references.authoring_inputs`
     // {impl}`requirements.definitions.authoring_inputs`
-    // {impl}`requirements.ci.authoring_inputs`
     // {impl}`requirements.authoring.source_tools`
-    // {impl}`requirements.authoring.read_denial`
     // {impl}`requirements.references.anchors`
     // {impl}`requirements.ci.reference_set`
     // {impl}`requirements.references.builtin_definitions`
@@ -259,9 +251,7 @@ impl AssessmentSources {
     /// mandatory inputs are the item's outline node, each cited declaration
     /// or built-in text, and the terminology they use; the citations and
     /// their commentary are supplied in the prompt.
-    // {impl}`requirements.references.citation_review`
     // {impl}`requirements.authoring.citation_prompt`
-    // {impl}`requirements.authoring.read_denial`
     // {impl}`requirements.authoring.mandatory_inputs`
     pub(crate) fn prepare_citation(root: &Path, file: &str, item: &str) -> io::Result<Self> {
         let root = fs::canonicalize(root)?;
@@ -355,9 +345,7 @@ impl AssessmentSources {
     /// complete declaration, each declaration or built-in text it cites, and
     /// the terminology they use; a `{fixme}` naming the requirement inside
     /// the site is part of the site's node.
-    // {impl}`requirements.references.site_review`
     // {impl}`requirements.authoring.site_prompt`
-    // {impl}`requirements.authoring.read_denial`
     // {impl}`requirements.authoring.mandatory_inputs`
     // {impl}`requirements.references.builtin_definitions`
     pub(crate) fn prepare_site(
@@ -470,9 +458,7 @@ impl AssessmentSources {
     /// are the item's outline node, the declarations of the requirements and
     /// examples whose replaced records read it, and the terminology they use;
     /// those records' rationales are supplied in the prompt.
-    // {impl}`requirements.authoring.coverage_loss`
     // {impl}`requirements.authoring.mandatory_inputs`
-    // {impl}`requirements.authoring.read_denial`
     pub(crate) fn prepare_coverage_loss(
         root: &Path,
         lost: super::coverage_loss::LostItem,
@@ -579,7 +565,6 @@ impl AssessmentSources {
 
     // {impl}`requirements.authoring.delivered_inputs`
     // {impl}`requirements.ci.outline_inputs`
-    // {impl}`requirements.definitions.authoring_inputs`
     pub(crate) fn record_inputs(&mut self, inputs: &[Value]) {
         // A built-in's fixed text is supplied to the model but is not an
         // evidence input form.
@@ -593,9 +578,6 @@ impl AssessmentSources {
 
     /// Reads a selector as a model-facing input, recording a project-local
     /// absolute path relative to the project.
-    // {impl}`requirements.authoring.source_tools`
-    // {impl}`requirements.authoring.text_search`
-    // {impl}`requirements.ci.schema`
     pub(crate) fn read_selector(&self, selector: &InputSelector) -> io::Result<Value> {
         let definitions = load_definitions(&self.root)?;
         let relative;
@@ -619,10 +601,7 @@ impl AssessmentSources {
     }
 
     /// Parses a permitted file, aborting on access denial.
-    // {impl}`requirements.authoring.source_tools`
-    // {impl}`requirements.authoring.text_search`
     // {impl}`requirements.authoring.outline_tool`
-    // {impl}`requirements.authoring.read_denial`
     pub(crate) fn parse_file(
         &self,
         file: &str,
@@ -634,8 +613,6 @@ impl AssessmentSources {
     /// Reads the innermost outline nodes covering an inclusive line range,
     /// as model-facing outline inputs. With `comments`, comment lines select
     /// their comments' owners.
-    // {impl}`requirements.authoring.source_tools`
-    // {impl}`requirements.authoring.text_search`
     // {impl}`requirements.ci.outline_inputs`
     pub(crate) fn read_lines(
         &self,
@@ -670,8 +647,6 @@ impl AssessmentSources {
 
     /// The additional definitions each input needs on its own, so a page of
     /// inputs can carry the definitions that accompany them.
-    // {impl}`requirements.authoring.result_pages`
-    // {impl}`requirements.definitions.authoring_inputs`
     pub(crate) fn definitions_each(&self, inputs: &[Value]) -> io::Result<Vec<Vec<Value>>> {
         let definitions = load_definitions(&self.root)?;
         inputs
@@ -692,9 +667,6 @@ impl AssessmentSources {
             .collect()
     }
 
-    // {impl}`requirements.definitions.authoring_inputs`
-    // {impl}`requirements.authoring.source_tools`
-    // {impl}`requirements.authoring.text_search`
     pub(crate) fn additional_definitions(&self, inputs: &[Value]) -> io::Result<Vec<Value>> {
         let definitions = load_definitions(&self.root)?;
         Ok(definition_inputs(
@@ -712,10 +684,7 @@ impl AssessmentSources {
 }
 
 // {impl}`requirements.authoring.mandatory_inputs`
-// {impl}`requirements.authoring.source_tools`
 // {impl}`requirements.authoring.file_discovery`
-// {impl}`requirements.authoring.text_search`
-// {impl}`requirements.ci.authoring_inputs`
 pub(crate) fn generated_evidence_path(root: &Path, path: &Path) -> bool {
     let path = root.join(path);
     let evidence = root.join("evidence");
@@ -725,8 +694,6 @@ pub(crate) fn generated_evidence_path(root: &Path, path: &Path) -> bool {
 }
 
 // {impl}`requirements.authoring.mandatory_inputs`
-// {impl}`requirements.authoring.source_tools`
-// {impl}`requirements.ci.authoring_inputs`
 // {impl}`requirements.configuration.evidence_paths`
 fn generated_evidence_selector(
     root: &Path,
@@ -742,12 +709,7 @@ fn generated_evidence_selector(
 }
 
 // {impl}`requirements.authoring.mandatory_inputs`
-// {impl}`requirements.authoring.source_tools`
-// {impl}`requirements.definitions.authoring_inputs`
-// {impl}`requirements.ci.authoring_inputs`
 // {impl}`requirements.configuration.evidence_paths`
-// {impl}`requirements.authoring.read_denial`
-// {impl}`requirements.definitions.selection`
 // {impl}`requirements.references.definition_globs`
 fn source_input(
     root: &Path,
@@ -785,8 +747,6 @@ fn source_input(
 }
 
 /// The model-facing input carrying a built-in's fixed text.
-// {impl}`requirements.references.builtin_definitions`
-// {impl}`requirements.references.citation_review`
 // {impl}`requirements.authoring.mandatory_inputs`
 pub(crate) fn builtin_input(name: &str) -> Value {
     let text = crate::builtins::builtin(name).map_or("", |builtin| builtin.text());
@@ -803,7 +763,6 @@ fn insert_selector(selectors: &mut Vec<InputSelector>, selector: InputSelector) 
 /// The input a `{impl}` or `{test}` reference contributes: the enclosing
 /// Markdown declaration, otherwise the smallest outline node the reference
 /// belongs to, or the whole file in a plain-text source.
-// {impl}`requirements.references.authoring_inputs`
 // {impl}`requirements.references.outline_comments`
 fn reference_selector(
     root: &Path,
@@ -852,7 +811,6 @@ fn reference_selector(
     Ok(InputSelector::Outline { file, item })
 }
 
-// {impl}`requirements.definitions.authoring_inputs`
 // {impl}`requirements.definitions.selection`
 // {impl}`requirements.authoring.mandatory_inputs`
 fn definition_inputs(

@@ -22,8 +22,6 @@ use crate::inputs::OutlineCache;
 use crate::outline::{Outline, Profile};
 
 /// An outline profile with a grammar, as an ast-grep language.
-// {impl}`requirements.authoring.structural_search`
-// {impl}`requirements.references.distributed`
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct QueryLanguage {
     pub(crate) profile: &'static Profile,
@@ -32,8 +30,6 @@ pub(crate) struct QueryLanguage {
 
 impl QueryLanguage {
     /// The language named by an outline profile with a grammar.
-    // {impl}`requirements.authoring.structural_search`
-    // {impl}`requirements.references.distributed`
     pub(crate) fn named(name: &str) -> Result<Self, String> {
         crate::outline::profile::profiles()
             .into_iter()
@@ -48,8 +44,6 @@ impl QueryLanguage {
     }
 
     /// The names of the outline profiles with a grammar.
-    // {impl}`requirements.authoring.structural_search`
-    // {impl}`requirements.references.distributed`
     pub(crate) fn names() -> Vec<&'static str> {
         crate::outline::profile::profiles()
             .into_iter()
@@ -59,8 +53,6 @@ impl QueryLanguage {
     }
 
     /// Whether a file is a source of this language.
-    // {impl}`requirements.authoring.structural_search`
-    // {impl}`requirements.references.distributed`
     pub(crate) fn covers(&self, path: &Path) -> bool {
         std::ptr::eq(crate::outline::profile_for_path(path), self.profile)
     }
@@ -81,7 +73,6 @@ impl Language for QueryLanguage {
 
     /// Grammars where `$` cannot start an identifier parse metavariables
     /// under another character, as ast-grep's own language table does.
-    // {impl}`requirements.authoring.structural_search`
     fn expando_char(&self) -> char {
         match self.profile.name {
             "rust" | "python" => 'µ',
@@ -123,15 +114,12 @@ impl Language for QueryLanguage {
 }
 
 impl LanguageExt for QueryLanguage {
-    // {impl}`requirements.authoring.structural_search`
     fn get_ts_language(&self) -> TSLanguage {
         (self.grammar)()
     }
 }
 
 /// A compiled ast-grep rule core for one language.
-// {impl}`requirements.authoring.structural_search`
-// {impl}`requirements.references.distributed`
 pub(crate) struct StructuralRule {
     language: QueryLanguage,
     core: RuleCore,
@@ -140,8 +128,6 @@ pub(crate) struct StructuralRule {
 impl StructuralRule {
     /// Compiles a rule core: an object holding `rule` and optional `utils`
     /// and `constraints`, in the syntax of the pinned `ast-grep-config`.
-    // {impl}`requirements.authoring.structural_search`
-    // {impl}`requirements.references.distributed`
     pub(crate) fn compile(language: &str, rule: &Map<String, Value>) -> Result<Self, String> {
         let language = QueryLanguage::named(language)?;
         for key in rule.keys() {
@@ -162,15 +148,11 @@ impl StructuralRule {
         Ok(Self { language, core })
     }
 
-    // {impl}`requirements.authoring.structural_search`
-    // {impl}`requirements.references.distributed`
     pub(crate) fn language(&self) -> QueryLanguage {
         self.language
     }
 
     /// The byte ranges of every match in a source, in source order.
-    // {impl}`requirements.authoring.structural_search`
-    // {impl}`requirements.references.distributed`
     pub(crate) fn matches(&self, source: &str) -> Vec<Range<usize>> {
         let root = self.language.ast_grep(source);
         let mut ranges = root
@@ -186,7 +168,6 @@ impl StructuralRule {
 
 /// An error with each of its sources, since ast-grep's top-level messages
 /// name only the part of the rule that failed.
-// {impl}`requirements.authoring.structural_search`
 fn error_chain(error: &dyn std::error::Error) -> String {
     let mut message = error.to_string();
     let mut source = error.source();
@@ -201,8 +182,6 @@ fn error_chain(error: &dyn std::error::Error) -> String {
 /// The innermost outline node containing a byte range of the source the
 /// outline was parsed from. A match within a comment belongs to the
 /// comment's owner; a node contains the lines attached before it.
-// {impl}`requirements.authoring.structural_search`
-// {impl}`requirements.references.distributed`
 // {impl}`requirements.references.outline_comments`
 pub(crate) fn innermost_node(outline: &Outline, source: &str, range: &Range<usize>) -> usize {
     if let Some(comment) = outline
@@ -238,7 +217,6 @@ pub(crate) fn innermost_node(outline: &Outline, source: &str, range: &Range<usiz
 }
 
 /// Which directive declares a query.
-// {impl}`requirements.references.distributed`
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum QueryKind {
     Sites,
@@ -247,7 +225,6 @@ pub(crate) enum QueryKind {
 
 /// A query body: one `yaml` block of a `{sites}` or `{violations}`
 /// directive.
-// {impl}`requirements.references.distributed`
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct QueryBody {
@@ -270,7 +247,6 @@ pub(crate) struct QueryBody {
 
 impl QueryBody {
     /// The body's rule core: its `rule`, `utils`, and `constraints`.
-    // {impl}`requirements.references.distributed`
     pub(crate) fn rule_core(&self) -> Map<String, Value> {
         let mut core = Map::new();
         core.insert("rule".to_owned(), self.rule.clone());
@@ -285,7 +261,6 @@ impl QueryBody {
 
     /// Whether a project-relative source is searched under `paths` and
     /// `exclude`.
-    // {impl}`requirements.references.distributed`
     pub(crate) fn searches(&self, file: &Path) -> bool {
         let under = |entry: &String| file.starts_with(Path::new(entry.trim_end_matches('/')));
         self.paths
@@ -296,7 +271,6 @@ impl QueryBody {
 }
 
 /// A query a distributed requirement declares.
-// {impl}`requirements.references.distributed`
 #[derive(Debug)]
 pub(crate) struct DeclaredQuery {
     pub(crate) name: String,
@@ -308,7 +282,6 @@ pub(crate) struct DeclaredQuery {
 
 /// The queries a requirement declaration contains, in declaration order,
 /// failing on the first malformed one.
-// {impl}`requirements.references.distributed`
 pub(crate) fn declared_queries(declaration: &Declaration) -> Result<Vec<DeclaredQuery>, String> {
     let (queries, problems) = parse_queries(declaration);
     match problems.into_iter().next() {
@@ -318,7 +291,6 @@ pub(crate) fn declared_queries(declaration: &Declaration) -> Result<Vec<Declared
 }
 
 /// Whether a declaration contains a query directive, well-formed or not.
-// {impl}`requirements.references.distributed`
 pub(crate) fn has_query_directive(declaration: &Declaration) -> bool {
     declaration
         .raw_lines
@@ -329,7 +301,6 @@ pub(crate) fn has_query_directive(declaration: &Declaration) -> bool {
 
 /// The well-formed queries a requirement declaration contains, in
 /// declaration order, and a problem for each malformed one.
-// {impl}`requirements.references.distributed`
 // {impl}`requirements.ci.errors`
 pub(crate) fn parse_queries(declaration: &Declaration) -> (Vec<DeclaredQuery>, Vec<String>) {
     let lines = &declaration.raw_lines;
@@ -385,7 +356,6 @@ pub(crate) fn parse_queries(declaration: &Declaration) -> (Vec<DeclaredQuery>, V
 }
 
 /// A query directive's opening fence: its colons, kind, and name.
-// {impl}`requirements.references.distributed`
 pub(crate) fn query_fence(line: &str) -> Option<(&str, QueryKind, &str)> {
     let colons = line.len() - line.trim_start_matches(':').len();
     if colons < 3 {
@@ -401,7 +371,6 @@ pub(crate) fn query_fence(line: &str) -> Option<(&str, QueryKind, &str)> {
 }
 
 /// The text of the one fenced `yaml` code block that makes up a query body.
-// {impl}`requirements.references.distributed`
 fn yaml_block(lines: &[&str]) -> Option<String> {
     let content = lines
         .iter()
@@ -426,7 +395,6 @@ fn yaml_block(lines: &[&str]) -> Option<String> {
 }
 
 /// One site of a query: a project-relative file and an outline node of it.
-// {impl}`requirements.references.distributed`
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct Site {
     pub(crate) file: String,
@@ -435,7 +403,6 @@ pub(crate) struct Site {
 
 impl QueryKind {
     /// The directive's role name, `sites` or `violations`.
-    // {impl}`requirements.references.distributed`
     pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Sites => "sites",
@@ -445,7 +412,6 @@ impl QueryKind {
 }
 
 /// One match of a declared query in the project, with its site.
-// {impl}`requirements.references.distributed`
 #[derive(Clone, Debug)]
 pub(crate) struct QueryMatch {
     pub(crate) site: Site,
@@ -461,8 +427,6 @@ pub(crate) struct QueryMatch {
 /// returns the distinct sites of its matches in path and source order. A
 /// violation query's matches belong to the innermost site of its `within`
 /// query containing them; matches inside none of them are discarded.
-// {impl}`requirements.references.distributed`
-// {impl}`requirements.authoring.structural_search`
 pub(crate) fn query_sites(
     root: &Path,
     files: &[PathBuf],
@@ -481,7 +445,6 @@ pub(crate) fn query_sites(
 
 /// Every match of a declared query, with its site, in path and source
 /// order, as [`query_sites`] finds them.
-// {impl}`requirements.references.distributed`
 pub(crate) fn query_matches(
     root: &Path,
     files: &[PathBuf],
@@ -563,7 +526,6 @@ pub(crate) fn query_matches(
 /// The site query a query's matches must lie within: none for a site
 /// query, and the `within` target, which must be a site query of the same
 /// requirement, for a violation query.
-// {impl}`requirements.references.distributed`
 pub(crate) fn within_query<'a>(
     queries: &'a [DeclaredQuery],
     query: &DeclaredQuery,
@@ -583,7 +545,6 @@ pub(crate) fn within_query<'a>(
 
 /// The site a match belongs to: the innermost outline node containing it,
 /// or, with `within`, the innermost of those nodes containing it.
-// {impl}`requirements.references.distributed`
 fn owning_site(
     outline: &Outline,
     source: &str,
@@ -604,7 +565,6 @@ fn owning_site(
 /// How many matches a query has in one snippet of its language, counting a
 /// violation query's matches only inside a site of its `within` query in
 /// the same snippet. A snippet that does not parse is an error.
-// {impl}`requirements.references.distributed`
 pub(crate) fn snippet_matches(
     queries: &[DeclaredQuery],
     query: &DeclaredQuery,

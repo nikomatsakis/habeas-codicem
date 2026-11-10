@@ -13,7 +13,6 @@ use crate::{
     reference_roles, valid_name,
 };
 
-// {impl}`requirements.integration.report_api`
 #[derive(Debug)]
 pub struct EvidenceReport {
     pub requirements: usize,
@@ -22,7 +21,6 @@ pub struct EvidenceReport {
     pub errors: Vec<String>,
 }
 
-// {impl}`requirements.references.anchors`
 pub(crate) struct Declaration {
     pub(crate) kind: DefinitionKind,
     pub(crate) text: String,
@@ -36,7 +34,6 @@ pub(crate) struct Declaration {
 
 /// An `:impl:` or `:test:` option naming a project file, or one outline node
 /// in it as `path#selector`.
-// {impl}`requirements.references.anchors`
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Anchor {
     pub(crate) kind: ReferenceKind,
@@ -46,7 +43,6 @@ pub(crate) struct Anchor {
 }
 
 /// The node an anchor currently resolves to.
-// {impl}`requirements.references.anchors`
 pub(crate) struct AnchorTarget {
     /// Canonical path of the anchored file.
     pub(crate) path: PathBuf,
@@ -58,7 +54,6 @@ pub(crate) struct AnchorTarget {
 
 impl Anchor {
     /// Parses an option value: a path, optionally followed by `#selector`.
-    // {impl}`requirements.references.anchors`
     pub(crate) fn parse(kind: ReferenceKind, value: &str) -> Self {
         let (file, item) = value.split_once('#').unwrap_or((value, ""));
         Self {
@@ -69,7 +64,6 @@ impl Anchor {
     }
 
     /// The option value as written.
-    // {impl}`requirements.references.anchors`
     pub(crate) fn label(&self) -> String {
         if self.item.is_empty() {
             self.file.clone()
@@ -79,7 +73,6 @@ impl Anchor {
     }
 
     /// Resolves the anchored file and node.
-    // {impl}`requirements.references.anchors`
     pub(crate) fn resolve(
         &self,
         root: &Path,
@@ -107,7 +100,6 @@ impl Anchor {
     }
 
     /// The outline input selecting the anchored node.
-    // {impl}`requirements.references.anchors`
     pub(crate) fn selector(&self) -> InputSelector {
         InputSelector::Outline {
             file: self.file.clone(),
@@ -134,14 +126,12 @@ pub(crate) struct RepositoryInspection {
     /// The sites of each distributed requirement.
     pub(crate) sites: crate::sites::Sites,
     /// The Rust items reported uncovered, in report order.
-    // {impl}`requirements.authoring.coverage_loss`
     pub(crate) uncovered: Vec<crate::rust_coverage::UncoveredItem>,
     pub(crate) report: EvidenceReport,
     pub(crate) discovery_errors: Vec<String>,
 }
 
 /// Progress within one inspection phase; discovery has no known total.
-// {impl}`requirements.authoring.progress`
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct InspectionProgress {
     pub(crate) stage: &'static str,
@@ -168,9 +158,6 @@ pub(crate) fn load_definitions(root: &Path) -> io::Result<BTreeMap<String, Decla
     }
 }
 
-// {impl}`requirements.integration.report_api`
-// {impl}`requirements.definitions.declaration`
-// {impl}`requirements.authoring.batch`
 // {impl}`requirements.ci.errors`
 // {impl}`requirements.ci.diagnostics`
 // {impl}`requirements.examples.evidence`
@@ -181,12 +168,7 @@ pub(crate) fn inspect_repository(root: &Path) -> io::Result<RepositoryInspection
     inspect_repository_with_progress(root, |_| {})
 }
 
-// {impl}`requirements.integration.report_api`
-// {impl}`requirements.definitions.declaration`
-// {impl}`requirements.authoring.batch`
-// {impl}`requirements.authoring.progress`
 // {impl}`requirements.ci.errors`
-// {impl}`requirements.ci.diagnostics`
 // {impl}`requirements.examples.evidence`
 // {impl}`requirements.configuration.workspace_location`
 // {impl}`requirements.configuration.workspace_structure`
@@ -217,13 +199,11 @@ pub(crate) fn inspect_repository_with_progress(
     let mut present = BTreeSet::new();
     let outlines = OutlineCache::default();
     // Citation reviews are validated against their source items below.
-    // {impl}`requirements.references.citation_review`
     let (review_files, ordinary_files): (Vec<_>, Vec<_>) = evidence_files
         .iter()
         .partition(|file| crate::citations::is_review_path(&evidence_root, file));
     let review_files: Vec<PathBuf> = review_files.into_iter().cloned().collect();
     // Site reviews are validated against the sites of their requirements.
-    // {impl}`requirements.references.site_review`
     // {impl}`requirements.ci.orphans`
     let (site_files, ordinary_files): (Vec<_>, Vec<_>) = ordinary_files
         .into_iter()
@@ -282,7 +262,6 @@ pub(crate) fn inspect_repository_with_progress(
 
     // Unreadable reference sources are discovery failures: a batch must not
     // treat a partial scan as complete.
-    // {impl}`requirements.authoring.batch`
     let scanned = errors.len();
     progress(InspectionProgress {
         stage: "discovering source references",
@@ -304,7 +283,6 @@ pub(crate) fn inspect_repository_with_progress(
         &mut errors,
         &mut progress,
     );
-    // {impl}`requirements.references.citation_review`
     crate::citations::validate(
         &root,
         &definitions,
@@ -314,7 +292,6 @@ pub(crate) fn inspect_repository_with_progress(
         &mut errors,
         &mut progress,
     );
-    // {impl}`requirements.references.site_review`
     crate::sites::validate(
         &root,
         &definitions,
@@ -362,9 +339,7 @@ pub(crate) fn inspect_repository_with_progress(
     })
 }
 
-// {impl}`requirements.ci.book_source`
 // {impl}`requirements.configuration.loading`
-// {impl}`requirements.ci.diagnostics`
 // A malformed `book.toml` is one failed check: fall back to `md` so
 // definition collection and the checks after it still run.
 // {impl}`requirements.ci.errors`
@@ -418,15 +393,9 @@ pub(crate) fn book_source_dir(root: &Path, errors: &mut Vec<String>) -> PathBuf 
     root.join(relative)
 }
 
-// {impl}`requirements.ci.definition_errors`
-// {impl}`requirements.ci.identifiers`
-// {impl}`requirements.references.builtin_definitions`
 // {impl}`requirements.examples.definition`
-// {impl}`requirements.definitions.declaration`
-// {impl}`requirements.references.anchors`
 // {impl}`requirements.ci.requirements_inputs`
 // {impl}`requirements.ci.errors`
-// {impl}`requirements.ci.coverage`
 fn collect_definitions(
     root: &Path,
     md_root: &Path,
@@ -463,7 +432,6 @@ fn collect_definitions(
             let name = full_requirement_name(&namespace, &block.name);
             // An invalid name declares nothing, but the checks of the
             // declaration's fence, options, and text still run.
-            // {impl}`requirements.references.builtin_definitions`
             let named = if name.starts_with("habeas:") || block.name.starts_with("habeas:") {
                 errors.push(format!(
                     "{source}: invalid {} name {name:?}: names beginning with habeas: are reserved for built-in definitions",
@@ -487,7 +455,6 @@ fn collect_definitions(
                 ));
             }
             // {impl}`requirements.ci.span`
-            // {impl}`requirements.references.anchors`
             // {impl}`requirements.ci.requirement_text`
             let text = crate::without_options(&content, block.body_start..block.body_end, &blocks)
                 .trim()
@@ -537,7 +504,6 @@ fn collect_definitions(
             }
             match definitions.entry(name.clone()) {
                 Entry::Vacant(slot) => {
-                    // {impl}`requirements.references.anchors`
                     let raw_lines =
                         crate::without_options(&content, block.start..block.end, &blocks)
                             .lines()
@@ -582,7 +548,6 @@ fn collect_definitions(
 /// requirement. Definition collection reports an example without one, and
 /// Rust item coverage counts a reference to an example only when it has one.
 // {impl}`requirements.examples.definition`
-// {impl}`requirements.references.rust_item_coverage`
 pub(crate) fn example_references_requirement(
     example: &Declaration,
     definitions: &BTreeMap<String, Declaration>,
@@ -600,8 +565,6 @@ pub(crate) fn example_references_requirement(
 /// Lists every file with `extension` under `dir` at any depth. A symlink to a
 /// file counts as a file; symlinked directories are not followed, so a cycle
 /// cannot repeat the walk.
-// {impl}`requirements.ci.coverage`
-// {impl}`requirements.ci.orphans`
 // {impl}`requirements.ci.errors`
 pub(crate) fn files_with_extension(
     root: &Path,
@@ -661,7 +624,6 @@ pub(crate) fn files_with_extension(
 // {impl}`requirements.ci.schema`
 // {impl}`requirements.examples.evidence`
 // {impl}`requirements.definitions.dependencies`
-// {impl}`requirements.ci.diagnostics`
 // A malformed evidence file is one failed check reporting its first parse
 // problem; every well-formed record reports each failed field check.
 // {impl}`requirements.ci.errors`
@@ -797,7 +759,6 @@ fn validate_evidence_file(
     }
 }
 
-// {impl}`requirements.ci.schema`
 // {impl}`requirements.ci.input_containment`
 // {impl}`requirements.ci.outline_inputs`
 // {impl}`requirements.ci.requirements_inputs`
@@ -874,11 +835,7 @@ pub(crate) fn validate_input(
     validate_outline_input(root, definitions, outlines, object, label, errors)
 }
 
-// {impl}`requirements.ci.schema`
-// {impl}`requirements.ci.outline_inputs`
 // {impl}`requirements.configuration.evidence_paths`
-// {impl}`requirements.ci.diagnostics`
-// {impl}`requirements.ci.input_containment`
 // {impl}`requirements.ci.errors`
 fn validate_outline_input(
     root: &Path,
@@ -936,7 +893,6 @@ fn validate_outline_input(
     Some(resolved)
 }
 
-// {impl}`requirements.ci.schema`
 fn text_field(
     object: &Map<String, Value>,
     label: &str,
@@ -957,10 +913,6 @@ fn text_field(
     (text.len() == values.len()).then_some(text)
 }
 
-// {impl}`requirements.ci.requirements_inputs`
-// {impl}`requirements.definitions.inputs`
-// {impl}`requirements.ci.diagnostics`
-// {impl}`requirements.ci.input_containment`
 // {impl}`requirements.authoring.redaction`
 // {impl}`requirements.ci.errors`
 #[allow(clippy::too_many_arguments)]
@@ -1038,7 +990,6 @@ fn validate_resolved_input(
     Some(resolved)
 }
 
-// {impl}`requirements.ci.diagnostics`
 fn compact_diff(recorded: &[&str], current: &[&str]) -> String {
     let prefix = recorded
         .iter()
@@ -1065,7 +1016,6 @@ fn compact_diff(recorded: &[&str], current: &[&str]) -> String {
     diff
 }
 
-// {impl}`requirements.ci.schema`
 pub(crate) fn check_keys(
     object: &Map<String, Value>,
     expected: &[&str],
@@ -1079,7 +1029,6 @@ pub(crate) fn check_keys(
     }
 }
 
-// {impl}`requirements.ci.schema`
 pub(crate) fn string_field<'a>(
     object: &'a Map<String, Value>,
     key: &str,
@@ -1099,7 +1048,6 @@ pub(crate) fn string_field<'a>(
     }
 }
 
-// {impl}`requirements.ci.schema`
 pub(crate) fn array_field<'a>(
     object: &'a Map<String, Value>,
     key: &str,
@@ -1119,7 +1067,6 @@ pub(crate) fn array_field<'a>(
     }
 }
 
-// {impl}`requirements.ci.diagnostics`
 pub(crate) fn display_path(root: &Path, path: &Path) -> String {
     path.strip_prefix(root)
         .unwrap_or(path)
@@ -1127,8 +1074,6 @@ pub(crate) fn display_path(root: &Path, path: &Path) -> String {
         .to_string()
 }
 
-// {impl}`requirements.references.roles`
-// {impl}`requirements.ci.reference_set`
 #[derive(Clone, Debug)]
 pub(crate) struct SourceReference {
     pub(crate) name: String,
@@ -1152,7 +1097,6 @@ impl SourceReference {
     /// Whether a `{fixme}` can be an edge: named, fenced, and outside the
     /// book. Other placements are validation errors, and an unnamed
     /// `{fixme}` is never an edge. Every other role can be.
-    // {impl}`requirements.references.roles`
     pub(crate) fn is_fixme_edge(&self) -> bool {
         self.kind != ReferenceKind::Fixme
             || (!self.name.is_empty() && self.commentary.is_some() && !self.in_book)
@@ -1161,7 +1105,6 @@ impl SourceReference {
 
 /// One edge of a definition's reference set: its origin (an in-source
 /// reference or a declaration anchor), role, file, and outline selector.
-// {impl}`requirements.ci.reference_set`
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct ReferenceSetEntry {
     origin: &'static str,
@@ -1179,9 +1122,7 @@ struct ReferenceSetEntry {
 /// that node leaves the digest unchanged; an anchor contributes its file and
 /// selector as written. `{cite}` references do not contribute. `root` must be
 /// canonical, as reference discovery records canonical paths.
-// {impl}`requirements.ci.reference_set`
 // {impl}`requirements.references.outline_comments`
-// {impl}`requirements.ci.errors`
 pub(crate) fn reference_set_digest<'a>(
     root: &Path,
     outlines: &OutlineCache,
@@ -1196,7 +1137,6 @@ pub(crate) fn reference_set_digest<'a>(
     for reference in references {
         // A `{fixme}` inside a site of a distributed definition belongs to
         // that site's review instead.
-        // {impl}`requirements.references.site_review`
         if reference.name != name
             || crate::sites::in_own_site(root, sites, reference)
             || !reference.is_fixme_edge()
@@ -1314,7 +1254,6 @@ pub fn reference_set_digest_for(root: &Path, name: &str) -> io::Result<String> {
 
 /// The sites of one definition, keyed as in an inspection, so a `{fixme}`
 /// inside one of them can be told apart; empty unless it is distributed.
-// {impl}`requirements.references.site_review`
 pub(crate) fn definition_sites(
     root: &Path,
     name: &str,
@@ -1336,7 +1275,6 @@ pub(crate) fn definition_sites(
 }
 
 /// Whether a string is a lowercase hexadecimal SHA-256 digest.
-// {impl}`requirements.ci.schema`
 fn is_sha256_hex(value: &str) -> bool {
     value.len() == 64
         && value
@@ -1344,8 +1282,6 @@ fn is_sha256_hex(value: &str) -> bool {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
-// {impl}`requirements.references.evidence_coverage`
-// {impl}`requirements.references.anchors`
 struct InputRange {
     file: PathBuf,
     line_start: usize,
@@ -1356,10 +1292,6 @@ struct InputRange {
 // {impl}`requirements.references.evidence_coverage`
 // {impl}`requirements.references.discovery`
 // {impl}`requirements.examples.evidence`
-// {impl}`requirements.definitions.references`
-// {impl}`requirements.definitions.declaration`
-// {impl}`requirements.authoring.progress`
-// {impl}`requirements.references.anchors`
 // {impl}`requirements.ci.reference_set`
 // {impl}`requirements.ci.errors`
 fn validate_references(
@@ -1393,7 +1325,6 @@ fn validate_references(
             continue;
         }
         // {impl}`requirements.references.builtin_definitions`
-        // {impl}`requirements.references.no_requirement`
         if crate::builtins::is_builtin_name(&reference.name) {
             match crate::builtins::builtin(&reference.name) {
                 // Its form problems are already reported.
@@ -1429,7 +1360,6 @@ fn validate_references(
             // A `{fixme}` inside one of its definition's sites acknowledges a
             // gap at that site only, so it is not part of the definition's
             // coverage or reference set.
-            // {impl}`requirements.references.site_review`
             // {impl}`requirements.references.evidence_coverage`
             if edge && !unclosed && !crate::sites::in_own_site(root, sites, reference) {
                 by_definition
@@ -1595,7 +1525,6 @@ fn validate_references(
 /// whether it is a named edge whose name and coverage still need checking.
 /// An unnamed `{fixme}` is not an edge; a misplaced named one is reported
 /// once rather than also as uncovered.
-// {impl}`requirements.references.roles`
 fn validate_fixme_form(
     reference: &SourceReference,
     location: &str,
@@ -1656,8 +1585,6 @@ fn validate_fixme_form(
 /// a `{fixme}` evidently acknowledging a gap, through an issue only it
 /// names, must have all of its issues listed. Whether each gap is real and
 /// acknowledged is the reviewer's judgment and is not reassessed.
-// {impl}`requirements.ci.outcomes`
-// {impl}`requirements.references.site_review`
 pub(crate) fn validate_fixme_entries(
     root: &Path,
     label: &str,
@@ -1728,7 +1655,6 @@ pub(crate) fn collect_references(root: &Path, errors: &mut Vec<String>) -> Vec<S
 
 /// The project files reference discovery considers under source-access
 /// policy, reporting a failure to read the Git index as a discovery error.
-// {impl}`requirements.references.discovery`
 // {impl}`requirements.ci.errors`
 pub(crate) fn discovered_files(root: &Path, errors: &mut Vec<String>) -> Vec<PathBuf> {
     match crate::authoring::access::DiscoverySources::load(root) {
@@ -1777,7 +1703,6 @@ fn validate_committed_credentials(root: &Path, errors: &mut Vec<String>) {
 
 /// Untracked files in a Git worktree, outside the discovery exclusions, that
 /// contain references discovery would otherwise find; empty outside Git.
-// {impl}`requirements.cli.status`
 pub(crate) fn untracked_reference_files(root: &Path) -> io::Result<Vec<PathBuf>> {
     let root = fs::canonicalize(root)?;
     let md_root = book_source_dir(&root, &mut Vec::new());
@@ -1795,8 +1720,6 @@ pub(crate) fn untracked_reference_files(root: &Path) -> io::Result<Vec<PathBuf>>
         .collect())
 }
 
-// {impl}`requirements.references.discovery`
-// {impl}`requirements.authoring.progress`
 // {impl}`requirements.ci.errors`
 pub(crate) fn collect_references_with_progress(
     root: &Path,
@@ -1839,7 +1762,6 @@ pub(crate) fn collect_references_with_progress(
 }
 
 /// The inline and fenced references in one text file, in line order.
-// {impl}`requirements.references.discovery`
 fn file_references(file: &Path, content: &str, in_book: bool) -> Vec<SourceReference> {
     let markdown = crate::outline::is_markdown_path(file);
     let mut references = Vec::new();
@@ -1906,8 +1828,6 @@ fn declaration_line_ranges(content: &str) -> Vec<(usize, usize)> {
 
 /// Unreadable records and unresolvable inputs contribute no ranges: their
 /// own checks report them, and coverage checking continues.
-// {impl}`requirements.references.evidence_coverage`
-// {impl}`requirements.ci.errors`
 fn evidence_input_ranges(
     root: &Path,
     path: &Path,
@@ -1964,7 +1884,6 @@ pub(crate) mod tests {
     /// Records the current reference-set digest in every evidence record for
     /// a defined requirement or example that has none, so fixtures that
     /// write records by hand need not compute it.
-    // {test}`requirements.ci.reference_set`
     pub(crate) fn stamp_reference_sets(root: &Path) {
         let Ok(entries) = fs::read_dir(root.join("evidence")) else {
             return;
@@ -1997,7 +1916,6 @@ pub(crate) mod tests {
 
     /// Validates after stamping hand-written records with their current
     /// reference-set digests.
-    // {test}`requirements.integration.report_api`
     // {test}`requirements.ci.reference_set`
     fn validate_repository(root: &Path) -> std::io::Result<super::EvidenceReport> {
         stamp_reference_sets(root);
@@ -2005,12 +1923,10 @@ pub(crate) mod tests {
     }
 
     /// The recorded outline input for `item` in `file`.
-    // {test}`requirements.ci.outline_inputs`
     fn outline(root: &std::path::Path, file: &str, item: &str) -> Value {
         crate::inputs::outline_input(root, file, item).unwrap()
     }
 
-    // {test}`requirements.integration.report_api`
     fn fixture() -> TempDir {
         let temp = TempDir::new().unwrap();
         fs::create_dir_all(temp.path().join("md/reqs/foo")).unwrap();

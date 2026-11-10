@@ -1,5 +1,4 @@
 // {impl}`requirements.cli.status_table_alignment`
-// {impl}`requirements.cli.shared_status_rendering`
 pub(crate) fn render_evidence_table(rows: &[(String, &str)]) -> String {
     let definition_width = rows
         .iter()

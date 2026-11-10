@@ -6,7 +6,6 @@ use serde_json::{Value, json};
 
 use crate::setup;
 
-// {impl}`requirements.integration.symposium_setup_hook`
 pub(crate) fn session_start() -> Result<(), Box<dyn Error>> {
     let input: Value = serde_json::from_reader(io::stdin()).unwrap_or(Value::Null);
     let response = session_start_response(&input, &std::env::current_dir()?);
@@ -14,7 +13,6 @@ pub(crate) fn session_start() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-// {impl}`requirements.integration.symposium_setup_hook`
 fn session_start_response(input: &Value, fallback_cwd: &Path) -> Value {
     let Some(event) = input.get("SessionStart") else {
         return json!({"SessionStart": {}});

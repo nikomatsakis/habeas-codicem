@@ -5,7 +5,6 @@ use tree_sitter::Node;
 use super::profile::{KindRule, NameRule, Profile, text};
 
 /// Names an impl by its syntactic self type and optional trait path.
-// {impl}`requirements.references.rust_item_selectors`
 fn impl_name(node: Node<'_>, source: &str) -> Option<(Vec<String>, usize)> {
     let self_type = node.child_by_field_name("type")?;
     let name = text(self_type, source).to_owned();
@@ -20,7 +19,6 @@ fn impl_name(node: Node<'_>, source: &str) -> Option<(Vec<String>, usize)> {
 }
 
 /// Names an extern block by its ABI string, `Rust` when absent.
-// {impl}`requirements.references.rust_item_selectors`
 fn extern_name(node: Node<'_>, source: &str) -> Option<(Vec<String>, usize)> {
     let mut cursor = node.walk();
     let modifier = node
@@ -47,14 +45,12 @@ fn extern_name(node: Node<'_>, source: &str) -> Option<(Vec<String>, usize)> {
 }
 
 /// Whether a grammar node sits directly in an item list.
-// {impl}`requirements.references.rust_item_selectors`
 fn in_item_list(node: Node<'_>) -> bool {
     node.parent()
         .is_some_and(|parent| matches!(parent.kind(), "source_file" | "declaration_list"))
 }
 
 /// Whether a macro invocation is an item rather than an expression.
-// {impl}`requirements.references.rust_item_selectors`
 fn item_macro(node: Node<'_>) -> bool {
     in_item_list(node)
         || node
@@ -62,15 +58,11 @@ fn item_macro(node: Node<'_>) -> bool {
             .is_some_and(|parent| parent.kind() == "expression_statement" && in_item_list(parent))
 }
 
-// {impl}`requirements.references.outlines`
-// {impl}`requirements.references.outline_comments`
-// {impl}`requirements.references.structural_hash`
 fn is_comment(node: Node<'_>, _source: &str) -> bool {
     matches!(node.kind(), "line_comment" | "block_comment")
 }
 
 /// Whether a comment has the given doc comment marker child.
-// {impl}`requirements.references.structural_hash`
 fn has_marker(node: Node<'_>, marker: &str) -> bool {
     let mut cursor = node.walk();
     is_comment(node, "")
@@ -80,7 +72,6 @@ fn has_marker(node: Node<'_>, marker: &str) -> bool {
 }
 
 /// Doc comments, outer and inner, are hashed.
-// {impl}`requirements.references.structural_hash`
 fn is_doc_comment(node: Node<'_>, _source: &str) -> bool {
     has_marker(node, "outer_doc_comment_marker") || has_marker(node, "inner_doc_comment_marker")
 }
@@ -88,7 +79,6 @@ fn is_doc_comment(node: Node<'_>, _source: &str) -> bool {
 /// Inner doc comments document the item enclosing them, and their prose is
 /// hashed in its own group, apart from outer doc comments.
 // {impl}`requirements.references.outline_comments`
-// {impl}`requirements.references.structural_hash`
 fn is_inner_doc_comment(node: Node<'_>, _source: &str) -> bool {
     has_marker(node, "inner_doc_comment_marker")
 }
@@ -96,7 +86,6 @@ fn is_inner_doc_comment(node: Node<'_>, _source: &str) -> bool {
 /// A doc comment's prose group, inner or outer, and its text without the
 /// `///`, `//!`, `/**`, `/*!`, and `*/` delimiters or the leading `*` of a
 /// block comment's continuation lines.
-// {impl}`requirements.references.structural_hash`
 fn doc_prose(node: Node<'_>, body: &str) -> (&'static str, String) {
     let group = if is_inner_doc_comment(node, body) {
         "inner_doc_comment"
@@ -122,14 +111,10 @@ fn doc_prose(node: Node<'_>, body: &str) -> (&'static str, String) {
 }
 
 /// Attributes and outer doc comments attach to the following item.
-// {impl}`requirements.references.outlines`
-// {impl}`requirements.references.structural_hash`
 fn attaches(node: Node<'_>, _source: &str) -> bool {
     node.kind() == "attribute_item" || has_marker(node, "outer_doc_comment_marker")
 }
 
-// {impl}`requirements.references.rust_item_selectors`
-// {impl}`requirements.references.outlines`
 const KINDS: &[KindRule] = &[
     KindRule::new("function_item", "fn", NameRule::Field("name")),
     KindRule::new("function_signature_item", "fn", NameRule::Field("name")),
@@ -154,7 +139,6 @@ const KINDS: &[KindRule] = &[
     KindRule::new("use_declaration", "use", NameRule::Anonymous),
 ];
 
-// {impl}`requirements.references.outlines`
 // {impl}`requirements.references.rust_item_selectors`
 // {impl}`requirements.references.outline_comments`
 // {impl}`requirements.references.structural_hash`

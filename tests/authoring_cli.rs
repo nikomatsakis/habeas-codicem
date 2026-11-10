@@ -17,7 +17,6 @@ const REQUIREMENT: &str = concat!(
 const MODEL: &str = "fixture:q4_K_M";
 const AUTH: &str = "SECRET_AUTH_VALUE";
 
-// {test}`requirements.authoring.provider`
 struct Request {
     headers: String,
     body: Value,
@@ -26,7 +25,6 @@ struct Request {
 /// A request's system prompt and subject message, as Ollama's leading
 /// `system` and `user` messages or Bedrock's `system` blocks and first
 /// message.
-// {test}`requirements.authoring.prompt_parts`
 fn opening(body: &Value) -> (String, String) {
     let text = |value: &Value| value.as_str().unwrap().to_owned();
     if body.get("system").is_some() {
@@ -46,26 +44,21 @@ fn opening(body: &Value) -> (String, String) {
 
 /// A request's system prompt and subject message joined, for checks that
 /// text reaches the model in either.
-// {test}`requirements.authoring.prompt_parts`
 fn prompt_text(body: &Value) -> String {
     let (system, subject) = opening(body);
     format!("{system}\n\n{subject}")
 }
 
-// {test}`requirements.authoring.provider`
 struct Server {
     endpoint: String,
     thread: JoinHandle<Vec<Request>>,
 }
 
 impl Server {
-    // {test}`requirements.authoring.provider`
-    // {test}`requirements.authoring.rig_configuration_mapping`
     fn start(responses: Vec<Value>) -> Self {
         Self::start_with(responses, || {})
     }
 
-    // {test}`requirements.authoring.provider`
     // {test}`requirements.authoring.persistence`
     fn start_with(responses: Vec<Value>, mut before_reply: impl FnMut() + Send + 'static) -> Self {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
@@ -124,7 +117,6 @@ impl Server {
         Self { endpoint, thread }
     }
 
-    // {test}`requirements.authoring.provider`
     fn finish(self) -> Vec<Request> {
         self.thread.join().unwrap()
     }
@@ -141,9 +133,7 @@ struct Fixture {
 }
 
 impl Fixture {
-    // {test}`requirements.authoring.complete_initial_bundle`
     // {test}`requirements.authoring.persistence`
-    // {test}`requirements.authoring.configuration`
     fn new(endpoint: &str) -> Self {
         let temp = tempfile::tempdir().unwrap();
         let project = temp.path().join("project");
@@ -211,14 +201,12 @@ impl Fixture {
     }
 
     // {test}`requirements.authoring.invocation`
-    // {test}`requirements.authoring.configuration_precedence`
     // {test}`requirements.authoring.deterministic_validation`
     fn run(&self, args: &[&str]) -> Output {
         self.command().args(args).output().unwrap()
     }
 
     // {test}`requirements.authoring.invocation`
-    // {test}`requirements.authoring.configuration_precedence`
     fn command(&self) -> Command {
         let mut command = Command::new(env!("CARGO_BIN_EXE_habeas"));
         command
@@ -235,7 +223,6 @@ impl Fixture {
         command
     }
 
-    // {test}`requirements.authoring.usage_storage`
     fn usage(&self) -> Value {
         let directory = if cfg!(windows) {
             self.state.join("habeas/state/authoring/usage")
@@ -251,13 +238,10 @@ impl Fixture {
     }
 }
 
-// {test}`requirements.authoring.submission`
 fn call(id: &str, name: &str, arguments: Value) -> Value {
     json!({"id":id,"type":"function","function":{"name":name,"arguments":arguments}})
 }
 
-// {test}`requirements.authoring.provider`
-// {test}`requirements.authoring.usage_requests`
 fn reply(calls: Vec<Value>) -> Value {
     json!({"model":MODEL,"created_at":"2026-01-01T00:00:00Z",
         "message":{"role":"assistant","content":"review complete","tool_calls":calls},
@@ -1729,8 +1713,6 @@ fn bedrock_cli_uses_selected_profile_region_and_converse_tools() {
 
 /// Runs one Bedrock assessment that reads a file and then submits, against
 /// model `model`, returning the two request bodies and the usage record.
-// {test}`requirements.authoring.cache_checkpoints`
-// {test}`requirements.authoring.usage_requests`
 fn bedrock_run(model: &str) -> (Vec<Value>, Value) {
     let server = Server::start(vec![
         json!({
@@ -1798,7 +1780,6 @@ fn bedrock_run(model: &str) -> (Vec<Value>, Value) {
 }
 
 /// Removes every `cachePoint` block from a Converse request body.
-// {test}`requirements.authoring.cache_checkpoints`
 fn without_cache_points(body: &Value) -> Value {
     let mut body = body.clone();
     let strip = |blocks: &mut Value| {
@@ -1895,7 +1876,6 @@ fn failed_evidence_write_keeps_the_accepted_judgment_in_usage() {
 }
 
 /// Answers one request with an HTTP error status and returns its JSON body.
-// {test}`requirements.authoring.configuration_storage`
 fn reject_once(status: &'static str, body: &'static str) -> (String, JoinHandle<Value>) {
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let endpoint = format!("http://{}", listener.local_addr().unwrap());
@@ -1978,7 +1958,6 @@ fn provider_rejection_of_inference_options_is_reported() {
 }
 
 /// Returns the first request's prompt and its sorted tool names and descriptions.
-// {test}`requirements.authoring.rig_configuration_mapping`
 // {test}`requirements.authoring.prompt_parts`
 fn prompt_and_tools(body: &Value, bedrock: bool) -> (String, Vec<(String, String)>) {
     let (tools, spec) = if bedrock {
@@ -2101,7 +2080,6 @@ fn both_adapters_send_the_same_prompt_and_tools_with_default_connections() {
 
 /// Asserts that authoring failed before or while recording usage history and
 /// did not report a recorded success.
-// {test}`requirements.configuration.state_location`
 fn assert_unrecorded_failure(output: &Output, expected: &str) {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -2410,7 +2388,6 @@ fn bundled_skills_open_with_a_workflow_and_name_their_neighbors() {
 
 /// The bundled skills, by name.
 // {test}`requirements.cli.behavior_review_guidance`
-// {test}`requirements.cli.internal_detail_guidance`
 const SKILLS: [&str; 3] = [
     "habeas-requirements",
     "habeas-evidence",
@@ -2419,13 +2396,6 @@ const SKILLS: [&str; 3] = [
 
 /// A bundled skill together with the reference files it links to, with line
 /// wrapping collapsed so phrases can be matched across lines.
-// {test}`requirements.authoring.batch`
-// {test}`requirements.cli.behavior_review_guidance`
-// {test}`requirements.cli.bootstrap_skill`
-// {test}`requirements.cli.flip_guidance`
-// {test}`requirements.cli.internal_detail_guidance`
-// {test}`requirements.cli.requirements_review_skill`
-// {test}`requirements.cli.distributed_guidance`
 fn bundled_skill(name: &str) -> String {
     let files: &[&str] = match name {
         "habeas-requirements" => &[
@@ -2451,13 +2421,6 @@ fn bundled_skill(name: &str) -> String {
         .join(" ")
 }
 
-// {test}`requirements.authoring.batch`
-// {test}`requirements.cli.behavior_review_guidance`
-// {test}`requirements.cli.bootstrap_skill`
-// {test}`requirements.cli.internal_detail_guidance`
-// {test}`requirements.cli.requirements_review_skill`
-// {test}`requirements.cli.flip_guidance`
-// {test}`requirements.cli.distributed_guidance`
 fn assert_phrases(name: &str, phrases: &[&str]) {
     let text = bundled_skill(name);
     for phrase in phrases {
@@ -2466,10 +2429,6 @@ fn assert_phrases(name: &str, phrases: &[&str]) {
 }
 
 /// Asserts that the skill contains each phrase, each after the previous one.
-// {test}`requirements.cli.bootstrap_skill`
-// {test}`requirements.cli.flip_guidance`
-// {test}`requirements.cli.internal_detail_guidance`
-// {test}`requirements.cli.requirements_review_skill`
 fn assert_in_order(name: &str, phrases: &[&str]) {
     let text = bundled_skill(name);
     let mut from = 0;

@@ -2,17 +2,14 @@
 
 use super::profile::{KindRule, NameRule, Profile, kind_is_comment, never};
 
-// {impl}`requirements.references.outlines`
 const KEYS: &[&str] = &["bare_key", "quoted_key", "dotted_key"];
 
-// {impl}`requirements.references.outlines`
 const KINDS: &[KindRule] = &[
     KindRule::new("table", "table", NameRule::FirstChild(KEYS)),
     KindRule::new("table_array_element", "table", NameRule::FirstChild(KEYS)),
     KindRule::new("pair", "pair", NameRule::FirstChild(KEYS)),
 ];
 
-// {impl}`requirements.references.outlines`
 // {impl}`requirements.references.outline_comments`
 // {impl}`requirements.references.structural_hash`
 pub(crate) static PROFILE: Profile = Profile {

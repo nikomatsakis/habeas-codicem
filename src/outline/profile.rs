@@ -4,11 +4,9 @@ use tree_sitter::{Language, Node};
 
 /// A profile-specific naming rule: the name's parts and the byte where the
 /// name begins.
-// {impl}`requirements.references.outlines`
 pub(crate) type CustomName = fn(Node<'_>, &str) -> Option<(Vec<String>, usize)>;
 
 /// How an outline node of a mapped kind is named.
-// {impl}`requirements.references.outlines`
 #[derive(Clone, Copy)]
 pub(crate) enum NameRule {
     /// Always anonymous: the segment is `kind@<identity hash>`.
@@ -25,7 +23,6 @@ pub(crate) enum NameRule {
 }
 
 /// One row of a profile's kind table.
-// {impl}`requirements.references.outlines`
 pub(crate) struct KindRule {
     /// Grammar node kind.
     pub(crate) grammar: &'static str,
@@ -38,7 +35,6 @@ pub(crate) struct KindRule {
 }
 
 impl KindRule {
-    // {impl}`requirements.references.outlines`
     pub(crate) const fn new(grammar: &'static str, kind: &'static str, name: NameRule) -> Self {
         Self {
             grammar,
@@ -48,7 +44,6 @@ impl KindRule {
         }
     }
 
-    // {impl}`requirements.references.outlines`
     pub(crate) const fn when(mut self, condition: fn(Node<'_>) -> bool) -> Self {
         self.when = Some(condition);
         self
@@ -56,9 +51,6 @@ impl KindRule {
 }
 
 /// A language's outline profile.
-// {impl}`requirements.references.outlines`
-// {impl}`requirements.references.outline_comments`
-// {impl}`requirements.references.structural_hash`
 pub(crate) struct Profile {
     /// Profile name, such as `rust` or `plain-text`.
     pub(crate) name: &'static str,
@@ -95,7 +87,6 @@ impl std::fmt::Debug for Profile {
 }
 
 impl Profile {
-    // {impl}`requirements.references.outlines`
     pub(crate) fn rule(&self, node: Node<'_>) -> Option<&KindRule> {
         self.kinds.iter().find(|rule| {
             rule.grammar == node.kind() && rule.when.is_none_or(|condition| condition(node))
@@ -103,36 +94,28 @@ impl Profile {
     }
 }
 
-// {impl}`requirements.references.outlines`
-// {impl}`requirements.references.outline_comments`
-// {impl}`requirements.references.structural_hash`
 pub(crate) fn kind_is_comment(node: Node<'_>, _source: &str) -> bool {
     node.kind() == "comment"
 }
 
-// {impl}`requirements.references.structural_hash`
 pub(crate) fn never(_node: Node<'_>, _source: &str) -> bool {
     false
 }
 
 /// Comment prose for profiles that hash no comments: the whole text.
-// {impl}`requirements.references.structural_hash`
 pub(crate) fn whole_comment(_node: Node<'_>, body: &str) -> (&'static str, String) {
     ("comment", body.to_owned())
 }
 
-// {impl}`requirements.references.outlines`
 pub(crate) fn text<'a>(node: Node<'_>, source: &'a str) -> &'a str {
     source.get(node.byte_range()).unwrap_or("")
 }
 
-// {impl}`requirements.references.outlines`
 pub(crate) fn normalized(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// Every profile, in lookup order; the plain-text profile is the fallback.
-// {impl}`requirements.references.outlines`
 pub(crate) fn profiles() -> [&'static Profile; 8] {
     [
         &super::rust::PROFILE,
@@ -147,7 +130,6 @@ pub(crate) fn profiles() -> [&'static Profile; 8] {
 }
 
 /// Selects the profile for a path by its extension.
-// {impl}`requirements.references.outlines`
 pub(crate) fn profile_for_path(path: &std::path::Path) -> &'static Profile {
     let Some(extension) = path.extension().and_then(|extension| extension.to_str()) else {
         return &super::plain::PROFILE;
@@ -161,8 +143,6 @@ pub(crate) fn profile_for_path(path: &std::path::Path) -> &'static Profile {
 
 /// Whether a path is Markdown: it selects the Markdown profile, so inline
 /// roles and fences in it follow the same Markdown literal rules.
-// {impl}`requirements.references.discovery`
-// {impl}`requirements.references.markdown_literals`
 pub(crate) fn is_markdown_path(path: &std::path::Path) -> bool {
     profile_for_path(path).name == "markdown"
 }

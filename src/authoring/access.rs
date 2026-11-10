@@ -45,7 +45,6 @@ impl PathPolicy {
     }
 
     // {impl}`requirements.configuration.evidence_paths`
-    // {impl}`requirements.authoring.read_denial`
     pub(crate) fn check_disallow(&self, requested: &Path, target: &Path) -> io::Result<()> {
         if self.disallow.is_empty() {
             return Ok(());
@@ -72,7 +71,6 @@ impl PathPolicy {
     }
 }
 
-// {impl}`requirements.authoring.source_tools`
 // {impl}`requirements.authoring.generated_inputs`
 pub(crate) struct SourceAccess {
     tracked: Option<BTreeSet<PathBuf>>,
@@ -83,7 +81,6 @@ pub(crate) struct SourceAccess {
 }
 
 impl SourceAccess {
-    // {impl}`requirements.authoring.source_tools`
     // {impl}`requirements.configuration.evidence_paths`
     // {impl}`requirements.authoring.generated_inputs`
     pub(crate) fn load(root: &Path) -> io::Result<Self> {
@@ -95,11 +92,8 @@ impl SourceAccess {
         })
     }
 
-    // {impl}`requirements.authoring.source_tools`
     // {impl}`requirements.authoring.file_discovery`
-    // {impl}`requirements.authoring.text_search`
     // {impl}`requirements.configuration.evidence_paths`
-    // {impl}`requirements.authoring.read_denial`
     // {impl}`requirements.authoring.generated_inputs`
     pub(crate) fn path(&self, root: &Path, relative: &Path) -> io::Result<PathBuf> {
         let (requested, target) = resolve(root, relative)?;
@@ -177,10 +171,7 @@ impl SourceAccess {
         Ok(target)
     }
 
-    // {impl}`requirements.authoring.source_tools`
     // {impl}`requirements.authoring.mandatory_inputs`
-    // {impl}`requirements.authoring.read_denial`
-    // {impl}`requirements.authoring.text_search`
     pub(crate) fn file(&self, root: &Path, relative: &Path) -> io::Result<PathBuf> {
         let target = self.path(root, relative)?;
         if !target.is_file() {
@@ -194,8 +185,6 @@ impl SourceAccess {
 
     // {impl}`requirements.authoring.mandatory_inputs`
     // {impl}`requirements.configuration.evidence_paths`
-    // {impl}`requirements.authoring.source_tools`
-    // {impl}`requirements.ci.authoring_inputs`
     pub(crate) fn omit_generated_evidence(&self, root: &Path, path: &Path) -> bool {
         let joined = root.join(path);
         let requested = requested_location(&joined).unwrap_or_else(|_| joined.clone());
@@ -208,8 +197,6 @@ impl SourceAccess {
     }
 
     // {impl}`requirements.authoring.file_discovery`
-    // {impl}`requirements.authoring.source_tools`
-    // {impl}`requirements.authoring.text_search`
     // {impl}`requirements.authoring.generated_inputs`
     // {impl}`requirements.configuration.evidence_paths`
     fn has_source_under(&self, root: &Path, directory: &Path) -> bool {
@@ -228,7 +215,6 @@ impl SourceAccess {
     // {impl}`requirements.authoring.generated_inputs`
     // {impl}`requirements.configuration.evidence_paths`
     // {impl}`requirements.authoring.file_discovery`
-    // {impl}`requirements.authoring.text_search`
     pub(crate) fn extra_roots(&self) -> impl Iterator<Item = &PathBuf> {
         self.policy.allow.iter().chain(self.generated.iter())
     }
@@ -237,7 +223,6 @@ impl SourceAccess {
 /// The project files reference discovery and Rust item coverage consider: the
 /// sources [`SourceAccess`] would let authoring read by default, found without
 /// authoring configuration or Cargo metadata.
-// {impl}`requirements.references.discovery`
 // {impl}`requirements.authoring.deterministic_validation`
 pub(crate) struct DiscoverySources {
     root: PathBuf,
@@ -249,9 +234,7 @@ impl DiscoverySources {
     /// Loads the Git index and the workspace `[evidence]` rules. An invalid
     /// workspace configuration is reported by inspection itself, so discovery
     /// then applies no workspace rules rather than failing a second time.
-    // {impl}`requirements.references.discovery`
     // {impl}`requirements.authoring.deterministic_validation`
-    // {impl}`requirements.ci.errors`
     pub(crate) fn load(root: &Path) -> io::Result<Self> {
         Ok(Self {
             root: root.to_owned(),
@@ -263,7 +246,6 @@ impl DiscoverySources {
     /// Every considered file, sorted. In a Git worktree these are the indexed
     /// files; outside Git, every file under the project root. Symlinks are not
     /// followed, so no source is counted twice through an alias.
-    // {impl}`requirements.references.discovery`
     // {impl}`requirements.ci.errors`
     pub(crate) fn files(&self, errors: &mut Vec<String>) -> Vec<PathBuf> {
         let mut files: Vec<PathBuf> = match &self.tracked {
@@ -289,14 +271,12 @@ impl DiscoverySources {
 
     /// The files in the Git index, including staged and deleted ones; `None`
     /// outside Git.
-    // {impl}`requirements.authoring.credentials`
     pub(crate) fn indexed(&self) -> Option<&BTreeSet<PathBuf>> {
         self.tracked.as_ref()
     }
 
     /// Untracked files a Git worktree's ignore rules do not exclude, with the
     /// same exclusions as [`Self::files`]; empty outside Git.
-    // {impl}`requirements.cli.status`
     pub(crate) fn untracked(&self) -> io::Result<Vec<PathBuf>> {
         if self.tracked.is_none() {
             return Ok(Vec::new());
@@ -333,7 +313,6 @@ impl DiscoverySources {
 
     /// Whether a project file outside the fixed exclusions is permitted by the
     /// workspace rules: not disallowed.
-    // {impl}`requirements.references.discovery`
     // {impl}`requirements.configuration.evidence_paths`
     fn considers(&self, path: &Path, directory: bool) -> bool {
         if excluded_from_discovery(&self.root, path, directory) {
@@ -345,7 +324,6 @@ impl DiscoverySources {
 
     /// Lists every file outside Git, skipping excluded and disallowed
     /// directories without descending into them.
-    // {impl}`requirements.references.discovery`
     // {impl}`requirements.ci.errors`
     fn walk(&self, errors: &mut Vec<String>) -> Vec<PathBuf> {
         let root = &self.root;
@@ -406,7 +384,6 @@ impl DiscoverySources {
 /// Whether a file, or a directory when `directory` is set, lies in a `.git`
 /// or `target` directory at any depth or in the project-root `book` or
 /// `evidence` directory.
-// {impl}`requirements.references.discovery`
 fn excluded_from_discovery(root: &Path, path: &Path, directory: bool) -> bool {
     let Ok(relative) = path.strip_prefix(root) else {
         return true;
@@ -432,7 +409,6 @@ fn matches_rule(rule: &Path, requested: &Path, target: &Path) -> bool {
 }
 
 // {impl}`requirements.configuration.evidence_paths`
-// {impl}`requirements.ci.input_containment`
 fn requested_location(path: &Path) -> io::Result<PathBuf> {
     match (path.parent(), path.components().next_back()) {
         (Some(parent), Some(Component::Normal(name))) => Ok(fs::canonicalize(parent)?.join(name)),
@@ -441,7 +417,6 @@ fn requested_location(path: &Path) -> io::Result<PathBuf> {
 }
 
 // {impl}`requirements.configuration.evidence_paths`
-// {impl}`requirements.ci.input_containment`
 pub(crate) fn normalize(path: &Path) -> PathBuf {
     let mut normalized = PathBuf::new();
     for component in path.components() {
@@ -456,13 +431,10 @@ pub(crate) fn normalize(path: &Path) -> PathBuf {
     normalized
 }
 
-// {impl}`requirements.authoring.read_denial`
 /// A denial of a request that names a path outside the project and is not
 /// permitted by workspace or generated-output policy, or of a path holding
 /// build output. Mandatory inputs abort on it; a model's dispatched request
 /// receives it as a recoverable tool error.
-// {impl}`requirements.authoring.read_denial`
-// {impl}`requirements.authoring.source_tools`
 #[derive(Debug)]
 pub(crate) struct OutsideProject(String);
 
@@ -477,10 +449,7 @@ impl std::error::Error for OutsideProject {}
 
 /// Turns a denial of a path outside the project into an ordinary read failure,
 /// leaving every other error unchanged.
-// {impl}`requirements.authoring.read_denial`
-// {impl}`requirements.authoring.source_tools`
 // {impl}`requirements.authoring.file_discovery`
-// {impl}`requirements.authoring.text_search`
 // {impl}`requirements.authoring.outline_tool`
 pub(crate) fn recoverable_outside_request(error: io::Error) -> io::Error {
     if error
@@ -496,7 +465,6 @@ pub(crate) fn recoverable_outside_request(error: io::Error) -> io::Error {
 /// A source-access policy denial. Only these, and [`OutsideProject`] denials
 /// of mandatory inputs, abort an assessment; an operating-system permission
 /// failure is an ordinary read failure.
-// {impl}`requirements.authoring.read_denial`
 #[derive(Debug)]
 struct PolicyDenial(String);
 
@@ -512,7 +480,6 @@ impl std::error::Error for PolicyDenial {}
 /// Turns a permission error that did not come from source-access policy, such
 /// as an operating-system `EACCES`, into an ordinary read failure, leaving
 /// policy denials and every other error unchanged.
-// {impl}`requirements.authoring.read_denial`
 pub(crate) fn recoverable_os_denial(error: io::Error) -> io::Error {
     if error.kind() == io::ErrorKind::PermissionDenied
         && !error
@@ -525,7 +492,6 @@ pub(crate) fn recoverable_os_denial(error: io::Error) -> io::Error {
     }
 }
 
-// {impl}`requirements.authoring.read_denial`
 fn denied(message: impl Into<String>) -> io::Error {
     io::Error::new(
         io::ErrorKind::PermissionDenied,
@@ -533,10 +499,7 @@ fn denied(message: impl Into<String>) -> io::Error {
     )
 }
 
-// {impl}`requirements.authoring.source_tools`
 // {impl}`requirements.authoring.file_discovery`
-// {impl}`requirements.authoring.text_search`
-// {impl}`requirements.ci.input_containment`
 // {impl}`requirements.configuration.evidence_paths`
 fn resolve(root: &Path, relative: &Path) -> io::Result<(PathBuf, PathBuf)> {
     if relative.as_os_str().is_empty() {
@@ -556,7 +519,6 @@ fn resolve(root: &Path, relative: &Path) -> io::Result<(PathBuf, PathBuf)> {
     Ok((requested, target))
 }
 
-// {impl}`requirements.authoring.source_tools`
 fn tracked_sources(root: &Path) -> io::Result<Option<BTreeSet<PathBuf>>> {
     let mut has_git_marker = false;
     for directory in root.ancestors() {
@@ -626,7 +588,6 @@ fn tracked_sources(root: &Path) -> io::Result<Option<BTreeSet<PathBuf>>> {
 /// The directories holding the project's build output: the book's build
 /// directory, `book` unless `book.toml` sets `[build] build-dir`, and the
 /// project-root `target` directory.
-// {impl}`requirements.authoring.read_denial`
 fn build_output_dirs(root: &Path) -> Vec<PathBuf> {
     let book = fs::read_to_string(root.join("book.toml"))
         .ok()
@@ -713,7 +674,6 @@ fn discover_generated_roots(build_root: &Path) -> Vec<PathBuf> {
 }
 
 // {impl}`requirements.configuration.evidence_paths`
-// {impl}`requirements.ci.input_containment`
 // {impl}`requirements.authoring.generated_inputs`
 // {impl}`requirements.configuration.loading`
 pub(crate) fn resolve_evidence_file(root: &Path, file: &str) -> io::Result<PathBuf> {
@@ -741,7 +701,6 @@ pub(crate) fn resolve_evidence_file(root: &Path, file: &str) -> io::Result<PathB
 pub(crate) mod tests {
     use super::*;
 
-    // {test}`requirements.authoring.source_tools`
     pub(crate) fn git(root: &Path, args: &[&str]) {
         let output = Command::new("git")
             .current_dir(root)

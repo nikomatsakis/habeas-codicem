@@ -10,17 +10,14 @@ use serde_json::{Map, Value};
 use crate::config::{BackendConfig, BedrockConfig};
 
 pub(super) trait CompletionProvider {
-    // {impl}`requirements.authoring.provider`
     async fn complete(&self, request: CompletionRequest) -> io::Result<CompletionResponse>;
 }
 
-// {impl}`requirements.authoring.provider_backoff`
 pub(super) struct ProviderBackoff {
     window: Duration,
 }
 
 impl Default for ProviderBackoff {
-    // {impl}`requirements.authoring.provider_backoff`
     fn default() -> Self {
         Self {
             window: Duration::from_secs(1),
@@ -29,7 +26,6 @@ impl Default for ProviderBackoff {
 }
 
 impl ProviderBackoff {
-    // {impl}`requirements.authoring.provider_backoff`
     pub(super) fn next_delay(&mut self, error: &io::Error) -> Option<Duration> {
         // Rig preserves HTTP status and Bedrock's exception code. Do not infer
         // throttling from "tokens" in a message: a too-large input cannot be
@@ -73,12 +69,10 @@ impl ProviderBackoff {
 
 /// Wraps Rig's error unchanged, so `ProviderBackoff::next_delay` can read its
 /// HTTP status, provider code, and `Retry-After` header.
-// {impl}`requirements.authoring.provider_backoff`
 fn provider_failure(error: ProviderError) -> io::Error {
     io::Error::other(error)
 }
 
-// {impl}`requirements.authoring.provider_backoff`
 fn retry_after(error: &ProviderError, now: SystemTime) -> Option<Duration> {
     let header = error
         .provider_response_headers()?
@@ -107,9 +101,6 @@ pub(super) struct RigProvider {
 }
 
 impl RigProvider {
-    // {impl}`requirements.authoring.provider`
-    // {impl}`requirements.authoring.rig_configuration_mapping`
-    // {impl}`requirements.authoring.configuration_precedence`
     // {impl}`requirements.authoring.usage_requests`
     // {impl}`requirements.authoring.credentials`
     // {impl}`requirements.authoring.cache_checkpoints`
@@ -145,10 +136,6 @@ impl RigProvider {
     }
 }
 
-// {impl}`requirements.authoring.rig_configuration_mapping`
-// {impl}`requirements.authoring.configuration_precedence`
-// {impl}`requirements.authoring.credentials`
-// {impl}`requirements.authoring.usage_requests`
 // {impl}`requirements.authoring.provider_backoff`
 async fn bedrock_sdk_config(config: &BedrockConfig) -> aws_config::SdkConfig {
     bedrock_sdk_loader(
@@ -159,11 +146,6 @@ async fn bedrock_sdk_config(config: &BedrockConfig) -> aws_config::SdkConfig {
     .await
 }
 
-// {impl}`requirements.authoring.rig_configuration_mapping`
-// {impl}`requirements.authoring.configuration_precedence`
-// {impl}`requirements.authoring.credentials`
-// {impl}`requirements.authoring.provider_backoff`
-// {impl}`requirements.authoring.usage_requests`
 /// Applies a Bedrock record to an SDK loader, leaving every omitted value to
 /// the loader's standard resolution.
 fn bedrock_sdk_loader(
@@ -195,9 +177,7 @@ fn bedrock_sdk_loader(
 }
 
 impl CompletionProvider for RigProvider {
-    // {impl}`requirements.authoring.provider`
     // {impl}`requirements.authoring.configuration_storage`
-    // {impl}`requirements.authoring.rig_configuration_mapping`
     // {impl}`requirements.authoring.cache_checkpoints`
     async fn complete(&self, mut request: CompletionRequest) -> io::Result<CompletionResponse> {
         let mut options = self
@@ -220,8 +200,6 @@ impl CompletionProvider for RigProvider {
     }
 }
 
-// {impl}`requirements.authoring.provider`
-// {impl}`requirements.authoring.rig_configuration_mapping`
 fn normalize_bedrock_client_calls(response: &mut CompletionResponse) -> io::Result<()> {
     // Rig 0.44 treats every typed Converse toolUse block as a hosted tool.
     // Newer Claude responses explicitly identify client calls as "tool_use".
@@ -257,8 +235,6 @@ fn normalize_bedrock_client_calls(response: &mut CompletionResponse) -> io::Resu
     Ok(())
 }
 
-// {impl}`requirements.authoring.configuration_storage`
-// {impl}`requirements.authoring.rig_configuration_mapping`
 fn apply_bedrock_options(
     request: &mut CompletionRequest,
     options: &mut Map<String, Value>,
@@ -304,7 +280,6 @@ fn apply_bedrock_options(
 
 /// Whether a Bedrock model takes Converse cache checkpoints: Rig places
 /// them for the Claude and Nova families and refuses them for any other.
-// {impl}`requirements.authoring.cache_checkpoints`
 fn bedrock_caches(model: &str) -> bool {
     matches!(
         rig_bedrock::completion::Family::of(model),
@@ -317,12 +292,10 @@ fn bedrock_caches(model: &str) -> bool {
 /// `cachePoint` blocks, leaving the request's content unchanged. They are
 /// placed after reasoning turns too, which Bedrock accepts; the vendored
 /// `rig-bedrock` is patched to allow that.
-// {impl}`requirements.authoring.cache_checkpoints`
 fn place_cache_checkpoints(request: &mut CompletionRequest) {
     request.options.cache = Some(CacheRetention::Short);
 }
 
-// {impl}`requirements.authoring.configuration_storage`
 fn option_type(name: &str, expected: &str) -> io::Error {
     io::Error::new(
         io::ErrorKind::InvalidInput,
@@ -338,14 +311,12 @@ mod tests {
     use rig_core::message::{Opaque, Origin, Reasoning, Text};
     use serde_json::json;
 
-    // {test}`requirements.authoring.provider_backoff`
     fn provider_error(status: Option<u16>, code: Option<&str>) -> ProviderError {
         ProviderError::from_provider_body("Too many tokens")
             .with_provider_status(status.map(|status| status.try_into().unwrap()))
             .with_provider_code(code.map(str::to_owned))
     }
 
-    // {test}`requirements.authoring.provider_backoff`
     fn with_retry_after(error: ProviderError, value: &str) -> ProviderError {
         let mut headers = error
             .provider_response_headers()
@@ -533,7 +504,6 @@ mod tests {
             let config: BedrockConfig = toml::from_str(text).unwrap();
             bedrock_sdk_loader(&config, standard()).load()
         };
-        // {test}`requirements.authoring.configuration_precedence`
         async fn resolved(sdk: aws_config::SdkConfig) -> (Option<String>, String) {
             let key = sdk
                 .credentials_provider()

@@ -16,7 +16,6 @@ use crate::inputs::{InputSelector, OutlineCache};
 use crate::judgment::Judgment;
 
 /// The directory under `evidence/` holding citation reviews.
-// {impl}`requirements.references.citation_review`
 pub(crate) const CITATIONS_DIR: &str = "citations";
 
 /// The inspection phase that validates citation reviews.
@@ -25,7 +24,6 @@ const CITATION_STAGE: &str = "citation reviews";
 
 /// One citation of a reviewed item: its role, name, and fenced commentary,
 /// which is empty for an inline reference.
-// {impl}`requirements.references.citation_review`
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct Citation {
     pub(crate) role: &'static str,
@@ -34,14 +32,12 @@ pub(crate) struct Citation {
 }
 
 impl Citation {
-    // {impl}`requirements.references.citation_review`
     pub(crate) fn to_value(&self) -> Value {
         json!({"role": self.role, "name": self.name, "commentary": self.commentary})
     }
 }
 
 /// A source item outside the book carrying at least one `{cite}` reference.
-// {impl}`requirements.references.citation_review`
 #[derive(Clone, Debug)]
 pub(crate) struct CitationItem {
     /// Project-relative path.
@@ -56,14 +52,11 @@ pub(crate) struct CitationItem {
 
 impl CitationItem {
     /// The review's path relative to the project root.
-    // {impl}`requirements.references.citation_review`
     pub(crate) fn review_path(&self) -> String {
         review_path(&self.file, &self.item)
     }
 
     /// The selector as displayed, `<root>` for the root node.
-    // {impl}`requirements.references.citation_review`
-    // {impl}`requirements.authoring.citation_prompt`
     pub(crate) fn selector_label(&self) -> &str {
         if self.item.is_empty() {
             "<root>"
@@ -73,15 +66,11 @@ impl CitationItem {
     }
 
     /// The citations as JSON, in source order.
-    // {impl}`requirements.references.citation_review`
-    // {impl}`requirements.authoring.citation_prompt`
     pub(crate) fn citations_value(&self) -> Value {
         Value::Array(self.citations.iter().map(Citation::to_value).collect())
     }
 
     /// The citations as the model receives them, with each commentary redacted.
-    // {impl}`requirements.authoring.citation_prompt`
-    // {impl}`requirements.authoring.redaction`
     pub(crate) fn model_citations_value(&self) -> Value {
         let mut value = self.citations_value();
         for citation in value.as_array_mut().into_iter().flatten() {
@@ -97,7 +86,6 @@ impl CitationItem {
 
 /// `evidence/citations/<file>/<selector>.json`, with `/` and `%` in the
 /// selector percent-encoded and `_root` for the root node.
-// {impl}`requirements.references.citation_review`
 pub(crate) fn review_path(file: &str, item: &str) -> String {
     format!(
         "evidence/{CITATIONS_DIR}/{file}/{}.json",
@@ -107,8 +95,6 @@ pub(crate) fn review_path(file: &str, item: &str) -> String {
 
 /// A selector as a review file name: `/` and `%` percent-encoded, and
 /// `_root` for the root node.
-// {impl}`requirements.references.citation_review`
-// {impl}`requirements.references.site_review`
 pub(crate) fn encoded_selector(item: &str) -> String {
     if item.is_empty() {
         "_root".to_owned()
@@ -119,7 +105,6 @@ pub(crate) fn encoded_selector(item: &str) -> String {
 
 /// The single-subject authoring name of a citation review,
 /// `citations:<file>#<selector>`.
-// {impl}`requirements.references.citation_review`
 pub(crate) fn subject_label(file: &str, item: &str) -> String {
     format!("citations:{file}#{item}")
 }
@@ -127,10 +112,8 @@ pub(crate) fn subject_label(file: &str, item: &str) -> String {
 /// The source items outside the book whose citations need review, keyed by
 /// file and selector. Citations that do not resolve are reported by
 /// reference validation and are not reviewed.
-// {impl}`requirements.references.citation_review`
 // {impl}`requirements.references.outline_comments`
 // {impl}`requirements.references.builtin_definitions`
-// {impl}`requirements.ci.errors`
 pub(crate) fn citation_items(
     root: &Path,
     definitions: &BTreeMap<String, Declaration>,
@@ -182,7 +165,6 @@ pub(crate) fn citation_items(
 
 /// Whether two citation lists are the same, comparing commentary by its
 /// words so reflowing it does not change the review.
-// {impl}`requirements.references.citation_review`
 fn same_citations(recorded: &[Citation], current: &[Citation]) -> bool {
     let key = |citations: &[Citation]| {
         let mut keys = citations
@@ -211,10 +193,8 @@ fn same_citations(recorded: &[Citation], current: &[Citation]) -> bool {
 /// failure there is reported once.
 /// Reports progress as the "citation reviews" phase: an activity display
 /// while items are discovered, then one check per item and review file.
-// {impl}`requirements.references.citation_review`
 // {impl}`requirements.ci.outcomes`
 // {impl}`requirements.ci.determination`
-// {impl}`requirements.authoring.progress`
 // {impl}`requirements.ci.errors`
 pub(crate) fn validate(
     root: &Path,
@@ -271,9 +251,6 @@ pub(crate) fn validate(
 }
 
 /// Validates one review file against its current item.
-// {impl}`requirements.references.citation_review`
-// {impl}`requirements.ci.outcomes`
-// {impl}`requirements.ci.diagnostics`
 // {impl}`requirements.ci.errors`
 fn validate_review(
     root: &Path,
@@ -428,7 +405,6 @@ fn validate_review(
 }
 
 /// Parses one recorded citation.
-// {impl}`requirements.references.citation_review`
 // {impl}`requirements.ci.errors`
 fn parse_citation(value: &Value, label: &str, errors: &mut Vec<String>) -> Option<Citation> {
     let Some(object) = value.as_object() else {
@@ -456,8 +432,6 @@ fn parse_citation(value: &Value, label: &str, errors: &mut Vec<String>) -> Optio
 }
 
 /// Whether a path lies in the citation review directory.
-// {impl}`requirements.references.citation_review`
-// {impl}`requirements.ci.orphans`
 pub(crate) fn is_review_path(evidence_root: &Path, path: &Path) -> bool {
     path.strip_prefix(evidence_root)
         .ok()
@@ -467,7 +441,6 @@ pub(crate) fn is_review_path(evidence_root: &Path, path: &Path) -> bool {
 
 /// The `habeas:none` citations outside the book, as file, selector, line,
 /// and justification.
-// {impl}`requirements.references.no_requirement`
 pub(crate) fn none_citations(
     root: &Path,
     definitions: &BTreeMap<String, Declaration>,

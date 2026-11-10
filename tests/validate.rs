@@ -20,7 +20,6 @@ fn validate_child() {
 }
 
 /// Runs [`validate_child`] in `cwd`, with Habeas state directed to `state`.
-// {test}`requirements.integration.validate`
 fn validate_in(cwd: &Path, state: &Path) -> Output {
     Command::new(std::env::current_exe().unwrap())
         .args([

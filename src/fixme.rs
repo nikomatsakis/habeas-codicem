@@ -5,13 +5,11 @@ use regex::Regex;
 
 use crate::escape_html;
 
-// {impl}`requirements.cli.fixme_summary`
 #[derive(Default)]
 pub(crate) struct FixmeSummary {
     judgments: Vec<FixmeJudgment>,
 }
 
-// {impl}`requirements.cli.fixme_summary`
 struct FixmeJudgment {
     name: String,
     kind: &'static str,
@@ -19,7 +17,6 @@ struct FixmeJudgment {
 }
 
 impl FixmeSummary {
-    // {impl}`requirements.cli.fixme_summary`
     pub(crate) fn add(&mut self, name: &str, kind: &'static str, entries: &[String]) {
         if !entries.is_empty() {
             self.judgments.push(FixmeJudgment {
@@ -30,7 +27,6 @@ impl FixmeSummary {
         }
     }
 
-    // {impl}`requirements.cli.fixme_summary`
     pub(crate) fn render(&self, verbose: bool) -> String {
         if self.judgments.is_empty() {
             return String::new();
@@ -82,12 +78,10 @@ impl FixmeSummary {
     }
 }
 
-// {impl}`requirements.cli.fixme_summary`
 fn judgment_word(count: usize) -> &'static str {
     if count == 1 { "judgment" } else { "judgments" }
 }
 
-// {impl}`requirements.cli.fixme_summary`
 fn render_judgments(output: &mut String, judgments: &[&FixmeJudgment]) {
     for judgment in judgments {
         output.push_str(&format!("- `{}` ({})\n\n", judgment.name, judgment.kind));
@@ -100,7 +94,6 @@ fn render_judgments(output: &mut String, judgments: &[&FixmeJudgment]) {
 /// The issues a judgment's FIXME strings name: each string that is exactly
 /// an `owner/repo#N` issue reference. Any other string describes a gap
 /// without an issue.
-// {impl}`requirements.cli.fixme_summary`
 fn issue_references(entries: &[String]) -> BTreeSet<String> {
     entries
         .iter()
@@ -111,8 +104,6 @@ fn issue_references(entries: &[String]) -> BTreeSet<String> {
 
 /// Whether `value` is a GitHub issue reference `<owner>/<repo>#<number>`,
 /// with a positive number written without leading zeros.
-// {impl}`requirements.references.roles`
-// {impl}`requirements.cli.fixme_summary`
 pub(crate) fn is_issue_reference(value: &str) -> bool {
     static ISSUE: LazyLock<Regex> = LazyLock::new(|| {
         Regex::new(r"^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9._-]+#[1-9][0-9]*$")
@@ -123,8 +114,6 @@ pub(crate) fn is_issue_reference(value: &str) -> bool {
 
 /// A `{fixme}` body split into its leading `:github:` option lines and its
 /// description, with the problems validation reports in its option lines.
-// {impl}`requirements.references.roles`
-// {impl}`requirements.ci.outcomes`
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(crate) struct FixmeBody {
     /// Issue references as written after `:github:`, in order.
@@ -138,8 +127,6 @@ pub(crate) struct FixmeBody {
 impl FixmeBody {
     /// Parses a body whose comment delimiters are already removed. Option
     /// lines are the leading lines of the form `:name: value`.
-    // {impl}`requirements.references.roles`
-    // {impl}`requirements.ci.outcomes`
     pub(crate) fn parse(body: &str) -> Self {
         let mut parsed = Self::default();
         let mut lines = body.lines().peekable();
@@ -166,7 +153,6 @@ impl FixmeBody {
 
     /// The FIXME strings this `{fixme}` contributes when it acknowledges a
     /// gap: its distinct issues, or its description when it names none.
-    // {impl}`requirements.ci.outcomes`
     pub(crate) fn acknowledgments(&self) -> Vec<String> {
         if self.issues.is_empty() {
             return vec![self.description.clone()];
@@ -185,13 +171,11 @@ impl FixmeBody {
 mod tests {
     use super::*;
 
-    // {test}`requirements.cli.fixme_summary`
     fn strings(entries: &[&str]) -> Vec<String> {
         entries.iter().map(|entry| (*entry).to_owned()).collect()
     }
 
     /// The judgment names listed under each verbose `###` heading.
-    // {test}`requirements.cli.fixme_summary`
     fn verbose_groups(output: &str) -> Vec<(String, Vec<String>)> {
         let mut groups: Vec<(String, Vec<String>)> = Vec::new();
         for line in output.lines() {

@@ -2,7 +2,6 @@
 
 use super::profile::{KindRule, NameRule, Profile, kind_is_comment, never};
 
-// {impl}`requirements.references.outlines`
 const KINDS: &[KindRule] = &[
     KindRule::new("function_declaration", "function", NameRule::Field("name")),
     KindRule::new(
@@ -35,9 +34,7 @@ const KINDS: &[KindRule] = &[
     KindRule::new("module", "namespace", NameRule::Field("name")),
 ];
 
-// {impl}`requirements.references.outlines`
 // {impl}`requirements.references.outline_comments`
-// {impl}`requirements.references.structural_hash`
 const TYPESCRIPT: Profile = Profile {
     name: "typescript",
     extensions: &["ts", "mts", "cts"],
@@ -51,10 +48,8 @@ const TYPESCRIPT: Profile = Profile {
     attaches: never,
 };
 
-// {impl}`requirements.references.outlines`
 pub(crate) static PROFILE: Profile = TYPESCRIPT;
 
-// {impl}`requirements.references.outlines`
 // {impl}`requirements.references.outline_comments`
 // {impl}`requirements.references.structural_hash`
 pub(crate) static TSX_PROFILE: Profile = Profile {

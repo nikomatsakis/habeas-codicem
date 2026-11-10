@@ -7,13 +7,11 @@ use crate::outline::{Outline, parse_redacted, profile_for_path};
 // no literal match of a `secretshape` rule.
 
 /// A GitHub classic token shape.
-// {test}`requirements.authoring.redaction`
 pub(crate) fn github_token() -> String {
     format!("gh{}_{}", "p", "16C7e42F292c6912E7710c838347Ae178B4a")
 }
 
 /// A PEM private key block whose body lines the entropy heuristic flags.
-// {test}`requirements.authoring.redaction`
 pub(crate) fn private_key() -> String {
     [
         format!("-----BEGIN {}-----", "RSA PRIVATE KEY"),
@@ -25,7 +23,6 @@ pub(crate) fn private_key() -> String {
     .join("\n")
 }
 
-// {test}`requirements.authoring.redaction`
 fn outline(path: &str, source: &str, redaction: &Redaction) -> Outline {
     parse_redacted(profile_for_path(Path::new(path)), source, redaction)
         .unwrap_or_else(|error| panic!("{path}: {error}"))
@@ -33,7 +30,6 @@ fn outline(path: &str, source: &str, redaction: &Redaction) -> Outline {
 
 /// Every outline property except hashes: kinds, names, selectors of named
 /// nodes, structure, and line and byte ranges.
-// {test}`requirements.authoring.redaction`
 fn structure(outline: &Outline) -> Vec<String> {
     outline
         .nodes
