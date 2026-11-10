@@ -1569,10 +1569,7 @@ mod tests {
             self.requests.borrow_mut().push(last.clone());
             let turn = self.requests.borrow().len();
             let (name, arguments) = match turn {
-                1 => (
-                    "ripgrep",
-                    json!({"pattern": "fn needle_", "path": "src", "context": 0}),
-                ),
+                1 => ("habeas", json!({"file": "src/lib.rs", "line_start": 1})),
                 2 => {
                     // The tool result is JSON text inside the serialized message.
                     let marker = r#"\"next\":\""#;

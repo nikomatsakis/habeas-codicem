@@ -452,12 +452,12 @@ fn ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free() {
         .iter()
         .filter(|input| input["file"] == "extra.txt")
         .collect::<Vec<_>>();
-    // The search window covers lines 1-11 and the reads lines 10-12, one
-    // plain-text line node each; overlapping and repeated deliveries are
-    // recorded once, by selector and hash only.
+    // The search only locates lines and records nothing; the reads cover
+    // lines 10-12, one plain-text line node each, and the repeated delivery
+    // is recorded once, by selector and hash only.
     assert_eq!(
         extra,
-        habeas::outline_inputs_for_lines(&fixture.project, "extra.txt", 1, 12)
+        habeas::outline_inputs_for_lines(&fixture.project, "extra.txt", 10, 12)
             .unwrap()
             .iter()
             .collect::<Vec<_>>(),
@@ -492,10 +492,11 @@ fn ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free() {
             .any(|input| input["origin"] == "list_files"),
         "{usage_inputs:?}"
     );
+    // Search results are not inputs either.
     assert!(
-        usage_inputs.iter().any(|input| input["origin"] == "ripgrep"
-            && input["bytes"].as_u64().unwrap() > 0
-            && input["lines"].as_u64().unwrap() > 0),
+        !usage_inputs
+            .iter()
+            .any(|input| input["origin"] == "ripgrep"),
         "{usage_inputs:?}"
     );
     assert!(

@@ -167,10 +167,12 @@ with `habeas`, list files, list a file's selectable nodes with `outline`, search
 files with ripgrep (built in; no `rg` executable is needed), and use `references`
 to list definition names or every `{impl}`, `{cite}`, and `{test}` site for a
 definition selection. A `habeas` read names an outline node directly or asks for
-a line range; a line range, like each ripgrep match and its context, is returned
-as the innermost outline nodes covering those lines, and those nodes are recorded
-as outline inputs. Listings, outlines, and reference lookups are not recorded as
-evidence.
+a line range; a line range is returned as the innermost outline nodes covering
+those lines, and those nodes are recorded as outline inputs. Searches only locate
+code: each ripgrep or ast-grep match is returned as the innermost outline node
+containing it with the matching lines and their context, and the model reads with
+`habeas` any node it relies on. Searches, listings, outlines, and reference
+lookups are not recorded as evidence.
 Choose a model that supports tool calls, either on Amazon Bedrock or an accessible
 Ollama server. The server can run on another machine; Habeas does not need a GPU.
 {cite}`requirements.authoring.invocation` {cite}`requirements.authoring.provider`

@@ -403,8 +403,8 @@ mod tests {
         let first = dispatch_paged(
             &sources,
             &mut pages,
-            "ripgrep",
-            &json!({"pattern":"fn needle_","path":"src","context":0}),
+            "habeas",
+            &json!({"file":"src/lib.rs","line_start":1}),
         )
         .unwrap();
         let delivered = all_pages(&pages, first);
