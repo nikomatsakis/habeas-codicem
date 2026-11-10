@@ -1239,6 +1239,7 @@ mod tests {
 
     // {test}`requirements.definitions.selection`
     // {test}`requirements.references.definition_globs`
+    // {test}`requirements.authoring.source_tools`
     #[test]
     fn requirements_reads_select_requirements_and_examples_but_not_definitions() {
         let root = project();

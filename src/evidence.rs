@@ -481,6 +481,7 @@ fn collect_definitions(
             }
             // {impl}`requirements.ci.span`
             // {impl}`requirements.references.anchors`
+            // {impl}`requirements.ci.requirement_text`
             let text = crate::without_options(&content, block.body_start..block.body_end, &blocks)
                 .trim()
                 .to_owned();
