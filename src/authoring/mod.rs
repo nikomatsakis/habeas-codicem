@@ -151,6 +151,23 @@ impl AuthoringSubject {
         }
     }
 
+    /// The subject kind recorded in usage, as `AssessmentKind::noun` names
+    /// it, known before configuration and sources are prepared so that an
+    /// early failure still records it. `None` when no requirement or example
+    /// has the name, or the book cannot be read.
+    // {impl}`requirements.authoring.usage_storage`
+    fn kind_noun(&self, root: &Path) -> Option<&'static str> {
+        match self {
+            Self::Definition(name) => crate::evidence::load_definitions(root)
+                .ok()?
+                .get(name)
+                .filter(|definition| definition.kind != DefinitionKind::Term)
+                .map(|definition| definition.kind.noun()),
+            Self::Citation { .. } => Some("citation review"),
+            Self::Site { .. } => Some("site review"),
+        }
+    }
+
     /// Prepares the subject's sources and mandatory inputs.
     // {impl}`requirements.authoring.mandatory_inputs`
     // {impl}`requirements.references.citation_review`
@@ -283,6 +300,9 @@ pub async fn author_evidence_with_options(
     }
     let state = usage_state_root(&root)?;
     let mut usage = UsageLog::start(&state, &root, subject)?;
+    usage.record.subject_kind = AuthoringSubject::parse(subject)
+        .kind_noun(&root)
+        .map(str::to_owned);
     usage.record.evidence_output = match output {
         EvidenceOutput::File => "file",
         EvidenceOutput::Stdout => "stdout",
@@ -367,6 +387,8 @@ pub(crate) async fn prepare_assessment(
     let root = fs::canonicalize(root)?;
     let state = usage_state_root(&root)?;
     let mut usage = UsageLog::start(&state, &root, &subject.label())?;
+    usage.record.subject_kind = subject.kind_noun(&root).map(str::to_owned);
+    usage.save()?;
     if let Some(finished) = first_request_finished {
         usage.on_first_request(finished);
     }
@@ -665,6 +687,7 @@ fn followup_log(
     purpose: &str,
 ) -> io::Result<UsageLog> {
     let mut usage = UsageLog::start(state, root, &format!("{} ({purpose})", subject.label()))?;
+    usage.record.subject_kind = first.record.subject_kind.clone();
     usage.record.backend = first.record.backend.clone();
     usage.record.model = first.record.model.clone();
     usage.record.policy = first.record.policy;
@@ -675,6 +698,7 @@ fn followup_log(
 /// Fresh sources for an independent conversation, recorded in its usage.
 // {impl}`requirements.authoring.confirmation`
 // {impl}`requirements.authoring.usage_inputs`
+// {impl}`requirements.authoring.usage_storage`
 fn followup_sources(
     root: &Path,
     subject: &AuthoringSubject,
@@ -2885,6 +2909,41 @@ mod tests {
             assert!(one.subject.contains("One gap."));
             assert!(!one.system.contains("One gap."));
         }
+    }
+
+    // {test}`requirements.authoring.usage_storage`
+    #[test]
+    fn usage_subject_kind_is_known_before_sources_are_prepared() {
+        let project =
+            crate::sites::tests::project(crate::sites::tests::RULE, crate::sites::tests::SOURCE);
+        let root = project.path();
+        let requirements = root.join("md/requirements.md");
+        let mut book = fs::read_to_string(&requirements).unwrap();
+        let cite = concat!("{", "cite}`requirements.rule`");
+        book.push_str(&format!("\n:::{{example}} case\nA case. {cite}\n:::\n"));
+        fs::write(&requirements, book).unwrap();
+        let source = root.join("src/lib.rs");
+        let mut text = fs::read_to_string(&source).unwrap();
+        text.push_str(&format!("\n// {cite}\nfn cites() {{}}\n"));
+        fs::write(&source, text).unwrap();
+        for (subject, kind) in [
+            ("requirements.rule", "requirement"),
+            ("requirements.case", "example"),
+            ("citations:src/lib.rs#fn[cites]", "citation review"),
+            (
+                "sites:requirements.rule/src/lib.rs#fn[check_one]",
+                "site review",
+            ),
+        ] {
+            let subject = AuthoringSubject::parse(subject);
+            assert_eq!(subject.kind_noun(root), Some(kind), "{}", subject.label());
+            // The same kind the prepared sources record.
+            assert_eq!(subject.sources(root).unwrap().subject_kind.noun(), kind);
+        }
+        assert_eq!(
+            AuthoringSubject::parse("requirements.missing").kind_noun(root),
+            None
+        );
     }
 
     /// Runs the review of site `fn[check_one]` of `requirements.rule` with

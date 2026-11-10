@@ -1161,6 +1161,32 @@ fn usage_record_identifies_its_run_and_unusable_state_is_reported() {
 
 // {test}`requirements.authoring.usage_storage`
 #[test]
+fn usage_record_of_an_early_failure_identifies_its_subject_kind() {
+    // The configuration selection fails before sources are prepared or a
+    // provider is connected.
+    let fixture = Fixture::new("http://127.0.0.1:1");
+    let output = fixture
+        .command()
+        .args(["author", SUBJECT, "--force", "--config", "missing"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success(), "{output:?}");
+    let directory = fixture.state.join("habeas/authoring/usage");
+    let files = fs::read_dir(&directory)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect::<Vec<_>>();
+    assert_eq!(files.len(), 1, "{output:?}");
+    let usage: Value = serde_json::from_slice(&fs::read(&files[0]).unwrap()).unwrap();
+    assert_eq!(usage["subject"], SUBJECT);
+    assert_eq!(usage["subject_kind"], "requirement", "{usage}");
+    assert_eq!(usage["outcome"], "failed", "{usage}");
+    assert_eq!(usage["evidence_written"], false, "{usage}");
+    assert!(usage["end_time_ms"].as_u64().is_some(), "{usage}");
+}
+
+// {test}`requirements.authoring.usage_storage`
+#[test]
 fn usage_state_inside_the_project_is_refused_before_creating_it() {
     let fixture = Fixture::new("http://127.0.0.1:1");
     let inside = fixture.project.join("state");
