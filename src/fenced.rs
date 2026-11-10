@@ -347,6 +347,29 @@ mod tests {
         assert_eq!(markdown_fences(&content, false).len(), 4);
     }
 
+    // {test}`requirements.references.markdown_literals`
+    #[test]
+    fn markdown_fences_in_raw_html_stay_literal() {
+        let content = "<div>\n:::{cite} in.block\nbody\n:::\n</div>\n\n<!--\n:::{cite} in.comment\nbody\n:::\n-->\n\nText <span title=\"\n:::{cite} in.tag\n:::\n\">tag</span>.\n\n:::{cite} outside.html\nbody\n:::\n";
+        let names = |markdown| {
+            markdown_fences(content, markdown)
+                .into_iter()
+                .map(|fence| fence.name)
+                .collect::<Vec<_>>()
+        };
+        // Only the fence outside raw HTML is a reference...
+        assert_eq!(names(true), ["outside.html"], "{content}");
+        assert_eq!(
+            crate::text_references(content, true),
+            [(ReferenceKind::Cite, "outside.html".to_owned())]
+        );
+        // ...while in plain text every fence counts.
+        assert_eq!(
+            names(false),
+            ["in.block", "in.comment", "in.tag", "outside.html"]
+        );
+    }
+
     // {test}`requirements.references.roles`
     #[test]
     fn comment_delimiters_are_removed_per_line() {
