@@ -709,6 +709,30 @@ mod tests {
         );
     }
 
+    // {test}`requirements.configuration.state_location`
+    #[test]
+    fn an_unwritable_state_root_fails_the_store_with_its_location() {
+        let temp = tempfile::tempdir().unwrap();
+        // A file where the state directory should be makes it unwritable.
+        let state = temp.path().join("state");
+        fs::write(&state, "not a directory").unwrap();
+        let error = store(
+            &state,
+            Path::new("/work/project"),
+            "src/lib.rs",
+            "fn[f]",
+            None,
+            &[],
+        )
+        .unwrap_err();
+        let message = error.to_string();
+        assert!(
+            message.starts_with("cannot keep the coverage-loss review at "),
+            "{message}"
+        );
+        assert!(message.contains(&state.display().to_string()), "{message}");
+    }
+
     // {test}`requirements.authoring.habeas_background`
     // {test}`requirements.authoring.judgment_rules`
     // {test}`requirements.authoring.coverage_loss`
