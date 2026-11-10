@@ -1,7 +1,7 @@
 {
   "example": "The model calls `list_files` to find a directory, then `ripgrep` to find matching\nlines in a Rust file. The listing creates no evidence input; the search returns\nand records the innermost Rust item containing each match. An `outline` request\nfor that file lists its items without content and creates no evidence input. A\n`habeas` request with the file and one item's selector returns and records that\nitem, along with any required terminology. A line-range request omitting\n`line_end` reads through EOF and records the outline nodes it covers.\n{cite}`requirements.authoring.file_discovery`\n{cite}`requirements.authoring.text_search`\n{cite}`requirements.authoring.source_tools`\n{cite}`requirements.authoring.delivered_inputs`",
-  "determination": true,
-  "rationale": "The example has several `{test}` references. They cover each step of its scenario.\n\n**Main test:** `additional_read_flow_searches_outlines_and_reads_a_rust_file` in `src/authoring/tools.rs` follows the scenario in order. Its `src/lib.rs` has a `fn work` and a `fn other`, and a terminology reference to `terms.value`.\n- **`list_files`:** It lists `src`, asserts the result is `[{\"path\":\"src/lib.rs\",\"kind\":\"file\"}]`, and asserts `listing.inputs` is empty, so a listing creates no evidence input.\n- **`ripgrep`:** It searches `src/lib.rs` for \"work\" with `context:0`. It asserts exactly one input for that file, whose item is `fn[work]`, the innermost Rust item. It then records the search inputs.\n- **`outline`:** It asserts `outline.inputs` is empty. It asserts the listed items are `fn[work]` and `fn[other]`. It asserts the result does not contain the body text `fn other()`, so the listing carries no content.\n- **`habeas` by item:** A request with `file` and `item` `fn[other]` returns that item with its text `fn other() {}`, and the test records it.\n- **`habeas` by line range:** A request with `line_start:2` and no `line_end` covers `fn[work]` and `fn[other]`, so it reads through EOF. The test records these inputs.\n- **Recording and terminology:** The test asserts that the recorded inputs contain both outline inputs. They also contain the `terms.value` definition input, so the required terminology is recorded.\n\n**Supporting tests:**\n- `reading_records_only_delivered_sources_and_their_terms` asserts that an item read returns `definitions[0].definition == \"terms.value\"`. It also asserts that a line-range read supplies terminology, that recording is deduplicated, and that a failed read or an invalid request form is rejected.\n- `search_merges_context_windows_and_respects_ignore_rules` covers the `ripgrep` conventions: context merging, zero context, empty results, and errors.\n- The CLI test `ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free` in `tests/authoring_cli.rs` runs the tools end to end. It checks that `list_files` adds no evidence input. It checks that `ripgrep` and `habeas` results are recorded once, by selector and hash, in the written evidence file.\n\nNo gap found.",
+  "determination": false,
+  "rationale": "The tests cover most of the scenario, but the example says the search \"returns and records\" the innermost item, and the tests assert the opposite. I found no {fixme} acknowledging this, so I am reporting it as a gap.\n\n**Covered, with `{test}` references to the example.**\n- `src/authoring/tools.rs`, `additional_read_flow_searches_outlines_and_reads_a_rust_file`:\n  - `list_files` on `src` returns `src/lib.rs`, and `listing.inputs` is empty.\n  - `ripgrep` on the Rust file returns `fn[work]` as the innermost item with its kind and line range.\n  - `outline` lists `fn[work]` and `fn[other]` with no content (`fn other()` is absent from the result), and `outline.inputs` is empty.\n  - A `habeas` read with `file` and `item` (`fn[other]`) returns that item's text, and it is recorded via `record_inputs`.\n  - A `habeas` read with `file` and `line_start: 2` and no `line_end` returns `fn[work]` and `fn[other]`, which is through EOF. Both are recorded, checked against `outline_input`.\n  - The terminology input `terms.value` is recorded.\n- `reading_records_only_delivered_sources_and_their_terms`:\n  - A read by item selector of `fn[work]` returns the outline input plus the `terms.value` definition. Two inputs are produced, and they are recorded only when `record_inputs` is called.\n  - The line-range reads are covered, including the terminology they deliver.\n- `search_merges_context_windows_and_respects_ignore_rules` and the CLI test `ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free` exercise the same tools end to end. The CLI test checks that the listing and the search are not evidence or usage inputs, while the habeas reads are recorded once by selector and hash.\n\n**Gap: the search outcome.**\n- The example states that the search \"returns and records the innermost Rust item containing each match\", in the same sense as \"returns and records that item\" for `habeas`, which means an evidence record.\n- The tests assert the opposite. `additional_read_flow...` asserts `search.inputs.is_empty()` with the comment \"nothing is recorded\".\n- The CLI test asserts that ripgrep appears among no recorded or usage inputs, and `extra.txt` is recorded only through the `habeas` reads.\n- The cited `requirements.authoring.text_search` also says search results MUST NOT become evidence inputs, so the tests follow the requirement.\n- The example's text still conflicts with the cited requirement and the tests, and no test asserts the \"records\" outcome the example states. The example's own wording admits no equally supported reading that makes this consistent. Either the example text or the requirement has to change.",
   "references": "9597e561778130a96dd8b8002e9054cf954a9d45f9890575728231876f59fee9",
   "inputs": [
     {
@@ -68,7 +68,7 @@
         "The harness MUST expose a `ripgrep` tool with this interface:",
         "",
         "```text",
-        "ripgrep({ pattern: String, path: String = \".\", context: Integer = 5,",
+        "ripgrep({ pattern: String, path: String = \".\", context: Integer = 2,",
         "          referencing: Optional<ReferenceScope> }) -> SearchResult",
         "",
         "ReferenceScope {",
@@ -77,9 +77,15 @@
         "    scope: \"node\" | \"file\" = \"file\",",
         "}",
         "",
-        "SearchResult {",
-        "    inputs: Array<EvidenceInput>,",
-        "    definitions: Array<DefinitionInput>,",
+        "SearchResult { matches: Array<SearchMatch> }",
+        "",
+        "SearchMatch {",
+        "    file: String,",
+        "    item: String,        // selector of the innermost outline node",
+        "    kind: String,",
+        "    line_start: Integer, // the node's current lines",
+        "    line_end: Integer,",
+        "    lines: Array<{ line: Integer, text: String }>,",
         "}",
         "```",
         "",
@@ -93,13 +99,17 @@
         "be searched even when ignored or hidden; workspace disallow rules still apply.",
         "Its model-facing description MUST explain those conventions. `context`",
         "MUST be nonnegative and specify how many lines before and after each matching",
-        "line to include, defaulting to five on each side. Windows MUST stop at file",
-        "boundaries, and overlapping windows in the same file MUST be merged. Each match and its context lines MUST be returned and",
-        "recorded as the innermost outline nodes containing them, under",
-        "{cite}`requirements.ci.outline_inputs`; a match in a comment belongs to the node",
-        "the comment belongs to under {cite}`requirements.references.outline_comments`.",
-        "Each result MUST include the selected source text for the model.",
-        "Setting `context` to zero MUST return only matching lines.",
+        "line to include, defaulting to two on each side. Windows MUST stop at file",
+        "boundaries, and overlapping windows in the same file MUST be merged. The result",
+        "MUST give one entry for each innermost outline node containing a match, where a",
+        "match in a comment belongs to the node the comment belongs to under",
+        "{cite}`requirements.references.outline_comments`: the node's file, selector",
+        "under {cite}`requirements.references.outline_selectors`, kind, and current line",
+        "range, and its matching and context lines with their line numbers, redacted",
+        "under {cite}`requirements.authoring.redaction`. Search results MUST NOT become",
+        "evidence inputs and MUST NOT include definitions; the model-facing description",
+        "MUST tell the model to read with the `habeas` tool any node whose code its",
+        "conclusion relies on. Setting `context` to zero MUST return only matching lines.",
         "With `referencing`, the tool MUST search only sources, within `path`, that carry",
         "a reference in one of `roles` to a requirement or example the `selection`",
         "matches under {cite}`requirements.references.definition_globs`, including",
@@ -111,10 +121,7 @@
         "Search results MUST exclude files disallowed by",
         "{cite}`requirements.authoring.source_tools`; explicitly requesting an excluded",
         "path MUST be handled as a denial under {cite}`requirements.authoring.read_denial`.",
-        "Required terminology MUST be included under",
-        "{cite}`requirements.definitions.authoring_inputs`. Returned source inputs supplied",
-        "to the model MUST be recorded under {cite}`requirements.authoring.delivered_inputs`.",
-        "No matches MUST return empty arrays; invalid arguments or a failed search MUST",
+        "No matches MUST return an empty array; invalid arguments or a failed search MUST",
         "return an explanatory tool error.",
         ":::"
       ]
@@ -204,7 +211,7 @@
     {
       "file": "src/authoring/tools.rs",
       "item": "mod[tests]/fn[additional_read_flow_searches_outlines_and_reads_a_rust_file]",
-      "hash": "f1567a7dd680f333bac1f1a47bd6d5967d283e6728c2f9a1f97b82271f392588"
+      "hash": "df56904dcbea058ea60bf8ce2bf5b957051a1201eb0a47638366f9ca8c5f6d0d"
     },
     {
       "file": "src/authoring/tools.rs",
@@ -214,12 +221,12 @@
     {
       "file": "src/authoring/tools.rs",
       "item": "mod[tests]/fn[search_merges_context_windows_and_respects_ignore_rules]",
-      "hash": "2fa8051cca2d46d6337e91a9309b9dfa14423c3c4a83ad4f363cf70d035f5977"
+      "hash": "fd59902e9772e83aa4fed5cc03433638e024cae284569ab554d36edb883d755e"
     },
     {
       "file": "tests/authoring_cli.rs",
       "item": "fn[ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free]",
-      "hash": "2440f5eb6bd8f52e3a8bec38716e26e47c52772f98cd10fd1bde133da4d7468a"
+      "hash": "74303f88169d9890345df3e1fe9aa417ef12eccc1a23fce9ac0e42b24c57b20a"
     }
   ]
 }

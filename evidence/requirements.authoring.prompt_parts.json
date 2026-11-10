@@ -1,8 +1,8 @@
 {
   "requirement": "Each assessment conversation MUST send its prompt as a system prompt followed by\none user message, the subject message, filled from the first and second text\nblocks of the prompt requirement for the assessment's kind. The kinds are\nrequirement, example, citation review, site review, and a verifier of each of\nthose. A system prompt MUST be the same for every assessment of its kind, so\nevery placeholder whose value depends on the subject MUST be in the subject\nmessage.",
   "determination": true,
-  "rationale": "I found no gaps. Each obligation has marked code and a test that asserts its outcome.\n\n**Obligations**\n1. Send the prompt as a system prompt followed by one user message, the subject message.\n2. Fill the system prompt and the subject message from the first and second text blocks of the prompt requirement for the assessment's kind. The kinds are requirement, example, citation review, site review, and a verifier of each.\n3. Keep the system prompt the same for every assessment of its kind.\n4. Put every subject-dependent placeholder in the subject message.\n\n**Code**\n- **Sending (1).** `Prompt::request` (src/authoring/mod.rs:834) builds `CompletionRequest::new(Message::user(subject)).preamble(system)`. That is the only place a request is built, and `converse` (:1251) always starts from `prompt.request()`. `assess` and `verify` both go through `converse`, so initial, citation, site and verifier conversations all send a system message followed by one user message.\n- **Filling (2).** `Prompt::filled` (:821) fills `approved_text(name, 0)` as the system prompt and `approved_text(name, 1)` as the subject message. `initial_prompt` (:849) selects `initial_prompt` for a requirement or example, `citation_prompt` for a citation review and `site_prompt` for a site review. `verification_prompt` (:934) selects `verifier_prompt` for the verifier of any kind.\n- **Same system prompt per kind (3).** Neither `initial_prompt` nor `verification_prompt` puts a subject value into a system block.\n  - The system-block placeholders are `subject_kind`, `habeas_background`, `reference_roles`, `judgment_rules`, `subject_task`, and `site_step` in the verifier. Each depends only on the kind.\n  - Every subject-specific placeholder sits in the second block in the prompt text in `md/requirements/authoring.md`: `subject_name`, `distributed_task`, `item_file`, `item_selector`, `citations`, `site_file`, `site_selector`, `matches`, `requirement_name`, `determination`, `rationale`, `review_instructions` and `mandatory_inputs`.\n  - `distributed_task` is kept out of the system prompt, and `subject_task` depends only on requirement versus example.\n  - `assessment_kind` in src/authoring/batch.rs groups subjects by kind.\n- **Subject-dependent placeholders in the subject message (4).** This follows from the placement above.\n\n**Tests**\n- `subjects_of_one_kind_share_a_byte_identical_system_prompt` (mod.rs:2829) takes two subjects of each kind: requirement, example, citation review and site review. It asserts that:\n  - the initial system prompts are identical;\n  - the subject messages differ and begin with \"# Subject\";\n  - the system prompt does not contain the subject name;\n  - the verifier system prompts are identical for each of those kinds, and the verifier rationale appears only in the subject message.\n- `initial_prompt_substitutes_subject_and_mandatory_inputs_into_the_template` (tests/authoring_cli.rs:839) checks the requests received by a fake provider. It asserts that the system message equals the first block with only kind-level substitutions, and that the user message equals the second block with the subject, name and inputs filled.\n- `opening` and `prompt_text` in tests/authoring_cli.rs read the leading system message and the user message, for both the Ollama and Bedrock shapes.\n- `verifier_prompts_name_examples_and_citation_reviews` (mod.rs:2530) asserts that the verifier's system prompt contains neither the rationale nor the subject name.\n\nNo unspecified behavior and no unmarked implementing code turned up.",
-  "references": "e9a7bff41c026fce16878ab9562ef373048094b0dcd3cb215d0d3ed471e6ee27",
+  "rationale": "I found no gap in how the code and tests satisfy `requirements.authoring.prompt_parts`.\n\n**Obligations**\n1. Each conversation sends a system prompt followed by one user message, the subject message.\n2. Both are filled from the first and second text blocks of the prompt requirement for the assessment's kind. The kinds are requirement, example, citation review, site review, and a verifier of each.\n3. A system prompt is the same for every assessment of its kind.\n4. Every placeholder whose value depends on the subject is in the subject message.\n\n**Code**\n- **Sending (1).**\n  - `converse` (src/authoring/mod.rs, marked {impl}) builds its request with `prompt.request()`.\n  - `Prompt::request` is `CompletionRequest::new(Message::user(self.subject)).preamble(self.system)`. That is one system prompt plus one user message.\n- **Filling from the two blocks (2).**\n  - `Prompt::filled(name, values)` fills `approved_text(name, 0)` as the system prompt and `approved_text(name, 1)` as the subject message.\n  - `initial_prompt` picks the template by kind:\n    - `initial_prompt` for requirement and example.\n    - `citation_prompt` for a citation review.\n    - `site_prompt` for a site review.\n  - `verification_prompt` (marked {impl}) uses `verifier_prompt` for the verifier of any of those kinds.\n  - `initial_prompt` is reached from `verification_prompt` and from `converse`'s callers, so it needs no `prompt_parts` reference of its own.\n- **Same system prompt per kind (3, 4).**\n  - Placeholders in the system blocks are `subject_kind`, `subject_task`, `habeas_background`, `reference_roles`, `judgment_rules`, `distributed_background` and `site_step`. In the verifier, `subject_kind` and `site_step` depend only on the kind. The others are constants.\n  - `subject_task` depends only on the requirement/example kind.\n  - Subject-dependent placeholders are in the subject blocks: `subject_name`, `item_file`, `item_selector`, `citations`, `requirement_name`, `site_file`, `site_selector`, `matches`, `distributed_task`, `determination`, `rationale`, `review_instructions` and `mandatory_inputs`.\n  - `verification_prompt` handles a site review's missing reference roles by substituting an empty string. That depends only on the kind, so the system prompt stays the same.\n- `assessment_kind` (src/authoring/batch.rs) names the kinds that share a system prompt. It is marked {impl} and is consistent with the requirement's kind list.\n\n**Tests**\n- `subjects_of_one_kind_share_a_byte_identical_system_prompt` (src/authoring/mod.rs, {test}) builds two subjects for each of requirement, example, citation review and site review. It checks that:\n  - the system prompts are equal, differ in the subject message, and don't contain the subject name;\n  - the subject message starts with \"# Subject\";\n  - the verifier system prompts are equal for each pair, with the rationale only in the subject message.\n- `initial_prompt_substitutes_subject_and_mandatory_inputs_into_the_template` (tests/authoring_cli.rs, {test}) runs the CLI against a fake provider for a requirement and an example. It asserts that the sent system prompt equals the first block with only the stated substitutions and doesn't contain the subject name. It also asserts that the user message equals the second block with the subject-dependent values filled in.\n- `claude_requests_carry_cache_checkpoints_and_record_cache_usage` asserts the request shape with a system prompt followed by messages.\n- The helper `prompt_and_tools` and the `joined` helper are marked {test}.\n\n**Unspecified behavior**\nI saw none beyond what the text and the sibling prompt requirements specify. The coverage-loss prompt is outside the listed kinds and is governed by `coverage_loss`.",
+  "references": "642d6fe5c0b606073d2c7c5067ea26e5cf1d83913bb509e9c7d8f55c1fe596c0",
   "inputs": [
     {
       "requirements": "requirements.authoring.prompt_parts",
@@ -28,33 +28,8 @@
     },
     {
       "file": "src/authoring/mod.rs",
-      "item": "fn[distributed_task]",
-      "hash": "7f0686d3f19b00d9518ce440e8a345617da601a9f1148c287786de4ad13ddf59"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "struct[Prompt]",
-      "hash": "26992fd599d0736e233b62c0fd40f5dadf4499391aead30f3a9d837bb5dd7f07"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "impl[Prompt]/fn[filled]",
-      "hash": "206fa7fa4e239307c5c77808717c22494e936dd2bdef12e8a2a8479a1a852c56"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "impl[Prompt]/fn[request]",
-      "hash": "f9ffe120e04b612858150221d3adda1aaa7b5cf606a62ddabd7a7f0f6a7f66e9"
-    },
-    {
-      "file": "src/authoring/mod.rs",
       "item": "impl[Prompt]/fn[joined]",
       "hash": "f2a86b8af60b81e3a7a1d1b9cdcbfdfef105be5cb60cfef599d882e7f54ad0bc"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "fn[initial_prompt]",
-      "hash": "e18a20a9ce82743cf96cc070647075882dd29c6192f727077c3b87ff383c8717"
     },
     {
       "file": "src/authoring/mod.rs",
@@ -70,16 +45,6 @@
       "file": "src/authoring/mod.rs",
       "item": "mod[tests]/fn[subjects_of_one_kind_share_a_byte_identical_system_prompt]",
       "hash": "9e4e2c1b38ea8798a439c6eae5c85cdbce1c96cc90221d0c55ed975f1b6165de"
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "item": "fn[opening]",
-      "hash": "1578a614413cbf7fe1ad142e5ab72baffe78d10a8b8bc6f443c48a6400761095"
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "item": "fn[prompt_text]",
-      "hash": "375e5b6c63239d99da1c42db45f908a865071994c6ba9a3ac277dd674360d1f1"
     },
     {
       "file": "tests/authoring_cli.rs",
@@ -128,6 +93,26 @@
     },
     {
       "file": "src/authoring/mod.rs",
+      "item": "fn[distributed_task]",
+      "hash": "7f0686d3f19b00d9518ce440e8a345617da601a9f1148c287786de4ad13ddf59"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "struct[Prompt]",
+      "hash": "26992fd599d0736e233b62c0fd40f5dadf4499391aead30f3a9d837bb5dd7f07"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "impl[Prompt]",
+      "hash": "94bd957fe2bcb6231b591826b541c1751cbefcb4f746a3cc56214245f2570ed1"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "fn[initial_prompt]",
+      "hash": "587ce8609b4b710048cf88c56cc5b38047e867f607c5683331b9695b08187abf"
+    },
+    {
+      "file": "src/authoring/mod.rs",
       "item": "fn[prompt_section]",
       "hash": "5c664b046c83b164ea6c8e7ad1011991619ef30b465b361cf7bdd297268aacd8"
     },
@@ -148,18 +133,33 @@
     },
     {
       "file": "src/authoring/mod.rs",
-      "item": "mod[tests]/fn[verifier_prompts_name_examples_and_citation_reviews]",
-      "hash": "9a62719c0a8d7b92593602b1ba02a3b5652ff559ec6a5b8763ed183d231b1763"
+      "item": "fn[site_submission]",
+      "hash": "cc951cccbdd2c83c8ce27330f80d3364a138919cc347f58a99132d82c8e157bc"
     },
     {
       "file": "src/authoring/mod.rs",
-      "item": "mod[tests]/fn[verifications_accept_exactly_their_four_fields]",
-      "hash": "52814bc7f2fb8626a97eff95866521b4f0994a356c15b7c4bb280a72b908921a"
+      "item": "struct[Verification]",
+      "hash": "1d28e86930671369c184376a61d98a94accc90f6c0545614ce27ff0926c52128"
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "item": "section[Authoring%20evidence]/section[Initial%20prompt]/section[Mandatory%20inputs]",
+      "hash": "6eb1cb5574a10d12fa9b9b20f094da7b3517769356fe1f98aa77a0c4710fd38d"
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "item": "section[Authoring%20evidence]/section[Initial%20prompt]/section[Prompt%20template]",
+      "hash": "5f871699857c378f415e0b6c3e9a134668d7dd1dc5a16b3a9768820974ab08bd"
+    },
+    {
+      "file": "md/requirements/authoring.md",
+      "item": "section[Authoring%20evidence]/section[Configuration]",
+      "hash": "772718a0b38e131b69215b825619842b2abeb1aeeca9e5f38a131a6fd49c78c0"
     },
     {
       "file": "md/requirements/authoring.md",
       "item": "section[Authoring%20evidence]",
-      "hash": "ed6d4a9fd83aa38c404dc6624de72ba067aec3b9b62c5739a56591a07f0d8fb6"
+      "hash": "5c22d128ba3d014cb81077327bbf26b1bcbaf5b4c56b3fa4f95548928c84a114"
     },
     {
       "definition": "requirements.references.definition_selection",
@@ -173,26 +173,6 @@
         "exactly that definition.",
         ":::"
       ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "fn[assess]",
-      "hash": "c216d8ae617afd028b13919a0143231867d37eddee5ce4b93a4093f6902fe469"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "fn[verify]",
-      "hash": "6a5a6ffe969e3b4d5c1d9bce32e4d92c0e3e386c3190e6419eb2bbd77dd16dd2"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "mod[tests]/fn[bedrock_native_option_types_are_checked_without_supplying_defaults]",
-      "hash": "95dfba63238700fed1839482c85629b64e280a8002799ab8dbeae05ffa39b916"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "mod[tests]/fn[cache_checkpoints_are_requested_for_caching_models]",
-      "hash": "bf1d467d486bbc62b611a7680d8d2e17f6f1fbddd30ac916a1534ce1aabc1c41"
     }
   ]
 }

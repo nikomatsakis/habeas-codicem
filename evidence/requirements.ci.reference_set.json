@@ -1,8 +1,8 @@
 {
   "requirement": "A definition's reference set MUST consist of its current incoming `{impl}`, `{test}`, and `{fixme}` edges, except a `{fixme}` inside a site of the definition under {cite}`requirements.references.site_review`, under {cite}`requirements.references.roles` and\n{cite}`requirements.references.anchors`: for each edge, its role and the file and\noutline selector of the node the reference belongs to under\n{cite}`requirements.references.outline_comments`, or of the anchored file or\nnode, and, for a fenced reference in a source outside the book, the words of\nits body under the word rule of {cite}`requirements.references.structural_hash`.\n`{cite}` references MUST NOT contribute. The reference-set digest MUST be\nthe SHA-256 digest of an unambiguous encoding of those entries in sorted order,\nso it does not depend on line numbers or on the order references are found.\nAuthoring MUST record the digest of the reference set it supplied, and\nvalidation MUST recompute it and report a changed reference set as stale\nevidence. Adding or removing an `{impl}`, `{test}`, or `{fixme}` reference or anchor,\nchanging its role, editing its commentary, or moving it to a different node\nMUST therefore make the evidence stale even when no recorded input changed; moving a reference within\nthe node it belongs to MUST NOT.",
   "determination": true,
-  "rationale": "I found no gap. I judged this from the mandatory inputs and did not read beyond them, so I did not check the internals of `owner_at_line` or `is_fixme_edge`.\n\n**Obligations and the code that carries them out**\n- **Entries are the current `{impl}`, `{test}`, and `{fixme}` edges.** `reference_set_digest` (src/evidence.rs 1167-1267) keeps only references to the definition with one of those three kinds. It skips a `{fixme}` inside the definition's own site (`in_own_site`) and any reference that is not a real edge (`is_fixme_edge`).\n- **Each entry has a role, file, and node selector.**\n  - Role: `reference.kind.label()`.\n  - File: the displayed path.\n  - Node: the selector from `outline.owner_at_line(reference.line)`, or the empty root selector for plain-text files.\n  - Anchors contribute their file and selector, with origin `anchor`.\n- **Fenced references outside the book add the words of their body.** The body is split on whitespace (the word rule). Book commentary is excluded through `filter(!reference.in_book)`.\n- **`{cite}` does not contribute.** The kind filter excludes it.\n- **The digest is SHA-256 over an unambiguous encoding of the sorted entries.**\n  - The `ReferenceSetEntry` list is sorted with `entries.sort()`.\n  - Every field is length-prefixed and the entry count is encoded first.\n  - Line numbers are never hashed, and the sort removes any dependence on discovery order.\n- **Authoring records the digest.** `AssessmentSources::prepare` (src/authoring/inputs.rs) computes it. `record()` and `assess()` (src/authoring/mod.rs) write it to the `references` field.\n- **Validation recomputes it and reports staleness.** `validate_references` compares the recorded `references` value with a recomputed digest and reports \"reference set changed\". `validate_evidence_file` checks that the field is a lowercase SHA-256 hex string.\n\n**Tests**\n- `reference_set_digest_tracks_impl_and_test_edges_by_node` (src/evidence.rs) checks these cases:\n  - The digest is deterministic and 64 hex characters long.\n  - Moving a reference within its node, adding unrelated lines, and adding `{cite}` references leave it unchanged.\n  - Adding, removing, re-roling, or moving a reference to another node changes it.\n  - Adding anchors changes it.\n- `validation_requires_a_current_reference_set_digest` (src/evidence.rs) checks the missing, wrong-type, malformed, and stale-digest cases. The stale case is a new reference inside a node the inputs already cover.\n- `fenced_commentary_outside_the_book_contributes_to_the_reference_set` and `fixme_edges_and_their_bodies_are_part_of_the_reference_set` (tests/references.rs) check these cases:\n  - Reflowing commentary keeps the digest.\n  - Changing the words changes it.\n  - Book commentary is excluded.\n  - A `{fixme}` and its issue and body change the digest.\n  - An inline or unnamed `{fixme}` is not an edge.\n- `a_fixme_inside_a_site_belongs_to_that_sites_review_only` (src/sites.rs) checks that an in-site `{fixme}` does not affect the requirement's digest.\n- `editing_or_adding_a_fixme_makes_evidence_stale_or_uncovered` (tests/outcomes.rs) checks that editing a `{fixme}` body makes evidence stale.\n- `batch_reauthors_a_false_judgment_when_its_reference_set_changes` (tests/authoring_batch.rs) and `throttled_requests_retry_unchanged_and_record_every_attempt` (src/authoring/mod.rs) check that authoring records the current digest.\n\n**Possible weak spots, not counted as gaps**\n- No test explicitly shuffles the order in which references are found. The sort has no conditional and the digest tests exercise determinism, so I did not count this.\n- An unclosed fence is filtered out in validation but not in authoring's digest. That state is already a validation error under the roles requirement, and the subject's text does not name it.",
-  "references": "77908dbb29eb2575a3d434a7530d2b600e86ff1381218820fceb8b67fd531a57",
+  "rationale": "I found no gaps. Each obligation maps to code reachable from the `{impl}` items, and each has a test.\n\n**Digest construction.** `reference_set_digest` (src/evidence.rs:1118) builds the digest, and both `reference_set_digest_for` and `AssessmentSources::prepare` call it.\n- **Edges included:** it takes only references that name the definition, have role `{impl}`, `{test}` or `{fixme}`, and pass `is_fixme_edge`. `is_fixme_edge` requires a `{fixme}` to be named, fenced and outside the book.\n- **Exclusions:** `{cite}` references are dropped by the role filter. A `{fixme}` inside the definition's own site is dropped by `in_own_site`.\n- **Entry fields:** each entry holds the role, the file, and the selector of the node the reference belongs to, found with `outline.owner_at_line`. Plain-text files use the root node. An anchor contributes its file and selector. A fenced reference outside the book also contributes the whitespace-split words of its body, which follows the word rule.\n- **Encoding:** entries are sorted, so the digest does not depend on discovery order. Line numbers are never hashed. The encoding is length-prefixed and starts with an entry count, so it is unambiguous. The hash is SHA-256.\n\n**Recording.** `record` in src/authoring/mod.rs writes `\"references\": sources.reference_set`, and `prepare` computes that value. The `assess` test in src/authoring/mod.rs asserts the field, and the test in src/authoring/inputs.rs asserts it equals `reference_set_digest_for`.\n\n**Validation.**\n- **Staleness:** `validate_references` recomputes the digest and reports \"reference set changed\" when it differs from the recorded value.\n- **Malformed field:** `validate_evidence_file` rejects a `references` field that is missing, not a string, or not lowercase hex SHA-256.\n\n**Tests.**\n- **Edge changes:** `reference_set_digest_tracks_impl_and_test_edges_by_node` (src/evidence.rs) covers these cases:\n  - Determinism.\n  - Adding, removing, re-roling, or moving a reference to another node changes the digest.\n  - Line moves within a node, unrelated lines, and `{cite}` references leave it unchanged.\n  - Adding an anchor changes it.\n- **Fenced commentary and `{fixme}` edges:**\n  - `fenced_commentary_outside_the_book_contributes_to_the_reference_set` (tests/references.rs) shows that reflowing keeps the digest and editing the words changes it.\n  - `fixme_edges_and_their_bodies_are_part_of_the_reference_set` (tests/references.rs) covers the `{fixme}` cases. A `{fixme}`'s body and issue lines change the digest. Inline and unnamed `{fixme}` references do not.\n- **Stale evidence:** `validation_requires_a_current_reference_set_digest` (src/evidence.rs) shows that a new reference inside an already-covered node makes the evidence stale without any changed input hash. `batch_reauthors_a_false_judgment_when_its_reference_set_changes` (tests/authoring_batch.rs) and `editing_or_adding_a_fixme_makes_evidence_stale_or_uncovered` (tests/outcomes.rs) cover the same behavior end to end.\n- **`{fixme}` in a site:** `a_fixme_inside_a_site_belongs_to_that_sites_review_only` (src/sites.rs) shows that editing an in-site `{fixme}` leaves the digest unchanged, while editing a `{fixme}` outside a site changes it.\n\nNo test reorders references to check order independence directly. That property comes from the single `entries.sort()` call, so I did not count it as a gap.",
+  "references": "8012837b881b15bca5ad7c6b3baf848d204b3f148a59aa2061ae478ebe06f88b",
   "inputs": [
     {
       "requirements": "requirements.ci.reference_set",
@@ -226,11 +226,6 @@
     },
     {
       "file": "src/authoring/mod.rs",
-      "item": "fn[record]",
-      "hash": "a1cccad93fb78cc208e3c5b50c496b00eeee75347e7bf7ce40ce4acb550b2ada"
-    },
-    {
-      "file": "src/authoring/mod.rs",
       "item": "fn[assess]",
       "hash": "c216d8ae617afd028b13919a0143231867d37eddee5ce4b93a4093f6902fe469"
     },
@@ -246,21 +241,6 @@
     },
     {
       "file": "src/evidence.rs",
-      "item": "struct[SourceReference]",
-      "hash": "c052b078a69e126fdde7935f8f6437412da50c5611dc51667212bb571b390788"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "struct[ReferenceSetEntry]",
-      "hash": "1cade0bf6d72c2076106d5066d0e702d0bfa1f0c71b0d648edd6ec8bf074c1c8"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[reference_set_digest]",
-      "hash": "bf4ecee44b22c35aa92df3535e6d5b981ee81740ffff2d7b236a1d36c4c70343"
-    },
-    {
-      "file": "src/evidence.rs",
       "item": "fn[reference_set_digest_for]",
       "hash": "28fa1b0cda51c2f4b0230473f69c65ccd49e9874921d37cc80eb69889c7babd2"
     },
@@ -268,11 +248,6 @@
       "file": "src/evidence.rs",
       "item": "fn[validate_references]",
       "hash": "74c3f3a7296b55c1ec33e7b39dbaad0860295866eef2ee856e18e26a46f754a3"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[stamp_reference_sets]",
-      "hash": "f73ee2fbdc73f41fe351ccfcafe42aa256b4cc37527ec673228c8d1e8dd82a3c"
     },
     {
       "file": "src/evidence.rs",
@@ -306,18 +281,8 @@
     },
     {
       "file": "tests/outcomes.rs",
-      "item": "fn[write_record]",
-      "hash": "674724c69adfae929c34fed7afc2586280266a035ca5fc26c8b0a0a7bb56b7e0"
-    },
-    {
-      "file": "tests/outcomes.rs",
       "item": "fn[editing_or_adding_a_fixme_makes_evidence_stale_or_uncovered]",
       "hash": "07e4d952f346f9009068957d683fb74eb11ac2bdb5155705d6980d89b773b7ac"
-    },
-    {
-      "file": "tests/references.rs",
-      "item": "fn[digest]",
-      "hash": "c7a38f4e53d32fdea380463389798cb21ac586fd97c61f278d20d59022e05ff3"
     },
     {
       "file": "tests/references.rs",
@@ -328,6 +293,26 @@
       "file": "tests/references.rs",
       "item": "fn[fixme_edges_and_their_bodies_are_part_of_the_reference_set]",
       "hash": "5cd8917c5dda351fb65006abfa09fdebd017d67799db06be28eae452096d05c5"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "struct[SourceReference]",
+      "hash": "c052b078a69e126fdde7935f8f6437412da50c5611dc51667212bb571b390788"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "impl[SourceReference]",
+      "hash": "1fc53c2bcba25c21b5e5677d2df9f4653bbd292d1d101a5fa75917e31070f0f0"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "struct[ReferenceSetEntry]",
+      "hash": "1cade0bf6d72c2076106d5066d0e702d0bfa1f0c71b0d648edd6ec8bf074c1c8"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[reference_set_digest]",
+      "hash": "bf4ecee44b22c35aa92df3535e6d5b981ee81740ffff2d7b236a1d36c4c70343"
     }
   ]
 }

@@ -1,8 +1,8 @@
 {
   "requirement": "A site review under {cite}`requirements.references.site_review` MUST use the\nsame tools and exactly-once submission rule as other assessments, except that\n`submit_judgment` MUST also require an `applies: Boolean` field, recorded as the\nreview's `applies`; a submission with `applies` false and a determination other\nthan `true` MUST be invalid. It MUST use this prompt, replacing\n`{{requirement_name}}`, `{{site_file}}`, `{{site_selector}}`, `{{matches}}` (a\nJSON array giving, for each query match at the site, the query's kind, `sites`\nor `violations`, its name, and the match's line range, and for a violation\nmatch its matched source text),\n`{{habeas_background}}` under {cite}`requirements.authoring.habeas_background`,\n`{{distributed_background}}` under\n{cite}`requirements.authoring.habeas_background`, `{{judgment_rules}}` under\n{cite}`requirements.authoring.judgment_rules`, and\n`{{mandatory_inputs}}`, the first block as its system prompt and the second as\nits subject message under {cite}`requirements.authoring.prompt_parts`:\n\n```text\n# Task\n\nReview one site of a distributed requirement. Your determination should be the\none any careful reviewer would reach from the same text and sources.\n\n# Background: Habeas terms\n\n{{habeas_background}}\n\n{{distributed_background}}\n\n# Your task\n\nThe mandatory inputs at the end contain the site, the requirement, and the\ndeclarations it cites.\n\nThe requirement may also state obligations that particular code carries out;\nthose, and the requirement's tests, are assessed with the requirement, not here.\nA site needs no {impl} or {test} reference and no tests of its own. Do not\nassess the site against other requirements, and do not assess the queries, the\nsite's callers, or other sites.\n\n1. Decide applies from the requirement's text describing its sites, not from\n   which query matched; a violation match alone does not make the requirement\n   apply. Read the site's callers only when its own code does not settle whether\n   the text describes it. Set applies to true when the best-supported reading of\n   that text, or one its wording supports equally well, governs the site.\n   Otherwise set applies to false and determination to true, and explain in your\n   rationale why the requirement does not apply.\n2. If applies is true, judge the site: each obligation the requirement states\n   for its sites that the site does not meet is a gap. Violation matches are\n   leads, not verdicts: judge each one listed above, saying whether it breaks\n   the requirement here and why, but a match may be harmless and the site may\n   break the requirement without one.\n3. Follow code the site calls only as far as needed to decide the site's\n   behavior under the requirement, and do not judge that code on its own\n   account.\n\n# How to judge\n\n{{judgment_rules}}\n\n# Submitting\n\nChoose true when your task finds no gap, {\"FIXME\": [\"...\"]} when every gap is\nacknowledged, and false otherwise. Call submit_judgment exactly once with\napplies, determination, and rationale. That tool call is your final answer.\n```\n\n```text\n# Subject\n\nSite under review: {{site_file}} {{site_selector}}\nRequirement: {{requirement_name}}\nMatches: {{matches}}\nJudge against: the obligations the requirement states for each of its sites.\n\n# Mandatory inputs\n\n{{mandatory_inputs}}\n```",
   "determination": true,
-  "rationale": "I found no gaps. Every obligation in `requirements.authoring.site_prompt` has implementing code and a test.\n\n**Obligations and the code that carries them out**\n- **Same tools, plus `applies`.** `tool_definitions_with(submit, site)` in `src/authoring/mod.rs` starts from the shared `tools::definitions()` and the usual `submit_judgment` schema. For a site review it adds an `applies` boolean property and appends `applies` to `required`. `assess` passes `(\"submit_judgment\", true)` for `AssessmentKind::Site`.\n- **Exactly-once submission rule.** `assess` goes through the same `converse` function as the other assessments. The only difference is that it passes `site_submission` as the parser.\n- **`applies` recorded.** `assess` returns `Some(applies)`, and `record()` writes it as `\"applies\"` in the site review record.\n- **`applies` false with a determination other than `true` is invalid.** `site_submission` (`src/authoring/mod.rs`) returns an error when `!applies && judgment != Judgment::True`. It also requires exactly the three fields and a boolean `applies`.\n- **Prompt text and its two blocks.**\n  - `approved_text(\"site_prompt\", 0/1)` reads the code blocks straight from `md/requirements/authoring.md`. `Prompt::filled` fills the first block as the system prompt and the second as the subject message.\n  - `Prompt::request` sends the system block as the preamble and the subject block as the user message.\n  - `fill` replaces `{{name}}` placeholders in a single pass.\n- **Placeholders replaced.** In the `AssessmentKind::Site` arm of `initial_prompt`:\n  - `requirement_name`, `site_file`, `site_selector` (with `<root>` for the root node), `matches` and `distributed_background` are filled there.\n  - `habeas_background` and `judgment_rules` come from `shared_blocks()`.\n  - `mandatory_inputs` is added before the match on the subject kind.\n  - The site prompt has no `{{reference_roles}}` placeholder, and the reference roles are not sent.\n- **`matches` content.** `SiteItem::matches_value` (`src/sites.rs`) emits, for each match, `kind` (`sites` or `violations`), `query`, `line_start` and `line_end`. For violation matches only, it adds `text`, redacted.\n- **Subject-dependent values only in the subject message.** The system block contains no subject-dependent placeholders. The test below checks this.\n\n**Tests**\n- `site_reviews_use_their_prompt_and_record_applies_and_the_site` checks the following:\n  - The subject message equals the filled second block.\n  - The system heading, the habeas background, the distributed background and the judgment rules reach the model.\n  - The reference roles are absent from the site prompt.\n  - No `{{` placeholder is left unfilled.\n  - `submit_judgment` has the required fields `[\"determination\",\"rationale\",\"applies\"]`.\n  - The record carries `applies`.\n- `site_submissions_require_applies_and_a_true_determination_when_it_is_false` covers `applies` false with `true`, `false` and FIXME determinations. It also covers a missing `applies`, a non-boolean `applies`, and an extra field.\n- `violation_text_reaches_the_model_redacted` (`src/sites.rs`) covers the `matches` format, including violation text being included and redacted and site matches having no `text`.\n- `subjects_of_one_kind_share_a_byte_identical_system_prompt` covers the system prompt being identical across sites and the subject message starting with `# Subject`.\n\nThere is no unspecified extra behavior in the `{impl}` code, and no `{fixme}` is involved.",
-  "references": "90077ce7894a2a5fe24d9079d2cbc0b645fef0ed8205750c98c00c9be562b660",
+  "rationale": "I found no gaps. Every obligation in `requirements.authoring.site_prompt` has implementing code reachable from a marked item and a test that asserts its outcome.\n\n**Obligations, code and tests**\n\n1. **Same tools and exactly-once submission as other assessments.**\n   - Code: `assess` (src/authoring/mod.rs) calls the shared `converse` for site reviews, as it does for other kinds. `converse` sends `tool_definitions_with(submit, site)`, which starts from `tools::definitions()`. It rejects zero submissions and more than one.\n   - Test: `site_reviews_use_their_prompt_and_record_applies_and_the_site` runs a full site conversation and asserts the `submit_judgment` tool is offered.\n\n2. **`submit_judgment` MUST also require an `applies: Boolean` field.**\n   - Code: `tool_definitions_with` adds `properties.applies = {type: boolean}` and appends `\"applies\"` to `required` when `site` is true. `site_submission` requires exactly three keys, with `applies` present and a boolean.\n   - Test: the site-review test above asserts `required == [\"determination\",\"rationale\",\"applies\"]`. `site_submissions_require_applies_and_a_true_determination_when_it_is_false` checks the missing, non-boolean and extra-key cases.\n\n3. **`applies` recorded as the review's `applies`.**\n   - Code: `assess` passes `Some(applies)` to `record`, which writes `\"applies\"` into the site record.\n   - Test: the site-review test asserts `record[\"applies\"] == true`. It also asserts that the record passes `validate_repository` for its site.\n\n4. **`applies` false with a determination other than `true` MUST be invalid.**\n   - Code: `site_submission` returns an error when `!applies && judgment != Judgment::True`.\n   - Test: `site_submissions_require_applies_and_a_true_determination_when_it_is_false` asserts that `applies: false` with `false` and with `{\"FIXME\": …}` are both rejected. It also asserts that `applies: false` with `true` is accepted.\n\n5. **Placeholder replacement and prompt blocks.**\n   - Code: `initial_prompt` handles `AssessmentKind::Site`.\n     - It fills `requirement_name`, `site_file`, `site_selector` (`<root>` for the root) and `matches`.\n     - It adds `distributed_background`, and `habeas_background` and `judgment_rules` through `shared_blocks`.\n     - It adds `mandatory_inputs`.\n     - `Prompt::filled(\"site_prompt\")` fills block 0 as the system prompt and block 1 as the subject message. Both come from the requirement text itself, via `approved_text` on authoring.md.\n     - `matches_value` in src/sites.rs gives each match's kind (`sites` or `violations`), query name, `line_start` and `line_end`. For violation matches only, it adds the match text, redacted.\n   - Tests:\n     - The site-review test compares the subject message to the expected fill and checks that the system prompt contains the heading, `habeas_background`, `distributed_background` and `judgment_rules`. It checks that no reference-roles block is present and that no `{{` placeholder is left.\n     - `violation_text_reaches_the_model_redacted` (src/sites.rs) checks the `matches` shape, including that violation text is included and sites match text is not.\n     - `subjects_of_one_kind_share_a_byte_identical_system_prompt` checks that two site subjects get an identical system prompt, with the subject-dependent values in the subject message.\n\n**Reachability and unspecified behavior.** The code is reachable from the `{impl}` items `initial_prompt`, `site_submission`, `tool_definitions_with` and `prepare_site`. I saw no unspecified extra behavior: the extra `fixmes` field in the record belongs to `requirements.references.site_review`.",
+  "references": "fd0cd83fc17846f9c3d537cfc4ea54be3efa30d9bad5f287d0398d8478e6b6af",
   "inputs": [
     {
       "requirements": "requirements.authoring.site_prompt",
@@ -188,7 +188,12 @@
         "  implementing it. A requirement stating a convention for every output of a",
         "  kind, such as every validation error, is implemented by the code that carries",
         "  out the convention as a whole, not by each item that produces one such output.",
-        "  A site of a distributed requirement needs no reference to it for being a site.",
+        "  Only a root needs the reference: an item that no other item marked {impl}",
+        "  for the same requirement reaches. Code a reviewer reaches by following a",
+        "  marked item, through what it calls, the types it uses, or the implementations",
+        "  of trait methods it calls, needs none; nor does a test helper reached from a",
+        "  test marked {test}. A site of a",
+        "  distributed requirement needs no reference to it for being a site.",
         "- {test}: the source is a test or test helper designed to verify behavior the",
         "  requirement or example specifies.",
         "- {cite}: the source relies on or refers to the requirement or example, and",
@@ -227,9 +232,10 @@
         "",
         "```text",
         "- Base every conclusion only on source code you have read: the items in the",
-        "  mandatory inputs, or items you read with the habeas tool, ripgrep, or",
-        "  ast_grep; outline, list_files, and references only locate items. Comments",
-        "  state intent; check the behavior in the code itself.",
+        "  mandatory inputs, or items you read with the habeas tool. ripgrep, ast_grep,",
+        "  outline, list_files, and references only locate items; read any item whose",
+        "  code your conclusion relies on. Comments state intent; check the behavior in",
+        "  the code itself.",
         "- Judge only against the text your task names. Report a gap only where your task",
         "  or these rules define one, for a specific item you have read, giving its",
         "  location. Missing code or tests for an obligation is a gap only after you have",
@@ -288,13 +294,8 @@
     },
     {
       "file": "src/authoring/mod.rs",
-      "item": "impl[Prompt]/fn[filled]",
-      "hash": "206fa7fa4e239307c5c77808717c22494e936dd2bdef12e8a2a8479a1a852c56"
-    },
-    {
-      "file": "src/authoring/mod.rs",
       "item": "fn[initial_prompt]",
-      "hash": "e18a20a9ce82743cf96cc070647075882dd29c6192f727077c3b87ff383c8717"
+      "hash": "587ce8609b4b710048cf88c56cc5b38047e867f607c5683331b9695b08187abf"
     },
     {
       "file": "src/authoring/mod.rs",
@@ -304,7 +305,7 @@
     {
       "file": "src/authoring/mod.rs",
       "item": "fn[tool_definitions_with]",
-      "hash": "4d1b21bea2fc8ede008bdcb50401e7055d4b0d86b386c69798e21a8cfed435c9"
+      "hash": "d8283ae52c3ec99e06c076f74330b68c4105c6e55992f5e0eb078b3ea74b3023"
     },
     {
       "file": "src/authoring/mod.rs",
@@ -323,28 +324,8 @@
     },
     {
       "file": "src/sites.rs",
-      "item": "struct[SiteMatch]",
-      "hash": "e737f63d7a9a64936be0617e1f264ced5afb5878ffa16ba83df13c1b27ff846f"
-    },
-    {
-      "file": "src/sites.rs",
-      "item": "impl[SiteItem]/fn[selector_label]",
-      "hash": "2eb0719e05cfb5224df9ac8c9013217e8d3157db47321c96f0f3e20bdf7e12fb"
-    },
-    {
-      "file": "src/sites.rs",
-      "item": "impl[SiteItem]/fn[matches_value]",
-      "hash": "2520aad15de8dbb9447637803863731e5079219f41f200fad8d8a61945b862f3"
-    },
-    {
-      "file": "src/sites.rs",
       "item": "mod[tests]/fn[violation_text_reaches_the_model_redacted]",
       "hash": "aab92c42775eb2660be4cd297ab796a7deb48e7891d15977cdfaf72e20b17322"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "impl[AssessmentSources]/fn[prepare_citation]",
-      "hash": "249aff3e790b0d413c6aa7ac93da2b61087d7aae4240e9f500e9833327edba79"
     },
     {
       "file": "src/authoring/mod.rs",
@@ -373,6 +354,16 @@
     },
     {
       "file": "src/authoring/mod.rs",
+      "item": "fn[subject_task]",
+      "hash": "209d9cc6c0f3241b6db6ad0e3a1290ededd9c57123d314d4b162b980e77a31c5"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "fn[distributed_task]",
+      "hash": "7f0686d3f19b00d9518ce440e8a345617da601a9f1148c287786de4ad13ddf59"
+    },
+    {
+      "file": "src/authoring/mod.rs",
       "item": "struct[Prompt]",
       "hash": "26992fd599d0736e233b62c0fd40f5dadf4499391aead30f3a9d837bb5dd7f07"
     },
@@ -388,28 +379,63 @@
     },
     {
       "file": "src/authoring/mod.rs",
+      "item": "fn[review_instructions]",
+      "hash": "b634c139e14b044aaa5dcc2fa2f14e0f1cd462c5656448a2a45a629099cfcf20"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "const[SITE_STEP]",
+      "hash": "9bce1e171027f1a73bac598b3f91a61973c946aa90889ab507ba4d2914db53b7"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "fn[verification_prompt]",
+      "hash": "0eea8cc79444eab7109b1e903a14da3f2b1e8af47128b79004b6a779c510dc30"
+    },
+    {
+      "file": "src/authoring/mod.rs",
       "item": "fn[submission]",
       "hash": "3f4acd1d1c636179b58366914e69d8b699355c761c96b5b2842314d8d7da1860"
     },
     {
       "file": "src/authoring/mod.rs",
-      "item": "fn[site_verification]",
-      "hash": "035a9829a1308f4b71850e9063f037267f1e6b5ed11093bef9b75f5fd3ad3ab2"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "fn[tool_definitions]",
-      "hash": "ff1be9983df9df2bd5532de54ef0de8e84f6e3315fbdf3534e1aba5f3b1cfb1f"
+      "item": "struct[Verification]",
+      "hash": "1d28e86930671369c184376a61d98a94accc90f6c0545614ce27ff0926c52128"
     },
     {
       "file": "src/authoring/mod.rs",
       "item": "fn[record]",
-      "hash": "a1cccad93fb78cc208e3c5b50c496b00eeee75347e7bf7ce40ce4acb550b2ada"
+      "hash": "b3e39d525c271a4850dcc6f048ce837f762ee39adb73506b516c8c72a939ec16"
     },
     {
       "file": "src/authoring/mod.rs",
       "item": "fn[assess]",
       "hash": "c216d8ae617afd028b13919a0143231867d37eddee5ce4b93a4093f6902fe469"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "fn[verify]",
+      "hash": "6a5a6ffe969e3b4d5c1d9bce32e4d92c0e3e386c3190e6419eb2bbd77dd16dd2"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "fn[converse]",
+      "hash": "12de6c27434f14d49e79ec0263ff0125433eb77c29d4aa8114fbbde5541b1cff"
+    },
+    {
+      "file": "src/sites.rs",
+      "item": "impl[SiteItem]/fn[queries]",
+      "hash": "07137fd8c94b2201eb7866af96c48295fea8c533470e3c877e08c2779d5a5964"
+    },
+    {
+      "file": "src/sites.rs",
+      "item": "impl[SiteItem]/fn[matches_value]",
+      "hash": "2520aad15de8dbb9447637803863731e5079219f41f200fad8d8a61945b862f3"
+    },
+    {
+      "file": "src/sites.rs",
+      "item": "impl[SiteItem]/fn[contains]",
+      "hash": "80e5097cf652abad9d9b351c2acb3d987574e438f2400627c0627324aaffcbae"
     }
   ]
 }

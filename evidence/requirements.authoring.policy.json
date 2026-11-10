@@ -1,7 +1,7 @@
 {
   "requirement": "Every `habeas author` form MUST assess its subjects under an assessment policy,\n`confirm` or `once`. The policy MUST come from `--policy <name>` when given,\notherwise from the selected configuration's `policy`, and otherwise MUST be\n`confirm`. Under `confirm`, each subject MUST be assessed as\n{cite}`requirements.authoring.confirmation` specifies. Under `once`, each subject\nMUST receive a single assessment, whose result is recorded; it uses fewer tokens\nand less time, such as with a slow local model. An unknown policy name MUST be\nrejected as invalid configuration or arguments. The completion report MUST name\nthe policy used, and each usage record MUST identify it.",
   "determination": true,
-  "rationale": "I found no gaps. Each obligation has marked code and a test.\n\n**Policy resolution (flag, then configuration, then `confirm`)**\n- Code: `AssessmentPolicy` in `src/config.rs` has the `Confirm` default and a lowercase serde form. `ResolvedAuthoringConfig::effective_policy` computes `explicit.or(self.policy).unwrap_or_default()`.\n- The `Command::Author` `--policy` option in `src/main.rs` is passed into `AuthoringOptions`.\n- Both entry points apply it. `configured_assessment` handles the single-subject form and `run_batch` handles `--all` and `sites:`. Citation reviews run through the same batch path.\n- Tests: `policy_comes_from_the_flag_then_the_configuration_then_defaults_to_confirm` in `tests/authoring_batch.rs` covers all four sources and precedence cases. `authoring_policy_defaults_to_confirm_and_round_trips` in `tests/configuration.rs` covers `effective_policy` and the serialized form.\n\n**`confirm` assesses as the confirmation requirement specifies**\n- `assess_subject` in `src/authoring/mod.rs` runs the second conversation and, when they disagree, the third. This obligation defers to `requirements.authoring.confirmation`, which I did not reassess.\n- The same test shows `confirm` produces 2 conversations. `confirm_runs_a_second_assessment_with_its_own_usage_record` and `confirm_with_all_runs_a_second_assessment_for_each_batch_subject` cover the single and `--all` forms.\n\n**`once` makes a single recorded assessment**\n- Code: `assess_subject` returns the first result immediately when `policy == AssessmentPolicy::Once`.\n- Test: the policy test asserts exactly 1 conversation for the `once` cases, from both the flag and the configuration.\n\n**Unknown policy name is rejected as invalid arguments or configuration**\n- Code: `AssessmentPolicy::from_str` returns an error for an unknown name, and clap uses it for `--policy`. Serde deserialization of the enum rejects an unknown value in the configuration.\n- Tests: the `--policy twice` case, the configured `'twice'` case for both the single and `--all` forms, and no model requests made. `tests/configuration.rs` also checks that `'twice'`, `'Confirm'` and `true` fail to parse.\n\n**Completion report names the policy**\n- Code: `main.rs` prints `; policy {policy}` in the single-subject summary and in the batch summary from `BatchOutcome.policy`. `run_batch` also prints the policy in its start line.\n- Tests: the single-subject case asserts `; policy {expected}`. The batch case asserts the exact line `6 authored; 0 skipped as current; 0 failed; policy once`.\n- When nothing is assessed (everything current), the batch summary omits the policy. No policy was used then, and no configuration is resolved, so I don't count this as a gap.\n\n**Each usage record identifies the policy**\n- Code: `UsageRecord.policy` in `src/authoring/usage.rs` is set in `configured_record`. `followup_log` copies it into the second and third conversations' records.\n- Test: the policy test asserts that every usage record produced for each run has `policy == expected`, with the right number of records for each policy.\n\nThe `sites:` form reuses `run_batch`, so it has no separate policy path.",
+  "rationale": "I found no gap in the code or tests for `requirements.authoring.policy`.\n\n**Obligations and the code that carries them out**\n- **Every `author` form assesses under a policy.** `main.rs` `Command::Author` passes `--policy` into `AuthoringOptions` for the single-subject, `--all` and `sites:` forms.\n  - The batch path is `author_all_with_options` → `run_batch`, which calls `config.effective_policy(options.policy)`.\n  - The single-subject path is `author_evidence_with_options` → `configured_assessment`, which also calls `effective_policy`.\n  - Both hand the policy to `configured_record` and then `assess_subject`.\n- **Policy source: `--policy`, then the configuration, then `confirm`.** `ResolvedAuthoringConfig::effective_policy` is `explicit.or(self.policy).unwrap_or_default()`, and `AssessmentPolicy` defaults to `Confirm`. `AuthoringConfig.policy` is the config field, and `AuthoringOptions.policy` carries the flag.\n- **`confirm` follows the confirmation requirement.** `assess_subject` runs a second conversation and, if the two disagree, a verification conversation. It does this only when the policy is not `Once` and the first result is not `false`. That confirmation logic is the cited requirement's own and was not reassessed here.\n- **`once` records a single assessment.** `assess_subject` returns the first assessment when `policy == AssessmentPolicy::Once`.\n- **An unknown policy name is rejected.** `AssessmentPolicy::from_str` returns \"unknown assessment policy …\" for the flag. The serde `lowercase` enum rejects it in the configuration.\n- **The completion report names the policy.**\n  - `main.rs` prints `; policy {policy}` in the batch summary, taken from `outcome.policy`, which `run_batch` sets.\n  - It prints `policy {}` in the single-subject summary, taken from `AuthoringOutcome.policy`.\n  - `run_batch` also prints the policy in its start message.\n- **Each usage record identifies the policy.** `configured_record` sets `usage.record.policy`, and `followup_log` copies it into the second-assessment and verification records. `UsageRecord.policy` is serialized.\n\n**Tests**\n- `tests/authoring_batch.rs::policy_comes_from_the_flag_then_the_configuration_then_defaults_to_confirm` covers:\n  - the default `confirm` with 2 conversations;\n  - `--policy once` with 1 conversation;\n  - the flag overriding the configuration in both directions;\n  - the configuration's `once`;\n  - the report naming the policy for single-subject and `--all` runs;\n  - every new usage record carrying the policy;\n  - an unknown `--policy` value rejected;\n  - an unknown configuration value rejected, for both single-subject and `--all`, before any request.\n- `tests/configuration.rs::authoring_policy_defaults_to_confirm_and_round_trips` covers the precedence in `effective_policy`, serialization round-tripping, `FromStr` and `Display`, and rejection of invalid values in the configuration.\n\n**Considered and not a gap**\n- Coverage-loss review usage records (`coverage_loss::review`) set no `policy`. A coverage-loss review is a single conversation about a replaced record's item. It is not one of the subject assessments the policy governs, so I read \"each usage record\" as covering the subject assessments' records.\n- A `--missing` run that skips a current record uses no model, so there is no policy to name.",
   "references": "bf55453e7f3835daba2d8a6c957834ed4600c710788af094b298831a88d3aaa0",
   "inputs": [
     {
@@ -53,7 +53,7 @@
     {
       "file": "src/authoring/batch.rs",
       "item": "struct[BatchOutcome]",
-      "hash": "a2592b96b081eadccd140aa6d436e8b4f7c205047382f0840a9709d5c27c736e"
+      "hash": "240bf5e070bac2680af0e845c49a48514a2edd647c6a8c605d13eb27bc20663e"
     },
     {
       "file": "src/authoring/batch.rs",
@@ -63,12 +63,12 @@
     {
       "file": "src/authoring/batch.rs",
       "item": "fn[run_batch]",
-      "hash": "0b8ea9a87bf1c8632a3e2944b4a24027f4df953902bb0d3f30d0e16d46779a29"
+      "hash": "20e4f35b99f63811252bda542d2e93c05e7f3cb8ffdf0b2160da49ace25f2636"
     },
     {
       "file": "src/authoring/mod.rs",
       "item": "struct[AuthoringOutcome]",
-      "hash": "ca3864f602515f1057f3adbb3c98dc24d9ed6249138ae2ec05e8c6dffb8e92d8"
+      "hash": "786d92615eac759e21383402ad7e9b48c51c061d6034bbf0944be202408175c7"
     },
     {
       "file": "src/authoring/mod.rs",
@@ -83,17 +83,17 @@
     {
       "file": "src/authoring/mod.rs",
       "item": "fn[prepare_assessment]",
-      "hash": "e186d250a7d7946631e1f4b942654657f6ebf9d8d270889cb0583065b7e08752"
+      "hash": "a73c4a12583a3f3c00f14bf3e33ee95f270dfe0543fc39dd6a674ed0057e4250"
     },
     {
       "file": "src/authoring/mod.rs",
       "item": "fn[configured_assessment]",
-      "hash": "ca2a3f3c24f0899ba8e1cbc1cff6bd0c36dbc5561a73be25c66f054b04d1f5be"
+      "hash": "6dafc32ab2a9aa52d232753ab1fb559697fc4bd8c4219cbc59c581b759cbb86f"
     },
     {
       "file": "src/authoring/mod.rs",
       "item": "fn[configured_record]",
-      "hash": "ef2ef1e0f38ab140265308f4f66046f8830bdaa9364b0fc71a8ed8a861c28db8"
+      "hash": "53f7e17d3dc1d00bf7fceeb70c1003f4b51381ee4be2d97466da338d42d99f58"
     },
     {
       "file": "src/authoring/mod.rs",
@@ -153,7 +153,7 @@
     {
       "file": "src/main.rs",
       "item": "fn[main]",
-      "hash": "b80c1755ddd2f03f73839c71f01b1177146dcc83310183bd29ba90c426a72f2c"
+      "hash": "868ad3db215d07150b0a0c3b700e5e8da9d49bd6b4a4101ed0f258a7ab4109d6"
     },
     {
       "file": "tests/authoring_batch.rs",
@@ -166,99 +166,113 @@
       "hash": "2eca52c3ce61a8081a91c5eeb130769273d5c12332337df1cdf6125a61b124bb"
     },
     {
-      "file": "src/authoring/access.rs",
-      "item": "impl[PathPolicy]/fn[check_disallow]",
-      "hash": "cd6d3d914a9da2f58116fbbbce20e2e5f89eb02a3c2a73eed083dba8c9d24589"
+      "file": "src/authoring/coverage_loss.rs",
+      "item": "fn[submission]",
+      "hash": "751cab59d7490b91edf53b6075241ada515dd4f525941f999e5127f48d6629af"
     },
     {
-      "file": "src/authoring/access.rs",
-      "item": "struct[SourceAccess]",
-      "hash": "0391484a788006167b470a88094e4eb6a0c4d8dd96a8fe51df087021928006e6"
+      "file": "src/authoring/coverage_loss.rs",
+      "item": "fn[review]",
+      "hash": "ae060e648696bef4b96d1852118ec12ae6a338664327ebb44a782d7cbba3f40f"
     },
     {
-      "file": "src/authoring/access.rs",
-      "item": "impl[SourceAccess]/fn[load]",
-      "hash": "0506d2909787bf76d7b35644037013d3528b765387c41936113b696c2c339aaa"
+      "file": "src/authoring/coverage_loss.rs",
+      "item": "fn[result_path]",
+      "hash": "56c6c9807c48a537f8baccd40229c8fb8e2aa92f32e303015f6b4711f7733c9a"
     },
     {
-      "file": "src/authoring/access.rs",
-      "item": "impl[SourceAccess]/fn[path]",
-      "hash": "0150396844273da1aa3e490d9555b75ce3d48d31e49955e22bf209ba9e82f5b9"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "impl[SourceAccess]/fn[omit_generated_evidence]",
-      "hash": "fbe332f0aadcbd5a242be70fdf733e8dd91a384206174d6f45941bf4d30464f2"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "impl[SourceAccess]/fn[has_source_under]",
-      "hash": "5cd20bff921efc9e95b0522656f46f470541445339c2724d6622135be35168a6"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "impl[SourceAccess]/fn[extra_roots]",
-      "hash": "dd2943dd0a21f08f25c0a2dfb3540b5d18e0ee1415ae6efdba20e34c62a21ad2"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "struct[DiscoverySources]",
-      "hash": "d41ede64ceca6cda2eedddc6f88391e3b8f5a84145ae93206993582d0e5b6bc5"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "impl[DiscoverySources]/fn[load]",
-      "hash": "56207181948908057dd7fc60fb1b8920bb421d522f64b255914bf4c95eb0ed67"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "impl[DiscoverySources]/fn[considers]",
-      "hash": "a6f20995e472ab624000c4900d7026807fef17837fb9cbe1c2816d6509dfa8e7"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "struct[OutsideProject]",
-      "hash": "a39110b420c9d60137437420603681a78dab255826c42bb3abf75fe150e80888"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "struct[PolicyDenial]",
-      "hash": "d978d7071e3dc1426fb83069c97767038dc86a9d1777183a498fe1051cd34e0e"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "fn[recoverable_os_denial]",
-      "hash": "fae2c51d8a39059ef6c6eb68c3518216c2e1f83c2982f3b83fc68be89b37db56"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "fn[resolve_evidence_file]",
-      "hash": "9418006962cb9105a2ab4972bf23159a668c8b08d8994df21d81362cf800473b"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "mod[tests]/fn[policy_resolves_symlinks_before_parent_components_without_allowing_wrong_subtrees]",
-      "hash": "2f2d8e111030ceb4fe779808eb183f8865ca9106498fbabc52491a9b61890fff"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "const[DISAGREEMENT_NOTE]",
-      "hash": "7e1e8ef3f943610413af785c2c30f69f62292b01d7fcb2f4c9a77566461142df"
-    },
-    {
-      "file": "src/authoring/batch.rs",
-      "item": "fn[author_sites_with_options]",
-      "hash": "6e7344c480582c07c88d0cba1a89895dc9457a0553f7830e6a87922a391ccc84"
-    },
-    {
-      "file": "tests/authoring_batch.rs",
-      "item": "fn[confirm_runs_a_second_assessment_with_its_own_usage_record]",
-      "hash": "0f9626cebdda1ddd01edf8bd95d0f38b88875600bfc5bd4888c2b9734be7adce"
-    },
-    {
-      "file": "tests/authoring_batch.rs",
-      "item": "fn[confirm_with_all_runs_a_second_assessment_for_each_batch_subject]",
-      "hash": "e423b22d139b7e2d2f83d2fd74643c8f9dd0b42f797291ea615994037e6daa5c"
+      "requirements": "requirements.authoring.coverage_loss",
+      "matches": [
+        "requirements.authoring.coverage_loss"
+      ],
+      "text": [
+        ":::{req} coverage_loss",
+        "When authoring replaces a record and an item that its previous inputs covered",
+        "under {cite}`requirements.references.rust_item_coverage` is no longer covered,",
+        "the harness MUST assess that item in a coverage-loss review: an independent",
+        "conversation with the same source tools, whose mandatory inputs are the item's",
+        "outline node and the declarations of the requirements and examples whose",
+        "previous records read it, and whose prompt gives each such record's rationale.",
+        "The reviewer MUST submit, for each of those definitions, whether the item is a",
+        "root of its implementation or is not needed for it, with a nonempty rationale:",
+        "a root when the item carries out part of the definition under",
+        "{cite}`requirements.references.procedure`, even when an item marked `{impl}`",
+        "for it reaches the item, and not needed otherwise. The result MUST NOT be",
+        "evidence: authoring MUST report it, and `habeas status` MUST show the latest",
+        "result beside the uncovered item until the item is covered again.",
+        "",
+        "The review MUST use this prompt, the first block as its system prompt and the",
+        "second as its subject message under {cite}`requirements.authoring.prompt_parts`,",
+        "replacing `{{habeas_background}}` and `{{reference_roles}}` under",
+        "{cite}`requirements.authoring.habeas_background`, `{{judgment_rules}}` under",
+        "{cite}`requirements.authoring.judgment_rules`, `{{item_file}}` and",
+        "`{{item_selector}}` (with `<root>` for the root node), `{{definitions}}` with",
+        "the definitions' full names as a JSON array, `{{rationales}}` with a `## <full",
+        "name>` heading and the redacted earlier rationale for each, and",
+        "`{{mandatory_inputs}}`:",
+        "",
+        "```text",
+        "# Task",
+        "",
+        "Review one source item that earlier assessments read but that nothing covers",
+        "any longer. Your finding for each definition should be the one any careful",
+        "reviewer would reach from the same text and sources.",
+        "",
+        "# Background: Habeas terms",
+        "",
+        "{{habeas_background}}",
+        "",
+        "{{reference_roles}}",
+        "",
+        "# Your task",
+        "",
+        "The mandatory inputs at the end contain the item and the declarations of the",
+        "requirements and examples whose earlier assessments read it. Those assessments",
+        "have been replaced by ones that did not read the item, and it carries no",
+        "reference of its own, so validation reports it uncovered. For each listed",
+        "definition, decide whether the item is a root of the definition's",
+        "implementation or is not needed for it.",
+        "",
+        "1. Read the earlier rationale given for the definition to see what the",
+        "   assessment relied on the item for.",
+        "2. Decide whether the item carries out part of the definition, as the",
+        "   reference roles describe. Read the items marked {impl} for the definition,",
+        "   found with the references tool, and the code they reach, only as far as",
+        "   needed to decide this.",
+        "3. The item is a root if it carries out part of the definition, even when a",
+        "   marked item reaches it: the earlier read shows a review relied on it, and",
+        "   being reached did not keep it covered. Otherwise it is not needed for the",
+        "   definition.",
+        "4. In each rationale, say what part of the definition the item carries out,",
+        "   or why it carries out none, with source locations.",
+        "",
+        "# How to judge",
+        "",
+        "{{judgment_rules}}",
+        "",
+        "# Submitting",
+        "",
+        "Call submit_coverage_review exactly once with findings: one entry for each",
+        "listed definition, with definition (its full name), finding (\"root\" or",
+        "\"not needed\"), and a nonempty rationale. That tool call is your final answer.",
+        "```",
+        "",
+        "```text",
+        "# Subject",
+        "",
+        "Item under review: {{item_file}} {{item_selector}}",
+        "Definitions to decide: {{definitions}}",
+        "",
+        "# Earlier rationales",
+        "",
+        "{{rationales}}",
+        "",
+        "# Mandatory inputs",
+        "",
+        "{{mandatory_inputs}}",
+        "```",
+        ":::"
+      ]
     }
   ]
 }

@@ -1,7 +1,7 @@
 {
   "requirement": "An operation MUST load user configuration only when its requirements call for\nuser settings. A missing user file MUST represent absent user configuration;\nwhether the operation can proceed MUST be defined by the feature. Loading MUST\nNOT create a file, repair malformed input, or supply an undocumented selection.\n\nWhen loading configuration, Habeas MUST report unreadable files, invalid TOML,\nunsupported user-file versions, unknown common keys, and invalid common field\ntypes. It MUST validate the feature sections used by that operation and report\ninvalid feature settings with the file and setting identified. Unknown keys in\nan explicitly documented provider-owned options map MUST follow that feature's\nvalidation rules.\n\nAn operation MUST NOT require or semantically validate configuration for a\nfeature it does not use. This isolation MUST NOT suppress TOML syntax errors in\na shared file that the operation otherwise needs to parse. In particular,\nordinary validation still requires a parseable `book.toml` while remaining\nindependent of authoring settings and the user configuration file. It MUST apply\nthe selected workspace's evidence path policy without loading its model clients\nor credentials.",
   "determination": true,
-  "rationale": "I found no gaps. I did not run the tests; this judgment rests on reading the implementing code and the listed tests.\n\n**Obligations and code**\n- **Load user configuration only when needed.**\n  - Only `resolve_authoring` calls `load_user_config` (`src/config.rs`), and only the authoring path (`configured_assessment` in `src/authoring/mod.rs`) calls `resolve_authoring`.\n  - `inspect_repository_with_progress` and `PathPolicy::load` load only `load_workspace_evidence`.\n  - `main` skips even that for `setup`, `hook`, `mdbook supports`, `status` and `info`.\n  - Tests: `ordinary_status_ignores_invalid_user_authoring_configuration` and `commands_without_evidence_inputs_ignore_an_invalid_workspace_file`. In `batch_fills_evidence_…`, `author --all` still succeeds with an invalid or missing user file when every record is current.\n- **A missing user file means absent configuration.** `load_user_config` maps `NotFound` to `Ok(None)`. `absent_and_minimal_configuration_are_distinct_and_read_only` asserts this.\n- **The feature defines whether the operation can proceed.** `resolve_authoring_with_workspace_from` returns the \"no authoring configuration\", \"no configuration selected\" and \"unknown configuration\" errors. `configurations_without_any_selection_report_how_to_choose_one` tests this.\n- **Loading does not create a file, repair input, or supply an undocumented selection.**\n  - The loaders only read.\n  - Selection follows explicit name, then project entry, then workspace default, then user default, and otherwise errors.\n  - `absent_and_minimal_…` and `unreadable_configuration_files_…` assert that no file is created and the original text is unchanged.\n- **Report unreadable files, invalid TOML, unsupported versions, unknown common keys and invalid common field types.**\n  - Unreadable files: `load_user_config` and `workspace_document` wrap read errors with the path.\n  - Invalid TOML: `parse_document` reports the file and position.\n  - Versions: `UserConfig::validate` and `validate_workspace_common` reject any version other than 1.\n  - Unknown common keys: `deny_unknown_fields` on the structs, plus `validate_workspace_common` for the workspace file.\n  - Invalid common field types: `decode`.\n  - Tests: `unreadable_configuration_files_…`, `invalid_schema_and_feature_values_…` and `workspace_diagnostics_identify_the_file_and_setting`.\n- **Validate the feature sections the operation uses, naming file and setting.**\n  - `UserAuthoringConfig::validate`, `BackendConfig::validate`, `WorkspaceConfig::validate` and `EvidenceConfig::validate` validate the sections, and `invalid()` formats `path: setting: message`.\n  - `load_workspace_evidence` decodes and validates only `[evidence]`.\n  - Tests: `storage_rules_reject_each_invalid_field_with_its_setting` and `evidence_configuration_ignores_unused_authoring_settings_…`.\n- **Provider-owned options map follows the feature's rules.** `BackendConfig::validate` iterates `self.options()` and rejects reserved keys (model, prompt, tools and similar) and non-finite values. The reserved-key cases and the nan/inf cases are tested.\n- **No requiring or semantic validation of unused features.**\n  - `load_workspace_evidence` does not validate the authoring section.\n  - `status_loads_nearest_workspace_file_without_validating_authoring` and `validation_checks_workspace_common_config_without_loading_unused_authoring_settings` test this: an invalid `[authoring]` table passes validation.\n- **Shared-file TOML syntax errors are not suppressed.** `workspace_document` always parses the shared file and applies `validate_workspace_common` before any feature decode. The same two tests also assert that a syntax error such as `version = [` is reported.\n- **Ordinary validation needs a parseable `book.toml`.**\n  - `book_source_dir` reports unreadable files, invalid TOML and wrong types.\n  - `book_source_defaults_only_when_absent_and_reports_invalid_configuration` tests this.\n  - Validation does not touch authoring settings or the user file, which the status tests above show.\n- **Apply the workspace evidence path policy without loading model clients or credentials.** `PathPolicy::load` and `resolve_evidence_file` use `load_workspace_evidence`, which only flags `contains_credentials` and does not load credentials. `evidence_configuration_ignores_unused_authoring_settings_and_detects_credentials` tests this.\n\nI found no extra unspecified behavior in the implementing code, and no implementing code or tests that lack a reference to the requirement.",
+  "rationale": "I found no gap in the code or tests for any obligation in `requirements.configuration.loading`.\n\n**Loading only when needed, and absent files**\n- `load_user_config` (`src/config.rs`) is reached only from `resolve_authoring`. The authoring path in `configured_assessment` is the only caller.\n- `load_user_config` returns `Ok(None)` on `NotFound`, so a missing user file is absent configuration. `resolve_authoring_with_workspace_from` then decides whether the operation can proceed. It reports \"no authoring configuration\" or \"no configuration selected\".\n- `batch_fills_evidence_…` (`tests/authoring_batch.rs`) runs `author --all` as a no-op with an invalid user file and with a missing one. Both succeed, so the user file is not loaded when no assessment needs it.\n- `absent_and_minimal_configuration_are_distinct_and_read_only` and `configurations_without_any_selection_report_how_to_choose_one` (`tests/configuration.rs`) cover the missing-file and no-selection cases.\n\n**No file creation, repair, or undocumented selection**\n- The loaders only read files.\n- The tests assert that the file is not created, that its text is unchanged after loading, and that the directory stays empty: `absent_and_minimal_…` and `unreadable_configuration_files_…`.\n- Selection comes only from an explicit name, a project entry, or a default. Otherwise it is an error.\n\n**Reporting problems when loading**\n- Unreadable files: `load_user_config` and `workspace_document` wrap the I/O error with the file path. `unreadable_configuration_files_are_reported_instead_of_skipped` covers a directory in place of a file and non-UTF-8 content.\n- Invalid TOML: `parse_document` reports the file and the line and column. `workspace_diagnostics_identify_the_file_and_setting` covers it.\n- Unsupported versions: `UserConfig::validate` and `validate_workspace_common` reject any version other than 1. The tests use `version = 2` and `version = '1'`.\n- Unknown common keys: `#[serde(deny_unknown_fields)]` on `UserConfig` and `WorkspaceConfig`, plus the top-level key check in `validate_workspace_common`. Tests cover `unknown = true`.\n- Invalid common field types: `decode` reports the file and setting.\n\n**Feature validation and provider options**\n- Feature sections are validated by `UserAuthoringConfig::validate`, `BackendConfig::validate` and `EvidenceConfig::validate`. Errors come from `invalid(path, setting, …)`, which names both the file and the setting.\n- `BackendConfig::validate` applies the feature's rules to the provider-owned `options` map: it rejects the reserved keys `model`, `prompt`, `tools` and similar, and rejects non-finite values.\n- `storage_rules_reject_each_invalid_field_with_its_setting` tests this for every reserved key.\n\n**Isolation**\n- `load_workspace_evidence` decodes only the `evidence` table and only detects credentials. It does not validate authoring settings or build model clients.\n- `evidence_configuration_ignores_unused_authoring_settings_and_detects_credentials` and `validation_checks_workspace_common_config_without_loading_unused_authoring_settings` show that `authoring.default = 123` or `configs = 'invalid…'` does not fail evidence loading or validation. They also show that version errors, unknown keys and TOML syntax errors in the shared file are still reported.\n- `main` skips workspace loading for commands that do not use evidence paths. `commands_without_evidence_inputs_ignore_an_invalid_workspace_file` tests this.\n\n**Ordinary validation**\n- `book_source_dir` requires a parseable `book.toml`. It never reads authoring settings or the user file.\n- `book_source_defaults_only_when_absent_and_reports_invalid_configuration` tests it.\n- `inspect_repository_with_progress` calls only `load_workspace_evidence`, so it applies the evidence path policy without loading model clients or credentials.\n- `ordinary_status_ignores_invalid_user_authoring_configuration` (`tests/authoring_cli.rs`) and `status_loads_nearest_workspace_file_without_validating_authoring` (`tests/commands.rs`) cover this.",
   "references": "9c4488c925be72cde5e7bb5c440952cdd312981f668724c5f4af55ab86270299",
   "inputs": [
     {
@@ -51,7 +51,7 @@
     {
       "file": "src/authoring/mod.rs",
       "item": "fn[configured_assessment]",
-      "hash": "ca2a3f3c24f0899ba8e1cbc1cff6bd0c36dbc5561a73be25c66f054b04d1f5be"
+      "hash": "6dafc32ab2a9aa52d232753ab1fb559697fc4bd8c4219cbc59c581b759cbb86f"
     },
     {
       "file": "src/config.rs",
@@ -161,7 +161,7 @@
     {
       "file": "src/evidence.rs",
       "item": "fn[inspect_repository_with_progress]",
-      "hash": "435e07a5d5ed2a3c1c5786826b36f87d0bd1e0e6096f593374804b0c06e38e37"
+      "hash": "913f85233a4a6769b71ba619d6c30659cf988042001b6421d037ae0bd0d4dc57"
     },
     {
       "file": "src/evidence.rs",
@@ -176,7 +176,7 @@
     {
       "file": "src/main.rs",
       "item": "fn[main]",
-      "hash": "b80c1755ddd2f03f73839c71f01b1177146dcc83310183bd29ba90c426a72f2c"
+      "hash": "868ad3db215d07150b0a0c3b700e5e8da9d49bd6b4a4101ed0f258a7ab4109d6"
     },
     {
       "file": "tests/authoring_batch.rs",
@@ -252,56 +252,6 @@
       "file": "tests/evidence_boundaries.rs",
       "item": "fn[validation_checks_workspace_common_config_without_loading_unused_authoring_settings]",
       "hash": "ef6d907936f39ecf4c5d86b96a84c9519988f9370c0b695ec10d690c785f4a98"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "struct[UserConfig]",
-      "hash": "5ca27331b076fcf81f134db2bcb9a411fac504a9fea82f170d5fdc7a96428af9"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "struct[ProjectConfig]",
-      "hash": "487c2320263d6102d8c2df7c36cd39e87151d924b0897184bf6a5b5f30122729"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "struct[WorkspaceConfig]",
-      "hash": "94705e5df970944d7b9c1500dff4f2f0771e6db9aa270cdc793ac478829746f9"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "struct[WorkspaceAuthoringConfig]",
-      "hash": "dc77877aa0ec14ccc3722764dc03c147573d21c90195f6398c6ccae78ce104c5"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "struct[EvidenceConfig]",
-      "hash": "f25be8caf3c4f515b3a60e2b3262d173de9c5fb20e2d19f892470c9b18bc0902"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "struct[BedrockCredentials]",
-      "hash": "0be8d654e8c7d39c9ed046216190093c2dda93f4862fec2dcb3f88ccf921aee4"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "struct[UserAuthoringConfig]",
-      "hash": "d2e5b7da032551910106c5024d9b6a286b1603c0268a63b9a2b851fe3330153b"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "struct[ProjectSelection]",
-      "hash": "9c20bc057d63c1972e2664967a18366422b22742143a834e81e89927f892ce30"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "struct[BedrockConfig]",
-      "hash": "e123937a7e339468258c2a8a9a0926311f6b446c5430b1aaf5668aa82d758e15"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "struct[OllamaConfig]",
-      "hash": "75a1dacb21ac62202f7a625fbd76627d723870f174a00fed5d8ec05515f76fc9"
     }
   ]
 }

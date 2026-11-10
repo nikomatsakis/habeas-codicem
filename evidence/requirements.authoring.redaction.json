@@ -1,8 +1,8 @@
 {
   "requirement": "Every source text the harness supplies to a model, including mandatory inputs,\n`habeas` reads, and `ripgrep` results, and every source text Habeas displays in\nthe book or `habeas info`, MUST be redacted:\n\n1. In a workspace `habeas.toml` or user configuration file, the value of every\n   explicit credential field defined by {cite}`requirements.authoring.credentials`\n   MUST be replaced. Such a file that is not valid TOML MUST be replaced whole,\n   with `configuration` as the kind, because its fields cannot be located.\n2. In every source, each match of a built-in rule of the `secretshape` crate MUST\n   be replaced. The replaced region MUST be extended through each adjacent region\n   that the crate's entropy heuristic flags and that only whitespace separates\n   from the region, repeating until no flagged region is adjacent. The heuristic\n   MUST NOT cause redaction on its own.\n\nA replacement MUST read `[REDACTED:<kind>]`, where `<kind>` is the credential\nfield or the rule's name, and MUST keep every line break within the replaced\ntext, so line numbers are unchanged. Outlines MUST be built from the original\nsource, and the structural hash MUST hash each text piece that overlaps a\nredacted region in its redacted form, so evidence never depends on a credential's\nvalue and redaction never changes or breaks a file's outline. The `secretshape` version MUST be pinned exactly; upgrading\nit MAY change redaction and hashes and MUST be treated as a deliberate change.",
-  "determination": true,
-  "rationale": "I found no gap in `requirements.authoring.redaction`. I checked the {impl} items and their tests, and read the source-text paths in `src/inputs.rs`, `src/outline/mod.rs` and `src/index.rs` directly. I did not open the ripgrep or `habeas` tool code in `src/authoring/tools.rs`. For those I relied on the test `model_inputs_reads_searches_and_citation_prompts_are_redacted` and on the fact that tool results are built from `node_range`. I did not read `src/redaction/tests.rs` outside the inputs given.\n\n**Obligations and the code that carries them out**\n- **Credential fields in a workspace `habeas.toml` or the user configuration file.**\n  - `credential_fields`, `item_fields` and `value_fields` in `src/redaction.rs` redact every leaf value under an authoring configuration's `credentials` and its `api_key`. They also handle inline tables.\n  - `is_configuration_file` and `is_configuration_file_for` recognise any file named `habeas.toml`, the user configuration file, and aliases of it.\n  - `Redaction::of_file` adds these regions on top of the `secretshape` regions.\n- **Invalid TOML replaced whole, with kind `configuration`.** `configuration_regions` returns `0..len` with kind `configuration` when `credential_fields` returns `None`.\n- **`secretshape` rule matches replaced.** `secret_regions` and `scanners` use rule-only scanning with the input cap removed.\n- **Extension through whitespace-adjacent heuristic regions, never starting a region.**\n  - `secret_regions` starts from rule findings only. It then extends each region forward and backward over flagged spans that are adjacent or separated only by whitespace.\n  - Heuristic findings alone never start a region.\n  - `merge` joins regions that overlap after extension.\n- **Replacement reads `[REDACTED:<kind>]` and keeps line breaks.** `Redaction::slice`, `apply` and `push_line_breaks` emit the marker once per region and keep every `\\n`, including `\\r\\n` pairs. `redact_lines` keeps the line count.\n- **Outlines built from the original source; pieces hashed in redacted form.**\n  - `parse_redacted` parses the original source. `Builder::piece` and `encode` hash `redaction.slice(...)`. `plain_text` hashes the redacted line.\n  - `OutlineCache::parse` builds the outline from the original and keeps a separate redacted copy for display.\n- **`secretshape` pinned exactly.** `Cargo.toml` has `secretshape = \"=0.1.0\"`, with a comment saying a new version may change redaction and hashes.\n- **Every source text supplied to a model or displayed is redacted.**\n  - Mandatory inputs and `habeas` reads go through `InputSelector::resolve` and `node_range`, which use redacted text. The same path serves ripgrep and ast_grep results.\n  - Declaration text goes through `redact_lines`.\n  - Citation commentary goes through `model_citations_value`. Violation text in site prompts goes through `matches_value`. GitHub issue title and body go through `fetch`.\n  - `habeas info` and the book go through `render_detail_sections` and `render_input`. These redact the definition text, validation findings, unresolved raw JSON, unreadable records, and input text.\n\n**Tests**\n- `src/redaction/tests.rs` covers:\n  - credential fields by name, including inline tables and non-configuration `.toml` files;\n  - private-key blocks and CRLF;\n  - rule matches without adjacent code;\n  - heuristic-only findings not being redacted;\n  - hashes not depending on credential values;\n  - redaction never changing an outline's structure;\n  - slices concatenating to the redacted whole;\n  - invalid configuration files redacted whole;\n  - the user configuration file and its aliases;\n  - backward extension and scanning past 1 MiB.\n- `model_inputs_reads_searches_and_citation_prompts_are_redacted` in `src/authoring/tools.rs` covers mandatory inputs, prompts, `habeas` reads, ripgrep results and citation commentary.\n- The ast_grep test, `violation_text_reaches_the_model_redacted` in `src/sites.rs`, `the_tool_reads_issues_with_the_token_and_redacts_bodies` in `src/github.rs`, and `detail_pages_and_info_display_redacted_source` in `src/index.rs` cover the remaining paths.\n- The version pin is a declaration with no conditional, so it needs no test.\n\n**Marking.** I found no unmarked implementing code and no unmarked tests among the sources I read.\n\n**Possible gap, not reported.** `FIXME` entries in the detail page are escaped but not run through `redact_text`. They are validated to match the `{fixme}` body text exactly, so I did not count this as a gap against the requirement's text.",
-  "references": "3838c29b81131cbcf155dce785d85a869a82f106cd8df5f5f5a8137c49486881",
+  "determination": false,
+  "rationale": "I found one gap: nothing tests that declaration text is redacted on the model path. Most other obligations are implemented and tested.\n\n**Implemented and tested**\n- **Configuration credential fields:** `Redaction::of_file`, `configuration_regions`, `credential_fields` and `value_fields` in `src/redaction.rs` redact the Bedrock `credentials.*` leaves and the Ollama `api_key` by name.\n  - This applies in any `habeas.toml` and in the user configuration file, including symlink aliases of it.\n  - Tests: `configuration_credential_fields_are_redacted_by_name_whatever_their_values` and `the_user_configuration_file_and_its_aliases_are_configuration_files`.\n- **Invalid TOML:** `configuration_regions` replaces the whole file with kind `configuration`. Test: `invalid_configuration_files_are_redacted_whole_keeping_lines`.\n- **`secretshape` rules and extension:**\n  - `secret_regions` scans with the built-in rules, then extends each match forward and backward through whitespace-adjacent entropy-flagged tokens.\n  - The heuristic never starts a region, because the function returns early when the rule scan finds nothing.\n  - Tests: `tokens_in_code_are_redacted_without_adjacent_code`, `private_keys_are_redacted_from_header_through_body_keeping_lines` (forward), `regions_extend_backward_keep_crlf_and_scan_past_a_mebibyte` (backward) and `heuristic_findings_alone_are_not_redacted`.\n- **Replacement format and line breaks:** `Redaction::slice` and `push_line_breaks` emit `[REDACTED:<kind>]` and keep every line break, including CRLF. Tests: `slices_concatenate_to_the_redacted_whole`, `redaction_never_changes_an_outline`, and the CRLF case in `regions_extend_backward_keep_crlf_and_scan_past_a_mebibyte`.\n- **Outlines and hashes:** the outline is built from the original source (`parse_redacted`, `Builder::piece`, `plain_text`) and hashes use `Redaction::slice`. Tests: `hashes_do_not_depend_on_credential_values` and `redaction_never_changes_an_outline`.\n- **Pin:** `Cargo.toml` has `secretshape = \"=0.1.0\"`. This is static and needs no test.\n- **Model-facing source:**\n  - `OutlineCache::parse` builds `ParsedSource.redacted`.\n  - `SearchNodes::entries`, `initial_prompt`, `CitationItem::model_citations_value`, `SiteItem::matches_value` and the GitHub `fetch` all use redacted text.\n  - Tests: `model_inputs_reads_searches_and_citation_prompts_are_redacted`, `ast_grep_returns_innermost_nodes_of_the_language_and_reports_failures`, `violation_text_reaches_the_model_redacted` and `the_tool_reads_issues_with_the_token_and_redacts_bodies`.\n- **Displayed in the book and `habeas info`:** `render_detail_sections` and `render_input` redact. Test: `detail_pages_and_info_display_redacted_source`.\n\n**Gap: untested declaration redaction on the model path**\n- **Where:** `InputSelector::resolve` in `src/inputs.rs` calls `crate::redaction::redact_lines` for `Definition` inputs and for `Requirements` inputs. These supply the subject's, cited requirements' and terms' text in mandatory inputs and `habeas` requirements/definition reads. `validate_resolved_input` in `src/evidence.rs` also calls `redact_lines`. `redact_lines` has its own conditional and transformation (join, redact, split).\n- **What is missing:** no test puts a credential in a requirement, example or definition declaration and checks the model-facing text.\n  - `model_inputs_reads_searches_and_citation_prompts_are_redacted` puts the token only in `src/lib.rs` and in the config file.\n  - `detail_pages_and_info_display_redacted_source` covers only display, through `redact_text` in `render_detail_sections`.\n  - Nothing else in `src` or `tests` exercises `redact_lines`, so it is untested.\n- **Obligation affected:** \"Every source text the harness supplies to a model, including mandatory inputs ... MUST be redacted.\" This path has a conditional and a transformation, so it does not qualify for the untested-obligation exemption.\n\nI report this as an unacknowledged gap; no `{fixme}` covers it.",
+  "references": "f34265988ce2c0148b248983690ce0b9d11ff05bf667a56634767d0e86afce0b",
   "inputs": [
     {
       "requirements": "requirements.authoring.redaction",
@@ -75,22 +75,22 @@
     {
       "file": "src/authoring/mod.rs",
       "item": "fn[initial_prompt]",
-      "hash": "e18a20a9ce82743cf96cc070647075882dd29c6192f727077c3b87ff383c8717"
+      "hash": "587ce8609b4b710048cf88c56cc5b38047e867f607c5683331b9695b08187abf"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "impl[SearchNodes]/fn[entries]",
+      "hash": "85eba13a2f8345275e81a3d358c16b0ed88a0767b7bb2239a8851cd65e87dd76"
     },
     {
       "file": "src/authoring/tools.rs",
       "item": "mod[tests]/fn[model_inputs_reads_searches_and_citation_prompts_are_redacted]",
-      "hash": "14c558c84e83fa2d5f267e0b5b3306f4777ee6e0b7adb122953ef5714d6a55fd"
+      "hash": "ec0650c2b7c17bec40f218540fac4fe48673651ba231dc64e7cc0ee6d346d06c"
     },
     {
       "file": "src/authoring/tools.rs",
       "item": "mod[tests]/fn[ast_grep_returns_innermost_nodes_of_the_language_and_reports_failures]",
-      "hash": "84165a7b6dcb3170b247771e21bd4e7be34ef121294fc399ffe31bd0a3a43c55"
-    },
-    {
-      "file": "src/citations.rs",
-      "item": "impl[CitationItem]/fn[model_citations_value]",
-      "hash": "7cba496f63869d0b21926ab7ec02e94cb61658e5404d31584e19957ef3da4a1b"
+      "hash": "e8cb249430f363514b5d89b06653056a2962cc7099dce3fcceb0499a1f140ff9"
     },
     {
       "file": "src/evidence.rs",
@@ -114,28 +114,8 @@
     },
     {
       "file": "src/index.rs",
-      "item": "fn[render_input]",
-      "hash": "d9de115b90fe0cdac7a7972a76b17e61c083627ef27d40859f4e2de9dbb8232d"
-    },
-    {
-      "file": "src/index.rs",
       "item": "mod[tests]/fn[detail_pages_and_info_display_redacted_source]",
       "hash": "6dda823b8b0e94bd84741c6f881430a4393ccd3cc8d9e87eb9741f1d928eb9bb"
-    },
-    {
-      "file": "src/inputs.rs",
-      "item": "impl[OutlineCache]/fn[parse]",
-      "hash": "547220a7cf9e860f93a3e2c1180eec2a232d80cd89e4b5cb63358d5ee9217638"
-    },
-    {
-      "file": "src/inputs.rs",
-      "item": "impl[ParsedSource]/fn[node_range]",
-      "hash": "5872ecfc8b27bb88b454a9c0b9c0a9cd57cc98bc3b00e2384d1528adc48eecba"
-    },
-    {
-      "file": "src/inputs.rs",
-      "item": "impl[InputSelector]/fn[resolve]",
-      "hash": "1aedf847e4e2e74844ccedb3ccd88dd42b0805acfbb266f8e7f4bea8574853d3"
     },
     {
       "file": "src/outline/mod.rs",
@@ -146,41 +126,6 @@
       "file": "src/outline/mod.rs",
       "item": "fn[parse_with]",
       "hash": "1bc5d8c2633154923920bddfc56ed57e035cf8357124d989b93794d3bb152687"
-    },
-    {
-      "file": "src/outline/mod.rs",
-      "item": "fn[parse_redacted]",
-      "hash": "72a135c94535238cacd27a58ffdfbcc7cb971d61f3c13de0fd10700d44008167"
-    },
-    {
-      "file": "src/outline/mod.rs",
-      "item": "fn[plain_text]",
-      "hash": "4f3b316712177077546712701ceb34834b3fa240a4ac0b80714043abcf49c6ca"
-    },
-    {
-      "file": "src/outline/mod.rs",
-      "item": "impl[Builder<'tree,%20'source>]/fn[piece]",
-      "hash": "bf34892ee516502dcf93c2dadcead1dda738da8aa6640ff60ed716a0257ba062"
-    },
-    {
-      "file": "src/redaction/tests.rs",
-      "item": "fn[github_token]",
-      "hash": "78f451d363a4909f57a88d53cbfb581c92ceb788b6492b6a3180589a43ca3b1b"
-    },
-    {
-      "file": "src/redaction/tests.rs",
-      "item": "fn[private_key]",
-      "hash": "8b76839a1fb631cef2293c3b417f937d66c3a1b8d2ca42a5488973cd6e253769"
-    },
-    {
-      "file": "src/redaction/tests.rs",
-      "item": "fn[outline]",
-      "hash": "55f66b1944e0bdefe80429cb564a29087db9eca3e5832bdfc103f80ae66d6160"
-    },
-    {
-      "file": "src/redaction/tests.rs",
-      "item": "fn[structure]",
-      "hash": "3ac0371170c1501b7677a5a7fbdda44689f2a0359e3967e51e33740a6aaa0105"
     },
     {
       "file": "src/redaction/tests.rs",
@@ -233,294 +178,169 @@
       "hash": "76aeabb2851db060abf9267aee28ccc079fdf8451d2320c27f9f6aa857e631b5"
     },
     {
-      "file": "src/redaction.rs",
-      "item": "struct[Region]",
-      "hash": "0712fbed50e4176ab0d99da7d6318e3f46221e7ca3e99194c2b5b782dbca1224"
-    },
-    {
-      "file": "src/redaction.rs",
-      "item": "struct[Redaction]",
-      "hash": "c1a4d250853491e434b4ec2da0e27a8d537ff859662f4e62cfbcffb1409f28fa"
-    },
-    {
-      "file": "src/redaction.rs",
-      "item": "struct[CredentialField]",
-      "hash": "52199e49783a7c3fca9a2608d970c08d1fd9d9b77576887d7bbce01509288bfc"
-    },
-    {
-      "file": "src/redaction.rs",
-      "item": "impl[Redaction]/fn[of_text]",
-      "hash": "e86793b71bc0bbc726cd2f15544489a38ffdc3562fded15407e969527d7b4c81"
-    },
-    {
-      "file": "src/redaction.rs",
-      "item": "impl[Redaction]/fn[of_file]",
-      "hash": "4aad26e9ad0448cfc7c125b41ab45cbc8114b9ce97356c45b820f8d0b0d5cb5f"
-    },
-    {
-      "file": "src/redaction.rs",
-      "item": "impl[Redaction]/fn[merge]",
-      "hash": "1640bbd36ab92bea6124405a3e374817dd978a36b6a23d9dd19787bedede083d"
-    },
-    {
-      "file": "src/redaction.rs",
-      "item": "impl[Redaction]/fn[is_empty]",
-      "hash": "3e4f41ca3faf930ea669da51ef711b384eb2832baf8e3065201fd92ac94d0b72"
-    },
-    {
-      "file": "src/redaction.rs",
-      "item": "impl[Redaction]/fn[slice]",
-      "hash": "f68aeed01a320f095dd7b1011f90fd413fde6d0b877257d7cfcd20c4531d0c5a"
-    },
-    {
-      "file": "src/redaction.rs",
-      "item": "impl[Redaction]/fn[apply]",
-      "hash": "1693a102e2542ebb1cde247fde247d83035fab2105ee586d8b47f930eab51b62"
-    },
-    {
-      "file": "src/redaction.rs",
-      "item": "fn[redact_text]",
-      "hash": "eb01a8e17ed5a85035c775494371f447404613c91d91158ab1d0e72719edb26a"
-    },
-    {
-      "file": "src/redaction.rs",
-      "item": "fn[redact_lines]",
-      "hash": "7ec6e69e33be08061ced2df22254ba5ef1970ff8eb10f72cf0c11a52f4663042"
-    },
-    {
-      "file": "src/redaction.rs",
-      "item": "fn[push_line_breaks]",
-      "hash": "0184600e705b84fc613f6c9b159a152bbaa0571180f117a4de038e23ca0097bf"
-    },
-    {
-      "file": "src/redaction.rs",
-      "item": "fn[scanners]",
-      "hash": "708a7aa88bbc4187f350ebf2ba1999a17c6839aab4440c200ad25b1c400d223c"
-    },
-    {
-      "file": "src/redaction.rs",
-      "item": "fn[secret_regions]",
-      "hash": "32e323c906372e0de5c320ec6710cfbd513f191a8d383a7ae5b0fef6206c01ed"
-    },
-    {
-      "file": "src/redaction.rs",
-      "item": "fn[is_configuration_file]",
-      "hash": "ecf5c0195d92e670405c61648cf48a48ac5d890ddbe4392f421391439d5c027b"
-    },
-    {
-      "file": "src/redaction.rs",
-      "item": "fn[is_configuration_file_for]",
-      "hash": "f9c0918a9598b399b3bcaaa1d53c80d208170a5ca66fa769a86e9fbca3bd62c4"
-    },
-    {
-      "file": "src/redaction.rs",
-      "item": "fn[configuration_regions]",
-      "hash": "5ac83944c7bd834912a11b29fdd21124c589f8108bed68ebb6aa7496a9323b84"
-    },
-    {
-      "file": "src/redaction.rs",
-      "item": "fn[credential_fields]",
-      "hash": "e1b45f696f356560d6962b98784758c2dc5caa11ab55de13f597fea74b4756df"
-    },
-    {
-      "file": "src/redaction.rs",
-      "item": "fn[item_fields]",
-      "hash": "8e33a3b916514955383bbbd18b55d31f4ca8f32799ee0bbbc49798a2b74f7bc4"
-    },
-    {
-      "file": "src/redaction.rs",
-      "item": "fn[value_fields]",
-      "hash": "83d379eeebbc73d705c2267124fc5d8fbc291a79c76cfddf5e4754e5c2336eae"
-    },
-    {
-      "file": "src/sites.rs",
-      "item": "impl[SiteItem]/fn[matches_value]",
-      "hash": "2520aad15de8dbb9447637803863731e5079219f41f200fad8d8a61945b862f3"
-    },
-    {
       "file": "src/sites.rs",
       "item": "mod[tests]/fn[violation_text_reaches_the_model_redacted]",
       "hash": "aab92c42775eb2660be4cd297ab796a7deb48e7891d15977cdfaf72e20b17322"
     },
     {
-      "file": "src/authoring/tools.rs",
-      "item": "fn[definitions]",
-      "hash": "bffaa08f66913b9f58a727170cf4a45954cc05d0137bd2767db46bdbb233899f"
+      "file": "src/redaction.rs",
+      "item": "",
+      "hash": "9d63cf6e5e457e5976049363b829c482a757b5f8f75fe57e229df0cbd6149bed"
     },
     {
-      "file": "src/config.rs",
-      "item": "impl[SecretString/fmt::Debug]/fn[fmt]",
-      "hash": "98f5f27559cedd7d31bcf7de2713d16ce026289e7e03b6e033418581ae183fa2"
+      "file": "src/inputs.rs",
+      "item": "use@a26087e08c80",
+      "hash": "a26087e08c80d5c75559c00d6f08909f5a03a0bd909c8c903061c37b78950102"
     },
     {
-      "file": "src/config.rs",
-      "item": "fn[decode]",
-      "hash": "18c77225e202f5ac560723436ec3878e6b588615de9c83ab7a18e5008a3db1eb"
+      "file": "src/inputs.rs",
+      "item": "use@0aa5aad345a4",
+      "hash": "0aa5aad345a497ea8555581d02720ca86969e0aff012fce65b6f20d384262fb4"
     },
     {
-      "file": "src/authoring/inputs.rs",
-      "item": "impl[AssessmentSources]/fn[prepare_site]",
-      "hash": "3f2f152c7b16053bd1bc6d96fae1b55682553b236965df9f34837fabdc8d2f93"
+      "file": "src/inputs.rs",
+      "item": "use@3970e6901143",
+      "hash": "3970e6901143920563d8805f9c3cc3a00f3047d12ba98064de8508cf8fd075f2"
     },
     {
-      "file": "src/authoring/inputs.rs",
-      "item": "impl[AssessmentSources]/fn[mandatory_inputs]",
-      "hash": "2763487c6f1f7cf192d22180b6d71da1e5868bfd302380d210868139ee624359"
+      "file": "src/inputs.rs",
+      "item": "use@17891119f0eb",
+      "hash": "17891119f0eb9d10b48f727e590ef4be9050f4cdc2813283f53abf585dfe721a"
     },
     {
-      "file": "src/authoring/inputs.rs",
-      "item": "impl[AssessmentSources]/fn[model_mandatory_inputs]",
-      "hash": "c64d022bf88a51f9573af169ef2a69b43ca1716b28f579e150b3f9c3b83e3e1b"
+      "file": "src/inputs.rs",
+      "item": "use@6e42e0801700",
+      "hash": "6e42e08017009abb18f33fa65d11a99391be1f47814478d1337e25ea5a0189ec"
     },
     {
-      "file": "src/authoring/inputs.rs",
-      "item": "impl[AssessmentSources]/fn[recorded_inputs]",
-      "hash": "2e4f2c9b9b15095b5d684a5c59a6f913d373523d20c95e2fb04a4c34d549b256"
+      "file": "src/inputs.rs",
+      "item": "use@945e92f43fad",
+      "hash": "945e92f43fad9a4c59b94afe789e6ef9514106d005841b29a86ecf6cee616e26"
     },
     {
-      "file": "src/authoring/inputs.rs",
-      "item": "mod[tests]/fn[mandatory_git_inputs_require_staging_declarations_sources_and_terms]",
-      "hash": "a3545d993ee80435ed52424c332b3c17d5c8118501e2711c579c175f1f917bff"
+      "file": "src/inputs.rs",
+      "item": "use@329c335dba2c",
+      "hash": "329c335dba2cdba11067fef8c3a11caf3c7059e9c3ca39d0f580b295da43c88c"
     },
     {
-      "file": "src/authoring/inputs.rs",
-      "item": "mod[tests]/fn[mandatory_inputs_through_symlinks_leaving_the_project_abort_preparation]",
-      "hash": "a9f72f30b27102cfaa5697448cc58df1881aa7110ef023ca06f1d13c731c7b5e"
+      "file": "src/inputs.rs",
+      "item": "use@94c7012d1800",
+      "hash": "94c7012d18006bc204d06850f929668e869b47eba6b9b2d8ef109add66dee46f"
     },
     {
-      "file": "src/authoring/inputs.rs",
-      "item": "mod[tests]/fn[disallowed_mandatory_inputs_abort_preparation]",
-      "hash": "c5a172104475952c5855d123e1a1e52f105fa1122ad58d75facfaa9b7429f374"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "mod[tests]/fn[unpermitted_requests_outside_the_project_are_recoverable_tool_errors]",
-      "hash": "3881e30af14db8b9c8673a58049c015e872ecae4aaec9624464e6abf82055f58"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "mod[tests]/fn[mandatory_inputs_outside_the_project_still_abort]",
-      "hash": "7f6e8d8f4b7dbb70bf1f566d57271d75b7cb1080fbb3d1c67eede7faf39f6b64"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "mod[tests]/fn[habeas_tool_describes_its_argument_conventions_with_an_example_per_form]",
-      "hash": "3eec68e94859ed552ac6613755d4b27f29ea02406b53e3e8fa2903bcbd7e9191"
-    },
-    {
-      "file": "src/outline/mod.rs",
-      "item": "impl[Outline]/fn[node_lines]",
-      "hash": "7734366f0b0f2d2025bc35a536733b893c61516129a21a958cf5a54bf9590f16"
-    },
-    {
-      "file": "src/commands.rs",
-      "item": "fn[status_markdown_with_github]",
-      "hash": "c862a7343a2fd6a2bcbb3443a38fbf76564a4d226f1ed305befa939a1feed5dd"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[validate_references]",
-      "hash": "74c3f3a7296b55c1ec33e7b39dbaad0860295866eef2ee856e18e26a46f754a3"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[validate_fixme_form]",
-      "hash": "96175bf48bf658e9cd39f62750afb65c8558e2e4a85fe3c306c3f57350413e91"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[validate_fixme_entries]",
-      "hash": "adafa4d067066c99d40de3be87e455ea856192c888a5cdede8a175ea186b9065"
-    },
-    {
-      "file": "src/github.rs",
-      "item": "fn[add_issue_findings]",
-      "hash": "04993674af703642444080bd7aec802680f96b248cda1e0035d23f9541ffa0b1"
-    },
-    {
-      "file": "src/index.rs",
-      "item": "enum[EvidenceState]",
-      "hash": "6a845f420dc533ad3dcb656d3188d9eb1bc4ad724b5a843930aae6967a5697a3"
-    },
-    {
-      "file": "src/index.rs",
-      "item": "struct[LoadedDetailEvidence]",
-      "hash": "75cf2243573bee2624afbfa6895a134eeda5ad495d220c141593305423923e44"
-    },
-    {
-      "file": "src/index.rs",
-      "item": "struct[DetailEvidence]",
-      "hash": "2f1e313f2d698e693a9f494ca743c7b73444bf3cb0e72311362309ccf6933c52"
-    },
-    {
-      "file": "src/index.rs",
-      "item": "fn[encode_url_segment]",
-      "hash": "0aa2cca56cbaa936f10b3f61ca7bb937dea609765c71dbfc24f6b5f982426987"
-    },
-    {
-      "file": "src/index.rs",
-      "item": "impl[LoadedDetailEvidence]",
-      "hash": "d4feaf3659df7a7bdada3f198ef4cbf07d6ecb2c3212c4e2727ecb480af7978d"
-    },
-    {
-      "file": "src/index.rs",
-      "item": "impl[EvidenceState]",
-      "hash": "52f9687ee35767424d89917de8732f29c1d0e964aca30c4eb332934fe68b93e4"
-    },
-    {
-      "file": "src/index.rs",
-      "item": "impl[DetailPlan]",
-      "hash": "6fe4eb7308da3b00ff29ff3c756c8cbf7538b13b1a25d28195d22f2cb7cc6bcd"
-    },
-    {
-      "file": "src/index.rs",
-      "item": "mod[tests]/fn[detail_page_renders_markdown_and_highlighted_input_sections]",
-      "hash": "0ae885fff9d40e0a5380ce273360699c8c52c16f860dd216d441fdc7b6f48178"
-    },
-    {
-      "file": "src/index.rs",
-      "item": "mod[tests]/fn[source_links_use_configured_repository_and_branch]",
-      "hash": "e9a30f4640ab1f0a15dad26c1cf5c6cf1831e5ce488f7759a667ebbd7675450e"
-    },
-    {
-      "file": "src/index.rs",
-      "item": "mod[tests]/fn[common_input_extensions_select_highlighting_languages]",
-      "hash": "0aa970689b9c3680b597a49dd946891fa06fd1aaa03858e2d4b56731e5df98a7"
-    },
-    {
-      "file": "src/index.rs",
-      "item": "mod[tests]/fn[generated_detail_path_cannot_replace_a_chapter]",
-      "hash": "3202b1717afc420b649ce2c1abbaee8200fa7df46d02176794a81add5d890595"
-    },
-    {
-      "file": "src/outline/mod.rs",
+      "file": "src/inputs.rs",
       "item": "use@167510602cb3",
       "hash": "167510602cb34e66d4c8c78e9beeae3cee5655de55ff522a33ded8622af1c7f2"
     },
     {
-      "file": "src/outline/mod.rs",
-      "item": "struct[Builder]",
-      "hash": "1d002defec97fba36cf07bb9651f817a429045191619fdc753b06ba00d3901ff"
+      "file": "src/inputs.rs",
+      "item": "enum[InputSelector]",
+      "hash": "08a32d6d16b33bb0240b295f12f62e2fcc9e56aa8fa1b81e3551a705e6ade5f9"
     },
     {
-      "file": "src/outline/mod.rs",
-      "item": "impl[Builder<'tree,%20'source>]/fn[new]",
-      "hash": "9f0b7bff5823180795e6ad3469d796dace709bbfb96ea69c8abb5f01f06a5b9e"
+      "file": "src/inputs.rs",
+      "item": "struct[SourceRange]",
+      "hash": "00a39f28430d5e153770e7b84515cae45e86675d442339e72386be6b8c178ff6"
     },
     {
-      "file": "src/outline/mod.rs",
-      "item": "impl[Builder<'tree,%20'source>]/fn[encode]",
-      "hash": "03a0f1e8ba0ae4c4685bbea7f89e4d119f76f4a4420803f924194030698ab9cb"
+      "file": "src/inputs.rs",
+      "item": "struct[ResolvedNode]",
+      "hash": "bf313fc4a64fd3c230d6433e360e30d613feaddc7ff28a17282a8d7d91afe2fa"
     },
     {
-      "file": "src/outline/mod.rs",
-      "item": "fn[trails_code]",
-      "hash": "16526bc7236feeac97e5d4cd3778a0c76af02f6dc52ce66be7749494d9d8bd9b"
+      "file": "src/inputs.rs",
+      "item": "struct[ResolvedInput]",
+      "hash": "747340a2a8f82c0e6547761dfa62a27ff890b8cd6eee80eca966088f5b7ae385"
     },
     {
-      "file": "src/outline/tests.rs",
-      "item": "fn[duplicate_names_are_numbered_in_source_order_without_line_numbers]",
-      "hash": "16214a4586dd5b69987d0fa62070cb81fa6be9605dacaab8246470fe37fa7a49"
+      "file": "src/inputs.rs",
+      "item": "struct[ParsedSource]",
+      "hash": "60fdf5fdf9a375c3cd8f87afaaa15d7a3796bce2af9fab6835be52f3ba8c3be7"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "struct[OutlineCache]",
+      "hash": "51cd8476bb8fb67663a9845e54dfd7a7c7104ed0128e9c417c6f9a89960712f7"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "impl[OutlineCache]",
+      "hash": "3d341a2ee9eac04b06cfb061e5d8e4be1c1d7c45470e654d500a607e1c173f13"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "impl[ParsedSource]",
+      "hash": "1e8736402977d749ed722b0ca3a943de21dc5d0a8617f735f9f34650bc549907"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "impl[InputSelector]",
+      "hash": "65872609b4c4184eb51c5f1a3acbd2b3aaab02313acb77a9ddac15ab752a4154"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "fn[recorded_input]",
+      "hash": "e367b914f4385dbb6fa5352d25621130a8d501d28d36793e28b80228806689b5"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "fn[project_relative]",
+      "hash": "2bacdf705f69e79ecb7e7b649562d949c57508036bb5e1ddc1ea1387c585ebf1"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "fn[check_project_file]",
+      "hash": "d229a2e14bc49aad09e4bca7ab3bdab6d475f05819973da2477323152e7aa4e5"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "fn[read_project_file]",
+      "hash": "e41f9a27f04e9f92ef30a0f9364eb43397ec3142bd9947b7c34d0d4ea691ba1d"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "fn[outline_input]",
+      "hash": "c1b23bc16454f46cd2402e7867e2067b6c69ce6c7051760c3c77847c1f5804dc"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "fn[outline_inputs_for_lines]",
+      "hash": "1a71201d6c638e1ad96c8664db6788c9c99992c61d19e49ba3902bed73995d4f"
+    },
+    {
+      "file": "src/redaction/tests.rs",
+      "item": "use@e843693d3cbe",
+      "hash": "e843693d3cbeca2bebfa419b4a2dc5105a0168642b87189c11f2ad16b53a0207"
+    },
+    {
+      "file": "src/redaction/tests.rs",
+      "item": "use@932900f4bf04",
+      "hash": "932900f4bf040be3537072b8c86afecf8609e53bb1ed7cd364fa03bf1fbbb2b2"
+    },
+    {
+      "file": "src/redaction/tests.rs",
+      "item": "use@dae7a77fbaa1",
+      "hash": "dae7a77fbaa1742164b8054a04bfed3e99575ca81ab22e07d39d667836936554"
+    },
+    {
+      "file": "src/redaction/tests.rs",
+      "item": "fn[github_token]",
+      "hash": "78f451d363a4909f57a88d53cbfb581c92ceb788b6492b6a3180589a43ca3b1b"
+    },
+    {
+      "file": "src/redaction/tests.rs",
+      "item": "fn[private_key]",
+      "hash": "8b76839a1fb631cef2293c3b417f937d66c3a1b8d2ca42a5488973cd6e253769"
+    },
+    {
+      "file": "src/redaction/tests.rs",
+      "item": "fn[outline]",
+      "hash": "55f66b1944e0bdefe80429cb564a29087db9eca3e5832bdfc103f80ae66d6160"
+    },
+    {
+      "file": "src/redaction/tests.rs",
+      "item": "fn[structure]",
+      "hash": "3ac0371170c1501b7677a5a7fbdda44689f2a0359e3967e51e33740a6aaa0105"
     }
   ]
 }

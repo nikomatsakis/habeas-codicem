@@ -1,8 +1,8 @@
 {
   "requirement": "Usage MUST record mandatory input counts and sizes by evidence kind, in UTF-8\nbytes and lines, and the same information for additional inputs requested through\n`habeas` or `ripgrep`. A requirements input MUST also record its number of matched declarations.\nUsage MUST distinguish unique inputs from repeated reads, successful from\nfailed reads, and prepared inputs from those actually sent to the model.\nFile-discovery calls MUST count as tool calls without recording directory\nlistings as evidence or source inputs.",
   "determination": true,
-  "rationale": "I found no gaps. I judged each obligation of `requirements.authoring.usage_inputs` against the code and tests in the inputs. I did not open any other source.\n\n**Obligations and the code that carries them out**\n- **Mandatory input counts and sizes by evidence kind, in UTF-8 bytes and lines.**\n  - `UsageLog::prepared` (`src/authoring/usage.rs`) classifies each input as outline, requirements, builtin or definition, and records `bytes` and `lines` for it in an `InputUsage` entry.\n  - `bytes` is the sum of `str::len` over the text lines plus the newline separators. `lines` is the number of text lines.\n  - `assess_subject` and `followup_sources` call it with origin `\"mandatory\"`.\n- **The same information for additional inputs from `habeas` or `ripgrep`.** `converse` calls `usage.prepared(<tool name>, &delivery.inputs)` for every tool result, so the origin is the tool name and the same fields are recorded.\n- **A requirements input records its number of matched declarations.** The `components` field is the length of the input's `matches` array, and 1 for other kinds.\n- **Unique inputs distinguished from repeated reads.** The `unique` field is `self.seen.insert(input.to_string())`.\n- **Successful reads distinguished from failed reads.** `converse` calls `usage.tool(name, failed)`, which feeds `tool_calls` and `tool_failures`. `skipped_tool` records skipped calls separately.\n- **Prepared inputs distinguished from those sent to the model.**\n  - `begin_request` sets `submitted_in_request`.\n  - `end_request` sets `sent_in_request` only when the provider returned usage, so a failed request leaves it unset.\n  - `InputUsage` carries both fields.\n- **File-discovery calls count as tool calls but are not recorded as inputs.** `usage.tool` counts the call. A listing produces no `delivery.inputs`, so `prepared` records nothing for it.\n\n**Tests**\n- `input_metadata_counts_components_and_reads_without_persisting_source` (`usage.rs`) asserts:\n  - kind `outline`;\n  - UTF-8 byte count using `λ`, and line count;\n  - `components` equal to 2 for a requirements input;\n  - `unique` true then false for a repeated read, with origin `habeas`;\n  - `submitted_in_request` and `sent_in_request` transitions.\n- `failed_submission_can_be_confirmed_on_a_later_attempt` asserts that a failed request leaves `sent_in_request` unset and that it is set on the retry.\n- `tool_outcomes_are_distinct_and_unknown_names_do_not_leak_model_text` asserts that failures and skips are counted separately from calls.\n- `throttled_requests_retry_unchanged_and_record_every_attempt` (`src/authoring/mod.rs`) asserts that submitted and sent indices differ after failed requests.\n- `ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free` (`tests/authoring_cli.rs`) exercises the whole path and asserts:\n  - no `list_files` input origin, while `tool_calls.list_files` is 1;\n  - `ripgrep` inputs with bytes and lines above 0;\n  - a `habeas` input with `unique` true and a repeated one with `unique` false and `sent_in_request` 1;\n  - a mandatory `definition` input with bytes above 0;\n  - one failed `habeas` read in `tool_failures`.\n\nThe unit test does not assert that `kind` is `requirements` for the requirements input. It does assert `components` for that input, and the code path is simple, so I did not count this as a gap.",
-  "references": "dc43fb7d9d6f3d57673af4f00f38c1477c5deda399f79d1bccb7a3770e5c7190",
+  "rationale": "I found no gap against `requirements.authoring.usage_inputs`.\n\n**Reachability.** The only {impl} item is `configured_record` in `src/authoring/mod.rs`. It reaches the code that does the work, by this chain:\n- `configured_record` calls `assess_subject`.\n- `assess_subject` calls `usage.prepared(\"mandatory\", …)` and then `assess`.\n- `assess` reaches `converse`, which does the per-request and per-tool bookkeeping.\n\nAll of the code below is reachable from that chain.\n\n**Obligations, code and tests**\n- **Mandatory inputs: counts and sizes by evidence kind, in UTF-8 bytes and lines.**\n  - `UsageLog::prepared` (`src/authoring/usage.rs`) classifies each input as outline, requirements, builtin or definition.\n  - It records `bytes` as the sum of `str::len` (UTF-8 bytes) plus the newline separators, and `lines` as the number of text entries.\n  - Test: `input_metadata_counts_components_and_reads_without_persisting_source` asserts kind `outline`, bytes `\"λ\\nDO_NOT_LOG_SOURCE\".len()` (this includes a multibyte character) and lines 2. The CLI test asserts a mandatory `definition` input with bytes > 0.\n- **Additional inputs requested through `habeas` or `ripgrep`: the same information.**\n  - `converse` calls `usage.prepared(call.function.name, &delivery.inputs)` for every successful tool delivery, so the origin is the tool name.\n  - Test: the usage unit test records `prepared(\"habeas\", …)` and asserts origin `habeas` and the same fields. The CLI test asserts habeas-origin inputs. It also shows that `ripgrep` only locates lines and delivers no inputs, which is consistent with the requirement.\n- **A requirements input records its number of matched declarations.**\n  - `components` is `matches.len()`, or 1 for other kinds.\n  - Test: the unit test asserts `components == 2` for a requirements input with two matches.\n  - The assertion does not check the kind string `requirements` directly. I treat that as minor, because the branch is simple and the `components` assertion exercises the requirements input.\n- **Unique inputs distinguished from repeated reads.**\n  - `unique` is set from `seen.insert(...)`.\n  - Tests: the unit test asserts the first input is unique and the repeat is not. The CLI test asserts a habeas-origin input with `unique == false`.\n- **Successful reads distinguished from failed reads.**\n  - `UsageLog::tool` and `skipped_tool` keep `tool_calls` and `tool_failures` counters.\n  - In `converse`, a failed read is counted as a failure and adds no input.\n  - Tests: the CLI test asserts `tool_calls.habeas == 3` and `tool_failures.habeas == 1`. `tool_outcomes_are_distinct_and_unknown_names_do_not_leak_model_text` asserts the failure and skipped counters.\n- **Prepared inputs distinguished from those actually sent.**\n  - Inputs are recorded at preparation.\n  - `begin_request` sets `submitted_in_request`.\n  - `end_request` sets `sent_in_request` only when the response carried usage, that is, on success.\n  - Tests: the unit test asserts null → submitted → sent. `failed_submission_can_be_confirmed_on_a_later_attempt` covers a failed attempt followed by a retry. `throttled_requests_retry_unchanged_and_record_every_attempt` covers the same across eight failures.\n- **File-discovery calls count as tool calls but are not recorded as inputs.**\n  - `list_files` goes through `usage.tool`, and its delivery carries no inputs.\n  - Tests: the CLI test asserts `tool_calls.list_files == 1` and no usage input with origin `list_files`. The unit test counts `list_files` as a tool call with empty `inputs`.\n\nNo unspecified observable behavior turned up. The extra `builtin` kind covers fixed text that is not evidence.",
+  "references": "3293201470f0a495844ee51c868342042be1d70cde1ada5dd186412b131c1992",
   "inputs": [
     {
       "requirements": "requirements.authoring.usage_inputs",
@@ -24,62 +24,12 @@
     {
       "file": "src/authoring/mod.rs",
       "item": "fn[configured_record]",
-      "hash": "ef2ef1e0f38ab140265308f4f66046f8830bdaa9364b0fc71a8ed8a861c28db8"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "fn[assess_subject]",
-      "hash": "492f0e1bbfd42b850d1dfc6299792338a4bab939bb80656754f1c44da2c86f2e"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "fn[followup_sources]",
-      "hash": "91690390a4d3972683538dcb89c8f09253b040be7be5bb37eb4820625cd89b21"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "fn[converse]",
-      "hash": "12de6c27434f14d49e79ec0263ff0125433eb77c29d4aa8114fbbde5541b1cff"
+      "hash": "53f7e17d3dc1d00bf7fceeb70c1003f4b51381ee4be2d97466da338d42d99f58"
     },
     {
       "file": "src/authoring/mod.rs",
       "item": "mod[tests]/fn[throttled_requests_retry_unchanged_and_record_every_attempt]",
       "hash": "7449f6ef42af4fda0582a4da908f6f04f0a9f45e6606834b8a1a599a7c5bd5d9"
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "item": "struct[InputUsage]",
-      "hash": "0700e5ace38d9149dd28c6dce787c33e372e6108ad2b928509e78e502c848814"
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "item": "impl[UsageLog]/fn[prepared]",
-      "hash": "2f5ee5841328017a9014a674c7d6f031d32007daa3a487758b1e73b0fb43db6d"
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "item": "impl[UsageLog]/fn[begin_request]",
-      "hash": "b8fda53efe81ae7f8eefa5a83482a89bab71e2871480b183a7a7476fd98377fc"
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "item": "impl[UsageLog]/fn[end_request]",
-      "hash": "d97415ef41f54b420b45091f757d82e490a2c181ebe8456373fad5689dc9011d"
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "item": "impl[UsageLog]/fn[tool]",
-      "hash": "6aa1c92817d5a63f06bc5877e1dbe06da33874a0cd09e3f509a447c61a1359c0"
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "item": "impl[UsageLog]/fn[skipped_tool]",
-      "hash": "b75aa1847cab3fc7573d68ed6e4d3c7f29417a61e17d8c51ee756d3d88de8cdb"
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "item": "fn[tool_name]",
-      "hash": "3fbf5ec78958a5659c52aaf45460f4924677cb1862706f585ce438f679aaa971"
     },
     {
       "file": "src/authoring/usage.rs",
@@ -99,7 +49,107 @@
     {
       "file": "tests/authoring_cli.rs",
       "item": "fn[ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free]",
-      "hash": "2440f5eb6bd8f52e3a8bec38716e26e47c52772f98cd10fd1bde133da4d7468a"
+      "hash": "74303f88169d9890345df3e1fe9aa417ef12eccc1a23fce9ac0e42b24c57b20a"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "use@41232e72e1f3",
+      "hash": "41232e72e1f385e38ae4ad5b99da6e14207f3391487fad42ed8aa7ddd14d6cf3"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "use@7d19e0e4275b",
+      "hash": "7d19e0e4275bf5a3d248c8be4f91efe98e7afd386e5fdff696761ed1a31240d7"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "use@b9ad51f029df",
+      "hash": "b9ad51f029df0e9b3352de6ee80b9fc5085d69b914654d0181d2570afbfc446f"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "use@3970e6901143",
+      "hash": "3970e6901143920563d8805f9c3cc3a00f3047d12ba98064de8508cf8fd075f2"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "use@dd6bef0c8b3f",
+      "hash": "dd6bef0c8b3ff74d7a9e16476a39b756c85c442097c5383c4b6c84ea87170497"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "use@b254c9726a6b",
+      "hash": "b254c9726a6bf20073ea1825ce8f93c5326b97722758d0c11b573ac41ace0b4a"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "use@1fee5dfeb258",
+      "hash": "1fee5dfeb258363dba1e6d791b567f5a1ef8dc1badfa794de0de110f71dab537"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "use@ee79f9c70b9d",
+      "hash": "ee79f9c70b9d06fb940d5fb18008024f03e7f4046f00a24ae3c5ed7f3622411f"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "use@ae28650edb42",
+      "hash": "ae28650edb426279725e0ce17aa894e8e0be5440573cbf57b3b9d71fbea44ba9"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "static[SEQUENCE]",
+      "hash": "27ea496a941ba87256ee176fa57728b8cf3ab68279cbf4c2e5bb4188efb7f136"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "struct[UsageRecord]",
+      "hash": "fe1536bcd19ca319cb877d57c6972dc1337b0ed56254123f3a9b2c24fc147fb0"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "struct[InputUsage]",
+      "hash": "0700e5ace38d9149dd28c6dce787c33e372e6108ad2b928509e78e502c848814"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "struct[RequestUsage]",
+      "hash": "ced83e15e260c181021d844579a30aeeda5d1949371e81106a0de9b3d5d85281"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "struct[TokenCounts]",
+      "hash": "4b5cbb91ce295d288e0a77be2fa693d7f9f932ae8d91307d787a07b9dc4cd610"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "struct[UsageLog]",
+      "hash": "97e4b7533e5d5763af9043a66f7efb3b1ee2926e342c076d3e5d20d14d4e7500"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "impl[UsageLog]",
+      "hash": "25091f183b27f1103e70640e06de6c849392e8cbe925243d6d11c75aa9651134"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "impl[TokenCounts]",
+      "hash": "28ad3197404ef55ddad58da22007328feb6b47ffd483b15a7018a00fd34e37d8"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "fn[tool_name]",
+      "hash": "3fbf5ec78958a5659c52aaf45460f4924677cb1862706f585ce438f679aaa971"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "fn[timestamp]",
+      "hash": "8d0368ffdb114254659644baf14666d13a8329fa838df00ac45aa73bd88edfdb"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "fn[converse]",
+      "hash": "12de6c27434f14d49e79ec0263ff0125433eb77c29d4aa8114fbbde5541b1cff"
     }
   ]
 }

@@ -1,7 +1,7 @@
 {
   "requirement": "Saved configuration MUST remain distinct from resolved runtime configuration.\nSerializing and deserializing a valid configuration MUST preserve its semantic\nvalues, including explicit versus omitted settings. Optional fields MAY be\nomitted on serialization; defaults and environment-derived values MUST NOT be\nmaterialized into omitted fields. TOML comments and formatting need not\nround-trip.\n\nLoading configuration or running a configured feature MUST NOT rewrite the user\nor project configuration as a side effect. Resolved credentials and live runtime\nobjects MUST NOT enter the serialized data structures. Explicitly supplied\ncredential values are permitted only in the fields documented by the authoring\nfeature; credentials resolved from a profile or environment MUST NOT be written\nback to configuration.",
   "determination": true,
-  "rationale": "I found no gaps. Each obligation below maps to marked code and to a test that exercises it.\n\n**Saved configuration stays distinct from resolved runtime configuration.**\n- The serde data structures in `src/config.rs` hold only saved values: `UserConfig`, `WorkspaceConfig`, `AuthoringConfig`, `BackendConfig`, `BedrockConfig` and `OllamaConfig`.\n- `ResolvedAuthoringConfig` (`src/config.rs:285`) is a separate type with no `Serialize` derive.\n- Its comment says it holds \"saved values … without resolved secrets\".\n- `resolve_authoring_with_workspace_from` copies fields from the saved structs and resolves no secrets.\n- Tests: `workspace_defaults_and_configs_combine_with_existing_user_selections` and `authoring_concurrency_defaults_overrides_and_invalid_values` resolve a config and check the saved one.\n\n**Round trip preserves semantic values, including explicit versus omitted settings.**\n- Optional fields use `#[serde(default, skip_serializing_if = \"Option::is_none\")]`, and empty collections are skipped. This is the optional-field omission the requirement permits.\n- `UserAuthoringConfig.configs` has no `skip_serializing_if`, so a present-but-empty `configs` is preserved.\n- `UserConfig::to_toml` and `WorkspaceConfig::to_toml` call `toml::to_string_pretty`, and `parse` decodes with `deny_unknown_fields`.\n- `OptionValue` is an untagged enum whose variants keep the string, integer, float and boolean types.\n- Tests:\n  - `backend_configuration_round_trips_without_materializing_defaults` covers a round trip with omitted `endpoint`, `concurrency` and `options`.\n  - `user_and_workspace_authoring_tables_round_trip_every_map` covers `configs = {}`, projects and options.\n  - `absent_and_minimal_configuration_are_distinct_and_read_only` covers a minimal config that has no `authoring`.\n  - `workspace_discovery_uses_nearest_file_without_merging_or_rewriting_it` covers a workspace round trip with omitted `configs` and `allow`.\n\n**Defaults and environment-derived values are not materialized into omitted fields.**\n- `OllamaConfig::endpoint()` computes the default on demand and stores nothing.\n- `api_key_from` returns an environment-resolved key as a `String` and never stores it in the struct.\n- Tests: `backend_configuration_round_trips_without_materializing_defaults` asserts that `endpoint`, `http://localhost` and `concurrency` are absent from the serialized output. `ollama_authentication_resolves_separately_and_rejects_missing_values` asserts that the serialized output keeps `MODEL_KEY` and omits `private-value`.\n\n**Loading or running a feature does not rewrite configuration.**\n- `load_user_config`, `load_workspace_config`, `parse` and `resolve_*` only read.\n- My search of `src` found no code that writes configuration files.\n- Tests:\n  - `absent_and_minimal_configuration_are_distinct_and_read_only` and `workspace_discovery_uses_nearest_file_without_merging_or_rewriting_it` re-read the file after loading and compare it to the original.\n  - `authoring_uses_nearest_workspace_configuration_without_a_user_file` (CLI) checks that both workspace files are byte-identical after `author` runs and that no user config is created.\n  - `ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free` checks that the user configuration is unchanged after `author-evidence` runs.\n\n**Resolved credentials and live runtime objects do not enter the serialized structures.**\n- The serialized structs hold only `SecretString`, `api_key_env` names and `aws_profile` names.\n- No resolved-credential or runtime-object field exists in them.\n- `RigProvider::connect` builds runtime objects separately from the config.\n- Tests: `ollama_authentication_resolves_separately_and_rejects_missing_values` and `authoring_uses_nearest_workspace_configuration_without_a_user_file`, which checks that usage output, stdout and stderr do not contain the literal key.\n\n**Explicit credentials only in documented fields.**\n- Explicit credentials live only in `BedrockCredentials`, the `credentials` field, and `OllamaConfig.api_key`, all of type `SecretString`.\n- `deny_unknown_fields` rejects any other field.\n- Test: `explicit_credentials_round_trip_but_diagnostics_and_debug_redact_them` checks that these fields round trip and that misplaced or invalid credential values are rejected.\n\n**Credentials resolved from a profile or environment are not written back.**\n- No code path stores them. This is covered by the `api_key_env` test and the CLI test, which uses an environment-resolved key and checks that the user configuration file is unchanged.\n\nAll of this code carries `{impl}` references to `requirements.configuration.serialization`, and every test carries a `{test}` reference. I found no unmarked implementing code and no unspecified behavior.",
+  "rationale": "I found no gap for any obligation in `requirements.configuration.serialization`. Each obligation is carried out by the marked items in `src/config.rs` and exercised by the marked tests.\n\n**1. Saved configuration is distinct from resolved runtime configuration.**\n- The saved types (`UserConfig`, `WorkspaceConfig`, `AuthoringConfig`, `BackendConfig` and their parts) derive `Serialize` and `Deserialize`.\n- `ResolvedAuthoringConfig` (`src/config.rs:257`) and `LoadedWorkspaceConfig` do not derive `Serialize`. The resolved value holds the source path, project root, selected name and saved settings, but no resolved secrets.\n- Tests: `backend_configuration_round_trips_without_materializing_defaults`, `authoring_concurrency_defaults_overrides_and_invalid_values` and `workspace_defaults_and_configs_combine_with_existing_user_selections` resolve a saved configuration into a separate runtime value.\n\n**2. Round trip preserves semantic values, including explicit versus omitted settings.**\n- Every optional field uses `#[serde(default, skip_serializing_if = ...)]`, and `deny_unknown_fields` is set.\n- `UserAuthoringConfig.configs` is required and is not skipped when empty, so a present-but-empty `configs` survives.\n- `to_toml` on `UserConfig` and `WorkspaceConfig` validates and then serializes. `parse` and `load_*` decode and validate.\n- Tests re-parse serialized output and compare it with the original:\n  - `backend_configuration_round_trips_without_materializing_defaults`\n  - `authoring_concurrency_defaults_overrides_and_invalid_values` (concurrency explicit versus omitted)\n  - `user_and_workspace_authoring_tables_round_trip_every_map`\n  - `workspace_discovery_uses_nearest_file_without_merging_or_rewriting_it`\n  - `absent_and_minimal_configuration_are_distinct_and_read_only`\n  - `explicit_credentials_round_trip_but_diagnostics_and_debug_redact_them`\n\n**3. Defaults and environment-derived values are not materialized into omitted fields.**\n- `OllamaConfig::endpoint()` applies the default URL only at read time. The stored `endpoint` stays `None`.\n- `api_key_from` resolves the environment variable separately from the saved fields.\n- Tests: `backend_configuration_round_trips_without_materializing_defaults` asserts that the serialized output has no `endpoint`, no `http://localhost` and no `concurrency`. `ollama_authentication_resolves_separately_and_rejects_missing_values` asserts that the serialized output keeps `MODEL_KEY` and does not contain `private-value`.\n\n**4. Loading or running does not rewrite configuration.**\n- `load_user_config`, `load_workspace_config` and the `resolve_authoring*` functions only read.\n- A search of `src` found no code path that writes a user or workspace configuration file. The only `to_toml` callers are in tests.\n- Tests: `absent_and_minimal_configuration_are_distinct_and_read_only` and `workspace_discovery_uses_nearest_file_without_merging_or_rewriting_it` check file bytes after loading. The CLI tests `ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free` and `authoring_uses_nearest_workspace_configuration_without_a_user_file` run the feature and check the files are unchanged and that no user file is created.\n\n**5. Resolved credentials and live runtime objects do not enter the serialized structures.**\n- The serialized types hold only saved values: `api_key_env` (the variable name), `aws_profile` and `region`.\n- Resolved values are returned by `api_key`/`api_key_from` as plain return values and are not stored in any serialized struct.\n- Test: `ollama_authentication_resolves_separately_and_rejects_missing_values` asserts that the serialized output contains `MODEL_KEY` and not `private-value`.\n\n**6. Explicit credentials only in documented fields; profile- or environment-resolved credentials are never written back.**\n- Only `BedrockCredentials` and `OllamaConfig.api_key` hold secrets, as `SecretString`. `SecretString` serializes transparently, and its `Debug` impl redacts the value.\n- `BackendConfig::validate` rejects `credentials` together with `aws_profile`, and `api_key` together with `api_key_env`.\n- Tests: `explicit_credentials_round_trip_but_diagnostics_and_debug_redact_them` covers the round trip and the rejection cases. The CLI test `authoring_uses_nearest_workspace_configuration_without_a_user_file` checks that the explicit key reaches the request header and appears in no output.\n\n**Judgment calls.**\n- An explicit empty `allow = []` or workspace `configs = {}` is dropped on serialization. These are `Vec` or `BTreeMap` fields, so the data structure cannot tell empty from omitted, and the semantic values are the same. I did not count this as a gap.\n- Every {impl} item is a serialized type, a parse/load/resolve function, or a default/credential accessor, and each is exercised by a {test}-marked test.",
   "references": "b74d27a39e2d9537d6d1f2699de2506605189119be307e637792026d5ecd2637",
   "inputs": [
     {
@@ -160,7 +160,7 @@
     {
       "file": "tests/authoring_cli.rs",
       "item": "fn[ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free]",
-      "hash": "2440f5eb6bd8f52e3a8bec38716e26e47c52772f98cd10fd1bde133da4d7468a"
+      "hash": "74303f88169d9890345df3e1fe9aa417ef12eccc1a23fce9ac0e42b24c57b20a"
     },
     {
       "file": "tests/authoring_cli.rs",
@@ -208,119 +208,144 @@
       "hash": "34fae851fb0afe1cf07314e2d97f3941995a972552b06b666bf52e300391ce8a"
     },
     {
-      "file": "src/authoring/access.rs",
-      "item": "mod[tests]/fn[nested_project_uses_only_its_part_of_the_git_index]",
-      "hash": "dea11d109c0202e1b5b6a7f89fc5e0b4864ee3a773393d4d2cb7f52f55a48595"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "mod[tests]/fn[discovery_considers_indexed_files_except_exclusions_including_credential_configuration]",
-      "hash": "c0f7459b67b4ef4b9ee2ff850d2265e3c0a3e5c689ffa80be01eb7c0b2aad331"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "mod[tests]/fn[unreadable_git_index_does_not_fall_back_to_untracked_access]",
-      "hash": "04e0bb3382ec1ba0982960e6e5a2254e7cacc9ce324a0d46442a9271c9c9e5d8"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "mod[tests]/fn[empty_git_directory_in_an_ancestor_does_not_make_a_project_a_worktree]",
-      "hash": "db8bdfdbb6c83a98321c48f79a8adb3c376b8e26b0df2e9b5fba12f8e3f46d83"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "mod[tests]/fn[invalid_git_configuration_does_not_fall_back_to_untracked_access]",
-      "hash": "1dc364aff4aca6baed1f16e223c9a5a9c6db629c66bbea30cc016d5d0f309315"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "mod[tests]/fn[explicit_allow_overrides_defaults_but_disallow_wins_for_alias_targets]",
-      "hash": "761b47712ef2c180dad13743d3211303eae1a9d74565d6d97eb1ac579f372865"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "mod[tests]/fn[workspace_configuration_with_credentials_is_readable_unless_disallowed]",
-      "hash": "3af28e1800a227c7f0da97cd73d5ea446179f3c04577931bf6971b33a6939463"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "mod[tests]/fn[disallowed_ancestors_cannot_redirect_reads_into_allowed_targets]",
-      "hash": "2ea3922fded2a225a891313be5037801e371c248314c6a9325f7627d917b67b6"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "mod[tests]/fn[generated_discovery_accepts_out_directories_but_not_arbitrary_root_output_targets]",
-      "hash": "3e8d50f15120781e88f7843939881d3d7f03976caf704fa4dae534cd5d903e6e"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "mod[tests]/fn[policy_resolves_symlinks_before_parent_components_without_allowing_wrong_subtrees]",
-      "hash": "2f2d8e111030ceb4fe779808eb183f8865ca9106498fbabc52491a9b61890fff"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "mod[tests]/fn[inherited_out_dir_is_ignored_and_metadata_failure_preserves_ordinary_reads]",
-      "hash": "15c3ec7055758032c8b893b53c556df962d6f388df5b93ecfccff059e6b712fe"
-    },
-    {
-      "file": "src/authoring/batch.rs",
-      "item": "mod[tests]/fn[selection_counts_definitions_and_citation_reviews_in_one_phase]",
-      "hash": "791858fd9a6d6dad77893e479f36f7c67de4e8e32b9e9b0f4c82236a0d2e5b38"
-    },
-    {
-      "file": "src/authoring/batch.rs",
-      "item": "mod[tests]/fn[orphaned_citation_and_site_reviews_are_deleted]",
-      "hash": "0e8541bbb280daa5af576678b1e80c72cc99028d47a6e0a10cd17207dff0d377"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "mod[tests]/fn[project]",
-      "hash": "fe2cd844de1cb0683bc9efd3c89dbc2d56b8880a80f3235a5dbb4b36ce6c5c80"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "mod[tests]/fn[bundle_combines_direct_references_terms_and_current_existing_selectors]",
-      "hash": "2d7779297348999b6cd989d88a4fd51badbcb4fcbfcc5ac1b14976184e5eab2e"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "mod[tests]/fn[unresolvable_earlier_inputs_do_not_block_reassessment]",
-      "hash": "4088fbdf10f3e04de09cfc9d9cb3ddbcb3950dc985f3269d41c86ad5a9638423"
+      "file": "src/config.rs",
+      "item": "struct[LoadedWorkspaceConfig]",
+      "hash": "4b8838291dc0d39b581ee5dfc82764501ab9e0f8357cc1a89d4fde699d081959"
     },
     {
       "file": "src/config.rs",
-      "item": "impl[UserConfig]/fn[validate]",
-      "hash": "9d47228e0c5a1d9a1681eb79f95a62e082f16ff1f218268f1d1c0e8f85b2c9e1"
+      "item": "struct[WorkspaceEvidenceConfig]",
+      "hash": "6ef8de3f201aaf71b6e3a15d9166541b8fe0d1f660887a80b27c5672f87db379"
     },
     {
       "file": "src/config.rs",
-      "item": "fn[parse_document]",
-      "hash": "0287b1717cba7e77c7d4c3f8b5264f202094f1b27303f52f763c36a782efbc70"
+      "item": "impl[SecretString]",
+      "hash": "a0235bf71399d6481804c2fa60803621ede1fe00b6346ef5c214490497466c6a"
     },
     {
       "file": "src/config.rs",
-      "item": "fn[decode]",
-      "hash": "18c77225e202f5ac560723436ec3878e6b588615de9c83ab7a18e5008a3db1eb"
+      "item": "impl[SecretString/fmt::Debug]",
+      "hash": "f2fbcc77aa24a816d53a19029d45ef08e6439939f3445414f300679df306417d"
     },
     {
       "file": "src/config.rs",
-      "item": "fn[decoded_setting]",
-      "hash": "5e1b71d9894d744a325566cd5baf422130ba6f2006a66db39941b435eb491520"
+      "item": "impl[AssessmentPolicy]",
+      "hash": "ed5873bec0d0df00bfca5d60e5887b3b17f4a33523b6c63a4f2d57bed88195ba"
     },
     {
       "file": "src/config.rs",
-      "item": "fn[credential_values]",
-      "hash": "55703ef2a699aecbc46d7379809fd1d1c18da759bc9bb5d86e391307a83bb23b"
+      "item": "impl[AssessmentPolicy/std::str::FromStr]",
+      "hash": "b27edc498208c4b4e60dea0908436e7a71374033ce59420a83545183fd1b410c"
     },
     {
       "file": "src/config.rs",
-      "item": "fn[resolve_authoring]",
-      "hash": "2fb277fc2ea1a1aed5d0a37cc3d9be0b0f97b41555f06cbff44571c2fffe05c0"
+      "item": "impl[AssessmentPolicy/fmt::Display]",
+      "hash": "aa28e4adfc752192e2d2cefd3294904b163ea2b4f08a4f1efe80f918e6423128"
     },
     {
-      "file": "src/authoring/providers.rs",
-      "item": "impl[RigProvider]/fn[connect]",
-      "hash": "10903ec51d70dcb885695f74ffbf3e327c9156270cae232ec0ba1b3dbbd683c8"
+      "file": "src/config.rs",
+      "item": "enum[BackendKind]",
+      "hash": "0e911ecbce26c7263adaf50bc4a818048182381675976d388325ffaf54ee3f79"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "struct[ModelRef]",
+      "hash": "812cb7505bb8aa46e898381466b12b251ae680aa9e2b9c67c48cceaa1151a60c"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "enum[ConfigPlatform]",
+      "hash": "a5de749a21f55c086f8e53b4112ba7f24db76ce29c826cf05dddd6e59c5ba7d5"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "impl[ConfigPlatform]",
+      "hash": "816fa731bb902965f928c77a8204fb9d14c729f3e24c44320d7ff47e12dc84e7"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "impl[UserConfig]",
+      "hash": "1c8c4f12d0c8aa68141f51f0b5f6210995d702934c62b76e640b7611db3a0c90"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "impl[WorkspaceConfig]",
+      "hash": "ba35cec3e9b3681e15a3081d504e47c86578d9a2b7ef210d3b32c3c62c1e4456"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "impl[EvidenceConfig]",
+      "hash": "9d9a20fc5bf46f4dd4df1bd3ec079246bd73834ca09664e5b6037bd0fb73803f"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "impl[ProjectConfig]",
+      "hash": "e9e434f684e79be2fd86de660957fc5b92c3e773253bf6266ca40588706112fa"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "impl[UserAuthoringConfig]",
+      "hash": "21ee902d70fce92016589b493f2d0d2bf808661d27dbe0d4aee1ffc3b4c41cda"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "impl[BackendConfig]",
+      "hash": "61e8cd7d95443b1b22bdd34e1bc222652f0f9333d8bdf21e2b64a8388db87ab5"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "impl[OptionValue]",
+      "hash": "c8e9e2a02cc67e48500beff2121d34a375effa4fe0d8540dcba8229896cb514d"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "impl[OllamaConfig]",
+      "hash": "e52a986ed0fb723f75dc5e72a297378da8361d2eb5a85cdfb697e5bd796780cf"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "impl[ResolvedAuthoringConfig]",
+      "hash": "b18ac1fe8055f3ddc57ac8076cf8b7a18abb449b8e8f493caf04ec697bbec6a7"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "fn[user_config_path]",
+      "hash": "a9d624b858415bccc5b8d0c8b258fb679ee2759027fa69ed21103f2b6a958661"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "fn[user_config_path_from]",
+      "hash": "977da9d487256eb10dc2b119c1fac18d7a6ea142f4594b03efb0b661e7f4a4f7"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "fn[state_root]",
+      "hash": "61c30e500766a61fe8fadb8ff6272f0aea3e3d3046c4525fd98783f184bc0c10"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "fn[state_root_from]",
+      "hash": "957018782a117a786d8497420928482942493cc7391f90efa9fbbe0ef8a2cfe2"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "fn[state_in_project]",
+      "hash": "0aad54b46aa43427582dde481049e300aa46030d246d78d366f9ff5d1a667f3b"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "fn[resolved_location]",
+      "hash": "3a81f383cedd85948645f4124e050368eed5acd0c1259b8a5d6939e6746e25ae"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "fn[absolute_directory]",
+      "hash": "82024e470bc377bbc0fc64f0702e8c445d30df5022d152673e1130e82fb5d222"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "fn[required_directory]",
+      "hash": "7fd086d548e3f55c4cd745817f63b4e4a11a1706958da3fa786d8de1c9499a72"
     }
   ]
 }

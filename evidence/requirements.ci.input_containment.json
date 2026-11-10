@@ -1,8 +1,8 @@
 {
   "requirement": "Every file named directly by an evidence input or resolved from its selector MUST resolve within the project root unless permitted by workspace path configuration or discovered Cargo generated-output policy. Symlink targets MUST follow the same policy. Validation MUST enforce explicit workspace disallow entries and report missing, unreadable, or excluded files. It MUST check existing generated inputs without running a build. {cite}`requirements.configuration.evidence_paths` {cite}`requirements.authoring.generated_inputs`",
   "determination": true,
-  "rationale": "I found no gaps. Every obligation has marked code and a test that asserts its outcome.\n\n**Obligations and the code that carries them out**\n- **Containment.** Files named by an evidence input or resolved from its selector must lie inside the project root unless workspace configuration or Cargo generated-output policy permits them.\n  - `resolve_evidence_file` in `src/authoring/access.rs` canonicalizes the root, then the requested path and its symlink target via `resolve` and `requested_location`.\n  - It rejects any path or target outside the root unless `policy.allowed(..)` matches or both lie under a root from `generated_roots`.\n  - The error is \"resolves outside the repository without an allowed evidence path\".\n- **Symlink targets follow the same policy.** The same function checks both `requested` and `target` for containment, allow and generated-root membership. `check_disallow` also checks every ancestor location, so a disallowed ancestor cannot redirect a read.\n- **Disallow enforcement.** `check_disallow` runs before the allow and generated-output checks, so a disallow entry wins over both. Its denial message says the path is \"disallowed by habeas.toml rule …\". Validation reaches this code through the outline path (`validate_outline_input`, then `InputSelector::resolve`, then `OutlineCache::parse`, then `read_project_file`, then `check_project_file`). Definition and requirements inputs reach it through `check_project_file` on the declaring file.\n- **Reporting missing, unreadable and excluded files.** `resolve` produces \"cannot open …\" errors. `read_project_file` produces \"cannot read …\" errors. The disallow and outside-repository errors cover excluded files. `validate_outline_input` and `validate_resolved_input` push these errors into the report.\n- **Existing generated inputs, no build.** `generated_roots` runs `cargo metadata --offline --locked --no-deps` and inspects existing `root-output` records in `discover_generated_roots`. It never builds or runs build scripts. The check never consults Git index membership.\n\n**Tests**\n- **Containment, including the sibling-prefix case.** `symlinks_may_resolve_inside_but_not_to_a_sibling_with_the_same_prefix` shows an inside symlink validates and an escaping symlink to a sibling directory gives \"escape.rs resolves outside the repository\".\n- **External paths allowed by configuration.** `configured_external_inputs_validate_and_remain_subject_to_freshness_and_disallow` shows an external file is rejected without the allow entry, accepted with it, goes stale on edit, and is disallowed when a disallow entry is added.\n- **Symlink and ancestor handling.** The following tests cover alias targets, disallowed ancestors and `..` after a symlink:\n  - `evidence_rejects_disallowed_ancestors_even_when_symlinks_target_allowed_sources`\n  - `explicit_allow_overrides_defaults_but_disallow_wins_for_alias_targets` (in `access.rs`)\n  - `disallowed_ancestors_cannot_redirect_reads_into_allowed_targets` (in `access.rs`)\n  - `policy_resolves_symlinks_before_parent_components_without_allowing_wrong_subtrees` (in `access.rs`)\n- **Disallow on definition and requirements inputs.** `definition_and_requirements_inputs_obey_containment_for_declaring_files` covers this. `status_applies_workspace_disallow_to_existing_evidence` covers the CLI path.\n- **Missing and unreadable files.** `unreadable_and_missing_inputs_are_reported` asserts \"cannot open gone.txt\" and \"cannot read locked.txt\". The unreadable assertion is skipped only when the test runs with privileges that can read the file.\n- **Generated outputs, no build.** `discovered_external_cargo_outputs_validate_freshness_and_obey_disallow` shows an external Cargo output validates, goes stale on edit, is disallowed by a disallow entry, and that `target` is never created.\n\nThe marking is complete. All the code I found implementing the requirement carries an `{impl}` reference. The tests that verify it carry `{test}` references.",
-  "references": "33992dcc30ce94dfa4c2c7ff280495adbb9981b0bb92de157259a341a9fd6bee",
+  "rationale": "I found no gaps. Each obligation has code reachable from the `{impl}` items and a test that exercises it.\n\n**Reachability.** `validate_input` (src/evidence.rs:762) leads to `validate_outline_input` / `validate_resolved_input`, then to `InputSelector::resolve`. From there, `OutlineCache::parse` calls `read_project_file`, which calls `check_project_file`, which calls `resolve_evidence_file` (src/authoring/access.rs:676). Definition and requirements inputs call `check_project_file` directly for each declaring file (src/inputs.rs:~255 and ~275). `project_path` in src/authoring/tools.rs calls `SourceAccess::path`, which covers authoring reads.\n\n| Obligation | Code | Tests |\n|---|---|---|\n| Every file named directly or resolved from a selector resolves within the project root, unless workspace configuration or Cargo generated-output policy permits it. | `resolve_evidence_file` rejects a requested path or target outside the canonical root unless `policy.allowed(..)` or a discovered generated root contains both. It returns \"resolves outside the repository without an allowed evidence path\". `SourceAccess::path` applies the same containment on the authoring side. | `symlinks_may_resolve_inside_but_not_to_a_sibling_with_the_same_prefix` (outside rejected, inside accepted). `configured_external_inputs_validate_and_remain_subject_to_freshness_and_disallow` (external path rejected without allow, accepted with allow). `definition_and_requirements_inputs_obey_containment_for_declaring_files`. `explicit_allow_overrides_defaults_but_disallow_wins_for_alias_targets` (access.rs). |\n| Symlink targets follow the same policy. | `resolve` canonicalizes the target and `requested_location` resolves the requested path without following the final symlink. Both are checked against containment and `check_disallow`, which also walks ancestor locations. | The sibling-prefix symlink test, `disallowed_ancestors_cannot_redirect_reads_into_allowed_targets`, `policy_resolves_symlinks_before_parent_components_without_allowing_wrong_subtrees`, and `evidence_rejects_disallowed_ancestors_even_when_symlinks_target_allowed_sources`. |\n| Validation enforces explicit workspace disallow entries. | `PathPolicy::check_disallow` runs in `resolve_evidence_file` before the allow and generated checks. | `configured_external_inputs_…` and `discovered_external_cargo_outputs_validate_freshness_and_obey_disallow` (disallow beats allow and generated roots). `definition_and_requirements_inputs_obey_containment_for_declaring_files`. `status_applies_workspace_disallow_to_existing_evidence` (tests/commands.rs). |\n| Validation reports missing files. | `resolve` returns \"cannot open X\". `validate_outline_input` and `validate_resolved_input` push the error with the `inputs[n]` label. | `unreadable_and_missing_inputs_are_reported` asserts \"inputs[1]: cannot open gone.txt\". `collects_missing_orphan_format_false_and_changed_line_errors` covers further input errors. |\n| Validation reports unreadable files. | `read_project_file` returns \"cannot read X: …\". | `unreadable_and_missing_inputs_are_reported` asserts \"inputs[0]: cannot read locked.txt\". It skips this assertion when the process can read the file regardless of mode, as when running as a privileged user. |\n| Validation reports excluded files. | The \"disallowed\" and \"outside the repository\" errors are pushed with the input label. | The disallow and containment tests above assert these messages. |\n| Validation checks existing generated inputs without running a build. | `generated_roots` runs `cargo metadata --offline --locked --no-deps` and `discover_generated_roots` reads existing `root-output` records. Neither runs a build. | `discovered_external_cargo_outputs_validate_freshness_and_obey_disallow` validates and freshness-checks a generated input, and asserts `!target.exists()` (\"metadata must not run a build\"). |\n\nThere is no unspecified behavior and no `{fixme}` to consider.",
+  "references": "df189d0591d47592539799a51d220c6299d3199df8d90d3749f3fedb916e3a35",
   "inputs": [
     {
       "requirements": "requirements.ci.input_containment",
@@ -75,26 +75,6 @@
     },
     {
       "file": "src/authoring/access.rs",
-      "item": "fn[requested_location]",
-      "hash": "88ae2a3be5517f6679f8f0cd3f455aaca565d527667600ec1a188cf3663c15e3"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "fn[normalize]",
-      "hash": "bb1e805afc5749bc709aaf7f081599fc4a7bcd0a200fe95533e597ce3875bf16"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "fn[resolve]",
-      "hash": "59b08bae87803bd25ca4b28f134c942dc849636a9837264612b98c6f457ce973"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "fn[resolve_evidence_file]",
-      "hash": "9418006962cb9105a2ab4972bf23159a668c8b08d8994df21d81362cf800473b"
-    },
-    {
-      "file": "src/authoring/access.rs",
       "item": "mod[tests]/fn[explicit_allow_overrides_defaults_but_disallow_wins_for_alias_targets]",
       "hash": "761b47712ef2c180dad13743d3211303eae1a9d74565d6d97eb1ac579f372865"
     },
@@ -116,7 +96,7 @@
     {
       "file": "src/authoring/tools.rs",
       "item": "mod[tests]/fn[search_uses_the_validated_target_when_symlinks_precede_parent_components]",
-      "hash": "c30a886f200ac79ea68db7926a082b6faa0aab61153d92fbf07e12c6e0de75a5"
+      "hash": "be14b1f1115089c2e41dee7fd269d72bc8bf13a969b3a667107c90688fa29ed4"
     },
     {
       "file": "src/evidence.rs",
@@ -125,48 +105,13 @@
     },
     {
       "file": "src/evidence.rs",
-      "item": "fn[validate_outline_input]",
-      "hash": "0bfab0f3093185b18122d349a70a23b379326bd79611fac1753184bff16d08bb"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[validate_resolved_input]",
-      "hash": "709c631128ce311965ed9c48a959634962d08ce9a66c64705e6eaff7ceb9b0e1"
-    },
-    {
-      "file": "src/evidence.rs",
       "item": "mod[tests]/fn[collects_missing_orphan_format_false_and_changed_line_errors]",
       "hash": "b1a25c52c79806b9102798b8514db58bbaa876fa9bf48ce39fdade9402d20d1d"
-    },
-    {
-      "file": "src/inputs.rs",
-      "item": "impl[OutlineCache]/fn[parse]",
-      "hash": "547220a7cf9e860f93a3e2c1180eec2a232d80cd89e4b5cb63358d5ee9217638"
-    },
-    {
-      "file": "src/inputs.rs",
-      "item": "impl[InputSelector]/fn[resolve]",
-      "hash": "1aedf847e4e2e74844ccedb3ccd88dd42b0805acfbb266f8e7f4bea8574853d3"
-    },
-    {
-      "file": "src/inputs.rs",
-      "item": "fn[check_project_file]",
-      "hash": "d229a2e14bc49aad09e4bca7ab3bdab6d475f05819973da2477323152e7aa4e5"
-    },
-    {
-      "file": "src/inputs.rs",
-      "item": "fn[read_project_file]",
-      "hash": "e41f9a27f04e9f92ef30a0f9364eb43397ec3142bd9947b7c34d0d4ea691ba1d"
     },
     {
       "file": "tests/commands.rs",
       "item": "fn[status_applies_workspace_disallow_to_existing_evidence]",
       "hash": "49a37589f20de14d662421cdc3a473dc73813bfc2f4df71ab09846154d6d62d5"
-    },
-    {
-      "file": "tests/evidence_boundaries.rs",
-      "item": "fn[fixture]",
-      "hash": "4a33bc170ebf4c2eac1c421a2427ca8d1acd72c8772476b61d2bf1a0f3c69949"
     },
     {
       "file": "tests/evidence_boundaries.rs",
@@ -246,7 +191,77 @@
     {
       "file": "src/authoring/access.rs",
       "item": "struct[SourceAccess]",
-      "hash": "0391484a788006167b470a88094e4eb6a0c4d8dd96a8fe51df087021928006e6"
+      "hash": "5415eda7c44356c91fa32ceb8ae19560446cf11ed6680c3066d19a121815e88d"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "impl[SourceAccess]",
+      "hash": "cd4c710e68d67b962930478fc59896e6fd80cbf2cd3b69fcf6a4732e5c540b9a"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "struct[DiscoverySources]",
+      "hash": "d41ede64ceca6cda2eedddc6f88391e3b8f5a84145ae93206993582d0e5b6bc5"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "impl[DiscoverySources]",
+      "hash": "29c2b4760a0ed897cf9ea002a5b63d416b7f3dfed6c68f03eaccbf72a156942c"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "fn[excluded_from_discovery]",
+      "hash": "783c0e5bf8c9b5e0db70ea8fa331bb5983e44affa49b0967a4cdc57190c24f04"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "fn[matches_rule]",
+      "hash": "41a6bde2409d645263e8718dbf4190aaba96c3ad46f7d580508c42aa699df699"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "fn[requested_location]",
+      "hash": "88ae2a3be5517f6679f8f0cd3f455aaca565d527667600ec1a188cf3663c15e3"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "fn[normalize]",
+      "hash": "bb1e805afc5749bc709aaf7f081599fc4a7bcd0a200fe95533e597ce3875bf16"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "struct[OutsideProject]",
+      "hash": "7347610821cd9fab235933e4bd26f16e77d06a98de4ee5e15ac76199b5d54259"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "impl[OutsideProject/std::fmt::Display]",
+      "hash": "37ab1896f6f1ef901ca863a0c3bf4dfc591e157ede4f628818cd12e84f050641"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "impl[OutsideProject/std::error::Error]",
+      "hash": "c06028f18c3247654a7404d78b9fa4c2dcafb65b43a6f1dc99a6fd9e33b882ca"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "fn[recoverable_outside_request]",
+      "hash": "fddd4231f739c424aaf7cf4f661961ed9393506663f6f819a24ea48f6b3fe8e1"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "struct[PolicyDenial]",
+      "hash": "d978d7071e3dc1426fb83069c97767038dc86a9d1777183a498fe1051cd34e0e"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "impl[PolicyDenial/std::fmt::Display]",
+      "hash": "1fd13f9334e07ecdf01dab38508d3398eab948069c60b59a6635fffc8d0e24ad"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "impl[PolicyDenial/std::error::Error]",
+      "hash": "8f7d3b4e6db68c7f2bfb1d520eadc6e697fafe0ac0b2abe9b762dd79b85720bc"
     },
     {
       "file": "src/authoring/access.rs",
@@ -260,8 +275,18 @@
     },
     {
       "file": "src/authoring/access.rs",
+      "item": "fn[resolve]",
+      "hash": "59b08bae87803bd25ca4b28f134c942dc849636a9837264612b98c6f457ce973"
+    },
+    {
+      "file": "src/authoring/access.rs",
       "item": "fn[tracked_sources]",
       "hash": "ddeda4bbf817788cc8952ba926a0e63408e3b35ddc72ded2692f32981abca498"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "fn[build_output_dirs]",
+      "hash": "e0b14328fb7b7e6c9372be7de8fff7e80c2d1c944dc77e13724522cdff2271fd"
     },
     {
       "file": "src/authoring/access.rs",
@@ -272,6 +297,146 @@
       "file": "src/authoring/access.rs",
       "item": "fn[discover_generated_roots]",
       "hash": "c841d9d538fd8ff27cc1a0e979a7c0a85848034f579cd5c58ce0f087c08f9488"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "fn[resolve_evidence_file]",
+      "hash": "9418006962cb9105a2ab4972bf23159a668c8b08d8994df21d81362cf800473b"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "use@a26087e08c80",
+      "hash": "a26087e08c80d5c75559c00d6f08909f5a03a0bd909c8c903061c37b78950102"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "use@0aa5aad345a4",
+      "hash": "0aa5aad345a497ea8555581d02720ca86969e0aff012fce65b6f20d384262fb4"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "use@3970e6901143",
+      "hash": "3970e6901143920563d8805f9c3cc3a00f3047d12ba98064de8508cf8fd075f2"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "use@17891119f0eb",
+      "hash": "17891119f0eb9d10b48f727e590ef4be9050f4cdc2813283f53abf585dfe721a"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "use@6e42e0801700",
+      "hash": "6e42e08017009abb18f33fa65d11a99391be1f47814478d1337e25ea5a0189ec"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "use@945e92f43fad",
+      "hash": "945e92f43fad9a4c59b94afe789e6ef9514106d005841b29a86ecf6cee616e26"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "use@329c335dba2c",
+      "hash": "329c335dba2cdba11067fef8c3a11caf3c7059e9c3ca39d0f580b295da43c88c"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "use@94c7012d1800",
+      "hash": "94c7012d18006bc204d06850f929668e869b47eba6b9b2d8ef109add66dee46f"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "use@167510602cb3",
+      "hash": "167510602cb34e66d4c8c78e9beeae3cee5655de55ff522a33ded8622af1c7f2"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "enum[InputSelector]",
+      "hash": "08a32d6d16b33bb0240b295f12f62e2fcc9e56aa8fa1b81e3551a705e6ade5f9"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "struct[SourceRange]",
+      "hash": "00a39f28430d5e153770e7b84515cae45e86675d442339e72386be6b8c178ff6"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "struct[ResolvedNode]",
+      "hash": "bf313fc4a64fd3c230d6433e360e30d613feaddc7ff28a17282a8d7d91afe2fa"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "struct[ResolvedInput]",
+      "hash": "747340a2a8f82c0e6547761dfa62a27ff890b8cd6eee80eca966088f5b7ae385"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "struct[ParsedSource]",
+      "hash": "60fdf5fdf9a375c3cd8f87afaaa15d7a3796bce2af9fab6835be52f3ba8c3be7"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "struct[OutlineCache]",
+      "hash": "51cd8476bb8fb67663a9845e54dfd7a7c7104ed0128e9c417c6f9a89960712f7"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "impl[OutlineCache]",
+      "hash": "3d341a2ee9eac04b06cfb061e5d8e4be1c1d7c45470e654d500a607e1c173f13"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "impl[ParsedSource]",
+      "hash": "1e8736402977d749ed722b0ca3a943de21dc5d0a8617f735f9f34650bc549907"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "impl[InputSelector]",
+      "hash": "65872609b4c4184eb51c5f1a3acbd2b3aaab02313acb77a9ddac15ab752a4154"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "fn[recorded_input]",
+      "hash": "e367b914f4385dbb6fa5352d25621130a8d501d28d36793e28b80228806689b5"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "fn[project_relative]",
+      "hash": "2bacdf705f69e79ecb7e7b649562d949c57508036bb5e1ddc1ea1387c585ebf1"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "fn[check_project_file]",
+      "hash": "d229a2e14bc49aad09e4bca7ab3bdab6d475f05819973da2477323152e7aa4e5"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "fn[read_project_file]",
+      "hash": "e41f9a27f04e9f92ef30a0f9364eb43397ec3142bd9947b7c34d0d4ea691ba1d"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "fn[outline_input]",
+      "hash": "c1b23bc16454f46cd2402e7867e2067b6c69ce6c7051760c3c77847c1f5804dc"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "fn[outline_inputs_for_lines]",
+      "hash": "1a71201d6c638e1ad96c8664db6788c9c99992c61d19e49ba3902bed73995d4f"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[validate_outline_input]",
+      "hash": "0bfab0f3093185b18122d349a70a23b379326bd79611fac1753184bff16d08bb"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[text_field]",
+      "hash": "f8bad25c98677d02faba4f36b2d36588ee6bd34c61c42347773874b820e31718"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[validate_resolved_input]",
+      "hash": "709c631128ce311965ed9c48a959634962d08ce9a66c64705e6eaff7ceb9b0e1"
     }
   ]
 }
