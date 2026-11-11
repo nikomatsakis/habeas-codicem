@@ -1438,11 +1438,11 @@ async fn converse<T>(
                         call.result(vec![ToolResultContent::text(delivery.result.to_string())]),
                     );
                 }
+                // A denied read is an ordinary tool error the model can see;
+                // only a denied mandatory input aborts, before any request.
+                // {impl}`requirements.authoring.read_denial`
                 Err(error) => {
                     usage.tool(call.function.name.as_str(), true);
-                    if error.kind() == io::ErrorKind::PermissionDenied {
-                        return Err(error);
-                    }
                     results.push(call.error_result(vec![ToolResultContent::text(
                         line_numbers::without_source_lines(&error.to_string()),
                     )]));
@@ -1813,7 +1813,7 @@ mod tests {
     // {test}`requirements.authoring.read_denial`
     #[cfg(unix)]
     #[tokio::test]
-    async fn a_read_through_a_symlink_leaving_the_project_aborts_the_assessment() {
+    async fn a_read_through_a_symlink_leaving_the_project_returns_an_error_to_the_model() {
         let project = inputs::tests::project();
         let outside = tempfile::tempdir().unwrap();
         fs::write(outside.path().join("secret.rs"), "fn secret() {}\n").unwrap();
@@ -1830,14 +1830,16 @@ mod tests {
             read: json!({"file": "src/escape.rs", "line_start": 1}),
             requests: RefCell::default(),
         };
-        let error = assess(&provider, &mut sources, &mut usage)
-            .await
-            .expect_err("the escaping read aborts");
-        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied, "{error}");
-        assert!(error.to_string().contains("src/escape.rs"), "{error}");
-        assert!(error.to_string().contains("outside the project"), "{error}");
-        // No result went back to the model and no further request was made.
-        assert_eq!(provider.requests.borrow().len(), 1);
+        let (_, evidence) = assess(&provider, &mut sources, &mut usage).await.unwrap();
+        // The denial went back to the model, naming the path and the reason,
+        // and the assessment continued without recording the file.
+        let requests = provider.requests.borrow();
+        assert_eq!(requests.len(), 2);
+        let delivered = requests[1].to_string();
+        assert!(delivered.contains("src/escape.rs"), "{delivered}");
+        assert!(delivered.contains("outside the project"), "{delivered}");
+        assert!(!delivered.contains("fn secret"), "{delivered}");
+        assert!(!evidence.to_string().contains("escape.rs"), "{evidence}");
     }
 
     // {test}`requirements.ci.review_criteria`

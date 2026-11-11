@@ -1375,6 +1375,7 @@ pub(super) mod tests {
 
     // {test}`requirements.references.anchors`
     // {test}`requirements.authoring.read_denial`
+    // {test}`requirements.authoring.read_denial.mandatory`
     #[test]
     fn unreadable_or_denied_anchors_fail_before_inference() {
         let root = project();

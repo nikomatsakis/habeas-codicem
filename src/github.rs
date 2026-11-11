@@ -417,7 +417,7 @@ pub(crate) fn tool(github: &GithubIssues, arguments: &Value) -> Result<Value, St
 pub(crate) fn tool_definition() -> Value {
     json!({
         "name": "github",
-        "description": "Read a GitHub issue or pull request named as <owner>/<repo>#<number>, such as one a {fixme} option line names. Returns its reference, state (open or closed), title, and body, with credential-shaped text redacted. Results are not evidence inputs. A malformed reference, an issue that does not exist, or a failed request returns a tool error.",
+        "description": "Read a GitHub issue or pull request named as <owner>/<repo>#<number>, such as one a {fixme} option line names. Returns its reference, state (open or closed), title, and body. Results are not evidence inputs.",
         "parameters": {"type": "object", "properties": {"issue": {"type": "string"}}, "required": ["issue"], "additionalProperties": false}
     })
 }

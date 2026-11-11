@@ -635,8 +635,10 @@ fn authoring_uses_nearest_workspace_configuration_without_a_user_file() {
 // {test}`requirements.authoring.persistence`
 // {test}`requirements.authoring.usage_storage`
 // {test}`requirements.authoring.usage_requests`
+// {test}`requirements.authoring.read_denial.untracked`
+// {test}`requirements.authoring.read_denial`
 #[test]
-fn explicit_untracked_reads_abort_without_another_request_or_evidence_write() {
+fn explicit_untracked_reads_return_an_untracked_error_and_the_assessment_continues() {
     for (tool, arguments) in [
         ("habeas", json!({"file":"untracked.txt", "line_start":1})),
         (
@@ -649,7 +651,14 @@ fn explicit_untracked_reads_abort_without_another_request_or_evidence_write() {
         ),
         ("list_files", json!({"path":"untracked-directory"})),
     ] {
-        let server = Server::start(vec![reply(vec![call("denied", tool, arguments)])]);
+        let server = Server::start(vec![
+            reply(vec![call("denied", tool, arguments)]),
+            reply(vec![call(
+                "submit",
+                "submit_judgment",
+                json!({"determination": true, "rationale": "The tracked sources support it."}),
+            )]),
+        ]);
         let fixture = Fixture::new(&server.endpoint);
         for args in [["init", "--quiet"], ["add", "."]] {
             let git = Command::new("git")
@@ -668,21 +677,24 @@ fn explicit_untracked_reads_abort_without_another_request_or_evidence_write() {
         .unwrap();
 
         let output = fixture.run(&["author", SUBJECT, "--stdout"]);
-        assert!(!output.status.success(), "{tool}: {output:?}");
-        assert!(output.stdout.is_empty(), "{tool}: {output:?}");
-        let diagnostics = String::from_utf8_lossy(&output.stderr);
-        assert!(diagnostics.contains("untracked"), "{tool}: {diagnostics}");
-        assert_eq!(
-            fs::read_to_string(&fixture.evidence).unwrap(),
-            fixture.original
+        assert!(output.status.success(), "{tool}: {output:?}");
+        // The model was told the path is untracked and how to fix it, and
+        // the file was neither delivered nor recorded.
+        let requests = server.finish();
+        assert_eq!(requests.len(), 2, "{tool}");
+        let second = requests[1].body.to_string();
+        assert!(
+            second.contains("is untracked") || second.contains("untracked, so"),
+            "{tool}: {second}"
         );
-        assert_eq!(server.finish().len(), 1);
+        assert!(second.contains("git add"), "{tool}: {second}");
+        assert!(!second.contains("hidden source"), "{tool}: {second}");
+        let evidence = String::from_utf8_lossy(&output.stdout);
+        assert!(!evidence.contains("untracked"), "{tool}: {evidence}");
         let usage = fixture.usage();
-        assert_eq!(usage["outcome"], "failed", "{tool}: {usage}");
-        assert_eq!(usage["request_count"], 1, "{tool}: {usage}");
+        assert_eq!(usage["outcome"], "completed", "{tool}: {usage}");
+        assert_eq!(usage["request_count"], 2, "{tool}: {usage}");
         assert_eq!(usage["tool_failures"][tool], 1, "{tool}: {usage}");
-        assert_eq!(usage["evidence_written"], false, "{tool}: {usage}");
-        assert!(usage["determination"].is_null(), "{tool}: {usage}");
     }
 }
 

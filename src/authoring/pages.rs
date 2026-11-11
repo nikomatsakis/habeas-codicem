@@ -143,11 +143,14 @@ impl ResultPages {
         for (number, range) in pages.iter().enumerate() {
             let (entries, page_indexes) = (&values[range.clone()], &indexes[range.clone()]);
             let definitions = page_definitions(entries, &accompanying[range.clone()]);
-            let page = json!({
+            let mut page = json!({
                 "total_entries": total,
                 "returned_entries": entries.len(),
                 "next": tokens.get(number),
             });
+            if tokens.get(number).is_some() {
+                page["note"] = json!(PAGE_NOTE);
+            }
             let result = listing.render(entries, page_indexes, &definitions, Some(page));
             let inputs = delivered(
                 &listing,
@@ -217,6 +220,13 @@ fn page_definitions(entries: &[&Value], accompanying: &[Vec<Value>]) -> Vec<Valu
 /// with their definitions and page fields, stays within [`PAGE_LIMIT`],
 /// except that an entry exceeding it forms a page of its own. Sizes are
 /// counted from above: every element's comma and every accompanying
+/// What a page with more entries after it tells the model, since tool
+/// descriptions do not explain paging.
+// {impl}`requirements.authoring.result_pages`
+// {impl}`requirements.authoring.tool_descriptions.special_cases`
+const PAGE_NOTE: &str =
+    "More entries remain: call next_page with this page's next token to get them.";
+
 /// definition are counted, so a page never exceeds its estimate.
 fn paginate(
     listing: &Listing,
@@ -228,6 +238,7 @@ fn paginate(
         "total_entries": total,
         "returned_entries": total,
         "next": "0".repeat(TOKEN_LENGTH),
+        "note": PAGE_NOTE,
     });
     let overhead = listing
         .render(&[], &[], &[], Some(longest))
@@ -288,8 +299,12 @@ mod tests {
             assert!(page["returned_entries"].as_u64().unwrap() > 0);
             let Some(token) = page["next"].as_str() else {
                 assert!(page["next"].is_null());
+                // The last page needs no note.
+                assert!(page.get("note").is_none(), "{page}");
                 break;
             };
+            // A page with more after it says how to continue.
+            assert_eq!(page["note"], PAGE_NOTE);
             delivered.push(pages.next_page(token).unwrap());
         }
         let returned: u64 = delivered

@@ -24,13 +24,15 @@ pub(crate) struct ToolDelivery {
 // {impl}`requirements.authoring.outline_tool`
 // {impl}`requirements.authoring.reference_index`
 // {impl}`requirements.authoring.github_reads`
+// {impl}`requirements.authoring.tool_descriptions.common_case`
+// {impl}`requirements.authoring.tool_descriptions.special_cases`
 pub(crate) fn definitions() -> Vec<Value> {
     // Providers such as Anthropic require a plain object at the schema root.
     // Describe the alternative forms here and enforce them in read().
-    let mut definitions = vec![
+    let definitions = vec![
         json!({
             "name": "habeas",
-            "description": "Read project source as evidence. Supply exactly one request form: file + line_start (optional line_end), file + item, requirements, or definition. Do not combine forms. Paths may be project-relative or absolute when permitted by the evidence policy. A line range is one-based and inclusive (omitted line_end reads through EOF) and returns {inputs, definitions}: the innermost outline nodes covering those lines, each with its item selector, kind, and source text, e.g. {\"file\":\"src/lib.rs\",\"line_start\":10,\"line_end\":20}. Line numbers only locate sources: results never give line numbers, and evidence records each node's selector and structural hash. Cite code by file and selector. The item form reads one outline node and returns {input, definitions}, e.g. {\"file\":\"src/lib.rs\",\"item\":\"impl[Thing]/fn[run]\"}; use the outline tool to list a file's selectors. Selectors are /-separated paths from the file's root: kind[name] for named nodes (Rust trait impls use impl[Thing/Trait]), kind@hash for anonymous nodes such as use declarations and plain-text lines (line@hash), and #N (one-based) for otherwise identical siblings; the empty item selects the whole file. Characters %, [, ], /, #, @ and whitespace in names are percent-encoded UTF-8 bytes. The requirements form takes a definition selection: a full requirement or example name, or a glob matching complete names where * matches any characters including dots, e.g. {\"requirements\":\"requirements.cli.*\"}. Definition reads use the full terminology name, e.g. {\"definition\":\"glossary.command\"}. Required terminology is returned alongside the selected input. Defaults permit project files (Git-tracked in Git worktrees) and existing Cargo build-script output directories; evidence/ is excluded. Returned source text is redacted: credential values and credential-shaped text read [REDACTED:<kind>], with line breaks unchanged. The nearest habeas.toml can explicitly allow other paths or disallow paths; disallow wins. Denied reads of project paths abort the assessment and report to the operator; a path outside the project that no rule permits returns an ordinary tool error, as does a path in the book's build directory or the project-root target directory, which hold build output (existing Cargo build-script outputs excepted); read the sources they are built from instead. Paths outside the project may be absolute when allowed.",
+            "description": "Read project source as evidence. Supply exactly one request form: file + line_start (optional line_end), file + item, requirements, or definition. Do not combine forms. Paths may be project-relative or absolute when permitted by the evidence policy. A line range is one-based and inclusive (omitted line_end reads through EOF) and returns {inputs, definitions}: the innermost outline nodes covering those lines, each with its item selector, kind, and source text, e.g. {\"file\":\"src/lib.rs\",\"line_start\":10,\"line_end\":20}. Line numbers only locate sources: results never give line numbers, and evidence records each node's selector and structural hash. Cite code by file and selector. The item form reads one outline node and returns {input, definitions}, e.g. {\"file\":\"src/lib.rs\",\"item\":\"impl[Thing]/fn[run]\"}; use the outline tool to list a file's selectors. Selectors are /-separated paths from the file's root: kind[name] for named nodes (Rust trait impls use impl[Thing/Trait]), kind@hash for anonymous nodes such as use declarations and plain-text lines (line@hash), and #N (one-based) for otherwise identical siblings; the empty item selects the whole file. Characters %, [, ], /, #, @ and whitespace in names are percent-encoded UTF-8 bytes. The requirements form takes a definition selection: a full requirement or example name, or a glob matching complete names where * matches any characters including dots, e.g. {\"requirements\":\"requirements.cli.*\"}. Definition reads use the full terminology name, e.g. {\"definition\":\"glossary.command\"}. Required terminology is returned alongside the selected input.",
             "parameters": {"type":"object", "properties": {
                 "file":{"type":"string"},
                 "line_start":{"type":"integer","minimum":1},
@@ -41,19 +43,19 @@ pub(crate) fn definitions() -> Vec<Value> {
             }, "additionalProperties":false}
         }),
         json!({
-            "name": "list_files", "description": "List immediate files and directories at a project-relative or policy-permitted absolute path (default .). Returned paths can be listed or read in another call. Directory listings are not evidence inputs. Only eligible sources are listed. Root listings also expose allowed paths and discovered Cargo build-script output directories. Defaults exclude evidence/ and untracked files; do not request excluded paths. Workspace habeas.toml allow/disallow rules apply; denied explicit requests for project paths abort the assessment, while unpermitted paths outside the project return a tool error.",
+            "name": "list_files", "description": "List immediate files and directories at a project-relative or policy-permitted absolute path (default .). Returned paths can be listed or read in another call. Directory listings are not evidence inputs.",
             "parameters":{"type":"object","properties":{"path":{"type":"string","default":"."}},"additionalProperties":false}
         }),
         json!({
-            "name":"outline", "description":"List a permitted file's outline: its selectable nodes nested by ancestry, in source order, each with its item selector (for habeas {file, item} reads), kind, and name (null when anonymous), and no line numbers. Rust, Python, TypeScript, CSS, Markdown, TOML, and YAML files have language outlines; other text files list one line node per nonblank line. Results contain no source text and are not evidence inputs; read the nodes you rely on with habeas. Requesting an excluded project file aborts the assessment; an unpermitted file outside the project returns a tool error.",
+            "name":"outline", "description":"List a permitted file's outline: its selectable nodes nested by ancestry, in source order, each with its item selector (for habeas {file, item} reads), kind, and name (null when anonymous), and no line numbers. Rust, Python, TypeScript, CSS, Markdown, TOML, and YAML files have language outlines; other text files list one line node per nonblank line. Results contain no source text and are not evidence inputs; read the nodes you rely on with habeas.",
             "parameters":{"type":"object","properties":{"file":{"type":"string"}},"required":["file"],"additionalProperties":false}
         }),
         json!({
-            "name":"ripgrep", "description":"Search a project-relative or policy-permitted absolute file or directory (default .) using ripgrep regex syntax, case-sensitive matching, and normal ignore rules (including .gitignore and hidden-file exclusions). Searches only locate code. The result is {matches: [{file, item, kind, lines: [{text, matched}]}]}: one entry for each innermost outline node containing a match (a match in a comment belongs to the node the comment belongs to), with the node's item selector and kind, and its matching lines (matched true) plus context lines before and after each match (default 2; zero means matches only), in source order and without line numbers. Windows stop at file boundaries, overlapping windows are merged, and a line with text \"…\" and matched false separates windows within one node. Results are not evidence inputs and carry no definitions: read with the habeas tool, e.g. {file, item}, any node whose code your conclusion relies on. No matches returns an empty matches array. Results include only eligible sources, and their lines are redacted as habeas reads are. Defaults exclude evidence/ and untracked files; do not request excluded paths. Explicitly allowed paths and existing Cargo build-script outputs are searched even when ignored or hidden. Workspace disallow rules win; denied explicit requests for project paths abort the assessment, while unpermitted paths outside the project return a tool error. With referencing {selection, roles, scope}, search only sources within path that carry a reference in one of roles (impl, test, cite, or fixme; default [impl, test, cite]) to a requirement or example the selection matches (a full name, or a glob where * matches any characters including dots), including :impl: and :test: declaration anchors: scope node searches only the outline nodes that contain or are named by those references, and scope file (the default) their whole files, e.g. {\"pattern\":\"errors\",\"referencing\":{\"selection\":\"requirements.ci.*\",\"roles\":[\"impl\"],\"scope\":\"node\"}}. A selection matching no requirement or example, or an unknown role or scope, returns a tool error.",
+            "name":"ripgrep", "description":"Search a project-relative or policy-permitted absolute file or directory (default .) using ripgrep regex syntax, case-sensitive matching, and normal ignore rules (including .gitignore and hidden-file exclusions). Searches only locate code. The result is {matches: [{file, item, kind, lines: [{text, matched}]}]}: one entry for each innermost outline node containing a match (a match in a comment belongs to the node the comment belongs to), with the node's item selector and kind, and its matching lines (matched true) plus context lines before and after each match (default 2; zero means matches only), in source order and without line numbers. Windows stop at file boundaries, overlapping windows are merged, and a line with text \"…\" and matched false separates windows within one node. Results are not evidence inputs and carry no definitions: read with the habeas tool, e.g. {file, item}, any node whose code your conclusion relies on. No matches returns an empty matches array. With referencing {selection, roles, scope}, search only sources within path that carry a reference in one of roles (impl, test, cite, or fixme; default [impl, test, cite]) to a requirement or example the selection matches (a full name, or a glob where * matches any characters including dots), including :impl: and :test: declaration anchors: scope node searches only the outline nodes that contain or are named by those references, and scope file (the default) their whole files, e.g. {\"pattern\":\"errors\",\"referencing\":{\"selection\":\"requirements.ci.*\",\"roles\":[\"impl\"],\"scope\":\"node\"}}.",
             "parameters":{"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string","default":"."},"context":{"type":"integer","minimum":0,"default":2},"referencing":reference_scope_schema()},"required":["pattern"],"additionalProperties":false}
         }),
         json!({
-            "name":"ast_grep", "description":"Search syntax trees in process with an ast-grep rule. Supply exactly one form: {language, rule, path (default .), referencing (optional)} or {query}. language is one of rust, python, typescript, tsx, css, markdown, toml, or yaml, matched with Habeas's pinned grammars; only files of that language are searched. rule is an object holding the keys of an ast-grep rule file's rule core, written as JSON: rule (required), and optional utils (named rules) and constraints (metavariable name to rule). A rule object combines atomic rules: pattern (code with metavariables, where $A matches one node, $$$A any number of nodes, and $_ one node without capturing), kind (a grammar node kind such as function_item), regex (a Rust regex the node's whole text must match), and nthChild; relational rules: inside, has, precedes, and follows, each taking a rule plus optional stopBy (neighbor, the default, end, or a rule) and field; and composite rules: all, any, not, and matches (a utils name). Patterns parse as standalone code, so a fragment that does not parse on its own, such as a type or parameter, needs the context and selector form: pattern: {context: \"fn f(x: &mut Vec<String>) {}\", selector: reference_type} parses context and matches the node of kind selector within it. Example: {\"language\":\"rust\",\"rule\":{\"rule\":{\"pattern\":\"$X.unwrap()\",\"inside\":{\"kind\":\"function_item\",\"stopBy\":\"end\"}}}}. path, referencing, file walking, ignore rules, ordering by path and then line, and source-access policy are as for ripgrep: explicitly allowed paths and existing Cargo build-script outputs are searched even when ignored or hidden, evidence/ and untracked files are excluded, workspace disallow rules win, denied explicit requests for project paths abort the assessment, and unpermitted paths outside the project return a tool error. The query form, e.g. {\"query\":\"requirements.ci.errors/error_accumulators\"}, runs a query a distributed requirement declares, named <full-name>/<query-name>, exactly as validation runs it, including its paths, exclude, and within, and returns each match's site. Searches only locate code. The result has ripgrep's form, {matches: [{file, item, kind, lines: [{text, matched}]}]}: one entry for each innermost outline node containing a match (a match in a comment belongs to the node the comment belongs to; a query match belongs to its site), with the node's item selector and kind, and the matched lines, redacted and without line numbers. Results are not evidence inputs and carry no definitions: read with the habeas tool, e.g. {file, item}, any node whose code your conclusion relies on. No matches returns an empty matches array; an invalid language or rule, or a failed search, returns a tool error.",
+            "name":"ast_grep", "description":"Search syntax trees in process with an ast-grep rule. Supply exactly one form: {language, rule, path (default .), referencing (optional)} or {query}. language is one of rust, python, typescript, tsx, css, markdown, toml, or yaml, matched with Habeas's pinned grammars; only files of that language are searched. rule is an object holding the keys of an ast-grep rule file's rule core, written as JSON: rule (required), and optional utils (named rules) and constraints (metavariable name to rule). A rule object combines atomic rules: pattern (code with metavariables, where $A matches one node, $$$A any number of nodes, and $_ one node without capturing), kind (a grammar node kind such as function_item), regex (a Rust regex the node's whole text must match), and nthChild; relational rules: inside, has, precedes, and follows, each taking a rule plus optional stopBy (neighbor, the default, end, or a rule) and field; and composite rules: all, any, not, and matches (a utils name). Patterns parse as standalone code, so a fragment that does not parse on its own, such as a type or parameter, needs the context and selector form: pattern: {context: \"fn f(x: &mut Vec<String>) {}\", selector: reference_type} parses context and matches the node of kind selector within it. Example: {\"language\":\"rust\",\"rule\":{\"rule\":{\"pattern\":\"$X.unwrap()\",\"inside\":{\"kind\":\"function_item\",\"stopBy\":\"end\"}}}}. path and referencing work as for ripgrep, and results are ordered by path and then line. The query form, e.g. {\"query\":\"requirements.ci.errors/error_accumulators\"}, runs a query a distributed requirement declares, named <full-name>/<query-name>, exactly as validation runs it, including its paths, exclude, and within, and returns each match's site. Searches only locate code. The result has ripgrep's form, {matches: [{file, item, kind, lines: [{text, matched}]}]}: one entry for each innermost outline node containing a match (a match in a comment belongs to the node the comment belongs to; a query match belongs to its site), with the node's item selector and kind, and the matched lines, without line numbers. Results are not evidence inputs and carry no definitions: read with the habeas tool, e.g. {file, item}, any node whose code your conclusion relies on. No matches returns an empty matches array.",
             "parameters":{"type":"object","properties":{"language":{"type":"string","enum":crate::structural::QueryLanguage::names()},"rule":{"type":"object"},"path":{"type":"string","default":"."},"referencing":reference_scope_schema(),"query":{"type":"string"}},"additionalProperties":false}
         }),
         json!({
@@ -62,39 +64,11 @@ pub(crate) fn definitions() -> Vec<Value> {
         }),
         crate::github::tool_definition(),
         json!({
-            "name":"next_page", "description":"Return the following page of a paged result of habeas (line-range form), list_files, outline, ripgrep, ast_grep, or references, in the same shape as its first page. token is the page's next value. Tokens are opaque and valid only in this assessment; an unknown token returns a tool error.",
+            "name":"next_page", "description":"Return the following page of a paged result of habeas (line-range form), list_files, outline, ripgrep, ast_grep, or references, in the same shape as its first page. token is the page's next value. Tokens are opaque.",
             "parameters":{"type":"object","properties":{"token":{"type":"string"}},"required":["token"],"additionalProperties":false}
         }),
     ];
-    for definition in &mut definitions {
-        let note = match definition["name"].as_str() {
-            Some("habeas") => Some(paged_note("A line-range result", "inputs")),
-            Some("list_files" | "outline") => Some(paged_note("A result", "entries")),
-            Some("ripgrep" | "ast_grep") => Some(paged_note("A result", "matches")),
-            Some("references") => Some(paged_note("A result", "definitions and sites")),
-            _ => None,
-        };
-        if let Some(note) = note {
-            let description = definition["description"].as_str().unwrap_or_default();
-            definition["description"] = Value::String(format!("{description} {note}"));
-        }
-    }
     definitions
-}
-
-/// How a tool's description explains paging: `subject` names the results
-/// that page, and `entries` what a page holds.
-fn paged_note(subject: &str, entries: &str) -> String {
-    let limit = super::pages::PAGE_LIMIT / 1024;
-    // Only evidence inputs are accompanied by definitions.
-    let definitions = if entries == "inputs" {
-        " (with the definitions accompanying its inputs)"
-    } else {
-        ""
-    };
-    format!(
-        "{subject} whose JSON exceeds {limit} KiB is returned in pages, each holding whole {entries} in order{definitions} and page: {{total_entries, returned_entries, next}}; next is a token for next_page while entries remain and null on the last page. A smaller result is returned whole, without page."
-    )
 }
 
 /// The parameter schema of a `referencing` argument.
@@ -142,8 +116,26 @@ pub(crate) fn dispatch_paged(
             .map_err(io::Error::other),
         _ => Err(io::Error::other(format!("unknown read tool {name:?}"))),
     }
+    .map(with_redaction_note)
     .map_err(super::access::recoverable_os_denial)
     .map_err(super::access::recoverable_outside_request)
+}
+
+/// What a result containing redacted text tells the model, since tool
+/// descriptions do not explain redaction.
+const REDACTION_NOTE: &str = "[REDACTED:<kind>] replaces credential-shaped text in this result; the original text is not available.";
+
+/// Adds the redaction note to a result that contains redacted text, and only
+/// to such a result.
+// {impl}`requirements.authoring.redaction_notice`
+// {impl}`requirements.authoring.tool_descriptions.special_cases`
+fn with_redaction_note(mut delivery: ToolDelivery) -> ToolDelivery {
+    if delivery.result.to_string().contains("[REDACTED:")
+        && let Some(object) = delivery.result.as_object_mut()
+    {
+        object.insert("note".to_owned(), json!(REDACTION_NOTE));
+    }
+    delivery
 }
 
 /// Dispatches one tool call in an assessment of its own, whose pages are
@@ -2067,6 +2059,7 @@ mod tests {
     // {test}`requirements.authoring.source_tools`
     // {test}`requirements.configuration.evidence_paths`
     // {test}`requirements.authoring.read_denial`
+    // {test}`requirements.authoring.read_denial.build_output`
     #[test]
     fn cargo_output_is_discovered_and_read_without_building_or_allowing_other_target_files() {
         let root = project();
@@ -2976,17 +2969,12 @@ mod tests {
             "a match in a comment belongs to the node the comment belongs to",
             "Results are not evidence inputs and carry no definitions",
             "read with the habeas tool, e.g. {file, item}, any node whose code your conclusion relies on",
-            "redacted",
             "No matches returns an empty matches array",
-            "Explicitly allowed paths and existing Cargo build-script outputs are searched even when ignored or hidden",
-            "Workspace disallow rules win",
-            "denied explicit requests for project paths abort the assessment",
             "With referencing {selection, roles, scope}",
             "default [impl, test, cite]",
             "including :impl: and :test: declaration anchors",
             "scope node searches only the outline nodes that contain or are named by those references",
             "scope file (the default) their whole files",
-            "A selection matching no requirement or example, or an unknown role or scope, returns a tool error",
         ] {
             assert!(description.contains(phrase), "{phrase:?} in {description}");
         }
@@ -3307,9 +3295,43 @@ mod tests {
         }
     }
 
-    // {test}`requirements.authoring.result_pages`
+    // {test}`requirements.authoring.redaction_notice`
     #[test]
-    fn next_page_is_advertised_and_paged_tools_explain_their_pages() {
+    fn only_results_with_redacted_text_carry_the_redaction_note() {
+        let root = project();
+        let token = crate::redaction::tests::github_token();
+        fs::write(
+            root.path().join("src/lib.rs"),
+            format!("fn client() -> &'static str {{\n    \"{token}\"\n}}\n\nfn plain() {{}}\n"),
+        )
+        .unwrap();
+        let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        let mut pages = ResultPages::default();
+        let mut read = |arguments: Value| {
+            dispatch_paged(&sources, &mut pages, "habeas", &arguments)
+                .unwrap()
+                .result
+        };
+        let redacted = read(json!({"file": "src/lib.rs", "item": "fn[client]"}));
+        assert!(redacted.to_string().contains("[REDACTED:"), "{redacted}");
+        assert_eq!(redacted["note"], REDACTION_NOTE);
+        let plain = read(json!({"file": "src/lib.rs", "item": "fn[plain]"}));
+        assert!(plain.get("note").is_none(), "{plain}");
+        let search = dispatch_paged(
+            &sources,
+            &mut pages,
+            "ripgrep",
+            &json!({"pattern": "client", "path": "src/lib.rs"}),
+        )
+        .unwrap()
+        .result;
+        assert_eq!(search["note"], REDACTION_NOTE, "{search}");
+    }
+
+    // {test}`requirements.authoring.result_pages`
+    // {test}`requirements.authoring.tool_descriptions.special_cases`
+    #[test]
+    fn descriptions_leave_paging_policy_redaction_and_failures_to_results() {
         let definitions = definitions();
         let next = definitions
             .iter()
@@ -3321,31 +3343,27 @@ mod tests {
         );
         for definition in &definitions {
             let name = definition["name"].as_str().unwrap();
-            let description = definition["description"].as_str().unwrap();
-            let paged = matches!(
-                name,
-                "habeas" | "list_files" | "outline" | "ripgrep" | "ast_grep" | "references"
-            );
-            assert_eq!(
-                description.contains("exceeds 32 KiB is returned in pages"),
-                paged,
-                "{name}: {description}"
-            );
-            if paged {
-                for text in [
-                    "total_entries, returned_entries, next",
-                    "next_page",
-                    "without page",
-                ] {
-                    assert!(description.contains(text), "{name}: {description}");
-                }
+            let description = definition["description"].as_str().unwrap().to_lowercase();
+            for special in [
+                "kib",
+                "returned in pages",
+                "redact",
+                "credential",
+                "denied",
+                "disallow",
+                "habeas.toml",
+                "aborts",
+                "untracked",
+                "build output",
+                "outside the project",
+                "tool error",
+            ] {
+                assert!(
+                    !description.contains(special),
+                    "{name} explains {special:?}: {description}"
+                );
             }
         }
-        let habeas = definitions[0]["description"].as_str().unwrap();
-        assert!(
-            habeas.contains("A line-range result whose JSON exceeds"),
-            "{habeas}"
-        );
     }
 
     // {test}`requirements.authoring.structural_search`
@@ -3399,17 +3417,16 @@ mod tests {
             "inside, has, precedes, and follows",
             "all, any, not, and matches",
             "the context and selector form",
-            "path, referencing, file walking, ignore rules, ordering by path and then line, and source-access policy are as for ripgrep",
-            "denied explicit requests for project paths abort the assessment",
+            "path and referencing work as for ripgrep, and results are ordered by path and then line",
             "named <full-name>/<query-name>, exactly as validation runs it, including its paths, exclude, and within, and returns each match's site",
             "Searches only locate code",
             "{matches: [{file, item, kind, lines: [{text, matched}]}]}",
             "one entry for each innermost outline node containing a match",
             "a match in a comment belongs to the node the comment belongs to",
-            "the matched lines, redacted and without line numbers",
+            "the matched lines, without line numbers",
             "Results are not evidence inputs and carry no definitions",
             "read with the habeas tool, e.g. {file, item}, any node whose code your conclusion relies on",
-            "No matches returns an empty matches array; an invalid language or rule, or a failed search, returns a tool error",
+            "No matches returns an empty matches array",
         ] {
             assert!(description.contains(phrase), "{phrase:?} in {description}");
         }
