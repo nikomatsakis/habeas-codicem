@@ -243,6 +243,7 @@ pub(crate) fn discover(
     files: &[PathBuf],
     outlines: &OutlineCache,
     errors: &mut Vec<String>,
+    incomplete: &mut Vec<String>,
 ) -> Sites {
     let mut sites = Sites::new();
     for (name, declaration) in definitions {
@@ -267,10 +268,18 @@ pub(crate) fn discover(
                     }
                     matches.push((query, found));
                 }
-                Err(error) => errors.push(format!(
-                    "{location}: query {} of {name} cannot run: {error}",
-                    query.name
-                )),
+                // A query that cannot run leaves its sites unknown: the
+                // scan is incomplete, so authoring must not treat the
+                // missing sites' reviews as orphans.
+                // {impl}`requirements.authoring.batch`
+                Err(error) => {
+                    let error = format!(
+                        "{location}: query {} of {name} cannot run: {error}",
+                        query.name
+                    );
+                    incomplete.push(error.clone());
+                    errors.push(error);
+                }
             }
         }
         sites.insert(name.clone(), collect_sites(root, name, outlines, matches));
@@ -854,6 +863,34 @@ no_match:
         assert_eq!(root_site.selector_label(), "<root>");
         assert_eq!(value[1]["text"], "connect(\"[REDACTED:GitHub Token]\")");
         assert!(!value.to_string().contains(&token), "{value}");
+    }
+
+    // {test}`requirements.authoring.batch`
+    #[cfg(unix)]
+    #[test]
+    fn a_query_that_cannot_run_is_a_discovery_error() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = project(RULE, SOURCE);
+        let root = temp.path();
+        let unreadable = root.join("src/other.rs");
+        fs::write(&unreadable, "fn check_four() {}\n").unwrap();
+        fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o000)).unwrap();
+        if fs::read(&unreadable).is_ok() {
+            // Running as root: permissions do not stop reads.
+            return;
+        }
+        let inspection = crate::evidence::inspect_repository(root).unwrap();
+        fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o644)).unwrap();
+        // The incomplete scan aborts authoring, so no site review is taken
+        // for an orphan and deleted.
+        assert!(
+            inspection
+                .discovery_errors
+                .iter()
+                .any(|error| error.contains("cannot run") && error.contains("other.rs")),
+            "{:#?}",
+            inspection.discovery_errors
+        );
     }
 
     // {test}`requirements.references.distributed`

@@ -271,6 +271,7 @@ pub async fn author_evidence_with_output(
 // {impl}`requirements.authoring.invocation`
 // {impl}`requirements.configuration.state_location`
 // {impl}`requirements.authoring.policy`
+// {impl}`requirements.authoring.read_denial.mandatory`
 pub async fn author_evidence_with_options(
     root: &Path,
     subject: &str,
@@ -500,6 +501,7 @@ async fn configured_assessment(
 // {impl}`requirements.authoring.usage_inputs`
 // {impl}`requirements.authoring.provider`
 // {impl}`requirements.authoring.policy`
+// {impl}`requirements.authoring.read_denial.mandatory`
 async fn configured_record(
     root: &Path,
     subject: &AuthoringSubject,
@@ -1253,6 +1255,8 @@ async fn verify(
 // {impl}`requirements.authoring.line_numbers.rejection`
 // {impl}`requirements.authoring.line_numbers.resubmission`
 // {impl}`requirements.authoring.submission`
+// {impl}`requirements.authoring.no_line_numbers`
+// {impl}`requirements.authoring.usage_requests.failures`
 async fn converse<T>(
     provider: &impl CompletionProvider,
     sources: &mut AssessmentSources,
@@ -1294,7 +1298,8 @@ async fn converse<T>(
         )?;
         let response = match response {
             Ok(response) => response,
-            Err(error) => match backoff.retry(error, Instant::now()) {
+            // Tokio's clock, so a paused test clock reaches the limit too.
+            Err(error) => match backoff.retry(error, tokio::time::Instant::now().into_std()) {
                 providers::Retry::Wait(delay) => {
                     usage.retried(index)?;
                     tokio::time::sleep(delay).await;
@@ -1924,13 +1929,14 @@ mod tests {
 
     // {test}`requirements.authoring.provider_backoff`
     // {test}`requirements.authoring.usage_requests`
+    // {test}`requirements.authoring.usage_requests.failures`
     // {test}`requirements.authoring.usage_inputs`
     // {test}`requirements.ci.reference_set`
     #[tokio::test(start_paused = true)]
     async fn throttled_requests_retry_unchanged_and_record_every_attempt() {
         let (_project, _state, mut sources, mut usage) = retry_fixture();
         let provider = ThrottledProvider {
-            failures: 8,
+            failures: 5,
             status: 429,
             code: "ThrottlingException",
             requests: RefCell::default(),
@@ -1939,22 +1945,27 @@ mod tests {
         let (_, record) = assess(&provider, &mut sources, &mut usage).await.unwrap();
         assert!(started.elapsed() >= Duration::from_millis(500));
         let requests = provider.requests.borrow();
-        assert_eq!(requests.len(), 9);
+        assert_eq!(requests.len(), 6);
         assert!(requests.iter().all(|request| request == &requests[0]));
         assert_eq!(record["inputs"], json!(sources.mandatory_inputs()));
         assert_eq!(record["references"], json!(sources.reference_set));
 
         let log: Value = serde_json::from_slice(&fs::read(&usage.path).unwrap()).unwrap();
-        assert_eq!(log["request_count"], 9);
-        for attempt in 0..8 {
+        assert_eq!(log["request_count"], 6);
+        for attempt in 0..5 {
             assert_eq!(log["requests"][attempt]["outcome"], "failed");
             assert_eq!(log["requests"][attempt]["tokens"]["complete"], false);
+            assert_eq!(
+                log["requests"][attempt]["failure"],
+                json!({"http_status": 429, "error_code": "ThrottlingException", "retried": true})
+            );
         }
-        assert_eq!(log["requests"][8]["outcome"], "completed");
+        assert!(log["requests"][5].get("failure").is_none());
+        assert_eq!(log["requests"][5]["outcome"], "completed");
         assert_eq!(log["tool_calls"]["submit_judgment"], 1);
         for input in log["inputs"].as_array().unwrap() {
             assert_eq!(input["submitted_in_request"], 0);
-            assert_eq!(input["sent_in_request"], 8);
+            assert_eq!(input["sent_in_request"], 5);
         }
     }
 
@@ -1975,6 +1986,44 @@ mod tests {
         assert!(error.to_string().contains("Too many tokens"));
         assert_eq!(started.elapsed(), Duration::ZERO);
         assert_eq!(provider.requests.borrow().len(), 1);
+        // The failure is recorded as not retried.
+        let log: Value = serde_json::from_slice(&fs::read(&usage.path).unwrap()).unwrap();
+        assert_eq!(
+            log["requests"][0]["failure"],
+            json!({"http_status": 400, "error_code": "ValidationException", "retried": false})
+        );
+    }
+
+    // {test}`requirements.authoring.provider_backoff.limit`
+    #[tokio::test(start_paused = true)]
+    async fn a_request_failing_for_a_minute_fails_the_assessment() {
+        let (_project, _state, mut sources, mut usage) = retry_fixture();
+        let provider = ThrottledProvider {
+            failures: usize::MAX,
+            status: 503,
+            code: "ServiceUnavailableException",
+            requests: RefCell::default(),
+        };
+        let started = tokio::time::Instant::now();
+        let error = assess(&provider, &mut sources, &mut usage)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            started.elapsed() <= providers::RETRY_LIMIT,
+            "{:?}",
+            started.elapsed()
+        );
+        let attempts = provider.requests.borrow().len();
+        assert!(attempts > 3, "{attempts}");
+        assert!(
+            error.contains(&format!(
+                "after {attempts} attempts; last failure: HTTP 503 ServiceUnavailableException"
+            )),
+            "{error}"
+        );
+        let log: Value = serde_json::from_slice(&fs::read(&usage.path).unwrap()).unwrap();
+        assert_eq!(log["requests"][attempts - 1]["failure"]["retried"], false);
     }
 
     // {test}`requirements.authoring.provider_backoff`

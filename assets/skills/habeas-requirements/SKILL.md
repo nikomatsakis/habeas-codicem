@@ -64,9 +64,8 @@ must move with the code.
   say why `^C` is accepted.
 - Keep full names stable once agreed: evidence, references, and links use them.
   Moving a requirement to another chapter or renaming it changes its full name:
-  agree it with the user, update every reference, link, and anchor to it, and
-  handle its old evidence as the orphaned-evidence row in habeas-evidence's
-  "Fixing findings" says.
+  agree it with the user, then follow the habeas-refactor skill, whose
+  `habeas refactor` rewrites the references, anchors, and evidence for you.
 
 ## Writing requirements
 

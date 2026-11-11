@@ -1032,7 +1032,8 @@ fn a_denied_mandatory_input_aborts_only_its_assessment() {
             failing_subject: None,
         },
     );
-    let fixture = Fixture::new(&server.endpoint, Some(2));
+    // One at a time, so the assessments after the aborted one were queued.
+    let fixture = Fixture::new(&server.endpoint, Some(1));
     fs::write(fixture.project.join("private.txt"), "private\n").unwrap();
     fs::write(
         fixture.project.join("habeas.toml"),
@@ -1077,6 +1078,54 @@ fn a_denied_mandatory_input_aborts_only_its_assessment() {
     ] {
         assert_eq!(fixture.evidence(name)["determination"], true, "{name}");
     }
+    let usage = fixture.usage();
+    let aborted = usage
+        .iter()
+        .find(|run| run["subject"] == "requirements.alpha")
+        .expect("the aborted assessment has a usage record");
+    assert_eq!(aborted["outcome"], "failed");
+    assert_eq!(aborted["request_count"], 0);
+    assert_eq!(aborted["evidence_written"], false);
+    // With --stdout it emits no evidence JSON.
+    let single = fixture.run(&["author", "requirements.alpha", "--stdout"]);
+    assert!(!single.status.success(), "{single:?}");
+    assert!(single.stdout.is_empty(), "{single:?}");
+}
+
+// {test}`requirements.authoring.read_denial.mandatory`
+// {test}`requirements.authoring.read_denial.untracked`
+#[test]
+fn an_untracked_mandatory_input_is_reported_with_how_to_stage_it() {
+    let server = Server::start_with(
+        false,
+        Behavior::Judgments {
+            failing_subject: None,
+        },
+    );
+    let fixture = Fixture::new(&server.endpoint, Some(1));
+    let chapter = fixture.project.join("md/requirements.md");
+    let text = fs::read_to_string(&chapter).unwrap();
+    fs::write(
+        &chapter,
+        text.replacen(":::{req} alpha\n", ":::{req} alpha\n:impl: notes.txt\n", 1),
+    )
+    .unwrap();
+    for args in [["init", "--quiet"], ["add", "."]] {
+        let git = Command::new("git")
+            .current_dir(&fixture.project)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(git.status.success(), "{git:?}");
+    }
+    fs::write(fixture.project.join("notes.txt"), "notes\n").unwrap();
+    let output = fixture.run(&["author", "requirements.alpha", "--stdout"]);
+    assert!(!output.status.success(), "{output:?}");
+    let diagnostic = String::from_utf8_lossy(&output.stderr);
+    for text in ["notes.txt", "untracked", "git add", "allow rule"] {
+        assert!(diagnostic.contains(text), "{text}: {diagnostic}");
+    }
+    assert!(server.subjects().is_empty());
 }
 
 // {test}`requirements.authoring.batch`

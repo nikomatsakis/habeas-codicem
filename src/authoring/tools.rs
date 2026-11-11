@@ -32,7 +32,7 @@ pub(crate) fn definitions() -> Vec<Value> {
     let definitions = vec![
         json!({
             "name": "habeas",
-            "description": "Read project source as evidence. Supply exactly one request form: file + line_start (optional line_end), file + item, requirements, or definition. Do not combine forms. Paths may be project-relative or absolute when permitted by the evidence policy. A line range is one-based and inclusive (omitted line_end reads through EOF) and returns {inputs, definitions}: the innermost outline nodes covering those lines, each with its item selector, kind, and source text, e.g. {\"file\":\"src/lib.rs\",\"line_start\":10,\"line_end\":20}. Line numbers only locate sources: results never give line numbers, and evidence records each node's selector and structural hash. Cite code by file and selector. The item form reads one outline node and returns {input, definitions}, e.g. {\"file\":\"src/lib.rs\",\"item\":\"impl[Thing]/fn[run]\"}; use the outline tool to list a file's selectors. Selectors are /-separated paths from the file's root: kind[name] for named nodes (Rust trait impls use impl[Thing/Trait]), kind@hash for anonymous nodes such as use declarations and plain-text lines (line@hash), and #N (one-based) for otherwise identical siblings; the empty item selects the whole file. Characters %, [, ], /, #, @ and whitespace in names are percent-encoded UTF-8 bytes. The requirements form takes a definition selection: a full requirement or example name, or a glob matching complete names where * matches any characters including dots, e.g. {\"requirements\":\"requirements.cli.*\"}. Definition reads use the full terminology name, e.g. {\"definition\":\"glossary.command\"}. Required terminology is returned alongside the selected input.",
+            "description": "Read project source as evidence. Supply exactly one request form: file + line_start (optional line_end), file + item, requirements, or definition. Do not combine forms. Paths are project-relative. A line range is one-based and inclusive (omitted line_end reads through EOF) and returns {inputs, definitions}: the innermost outline nodes covering those lines, each with its item selector, kind, and source text, e.g. {\"file\":\"src/lib.rs\",\"line_start\":10,\"line_end\":20}. Line numbers only locate sources: results never give line numbers, and evidence records each node's selector and structural hash. Cite code by file and selector. The item form reads one outline node and returns {input, definitions}, e.g. {\"file\":\"src/lib.rs\",\"item\":\"impl[Thing]/fn[run]\"}; use the outline tool to list a file's selectors. Selectors are /-separated paths from the file's root: kind[name] for named nodes (Rust trait impls use impl[Thing/Trait]), kind@hash for anonymous nodes such as use declarations and plain-text lines (line@hash), and #N (one-based) for otherwise identical siblings; the empty item selects the whole file. Characters %, [, ], /, #, @ and whitespace in names are percent-encoded UTF-8 bytes. The requirements form takes a definition selection: a full requirement or example name, or a glob matching complete names where * matches any characters including dots, e.g. {\"requirements\":\"requirements.cli.*\"}. Definition reads use the full terminology name, e.g. {\"definition\":\"glossary.command\"}. The requirements and definition forms return {input, definitions}: the selected input and the terminology it needs.",
             "parameters": {"type":"object", "properties": {
                 "file":{"type":"string"},
                 "line_start":{"type":"integer","minimum":1},
@@ -43,15 +43,15 @@ pub(crate) fn definitions() -> Vec<Value> {
             }, "additionalProperties":false}
         }),
         json!({
-            "name": "list_files", "description": "List immediate files and directories at a project-relative or policy-permitted absolute path (default .). Returned paths can be listed or read in another call. Directory listings are not evidence inputs.",
+            "name": "list_files", "description": "List the immediate files and directories of a project-relative directory (default .). The result is an array of {path, kind}, where kind is file or directory; returned paths can be listed or read in another call. Directory listings are not evidence inputs.",
             "parameters":{"type":"object","properties":{"path":{"type":"string","default":"."}},"additionalProperties":false}
         }),
         json!({
-            "name":"outline", "description":"List a permitted file's outline: its selectable nodes nested by ancestry, in source order, each with its item selector (for habeas {file, item} reads), kind, and name (null when anonymous), and no line numbers. Rust, Python, TypeScript, CSS, Markdown, TOML, and YAML files have language outlines; other text files list one line node per nonblank line. Results contain no source text and are not evidence inputs; read the nodes you rely on with habeas.",
+            "name":"outline", "description":"List a file's outline: its selectable nodes nested by ancestry, in source order, each with its item selector (for habeas {file, item} reads), kind, and name (null when anonymous), and no line numbers. Rust, Python, TypeScript, CSS, Markdown, TOML, and YAML files have language outlines; other text files list one line node per nonblank line. Results contain no source text and are not evidence inputs; read the nodes you rely on with habeas.",
             "parameters":{"type":"object","properties":{"file":{"type":"string"}},"required":["file"],"additionalProperties":false}
         }),
         json!({
-            "name":"ripgrep", "description":"Search a project-relative or policy-permitted absolute file or directory (default .) using ripgrep regex syntax, case-sensitive matching, and normal ignore rules (including .gitignore and hidden-file exclusions). Searches only locate code. The result is {matches: [{file, item, kind, lines: [{text, matched}]}]}: one entry for each innermost outline node containing a match (a match in a comment belongs to the node the comment belongs to), with the node's item selector and kind, and its matching lines (matched true) plus context lines before and after each match (default 2; zero means matches only), in source order and without line numbers. Windows stop at file boundaries, overlapping windows are merged, and a line with text \"…\" and matched false separates windows within one node. Results are not evidence inputs and carry no definitions: read with the habeas tool, e.g. {file, item}, any node whose code your conclusion relies on. No matches returns an empty matches array. With referencing {selection, roles, scope}, search only sources within path that carry a reference in one of roles (impl, test, cite, or fixme; default [impl, test, cite]) to a requirement or example the selection matches (a full name, or a glob where * matches any characters including dots), including :impl: and :test: declaration anchors: scope node searches only the outline nodes that contain or are named by those references, and scope file (the default) their whole files, e.g. {\"pattern\":\"errors\",\"referencing\":{\"selection\":\"requirements.ci.*\",\"roles\":[\"impl\"],\"scope\":\"node\"}}.",
+            "name":"ripgrep", "description":"Search a project-relative file or directory (default .) using ripgrep regex syntax and case-sensitive matching. Searches only locate code. The result is {matches: [{file, item, kind, lines: [{text, matched}]}]}: one entry for each innermost outline node containing a match (a match in a comment belongs to the node the comment belongs to), with the node's item selector and kind, and its matching lines (matched true) plus context lines before and after each match (default 2; zero means matches only), in source order and without line numbers. Windows stop at file boundaries, overlapping windows are merged, and a line with text \"…\" and matched false separates windows within one node. Results are not evidence inputs and carry no definitions: read with the habeas tool, e.g. {file, item}, any node whose code your conclusion relies on. No matches returns an empty matches array. With referencing {selection, roles, scope}, search only sources within path that carry a reference in one of roles (impl, test, cite, or fixme; default [impl, test, cite]) to a requirement or example the selection matches (a full name, or a glob where * matches any characters including dots), including :impl: and :test: declaration anchors: scope node searches only the outline nodes that contain or are named by those references, and scope file (the default) their whole files, e.g. {\"pattern\":\"errors\",\"referencing\":{\"selection\":\"requirements.ci.*\",\"roles\":[\"impl\"],\"scope\":\"node\"}}.",
             "parameters":{"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string","default":"."},"context":{"type":"integer","minimum":0,"default":2},"referencing":reference_scope_schema()},"required":["pattern"],"additionalProperties":false}
         }),
         json!({
@@ -116,7 +116,7 @@ pub(crate) fn dispatch_paged(
             .map_err(io::Error::other),
         _ => Err(io::Error::other(format!("unknown read tool {name:?}"))),
     }
-    .map(with_redaction_note)
+    .map(|delivery| with_redaction_note(sources, delivery))
     .map_err(super::access::recoverable_os_denial)
     .map_err(super::access::recoverable_outside_request)
 }
@@ -126,16 +126,53 @@ pub(crate) fn dispatch_paged(
 const REDACTION_NOTE: &str = "[REDACTED:<kind>] replaces credential-shaped text in this result; the original text is not available.";
 
 /// Adds the redaction note to a result that contains redacted text, and only
-/// to such a result.
+/// to such a result. A line showing the marker is redacted unless it appears
+/// verbatim in its file's original source, where the marker is literal text.
 // {impl}`requirements.authoring.redaction_notice`
 // {impl}`requirements.authoring.tool_descriptions.special_cases`
-fn with_redaction_note(mut delivery: ToolDelivery) -> ToolDelivery {
-    if delivery.result.to_string().contains("[REDACTED:")
-        && let Some(object) = delivery.result.as_object_mut()
-    {
+fn with_redaction_note(sources: &AssessmentSources, mut delivery: ToolDelivery) -> ToolDelivery {
+    if !delivery.result.to_string().contains("[REDACTED:") {
+        return delivery;
+    }
+    let mut redacted = false;
+    marked_lines(&delivery.result, None, &mut |file, line| {
+        let literal = file.is_some_and(|file| {
+            let parsed = sources.outlines.parse(&sources.root, file);
+            parsed
+                .as_ref()
+                .as_ref()
+                .is_ok_and(|parsed| parsed.source.lines().any(|source| source == line))
+        });
+        redacted |= !literal;
+    });
+    if redacted && let Some(object) = delivery.result.as_object_mut() {
         object.insert("note".to_owned(), json!(REDACTION_NOTE));
     }
     delivery
+}
+
+/// Calls `visit` with each string in `value` showing the redaction marker,
+/// and the file of the nearest enclosing entry that names one.
+fn marked_lines<'a>(
+    value: &'a Value,
+    file: Option<&'a str>,
+    visit: &mut dyn FnMut(Option<&'a str>, &'a str),
+) {
+    match value {
+        Value::String(text) if text.contains("[REDACTED:") => visit(file, text),
+        Value::Array(values) => {
+            for value in values {
+                marked_lines(value, file, visit);
+            }
+        }
+        Value::Object(object) => {
+            let file = object.get("file").and_then(Value::as_str).or(file);
+            for value in object.values() {
+                marked_lines(value, file, visit);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Dispatches one tool call in an assessment of its own, whose pages are
@@ -1761,6 +1798,7 @@ mod tests {
     }
 
     // {test}`requirements.authoring.read_denial`
+    // {test}`requirements.authoring.read_denial.untracked`
     #[test]
     fn untracked_diagnostics_name_git_add_and_an_allow_rule() {
         let root = project();
@@ -2542,6 +2580,8 @@ mod tests {
     }
 
     // {test}`requirements.authoring.read_denial`
+    // {test}`requirements.authoring.read_denial.build_output`
+    // {test}`requirements.authoring.tool_descriptions.special_cases`
     #[test]
     fn requests_for_book_or_target_output_are_ordinary_read_failures() {
         let root = project();
@@ -2956,7 +2996,6 @@ mod tests {
         for phrase in [
             "ripgrep regex syntax",
             "case-sensitive",
-            "normal ignore rules",
             "default 2",
             "zero means matches only",
             "overlapping windows are merged",
@@ -3295,7 +3334,68 @@ mod tests {
         }
     }
 
+    // {test}`requirements.authoring.file_discovery`
+    #[test]
+    fn failed_listings_return_explanatory_tool_errors() {
+        let root = project();
+        fs::write(root.path().join("src/lib.rs"), "fn work() {}\n").unwrap();
+        let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        for (arguments, message) in [
+            (json!({"path": "missing"}), "cannot"),
+            (json!({"path": "src/lib.rs"}), "cannot list"),
+            (json!({"path": 3}), "path"),
+            (json!({"path": ".", "extra": true}), "extra"),
+        ] {
+            let error = dispatch(&sources, "list_files", &arguments)
+                .err()
+                .unwrap_or_else(|| panic!("{arguments} fails"));
+            assert_ne!(error.kind(), io::ErrorKind::PermissionDenied, "{arguments}");
+            assert!(error.to_string().contains(message), "{arguments}: {error}");
+        }
+    }
+
+    // {test}`requirements.authoring.tool_descriptions.common_case`
+    #[test]
+    fn descriptions_give_each_argument_and_the_result_form() {
+        for definition in definitions() {
+            let name = definition["name"].as_str().unwrap();
+            let description = definition["description"].as_str().unwrap();
+            // At least a few sentences.
+            assert!(
+                description.matches(". ").count() >= 2,
+                "{name}: {description}"
+            );
+            for argument in definition["parameters"]["properties"]
+                .as_object()
+                .unwrap()
+                .keys()
+            {
+                assert!(
+                    description.contains(argument.as_str()),
+                    "{name} omits {argument}"
+                );
+            }
+            let result = match name {
+                "habeas" => "{input, definitions}",
+                "list_files" => "{path, kind}",
+                "outline" => "item selector",
+                "ripgrep" | "ast_grep" => {
+                    "{matches: [{file, item, kind, lines: [{text, matched}]}]}"
+                }
+                "references" => "definition name, role, file, and item",
+                "next_page" => "same shape",
+                "github" => "state (open or closed), title, and body",
+                _ => continue,
+            };
+            assert!(
+                description.contains(result),
+                "{name} omits its result: {description}"
+            );
+        }
+    }
+
     // {test}`requirements.authoring.redaction_notice`
+    // {test}`requirements.authoring.tool_descriptions.special_cases`
     #[test]
     fn only_results_with_redacted_text_carry_the_redaction_note() {
         let root = project();
@@ -3326,6 +3426,23 @@ mod tests {
         .unwrap()
         .result;
         assert_eq!(search["note"], REDACTION_NOTE, "{search}");
+        // Source that itself contains the marker text was not redacted.
+        fs::write(
+            root.path().join("src/notes.rs"),
+            "// Secrets show as [REDACTED:kind] in tool output.\nfn notes() {}\n",
+        )
+        .unwrap();
+        let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        let literal = dispatch_paged(
+            &sources,
+            &mut ResultPages::default(),
+            "habeas",
+            &json!({"file": "src/notes.rs", "item": "fn[notes]"}),
+        )
+        .unwrap()
+        .result;
+        assert!(literal.to_string().contains("[REDACTED:kind]"), "{literal}");
+        assert!(literal.get("note").is_none(), "{literal}");
     }
 
     // {test}`requirements.authoring.result_pages`
@@ -3357,6 +3474,10 @@ mod tests {
                 "build output",
                 "outside the project",
                 "tool error",
+                "policy",
+                "ignore rules",
+                "exclusion",
+                "permitted",
             ] {
                 assert!(
                     !description.contains(special),

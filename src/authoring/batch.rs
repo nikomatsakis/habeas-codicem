@@ -72,6 +72,7 @@ pub async fn author_sites_with_options(
 // {impl}`requirements.authoring.github_reads`
 // {impl}`requirements.authoring.policy`
 // {impl}`requirements.authoring.cache_warmup`
+// {impl}`requirements.authoring.read_denial.mandatory`
 async fn run_batch(
     root: &Path,
     selection: Option<&str>,

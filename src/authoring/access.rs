@@ -45,6 +45,7 @@ impl PathPolicy {
     }
 
     // {impl}`requirements.configuration.evidence_paths`
+    // {impl}`requirements.authoring.tool_descriptions.special_cases`
     pub(crate) fn check_disallow(&self, requested: &Path, target: &Path) -> io::Result<()> {
         if self.disallow.is_empty() {
             return Ok(());
@@ -97,6 +98,7 @@ impl SourceAccess {
     // {impl}`requirements.authoring.generated_inputs`
     // {impl}`requirements.authoring.read_denial.untracked`
     // {impl}`requirements.authoring.read_denial.build_output`
+    // {impl}`requirements.authoring.tool_descriptions.special_cases`
     pub(crate) fn path(&self, root: &Path, relative: &Path) -> io::Result<PathBuf> {
         let (requested, target) = resolve(root, relative)?;
         self.policy.check_disallow(&root.join(relative), &target)?;

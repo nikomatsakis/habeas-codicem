@@ -28,11 +28,16 @@ pub(crate) fn cited(rationale: &str) -> Option<&str> {
 static PARSE_POSITION: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\bline \d+: ").expect("parse position pattern"));
 
-/// A tool error as the model receives it: without the source line a parse
-/// error names, which the model did not supply.
+/// The position a diagnostic gives as `file:N: `, such as a malformed query.
+static FILE_POSITION: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(\S+?):\d+: ").expect("file position pattern"));
+
+/// A tool error as the model receives it: without the source lines a parse
+/// error or diagnostic names, which the model did not supply.
 // {impl}`requirements.authoring.no_line_numbers`
 pub(crate) fn without_source_lines(error: &str) -> String {
-    PARSE_POSITION.replace_all(error, "").into_owned()
+    let error = PARSE_POSITION.replace_all(error, "");
+    FILE_POSITION.replace_all(&error, "$1: ").into_owned()
 }
 
 /// The rationale of a submission's arguments.
@@ -143,6 +148,10 @@ mod tests {
         assert_eq!(
             without_source_lines("src/a.rs:9 is not an inclusive range"),
             "src/a.rs:9 is not an inclusive range"
+        );
+        assert_eq!(
+            without_source_lines("md/rules.md:12: query checkers is not closed"),
+            "md/rules.md: query checkers is not closed"
         );
     }
 

@@ -526,12 +526,68 @@ mod tests {
             ProviderBackoff::default().retry(late, Instant::now()),
             Retry::Stop(_)
         ));
+        // The last failure is named by whatever it reports.
+        for (error, last) in [
+            (
+                io::Error::other(provider_error(Some(503), None)),
+                "last failure: HTTP 503",
+            ),
+            (
+                io::Error::other(provider_error(None, Some("ThrottlingException"))),
+                "last failure: ThrottlingException",
+            ),
+            (
+                io::Error::new(io::ErrorKind::TimedOut, "no response within ten minutes"),
+                "last failure: no response within ten minutes",
+            ),
+        ] {
+            let mut backoff = ProviderBackoff::default();
+            let message = match backoff.retry(error, start + RETRY_LIMIT) {
+                Retry::Stop(error) => panic!("first failure stops: {error}"),
+                Retry::Wait(_) => {
+                    let again = match last {
+                        _ if last.contains("503") => {
+                            io::Error::other(provider_error(Some(503), None))
+                        }
+                        _ if last.contains("Throttling") => {
+                            io::Error::other(provider_error(None, Some("ThrottlingException")))
+                        }
+                        _ => io::Error::new(
+                            io::ErrorKind::TimedOut,
+                            "no response within ten minutes",
+                        ),
+                    };
+                    match backoff.retry(again, start + RETRY_LIMIT * 3) {
+                        Retry::Stop(error) => error.to_string(),
+                        Retry::Wait(_) => panic!("retrying passed the limit"),
+                    }
+                }
+            };
+            assert!(message.contains(last), "{message}");
+        }
         // A permanent failure stops with its own error.
         let permanent = io::Error::other(provider_error(Some(400), Some("ValidationException")));
         assert!(matches!(
             ProviderBackoff::default().retry(permanent, Instant::now()),
             Retry::Stop(error) if !error.to_string().contains("kept failing")
         ));
+    }
+
+    // {test}`requirements.authoring.usage_requests.failures`
+    #[test]
+    fn failure_codes_are_the_status_and_code_a_provider_reports() {
+        assert_eq!(
+            failure_codes(&io::Error::other(provider_error(
+                Some(429),
+                Some("ThrottlingException")
+            ))),
+            (Some(429), Some("ThrottlingException".to_owned()))
+        );
+        assert_eq!(failure_codes(&io::Error::other("plain")), (None, None));
+        assert_eq!(
+            failure_codes(&io::Error::new(io::ErrorKind::TimedOut, "no response")),
+            (None, None)
+        );
     }
 
     // {test}`requirements.authoring.provider_backoff`

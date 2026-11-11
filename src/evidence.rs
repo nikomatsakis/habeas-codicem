@@ -276,7 +276,14 @@ pub(crate) fn inspect_repository_with_progress(
     discovery_errors.extend(errors[scanned..].iter().cloned());
     validate_committed_credentials(&root, &mut errors);
     // {impl}`requirements.references.distributed`
-    let sites = crate::sites::discover(&root, &definitions, &files, &outlines, &mut errors);
+    let sites = crate::sites::discover(
+        &root,
+        &definitions,
+        &files,
+        &outlines,
+        &mut errors,
+        &mut discovery_errors,
+    );
     validate_references(
         &root,
         &definitions,

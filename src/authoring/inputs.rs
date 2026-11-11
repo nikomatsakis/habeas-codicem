@@ -71,6 +71,7 @@ impl AssessmentSources {
     // {impl}`requirements.references.anchors`
     // {impl}`requirements.ci.reference_set`
     // {impl}`requirements.references.builtin_definitions`
+    // {impl}`requirements.references.site_review`
     pub(crate) fn prepare(root: &Path, subject_name: &str) -> io::Result<Self> {
         let root = fs::canonicalize(root)?;
         let access = SourceAccess::load(&root)?;
@@ -1415,6 +1416,7 @@ pub(super) mod tests {
 
     // {test}`requirements.references.authoring_inputs`
     // {test}`requirements.references.builtin_definitions`
+    // {test}`requirements.references.site_review`
     #[test]
     fn cited_built_ins_contribute_their_text_and_fixmes_in_own_sites_do_not() {
         let project = crate::authoring::tests::citing_site_project();
@@ -1621,6 +1623,7 @@ pub(super) mod tests {
     }
 
     // {test}`requirements.authoring.mandatory_inputs`
+    // {test}`requirements.references.authoring_inputs`
     #[test]
     fn generated_evidence_references_are_omitted_by_default() {
         let root = project();

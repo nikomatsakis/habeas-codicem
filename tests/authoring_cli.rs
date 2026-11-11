@@ -2672,6 +2672,33 @@ fn bundled_skills_open_with_a_workflow_and_name_their_neighbors() {
         assert!(evidence.contains(heading), "{heading}");
     }
     assert!(bootstrap.contains("## Proposing requirements"));
+    // habeas-evidence is the home of fixing findings, and habeas-refactor of
+    // moves: its workflow and mapping forms, which the others do not restate.
+    assert!(evidence.contains("## Fixing findings"));
+    for text in [
+        "Make the move with your own edits",
+        "habeas refactor --dry-run",
+        "`--map 'src/config.rs#fn[load]=src/config/load.rs#fn[load]'`",
+        "A rename is not a move",
+    ] {
+        assert!(refactor.contains(text), "habeas-refactor: {text}");
+    }
+    for (name, text) in [
+        ("habeas-requirements", requirements),
+        ("habeas-evidence", evidence),
+        ("habeas-bootstrap-requirements", bootstrap),
+    ] {
+        assert!(
+            !text.contains("--dry-run"),
+            "{name} restates the refactor workflow"
+        );
+        assert!(
+            !text.contains("--map "),
+            "{name} restates the refactor mappings"
+        );
+    }
+    // Moving a requirement defers to habeas-refactor.
+    assert!(requirements.contains("follow the habeas-refactor skill"));
 
     // Each reference file is linked with a statement of when to read it.
     let collapsed = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");

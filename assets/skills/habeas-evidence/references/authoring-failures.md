@@ -30,13 +30,12 @@ The nearest enclosing `habeas.toml` can set `[evidence]` `allow` and `disallow`
 paths: literal files or directory subtrees, relative to that file. Allow
 overrides the defaults, and disallow wins over allow.
 
-A model request for a path outside the project root, or inside the book's
-build output (`book`, or `book.toml`'s `[build] build-dir`) or the project-root
-`target` directory, is an ordinary read failure: the reviewer gets a tool error
-and the assessment continues, so it needs no action. Other denied explicit
-reads abort that assessment: an untracked file, `evidence/`, a path an
-`[evidence] disallow` rule matches, a mandatory input outside the project, or a
-path whose symlink target leaves it. Other assessments in the batch continue,
-and the command reports failure. If the denied file is one you created, stage
-it and rerun. Otherwise ask the user whether to stage it or change the
-`[evidence]` policy.
+A denied model read, such as an untracked file, `evidence/`, a path an
+`[evidence] disallow` rule matches, a path outside the project, or build output,
+is an ordinary tool error: the reviewer is told the path and why, and the
+assessment continues. If its rationale says it could not read an untracked file
+you created, stage the file and reassess. Only a denied mandatory input aborts
+the assessment, before any model request; other assessments in the batch
+continue, and the command reports failure. If the denied file is one you
+created, stage it and rerun. Otherwise ask the user whether to stage it or
+change the `[evidence]` policy.
