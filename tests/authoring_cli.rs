@@ -1083,26 +1083,28 @@ fn bundled_skills_treat_disagreeing_assessments_as_findings() {
             "Decide whether one assessment found a real gap or the requirement text admits more than one reading",
             "Fix the source or tests, or tighten the requirement text, reviewing substantive changes with the user",
             "Don't re-run for a different result",
-            "record it in the audit log as the Rules say",
+            "explain why in the commit message as the Rules say",
         ],
     );
     assert_phrases(
         "habeas-evidence",
         &[
-            "record the old text, new text, reason, and the rationale that prompted the change in the project's audit log, such as `audits/requirement-rewordings/`",
+            "give the reason and the rationale that prompted it in the message of the commit that makes the change",
+            "Describe the change relative to the prior commit, not the drafts that led to it: document the destination, not the journey",
         ],
     );
-    // A rewording for precision is reviewed with the user before it is logged.
+    // A change to agreed text is reviewed with the user, then explained in
+    // its commit message.
     assert_in_order(
         "habeas-requirements",
         &[
             "Review every other change to agreed text with the user first too, even a rewording for precision",
-            "then log it as the habeas-evidence Rules say",
+            "then explain why in the commit message as the habeas-evidence Rules say",
         ],
     );
     assert_phrases(
         "habeas-evidence",
-        &["When the user agrees to reword a requirement for precision"],
+        &["When the user agrees to a change to a requirement's text"],
     );
     // The other skills point to it rather than restate it.
     for name in ["habeas-requirements", "habeas-bootstrap-requirements"] {
@@ -1112,6 +1114,10 @@ fn bundled_skills_treat_disagreeing_assessments_as_findings() {
             "{name} does not refer to habeas-evidence"
         );
         assert!(!text.contains(GOAL), "{name} restates the goal");
+    }
+    // No skill keeps a separate log of requirement changes.
+    for name in SKILLS {
+        assert!(!bundled_skill(name).contains("audit log"), "{name} mentions an audit log");
     }
 }
 

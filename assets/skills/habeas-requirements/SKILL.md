@@ -42,7 +42,8 @@ assess each one; `cargo test --workspace` checks the results.
 If implementation shows that an approved obligation must change substantively,
 review the revised text with the user before coding the change. Review every
 other change to agreed text with the user first too, even a rewording for
-precision, then log it as the habeas-evidence Rules say. A bug fix whose
+precision, then explain why in the commit message as the habeas-evidence
+Rules say. A bug fix whose
 behavior an existing requirement already specifies needs no new requirement:
 confirm the requirement covers it, then fix the code and check its tests and
 references. A refactor that changes no behavior needs no review, but references
