@@ -2,7 +2,7 @@ use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
-use std::process::{Command, Output, Stdio};
+use std::process::{Command, Output};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
@@ -192,8 +192,10 @@ fn serve(
         state.first_pair_overlapped = state.subjects.len() >= 2;
     }
     drop(state);
-    let denied =
-        matches!(behavior, Behavior::DeniedRead { subject: denied, .. } if subject == denied);
+    // The denied subject's first request reads a denied file; once the
+    // denial comes back as a tool error, it submits like the others.
+    let denied = first_for_subject
+        && matches!(behavior, Behavior::DeniedRead { subject: denied, .. } if subject == denied);
     let wait_for_interrupt = matches!(behavior, Behavior::WaitAfterFirst) && !first_request;
     let held = wait_for_interrupt
         || (!denied
@@ -383,11 +385,13 @@ impl Fixture {
         command
     }
 
+    // {cite}`habeas:util`
     #[cfg(unix)]
     fn run_in_pty(&self, interrupt: bool, term: &str) -> Output {
         self.run_in_pty_with_args(interrupt, term, &["author", "--all"])
     }
 
+    // {cite}`habeas:util`
     #[cfg(unix)]
     fn run_in_pty_with_args(&self, interrupt: bool, term: &str, args: &[&str]) -> Output {
         // Keep stdout piped: the bar belongs to stderr and must detect that
@@ -467,6 +471,7 @@ raise SystemExit(process.returncode if process.returncode >= 0 else 128 - proces
             .expect("PTY progress tests require python3 on Unix")
     }
 
+    // {cite}`habeas:util`
     fn evidence(&self, name: &str) -> Value {
         serde_json::from_slice(
             &fs::read(self.project.join(format!("evidence/{name}.json"))).unwrap(),
@@ -921,6 +926,7 @@ fn interrupted_terminal_progress_keeps_unstarted_work_incomplete() {
     }
 }
 
+// {cite}`habeas:util`
 #[cfg(unix)]
 fn assert_interruption_stops_the_batch(overlap: bool, concurrency: usize) {
     let server = Server::start_with(overlap, Behavior::WaitAfterFirst);
@@ -960,10 +966,9 @@ fn assert_interruption_stops_the_batch(overlap: bool, concurrency: usize) {
 
 // {test}`requirements.authoring.batch`
 // {test}`requirements.authoring.read_denial`
-// {test}`requirements.authoring.persistence`
 // {test}`requirements.authoring.usage_storage`
 #[test]
-fn denied_read_aborts_only_its_assessment_and_runs_queued_assessments() {
+fn a_denied_read_returns_an_error_and_its_assessment_continues() {
     let server = Server::start_with(
         false,
         Behavior::DeniedRead {
@@ -979,115 +984,90 @@ fn denied_read_aborts_only_its_assessment_and_runs_queued_assessments() {
     )
     .unwrap();
     let output = fixture.run(&["author", "--all"]);
-    assert!(!output.status.success(), "{output:?}");
+    assert!(output.status.success(), "{output:?}");
     let subjects = server.subjects();
-    assert_eq!(subjects.len(), 6, "{subjects:?}");
-    assert_eq!(
-        &subjects[..2],
-        [
-            "requirement requirements.alpha",
-            "example requirements.alpha_case"
-        ]
-    );
-    assert_eq!(
-        fixture.evidence("requirements.alpha")["determination"],
-        true
-    );
-    assert!(
-        !fixture
-            .project
-            .join("evidence/requirements.alpha_case.json")
-            .exists()
-    );
-    assert_eq!(fixture.evidence("requirements.beta")["determination"], true);
-    assert_eq!(
-        fixture.evidence("requirements.gamma")["determination"],
-        true
-    );
-    let diagnostic = String::from_utf8_lossy(&output.stderr);
-    assert!(diagnostic.contains("evidence/private.txt"), "{diagnostic}");
-    assert!(
-        !diagnostic.contains("assessments not started"),
-        "{diagnostic}"
-    );
-    let usage = fixture.usage();
-    assert_eq!(usage.len(), 6);
-    assert_eq!(
-        usage
-            .iter()
-            .filter(|run| run["outcome"] == "completed")
-            .count(),
-        5
-    );
-    let failed = usage.iter().find(|run| run["outcome"] == "failed").unwrap();
-    assert_eq!(failed["subject"], "requirements.alpha_case");
-    assert_eq!(failed["request_count"], 1);
-    assert_eq!(failed["tool_failures"]["habeas"], 1);
-    assert_eq!(failed["evidence_written"], false);
+    // The denied assessment made a second request after the tool error.
     assert_eq!(
         subjects
             .iter()
             .filter(|subject| *subject == "example requirements.alpha_case")
             .count(),
-        1
+        2,
+        "{subjects:?}"
+    );
+    for name in [
+        "requirements.alpha",
+        "requirements.alpha_case",
+        "requirements.beta",
+        "requirements.gamma",
+    ] {
+        assert_eq!(fixture.evidence(name)["determination"], true, "{name}");
+    }
+    let usage = fixture.usage();
+    assert!(
+        usage.iter().all(|run| run["outcome"] == "completed"),
+        "{usage:?}"
+    );
+    let denied = usage
+        .iter()
+        .find(|run| run["subject"] == "requirements.alpha_case")
+        .unwrap();
+    assert_eq!(denied["request_count"], 2);
+    assert_eq!(denied["tool_failures"]["habeas"], 1);
+    // The denied file is not recorded.
+    assert!(
+        !fixture
+            .evidence("requirements.alpha_case")
+            .to_string()
+            .contains("private.txt")
     );
 }
 
 // {test}`requirements.authoring.batch`
 // {test}`requirements.authoring.concurrency`
-// {test}`requirements.authoring.read_denial`
+// {test}`requirements.authoring.read_denial.mandatory`
 // {test}`requirements.authoring.persistence`
 // {test}`requirements.authoring.usage_storage`
-// {test}`requirements.authoring.usage_requests`
 #[test]
-fn denied_read_preserves_in_flight_assessments_and_their_evidence() {
+fn a_denied_mandatory_input_aborts_only_its_assessment() {
     let server = Server::start_with(
-        true,
-        Behavior::DeniedRead {
-            subject: "requirement requirements.alpha",
-            hold_other_requests: true,
+        false,
+        Behavior::Judgments {
+            failing_subject: None,
         },
     );
-    let fixture = Fixture::new(&server.endpoint, Some(2));
-    fs::create_dir(fixture.project.join("evidence")).unwrap();
+    // One at a time, so the assessments after the aborted one were queued.
+    let fixture = Fixture::new(&server.endpoint, Some(1));
+    fs::write(fixture.project.join("private.txt"), "private\n").unwrap();
     fs::write(
-        fixture.project.join("evidence/private.txt"),
-        "generated output\n",
+        fixture.project.join("habeas.toml"),
+        "version = 1\n\n[evidence]\ndisallow = [\"private.txt\"]\n",
     )
     .unwrap();
-    let mut child = fixture
-        .command()
-        .args(["author", "--all"])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(10);
-    let exited = loop {
-        if child.try_wait().unwrap().is_some() {
-            break true;
-        }
-        if Instant::now() >= deadline {
-            child.kill().unwrap();
-            break false;
-        }
-        thread::sleep(Duration::from_millis(10));
-    };
-    let output = child.wait_with_output().unwrap();
-    let subjects = server.subjects();
-    drop(server);
-    assert!(
-        exited,
-        "batch did not finish its independent assessments: {output:?}"
-    );
+    // The workspace disallows this anchor, a mandatory input of
+    // `requirements.alpha`.
+    let chapter = fixture.project.join("md/requirements.md");
+    let text = fs::read_to_string(&chapter).unwrap();
+    fs::write(
+        &chapter,
+        text.replacen(
+            ":::{req} alpha\n",
+            ":::{req} alpha\n:impl: private.txt\n",
+            1,
+        ),
+    )
+    .unwrap();
+    let output = fixture.run(&["author", "--all"]);
     assert!(!output.status.success(), "{output:?}");
-    assert_eq!(subjects.len(), 6, "{subjects:?}");
-    assert_eq!(
-        subjects
+    let diagnostic = String::from_utf8_lossy(&output.stderr);
+    assert!(diagnostic.contains("private.txt"), "{diagnostic}");
+    // It made no request; the others ran and kept their evidence.
+    let subjects = server.subjects();
+    assert!(
+        !subjects
             .iter()
-            .filter(|subject| *subject == "requirement requirements.alpha")
-            .count(),
-        1
+            .any(|subject| subject == "requirement requirements.alpha"),
+        "{subjects:?}"
     );
     assert!(
         !fixture
@@ -1095,42 +1075,61 @@ fn denied_read_preserves_in_flight_assessments_and_their_evidence() {
             .join("evidence/requirements.alpha.json")
             .exists()
     );
-    assert_eq!(
-        fixture.evidence("requirements.alpha_case")["determination"],
-        true
-    );
-    assert_eq!(fixture.evidence("requirements.beta")["determination"], true);
-    assert_eq!(
-        fixture.evidence("requirements.gamma")["determination"],
-        true
-    );
+    for name in [
+        "requirements.alpha_case",
+        "requirements.beta",
+        "requirements.gamma",
+    ] {
+        assert_eq!(fixture.evidence(name)["determination"], true, "{name}");
+    }
     let usage = fixture.usage();
-    assert_eq!(usage.len(), 6);
-    assert_eq!(
-        usage
-            .iter()
-            .filter(|run| run["outcome"] == "failed")
-            .count(),
-        1
-    );
-    let failed = usage.iter().find(|run| run["outcome"] == "failed").unwrap();
-    assert_eq!(failed["subject"], "requirements.alpha");
-    assert_eq!(failed["request_count"], 1);
-    assert_eq!(failed["tool_failures"]["habeas"], 1);
-    assert_eq!(failed["evidence_written"], false);
-    let completed: Vec<_> = usage
+    let aborted = usage
         .iter()
-        .filter(|run| run["outcome"] == "completed")
-        .collect();
-    assert_eq!(completed.len(), 5);
-    assert!(completed.iter().all(|run| run["evidence_written"] == true));
-    assert!(completed.iter().all(|run| run["request_count"] == 1));
-    assert!(
-        completed
-            .iter()
-            .all(|run| run["requests"][0]["outcome"] == "completed")
+        .find(|run| run["subject"] == "requirements.alpha")
+        .expect("the aborted assessment has a usage record");
+    assert_eq!(aborted["outcome"], "failed");
+    assert_eq!(aborted["request_count"], 0);
+    assert_eq!(aborted["evidence_written"], false);
+    // With --stdout it emits no evidence JSON.
+    let single = fixture.run(&["author", "requirements.alpha", "--stdout"]);
+    assert!(!single.status.success(), "{single:?}");
+    assert!(single.stdout.is_empty(), "{single:?}");
+}
+
+// {test}`requirements.authoring.read_denial.mandatory`
+// {test}`requirements.authoring.read_denial.untracked`
+#[test]
+fn an_untracked_mandatory_input_is_reported_with_how_to_stage_it() {
+    let server = Server::start_with(
+        false,
+        Behavior::Judgments {
+            failing_subject: None,
+        },
     );
-    assert!(usage.iter().all(|run| !run["end_time_ms"].is_null()));
+    let fixture = Fixture::new(&server.endpoint, Some(1));
+    let chapter = fixture.project.join("md/requirements.md");
+    let text = fs::read_to_string(&chapter).unwrap();
+    fs::write(
+        &chapter,
+        text.replacen(":::{req} alpha\n", ":::{req} alpha\n:impl: notes.txt\n", 1),
+    )
+    .unwrap();
+    for args in [["init", "--quiet"], ["add", "."]] {
+        let git = Command::new("git")
+            .current_dir(&fixture.project)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(git.status.success(), "{git:?}");
+    }
+    fs::write(fixture.project.join("notes.txt"), "notes\n").unwrap();
+    let output = fixture.run(&["author", "requirements.alpha", "--stdout"]);
+    assert!(!output.status.success(), "{output:?}");
+    let diagnostic = String::from_utf8_lossy(&output.stderr);
+    for text in ["notes.txt", "untracked", "git add", "allow rule"] {
+        assert!(diagnostic.contains(text), "{text}: {diagnostic}");
+    }
+    assert!(server.subjects().is_empty());
 }
 
 // {test}`requirements.authoring.batch`

@@ -22,6 +22,7 @@ pub(crate) const CITATIONS_DIR: &str = "citations";
 // {impl}`requirements.authoring.progress`
 const CITATION_STAGE: &str = "citation reviews";
 
+// {impl}`requirements.references.citation_review`
 /// One citation of a reviewed item: its role, name, and fenced commentary,
 /// which is empty for an inline reference.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -32,11 +33,13 @@ pub(crate) struct Citation {
 }
 
 impl Citation {
+    // {impl}`requirements.references.citation_review`
     pub(crate) fn to_value(&self) -> Value {
         json!({"role": self.role, "name": self.name, "commentary": self.commentary})
     }
 }
 
+// {cite}`habeas:util`
 /// A source item outside the book carrying at least one `{cite}` reference.
 #[derive(Clone, Debug)]
 pub(crate) struct CitationItem {
@@ -51,11 +54,13 @@ pub(crate) struct CitationItem {
 }
 
 impl CitationItem {
+    // {cite}`habeas:util`
     /// The review's path relative to the project root.
     pub(crate) fn review_path(&self) -> String {
         review_path(&self.file, &self.item)
     }
 
+    // {cite}`habeas:util`
     /// The selector as displayed, `<root>` for the root node.
     pub(crate) fn selector_label(&self) -> &str {
         if self.item.is_empty() {
@@ -65,11 +70,13 @@ impl CitationItem {
         }
     }
 
+    // {impl}`requirements.references.citation_review`
     /// The citations as JSON, in source order.
     pub(crate) fn citations_value(&self) -> Value {
         Value::Array(self.citations.iter().map(Citation::to_value).collect())
     }
 
+    // {cite}`habeas:util`
     /// The citations as the model receives them, with each commentary redacted.
     pub(crate) fn model_citations_value(&self) -> Value {
         let mut value = self.citations_value();
@@ -84,6 +91,7 @@ impl CitationItem {
     }
 }
 
+// {impl}`requirements.references.citation_review`
 /// `evidence/citations/<file>/<selector>.json`, with `/` and `%` in the
 /// selector percent-encoded and `_root` for the root node.
 pub(crate) fn review_path(file: &str, item: &str) -> String {
@@ -93,6 +101,7 @@ pub(crate) fn review_path(file: &str, item: &str) -> String {
     )
 }
 
+// {impl}`requirements.references.citation_review`
 /// A selector as a review file name: `/` and `%` percent-encoded, and
 /// `_root` for the root node.
 pub(crate) fn encoded_selector(item: &str) -> String {
@@ -172,7 +181,7 @@ pub(crate) fn citation_items(
 /// Whether two citation lists are the same, comparing commentary by its
 /// words so reflowing it does not change the review.
 // {cite}`habeas:util`
-fn same_citations(recorded: &[Citation], current: &[Citation]) -> bool {
+pub(crate) fn same_citations(recorded: &[Citation], current: &[Citation]) -> bool {
     let key = |citations: &[Citation]| {
         let mut keys = citations
             .iter()

@@ -1,5 +1,5 @@
 use std::io;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use rig_core::completion::{CacheRetention, CompletionRequest, CompletionResponse};
 use rig_core::error::ProviderError;
@@ -23,17 +23,71 @@ pub(super) trait CompletionProvider {
 
 pub(super) struct ProviderBackoff {
     window: Duration,
+    /// When the first of the current consecutive transient failures came,
+    /// and how many attempts have failed since.
+    failing: Option<(Instant, u32)>,
 }
 
 impl Default for ProviderBackoff {
     fn default() -> Self {
         Self {
             window: Duration::from_secs(1),
+            failing: None,
         }
     }
 }
 
+/// How long a request may keep failing transiently before retrying stops.
+// {impl}`requirements.authoring.provider_backoff.limit`
+pub(super) const RETRY_LIMIT: Duration = Duration::from_secs(60);
+
+// {cite}`habeas:util`
+/// What to do after a failed request.
+pub(super) enum Retry {
+    /// Wait this long, then retry.
+    Wait(Duration),
+    /// Stop: the failure is permanent, or retrying would pass the limit.
+    Stop(io::Error),
+}
+
+/// A failed request's HTTP status and provider error code, when reported.
+// {impl}`requirements.authoring.usage_requests.failures`
+pub(super) fn failure_codes(error: &io::Error) -> (Option<u16>, Option<String>) {
+    error
+        .get_ref()
+        .and_then(|inner| inner.downcast_ref::<ProviderError>())
+        .map_or((None, None), |provider| {
+            let report = provider.report();
+            (report.http_status, report.code)
+        })
+}
+
 impl ProviderBackoff {
+    /// Decides whether to retry a failed request at `now`: after a
+    /// transient failure while the next attempt still starts within
+    /// [`RETRY_LIMIT`] of the first consecutive failure.
+    // {impl}`requirements.authoring.provider_backoff.limit`
+    pub(super) fn retry(&mut self, error: io::Error, now: Instant) -> Retry {
+        let Some(delay) = self.next_delay(&error) else {
+            return Retry::Stop(error);
+        };
+        let (first, attempts) = self.failing.get_or_insert((now, 0));
+        *attempts += 1;
+        if now + delay > *first + RETRY_LIMIT {
+            let (status, code) = failure_codes(&error);
+            let last = match (status, code) {
+                (Some(status), Some(code)) => format!("HTTP {status} {code}"),
+                (Some(status), None) => format!("HTTP {status}"),
+                (None, Some(code)) => code,
+                (None, None) => error.to_string(),
+            };
+            return Retry::Stop(io::Error::other(format!(
+                "the provider kept failing for a minute after {attempts} attempts; last failure: {last}"
+            )));
+        }
+        Retry::Wait(delay)
+    }
+
     pub(super) fn next_delay(&mut self, error: &io::Error) -> Option<Duration> {
         // Rig preserves HTTP status and Bedrock's exception code. Do not infer
         // throttling from "tokens" in a message: a too-large input cannot be
@@ -75,6 +129,7 @@ impl ProviderBackoff {
     }
 }
 
+// {cite}`habeas:util`
 /// Wraps Rig's error unchanged, so `ProviderBackoff::next_delay` can read its
 /// HTTP status, provider code, and `Retry-After` header.
 fn provider_failure(error: ProviderError) -> io::Error {
@@ -227,6 +282,7 @@ impl CompletionProvider for RigProvider {
     }
 }
 
+// {cite}`habeas:util`
 fn normalize_bedrock_client_calls(response: &mut CompletionResponse) -> io::Result<()> {
     // Rig 0.44 treats every typed Converse toolUse block as a hosted tool.
     // Newer Claude responses explicitly identify client calls as "tool_use".
@@ -435,9 +491,111 @@ mod tests {
         );
     }
 
+    // {test}`requirements.authoring.provider_backoff.limit`
+    #[test]
+    fn retrying_stops_once_a_request_has_failed_for_a_minute() {
+        let throttled = || io::Error::other(provider_error(Some(429), Some("ThrottlingException")));
+        let start = Instant::now();
+        let mut backoff = ProviderBackoff::default();
+        let mut now = start;
+        let mut attempts = 0;
+        let message = loop {
+            match backoff.retry(throttled(), now) {
+                Retry::Wait(delay) => {
+                    attempts += 1;
+                    now += delay;
+                    // No attempt starts after the minute.
+                    assert!(now <= start + RETRY_LIMIT);
+                }
+                Retry::Stop(error) => break error.to_string(),
+            }
+        };
+        assert!(attempts > 3, "{attempts}");
+        assert!(message.contains("kept failing for a minute"), "{message}");
+        assert!(
+            message.contains(&format!("after {} attempts", attempts + 1)),
+            "{message}"
+        );
+        assert!(
+            message.contains("HTTP 429 ThrottlingException"),
+            "{message}"
+        );
+        // A Retry-After past the minute stops at once.
+        let late = io::Error::other(with_retry_after(
+            provider_error(Some(429), Some("ThrottlingException")),
+            "90",
+        ));
+        assert!(matches!(
+            ProviderBackoff::default().retry(late, Instant::now()),
+            Retry::Stop(_)
+        ));
+        // The last failure is named by whatever it reports.
+        for (error, last) in [
+            (
+                io::Error::other(provider_error(Some(503), None)),
+                "last failure: HTTP 503",
+            ),
+            (
+                io::Error::other(provider_error(None, Some("ThrottlingException"))),
+                "last failure: ThrottlingException",
+            ),
+            (
+                io::Error::new(io::ErrorKind::TimedOut, "no response within ten minutes"),
+                "last failure: no response within ten minutes",
+            ),
+        ] {
+            let mut backoff = ProviderBackoff::default();
+            let message = match backoff.retry(error, start + RETRY_LIMIT) {
+                Retry::Stop(error) => panic!("first failure stops: {error}"),
+                Retry::Wait(_) => {
+                    let again = match last {
+                        _ if last.contains("503") => {
+                            io::Error::other(provider_error(Some(503), None))
+                        }
+                        _ if last.contains("Throttling") => {
+                            io::Error::other(provider_error(None, Some("ThrottlingException")))
+                        }
+                        _ => io::Error::new(
+                            io::ErrorKind::TimedOut,
+                            "no response within ten minutes",
+                        ),
+                    };
+                    match backoff.retry(again, start + RETRY_LIMIT * 3) {
+                        Retry::Stop(error) => error.to_string(),
+                        Retry::Wait(_) => panic!("retrying passed the limit"),
+                    }
+                }
+            };
+            assert!(message.contains(last), "{message}");
+        }
+        // A permanent failure stops with its own error.
+        let permanent = io::Error::other(provider_error(Some(400), Some("ValidationException")));
+        assert!(matches!(
+            ProviderBackoff::default().retry(permanent, Instant::now()),
+            Retry::Stop(error) if !error.to_string().contains("kept failing")
+        ));
+    }
+
+    // {test}`requirements.authoring.usage_requests.failures`
+    #[test]
+    fn failure_codes_are_the_status_and_code_a_provider_reports() {
+        assert_eq!(
+            failure_codes(&io::Error::other(provider_error(
+                Some(429),
+                Some("ThrottlingException")
+            ))),
+            (Some(429), Some("ThrottlingException".to_owned()))
+        );
+        assert_eq!(failure_codes(&io::Error::other("plain")), (None, None));
+        assert_eq!(
+            failure_codes(&io::Error::new(io::ErrorKind::TimedOut, "no response")),
+            (None, None)
+        );
+    }
+
     // {test}`requirements.authoring.provider_backoff`
     #[test]
-    fn jittered_backoff_grows_to_a_ceiling_without_limiting_attempts() {
+    fn jittered_backoff_grows_to_a_ceiling() {
         let error = io::Error::other(provider_error(Some(429), Some("ThrottlingException")));
         let mut backoff = ProviderBackoff::default();
         for attempt in 0..100 {

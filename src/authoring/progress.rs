@@ -192,6 +192,7 @@ mod tests {
 
     use super::*;
 
+    // {cite}`habeas:util`
     #[derive(Clone, Debug, Default)]
     struct RecordingTerm(Arc<Mutex<String>>);
 

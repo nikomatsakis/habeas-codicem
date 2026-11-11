@@ -45,6 +45,7 @@ impl PathPolicy {
     }
 
     // {impl}`requirements.configuration.evidence_paths`
+    // {impl}`requirements.authoring.tool_descriptions.special_cases`
     pub(crate) fn check_disallow(&self, requested: &Path, target: &Path) -> io::Result<()> {
         if self.disallow.is_empty() {
             return Ok(());
@@ -95,6 +96,9 @@ impl SourceAccess {
     // {impl}`requirements.authoring.file_discovery`
     // {impl}`requirements.configuration.evidence_paths`
     // {impl}`requirements.authoring.generated_inputs`
+    // {impl}`requirements.authoring.read_denial.untracked`
+    // {impl}`requirements.authoring.read_denial.build_output`
+    // {impl}`requirements.authoring.tool_descriptions.special_cases`
     pub(crate) fn path(&self, root: &Path, relative: &Path) -> io::Result<PathBuf> {
         let (requested, target) = resolve(root, relative)?;
         self.policy.check_disallow(&root.join(relative), &target)?;
@@ -153,7 +157,7 @@ impl SourceAccess {
                 if !self.has_source_under(root, &requested) || !self.has_source_under(root, &target)
                 {
                     return Err(denied(format!(
-                        "{} contains no eligible sources; use git add to stage sources or add an explicit habeas.toml allow rule before retrying",
+                        "{} contains no tracked sources: its files are untracked, so they cannot be read; the caller can stage them with `git add` or permit them with a workspace habeas.toml allow rule",
                         relative.display()
                     )));
                 }
@@ -161,7 +165,7 @@ impl SourceAccess {
                 for path in [&lexical_request, &target] {
                     if !tracked.contains(path) {
                         return Err(denied(format!(
-                            "{} is not tracked by Git; use git add to stage it or add an explicit habeas.toml allow rule before retrying",
+                            "{} is untracked: it is not in the Git index, so it cannot be read; the caller can stage it with `git add` or permit it with a workspace habeas.toml allow rule",
                             path.strip_prefix(root).unwrap_or(path).display()
                         )));
                     }
@@ -462,6 +466,7 @@ pub(crate) fn recoverable_outside_request(error: io::Error) -> io::Error {
     }
 }
 
+// {cite}`habeas:util`
 /// A source-access policy denial. Only these, and [`OutsideProject`] denials
 /// of mandatory inputs, abort an assessment; an operating-system permission
 /// failure is an ordinary read failure.
@@ -492,6 +497,7 @@ pub(crate) fn recoverable_os_denial(error: io::Error) -> io::Error {
     }
 }
 
+// {cite}`habeas:util`
 fn denied(message: impl Into<String>) -> io::Error {
     io::Error::new(
         io::ErrorKind::PermissionDenied,
@@ -875,6 +881,8 @@ pub(crate) mod tests {
     }
 
     // {test}`requirements.configuration.evidence_paths`
+    // {test}`requirements.authoring.generated_inputs`
+    // {test}`requirements.authoring.read_denial.build_output`
     #[test]
     fn explicit_allow_overrides_the_build_output_refusal() {
         let root = tempfile::tempdir().unwrap();
@@ -902,6 +910,7 @@ pub(crate) mod tests {
     }
 
     // {test}`requirements.configuration.evidence_paths`
+    // {test}`requirements.authoring.tool_descriptions.special_cases`
     #[test]
     fn evidence_rules_are_literal_paths_not_globs() {
         let root = tempfile::tempdir().unwrap();

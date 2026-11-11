@@ -11,6 +11,7 @@ use crate::reference_roles;
 // {impl}`requirements.authoring.progress`
 const RUST_COVERAGE_STAGE: &str = "Rust function coverage";
 
+// {cite}`habeas:util`
 fn quoted_end(bytes: &[u8], start: usize) -> usize {
     let mut position = start + 1;
     while position < bytes.len() {
@@ -23,6 +24,7 @@ fn quoted_end(bytes: &[u8], start: usize) -> usize {
     bytes.len()
 }
 
+// {cite}`habeas:util`
 fn char_end(source: &str, start: usize) -> Option<usize> {
     let bytes = source.as_bytes();
     let mut position = start + 1;
@@ -48,6 +50,7 @@ fn char_end(source: &str, start: usize) -> Option<usize> {
     (bytes.get(position) == Some(&b'\'')).then_some(position + 1)
 }
 
+// {cite}`habeas:util`
 fn raw_string_end(bytes: &[u8], start: usize) -> Option<usize> {
     let mut position = match bytes.get(start..) {
         Some([b'r', ..]) => start + 1,
@@ -76,6 +79,7 @@ fn raw_string_end(bytes: &[u8], start: usize) -> Option<usize> {
     Some(bytes.len())
 }
 
+// {cite}`habeas:util`
 /// Byte ranges of the comments in Rust source, skipping string and character
 /// literals; used to find term references in recorded Rust inputs.
 pub(crate) fn comments(source: &str) -> Vec<Range<usize>> {
@@ -124,6 +128,7 @@ pub(crate) fn comments(source: &str) -> Vec<Range<usize>> {
     ranges
 }
 
+// {cite}`habeas:util`
 /// The outline inputs recorded by every evidence record, citation review,
 /// and site review, as `file -> item -> hashes`, read once per validation.
 /// An item is covered when its node or an enclosing node is recorded here
@@ -197,6 +202,7 @@ impl EvidenceReads {
     }
 }
 
+// {cite}`habeas:util`
 /// An item Rust item coverage reports: its file, outline selector, and the
 /// validation error naming it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -390,6 +396,7 @@ pub(crate) fn validate_rust_functions(
     uncovered
 }
 
+// {cite}`habeas:util`
 fn display_path(root: &Path, path: &Path) -> String {
     path.strip_prefix(root)
         .unwrap_or(path)

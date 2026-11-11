@@ -1,5 +1,6 @@
 use serde_json::{Value, json};
 
+// {impl}`requirements.ci.outcomes`
 /// A requirement or example assessment, independent of source freshness.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Judgment {
@@ -47,6 +48,7 @@ impl Judgment {
         }
     }
 
+    // {cite}`habeas:util`
     pub fn kind(&self) -> &'static str {
         match self {
             Self::True => "true",

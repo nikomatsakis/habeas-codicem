@@ -20,6 +20,7 @@ mod inputs;
 pub mod judgment;
 mod outline;
 mod redaction;
+mod refactor;
 mod rust_coverage;
 mod sites;
 mod structural;
@@ -28,6 +29,7 @@ mod terms;
 pub use evidence::{EvidenceReport, reference_set_digest_for, validate_repository};
 pub use github::GithubIssues;
 pub use inputs::{outline_input, outline_inputs_for_lines};
+pub use refactor::{RefactorError, refactor};
 
 /// Validate the current Cargo and mdBook project for use in a Cargo test.
 ///
@@ -88,6 +90,7 @@ impl DefinitionKind {
     }
 }
 
+// {cite}`habeas:util`
 pub(crate) struct DefinitionBlock {
     pub(crate) start: usize,
     pub(crate) end: usize,
@@ -101,6 +104,7 @@ pub(crate) struct DefinitionBlock {
     pub(crate) options: Vec<DefinitionOption>,
 }
 
+// {cite}`habeas:util`
 /// An option line such as `:impl: src/skill.md` immediately after the opening
 /// fence of a `{req}` or `{example}` directive.
 pub(crate) struct DefinitionOption {
@@ -118,6 +122,7 @@ pub(crate) struct Definition {
     pub(crate) kind: DefinitionKind,
 }
 
+// {cite}`habeas:util`
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ReferenceKind {
     Impl,
@@ -152,9 +157,10 @@ impl ReferenceKind {
     }
 }
 
+// {cite}`habeas:util`
 pub(crate) struct ReferenceMatch<'a> {
     pub(crate) start: usize,
-    end: usize,
+    pub(crate) end: usize,
     pub(crate) name: &'a str,
     pub(crate) kind: ReferenceKind,
 }

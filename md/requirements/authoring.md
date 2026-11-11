@@ -39,8 +39,8 @@ authoring error under {cite}`requirements.authoring.reporting`, and retain
 successful writes when another assessment fails. It MUST return a nonzero
 exit status if any assessment fails. False judgments MUST still be written as
 completed assessments; they remain failures under ordinary evidence validation.
-An access-policy denial MUST abort only the affected assessment under
-{cite}`requirements.authoring.read_denial`. Interruption MUST instead stop the
+A denied mandatory input MUST abort only the affected assessment under
+{cite}`requirements.authoring.read_denial.mandatory`. Interruption MUST instead stop the
 whole batch: queued assessments MUST NOT start, running assessments MUST be
 cancelled, and an assessment whose evidence has not been written when the
 interruption arrives MUST NOT write it. Evidence already written MUST be
@@ -155,7 +155,8 @@ applied.
 
 # Submitting
 
-Call submit_verification exactly once. That tool call is your final answer.
+You MUST end by calling submit_verification exactly once. A verification
+written in your reply text is not accepted.
 ```
 
 ```text
@@ -301,6 +302,12 @@ assessments judge by the same rules:
   itself a gap.
 - Explain your judgment in a Markdown rationale with source locations, including
   any acknowledged gaps.
+- Give a source location as its file and outline selector, the address the
+  habeas and outline tools use, in backticks: `src/config.rs#fn[load]`, or
+  `src/config.rs` for a whole file. Name requirements, examples, and
+  definitions by full name in backticks. Name functions, types, and tests in
+  backticks exactly as they are written. Do not give line numbers: they change
+  whenever nearby code changes, while a selector stays correct.
 ```
 :::
 
@@ -356,8 +363,9 @@ requirements or examples the item does not cite, except as step 3 requires.
 # Submitting
 
 Choose true when your task finds no gap, {"FIXME": ["..."]} when every gap is
-acknowledged, and false otherwise. Call submit_judgment exactly once with
-determination and rationale. That tool call is your final answer.
+acknowledged, and false otherwise. You MUST end by calling submit_judgment
+exactly once with determination and rationale. A judgment written in your
+reply text is not accepted.
 ```
 
 ```text
@@ -381,8 +389,10 @@ review's `applies`; a submission with `applies` false and a determination other
 than `true` MUST be invalid. It MUST use this prompt, replacing
 `{{requirement_name}}`, `{{site_file}}`, `{{site_selector}}`, `{{matches}}` (a
 JSON array giving, for each query match at the site, the query's kind, `sites`
-or `violations`, its name, and the match's line range, and for a violation
-match its matched source text),
+or `violations`, its name, and the selector, under
+{cite}`requirements.references.outline_selectors`, of the innermost outline node
+containing the match, but no line numbers, and for a violation match its
+matched source text),
 `{{habeas_background}}` under {cite}`requirements.authoring.habeas_background`,
 `{{distributed_background}}` under
 {cite}`requirements.authoring.habeas_background`, `{{judgment_rules}}` under
@@ -436,8 +446,9 @@ site's callers, or other sites.
 # Submitting
 
 Choose true when your task finds no gap, {"FIXME": ["..."]} when every gap is
-acknowledged, and false otherwise. Call submit_judgment exactly once with
-applies, determination, and rationale. That tool call is your final answer.
+acknowledged, and false otherwise. You MUST end by calling submit_judgment
+exactly once with applies, determination, and rationale. A judgment written in
+your reply text is not accepted.
 ```
 
 ```text
@@ -519,8 +530,8 @@ transient failure, up to sixty seconds. Each delay MUST be randomly selected
 between half and all of that window to spread parallel retries. An available
 provider `Retry-After` value, in seconds or HTTP-date form, MUST be honored as a
 minimum delay even when longer than the window. A successful response MUST reset
-backoff for the next completion request. There MUST be no retry-attempt limit;
-interruption MUST cancel both the wait and further retries.
+backoff for the next completion request, and interruption MUST cancel both the
+wait and further retries.
 
 Each attempt MUST be recorded under {cite}`requirements.authoring.usage_requests`.
 Hidden SDK retries MUST remain disabled so the harness can account for attempts.
@@ -530,11 +541,68 @@ recorded as evidence only after the request succeeds.
 {cite}`requirements.authoring.provider` {cite}`requirements.authoring.delivered_inputs`
 :::
 
+:::{req} provider_backoff.limit
+The harness MUST stop retrying a completion request under
+{cite}`requirements.authoring.provider_backoff` when the next attempt would
+start more than one minute after the first of its consecutive transient
+failures, including when a provider `Retry-After` delay would pass that point.
+It MUST then fail the assessment with an error naming the number of attempts
+and the last failure's HTTP status and provider error code, when available.
+:::
+
 ## Model tools
 
 The model receives nine tools: `habeas`, `list_files`, `outline`, `ripgrep`, `ast_grep`, `github`, `references`, `next_page`, and `submit_judgment`.
 The following notation defines their arguments and results; names in uppercase
 are data types, and optional fields show their defaults.
+
+The tools locate code by file and outline selector, the form rationales cite
+under {cite}`requirements.authoring.judgment_rules`.
+
+:::{req} tool_descriptions.common_case
+Each model tool's description MUST give what the model needs in the common
+case: what the tool does, when to use it rather than another tool, each
+argument's meaning and form, with a short example where the form is not
+obvious, and the form of a successful result.
+:::
+
+:::{req} tool_descriptions.special_cases
+Model tool descriptions SHOULD NOT explain cases the model meets only
+occasionally, such as access policy, excluded or build-output paths, redaction,
+paging, and failures, and the harness SHOULD explain each of these where it
+occurs: in the tool error, or in a note in the result it affects. The model reads
+every description on every assessment, so explaining rare cases there costs
+attention on every review for a case most never meet, and access-policy wording
+in particular can steer its reasoning away from the review. A tool whose purpose
+is one of these cases, such as `next_page`, explains it in its description.
+:::
+
+:::{req} not_listed
+A `list_files`, `ripgrep`, or `ast_grep` result MUST include `not_listed`, an
+array of `{path, reason}` with reason `untracked`, naming each untracked file
+inside the project that the listing would otherwise include or that contains a
+match, so the model can tell that sources exist which it cannot read. It MUST
+be omitted when there are none, and for a paged result it MUST appear on the
+first page. It MUST NOT give those files' contents, and they MUST NOT become
+evidence inputs. Files excluded for another reason, such as a workspace disallow
+rule or generated `evidence/` output, MUST NOT be read to find matches and MUST
+NOT be listed.
+:::
+
+:::{req} redaction_notice
+A tool result containing text the harness redacted under
+{cite}`requirements.authoring.redaction` MUST include a note saying that
+`[REDACTED:<kind>]` replaces credential-shaped text and that the original is not
+available. A result with no redacted text MUST NOT include the note.
+:::
+
+:::{req} no_line_numbers
+No prompt, tool result, or tool error the harness gives the model MUST state a
+line number or line range of a project source, except within source text it
+quotes and where a tool error repeats a line number the model supplied. The
+harness MUST identify a source location by file and outline selector under
+{cite}`requirements.references.outline_selectors` instead.
+:::
 
 ### Request evidence inputs: `habeas`
 
@@ -562,17 +630,18 @@ default, including symlink aliases. Every source the harness supplies to the
 model MUST be redacted under {cite}`requirements.authoring.redaction`. Generated build outputs MUST follow
 {cite}`requirements.authoring.generated_inputs`. Workspace path overrides MUST
 follow {cite}`requirements.configuration.evidence_paths`, including explicit
-permission for otherwise excluded inputs. A denied mandatory input or explicit
-read MUST abort under {cite}`requirements.authoring.read_denial`.
+permission for otherwise excluded inputs. A denied mandatory input MUST abort
+under {cite}`requirements.authoring.read_denial.mandatory`, and a denied model
+read MUST return a tool error under {cite}`requirements.authoring.read_denial`.
 
 Line numbers are only a way to request sources; recorded evidence MUST identify
 sources by outline selector and structural hash, never by line number. Request
 line numbers MUST be one-based and inclusive, and omitting `line_end` MUST read
 through EOF. A line-range request MUST be resolved to the innermost outline
 nodes covering the requested lines, which are `line` nodes in a file using the
-plain-text profile; the result MUST show the model each node's selector, current
-line range, and source text, and the harness MUST record those nodes as outline
-inputs. The model-facing tool description MUST include the argument conventions
+plain-text profile; the result MUST show the model each node's selector and
+source text, without line numbers, and the harness MUST record those nodes as
+outline inputs. The model-facing tool description MUST include the argument conventions
 from the cited requirements, including outline selector syntax, definition
 selections, and full definition names, with a short request example for each form.
 
@@ -592,43 +661,44 @@ HabeasResult {
 
 `definitions` MUST be empty when no additional terminology is required. The
 harness MUST record inputs supplied to the model in the assessment's evidence.
-A failed read MUST add no evidence input. Access-policy denials MUST abort
-except where {cite}`requirements.authoring.read_denial` makes them ordinary read
-failures; other failed reads MUST return an explanatory tool error.
+A failed read MUST add no evidence input. Access-policy denials MUST be handled
+under {cite}`requirements.authoring.read_denial`; other failed reads MUST return
+an explanatory tool error.
 :::
 
 :::{req} read_denial
-When a mandatory input or dispatched model read is denied by source-access
-policy, the assessment MUST abort and report the denied path and reason to its caller.
-It MUST NOT return the denial to the model as a recoverable tool result or make
-another model request for that assessment. An untracked-file diagnostic MUST
-explain that the caller can stage the file with `git add` or configure a workspace
-allow rule; the harness MUST NOT stage or permit the file itself.
+When source-access policy denies a path that a model tool call names
+explicitly, the harness MUST return a tool error naming the path and the reason
+it cannot be read, add no evidence input, and continue the assessment.
+Discovery and search MUST leave denied candidates out of their entries,
+reporting untracked ones under {cite}`requirements.authoring.not_listed`. Malformed tool
+arguments and ordinary read failures MUST also return explanatory tool errors.
+:::
 
-The aborted assessment MUST NOT write evidence or emit evidence JSON. Its usage
-record MUST identify the failure and any failed tool call. In a batch, other
-assessments MUST continue, including queued assessments, and their successful
-writes MUST be retained. The command MUST return a nonzero exit status after
-the batch finishes. Discovery and search MAY omit denied candidates without
-aborting, but explicitly requesting a denied file or directory MUST abort the
-affected assessment.
-Malformed tool arguments and ordinary read failures MUST retain their existing
-recoverable tool-error behavior.
+:::{req} read_denial.untracked
+A tool error for a denied file inside the project that is not in the Git index
+MUST say that the file is untracked and that the caller can stage it with
+`git add` or permit it with a workspace allow rule. The harness MUST NOT stage or
+permit the file itself.
+:::
 
-A dispatched model request naming a path inside the book's build directory,
-`book` unless `book.toml` sets `[build] build-dir`, or inside the project-root
-`target` directory, that no workspace allow rule or generated-output rule
-permits MUST also be treated as an ordinary read failure. Its tool error MUST
-say that the path holds build output and that the sources it is built from
-are elsewhere in the project.
+:::{req} read_denial.build_output
+A tool error for a path inside the book's build directory, `book` unless
+`book.toml` sets `[build] build-dir`, or inside the project-root `target`
+directory, that no workspace allow rule or generated-output rule permits MUST say
+that the path holds build output and that the sources it is built from are
+elsewhere in the project.
+:::
 
-A dispatched model request naming a path outside the project root, before
-symlinks are resolved, that no workspace allow rule or generated-output rule
-permits MUST be treated as an ordinary read failure rather than an abort: it
-MUST return an explanatory tool error, add no evidence input, and let the
-assessment continue. An explicit workspace disallow matching such a path MUST
-still abort. A mandatory input naming such a path, and a request inside the
-project whose symlink target leaves it, MUST still abort.
+:::{req} read_denial.mandatory
+When source-access policy denies a mandatory input, the assessment MUST abort
+before any model request and report the denied path and reason to its caller;
+for an untracked file, the report MUST say what {cite}`requirements.authoring.read_denial.untracked`
+says. The aborted assessment MUST NOT write evidence or emit evidence JSON, and
+its usage record MUST identify the failure. In a batch, other assessments MUST
+continue, including queued assessments, and their successful writes MUST be
+retained; the command MUST return a nonzero exit status after the batch
+finishes.
 :::
 
 :::{req} generated_inputs
@@ -679,8 +749,8 @@ explanatory tool error unless access was denied, which MUST be handled under
 Listings MUST omit files excluded by {cite}`requirements.authoring.source_tools`.
 In a Git worktree, directories MUST have at least one eligible source
 descendant to be listed unless explicitly allowed or discovered as generated
-output. Explicitly requesting an excluded path MUST return an
-authoring error under {cite}`requirements.authoring.read_denial`.
+output. Explicitly requesting an excluded path MUST be handled as a denial under
+{cite}`requirements.authoring.read_denial`.
 :::
 
 ### List a file's outline: `outline`
@@ -695,17 +765,15 @@ OutlineEntry {
     item: String,
     kind: String,
     name: String?,
-    line_start: Integer,
-    line_end: Integer,
     children: Array<OutlineEntry>,
 }
 ```
 
 The tool MUST return the outline of a permitted file in a supported language
 under {cite}`requirements.references.outlines`, with each node's selector under
-{cite}`requirements.references.outline_selectors`, its kind, its name when it is
-named, and its current inclusive line range, nested by outline ancestry. Results
-MUST contain no source text and MUST NOT become evidence inputs; the model reads
+{cite}`requirements.references.outline_selectors`, its kind, and its name when it
+is named, nested by outline ancestry and in source order. Results MUST contain
+no source text or line numbers and MUST NOT become evidence inputs; the model reads
 the nodes it relies on with the `habeas` tool. For a file using the plain-text
 profile, the outline lists its `line` nodes. Explicitly requesting an excluded
 file MUST be handled as a denial under {cite}`requirements.authoring.read_denial`.
@@ -732,9 +800,7 @@ SearchMatch {
     file: String,
     item: String,        // selector of the innermost outline node
     kind: String,
-    line_start: Integer, // the node's current lines
-    line_end: Integer,
-    lines: Array<{ line: Integer, text: String }>,
+    lines: Array<{ text: String, matched: Boolean }>,
 }
 ```
 
@@ -746,16 +812,19 @@ walking files rather than filtering results afterwards. It MAY search files in
 parallel; results MUST be ordered by path and then line regardless of
 parallelism, so the same sources always produce the same inputs. Explicitly allowed paths and discovered generated-output directories MUST
 be searched even when ignored or hidden; workspace disallow rules still apply.
-Its model-facing description MUST explain those conventions. `context`
+`context`
 MUST be nonnegative and specify how many lines before and after each matching
 line to include, defaulting to two on each side. Windows MUST stop at file
 boundaries, and overlapping windows in the same file MUST be merged. The result
 MUST give one entry for each innermost outline node containing a match, where a
 match in a comment belongs to the node the comment belongs to under
 {cite}`requirements.references.outline_comments`: the node's file, selector
-under {cite}`requirements.references.outline_selectors`, kind, and current line
-range, and its matching and context lines with their line numbers, redacted
-under {cite}`requirements.authoring.redaction`. Search results MUST NOT become
+under {cite}`requirements.references.outline_selectors`, kind, and its matching
+and context lines in source order, each marked as matching or not and redacted
+under {cite}`requirements.authoring.redaction`. Results MUST NOT give line
+numbers; the model locates and cites code by selector. Separate windows within
+one node MUST be distinguishable, such as by an elision line that is not
+marked as matching. Search results MUST NOT become
 evidence inputs and MUST NOT include definitions; the model-facing description
 MUST tell the model to read with the `habeas` tool any node whose code its
 conclusion relies on. Setting `context` to zero MUST return only matching lines.
@@ -855,7 +924,6 @@ ReferenceSite {
     name: String,
     role: "impl" | "cite" | "test",
     file: String,
-    line: Integer?,
     item: String?,
 }
 ```
@@ -867,11 +935,12 @@ order, with empty `sites`. With `selection`, it MUST return the selected definit
 in full-name order and one flattened `sites` array containing every valid
 `{impl}`, `{cite}`, and `{test}` reference to any match under
 {cite}`requirements.references.discovery`, each naming the definition it
-references, ordered by name, file, and line. An anchor under
-{cite}`requirements.references.anchors` MUST be reported as a site for its
-anchored file without a line. A site in a supported language MUST give the
-selector of its smallest enclosing outline node under
-{cite}`requirements.references.outline_comments`. Only sources reference discovery considers under
+references, ordered by name, file, and position in the file, without line
+numbers. An anchor under {cite}`requirements.references.anchors` MUST be
+reported as a site for its anchored file, with the anchored node's selector as
+`item` when it names one and no `item` when it names the whole file. Every
+other site MUST give as `item` the selector of its smallest enclosing outline
+node under {cite}`requirements.references.outline_comments`. Only sources reference discovery considers under
 {cite}`requirements.references.discovery` MUST contribute sites. If reading such a
 source fails, the tool MUST return an explanatory tool error naming the source.
 An invalid selection or one matching no definition MUST return an explanatory tool
@@ -951,9 +1020,10 @@ implementation or is not needed for it.
 
 # Submitting
 
-Call submit_coverage_review exactly once with findings: one entry for each
-listed definition, with definition (its full name), finding ("root" or
-"not needed"), and a nonempty rationale. That tool call is your final answer.
+You MUST end by calling submit_coverage_review exactly once with findings: one
+entry for each listed definition, with definition (its full name), finding
+("root" or "not needed"), and a nonempty rationale. Findings written in your
+reply text are not accepted.
 ```
 
 ```text
@@ -988,7 +1058,9 @@ page: {
 }
 ```
 
-`next` MUST be an opaque token when entries remain and null on the last page. The
+`next` MUST be an opaque token when entries remain and null on the last page.
+While entries remain, the page MUST also include a `note` saying that more
+entries remain and that `next_page` with `next` returns them. The
 harness MUST expose a `next_page({ token: String })` tool returning the following
 page of the same result, in the same shape. Pages MUST be kept only until the
 assessment that requested them finishes; an unknown token, including one from
@@ -1010,19 +1082,56 @@ The judgment MUST use the three outcomes and nonempty FIXME entries defined by
 {cite}`requirements.ci.outcomes`.
 `rationale` MUST be nonempty Markdown. This tool call MUST supply the final
 assessment result. The model MUST invoke it exactly once over the entire
-assessment. If the model finishes without invoking it, or invokes it more than
-once, the harness MUST report an error and leave existing evidence unchanged.
+assessment. If a response ends without invoking it, and the assessment has
+not already been reminded, the harness MUST continue the conversation with one
+user message, `Reminder: you MUST submit your result with the submit_judgment
+tool.`, naming the assessment's submission tool. If a later response also ends
+without invoking it, or the model invokes it more than once, the harness MUST
+report an error and leave existing evidence unchanged. The reminder MUST be
+counted in usage like any other turn.
 The harness MUST check the complete model response for multiple submissions
 before accepting one. Invalid submission arguments MUST also fail the assessment.
 A valid single submission MUST finish the assessment; there is no submission
 repair or resubmission loop, except the one continuation after a response cut
-off at its output limit under {cite}`requirements.authoring.output_limit`. An assessment that fails before accepting a valid
+off at its output limit under {cite}`requirements.authoring.output_limit`, the
+one reminder above, and the one resubmission after a rejection under
+{cite}`requirements.authoring.line_numbers.rejection`. An assessment that fails before accepting a valid
 judgment MUST emit no evidence JSON to stdout.
 :::
 
 ## Initial prompt
 
 ### Mandatory inputs
+
+:::{req} line_numbers.detection
+A rationale MUST be treated as citing line numbers when it contains a file path
+followed by `:` and a digit, the word `line` or `lines` in any case followed by
+a number, or a parenthesized number range such as `(12–30)` or `(12-30)`.
+:::
+
+:::{req} line_numbers.rejection
+When the only submission in a response under
+{cite}`requirements.authoring.submission`, or a `submit_verification` call under
+{cite}`requirements.authoring.verifier_prompt`, is otherwise valid but its
+rationale cites line numbers under
+{cite}`requirements.authoring.line_numbers.detection`, and it is the
+assessment's first such submission, the harness MUST reject it instead of
+accepting it and continue the conversation. The tool result MUST quote the
+matched text, repeat the location guidance of
+{cite}`requirements.authoring.judgment_rules`, and give a fresh random UUID,
+saying the model may submit once more, either without line numbers or with
+`rationale` set to exactly that UUID to keep the rejected submission as it was.
+A rejection MUST be counted in usage like any other turn.
+:::
+
+:::{req} line_numbers.resubmission
+After a rejection under {cite}`requirements.authoring.line_numbers.rejection`,
+a submission whose `rationale` is exactly the UUID that rejection gave MUST
+accept the rejected submission unchanged, ignoring the new submission's other
+fields. Any other rationale that cites line numbers MUST fail the assessment, so
+an assessment rejects at most one submission. The UUID MUST NOT be recorded in
+evidence.
+:::
 
 :::{req} mandatory_inputs
 The harness MUST construct each assessment's mandatory input set by combining
@@ -1035,7 +1144,7 @@ in the initial model request.
 Generated output under project-root `evidence/`, including symlink aliases, MUST
 be omitted from mandatory inputs when the default exclusion applies. An explicit
 workspace allow MUST permit those selections; an explicit disallow MUST abort
-under {cite}`requirements.authoring.read_denial`.
+under {cite}`requirements.authoring.read_denial.mandatory`.
 :::
 
 The contribution rules live with [requirements](../requirements.md#requirements-as-authoring-inputs),
@@ -1107,8 +1216,9 @@ reassess its implementation or tests, and those obligations need no test here.
 # Submitting
 
 Choose true when your task finds no gap, {"FIXME": ["..."]} when every gap is
-acknowledged, and false otherwise. Call submit_judgment exactly once with
-determination and rationale. That tool call is your final answer.
+acknowledged, and false otherwise. You MUST end by calling submit_judgment
+exactly once with determination and rationale. A judgment written in your
+reply text is not accepted.
 ```
 
 ```text
@@ -1740,10 +1850,17 @@ File-discovery calls MUST count as tool calls without recording directory
 listings as evidence or source inputs.
 :::
 
+:::{req} usage_requests.failures
+Usage MUST record, for each failed provider request, its HTTP status and
+provider error code when the provider reports them, and whether the harness
+retried it. It MUST NOT record the failure's message text.
+:::
+
 :::{req} usage_requests
 Usage MUST record each provider request's outcome and available input/output
 token counts, including retries, with cached or reasoning-token counts when
-provided. Missing measurements MUST be recorded as unavailable, not zero.
+provided, and for a failed request the failure under
+{cite}`requirements.authoring.usage_requests.failures`. Missing measurements MUST be recorded as unavailable, not zero.
 Run totals MUST include request and tool-call counts by tool, elapsed time, and
 available token usage, identifying incomplete totals without double counting
 provider counters that overlap.
@@ -1774,8 +1891,8 @@ requirement, both functions, and the required definition as evidence inputs.
 :::{example} additional_read
 The model calls `list_files` to find a directory, then `ripgrep` to find matching
 lines in a Rust file. The listing creates no evidence input; the search returns
-the selector and line range of the innermost Rust item containing each match,
-with the matching and context lines, and creates no evidence input. An `outline` request
+the selector of the innermost Rust item containing each match, with the
+matching and context lines but no line numbers, and creates no evidence input. An `outline` request
 for that file lists its items without content and creates no evidence input. A
 `habeas` request with the file and one item's selector returns and records that
 item, along with any required terminology. A line-range request omitting
@@ -1787,8 +1904,9 @@ item, along with any required terminology. A line-range request omitting
 :::
 
 :::{example} submission_count
-A model finishes with prose but never calls `submit_judgment`: the assessment
-fails without writing evidence. A response with two `submit_judgment` calls also
+A model finishes with prose but no `submit_judgment` call: the harness reminds
+it once, and when it then calls `submit_judgment`, the assessment succeeds. When
+it ends with prose again, the assessment fails without writing evidence. A response with two `submit_judgment` calls also
 fails, even when their payloads are identical. A single call with invalid
 arguments fails without requesting a replacement submission.
 {cite}`requirements.authoring.submission`

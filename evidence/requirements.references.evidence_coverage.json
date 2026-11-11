@@ -1,8 +1,8 @@
 {
   "requirement": "For every `{impl}` and `{test}` reference in a project source file, including one in a requirement or example declaration, and every `{fixme}` reference except one inside a site under {cite}`requirements.references.site_review`, the evidence file for the referenced requirement or example MUST contain an input whose resolved source ranges cover the reference's file and line. A `{cite}` reference MUST NOT require coverage; it is discoverable through {cite}`requirements.authoring.reference_index`. Habeas MUST report every uncovered reference with its role, full name, source file, and line number.",
   "determination": true,
-  "rationale": "I found no gaps. Each obligation maps to code under `validate_references` and to a test that runs it.\n\n**Obligations and code**\n- **Coverage of `{impl}`, `{test}` and `{fixme}` references.**\n  - `collect_references_with_progress` and `file_references` (src/evidence.rs) gather every reference in each discovered file. `reference_roles` in src/lib.rs excludes only protected ranges (such as code blocks) and the option line of a term definition, so references inside requirement and example declarations are collected like any others.\n  - `validate_references` (src/evidence.rs:1297) groups the references by definition. It drops a `{fixme}` that `crate::sites::in_own_site` finds inside one of its own definition's sites. That matches the \"except one inside a site under site_review\" carve-out.\n  - For each definition it resolves the evidence inputs with `evidence_input_ranges`. It then requires that some input has the same file and `line_start <= reference.line <= line_end`.\n- **`{cite}` never requires coverage.** The coverage loop filters out `ReferenceKind::Cite`.\n- **Reporting the role, full name, file and line of an uncovered reference.** The error reads `\"<evidence file>: no input covers {<role>}`<name>` at <file>:<line>\"`.\n\n**Tests**\n- **Covered references.** `source_references_are_covered_by_evidence_inputs` (src/evidence.rs) checks that impl, test and cite references in source and in Markdown are accepted when an input covers them.\n- **Uncovered line.** `reports_unknown_references_and_uncovered_lines` asserts the exact \"no input covers ... at src/notes.txt:2\" message.\n- **Cite versus impl/test.** `uncovered_cite_is_not_reported_while_uncovered_impl_and_test_are` checks three things: an uncovered impl and an uncovered test are reported with their role and line, an uncovered cite is not reported, and adding inputs clears the errors.\n- **Example evidence.** `cited_example_with_a_test_and_matching_evidence_validates` checks the empty-inputs case for a test reference on an example.\n- **`{fixme}` references.**\n  - `editing_or_adding_a_fixme_makes_evidence_stale_or_uncovered` and `fixme_does_not_hide_stale_inputs_or_uncovered_references` (tests/outcomes.rs) check that an uncovered `{fixme}` and an uncovered `{impl}` are reported.\n  - `a_fixme_inside_a_site_belongs_to_that_sites_review_only` (src/sites.rs) checks that an in-site `{fixme}` is not reported for coverage, while an out-of-site `{fixme}` is reported at src/lib.rs:9.\n\nNothing in the code for this requirement is unspecified or untested. No `{fixme}` acknowledgments are involved.",
-  "references": "0dbc1671e61516280c3e37a6684b90de85faa846aa22af823b8ac3e387e67b7e",
+  "rationale": "I found no gap. I did not open `crate::sites::in_own_site`; I relied on the sites test for its behavior.\n\n**Obligations**\n1. Every `{impl}` and `{test}` reference, and every `{fixme}` except one inside a site, must be covered by an input range of its definition's evidence file.\n2. A `{cite}` must not require coverage.\n3. Every uncovered reference must be reported with its role, full name, file and line.\n\n**Implementation**\n- `src/evidence.rs#fn[validate_references]` collects references per definition. It leaves out a `{fixme}` that `crate::sites::in_own_site` places inside one of its own definition's sites. It also leaves out references whose form failed or whose fence is unclosed; those get their own errors.\n- For each remaining reference, `validate_references` skips `{cite}` references, then looks for an input with the same file and a line range containing the reference's line. If none matches, it emits `<evidence file>: no input covers {<role>}`<name>` at <file>:<line>`. That message carries the role, full name, file and line.\n- Anchors (`:impl:` and `:test:` options inside a requirement or example declaration) are checked in the same function. An outline input must select the anchored node or one of its ancestors, and an anchor that does not resolve is reported.\n- `src/evidence.rs#fn[evidence_input_ranges]` resolves the evidence file's inputs to canonical file and line ranges. Unreadable or unresolvable inputs contribute no ranges, so the references they would have covered are reported.\n\n**Tests**\n- `reports_unknown_references_and_uncovered_lines` asserts that an uncovered `{test}` is reported with its file and line.\n- `uncovered_cite_is_not_reported_while_uncovered_impl_and_test_are` asserts that an uncovered `{impl}` and `{test}` are reported with their files and lines, that the `{cite}` is not, and that adding the inputs clears the errors.\n- `source_references_are_covered_by_evidence_inputs` covers the passing case, including a reference in a markdown file.\n- The anchor tests, `anchored_files_must_be_completely_covered_and_resolvable` and `selector_anchors_are_covered_by_inputs_selecting_the_node_or_an_ancestor`, cover references in declarations.\n- `tests/outcomes.rs#fn[fixme_does_not_hide_stale_inputs_or_uncovered_references]` covers an uncovered `{impl}`, and `editing_or_adding_a_fixme_makes_evidence_stale_or_uncovered` covers an uncovered `{fixme}`.\n- `src/sites.rs#mod[tests]/fn[a_fixme_inside_a_site_belongs_to_that_sites_review_only]` shows that an in-site `{fixme}` is not reported while an out-of-site one is.\n\nAll obligations are implemented, reachable from the `{impl}` items, and tested.",
+  "references": "25ae337cf77902ed2bb9e62b4aa4040a2cdf68c70a4ab1b127509ff0de873b9c",
   "inputs": [
     {
       "requirements": "requirements.references.evidence_coverage",
@@ -85,7 +85,6 @@
         "    name: String,",
         "    role: \"impl\" | \"cite\" | \"test\",",
         "    file: String,",
-        "    line: Integer?,",
         "    item: String?,",
         "}",
         "```",
@@ -97,11 +96,12 @@
         "in full-name order and one flattened `sites` array containing every valid",
         "`{impl}`, `{cite}`, and `{test}` reference to any match under",
         "{cite}`requirements.references.discovery`, each naming the definition it",
-        "references, ordered by name, file, and line. An anchor under",
-        "{cite}`requirements.references.anchors` MUST be reported as a site for its",
-        "anchored file without a line. A site in a supported language MUST give the",
-        "selector of its smallest enclosing outline node under",
-        "{cite}`requirements.references.outline_comments`. Only sources reference discovery considers under",
+        "references, ordered by name, file, and position in the file, without line",
+        "numbers. An anchor under {cite}`requirements.references.anchors` MUST be",
+        "reported as a site for its anchored file, with the anchored node's selector as",
+        "`item` when it names one and no `item` when it names the whole file. Every",
+        "other site MUST give as `item` the selector of its smallest enclosing outline",
+        "node under {cite}`requirements.references.outline_comments`. Only sources reference discovery considers under",
         "{cite}`requirements.references.discovery` MUST contribute sites. If reading such a",
         "source fails, the tool MUST return an explanatory tool error naming the source.",
         "An invalid selection or one matching no definition MUST return an explanatory tool",
@@ -117,6 +117,11 @@
       "file": "src/evidence.rs",
       "item": "fn[validate_references]",
       "hash": "781309f655380a29c0827793b07dfff9f4b8cfbccfb2ef56ba82cc3959da9fd8"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[evidence_input_ranges]",
+      "hash": "3f52fbf697d40dfacd965db9a21a865bfdd39b2d2c3d8e120e576f113b56d6f2"
     },
     {
       "file": "src/evidence.rs",
@@ -139,9 +144,19 @@
       "hash": "8438b66760683bc3ebb8338901de592dc71751d1e7c7de59fd6a0713b0a4f456"
     },
     {
+      "file": "src/evidence.rs",
+      "item": "mod[tests]/fn[anchored_files_must_be_completely_covered_and_resolvable]",
+      "hash": "1f83ab0efa2228bedb247af279eb58984beb03251af229000d34cdbfb5300d40"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "mod[tests]/fn[selector_anchors_are_covered_by_inputs_selecting_the_node_or_an_ancestor]",
+      "hash": "2e0d8ba541b1f11189298c285577b913477f7739e6318d07dc0f4a413cbd7b00"
+    },
+    {
       "file": "src/sites.rs",
       "item": "mod[tests]/fn[a_fixme_inside_a_site_belongs_to_that_sites_review_only]",
-      "hash": "54c6f1c55c36607397ce8f52502bff180c9dd1b277d49f17f3acd8fd0c5aa29d"
+      "hash": "617f15d3ed83f30b562dee1f1fac20495bd324b4dc1b8aab83ccac466e4e1971"
     },
     {
       "file": "tests/outcomes.rs",
@@ -165,91 +180,6 @@
         "exactly that definition.",
         ":::"
       ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[evidence_input_ranges]",
-      "hash": "3f52fbf697d40dfacd965db9a21a865bfdd39b2d2c3d8e120e576f113b56d6f2"
-    },
-    {
-      "file": "src/sites.rs",
-      "item": "fn[in_own_site]",
-      "hash": "a60f96307196cd550ea315dc8f6c8a30a7cc775f6034596b8bdf94fd617204f8"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[inspect_repository_with_progress]",
-      "hash": "913f85233a4a6769b71ba619d6c30659cf988042001b6421d037ae0bd0d4dc57"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[collect_references]",
-      "hash": "f3f9590681feafb196e4060246950b2069676bbdf99095fb52a4cf24325a7919"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[discovered_files]",
-      "hash": "69f990566604b1200771831a1303f4a265911f40d930ff504a3139ae843556c2"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[validate_committed_credentials]",
-      "hash": "dbabe3b70a254b1f9956792fc233a57964676e399257a364abd97ce751649c5c"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[untracked_reference_files]",
-      "hash": "7fe9619969e4bf8021ff67b65e48559f82ce5b4fc98f541d4a374c9f38e40689"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[collect_references_with_progress]",
-      "hash": "f2abe5fd3c8e90bd70018661c23d45808592de985e4f2e24859dac2d0d71ea81"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[file_references]",
-      "hash": "0a2ed84808ac7d314af2383cdeb869d1bbfd4c215d6c24d890aa017618c812d6"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[declaration_line_ranges]",
-      "hash": "8a275a66ef82487e54706ac63e94a137b87170da34e3b2b766daf503ce529a5a"
-    },
-    {
-      "file": "src/lib.rs",
-      "item": "fn[option_line]",
-      "hash": "e268113b51338212418d2d1c8d14b0bf5d33be6ff76301dd5212a2ad4fa92011"
-    },
-    {
-      "file": "src/lib.rs",
-      "item": "fn[without_options]",
-      "hash": "e0e1225b3c7d2e191052abbd937df63155dadb51f0e24f4570bda3f770d5803e"
-    },
-    {
-      "file": "src/lib.rs",
-      "item": "fn[code_block_ranges]",
-      "hash": "5387607010ad4a57691b25f34d732b1b89f2bd242c0f7f862498a423a1091d57"
-    },
-    {
-      "file": "src/lib.rs",
-      "item": "fn[colon_fence]",
-      "hash": "17dbdbd0ab763da559f914d082435131d67eaa61fdbac52eadea1d743928e1cf"
-    },
-    {
-      "file": "src/lib.rs",
-      "item": "fn[overlaps_protected]",
-      "hash": "fc6f0cdc23fd2afd887ec5108a1b3f93ed617109c0887df265a18dbb745e07cc"
-    },
-    {
-      "file": "src/lib.rs",
-      "item": "fn[reference_roles]",
-      "hash": "0ffd95afc0dafb5baa517e7a646d406aef2e7f55553ce0f4407c0f9fcfd1b8b6"
-    },
-    {
-      "file": "src/lib.rs",
-      "item": "fn[text_references]",
-      "hash": "8e96d00979e2861bac60dab5e9733213f94b6441891b788fd9f71a2ee4fa38a0"
     }
   ]
 }

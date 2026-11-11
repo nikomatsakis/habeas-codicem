@@ -1,8 +1,8 @@
 {
-  "example": "A model finishes with prose but never calls `submit_judgment`: the assessment\nfails without writing evidence. A response with two `submit_judgment` calls also\nfails, even when their payloads are identical. A single call with invalid\narguments fails without requesting a replacement submission.\n{cite}`requirements.authoring.submission`",
+  "example": "A model finishes with prose but no `submit_judgment` call: the harness reminds\nit once, and when it then calls `submit_judgment`, the assessment succeeds. When\nit ends with prose again, the assessment fails without writing evidence. A response with two `submit_judgment` calls also\nfails, even when their payloads are identical. A single call with invalid\narguments fails without requesting a replacement submission.\n{cite}`requirements.authoring.submission`",
   "determination": true,
-  "rationale": "The example is verified by one test, and `converse` implements the behavior it describes.\n\n**Test:** `missing_duplicate_and_invalid_submissions_preserve_existing_evidence` in `tests/authoring_cli.rs` (lines 1384–1434) carries `{test}` references to the example's requirement `requirements.authoring.submission_count`, and to `requirements.authoring.submission`. It runs each scenario once to a file and once with `--stdout`.\n- **Prose only, no submission:** `calls = vec![]`. The `reply` helper (lines 252–256) then sends a response with the content \"review complete\" and no tool calls.\n- **Two identical submissions:** two `submit_judgment` calls with the same valid payload.\n- **Single invalid call:** one call with an empty rationale. A second case, `{FIXME: []}`, checks the nonempty-FIXME rule.\n- **Assertions on every case:**\n  - The process does not succeed.\n  - Stdout is empty.\n  - The evidence file is unchanged from `fixture.original`.\n  - Usage records outcome `failed` and `evidence_written == false`.\n  - `request_count == 1`, so no replacement was requested.\n  - The determination is null.\n- **Mock server:** it is given exactly one response, and `server.finish()` joins its thread. A second request would not be served, and the `request_count == 1` assertion would catch it anyway.\n\n**Implementation:** `converse` in `src/authoring/mod.rs` carries `{impl}` for `submission_count`.\n- With no tool calls and no submission, it returns \"model finished without invoking {submit}\".\n- With more than one submission call, it returns an error (\"multiple submissions received\"). It checks the whole response's call list, and it does not compare payloads, so identical payloads still fail.\n- With exactly one submission, it returns `parse(...)` immediately. Invalid arguments therefore return `Err` and the loop ends, with no resubmission.\n\nThe test's setup and assertions cover all three scenarios in the example, and each expected outcome is asserted.",
-  "references": "85bfcd8ec9fc48308a6cbfd275cfcba919b3b3c70751821751bf744b98b43f63",
+  "rationale": "The tests cover every outcome in `requirements.authoring.submission_count`. `fn converse` in `src/authoring/mod.rs` implements it and is marked `{impl}`.\n\n**Prose, one reminder, then a submission succeeds.**\n- `src/authoring/mod.rs#mod[tests]/fn[a_response_without_a_submission_is_reminded_once]` scripts turns `[[], [submit_judgment]]`. `RemindedProvider` turns the empty tool-call list into a prose-only reply.\n- It asserts the first request has no \"Reminder:\" text.\n- It asserts the second request contains `Reminder: you MUST submit your result with the submit_judgment tool.`\n- It asserts two requests are counted in usage.\n- It asserts the result is accepted with rationale \"Fine.\".\n\n**Prose again fails.**\n- The same test scripts `[[], []]` and asserts the error contains \"even after a reminder\".\n- It asserts exactly two requests, so there is no third attempt.\n- `tests/authoring_cli.rs#fn[missing_duplicate_and_invalid_submissions_preserve_existing_evidence]` runs the CLI with a prose-only reply (`vec![]`) in both file and `--stdout` modes. It asserts:\n  - the command fails;\n  - stdout is empty;\n  - the evidence file is unchanged;\n  - usage `outcome` is `failed`;\n  - `evidence_written` is false;\n  - `request_count` is 2, which shows the reminder was sent.\n- Caveat: that CLI case supplies only one mock reply. The second request therefore fails at the mock server rather than receiving prose a second time. The \"prose again\" error path is verified by the unit test, and the no-evidence guarantee by the CLI test, so together they cover the scenario.\n\n**Two `submit_judgment` calls fail, even with identical payloads.** The CLI test sends two calls with the same `valid` payload and asserts the failure, empty stdout, unchanged evidence, `request_count` of 1 and a null determination. The one request shows no replacement was requested.\n\n**A single call with invalid arguments fails without a replacement.** The CLI test covers an empty rationale and an empty `FIXME` array. Each case asserts failure, no evidence written, unchanged evidence and `request_count` of 1.\n\nThe setup and assertions match each stated outcome, and the example has `{test}` references.",
+  "references": "4bb8b8332850be59dbf5ae9a7a06931b5b80227dda64692d089150e05309b9ad",
   "inputs": [
     {
       "requirements": "requirements.authoring.submission_count",
@@ -11,8 +11,9 @@
       ],
       "text": [
         ":::{example} submission_count",
-        "A model finishes with prose but never calls `submit_judgment`: the assessment",
-        "fails without writing evidence. A response with two `submit_judgment` calls also",
+        "A model finishes with prose but no `submit_judgment` call: the harness reminds",
+        "it once, and when it then calls `submit_judgment`, the assessment succeeds. When",
+        "it ends with prose again, the assessment fails without writing evidence. A response with two `submit_judgment` calls also",
         "fails, even when their payloads are identical. A single call with invalid",
         "arguments fails without requesting a replacement submission.",
         "{cite}`requirements.authoring.submission`",
@@ -38,13 +39,20 @@
         "{cite}`requirements.ci.outcomes`.",
         "`rationale` MUST be nonempty Markdown. This tool call MUST supply the final",
         "assessment result. The model MUST invoke it exactly once over the entire",
-        "assessment. If the model finishes without invoking it, or invokes it more than",
-        "once, the harness MUST report an error and leave existing evidence unchanged.",
+        "assessment. If a response ends without invoking it, and the assessment has",
+        "not already been reminded, the harness MUST continue the conversation with one",
+        "user message, `Reminder: you MUST submit your result with the submit_judgment",
+        "tool.`, naming the assessment's submission tool. If a later response also ends",
+        "without invoking it, or the model invokes it more than once, the harness MUST",
+        "report an error and leave existing evidence unchanged. The reminder MUST be",
+        "counted in usage like any other turn.",
         "The harness MUST check the complete model response for multiple submissions",
         "before accepting one. Invalid submission arguments MUST also fail the assessment.",
         "A valid single submission MUST finish the assessment; there is no submission",
         "repair or resubmission loop, except the one continuation after a response cut",
-        "off at its output limit under {cite}`requirements.authoring.output_limit`. An assessment that fails before accepting a valid",
+        "off at its output limit under {cite}`requirements.authoring.output_limit`, the",
+        "one reminder above, and the one resubmission after a rejection under",
+        "{cite}`requirements.authoring.line_numbers.rejection`. An assessment that fails before accepting a valid",
         "judgment MUST emit no evidence JSON to stdout.",
         ":::"
       ]
@@ -52,12 +60,22 @@
     {
       "file": "src/authoring/mod.rs",
       "item": "fn[converse]",
-      "hash": "91b233ba0dffb3e843685d68dd936b7b134fe8cfc47a6096bff42891be25d6ff"
+      "hash": "aca1babb5cde30dc5c4370e99e43d4e99b711ca04bf74da60edb1ecc99a46d25"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "mod[tests]/fn[a_response_without_a_submission_is_reminded_once]",
+      "hash": "914ea0be9a34a375bcd4df13632b0b94d683b7e96fcc7b0f2f5eb2e712215453"
     },
     {
       "file": "tests/authoring_cli.rs",
       "item": "fn[missing_duplicate_and_invalid_submissions_preserve_existing_evidence]",
-      "hash": "fbf718b81fa55ebcce30e668587f7eb98190479011e1f6721dbc1a6cb13ed74d"
+      "hash": "857c42cbcd61951e6fa88ce0bd7da154afd36e9b5fc2f507b8c5106b4daf3ec3"
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "item": "impl[Server]/fn[start_with]",
+      "hash": "bd9616d45667ff20f86753515bf58ab9ec2abd74b4a089ff2b5986ff8ecdb653"
     }
   ]
 }

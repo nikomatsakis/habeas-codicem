@@ -371,6 +371,7 @@ fn site_section(
 mod tests {
     use super::*;
 
+    // {cite}`habeas:util`
     /// Writes a record at `relative` whose rationale may carry the
     /// disagreement note.
     fn write_record(root: &Path, relative: &str, determination: serde_json::Value, note: bool) {

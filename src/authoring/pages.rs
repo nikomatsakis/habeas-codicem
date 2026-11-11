@@ -28,6 +28,9 @@ pub(crate) struct Listing {
     /// Whether the entries are evidence inputs, accompanied under
     /// `definitions` by the additional definitions they need.
     evidence: bool,
+    /// Keys added to the whole result, or to its first page, such as
+    /// `not_listed`; they count toward the page size.
+    extra: Map<String, Value>,
 }
 
 impl Listing {
@@ -38,6 +41,7 @@ impl Listing {
             arrays: &[],
             entries: entries.into_iter().map(|entry| (0, entry)).collect(),
             evidence: false,
+            extra: Map::new(),
         }
     }
 
@@ -48,6 +52,7 @@ impl Listing {
             arrays: &["inputs"],
             entries: inputs.into_iter().map(|input| (0, input)).collect(),
             evidence: true,
+            extra: Map::new(),
         }
     }
 
@@ -61,7 +66,20 @@ impl Listing {
                 .flat_map(|(index, values)| values.into_iter().map(move |value| (index, value)))
                 .collect(),
             evidence: false,
+            extra: Map::new(),
         }
+    }
+
+    /// The listing's entries, in order.
+    pub(crate) fn values(&self) -> impl Iterator<Item = &Value> {
+        self.entries.iter().map(|(_, value)| value)
+    }
+
+    /// The listing with `key` set to `value` on the whole result, or on its
+    /// first page.
+    pub(crate) fn with_extra(mut self, key: &str, value: Value) -> Self {
+        self.extra.insert(key.to_owned(), value);
+        self
     }
 
     /// The result, or one page of it, holding `entries` with `definitions`.
@@ -71,13 +89,25 @@ impl Listing {
         indexes: &[usize],
         definitions: &[Value],
         page: Option<Value>,
+        first: bool,
     ) -> Value {
+        let extra = if first {
+            self.extra.clone()
+        } else {
+            Map::new()
+        };
         if self.arrays.is_empty() {
             let entries = Value::Array(entries.iter().map(|entry| (*entry).clone()).collect());
-            return match page {
-                None => entries,
-                Some(page) => json!({"entries": entries, "page": page}),
-            };
+            if page.is_none() && extra.is_empty() {
+                return entries;
+            }
+            let mut object = Map::new();
+            object.insert("entries".into(), entries);
+            object.extend(extra);
+            if let Some(page) = page {
+                object.insert("page".into(), page);
+            }
+            return Value::Object(object);
         }
         let mut object = Map::new();
         for (index, key) in self.arrays.iter().enumerate() {
@@ -92,12 +122,17 @@ impl Listing {
         if self.evidence {
             object.insert("definitions".into(), Value::Array(definitions.to_vec()));
         }
+        object.extend(extra);
         if let Some(page) = page {
             object.insert("page".into(), page);
         }
         Value::Object(object)
     }
 }
+
+/// Room kept on every page for the redaction note added after paging.
+// {impl}`requirements.authoring.result_pages`
+const NOTE_RESERVE: usize = super::tools::REDACTION_NOTE.len() + 16;
 
 /// The pages of this assessment's paged results not yet returned, by token.
 /// Each assessment has its own, dropped when it finishes.
@@ -111,6 +146,7 @@ impl ResultPages {
     /// otherwise its first page, keeping the rest for `next_page`. Only the
     /// returned page's inputs are delivered.
     // {impl}`requirements.authoring.delivered_inputs`
+    // {impl}`requirements.authoring.tool_descriptions.special_cases`
     pub(crate) fn deliver(
         &mut self,
         sources: &AssessmentSources,
@@ -124,8 +160,14 @@ impl ResultPages {
         } else {
             Vec::new()
         };
-        let whole = listing.render(&values, &indexes, &definitions, None);
-        if whole.to_string().len() <= PAGE_LIMIT {
+        let whole = listing.render(&values, &indexes, &definitions, None, true);
+        // Room for the redaction note only when it will be added.
+        let reserve = if super::tools::needs_redaction_note(sources, &whole) {
+            NOTE_RESERVE
+        } else {
+            0
+        };
+        if whole.to_string().len() + reserve <= PAGE_LIMIT {
             return Ok(ToolDelivery {
                 result: whole,
                 inputs: delivered(&listing, owned, definitions),
@@ -137,18 +179,22 @@ impl ResultPages {
             vec![Vec::new(); owned.len()]
         };
         let total = values.len();
-        let pages = paginate(&listing, &values, &accompanying);
+        let pages = paginate(&listing, &values, &accompanying, reserve);
         let tokens: Vec<String> = (1..pages.len()).map(|_| self.token()).collect();
         let mut rendered = Vec::new();
         for (number, range) in pages.iter().enumerate() {
             let (entries, page_indexes) = (&values[range.clone()], &indexes[range.clone()]);
             let definitions = page_definitions(entries, &accompanying[range.clone()]);
-            let page = json!({
+            let mut page = json!({
                 "total_entries": total,
                 "returned_entries": entries.len(),
                 "next": tokens.get(number),
             });
-            let result = listing.render(entries, page_indexes, &definitions, Some(page));
+            if tokens.get(number).is_some() {
+                page["note"] = json!(PAGE_NOTE);
+            }
+            let result =
+                listing.render(entries, page_indexes, &definitions, Some(page), number == 0);
             let inputs = delivered(
                 &listing,
                 entries.iter().map(|entry| (*entry).clone()).collect(),
@@ -217,22 +263,32 @@ fn page_definitions(entries: &[&Value], accompanying: &[Vec<Value>]) -> Vec<Valu
 /// with their definitions and page fields, stays within [`PAGE_LIMIT`],
 /// except that an entry exceeding it forms a page of its own. Sizes are
 /// counted from above: every element's comma and every accompanying
+/// What a page with more entries after it tells the model, since tool
+/// descriptions do not explain paging.
+// {impl}`requirements.authoring.result_pages`
+// {impl}`requirements.authoring.tool_descriptions.special_cases`
+const PAGE_NOTE: &str =
+    "More entries remain: call next_page with this page's next token to get them.";
+
 /// definition are counted, so a page never exceeds its estimate.
 fn paginate(
     listing: &Listing,
     values: &[&Value],
     accompanying: &[Vec<Value>],
+    reserve: usize,
 ) -> Vec<std::ops::Range<usize>> {
     let total = values.len();
     let longest = json!({
         "total_entries": total,
         "returned_entries": total,
         "next": "0".repeat(TOKEN_LENGTH),
+        "note": PAGE_NOTE,
     });
     let overhead = listing
-        .render(&[], &[], &[], Some(longest))
+        .render(&[], &[], &[], Some(longest), true)
         .to_string()
-        .len();
+        .len()
+        + reserve;
     let mut pages = Vec::new();
     let mut start = 0;
     let mut size = overhead;
@@ -288,8 +344,12 @@ mod tests {
             assert!(page["returned_entries"].as_u64().unwrap() > 0);
             let Some(token) = page["next"].as_str() else {
                 assert!(page["next"].is_null());
+                // The last page needs no note.
+                assert!(page.get("note").is_none(), "{page}");
                 break;
             };
+            // A page with more after it says how to continue.
+            assert_eq!(page["note"], PAGE_NOTE);
             delivered.push(pages.next_page(token).unwrap());
         }
         let returned: u64 = delivered
@@ -301,6 +361,81 @@ mod tests {
         delivered
     }
 
+    // {test}`requirements.authoring.result_pages`
+    #[test]
+    fn a_result_just_within_the_limit_is_returned_whole() {
+        let root = project();
+        let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        let entries = |length: usize| {
+            (0..4)
+                .map(|index| json!({"path": format!("{index}{}", "x".repeat(length)), "kind": "file"}))
+                .collect::<Vec<_>>()
+        };
+        // Grow the entries until the whole result is a few bytes under the limit.
+        let size = |length: usize| Value::Array(entries(length)).to_string().len();
+        // Each unit of length adds one byte to each of the four entries.
+        let length = 1 + (PAGE_LIMIT - 5 - size(1)) / 4;
+        assert!(size(length) > PAGE_LIMIT - NOTE_RESERVE);
+        let result = ResultPages::default()
+            .deliver(&sources, Listing::array(entries(length)))
+            .unwrap()
+            .result;
+        assert!(result.is_array(), "paged: {}", &result.to_string()[..200]);
+        assert!(result.to_string().len() <= PAGE_LIMIT);
+    }
+
+    // {test}`requirements.authoring.result_pages`
+    // {test}`requirements.authoring.not_listed`
+    #[test]
+    fn not_listed_comes_on_the_first_page_within_the_page_limit() {
+        let root = project();
+        for index in 0..800 {
+            fs::write(
+                root.path()
+                    .join(format!("src/file_with_a_rather_long_name_{index:04}.rs")),
+                "fn f() {}\n",
+            )
+            .unwrap();
+        }
+        let git = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .current_dir(root.path())
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{output:?}");
+        };
+        git(&["init", "--quiet"]);
+        git(&["add", "."]);
+        for index in 0..40 {
+            fs::write(
+                root.path().join(format!(
+                    "src/untracked_draft_with_a_long_name_{index:02}.rs"
+                )),
+                "fn f() {}\n",
+            )
+            .unwrap();
+        }
+        let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        let mut pages = ResultPages::default();
+        let first =
+            dispatch_paged(&sources, &mut pages, "list_files", &json!({"path":"src"})).unwrap();
+        let delivered = all_pages(&pages, first);
+        assert_eq!(
+            delivered[0].result["not_listed"].as_array().unwrap().len(),
+            40,
+            "{}",
+            delivered[0].result
+        );
+        for (number, page) in delivered.iter().enumerate() {
+            assert!(page.result.to_string().len() <= PAGE_LIMIT, "page {number}");
+            if number > 0 {
+                assert!(page.result.get("not_listed").is_none(), "page {number}");
+            }
+        }
+    }
+
+    // {test}`requirements.authoring.tool_descriptions.special_cases`
     // {test}`requirements.authoring.result_pages`
     #[test]
     fn large_listings_and_outlines_page_whole_entries_in_order() {

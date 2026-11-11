@@ -71,6 +71,16 @@ enum Command {
         #[arg(long, value_name = "name")]
         policy: Option<habeas::config::AssessmentPolicy>,
     },
+    /// Update evidence after moving files, outline nodes, or definitions.
+    Refactor {
+        /// `<old>=<new>`: a file or directory path, a `<file>#<selector>`
+        /// node, or a definition name.
+        #[arg(long = "map", value_name = "old=new", required = true)]
+        mappings: Vec<String>,
+        /// Report what would change without writing anything.
+        #[arg(long)]
+        dry_run: bool,
+    },
     #[command(hide = true)]
     Hook {
         #[command(subcommand)]
@@ -155,6 +165,24 @@ fn main() -> Result<(), Box<dyn Error>> {
                 .as_bytes(),
             )?;
             Ok(())
+        }
+        // {impl}`requirements.refactor.command`
+        // {impl}`requirements.refactor.invalid_mappings`
+        Command::Refactor { mappings, dry_run } => {
+            let root = setup::project_root()?;
+            match habeas::refactor(&root, &mappings, dry_run) {
+                Ok(report) => {
+                    io::stdout().lock().write_all(report.as_bytes())?;
+                    Ok(())
+                }
+                Err(habeas::RefactorError::Usage(message)) => {
+                    use clap::CommandFactory;
+                    Cli::command()
+                        .error(clap::error::ErrorKind::ValueValidation, message)
+                        .exit()
+                }
+                Err(habeas::RefactorError::Io(error)) => Err(error.into()),
+            }
         }
         // {impl}`requirements.cli.info`
         Command::Info { selection } => {

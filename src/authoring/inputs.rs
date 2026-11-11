@@ -71,6 +71,7 @@ impl AssessmentSources {
     // {impl}`requirements.references.anchors`
     // {impl}`requirements.ci.reference_set`
     // {impl}`requirements.references.builtin_definitions`
+    // {impl}`requirements.references.site_review`
     pub(crate) fn prepare(root: &Path, subject_name: &str) -> io::Result<Self> {
         let root = fs::canonicalize(root)?;
         let access = SourceAccess::load(&root)?;
@@ -628,10 +629,16 @@ impl AssessmentSources {
             .as_ref()
             .map_err(|error| io::Error::other(error.clone()))?;
         let count = parsed.source.lines().count();
+        // The error repeats only the numbers the model supplied.
+        // {impl}`requirements.authoring.no_line_numbers`
+        let requested = match line_end {
+            Some(line_end) => format!("{line_start}-{line_end}"),
+            None => line_start.to_string(),
+        };
         let line_end = line_end.unwrap_or(count);
-        if line_start == 0 || line_end < line_start || line_end > count {
+        if line_start == 0 || line_end < line_start || line_end > count || line_start > count {
             return Err(io::Error::other(format!(
-                "{file}:{line_start}-{line_end} is not an inclusive range within the file's {count} lines"
+                "{file}:{requested} is not an inclusive range within the file; read it by selector instead"
             )));
         }
         parsed
@@ -1331,6 +1338,7 @@ pub(super) mod tests {
     // {test}`requirements.references.authoring_inputs`
     // {test}`requirements.authoring.mandatory_inputs`
     // {test}`requirements.authoring_input`
+    // {test}`requirements.authoring.no_line_numbers`
     #[test]
     fn anchored_files_contribute_root_node_inputs() {
         let root = project();
@@ -1359,8 +1367,6 @@ pub(super) mod tests {
                     "item": "",
                     "hash": hash,
                     "kind": "file",
-                    "line_start": 1,
-                    "line_end": 2,
                     "text": ["# Skill", "Be ready."]
                 }),
             ]
@@ -1370,6 +1376,7 @@ pub(super) mod tests {
 
     // {test}`requirements.references.anchors`
     // {test}`requirements.authoring.read_denial`
+    // {test}`requirements.authoring.read_denial.mandatory`
     #[test]
     fn unreadable_or_denied_anchors_fail_before_inference() {
         let root = project();
@@ -1385,6 +1392,23 @@ pub(super) mod tests {
             error
                 .to_string()
                 .contains("requirements.ready: cannot read :impl: anchor skills/missing.md"),
+            "{error}"
+        );
+
+        // An anchor naming a node its existing file lacks fails the same way.
+        fs::write(root.path().join("src/lib.rs"), "fn present() {}\n").unwrap();
+        fs::write(
+            root.path().join("md/requirements.md"),
+            ":::{req} ready\n:impl: src/lib.rs#fn[missing]\nThe project MUST be ready.\n:::\n",
+        )
+        .unwrap();
+        let error = AssessmentSources::prepare(root.path(), "requirements.ready")
+            .err()
+            .unwrap();
+        assert!(
+            error
+                .to_string()
+                .contains("cannot read :impl: anchor src/lib.rs#fn[missing]"),
             "{error}"
         );
 
@@ -1409,6 +1433,7 @@ pub(super) mod tests {
 
     // {test}`requirements.references.authoring_inputs`
     // {test}`requirements.references.builtin_definitions`
+    // {test}`requirements.references.site_review`
     #[test]
     fn cited_built_ins_contribute_their_text_and_fixmes_in_own_sites_do_not() {
         let project = crate::authoring::tests::citing_site_project();
@@ -1615,6 +1640,7 @@ pub(super) mod tests {
     }
 
     // {test}`requirements.authoring.mandatory_inputs`
+    // {test}`requirements.references.authoring_inputs`
     #[test]
     fn generated_evidence_references_are_omitted_by_default() {
         let root = project();

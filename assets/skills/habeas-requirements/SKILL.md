@@ -1,6 +1,6 @@
 ---
 name: habeas-requirements
-description: Use before adding, changing, or moving code, tests, or requirements in a project that tracks requirements with Habeas (a `habeas.toml`, `{req}` directives in its mdBook, or `{impl}`/`{test}`/`{cite}` references in code), even when the user only asks for a feature, bug fix, refactor, or CLI change and never says "requirement". Covers agreeing requirements and examples with the user, writing `{req}`, `{example}`, and `{definition}` directives, and choosing `{impl}`, `{test}`, `{cite}`, or `habeas:util` references. To run the authoring harness or fix evidence and validation failures, use habeas-evidence; to build an initial requirement set for an existing codebase, use habeas-bootstrap-requirements.
+description: Use before adding, changing, or moving code, tests, or requirements in a project that tracks requirements with Habeas (a `habeas.toml`, `{req}` directives in its mdBook, or `{impl}`/`{test}`/`{cite}` references in code), even when the user only asks for a feature, bug fix, refactor, or CLI change and never says "requirement". Covers agreeing requirements and examples with the user, writing `{req}`, `{example}`, and `{definition}` directives, and choosing `{impl}`, `{test}`, `{cite}`, or `habeas:util` references. To run the authoring harness or fix evidence and validation failures, use habeas-evidence; to move code, tests, or requirements to another file or chapter without changing them, use habeas-refactor; to build an initial requirement set for an existing codebase, use habeas-bootstrap-requirements.
 ---
 
 # Habeas requirements
@@ -42,7 +42,8 @@ assess each one; `cargo test --workspace` checks the results.
 If implementation shows that an approved obligation must change substantively,
 review the revised text with the user before coding the change. Review every
 other change to agreed text with the user first too, even a rewording for
-precision, then log it as the habeas-evidence Rules say. A bug fix whose
+precision, then explain why in the commit message as the habeas-evidence
+Rules say. A bug fix whose
 behavior an existing requirement already specifies needs no new requirement:
 confirm the requirement covers it, then fix the code and check its tests and
 references. A refactor that changes no behavior needs no review, but references
@@ -64,9 +65,8 @@ must move with the code.
   say why `^C` is accepted.
 - Keep full names stable once agreed: evidence, references, and links use them.
   Moving a requirement to another chapter or renaming it changes its full name:
-  agree it with the user, update every reference, link, and anchor to it, and
-  handle its old evidence as the orphaned-evidence row in habeas-evidence's
-  "Fixing findings" says.
+  agree it with the user, then follow the habeas-refactor skill, whose
+  `habeas refactor` rewrites the references, anchors, and evidence for you.
 
 ## Writing requirements
 

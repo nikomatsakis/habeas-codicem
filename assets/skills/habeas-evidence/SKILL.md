@@ -1,6 +1,6 @@
 ---
 name: habeas-evidence
-description: Use when Habeas evidence needs creating or refreshing, or when `cargo test` or `habeas status` reports Habeas findings such as missing, stale, or false evidence, uncovered `{impl}` or `{test}` lines, uncovered Rust items, coverage-loss reviews, FIXME judgments, citation or site reviews, or disagreeing assessments, even if the user only says "the habeas test is failing". Covers running `habeas author` and fixing the code, tests, or references it flags. To design new or changed requirements before coding, use habeas-requirements; to derive an initial requirement set when most of a codebase has no references, use habeas-bootstrap-requirements.
+description: Use when Habeas evidence needs creating or refreshing, or when `cargo test` or `habeas status` reports Habeas findings such as missing, stale, or false evidence, uncovered `{impl}` or `{test}` lines, uncovered Rust items, coverage-loss reviews, FIXME judgments, citation or site reviews, or disagreeing assessments, even if the user only says "the habeas test is failing". Covers running `habeas author` and fixing the code, tests, or references it flags. To design new or changed requirements before coding, use habeas-requirements; to keep evidence current while moving code or requirements to another file or chapter, use habeas-refactor; to derive an initial requirement set when most of a codebase has no references, use habeas-bootstrap-requirements.
 ---
 
 # Habeas evidence
@@ -57,12 +57,12 @@ Run commands from the project root, the directory with `book.toml` and
   and return short findings.
 - Review every change to an agreed requirement's text with the user first, as
   the habeas-requirements skill describes, even a rewording for precision.
-- When the user agrees to reword a requirement for precision, whether a false
-  rationale, a site review, or a disagreement prompted it, record the old text, new text,
-  reason, and the rationale that prompted the change in the project's audit
-  log, such as `audits/requirement-rewordings/`; if the project has none, ask
-  the user before creating one. Escape quoted roles there, as in `\{cite}`, so
-  the log adds no references.
+- When the user agrees to a change to a requirement's text, whether a false
+  rationale, a site review, or a disagreement prompted it, give the reason and
+  the rationale that prompted it in the message of the commit that makes the
+  change. Describe the change relative to the prior commit, not the drafts that
+  led to it: document the destination, not the journey. Git keeps the old and
+  new text.
 - Validation is deterministic. When it tells you to run `habeas author`, run it
   yourself; never add `habeas author` to CI.
 
@@ -183,7 +183,8 @@ section of `habeas status` after each `habeas author` run.
    found a real gap or the requirement text admits more than one reading.
 2. Fix the source or tests, or tighten the requirement text, reviewing
    substantive changes with the user. Don't re-run for a different result.
-3. If you reword the requirement, record it in the audit log as the Rules say.
+3. If you change the requirement's text, explain why in the commit message as
+   the Rules say.
 
 ## Gotchas
 

@@ -72,6 +72,7 @@ pub async fn author_sites_with_options(
 // {impl}`requirements.authoring.github_reads`
 // {impl}`requirements.authoring.policy`
 // {impl}`requirements.authoring.cache_warmup`
+// {impl}`requirements.authoring.read_denial.mandatory`
 async fn run_batch(
     root: &Path,
     selection: Option<&str>,
@@ -396,6 +397,7 @@ fn delete_orphaned_reviews(
     Ok(deleted)
 }
 
+// {cite}`habeas:util`
 /// Whether a record is current: valid, an accepted FIXME, or a false
 /// judgment whose subject and inputs are unchanged.
 fn current(evidence: &LoadedDetailEvidence) -> bool {
@@ -570,6 +572,7 @@ fn cancel_on_error(cancel: &watch::Sender<Option<&'static str>>, error: &io::Err
     }
 }
 
+// {impl}`requirements.authoring.batch`
 /// Records an interruption that has already arrived, without waiting. The
 /// first poll registers the listener.
 async fn observe_interrupt(
@@ -592,6 +595,7 @@ async fn observe_interrupt(
     }
 }
 
+// {impl}`requirements.authoring.batch`
 /// Signals every assessment and the launcher that the batch is stopping.
 fn stop(cancel: &watch::Sender<Option<&'static str>>) {
     cancel.send_if_modified(|current| {

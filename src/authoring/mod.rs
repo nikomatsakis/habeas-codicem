@@ -4,6 +4,7 @@ pub(crate) mod access;
 mod batch;
 pub(crate) mod coverage_loss;
 mod inputs;
+mod line_numbers;
 mod pages;
 mod progress;
 mod providers;
@@ -270,6 +271,7 @@ pub async fn author_evidence_with_output(
 // {impl}`requirements.authoring.invocation`
 // {impl}`requirements.configuration.state_location`
 // {impl}`requirements.authoring.policy`
+// {impl}`requirements.authoring.read_denial.mandatory`
 pub async fn author_evidence_with_options(
     root: &Path,
     subject: &str,
@@ -499,6 +501,7 @@ async fn configured_assessment(
 // {impl}`requirements.authoring.usage_inputs`
 // {impl}`requirements.authoring.provider`
 // {impl}`requirements.authoring.policy`
+// {impl}`requirements.authoring.read_denial.mandatory`
 async fn configured_record(
     root: &Path,
     subject: &AuthoringSubject,
@@ -527,6 +530,7 @@ async fn configured_record(
     assess_subject(&provider, root, &state, subject, sources, usage, policy).await
 }
 
+// {impl}`requirements.authoring.usage_storage`
 /// The backend name usage records give a model's backend.
 fn backend_name(model: &config::ModelRef) -> &'static str {
     match model.backend {
@@ -676,6 +680,7 @@ fn followup_log(
     Ok(usage)
 }
 
+// {cite}`habeas:util`
 /// Fresh sources for an independent conversation, recorded in its usage.
 fn followup_sources(
     root: &Path,
@@ -689,6 +694,7 @@ fn followup_sources(
     Ok(sources)
 }
 
+// {cite}`habeas:util`
 /// Finishes a further conversation's usage record with its outcome.
 fn finish_followup<T>(mut usage: UsageLog, purpose: &str, result: io::Result<T>) -> io::Result<T> {
     let outcome = match &result {
@@ -732,6 +738,18 @@ fn shared_blocks() -> [(&'static str, &'static str); 3] {
         ("reference_roles", approved_text("habeas_background", 1)),
         ("judgment_rules", approved_text("judgment_rules", 0)),
     ]
+}
+
+/// The judgment rules' guidance on citing source locations, which a
+/// rejection for citing line numbers repeats.
+// {impl}`requirements.authoring.line_numbers.rejection`
+fn location_guidance() -> &'static str {
+    let rules = approved_text("judgment_rules", 0);
+    let start = rules
+        .find("- Give a source location")
+        .expect("location guidance");
+    let rest = &rules[start..];
+    rest.find("\n- ").map_or(rest, |end| &rest[..end])
 }
 
 /// The account of distributed requirements that the site prompt, the
@@ -843,6 +861,7 @@ impl Prompt {
 // {impl}`requirements.authoring.github_reads`
 // {impl}`requirements.authoring.site_prompt`
 // {impl}`requirements.authoring.habeas_background`
+// {impl}`requirements.authoring.judgment_rules`
 fn initial_prompt(sources: &AssessmentSources) -> io::Result<Prompt> {
     let mandatory = serde_json::to_string_pretty(&sources.model_mandatory_inputs())?;
     let mut values = shared_blocks().to_vec();
@@ -883,6 +902,7 @@ fn initial_prompt(sources: &AssessmentSources) -> io::Result<Prompt> {
     })
 }
 
+// {impl}`requirements.authoring.verifier_prompt`
 /// The body of a filled prompt's `# heading` section, up to the next heading.
 fn prompt_section<'a>(prompt: &'a str, heading: &str) -> &'a str {
     let opening = format!("# {heading}\n\n");
@@ -915,6 +935,7 @@ fn review_instructions(prompt: &Prompt, site: bool) -> String {
 const SITE_STEP: &str = "4. Also set applies to whether the requirement governs the site, as the reviewer's step 1 decides it; if it does not, set real to false.";
 
 /// The verifier's prompt for a determination and its rationale.
+// {impl}`requirements.authoring.judgment_rules`
 // {impl}`requirements.authoring.github_reads`
 // {impl}`requirements.authoring.habeas_background`
 // {impl}`requirements.authoring.prompt_parts`
@@ -991,6 +1012,8 @@ fn site_submission(arguments: &Value) -> io::Result<(Judgment, String, bool)> {
     Ok((judgment, rationale, applies))
 }
 
+// {impl}`requirements.authoring.verifier_outcome`
+// {impl}`requirements.authoring.verifier_prompt`
 /// A verifier's findings about the claimed gaps of an assessment, and, for a
 /// site review, whether the requirement applies to the site.
 #[derive(Debug, PartialEq)]
@@ -1235,6 +1258,11 @@ async fn verify(
 // {impl}`requirements.authoring.prompt_parts`
 // {impl}`requirements.authoring.result_pages`
 // {impl}`requirements.authoring.output_limit`
+// {impl}`requirements.authoring.line_numbers.rejection`
+// {impl}`requirements.authoring.line_numbers.resubmission`
+// {impl}`requirements.authoring.submission`
+// {impl}`requirements.authoring.no_line_numbers`
+// {impl}`requirements.authoring.usage_requests.failures`
 async fn converse<T>(
     provider: &impl CompletionProvider,
     sources: &mut AssessmentSources,
@@ -1251,6 +1279,10 @@ async fn converse<T>(
     let mut pages = pages::ResultPages::default();
     // Whether the one continuation after a cut-off response has been used.
     let mut continued = false;
+    // The one rejection of a rationale citing line numbers.
+    let mut rejection = line_numbers::Rejection::default();
+    // Whether the one reminder to submit has been sent.
+    let mut reminded = false;
     loop {
         let index = usage.begin_request()?;
         let started = Instant::now();
@@ -1263,20 +1295,24 @@ async fn converse<T>(
                     "provider request had no response within ten minutes",
                 )),
             };
+        let failure = response.as_ref().err().map(providers::failure_codes);
         usage.end_request(
             index,
             started.elapsed().as_millis(),
             response.as_ref().ok().map(|r| &r.usage),
+            failure,
         )?;
         let response = match response {
             Ok(response) => response,
-            Err(error) => {
-                if let Some(delay) = backoff.next_delay(&error) {
+            // Tokio's clock, so a paused test clock reaches the limit too.
+            Err(error) => match backoff.retry(error, tokio::time::Instant::now().into_std()) {
+                providers::Retry::Wait(delay) => {
+                    usage.retried(index)?;
                     tokio::time::sleep(delay).await;
                     continue;
                 }
-                return Err(error);
-            }
+                providers::Retry::Stop(error) => return Err(error),
+            },
         };
         backoff = providers::ProviderBackoff::default();
         sources.record_inputs(&pending);
@@ -1335,14 +1371,65 @@ async fn converse<T>(
                     "{submit} must be invoked exactly once; multiple submissions received"
                 )));
             }
-            let result = parse(&Value::Object(submissions[0].function.arguments.clone()));
-            usage.tool(submit, result.is_err());
-            return result;
+            let arguments = Value::Object(submissions[0].function.arguments.clone());
+            if let Some(rejected) = rejection.resubmitted(&arguments) {
+                let result = parse(&rejected);
+                usage.tool(submit, result.is_err());
+                return result;
+            }
+            let result = parse(&arguments);
+            if result.is_err() {
+                usage.tool(submit, true);
+                return result;
+            }
+            match rejection.decide(submit, &arguments, location_guidance()) {
+                line_numbers::Outcome::Accept => {
+                    usage.tool(submit, false);
+                    return result;
+                }
+                line_numbers::Outcome::Fail(error) => {
+                    usage.tool(submit, true);
+                    return Err(io::Error::other(error));
+                }
+                line_numbers::Outcome::Reject(message) => {
+                    usage.tool(submit, true);
+                    request.chat_history.push(
+                        response
+                            .message()
+                            .ok_or_else(|| io::Error::other("model returned an empty response"))?,
+                    );
+                    let results = calls
+                        .iter()
+                        .map(|call| {
+                            let text = if call.function.name.as_str() == submit {
+                                message.clone()
+                            } else {
+                                "not run: the response also made a submission".to_owned()
+                            };
+                            call.error_result(vec![ToolResultContent::text(text)])
+                        })
+                        .collect();
+                    usage.save()?;
+                    request.chat_history.push(Message::tool_results(results));
+                    continue;
+                }
+            }
         }
         if calls.is_empty() {
-            return Err(io::Error::other(format!(
-                "model finished without invoking {submit}"
-            )));
+            if reminded {
+                return Err(io::Error::other(format!(
+                    "model finished without invoking {submit}, even after a reminder"
+                )));
+            }
+            reminded = true;
+            request.chat_history.extend(response.message());
+            request.chat_history.push(Message::User {
+                content: vec![UserContent::text(format!(
+                    "Reminder: you MUST submit your result with the {submit} tool."
+                ))],
+            });
+            usage.save()?;
+            continue;
         }
         request.chat_history.push(
             response
@@ -1365,13 +1452,14 @@ async fn converse<T>(
                         call.result(vec![ToolResultContent::text(delivery.result.to_string())]),
                     );
                 }
+                // A denied read is an ordinary tool error the model can see;
+                // only a denied mandatory input aborts, before any request.
+                // {impl}`requirements.authoring.read_denial`
                 Err(error) => {
                     usage.tool(call.function.name.as_str(), true);
-                    if error.kind() == io::ErrorKind::PermissionDenied {
-                        return Err(error);
-                    }
-                    results
-                        .push(call.error_result(vec![ToolResultContent::text(error.to_string())]));
+                    results.push(call.error_result(vec![ToolResultContent::text(
+                        line_numbers::without_source_lines(&error.to_string()),
+                    )]));
                 }
             }
         }
@@ -1633,6 +1721,59 @@ mod tests {
         assert_eq!(log["tool_calls"]["next_page"], 1);
     }
 
+    // {test}`requirements.authoring.no_line_numbers`
+    #[tokio::test]
+    async fn tool_errors_give_the_model_no_line_numbers_it_did_not_supply() {
+        let project = inputs::tests::project();
+        fs::write(project.path().join("src/lib.rs"), "fn work() {}\n").unwrap();
+        fs::write(
+            project.path().join("src/broken.rs"),
+            "fn ok() {}\nfn broken( {\n",
+        )
+        .unwrap();
+        let sources = AssessmentSources::prepare(project.path(), "requirements.ready").unwrap();
+        // A range past the end repeats only the supplied start line.
+        let past = tools::dispatch(
+            &sources,
+            "habeas",
+            &json!({"file": "src/lib.rs", "line_start": 99}),
+        )
+        .err()
+        .unwrap()
+        .to_string();
+        assert!(
+            past.starts_with("src/lib.rs:99 is not an inclusive range"),
+            "{past}"
+        );
+        // A parse error names its line, but the model receives it without.
+        let read = json!({"file": "src/broken.rs", "item": ""});
+        let parse = tools::dispatch(&sources, "habeas", &read)
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(
+            regex::Regex::new(r"line \d+: ").unwrap().is_match(&parse),
+            "{parse}"
+        );
+        let mut sources = sources;
+        let state = tempfile::tempdir().unwrap();
+        let mut usage =
+            UsageLog::start(state.path(), project.path(), &sources.subject_name).unwrap();
+        let provider = ReadingProvider {
+            read,
+            requests: RefCell::default(),
+        };
+        assess(&provider, &mut sources, &mut usage).await.unwrap();
+        let delivered = provider.requests.borrow()[1].to_string();
+        assert!(delivered.contains("cannot parse"), "{delivered}");
+        assert!(
+            !regex::Regex::new(r"line \d+: ")
+                .unwrap()
+                .is_match(&delivered),
+            "{delivered}"
+        );
+    }
+
     // {test}`requirements.authoring.read_denial`
     #[tokio::test]
     async fn malformed_and_failed_reads_return_to_the_model_and_the_assessment_continues() {
@@ -1685,8 +1826,9 @@ mod tests {
 
     // {test}`requirements.authoring.read_denial`
     #[cfg(unix)]
+    // {test}`requirements.authoring.tool_descriptions.special_cases`
     #[tokio::test]
-    async fn a_read_through_a_symlink_leaving_the_project_aborts_the_assessment() {
+    async fn a_read_through_a_symlink_leaving_the_project_returns_an_error_to_the_model() {
         let project = inputs::tests::project();
         let outside = tempfile::tempdir().unwrap();
         fs::write(outside.path().join("secret.rs"), "fn secret() {}\n").unwrap();
@@ -1703,14 +1845,16 @@ mod tests {
             read: json!({"file": "src/escape.rs", "line_start": 1}),
             requests: RefCell::default(),
         };
-        let error = assess(&provider, &mut sources, &mut usage)
-            .await
-            .expect_err("the escaping read aborts");
-        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied, "{error}");
-        assert!(error.to_string().contains("src/escape.rs"), "{error}");
-        assert!(error.to_string().contains("outside the project"), "{error}");
-        // No result went back to the model and no further request was made.
-        assert_eq!(provider.requests.borrow().len(), 1);
+        let (_, evidence) = assess(&provider, &mut sources, &mut usage).await.unwrap();
+        // The denial went back to the model, naming the path and the reason,
+        // and the assessment continued without recording the file.
+        let requests = provider.requests.borrow();
+        assert_eq!(requests.len(), 2);
+        let delivered = requests[1].to_string();
+        assert!(delivered.contains("src/escape.rs"), "{delivered}");
+        assert!(delivered.contains("outside the project"), "{delivered}");
+        assert!(!delivered.contains("fn secret"), "{delivered}");
+        assert!(!evidence.to_string().contains("escape.rs"), "{evidence}");
     }
 
     // {test}`requirements.ci.review_criteria`
@@ -1792,13 +1936,14 @@ mod tests {
 
     // {test}`requirements.authoring.provider_backoff`
     // {test}`requirements.authoring.usage_requests`
+    // {test}`requirements.authoring.usage_requests.failures`
     // {test}`requirements.authoring.usage_inputs`
     // {test}`requirements.ci.reference_set`
     #[tokio::test(start_paused = true)]
     async fn throttled_requests_retry_unchanged_and_record_every_attempt() {
         let (_project, _state, mut sources, mut usage) = retry_fixture();
         let provider = ThrottledProvider {
-            failures: 8,
+            failures: 5,
             status: 429,
             code: "ThrottlingException",
             requests: RefCell::default(),
@@ -1807,22 +1952,27 @@ mod tests {
         let (_, record) = assess(&provider, &mut sources, &mut usage).await.unwrap();
         assert!(started.elapsed() >= Duration::from_millis(500));
         let requests = provider.requests.borrow();
-        assert_eq!(requests.len(), 9);
+        assert_eq!(requests.len(), 6);
         assert!(requests.iter().all(|request| request == &requests[0]));
         assert_eq!(record["inputs"], json!(sources.mandatory_inputs()));
         assert_eq!(record["references"], json!(sources.reference_set));
 
         let log: Value = serde_json::from_slice(&fs::read(&usage.path).unwrap()).unwrap();
-        assert_eq!(log["request_count"], 9);
-        for attempt in 0..8 {
+        assert_eq!(log["request_count"], 6);
+        for attempt in 0..5 {
             assert_eq!(log["requests"][attempt]["outcome"], "failed");
             assert_eq!(log["requests"][attempt]["tokens"]["complete"], false);
+            assert_eq!(
+                log["requests"][attempt]["failure"],
+                json!({"http_status": 429, "error_code": "ThrottlingException", "retried": true})
+            );
         }
-        assert_eq!(log["requests"][8]["outcome"], "completed");
+        assert!(log["requests"][5].get("failure").is_none());
+        assert_eq!(log["requests"][5]["outcome"], "completed");
         assert_eq!(log["tool_calls"]["submit_judgment"], 1);
         for input in log["inputs"].as_array().unwrap() {
             assert_eq!(input["submitted_in_request"], 0);
-            assert_eq!(input["sent_in_request"], 8);
+            assert_eq!(input["sent_in_request"], 5);
         }
     }
 
@@ -1843,6 +1993,44 @@ mod tests {
         assert!(error.to_string().contains("Too many tokens"));
         assert_eq!(started.elapsed(), Duration::ZERO);
         assert_eq!(provider.requests.borrow().len(), 1);
+        // The failure is recorded as not retried.
+        let log: Value = serde_json::from_slice(&fs::read(&usage.path).unwrap()).unwrap();
+        assert_eq!(
+            log["requests"][0]["failure"],
+            json!({"http_status": 400, "error_code": "ValidationException", "retried": false})
+        );
+    }
+
+    // {test}`requirements.authoring.provider_backoff.limit`
+    #[tokio::test(start_paused = true)]
+    async fn a_request_failing_for_a_minute_fails_the_assessment() {
+        let (_project, _state, mut sources, mut usage) = retry_fixture();
+        let provider = ThrottledProvider {
+            failures: usize::MAX,
+            status: 503,
+            code: "ServiceUnavailableException",
+            requests: RefCell::default(),
+        };
+        let started = tokio::time::Instant::now();
+        let error = assess(&provider, &mut sources, &mut usage)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            started.elapsed() <= providers::RETRY_LIMIT,
+            "{:?}",
+            started.elapsed()
+        );
+        let attempts = provider.requests.borrow().len();
+        assert!(attempts > 3, "{attempts}");
+        assert!(
+            error.contains(&format!(
+                "after {attempts} attempts; last failure: HTTP 503 ServiceUnavailableException"
+            )),
+            "{error}"
+        );
+        let log: Value = serde_json::from_slice(&fs::read(&usage.path).unwrap()).unwrap();
+        assert_eq!(log["requests"][attempts - 1]["failure"]["retried"], false);
     }
 
     // {test}`requirements.authoring.provider_backoff`
@@ -2065,7 +2253,7 @@ mod tests {
         let prompt = initial_prompt(&sources).unwrap().joined();
         for guidance in [
             "Choose true when your task finds no gap, {\"FIXME\": [\"...\"]} when every gap is\nacknowledged, and false otherwise.",
-            "Call submit_judgment exactly once with\ndetermination and rationale.",
+            "You MUST end by calling submit_judgment\nexactly once with determination and rationale. A judgment written in your\nreply text is not accepted.",
             "A gap is acknowledged only by a {fixme} reference",
             "a {fixme} naming a\n  closed issue no longer acknowledges its gap",
             "including\n  any acknowledged gaps",
@@ -2149,6 +2337,219 @@ mod tests {
                 Value::Null,
             )
             .with_finish_reason(FinishReason::ToolCalls))
+        }
+    }
+
+    // {cite}`habeas:util`
+    /// Submits `first`, then, on each later request, the submission
+    /// `next` makes from the UUID in the conversation's last rejection.
+    struct ResubmittingProvider {
+        first: Value,
+        next: fn(&str) -> Value,
+        requests: RefCell<Vec<String>>,
+    }
+
+    impl CompletionProvider for ResubmittingProvider {
+        // {cite}`habeas:util`
+        async fn complete(&self, request: CompletionRequest) -> io::Result<CompletionResponse> {
+            let history = serde_json::to_string(&request.chat_history).unwrap();
+            let turn = self.requests.borrow().len();
+            self.requests.borrow_mut().push(history.clone());
+            let arguments = if turn == 0 {
+                self.first.clone()
+            } else {
+                let uuid = regex::Regex::new(
+                    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+                )
+                .unwrap()
+                .find_iter(&history)
+                .last()
+                .map(|found| found.as_str().to_owned())
+                .unwrap_or_default();
+                (self.next)(&uuid)
+            };
+            let call = AssistantContent::ToolCall(ToolCall::from_wire(
+                format!("call-{turn}"),
+                ToolFunction::new(ToolName::new("submit_judgment").unwrap(), arguments),
+            ));
+            Ok(CompletionResponse::new(
+                vec![call],
+                Usage::default(),
+                Origin::new("fixture", "fixture", "fixture"),
+                Value::Null,
+            )
+            .with_finish_reason(FinishReason::ToolCalls))
+        }
+    }
+
+    // {test}`requirements.authoring.line_numbers.rejection`
+    // {test}`requirements.authoring.line_numbers.resubmission`
+    // {test}`requirements.authoring.submission`
+    #[tokio::test]
+    async fn a_rationale_citing_line_numbers_is_rejected_once() {
+        let cited = json!({"determination": false, "rationale": "`work` at src/lib.rs:1 fails."});
+        type Next = fn(&str) -> Value;
+        let uuid = regex::Regex::new(r"[0-9a-f]{8}-[0-9a-f]{4}-").unwrap();
+        let cases: [(Next, Option<&str>); 3] = [
+            // Exactly the UUID keeps the rejected submission.
+            (
+                |uuid| json!({"determination": true, "rationale": uuid}),
+                Some("`work` at src/lib.rs:1 fails."),
+            ),
+            // A rationale without line numbers replaces it.
+            (
+                |_| json!({"determination": false, "rationale": "`src/lib.rs#fn[work]` fails."}),
+                Some("`src/lib.rs#fn[work]` fails."),
+            ),
+            // Line numbers again fail the assessment.
+            (
+                |_| json!({"determination": false, "rationale": "Line 1 fails."}),
+                None,
+            ),
+        ];
+        for (next, accepted) in cases {
+            let project = inputs::tests::project();
+            fs::write(project.path().join("src/lib.rs"), "fn work() {}\n").unwrap();
+            let mut sources =
+                AssessmentSources::prepare(project.path(), "requirements.ready").unwrap();
+            let state = tempfile::tempdir().unwrap();
+            let mut usage =
+                UsageLog::start(state.path(), project.path(), &sources.subject_name).unwrap();
+            let provider = ResubmittingProvider {
+                first: cited.clone(),
+                next,
+                requests: RefCell::default(),
+            };
+            let result = assess(&provider, &mut sources, &mut usage).await;
+            let requests = provider.requests.borrow();
+            assert_eq!(requests.len(), 2);
+            // The rejection quotes the citation and repeats the guidance.
+            assert!(requests[1].contains("src/lib.rs:1"), "{}", requests[1]);
+            assert!(
+                requests[1].contains("Give a source location"),
+                "{}",
+                requests[1]
+            );
+            // Both turns are counted in usage.
+            let record = serde_json::to_value(&usage.record).unwrap();
+            assert_eq!(
+                record["requests"].as_array().unwrap().len(),
+                2,
+                "{record:#}"
+            );
+            match accepted {
+                Some(rationale) => {
+                    let (_, evidence) = result.unwrap();
+                    assert_eq!(evidence["rationale"], rationale);
+                    // The UUID is not recorded.
+                    assert!(!uuid.is_match(&evidence.to_string()), "{evidence}");
+                }
+                None => {
+                    let error = result.unwrap_err().to_string();
+                    assert!(error.contains("after a rejection"), "{error}");
+                }
+            }
+        }
+    }
+
+    // A first submission giving no line numbers is accepted at once.
+    // {test}`requirements.authoring.line_numbers.rejection`
+    #[tokio::test]
+    async fn a_rationale_without_line_numbers_is_accepted_at_once() {
+        let project = inputs::tests::project();
+        let mut sources = AssessmentSources::prepare(project.path(), "requirements.ready").unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let mut usage =
+            UsageLog::start(state.path(), project.path(), &sources.subject_name).unwrap();
+        let provider = ResubmittingProvider {
+            first: json!({"determination": true, "rationale": "`src/lib.rs` is fine."}),
+            next: |_| unreachable!(),
+            requests: RefCell::default(),
+        };
+        assess(&provider, &mut sources, &mut usage).await.unwrap();
+        assert_eq!(provider.requests.borrow().len(), 1);
+    }
+
+    // {cite}`habeas:util`
+    /// Records each request's conversation and answers with the next
+    /// scripted tool calls.
+    struct RemindedProvider {
+        turns: Vec<Vec<(&'static str, Value)>>,
+        requests: RefCell<Vec<String>>,
+    }
+
+    impl CompletionProvider for RemindedProvider {
+        // {cite}`habeas:util`
+        async fn complete(&self, request: CompletionRequest) -> io::Result<CompletionResponse> {
+            let turn = self.requests.borrow().len();
+            self.requests
+                .borrow_mut()
+                .push(serde_json::to_string(&request.chat_history).unwrap());
+            let mut content: Vec<AssistantContent> = self.turns[turn]
+                .iter()
+                .enumerate()
+                .map(|(index, (name, arguments))| {
+                    AssistantContent::ToolCall(ToolCall::from_wire(
+                        format!("call-{turn}-{index}"),
+                        ToolFunction::new(ToolName::new(*name).unwrap(), arguments.clone()),
+                    ))
+                })
+                .collect();
+            if content.is_empty() {
+                content.push(AssistantContent::text("The judgment is true."));
+            }
+            Ok(CompletionResponse::new(
+                content,
+                Usage::default(),
+                Origin::new("fixture", "fixture", "fixture"),
+                Value::Null,
+            )
+            .with_finish_reason(FinishReason::Stop))
+        }
+    }
+
+    // {test}`requirements.authoring.submission`
+    // {test}`requirements.authoring.submission_count`
+    #[tokio::test]
+    async fn a_response_without_a_submission_is_reminded_once() {
+        let submit = json!({"determination": true, "rationale": "Fine."});
+        for (turns, accepted) in [
+            (
+                vec![vec![], vec![("submit_judgment", submit.clone())]],
+                true,
+            ),
+            (vec![vec![], vec![]], false),
+        ] {
+            let project = inputs::tests::project();
+            let mut sources =
+                AssessmentSources::prepare(project.path(), "requirements.ready").unwrap();
+            let state = tempfile::tempdir().unwrap();
+            let mut usage =
+                UsageLog::start(state.path(), project.path(), &sources.subject_name).unwrap();
+            let provider = RemindedProvider {
+                turns,
+                requests: RefCell::default(),
+            };
+            let result = assess(&provider, &mut sources, &mut usage).await;
+            let requests = provider.requests.borrow();
+            assert_eq!(requests.len(), 2);
+            assert!(!requests[0].contains("Reminder:"));
+            assert!(
+                requests[1].contains(
+                    "Reminder: you MUST submit your result with the submit_judgment tool."
+                ),
+                "{}",
+                requests[1]
+            );
+            // Both turns are counted in usage.
+            let record = serde_json::to_value(&usage.record).unwrap();
+            assert_eq!(record["requests"].as_array().unwrap().len(), 2);
+            if accepted {
+                assert_eq!(result.unwrap().1["rationale"], "Fine.");
+            } else {
+                let error = result.unwrap_err().to_string();
+                assert!(error.contains("even after a reminder"), "{error}");
+            }
         }
     }
 
@@ -3121,6 +3522,7 @@ no_match:
     // {test}`requirements.references.site_review`
     // {test}`requirements.authoring.mandatory_inputs`
     // {test}`requirements.authoring.judgment_rules`
+    // {test}`requirements.authoring.no_line_numbers`
     #[tokio::test]
     async fn site_reviews_use_their_prompt_and_record_applies_and_the_site() {
         let project = crate::sites::tests::project(
@@ -3146,8 +3548,7 @@ no_match:
         // The subject message names the requirement, the site's file and
         // selector, and each query match with its kind, name and lines.
         let matches =
-            json!([{"kind": "sites", "query": "checkers", "line_start": 2, "line_end": 6}])
-                .to_string();
+            json!([{"kind": "sites", "query": "checkers", "item": "fn[check_two]"}]).to_string();
         let mandatory_inputs =
             serde_json::to_string_pretty(&sources.model_mandatory_inputs()).unwrap();
         let expected_subject = fill(
@@ -3368,7 +3769,7 @@ no_match:
                 vec![
                     site(false, json!(true), "Not a checker."),
                     site(true, json!(false), "It panics."),
-                    check(true, true, "It panics at line 1."),
+                    check(true, true, "It panics in `src/lib.rs#fn[check_one]`."),
                 ],
                 Judgment::False,
                 true,

@@ -23,6 +23,7 @@ pub(crate) const SITES_DIR: &str = "sites";
 // {impl}`requirements.authoring.progress`
 const SITE_STAGE: &str = "site reviews";
 
+// {cite}`habeas:util`
 /// One query match at a site.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct SiteMatch {
@@ -30,9 +31,12 @@ pub(crate) struct SiteMatch {
     pub(crate) query: String,
     pub(crate) line_start: usize,
     pub(crate) line_end: usize,
+    /// Selector of the innermost outline node containing the match.
+    pub(crate) item: String,
     pub(crate) text: String,
 }
 
+// {cite}`habeas:util`
 /// One site of a distributed requirement: the innermost outline node
 /// containing a match of one of its queries.
 #[derive(Clone, Debug)]
@@ -50,11 +54,13 @@ pub(crate) struct SiteItem {
 }
 
 impl SiteItem {
+    // {cite}`habeas:util`
     /// The review's path relative to the project root.
     pub(crate) fn review_path(&self) -> String {
         review_path(&self.requirement, &self.file, &self.item)
     }
 
+    // {cite}`habeas:util`
     /// The selector as displayed, `<root>` for the root node.
     pub(crate) fn selector_label(&self) -> &str {
         if self.item.is_empty() {
@@ -64,6 +70,7 @@ impl SiteItem {
         }
     }
 
+    // {impl}`requirements.references.site_review`
     /// The sorted names of the queries with a match at the site.
     pub(crate) fn queries(&self) -> Vec<String> {
         self.matches
@@ -75,7 +82,10 @@ impl SiteItem {
     }
 
     /// The matches as the model receives them: each query's kind and name
-    /// and the match's lines, and, for a violation match, its redacted text.
+    /// and the selector of the innermost node containing the match, without
+    /// line numbers, and, for a violation match, its redacted text.
+    // {impl}`requirements.authoring.site_prompt`
+    // {impl}`requirements.authoring.no_line_numbers`
     pub(crate) fn matches_value(&self) -> Value {
         Value::Array(
             self.matches
@@ -84,8 +94,7 @@ impl SiteItem {
                     let mut value = json!({
                         "kind": found.kind.label(),
                         "query": found.query,
-                        "line_start": found.line_start,
-                        "line_end": found.line_end,
+                        "item": found.item,
                     });
                     if found.kind == QueryKind::Violations {
                         value["text"] =
@@ -97,6 +106,7 @@ impl SiteItem {
         )
     }
 
+    // {impl}`requirements.references.site_review`
     /// Whether a reference lies inside the site's node.
     pub(crate) fn contains(&self, root: &Path, reference: &SourceReference) -> bool {
         display_path(root, &reference.file) == self.file
@@ -104,6 +114,7 @@ impl SiteItem {
             && reference.line <= self.line_end
     }
 
+    // {impl}`requirements.references.site_review`
     /// The `{fixme}` references naming the requirement inside the site,
     /// which acknowledge gaps at this site only.
     pub(crate) fn fixmes<'a>(
@@ -136,6 +147,7 @@ pub(crate) fn in_own_site(root: &Path, sites: &Sites, reference: &SourceReferenc
             .is_some_and(|sites| sites.iter().any(|site| site.contains(root, reference)))
 }
 
+// {impl}`requirements.references.site_review`
 /// `evidence/sites/<full-name>/<file>/<selector>.json`, with the selector
 /// encoded as for citation reviews.
 pub(crate) fn review_path(requirement: &str, file: &str, item: &str) -> String {
@@ -145,6 +157,7 @@ pub(crate) fn review_path(requirement: &str, file: &str, item: &str) -> String {
     )
 }
 
+// {cite}`habeas:util`
 /// `sites:<full-name>/<file>#<selector>`.
 pub(crate) fn subject_label(requirement: &str, file: &str, item: &str) -> String {
     format!("sites:{requirement}/{file}#{item}")
@@ -188,14 +201,19 @@ fn collect_sites(
     let mut sites = BTreeMap::<(String, String), SiteItem>::new();
     for (query, found) in matches {
         for found in found {
+            let parsed = outlines.parse(root, &found.site.file);
+            let parsed = parsed.as_ref().as_ref().ok();
+            let item = parsed.map_or_else(
+                || found.site.item.clone(),
+                |parsed| {
+                    let index = parsed.outline.owner_at_line(found.line_start);
+                    parsed.outline.nodes[index].selector.clone()
+                },
+            );
             let site = sites
                 .entry((found.site.file.clone(), found.site.item.clone()))
                 .or_insert_with(|| {
-                    let (line_start, line_end) = outlines
-                        .parse(root, &found.site.file)
-                        .as_ref()
-                        .as_ref()
-                        .ok()
+                    let (line_start, line_end) = parsed
                         .and_then(|parsed| {
                             let index = parsed.outline.resolve(&found.site.item).ok()?;
                             let node = &parsed.outline.nodes[index];
@@ -216,6 +234,7 @@ fn collect_sites(
                 query: query.name.clone(),
                 line_start: found.line_start,
                 line_end: found.line_end,
+                item,
                 text: found.text,
             });
         }
@@ -233,6 +252,7 @@ pub(crate) fn discover(
     files: &[PathBuf],
     outlines: &OutlineCache,
     errors: &mut Vec<String>,
+    incomplete: &mut Vec<String>,
 ) -> Sites {
     let mut sites = Sites::new();
     for (name, declaration) in definitions {
@@ -257,10 +277,18 @@ pub(crate) fn discover(
                     }
                     matches.push((query, found));
                 }
-                Err(error) => errors.push(format!(
-                    "{location}: query {} of {name} cannot run: {error}",
-                    query.name
-                )),
+                // A query that cannot run leaves its sites unknown: the
+                // scan is incomplete, so authoring must not treat the
+                // missing sites' reviews as orphans.
+                // {impl}`requirements.authoring.batch`
+                Err(error) => {
+                    let error = format!(
+                        "{location}: query {} of {name} cannot run: {error}",
+                        query.name
+                    );
+                    incomplete.push(error.clone());
+                    errors.push(error);
+                }
             }
         }
         sites.insert(name.clone(), collect_sites(root, name, outlines, matches));
@@ -404,6 +432,7 @@ pub(crate) fn validate_query_placement(
     }
 }
 
+// {impl}`requirements.references.site_review`
 /// The declarations a requirement cites, which every site review receives.
 pub(crate) fn cited_declarations(
     declaration: &Declaration,
@@ -423,6 +452,7 @@ pub(crate) fn cited_declarations(
     cited
 }
 
+// {cite}`habeas:util`
 /// One acknowledgment inside a site as recorded: the outline node it
 /// belongs to and its body.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -432,10 +462,12 @@ pub(crate) struct SiteFixme {
 }
 
 impl SiteFixme {
+    // {cite}`habeas:util`
     pub(crate) fn to_value(&self) -> Value {
         json!({"item": self.item, "commentary": self.commentary})
     }
 
+    // {impl}`requirements.references.site_review`
     /// The comparison key: the node and the body's words, so reflowing the
     /// body does not make the review stale.
     fn key(&self) -> (String, Vec<String>) {
@@ -449,6 +481,7 @@ impl SiteFixme {
     }
 }
 
+// {impl}`requirements.references.site_review`
 /// The `{fixme}` references naming the requirement inside a site, in source
 /// order, as recorded in its review.
 pub(crate) fn site_fixmes(
@@ -477,6 +510,7 @@ pub(crate) fn site_fixmes(
         .collect()
 }
 
+// {impl}`requirements.references.site_review`
 /// Whether two lists of site `{fixme}` references are the same, by node and
 /// body words.
 fn same_fixmes(recorded: &[SiteFixme], current: &[SiteFixme]) -> bool {
@@ -816,6 +850,7 @@ no_match:
             query: "q".to_owned(),
             line_start: 1,
             line_end: 1,
+            item: "fn[check]".to_owned(),
             text: text.to_owned(),
         };
         let site = SiteItem {
@@ -832,7 +867,7 @@ no_match:
         let value = site.matches_value();
         assert_eq!(
             value[0],
-            json!({"kind": "sites", "query": "q", "line_start": 1, "line_end": 1})
+            json!({"kind": "sites", "query": "q", "item": "fn[check]"})
         );
         assert_eq!(value[1]["kind"], "violations");
         assert_eq!(site.selector_label(), "fn[check]");
@@ -843,6 +878,34 @@ no_match:
         assert_eq!(root_site.selector_label(), "<root>");
         assert_eq!(value[1]["text"], "connect(\"[REDACTED:GitHub Token]\")");
         assert!(!value.to_string().contains(&token), "{value}");
+    }
+
+    // {test}`requirements.authoring.batch`
+    #[cfg(unix)]
+    #[test]
+    fn a_query_that_cannot_run_is_a_discovery_error() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = project(RULE, SOURCE);
+        let root = temp.path();
+        let unreadable = root.join("src/other.rs");
+        fs::write(&unreadable, "fn check_four() {}\n").unwrap();
+        fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o000)).unwrap();
+        if fs::read(&unreadable).is_ok() {
+            // Running as root: permissions do not stop reads.
+            return;
+        }
+        let inspection = crate::evidence::inspect_repository(root).unwrap();
+        fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o644)).unwrap();
+        // The incomplete scan aborts authoring, so no site review is taken
+        // for an orphan and deleted.
+        assert!(
+            inspection
+                .discovery_errors
+                .iter()
+                .any(|error| error.contains("cannot run") && error.contains("other.rs")),
+            "{:#?}",
+            inspection.discovery_errors
+        );
     }
 
     // {test}`requirements.references.distributed`
@@ -880,7 +943,7 @@ no_match:
         assert_eq!(violation.line_start, 6);
         assert_eq!(
             nested.matches_value()[1],
-            json!({"kind": "violations", "query": "panics", "line_start": 6, "line_end": 6, "text": "panic!(\"z\")"})
+            json!({"kind": "violations", "query": "panics", "item": "mod[inner]/fn[check_three]/fn[nested]", "text": "panic!(\"z\")"})
         );
         // No query problems; each site lacks a review, and being a site is
         // not a reference for Rust item coverage.
@@ -1376,6 +1439,43 @@ no_match: ["struct S;"]
             crate::evidence::reference_set_digest_for(root, "requirements.rule").unwrap(),
             digest
         );
+
+        // A review recording the in-site `{fixme}` is current; reflowing its
+        // body keeps it current, and changing its words makes it stale.
+        fs::write(root.join("src/lib.rs"), &source).unwrap();
+        crate::evidence::tests::stamp_reference_sets(root);
+        write_review(
+            root,
+            "fn[check_two]",
+            json!({
+                "determination": {"FIXME": ["o/r#1"]},
+                "fixmes": [{"item": "fn[check_two]", "commentary": ":github: o/r#1\n Panics instead of reporting."}],
+            }),
+        );
+        let changed = |root: &Path| {
+            let (errors, _) = inspect(root);
+            review_errors(&errors, "fn[check_two]")
+                .into_iter()
+                .filter(|error| error.contains("{fixme} references"))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(changed(root), Vec::<String>::new());
+        fs::write(
+            root.join("src/lib.rs"),
+            source.replacen(
+                "    // Panics instead of reporting.\n",
+                "    // Panics instead\n    // of reporting.\n",
+                1,
+            ),
+        )
+        .unwrap();
+        assert_eq!(changed(root), Vec::<String>::new());
+        fs::write(
+            root.join("src/lib.rs"),
+            source.replacen("Panics instead", "Still panics instead", 1),
+        )
+        .unwrap();
+        assert_eq!(changed(root).len(), 1);
     }
 
     // {test}`requirements.ci.outcomes`

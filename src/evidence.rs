@@ -13,6 +13,7 @@ use crate::{
     reference_roles, valid_name,
 };
 
+// {impl}`requirements.integration.report_api`
 #[derive(Debug)]
 pub struct EvidenceReport {
     pub requirements: usize,
@@ -21,6 +22,8 @@ pub struct EvidenceReport {
     pub errors: Vec<String>,
 }
 
+// {cite}`habeas:util`
+#[derive(Clone)]
 pub(crate) struct Declaration {
     pub(crate) kind: DefinitionKind,
     pub(crate) text: String,
@@ -32,6 +35,7 @@ pub(crate) struct Declaration {
     pub(crate) anchors: Vec<Anchor>,
 }
 
+// {cite}`habeas:util`
 /// An `:impl:` or `:test:` option naming a project file, or one outline node
 /// in it as `path#selector`.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -42,6 +46,7 @@ pub(crate) struct Anchor {
     pub(crate) item: String,
 }
 
+// {cite}`habeas:util`
 /// The node an anchor currently resolves to.
 pub(crate) struct AnchorTarget {
     /// Canonical path of the anchored file.
@@ -131,6 +136,7 @@ pub(crate) struct RepositoryInspection {
     pub(crate) discovery_errors: Vec<String>,
 }
 
+// {cite}`habeas:util`
 /// Progress within one inspection phase; discovery has no known total.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct InspectionProgress {
@@ -275,7 +281,14 @@ pub(crate) fn inspect_repository_with_progress(
     discovery_errors.extend(errors[scanned..].iter().cloned());
     validate_committed_credentials(&root, &mut errors);
     // {impl}`requirements.references.distributed`
-    let sites = crate::sites::discover(&root, &definitions, &files, &outlines, &mut errors);
+    let sites = crate::sites::discover(
+        &root,
+        &definitions,
+        &files,
+        &outlines,
+        &mut errors,
+        &mut discovery_errors,
+    );
     validate_references(
         &root,
         &definitions,
@@ -1110,13 +1123,13 @@ impl SourceReference {
 /// One edge of a definition's reference set: its origin (an in-source
 /// reference or a declaration anchor), role, file, and outline selector.
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
-struct ReferenceSetEntry {
-    origin: &'static str,
-    role: &'static str,
-    file: String,
-    item: String,
+pub(crate) struct ReferenceSetEntry {
+    pub(crate) origin: &'static str,
+    pub(crate) role: &'static str,
+    pub(crate) file: String,
+    pub(crate) item: String,
     /// The words of a fenced reference's body, for a source outside the book.
-    words: Vec<String>,
+    pub(crate) words: Vec<String>,
 }
 
 /// The reference-set digest of a definition: SHA-256 over a length-prefixed
@@ -1135,8 +1148,23 @@ pub(crate) fn reference_set_digest<'a>(
     references: impl IntoIterator<Item = &'a SourceReference>,
     sites: &crate::sites::Sites,
 ) -> String {
-    use sha2::{Digest, Sha256};
+    digest_entries(reference_set_entries(
+        root, outlines, name, definition, references, sites,
+    ))
+}
 
+/// The entries of a definition's reference set, unsorted, as
+/// [`reference_set_digest`] encodes them.
+// {impl}`requirements.references.outline_comments`
+// {impl}`requirements.ci.reference_set`
+pub(crate) fn reference_set_entries<'a>(
+    root: &Path,
+    outlines: &OutlineCache,
+    name: &str,
+    definition: &Declaration,
+    references: impl IntoIterator<Item = &'a SourceReference>,
+    sites: &crate::sites::Sites,
+) -> Vec<ReferenceSetEntry> {
     let mut entries = Vec::new();
     for reference in references {
         // A `{fixme}` inside a site of a distributed definition belongs to
@@ -1190,8 +1218,15 @@ pub(crate) fn reference_set_digest<'a>(
             words: Vec::new(),
         });
     }
-    entries.sort();
+    entries
+}
 
+/// The reference-set digest of a set of entries, in sorted order.
+// {impl}`requirements.ci.reference_set`
+pub(crate) fn digest_entries(mut entries: Vec<ReferenceSetEntry>) -> String {
+    use sha2::{Digest, Sha256};
+
+    entries.sort();
     let mut hasher = Sha256::new();
     let mut field = |bytes: &[u8]| {
         hasher.update((bytes.len() as u64).to_le_bytes());
@@ -1835,6 +1870,7 @@ fn declaration_line_ranges(content: &str) -> Vec<(usize, usize)> {
         .collect()
 }
 
+// {impl}`requirements.references.evidence_coverage`
 /// Unreadable records and unresolvable inputs contribute no ranges: their
 /// own checks report them, and coverage checking continues.
 fn evidence_input_ranges(
@@ -1874,6 +1910,33 @@ fn evidence_input_ranges(
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use super::{ReferenceSetEntry, digest_entries};
+
+    // {test}`requirements.ci.reference_set`
+    #[test]
+    fn the_reference_set_digest_does_not_depend_on_the_order_entries_are_found() {
+        let entry = |role: &'static str, file: &str, item: &str| ReferenceSetEntry {
+            origin: "reference",
+            role,
+            file: file.to_owned(),
+            item: item.to_owned(),
+            words: Vec::new(),
+        };
+        let entries = || {
+            vec![
+                entry("impl", "src/a.rs", "fn[a]"),
+                entry("test", "src/b.rs", "fn[b]"),
+                entry("impl", "src/b.rs", ""),
+            ]
+        };
+        let mut reversed = entries();
+        reversed.reverse();
+        assert_eq!(digest_entries(entries()), digest_entries(reversed));
+        let mut other = entries();
+        other[0].item = "fn[c]".to_owned();
+        assert_ne!(digest_entries(entries()), digest_entries(other));
+    }
+
     /// Validation errors other than citation reviews, for fixtures that test
     /// other checks.
     // {test}`requirements.references.citation_review`
@@ -3355,6 +3418,7 @@ pub(crate) mod tests {
 
     // {test}`requirements.references.anchors`
     // {test}`requirements.ci.requirement_text`
+    // {test}`requirements.references.evidence_coverage`
     #[test]
     fn anchored_files_must_be_completely_covered_and_resolvable() {
         let temp = fixture();
@@ -3431,6 +3495,7 @@ pub(crate) mod tests {
 
     // {test}`requirements.references.anchors`
     // {test}`requirements.ci.outline_inputs`
+    // {test}`requirements.references.evidence_coverage`
     #[test]
     fn selector_anchors_are_covered_by_inputs_selecting_the_node_or_an_ancestor() {
         let temp = fixture();

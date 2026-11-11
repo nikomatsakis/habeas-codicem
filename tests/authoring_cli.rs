@@ -245,10 +245,12 @@ impl Fixture {
     }
 }
 
+// {cite}`habeas:util`
 fn call(id: &str, name: &str, arguments: Value) -> Value {
     json!({"id":id,"type":"function","function":{"name":name,"arguments":arguments}})
 }
 
+// {cite}`habeas:util`
 fn reply(calls: Vec<Value>) -> Value {
     json!({"model":MODEL,"created_at":"2026-01-01T00:00:00Z",
         "message":{"role":"assistant","content":"review complete","tool_calls":calls},
@@ -302,7 +304,7 @@ fn ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free() {
             "submit",
             "submit_judgment",
             json!({
-            "determination":{"FIXME":["example/app#125"]},"rationale":"SECRET_RATIONALE: src/lib.rs:2 documents the gap."}),
+            "determination":{"FIXME":["example/app#125"]},"rationale":"SECRET_RATIONALE: `src/lib.rs#fn[ready]` documents the gap."}),
         )]),
     ]);
     let fixture = Fixture::new(&server.endpoint);
@@ -338,7 +340,7 @@ fn ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free() {
         "SECRET_DEFINITION_TEXT",
         "fn ready()",
         "fn ready_test()",
-        "submit_judgment exactly once",
+        "You MUST end by calling submit_judgment",
     ] {
         assert!(prompt.contains(text), "prompt missing {text}");
     }
@@ -390,7 +392,7 @@ fn ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free() {
     );
     assert_eq!(
         evidence["rationale"],
-        "SECRET_RATIONALE: src/lib.rs:2 documents the gap."
+        "SECRET_RATIONALE: `src/lib.rs#fn[ready]` documents the gap."
     );
     assert_eq!(evidence["requirement"], REQUIREMENT);
     let inputs = evidence["inputs"].as_array().unwrap();
@@ -635,8 +637,10 @@ fn authoring_uses_nearest_workspace_configuration_without_a_user_file() {
 // {test}`requirements.authoring.persistence`
 // {test}`requirements.authoring.usage_storage`
 // {test}`requirements.authoring.usage_requests`
+// {test}`requirements.authoring.read_denial.untracked`
+// {test}`requirements.authoring.read_denial`
 #[test]
-fn explicit_untracked_reads_abort_without_another_request_or_evidence_write() {
+fn explicit_untracked_reads_return_an_untracked_error_and_the_assessment_continues() {
     for (tool, arguments) in [
         ("habeas", json!({"file":"untracked.txt", "line_start":1})),
         (
@@ -649,7 +653,14 @@ fn explicit_untracked_reads_abort_without_another_request_or_evidence_write() {
         ),
         ("list_files", json!({"path":"untracked-directory"})),
     ] {
-        let server = Server::start(vec![reply(vec![call("denied", tool, arguments)])]);
+        let server = Server::start(vec![
+            reply(vec![call("denied", tool, arguments)]),
+            reply(vec![call(
+                "submit",
+                "submit_judgment",
+                json!({"determination": true, "rationale": "The tracked sources support it."}),
+            )]),
+        ]);
         let fixture = Fixture::new(&server.endpoint);
         for args in [["init", "--quiet"], ["add", "."]] {
             let git = Command::new("git")
@@ -668,21 +679,24 @@ fn explicit_untracked_reads_abort_without_another_request_or_evidence_write() {
         .unwrap();
 
         let output = fixture.run(&["author", SUBJECT, "--stdout"]);
-        assert!(!output.status.success(), "{tool}: {output:?}");
-        assert!(output.stdout.is_empty(), "{tool}: {output:?}");
-        let diagnostics = String::from_utf8_lossy(&output.stderr);
-        assert!(diagnostics.contains("untracked"), "{tool}: {diagnostics}");
-        assert_eq!(
-            fs::read_to_string(&fixture.evidence).unwrap(),
-            fixture.original
+        assert!(output.status.success(), "{tool}: {output:?}");
+        // The model was told the path is untracked and how to fix it, and
+        // the file was neither delivered nor recorded.
+        let requests = server.finish();
+        assert_eq!(requests.len(), 2, "{tool}");
+        let second = requests[1].body.to_string();
+        assert!(
+            second.contains("is untracked") || second.contains("untracked, so"),
+            "{tool}: {second}"
         );
-        assert_eq!(server.finish().len(), 1);
+        assert!(second.contains("git add"), "{tool}: {second}");
+        assert!(!second.contains("hidden source"), "{tool}: {second}");
+        let evidence = String::from_utf8_lossy(&output.stdout);
+        assert!(!evidence.contains("untracked"), "{tool}: {evidence}");
         let usage = fixture.usage();
-        assert_eq!(usage["outcome"], "failed", "{tool}: {usage}");
-        assert_eq!(usage["request_count"], 1, "{tool}: {usage}");
+        assert_eq!(usage["outcome"], "completed", "{tool}: {usage}");
+        assert_eq!(usage["request_count"], 2, "{tool}: {usage}");
         assert_eq!(usage["tool_failures"][tool], 1, "{tool}: {usage}");
-        assert_eq!(usage["evidence_written"], false, "{tool}: {usage}");
-        assert!(usage["determination"].is_null(), "{tool}: {usage}");
     }
 }
 
@@ -762,7 +776,7 @@ fn false_is_a_completed_assessment() {
 #[test]
 fn negative_assessment_records_additional_reads_and_fails_validation() {
     let rationale =
-        "src/lib.rs implements readiness, but extra.txt line 6 shows the needle case is unhandled.";
+        "src/lib.rs implements readiness, but `extra.txt` shows the needle case is unhandled.";
     let server = Server::start(vec![
         reply(vec![call(
             "read",
@@ -986,6 +1000,7 @@ fn bundled_skills_direct_the_agent_to_the_authoring_harness() {
 
 // {test}`requirements.cli.internal_detail_guidance`
 // {test}`requirements.cli.skill_structure`
+// {test}`requirements.cli.behavior_review_guidance`
 #[test]
 fn bundled_skills_direct_the_reference_procedure_and_report_items_without_one() {
     // habeas-requirements is the home of the reference procedure; its steps
@@ -1070,35 +1085,48 @@ fn bundled_skills_treat_disagreeing_assessments_as_findings() {
             "Decide whether one assessment found a real gap or the requirement text admits more than one reading",
             "Fix the source or tests, or tighten the requirement text, reviewing substantive changes with the user",
             "Don't re-run for a different result",
-            "record it in the audit log as the Rules say",
+            "explain why in the commit message as the Rules say",
         ],
     );
     assert_phrases(
         "habeas-evidence",
         &[
-            "record the old text, new text, reason, and the rationale that prompted the change in the project's audit log, such as `audits/requirement-rewordings/`",
+            "give the reason and the rationale that prompted it in the message of the commit that makes the change",
+            "Describe the change relative to the prior commit, not the drafts that led to it: document the destination, not the journey",
         ],
     );
-    // A rewording for precision is reviewed with the user before it is logged.
+    // A change to agreed text is reviewed with the user, then explained in
+    // its commit message.
     assert_in_order(
         "habeas-requirements",
         &[
             "Review every other change to agreed text with the user first too, even a rewording for precision",
-            "then log it as the habeas-evidence Rules say",
+            "then explain why in the commit message as the habeas-evidence Rules say",
         ],
     );
     assert_phrases(
         "habeas-evidence",
-        &["When the user agrees to reword a requirement for precision"],
+        &["When the user agrees to a change to a requirement's text"],
     );
     // The other skills point to it rather than restate it.
-    for name in ["habeas-requirements", "habeas-bootstrap-requirements"] {
+    for name in [
+        "habeas-requirements",
+        "habeas-bootstrap-requirements",
+        "habeas-refactor",
+    ] {
         let text = bundled_skill(name);
         assert!(
             text.contains("\"Disagreeing assessments\" in the habeas-evidence skill"),
             "{name} does not refer to habeas-evidence"
         );
         assert!(!text.contains(GOAL), "{name} restates the goal");
+    }
+    // No skill keeps a separate log of requirement changes.
+    for name in SKILLS {
+        assert!(
+            !bundled_skill(name).contains("audit log"),
+            "{name} mentions an audit log"
+        );
     }
 }
 
@@ -1427,7 +1455,8 @@ fn missing_duplicate_and_invalid_submissions_preserve_existing_evidence() {
                 if stdout { "stdout" } else { "file" }
             );
             assert_eq!(usage["evidence_written"], false);
-            assert_eq!(usage["request_count"], 1);
+            // A response without a submission is reminded once.
+            assert_eq!(usage["request_count"], if calls.is_empty() { 2 } else { 1 });
             assert!(usage["determination"].is_null());
         }
     }
@@ -2551,7 +2580,53 @@ fn bundled_skills_guide_distributed_requirements_with_do_and_dont_lists() {
     );
 }
 
+// {test}`requirements.cli.refactor_skill`
+// {test}`requirements.cli.refactor_skill.workflow`
+// {test}`requirements.cli.refactor_skill.limits`
+#[test]
+fn the_refactor_skill_moves_first_then_updates_evidence_with_habeas_refactor() {
+    let description = bundled_skill("habeas-refactor");
+    assert!(description.contains(
+        "Use when a change moves code, tests, or requirements in a Habeas project to another file, chapter, or outline node"
+    ));
+    assert!(description.contains("splitting or merging modules or chapters"));
+    assert!(description.contains("so that evidence whose content is unchanged is not invalidated"));
+    assert_in_order(
+        "habeas-refactor",
+        &[
+            "Make the move with your own edits",
+            "Change nothing else in this step",
+            "`habeas refactor --dry-run` with one `--map <old>=<new>` for every moved file or directory, node, and definition name",
+            "Review the report",
+            "lists the records it updates, with each code span in their rationales that still mentions an old path, for you to check",
+            "lists records a mapping affects that fail a check",
+            "Run the same command without `--dry-run`",
+            "`habeas status`. Only the records the report left unchanged",
+            "Commit the move, the rewritten references, and the `evidence/` changes together, before any change to behavior or text",
+            "Reassess what remains stale with `habeas author`, following the habeas-evidence workflow",
+        ],
+    );
+    assert_phrases(
+        "habeas-refactor",
+        &[
+            "Never edit evidence files by hand to follow a move",
+            "A rename is not a move",
+            "Editing moved code or text in the same step leaves every record that read it stale",
+        ],
+    );
+}
+
+// {test}`requirements.references.anchors`
+#[test]
+fn bundled_skills_limit_anchors_to_files_whose_items_cannot_carry_references() {
+    assert_phrases(
+        "habeas-requirements",
+        &["Don't anchor a file whose items can carry a reference themselves"],
+    );
+}
+
 // {test}`requirements.cli.skill_structure`
+// {test}`requirements.cli.skill_conventions`
 #[test]
 fn bundled_skills_open_with_a_workflow_and_name_their_neighbors() {
     let skills = [
@@ -2566,6 +2641,10 @@ fn bundled_skills_open_with_a_workflow_and_name_their_neighbors() {
         (
             "habeas-bootstrap-requirements",
             include_str!("../assets/skills/habeas-bootstrap-requirements/SKILL.md"),
+        ),
+        (
+            "habeas-refactor",
+            include_str!("../assets/skills/habeas-refactor/SKILL.md"),
         ),
     ];
     for (name, text) in skills {
@@ -2595,7 +2674,13 @@ fn bundled_skills_open_with_a_workflow_and_name_their_neighbors() {
     }
 
     // Each topic's home holds its section.
-    let [(_, requirements), (_, evidence), (_, bootstrap)] = skills;
+    let [
+        (_, requirements),
+        (_, evidence),
+        (_, bootstrap),
+        (_, refactor),
+    ] = skills;
+    assert!(refactor.contains("habeas refactor --dry-run"));
     for heading in [
         "## Writing requirements",
         "## Choosing references",
@@ -2612,6 +2697,33 @@ fn bundled_skills_open_with_a_workflow_and_name_their_neighbors() {
         assert!(evidence.contains(heading), "{heading}");
     }
     assert!(bootstrap.contains("## Proposing requirements"));
+    // habeas-evidence is the home of fixing findings, and habeas-refactor of
+    // moves: its workflow and mapping forms, which the others do not restate.
+    assert!(evidence.contains("## Fixing findings"));
+    for text in [
+        "Make the move with your own edits",
+        "habeas refactor --dry-run",
+        "`--map 'src/config.rs#fn[load]=src/config/load.rs#fn[load]'`",
+        "A rename is not a move",
+    ] {
+        assert!(refactor.contains(text), "habeas-refactor: {text}");
+    }
+    for (name, text) in [
+        ("habeas-requirements", requirements),
+        ("habeas-evidence", evidence),
+        ("habeas-bootstrap-requirements", bootstrap),
+    ] {
+        assert!(
+            !text.contains("--dry-run"),
+            "{name} restates the refactor workflow"
+        );
+        assert!(
+            !text.contains("--map "),
+            "{name} restates the refactor mappings"
+        );
+    }
+    // Moving a requirement defers to habeas-refactor.
+    assert!(requirements.contains("follow the habeas-refactor skill"));
 
     // Each reference file is linked with a statement of when to read it.
     let collapsed = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -2635,10 +2747,11 @@ fn bundled_skills_open_with_a_workflow_and_name_their_neighbors() {
 
 /// The bundled skills, by name.
 // {test}`requirements.cli.behavior_review_guidance`
-const SKILLS: [&str; 3] = [
+const SKILLS: [&str; 4] = [
     "habeas-requirements",
     "habeas-evidence",
     "habeas-bootstrap-requirements",
+    "habeas-refactor",
 ];
 
 /// A bundled skill together with the reference files it links to, with line
@@ -2660,6 +2773,7 @@ fn bundled_skill(name: &str) -> String {
         "habeas-bootstrap-requirements" => &[include_str!(
             "../assets/skills/habeas-bootstrap-requirements/SKILL.md"
         )],
+        "habeas-refactor" => &[include_str!("../assets/skills/habeas-refactor/SKILL.md")],
         _ => panic!("unknown skill {name}"),
     };
     files

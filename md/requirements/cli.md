@@ -100,10 +100,11 @@ no checkable obligation.
 :impl: assets/skills/habeas-evidence/SKILL.md
 :impl: assets/skills/habeas-requirements/SKILL.md
 :impl: assets/skills/habeas-bootstrap-requirements/SKILL.md
-Habeas's bundled agent skills MUST state the goal that independent assessments
+The `habeas-evidence` skill MUST state the goal that independent assessments
 of the same subject reach the same determination, because the requirement, code,
 and tests leave no gap a careful reviewer could find and no reading a careful
-reviewer could take differently. They MUST tell agents that assessments of the
+reviewer could take differently, and the other bundled skills MUST refer to it
+rather than restate it. The skills MUST tell agents that assessments of the
 same subject that disagree are findings against that goal. They MUST direct agents to read both
 rationales and decide whether one assessment found a real gap or the requirement
 text admits more than one reading, then fix the source or tests, or tighten the
@@ -111,9 +112,10 @@ requirement text, rather than re-running an assessment to obtain a different
 determination. Every change to agreed requirement text, including a rewording for precision,
 MUST be reviewed with the user under
 {cite}`requirements.cli.requirements_review_skill` before it is made, and the
-skills MUST then direct agents to record the old text, new text, reason, and the
-rationale that prompted the change in the project's audit log, such as
-`audits/requirement-rewordings/`.
+skills MUST then direct agents to give the reason, and the rationale that
+prompted the change, in the message of the commit that makes it. That message
+MUST describe the change relative to the prior commit, not the intermediate
+drafts that led to it.
 :::
 :::{req} distributed_guidance
 :impl: assets/skills/habeas-requirements/SKILL.md
@@ -148,7 +150,38 @@ requirement for a cross-cutting convention instead of marking each of its sites
 with `{impl}`.
 :::
 
+:::{req} refactor_skill
+:impl: assets/skills/habeas-refactor/SKILL.md
+Habeas MUST bundle a `habeas-refactor` skill whose description tells agents to
+use it when a change moves code, tests, or requirements to another file,
+chapter, or outline node, including splitting or merging modules or chapters,
+so that evidence whose content is unchanged is not invalidated.
+:::
+
+:::{req} refactor_skill.workflow
+:impl: assets/skills/habeas-refactor/SKILL.md
+The `habeas-refactor` skill MUST direct agents to make the move with their own
+edits, keeping it separate from any change to the moved code or text; to run
+`habeas refactor --dry-run` under {cite}`requirements.refactor.dry_run` with a
+mapping for every moved file, node, and definition name under
+{cite}`requirements.refactor.mappings`; to review its report, including
+records it would leave unchanged and the rationale spans it lists under
+{cite}`requirements.refactor.rationale.untouched`; to run it without
+`--dry-run`; to confirm with `habeas status` that only the reported records
+are stale; and to commit the move and evidence update before changing
+behavior, then reassess stale records with `habeas author` under the
+habeas-evidence skill.
+:::
+
+:::{req} refactor_skill.limits
+:impl: assets/skills/habeas-refactor/SKILL.md
+The `habeas-refactor` skill MUST tell agents not to edit evidence files by hand
+to follow a move, and that renaming a function or editing moved text is not a
+move and needs reassessment.
+:::
+
 :::{req} skill_structure
+:impl: assets/skills/habeas-refactor/SKILL.md
 :impl: assets/skills/habeas-requirements/SKILL.md
 :impl: assets/skills/habeas-requirements/references/distributed-requirements.md
 :impl: assets/skills/habeas-evidence/SKILL.md
@@ -162,13 +195,33 @@ than restate it. The `habeas-requirements` skill MUST be the home of drafting an
 agreeing requirements, directive syntax, the reference procedure, the review
 criteria, and distributed requirements; the `habeas-evidence` skill MUST be the
 home of the authoring workflow, outcomes and FIXME judgments, citation and site
-reviews, and disagreeing assessments; and the `habeas-bootstrap-requirements`
-skill MUST be the home of deriving an initial requirement set from existing code.
-Each skill's description MUST state when to use it in terms of the user's task
-and name the other skills for neighboring tasks, and each skill MUST open with
-its workflow as ordered steps. Material needed only in specialized situations
-MAY live in files the skill references, each with a statement of when to read it.
+reviews, and disagreeing assessments; the `habeas-bootstrap-requirements`
+skill MUST be the home of deriving an initial requirement set from existing code;
+and the `habeas-refactor` skill MUST be the home of moving code, tests, and
+requirements between files, chapters, and outline nodes.
 :::
+
+::::{req} skill_conventions
+Each bundled skill's description MUST state when to use it in terms of the
+user's task and name the other bundled skills for neighboring tasks, and the
+skill MUST open with its workflow as ordered steps. Material needed only in
+specialized situations MAY live in files the skill references, each with a
+statement of when to read it. Each bundled skill, recognized by its front
+matter, is a site:
+
+:::{sites} skills
+```yaml
+language: markdown
+paths: [assets/skills]
+rule:
+  kind: minus_metadata
+match:
+  - "---\nname: example\n---\n\n# Example\n"
+no_match:
+  - "# Example\n"
+```
+:::
+::::
 
 :::{req} invocation
 `habeas mdbook supports html` MUST succeed, and a support query for another renderer MUST fail. An unknown command or invalid setup option combination MUST fail with a usage message. In particular, `habeas agents` and `habeas setup --install-skills` MUST fail with a usage message.

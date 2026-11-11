@@ -156,8 +156,9 @@ rationale goes to stderr. {cite}`requirements.authoring.reporting`
 
 Transient provider token/request throttling is retried automatically with
 exponential backoff and jitter, honoring `Retry-After` when the provider exposes
-it. Every attempt is counted in usage. Retries have no attempt limit; Ctrl-C
-interrupts waiting. Requests that exceed a model's input/context limit still fail
+it. Every attempt is counted in usage, with each failure's HTTP status and
+error code. Retrying gives up once a request has been failing for a minute, and
+the error names the last failure; Ctrl-C interrupts waiting. Requests that exceed a model's input/context limit still fail
 because waiting cannot make that request fit. {cite}`requirements.authoring.provider_backoff`
 
 `habeas author <full-name>` assesses one requirement or example, records the
@@ -172,7 +173,9 @@ those lines, and those nodes are recorded as outline inputs. Searches only locat
 code: each ripgrep or ast-grep match is returned as the innermost outline node
 containing it with the matching lines and their context, and the model reads with
 `habeas` any node it relies on. Searches, listings, outlines, and reference
-lookups are not recorded as evidence.
+lookups are not recorded as evidence. No tool gives the model line numbers:
+every location it sees is a file and outline selector, which is also how its
+rationale cites code. {cite}`requirements.authoring.no_line_numbers`
 When authoring replaces a record and an item the old record read is no longer
 covered, Habeas runs a coverage-loss review: an independent conversation that
 decides, for each requirement or example whose old record read the item, whether
@@ -192,12 +195,19 @@ In a Git worktree, stage new source files with `git add` before authoring. The
 model can read unstaged edits to tracked files. By default, reads exclude untracked files,
 generated `evidence/` content, and paths outside the project, including symlink
 aliases. Standalone projects use the same containment rules without requiring Git.
-An explicitly requested excluded path aborts that assessment and reports an error
-to the caller; it is not sent back to the model to work around. In a batch, other
-assessments continue and successful writes are retained. The command exits
-unsuccessfully after the batch finishes.
+When the model requests an excluded path, the tool returns an error naming the
+path and the reason, such as an untracked file that `git add` would make
+readable, and the assessment continues. A denied mandatory input instead aborts
+that assessment and reports the path to you; in a batch, other assessments
+continue and successful writes are retained, and the command exits
+unsuccessfully after the batch finishes. Tool descriptions cover only the common
+case; redaction, paging, and errors are explained in the results where they
+occur.
 {cite}`requirements.authoring.source_tools`
 {cite}`requirements.authoring.read_denial`
+{cite}`requirements.authoring.read_denial.untracked`
+{cite}`requirements.authoring.read_denial.mandatory`
+{cite}`requirements.authoring.tool_descriptions.special_cases`
 
 Source text sent to the model, and source text shown on book detail pages and by
 `habeas info`, is redacted. In a workspace `habeas.toml` or your user
@@ -741,6 +751,34 @@ Profile details:
 - TOML and YAML: `#` comments are not hashed. Quoted keys keep their quotes in names. In YAML, a comment before a key belongs to that key, even though the grammar places it at the end of the previous key's node; in TOML, a comment after a table's last pair stays in that table.
 
 Grammar versions are pinned exactly in `Cargo.toml`. Upgrading a grammar or changing a profile can change selectors and hashes, so it is a deliberate change. {cite}`requirements.references.outlines`
+
+## Moving code and requirements
+
+Moving a function to another file or a requirement to another chapter changes
+addresses that evidence records without changing what was reviewed. Make the
+move with ordinary edits, then tell Habeas what moved:
+
+```sh
+habeas refactor --dry-run \
+  --map 'src/config.rs#fn[load]=src/config/load.rs#fn[load]' \
+  --map requirements.cli.check=requirements.core.check
+```
+
+A mapping names a file or directory, a `<file>#<selector>` node, or a definition
+name, which also covers the names beneath it. For a definition name, Habeas
+rewrites the `{impl}`, `{test}`, `{cite}`, `{fixme}`, and `{term}` references to
+it; for a file or node, the `:impl:` and `:test:` anchors naming it. It then rewrites the evidence that read the moved items, but only where the
+content is unchanged: the moved node's structural hash and the recorded
+definition text must match once the mapping is undone. A record that fails any
+check is left as it is and reported, and stays stale until `habeas author`
+reassesses it. Rationales that name a moved item in backticks, as
+`` `src/config.rs#fn[load]` `` or a full definition name, are updated too;
+assessments are asked to cite locations that way rather than by line number.
+Run without `--dry-run` to apply the changes. Moving and editing the same item
+in one step leaves its evidence stale, so commit the move first.
+{cite}`requirements.refactor.command` {cite}`requirements.refactor.mappings`
+{cite}`requirements.refactor.reference_rewrite` {cite}`requirements.refactor.whole_record`
+{cite}`requirements.refactor.rationale.addresses` {cite}`requirements.authoring.line_numbers.rejection`
 
 ## Checking and viewing
 

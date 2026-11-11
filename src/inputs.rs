@@ -10,6 +10,7 @@ use crate::evidence::Declaration;
 use crate::outline::{self, Outline, ResolveError};
 use crate::redaction::Redaction;
 
+// {cite}`habeas:util`
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum InputSelector {
     Outline { file: String, item: String },
@@ -37,6 +38,7 @@ pub(crate) struct ResolvedNode {
     pub(crate) hash: String,
 }
 
+// {cite}`habeas:util`
 pub(crate) struct ResolvedInput {
     pub(crate) ranges: Vec<SourceRange>,
     /// Current source text; recorded only for requirements and definition inputs.
@@ -45,6 +47,7 @@ pub(crate) struct ResolvedInput {
     pub(crate) node: Option<ResolvedNode>,
 }
 
+// {cite}`habeas:util`
 /// A parsed source file.
 pub(crate) struct ParsedSource {
     /// Canonical path.
@@ -56,20 +59,37 @@ pub(crate) struct ParsedSource {
     pub(crate) outline: Outline,
 }
 
+// {cite}`habeas:util`
 /// Parsed outlines, cached per file for one validation or authoring run.
 #[derive(Default)]
 pub(crate) struct OutlineCache {
     files: Mutex<HashMap<PathBuf, Arc<Result<ParsedSource, String>>>>,
+    /// Content to parse in place of a file's, by project-relative path.
+    overrides: HashMap<String, String>,
 }
 
 impl OutlineCache {
+    // {cite}`habeas:util`
+    /// A cache that parses `overrides` in place of those files' contents.
+    pub(crate) fn with_overrides(overrides: HashMap<String, String>) -> Self {
+        Self {
+            files: Mutex::default(),
+            overrides,
+        }
+    }
+
+    // {impl}`requirements.authoring.outline_tool`
     /// Reads and parses a permitted file, or returns the cached result.
     pub(crate) fn parse(&self, root: &Path, file: &str) -> Arc<Result<ParsedSource, String>> {
         let key = root.join(file);
         if let Some(parsed) = self.files.lock().expect("outline cache lock").get(&key) {
             return parsed.clone();
         }
-        let parsed = Arc::new(read_project_file(root, file).and_then(|(path, source)| {
+        let read = match self.overrides.get(file) {
+            Some(content) => check_project_file(root, file).map(|path| (path, content.clone())),
+            None => read_project_file(root, file),
+        };
+        let parsed = Arc::new(read.and_then(|(path, source)| {
             let redaction = Redaction::of_file(&path, &source);
             let profile = outline::profile_for_path(&path);
             let outline =
@@ -145,6 +165,7 @@ impl ParsedSource {
         }
     }
 
+    // {impl}`requirements.ci.outline_inputs`
     /// A node's current inclusive line range and redacted source text.
     pub(crate) fn node_range(&self, file: &str, index: usize) -> (SourceRange, Vec<String>) {
         let node = &self.outline.nodes[index];
@@ -161,6 +182,7 @@ impl ParsedSource {
 }
 
 impl InputSelector {
+    // {cite}`habeas:util`
     pub(crate) fn from_input(input: &Value) -> Option<Self> {
         let object = input.as_object()?;
         if let Some(item) = object.get("item").and_then(Value::as_str) {
@@ -201,19 +223,15 @@ impl InputSelector {
     }
 
     /// The input as shown to the model: the recorded input plus, for an
-    /// outline input, the node's kind, current line range, and source text.
+    /// outline input, the node's kind and source text, without line numbers.
     // {impl}`requirements.authoring.mandatory_inputs`
+    // {impl}`requirements.authoring.no_line_numbers`
     pub(crate) fn to_model_input(&self, resolved: &ResolvedInput) -> Value {
         let mut input = self.to_input(resolved);
-        if let (Self::Outline { .. }, Some(node), Some(range), Some(object)) = (
-            self,
-            &resolved.node,
-            resolved.ranges.first(),
-            input.as_object_mut(),
-        ) {
+        if let (Self::Outline { .. }, Some(node), Some(object)) =
+            (self, &resolved.node, input.as_object_mut())
+        {
             object.insert("kind".to_owned(), json!(node.kind));
-            object.insert("line_start".to_owned(), json!(range.line_start));
-            object.insert("line_end".to_owned(), json!(range.line_end));
             object.insert("text".to_owned(), json!(resolved.text));
         }
         input
@@ -345,6 +363,7 @@ pub(crate) fn project_relative(root: &Path, file: &str) -> String {
     }
 }
 
+// {cite}`habeas:util`
 fn check_project_file(root: &Path, file: &str) -> Result<PathBuf, String> {
     crate::authoring::access::resolve_evidence_file(root, file).map_err(|error| error.to_string())
 }

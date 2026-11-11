@@ -15,6 +15,7 @@ The requirements are organized by the behavior they describe:
 - [Installation](requirements/install.md)
 - [Project integration](requirements/integration.md)
 - [Project layout](requirements/layout.md)
+- [Refactoring](requirements/refactor.md)
 
 ## Requirements as authoring inputs
 
