@@ -193,15 +193,33 @@ than restate it. The `habeas-requirements` skill MUST be the home of drafting an
 agreeing requirements, directive syntax, the reference procedure, the review
 criteria, and distributed requirements; the `habeas-evidence` skill MUST be the
 home of the authoring workflow, outcomes and FIXME judgments, citation and site
-reviews, and disagreeing assessments; and the `habeas-bootstrap-requirements`
+reviews, and disagreeing assessments; the `habeas-bootstrap-requirements`
 skill MUST be the home of deriving an initial requirement set from existing code;
 and the `habeas-refactor` skill MUST be the home of moving code, tests, and
 requirements between files, chapters, and outline nodes.
-Each skill's description MUST state when to use it in terms of the user's task
-and name the other skills for neighboring tasks, and each skill MUST open with
-its workflow as ordered steps. Material needed only in specialized situations
-MAY live in files the skill references, each with a statement of when to read it.
 :::
+
+::::{req} skill_conventions
+Each bundled skill's description MUST state when to use it in terms of the
+user's task and name the other bundled skills for neighboring tasks, and the
+skill MUST open with its workflow as ordered steps. Material needed only in
+specialized situations MAY live in files the skill references, each with a
+statement of when to read it. Each bundled skill, recognized by its front
+matter, is a site:
+
+:::{sites} skills
+```yaml
+language: markdown
+paths: [assets/skills]
+rule:
+  kind: minus_metadata
+match:
+  - "---\nname: example\n---\n\n# Example\n"
+no_match:
+  - "# Example\n"
+```
+:::
+::::
 
 :::{req} invocation
 `habeas mdbook supports html` MUST succeed, and a support query for another renderer MUST fail. An unknown command or invalid setup option combination MUST fail with a usage message. In particular, `habeas agents` and `habeas setup --install-skills` MUST fail with a usage message.
