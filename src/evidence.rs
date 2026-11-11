@@ -1745,6 +1745,7 @@ fn validate_committed_credentials(root: &Path, errors: &mut Vec<String>) {
     }
 }
 
+// {cite}`habeas:util`
 /// Untracked files in a Git worktree, outside the discovery exclusions, that
 /// contain references discovery would otherwise find; empty outside Git.
 pub(crate) fn untracked_reference_files(root: &Path) -> io::Result<Vec<PathBuf>> {
@@ -1993,6 +1994,17 @@ pub(crate) mod tests {
                 )
             ),
             ["c.comment"]
+        );
+        // A fenced role spanning lines of a string literal is literal too.
+        assert_eq!(
+            names(
+                "src/lib.rs",
+                format!(
+                    "// :::{0}impl}} f.comment\n// Body.\n// :::\nconst S: &str = \"\n:::{0}impl}} f.string\nBody.\n:::\n\";\n",
+                    '{'
+                )
+            ),
+            ["f.comment"]
         );
         // Plain text has no comments: roles count anywhere.
         assert_eq!(

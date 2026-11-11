@@ -212,6 +212,7 @@ enum Token {
     Path,
 }
 
+// {cite}`habeas:util`
 /// Replaces each occurrence of `from` in `text` that is a whole token, or
 /// the prefix of a token beneath it, with `to`.
 fn replace_tokens(text: &str, from: &str, to: &str, token: Token) -> String {

@@ -261,4 +261,44 @@ mod tests {
         let error = dependencies("docs/e.txt").unwrap_err();
         assert!(error.contains("terms.missing"), "{error}");
     }
+
+    // {test}`requirements.references.reference_contexts`
+    // {test}`requirements.definitions.dependencies`
+    #[test]
+    fn term_dependencies_of_outlined_sources_come_only_from_comments() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        fs::create_dir_all(root.join("md")).unwrap();
+        fs::write(root.join("book.toml"), "[book]\nsrc = \"md\"\n").unwrap();
+        fs::write(
+            root.join("md/terms.md"),
+            ":::{definition} unit\n:phrase: unit\nA unit.\n:::\n",
+        )
+        .unwrap();
+        let used = ["{", "term}`terms.unit`"].concat();
+        let missing = ["{", "term}`terms.missing`"].concat();
+        let declarations = crate::evidence::load_definitions(root).unwrap();
+        let outlines = OutlineCache::default();
+        for (file, text) in [
+            ("tool.py", format!("# Uses {used}.\nNAME = \"{missing}\"\n")),
+            (
+                "config.toml",
+                format!("# Uses {used}.\nname = \"{missing}\"\n"),
+            ),
+        ] {
+            fs::write(root.join(file), text).unwrap();
+            let record = json!({"inputs": [{"file": file, "item": ""}]});
+            assert_eq!(
+                dependencies(
+                    root,
+                    &declarations,
+                    &outlines,
+                    record.as_object().unwrap(),
+                    None
+                ),
+                Ok(BTreeSet::from(["terms.unit".to_owned()])),
+                "{file}"
+            );
+        }
+    }
 }
