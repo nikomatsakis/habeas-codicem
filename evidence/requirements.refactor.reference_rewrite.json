@@ -1,7 +1,7 @@
 {
   "requirement": "For a definition-name mapping, `habeas refactor` MUST rewrite each `{impl}`,\n`{test}`, `{cite}`, `{fixme}`, and `{term}` reference that names an old name,\nin the book and in the sources reference discovery considers. For a path or\nnode mapping, it MUST rewrite each `:impl:` or `:test:` anchor that names an\nold file or node. It MUST change nothing else in those files.",
   "determination": true,
-  "rationale": "I found no gaps. The one thing I could not fully confirm is test coverage of node mappings for `:impl:`/`:test:` anchors, which I judged adequate (see the last bullet).\n\n**Obligations**\n1. For a definition-name mapping, rewrite each `{impl}`, `{test}`, `{cite}`, `{fixme}` and `{term}` reference naming an old name, in the book and in the sources reference discovery considers.\n2. For a path or node mapping, rewrite each `:impl:` or `:test:` anchor naming an old file or node.\n3. Change nothing else in those files.\n\n**Implementation**\n- `src/refactor.rs#fn[rewrite_source]` carries the `{impl}` reference.\n  - Inline references: it iterates `crate::reference_roles` and keeps only the Impl, Test, Cite, Term and Fixme kinds. It replaces the name when `Mappings::name` maps it. `Mappings::name` is prefix-aware and applies only to name mappings. `reference_roles` skips protected regions such as code blocks.\n  - Fenced `{impl}`, `{test}`, `{cite}` and `{fixme}` references: it uses `crate::fenced::source_fences` and the `FENCE_ROLE` regex to replace only the name span on the opening-fence line.\n  - Anchors: for Markdown, it walks `crate::definition_blocks` options named `impl` or `test` and rewrites the value via `Mappings::address`. That function handles path and node mappings, with or without a `#selector`. Option-like lines outside a directive's options are therefore left alone.\n  - Edits: it applies them back to front, skips overlapping ones, and changes nothing else.\n- Reach: `States::compute` runs `rewrite_source` over every discovered file plus the definition files. These are the files reference discovery considers and the book. `refactor` writes the results.\n\n**Tests**\n- `src/refactor/tests.rs#fn[sources_rewrite_references_to_names_and_anchors_to_paths]`:\n  - Rust `{impl}` and a fenced `{fixme}` are rewritten.\n  - `{cite}` of the non-matching name `rules.checker` is left alone.\n  - Markdown `:impl:` and `:test:` anchors are rewritten, including a `#selector` form.\n  - `{term}` is rewritten, but a reference in a code block and the declaration name are not.\n  - Option-like lines in body text or code blocks, and `:impl:` in a plain-text file, are not rewritten.\n- `tests/refactor.rs#fn[a_moved_requirement_renames_its_references_and_evidence]`: end to end, including a `{test}` and `{impl}` in source, a `{cite}` in the book, and a snapshot diff showing that only the expected files changed.\n- `tests/refactor.rs#fn[a_moved_file_rewrites_anchors_and_paths]`: a book `:impl:` anchor is rewritten for a path mapping.\n- `tests/refactor.rs#fn[a_moved_term_rewrites_definition_inputs_and_the_texts_using_it]`: `{term}` rewriting.\n- `tests/refactor.rs#fn[a_rename_rewrites_the_hash_of_a_node_whose_doc_comment_names_it]`: a rewrite inside a doc comment.\n- Node-mapping anchors: no dedicated test rewrites an anchor under a node mapping. The anchor code path is the same `Mappings::address` call, and `mappings_cover_names_paths_and_nodes_beneath_them` covers node mapping of addresses. I judged this adequate.",
+  "rationale": "I found no gap. Every obligation maps to code reachable from the one `{impl}` item and to a test that asserts its outcome. The one thin spot is that anchor rewriting under a node mapping is tested only at the `Mappings::address` level, not through `rewrite_source`.\n\n**Implementation.** `src/refactor.rs#fn[rewrite_source]` is the only `{impl}` item. `States::compute` calls it for every source that reference discovery considers (`discovered_files`) plus every definition file. Everything else is reached from it.\n\n**Obligations and their code**\n- **Rewrite `{impl}`, `{test}`, `{cite}`, `{term}` and `{fixme}` references naming an old name.**\n  - Inline references: the loop over `crate::reference_roles` is the same scanner `evidence.rs#fn[file_references]` uses for discovery. It filters to those five kinds and rewrites the name through `Mappings::name`. `Mappings::name` uses `beneath`, so `rules.checker` is not treated as under `rules.check`.\n  - Fenced references (`:::{fixme} name`, also `{impl}`, `{test}` and `{cite}`): the `crate::fenced::source_fences` loop finds them. `FENCE_ROLE` locates the name on the opening line.\n- **Rewrite `:impl:` and `:test:` anchors naming an old file or node.** The `markdown` branch iterates `crate::definition_blocks` options and keeps only `impl` and `test`. It rewrites each value through `Mappings::address`, which applies node mappings first and then path mappings.\n- **Change nothing else.** Edits are byte-range replacements of only the name or anchor value. They are sorted in reverse order and overlapping edits are skipped. Declaration names are not touched. References in code blocks, option-like lines in body text or code blocks, and non-Markdown plain text stay literal.\n\n**Tests, all marked `{test}` for the subject**\n- `src/refactor/tests.rs#fn[sources_rewrite_references_to_names_and_anchors_to_paths]` covers:\n  - Rust inline `{impl}` and a fenced `{fixme}` are rewritten, while `{cite}` on `rules.checker` is not.\n  - Markdown `:impl:` and `:test:` anchors, including a `#node` suffix, and `{term}` are rewritten.\n  - The declaration name, code-block references, and option-like literal lines are untouched.\n  - Plain text outside Markdown has no anchors.\n- `tests/refactor.rs#fn[a_moved_requirement_renames_its_references_and_evidence]` runs end to end. `{impl}`, `{test}` and `{cite}` references are rewritten in `src/config.rs` and `md/notes.md`, and only the expected files differ.\n- `tests/refactor.rs#fn[a_moved_file_rewrites_anchors_and_paths]` covers an end-to-end path-mapped anchor rewrite.\n- `tests/refactor.rs#fn[a_moved_term_rewrites_definition_inputs_and_the_texts_using_it]` covers an end-to-end `{term}` rewrite in the book.\n- `tests/refactor.rs#fn[a_rename_rewrites_the_hash_of_a_node_whose_doc_comment_names_it]` covers a `///` doc-comment `{impl}` rewrite.\n\n**Residual observation.** No test rewrites an anchor under a node mapping through `rewrite_source`. The node branch sits in `Mappings::address`, which `src/refactor/tests.rs#fn[mappings_cover_names_paths_and_nodes_beneath_them]` asserts directly, and `rewrite_source` has no separate node-specific branch. I did not count this as a gap.",
   "references": "e5137a01787b1ee075b567caa9ef88ec19ec5c321eb0fcd5ed6ba832a130d744",
   "inputs": [
     {
@@ -22,7 +22,7 @@
     {
       "file": "src/refactor/tests.rs",
       "item": "fn[sources_rewrite_references_to_names_and_anchors_to_paths]",
-      "hash": "bbe5e9199b3449b9ad173529e0c288c187f352c0cde81f5713fa8ecdf886b48d"
+      "hash": "dc39020835047cfd687afd2e97e803759446b58a44d3164948073da6f95e0e94"
     },
     {
       "file": "src/refactor.rs",
@@ -32,7 +32,7 @@
     {
       "file": "tests/refactor.rs",
       "item": "fn[a_moved_requirement_renames_its_references_and_evidence]",
-      "hash": "06883c08a1a2bc095f37b837bab742b82eb0fc95ad6889d88f3569b32ded6b75"
+      "hash": "74c03b5695339691e95517ca80c08fe8aca91a013d412623f4cab66b233067b3"
     },
     {
       "file": "tests/refactor.rs",
@@ -42,17 +42,12 @@
     {
       "file": "tests/refactor.rs",
       "item": "fn[a_rename_rewrites_the_hash_of_a_node_whose_doc_comment_names_it]",
-      "hash": "a07ede5247e7ab97ebcfe92d3cb98b948155a47a91cdfe4865b36101716f8bd4"
+      "hash": "e517b91c2b94137e7758c2ad97380e551b4707dada7adc86300c4224d79d5171"
     },
     {
       "file": "tests/refactor.rs",
       "item": "fn[a_moved_term_rewrites_definition_inputs_and_the_texts_using_it]",
-      "hash": "af9f665dcc4a2bdf8798ac146484981871ddea77577d37b571f2043e8117955f"
-    },
-    {
-      "file": "src/refactor.rs",
-      "item": "impl[States]/fn[compute]",
-      "hash": "1ae409cd4ce7da9badaa5374cde3de8a2d97fb19dad4fcf021fbe51f1cf2b5a6"
+      "hash": "057ec92923152889a443be084ce18866cd1bee5096ab1c0ff44d2d9696adae58"
     },
     {
       "file": "src/refactor.rs",
@@ -72,18 +67,8 @@
     },
     {
       "file": "src/refactor.rs",
-      "item": "fn[refactor]",
-      "hash": "2919eefcc5ddd52be84daf0cd51ec4cefd0d4cfb5cdecfc4ba708ea145f8b149"
-    },
-    {
-      "file": "src/refactor.rs",
-      "item": "static[FENCE_ROLE]",
-      "hash": "fe7749508e8b0a5008aab30f922e03d68733d991fb95eb1c16745739ab40f2c6"
-    },
-    {
-      "file": "src/lib.rs",
-      "item": "fn[definition_blocks]",
-      "hash": "e361c1ffd094f9c5a4902c580d5610cb53313c43ab77f37b92ec379b2c9c3f10"
+      "item": "impl[States]/fn[compute]",
+      "hash": "1ae409cd4ce7da9badaa5374cde3de8a2d97fb19dad4fcf021fbe51f1cf2b5a6"
     },
     {
       "file": "src/lib.rs",
