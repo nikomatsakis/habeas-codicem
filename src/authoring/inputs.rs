@@ -631,7 +631,7 @@ impl AssessmentSources {
         let line_end = line_end.unwrap_or(count);
         if line_start == 0 || line_end < line_start || line_end > count {
             return Err(io::Error::other(format!(
-                "{file}:{line_start}-{line_end} is not an inclusive range within the file's {count} lines"
+                "{file}:{line_start}-{line_end} is not an inclusive range within the file; read it by selector instead"
             )));
         }
         parsed

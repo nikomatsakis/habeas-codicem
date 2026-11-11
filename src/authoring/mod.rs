@@ -4,6 +4,7 @@ pub(crate) mod access;
 mod batch;
 pub(crate) mod coverage_loss;
 mod inputs;
+mod line_numbers;
 mod pages;
 mod progress;
 mod providers;
@@ -734,6 +735,18 @@ fn shared_blocks() -> [(&'static str, &'static str); 3] {
     ]
 }
 
+/// The judgment rules' guidance on citing source locations, which a
+/// rejection for citing line numbers repeats.
+// {impl}`requirements.authoring.line_numbers.rejection`
+fn location_guidance() -> &'static str {
+    let rules = approved_text("judgment_rules", 0);
+    let start = rules
+        .find("- Give a source location")
+        .expect("location guidance");
+    let rest = &rules[start..];
+    rest.find("\n- ").map_or(rest, |end| &rest[..end])
+}
+
 /// The account of distributed requirements that the site prompt, the
 /// distributed task, and a site review's verifier receive.
 // {impl}`requirements.authoring.habeas_background`
@@ -1235,6 +1248,8 @@ async fn verify(
 // {impl}`requirements.authoring.prompt_parts`
 // {impl}`requirements.authoring.result_pages`
 // {impl}`requirements.authoring.output_limit`
+// {impl}`requirements.authoring.line_numbers.rejection`
+// {impl}`requirements.authoring.line_numbers.resubmission`
 async fn converse<T>(
     provider: &impl CompletionProvider,
     sources: &mut AssessmentSources,
@@ -1251,6 +1266,8 @@ async fn converse<T>(
     let mut pages = pages::ResultPages::default();
     // Whether the one continuation after a cut-off response has been used.
     let mut continued = false;
+    // The one rejection of a rationale citing line numbers.
+    let mut rejection = line_numbers::Rejection::default();
     loop {
         let index = usage.begin_request()?;
         let started = Instant::now();
@@ -1335,9 +1352,49 @@ async fn converse<T>(
                     "{submit} must be invoked exactly once; multiple submissions received"
                 )));
             }
-            let result = parse(&Value::Object(submissions[0].function.arguments.clone()));
-            usage.tool(submit, result.is_err());
-            return result;
+            let arguments = Value::Object(submissions[0].function.arguments.clone());
+            if let Some(rejected) = rejection.resubmitted(&arguments) {
+                let result = parse(&rejected);
+                usage.tool(submit, result.is_err());
+                return result;
+            }
+            let result = parse(&arguments);
+            if result.is_err() {
+                usage.tool(submit, true);
+                return result;
+            }
+            match rejection.decide(submit, &arguments, location_guidance()) {
+                line_numbers::Outcome::Accept => {
+                    usage.tool(submit, false);
+                    return result;
+                }
+                line_numbers::Outcome::Fail(error) => {
+                    usage.tool(submit, true);
+                    return Err(io::Error::other(error));
+                }
+                line_numbers::Outcome::Reject(message) => {
+                    usage.tool(submit, true);
+                    request.chat_history.push(
+                        response
+                            .message()
+                            .ok_or_else(|| io::Error::other("model returned an empty response"))?,
+                    );
+                    let results = calls
+                        .iter()
+                        .map(|call| {
+                            let text = if call.function.name.as_str() == submit {
+                                message.clone()
+                            } else {
+                                "not run: the response also made a submission".to_owned()
+                            };
+                            call.error_result(vec![ToolResultContent::text(text)])
+                        })
+                        .collect();
+                    usage.save()?;
+                    request.chat_history.push(Message::tool_results(results));
+                    continue;
+                }
+            }
         }
         if calls.is_empty() {
             return Err(io::Error::other(format!(
@@ -2150,6 +2207,135 @@ mod tests {
             )
             .with_finish_reason(FinishReason::ToolCalls))
         }
+    }
+
+    /// Submits `first`, then, on each later request, the submission
+    /// `next` makes from the UUID in the conversation's last rejection.
+    struct ResubmittingProvider {
+        first: Value,
+        next: fn(&str) -> Value,
+        requests: RefCell<Vec<String>>,
+    }
+
+    impl CompletionProvider for ResubmittingProvider {
+        // {cite}`habeas:util`
+        async fn complete(&self, request: CompletionRequest) -> io::Result<CompletionResponse> {
+            let history = serde_json::to_string(&request.chat_history).unwrap();
+            let turn = self.requests.borrow().len();
+            self.requests.borrow_mut().push(history.clone());
+            let arguments = if turn == 0 {
+                self.first.clone()
+            } else {
+                let uuid = regex::Regex::new(
+                    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+                )
+                .unwrap()
+                .find_iter(&history)
+                .last()
+                .map(|found| found.as_str().to_owned())
+                .unwrap_or_default();
+                (self.next)(&uuid)
+            };
+            let call = AssistantContent::ToolCall(ToolCall::from_wire(
+                format!("call-{turn}"),
+                ToolFunction::new(ToolName::new("submit_judgment").unwrap(), arguments),
+            ));
+            Ok(CompletionResponse::new(
+                vec![call],
+                Usage::default(),
+                Origin::new("fixture", "fixture", "fixture"),
+                Value::Null,
+            )
+            .with_finish_reason(FinishReason::ToolCalls))
+        }
+    }
+
+    // {test}`requirements.authoring.line_numbers.rejection`
+    // {test}`requirements.authoring.line_numbers.resubmission`
+    // {test}`requirements.authoring.submission`
+    #[tokio::test]
+    async fn a_rationale_citing_line_numbers_is_rejected_once() {
+        let cited = json!({"determination": false, "rationale": "`work` at src/lib.rs:1 fails."});
+        type Next = fn(&str) -> Value;
+        let uuid = regex::Regex::new(r"[0-9a-f]{8}-[0-9a-f]{4}-").unwrap();
+        let cases: [(Next, Option<&str>); 3] = [
+            // Exactly the UUID keeps the rejected submission.
+            (
+                |uuid| json!({"determination": true, "rationale": uuid}),
+                Some("`work` at src/lib.rs:1 fails."),
+            ),
+            // A rationale without line numbers replaces it.
+            (
+                |_| json!({"determination": false, "rationale": "`src/lib.rs#fn[work]` fails."}),
+                Some("`src/lib.rs#fn[work]` fails."),
+            ),
+            // Line numbers again fail the assessment.
+            (
+                |_| json!({"determination": false, "rationale": "Line 1 fails."}),
+                None,
+            ),
+        ];
+        for (next, accepted) in cases {
+            let project = inputs::tests::project();
+            fs::write(project.path().join("src/lib.rs"), "fn work() {}\n").unwrap();
+            let mut sources =
+                AssessmentSources::prepare(project.path(), "requirements.ready").unwrap();
+            let state = tempfile::tempdir().unwrap();
+            let mut usage =
+                UsageLog::start(state.path(), project.path(), &sources.subject_name).unwrap();
+            let provider = ResubmittingProvider {
+                first: cited.clone(),
+                next,
+                requests: RefCell::default(),
+            };
+            let result = assess(&provider, &mut sources, &mut usage).await;
+            let requests = provider.requests.borrow();
+            assert_eq!(requests.len(), 2);
+            // The rejection quotes the citation and repeats the guidance.
+            assert!(requests[1].contains("src/lib.rs:1"), "{}", requests[1]);
+            assert!(
+                requests[1].contains("Give a source location"),
+                "{}",
+                requests[1]
+            );
+            // Both turns are counted in usage.
+            let record = serde_json::to_value(&usage.record).unwrap();
+            assert_eq!(
+                record["requests"].as_array().unwrap().len(),
+                2,
+                "{record:#}"
+            );
+            match accepted {
+                Some(rationale) => {
+                    let (_, evidence) = result.unwrap();
+                    assert_eq!(evidence["rationale"], rationale);
+                    // The UUID is not recorded.
+                    assert!(!uuid.is_match(&evidence.to_string()), "{evidence}");
+                }
+                None => {
+                    let error = result.unwrap_err().to_string();
+                    assert!(error.contains("after a rejection"), "{error}");
+                }
+            }
+        }
+    }
+
+    // A first submission giving no line numbers is accepted at once.
+    // {test}`requirements.authoring.line_numbers.rejection`
+    #[tokio::test]
+    async fn a_rationale_without_line_numbers_is_accepted_at_once() {
+        let project = inputs::tests::project();
+        let mut sources = AssessmentSources::prepare(project.path(), "requirements.ready").unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let mut usage =
+            UsageLog::start(state.path(), project.path(), &sources.subject_name).unwrap();
+        let provider = ResubmittingProvider {
+            first: json!({"determination": true, "rationale": "`src/lib.rs` is fine."}),
+            next: |_| unreachable!(),
+            requests: RefCell::default(),
+        };
+        assess(&provider, &mut sources, &mut usage).await.unwrap();
+        assert_eq!(provider.requests.borrow().len(), 1);
     }
 
     // {test}`requirements.authoring.submission`
@@ -3367,7 +3553,7 @@ no_match:
                 vec![
                     site(false, json!(true), "Not a checker."),
                     site(true, json!(false), "It panics."),
-                    check(true, true, "It panics at line 1."),
+                    check(true, true, "It panics in `src/lib.rs#fn[check_one]`."),
                 ],
                 Judgment::False,
                 true,

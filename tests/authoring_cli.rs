@@ -302,7 +302,7 @@ fn ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free() {
             "submit",
             "submit_judgment",
             json!({
-            "determination":{"FIXME":["example/app#125"]},"rationale":"SECRET_RATIONALE: src/lib.rs:2 documents the gap."}),
+            "determination":{"FIXME":["example/app#125"]},"rationale":"SECRET_RATIONALE: `src/lib.rs#fn[ready]` documents the gap."}),
         )]),
     ]);
     let fixture = Fixture::new(&server.endpoint);
@@ -390,7 +390,7 @@ fn ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free() {
     );
     assert_eq!(
         evidence["rationale"],
-        "SECRET_RATIONALE: src/lib.rs:2 documents the gap."
+        "SECRET_RATIONALE: `src/lib.rs#fn[ready]` documents the gap."
     );
     assert_eq!(evidence["requirement"], REQUIREMENT);
     let inputs = evidence["inputs"].as_array().unwrap();
@@ -762,7 +762,7 @@ fn false_is_a_completed_assessment() {
 #[test]
 fn negative_assessment_records_additional_reads_and_fails_validation() {
     let rationale =
-        "src/lib.rs implements readiness, but extra.txt line 6 shows the needle case is unhandled.";
+        "src/lib.rs implements readiness, but `extra.txt` shows the needle case is unhandled.";
     let server = Server::start(vec![
         reply(vec![call(
             "read",
