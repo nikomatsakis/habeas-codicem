@@ -100,10 +100,22 @@ pub(crate) fn dispatch_paged(
             Ok(delivery) => Ok(delivery),
             Err(listing) => deliver(Ok(listing)),
         }),
-        "list_files" => deliver(list_files(sources, arguments)),
+        "list_files" => deliver(list_files(sources, arguments)).and_then(|delivery| {
+            with_not_listed(sources, arguments, NotListed::Children, delivery)
+        }),
         "outline" => deliver(outline(sources, arguments)),
-        "ripgrep" => deliver(search(sources, arguments)),
-        "ast_grep" => deliver(structural(sources, arguments)),
+        "ripgrep" => deliver(search(sources, arguments)).and_then(|delivery| {
+            let pattern = regex::Regex::new(string(arguments, "pattern")?).ok();
+            with_not_listed(sources, arguments, NotListed::Text(pattern), delivery)
+        }),
+        "ast_grep" => deliver(structural(sources, arguments)).and_then(|delivery| {
+            let rule = arguments
+                .get("language")
+                .and_then(Value::as_str)
+                .zip(arguments.get("rule").and_then(Value::as_object))
+                .and_then(|(language, rule)| StructuralRule::compile(language, rule).ok());
+            with_not_listed(sources, arguments, NotListed::Rule(rule), delivery)
+        }),
         "references" => deliver(references(sources, arguments)),
         "next_page" => check_keys(arguments, &["token"])
             .and_then(|()| pages.next_page(string(arguments, "token")?)),
@@ -119,6 +131,115 @@ pub(crate) fn dispatch_paged(
     .map(|delivery| with_redaction_note(sources, delivery))
     .map_err(super::access::recoverable_os_denial)
     .map_err(super::access::recoverable_outside_request)
+}
+
+/// Which untracked files a result names under `not_listed`.
+enum NotListed {
+    /// The requested directory's entries that would otherwise be listed.
+    Children,
+    /// Files under the path with a line matching the pattern.
+    Text(Option<regex::Regex>),
+    /// Files under the path, of the rule's language, with a match.
+    Rule(Option<StructuralRule>),
+}
+
+/// Adds `not_listed` to a listing or search result: each untracked file
+/// under the requested path that the listing would include, or that has a
+/// match, by its project-relative path and without its contents. Searches
+/// scoped by `referencing` only consider files reference discovery reads,
+/// which excludes untracked ones.
+// {impl}`requirements.authoring.not_listed`
+fn with_not_listed(
+    sources: &AssessmentSources,
+    arguments: &Map<String, Value>,
+    kind: NotListed,
+    mut delivery: ToolDelivery,
+) -> io::Result<ToolDelivery> {
+    // This is the first page; later pages come from next_page.
+    if arguments.contains_key("referencing") {
+        return Ok(delivery);
+    }
+    let requested = optional_path(arguments)?.trim_end_matches('/');
+    let requested = if requested == "." { "" } else { requested };
+    let untracked = super::access::DiscoverySources::load(&sources.root)?.untracked()?;
+    let mut named = BTreeSet::new();
+    for file in untracked {
+        let Ok(relative) = file.strip_prefix(&sources.root) else {
+            continue;
+        };
+        let relative = relative.to_string_lossy().replace('\\', "/");
+        let inside = if requested.is_empty() {
+            Some(relative.as_str())
+        } else {
+            relative
+                .strip_prefix(requested)
+                .and_then(|rest| rest.strip_prefix('/'))
+                .or_else(|| (relative == requested).then_some(""))
+        };
+        let Some(inside) = inside else {
+            continue;
+        };
+        let name = match &kind {
+            NotListed::Children => {
+                let child = inside.split('/').next().unwrap_or_default();
+                if child.is_empty() {
+                    continue;
+                }
+                if requested.is_empty() {
+                    child.to_owned()
+                } else {
+                    format!("{requested}/{child}")
+                }
+            }
+            NotListed::Text(pattern) => {
+                let Some(pattern) = pattern else { continue };
+                let Ok(text) = fs::read_to_string(&file) else {
+                    continue;
+                };
+                if !text.lines().any(|line| pattern.is_match(line)) {
+                    continue;
+                }
+                relative.clone()
+            }
+            NotListed::Rule(rule) => {
+                let Some(rule) = rule else { continue };
+                if !rule.language().covers(&file) {
+                    continue;
+                }
+                let Ok(text) = fs::read_to_string(&file) else {
+                    continue;
+                };
+                if rule.matches(&text).is_empty() {
+                    continue;
+                }
+                relative.clone()
+            }
+        };
+        named.insert(name);
+    }
+    // A directory listing already shows a child it lists.
+    let listed: BTreeSet<String> = match delivery.result.get("entries").unwrap_or(&delivery.result)
+    {
+        Value::Array(entries) => entries
+            .iter()
+            .filter_map(|entry| entry.get("path").and_then(Value::as_str))
+            .map(str::to_owned)
+            .collect(),
+        _ => BTreeSet::new(),
+    };
+    let not_listed: Vec<Value> = named
+        .into_iter()
+        .filter(|name| !listed.contains(name))
+        .map(|path| json!({"path": path, "reason": "untracked"}))
+        .collect();
+    if not_listed.is_empty() {
+        return Ok(delivery);
+    }
+    if !delivery.result.is_object() {
+        delivery.result = json!({"entries": delivery.result});
+    }
+    delivery.result["not_listed"] = Value::Array(not_listed);
+    Ok(delivery)
 }
 
 /// What a result containing redacted text tells the model, since tool
@@ -1149,6 +1270,8 @@ mod tests {
         assert!(outline.inputs.is_empty());
         let items = outline
             .result
+            .get("entries")
+            .unwrap_or(&outline.result)
             .as_array()
             .unwrap()
             .iter()
@@ -1896,6 +2019,8 @@ mod tests {
         assert_eq!(
             listing
                 .result
+                .get("entries")
+                .unwrap_or(&listing.result)
                 .as_array()
                 .unwrap()
                 .iter()
@@ -2003,6 +2128,8 @@ mod tests {
         let listing = dispatch(&sources, "list_files", &json!({})).unwrap();
         let paths = listing
             .result
+            .get("entries")
+            .unwrap_or(&listing.result)
             .as_array()
             .unwrap()
             .iter()
@@ -2046,6 +2173,8 @@ mod tests {
         let listing = dispatch(&sources, "list_files", &json!({})).unwrap();
         let paths = listing
             .result
+            .get("entries")
+            .unwrap_or(&listing.result)
             .as_array()
             .unwrap()
             .iter()
@@ -2133,6 +2262,8 @@ mod tests {
         assert!(
             listing
                 .result
+                .get("entries")
+                .unwrap_or(&listing.result)
                 .as_array()
                 .unwrap()
                 .iter()
@@ -2165,6 +2296,8 @@ mod tests {
         assert!(
             !listing
                 .result
+                .get("entries")
+                .unwrap_or(&listing.result)
                 .as_array()
                 .unwrap()
                 .iter()
@@ -3332,6 +3465,74 @@ mod tests {
                 assert_eq!(recorded[0]["item"], "fn[work]", "{arguments}");
             }
         }
+    }
+
+    // {test}`requirements.authoring.not_listed`
+    #[test]
+    fn listings_and_searches_name_untracked_files_without_their_contents() {
+        let root = project();
+        fs::write(root.path().join("src/lib.rs"), "fn tracked() {}\n").unwrap();
+        fs::write(
+            root.path().join("habeas.toml"),
+            "version = 1\n[evidence]\ndisallow = ['secret.rs']\n",
+        )
+        .unwrap();
+        git(root.path(), &["init", "--quiet"]);
+        git(root.path(), &["add", "."]);
+        fs::write(root.path().join("untracked.rs"), "fn needle() {}\n").unwrap();
+        fs::create_dir(root.path().join("drafts")).unwrap();
+        fs::write(root.path().join("drafts/plan.txt"), "a needle here\n").unwrap();
+        fs::write(root.path().join("secret.rs"), "fn needle() {}\n").unwrap();
+        fs::create_dir_all(root.path().join("evidence")).unwrap();
+        fs::write(root.path().join("evidence/note.txt"), "needle\n").unwrap();
+        let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        let named = |result: &Value| {
+            result["not_listed"]
+                .as_array()
+                .map(|entries| {
+                    entries
+                        .iter()
+                        .map(|entry| {
+                            assert_eq!(entry["reason"], "untracked");
+                            entry["path"].as_str().unwrap().to_owned()
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
+        };
+        let listing = dispatch(&sources, "list_files", &json!({})).unwrap();
+        assert_eq!(named(&listing.result), ["drafts", "untracked.rs"]);
+        assert!(
+            listing.result["entries"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|entry| entry["path"] == "src")
+        );
+        let search = dispatch(&sources, "ripgrep", &json!({"pattern": "needle"})).unwrap();
+        assert_eq!(named(&search.result), ["drafts/plan.txt", "untracked.rs"]);
+        let text = search.result.to_string();
+        assert!(
+            !text.contains("a needle here") && !text.contains("fn needle"),
+            "{text}"
+        );
+        assert!(search.inputs.is_empty());
+        let rust = dispatch(
+            &sources,
+            "ast_grep",
+            &json!({"language": "rust", "rule": {"rule": {"pattern": "fn needle() {}"}}}),
+        )
+        .unwrap();
+        assert_eq!(named(&rust.result), ["untracked.rs"]);
+        // Nothing untracked matches: no not_listed.
+        let none = dispatch(&sources, "ripgrep", &json!({"pattern": "tracked\\(\\)"})).unwrap();
+        assert!(none.result.get("not_listed").is_none(), "{}", none.result);
+        let inside = dispatch(&sources, "list_files", &json!({"path": "src"})).unwrap();
+        assert!(
+            inside.result.get("not_listed").is_none(),
+            "{}",
+            inside.result
+        );
     }
 
     // {test}`requirements.authoring.file_discovery`
