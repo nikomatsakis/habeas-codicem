@@ -57,6 +57,19 @@ struct RequestUsage {
     outcome: String,
     elapsed_ms: u128,
     tokens: TokenCounts,
+    /// A failed request's HTTP status, provider error code, and whether it
+    /// was retried; never its message.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    failure: Option<RequestFailure>,
+}
+
+/// What usage records of a failed request.
+// {impl}`requirements.authoring.usage_requests.failures`
+#[derive(Serialize)]
+struct RequestFailure {
+    http_status: Option<u16>,
+    error_code: Option<String>,
+    retried: bool,
 }
 
 #[derive(Default, Serialize)]
@@ -190,6 +203,7 @@ impl UsageLog {
             outcome: "unfinished".into(),
             elapsed_ms: 0,
             tokens: TokenCounts::default(),
+            failure: None,
         });
         self.record.request_count = self.record.requests.len();
         self.record.tokens = TokenCounts::sum(&self.record.requests);
@@ -205,11 +219,21 @@ impl UsageLog {
         self.first_request_finished = Some(Box::new(finished));
     }
 
+    /// Records that a failed request is being retried.
+    // {impl}`requirements.authoring.usage_requests.failures`
+    pub(super) fn retried(&mut self, index: usize) -> io::Result<()> {
+        if let Some(failure) = &mut self.record.requests[index].failure {
+            failure.retried = true;
+        }
+        self.save()
+    }
+
     pub(super) fn end_request(
         &mut self,
         index: usize,
         elapsed: u128,
         usage: Option<&Usage>,
+        failure: Option<(Option<u16>, Option<String>)>,
     ) -> io::Result<()> {
         let tokens = usage.map(TokenCounts::from_usage).unwrap_or_default();
         if usage.is_some() {
@@ -228,6 +252,11 @@ impl UsageLog {
             .into(),
             elapsed_ms: elapsed,
             tokens,
+            failure: failure.map(|(http_status, error_code)| RequestFailure {
+                http_status,
+                error_code,
+                retried: false,
+            }),
         };
         self.record.tokens = TokenCounts::sum(&self.record.requests);
         self.active_request = None;
@@ -382,10 +411,11 @@ mod tests {
         });
         let first = log.begin_request().unwrap();
         assert_eq!(calls.load(Ordering::Relaxed), 0);
-        log.end_request(first, 1, None).unwrap();
+        log.end_request(first, 1, None, Some((None, None))).unwrap();
         assert_eq!(calls.load(Ordering::Relaxed), 1);
         let second = log.begin_request().unwrap();
-        log.end_request(second, 1, Some(&Usage::new())).unwrap();
+        log.end_request(second, 1, Some(&Usage::new()), None)
+            .unwrap();
         assert_eq!(calls.load(Ordering::Relaxed), 1);
     }
 
@@ -423,7 +453,8 @@ mod tests {
         let submitted = persisted(&log);
         assert_eq!(submitted["inputs"][0]["submitted_in_request"], index);
         assert!(submitted["inputs"][0]["sent_in_request"].is_null());
-        log.end_request(index, 7, Some(&Usage::new())).unwrap();
+        log.end_request(index, 7, Some(&Usage::new()), None)
+            .unwrap();
         log.record.determination = Some("FIXME".into());
         log.record.evidence_written = true;
         log.finish("completed").unwrap();
@@ -464,12 +495,12 @@ mod tests {
             .cache_creation_input_tokens(10)
             .reasoning_tokens(5);
         let first = log.begin_request().unwrap();
-        log.end_request(first, 3, Some(&measured)).unwrap();
+        log.end_request(first, 3, Some(&measured), None).unwrap();
         let second = log.begin_request().unwrap();
         let in_flight = persisted(&log);
         assert_eq!(in_flight["tokens"]["complete"], false);
         assert_eq!(in_flight["tokens"]["input"], 100);
-        log.end_request(second, 4, Some(&measured)).unwrap();
+        log.end_request(second, 4, Some(&measured), None).unwrap();
         let complete = persisted(&log);
         assert_eq!(complete["tokens"]["input"], 200);
         assert_eq!(complete["tokens"]["output"], 40);
@@ -478,7 +509,7 @@ mod tests {
         assert_eq!(complete["tokens"]["reasoning"], 10);
         assert_eq!(complete["tokens"]["complete"], true);
         let third = log.begin_request().unwrap();
-        log.end_request(third, 2, None).unwrap();
+        log.end_request(third, 2, None, Some((None, None))).unwrap();
         log.finish("failed").unwrap();
         let failed = persisted(&log);
         assert_eq!(failed["request_count"], 3);
@@ -502,13 +533,15 @@ mod tests {
             first,
             2,
             Some(&Usage::new().input_tokens(10).output_tokens(3)),
+            None,
         )
         .unwrap();
         let known = persisted(&log);
         assert_eq!(known["tokens"]["complete"], true);
         assert!(known["tokens"]["cached_input"].is_null());
         let failed = log.begin_request().unwrap();
-        log.end_request(failed, 1, None).unwrap();
+        log.end_request(failed, 1, None, Some((None, None)))
+            .unwrap();
         let partial = persisted(&log);
         assert_eq!(partial["tokens"]["input"], 10);
         assert_eq!(partial["tokens"]["output"], 3);
@@ -524,6 +557,7 @@ mod tests {
                 first,
                 1,
                 Some(&Usage::new().input_tokens(10).output_tokens(3)),
+                None,
             )
             .unwrap();
         let second = optional.begin_request().unwrap();
@@ -537,6 +571,7 @@ mod tests {
                         .output_tokens(2)
                         .cached_input_tokens(0),
                 ),
+                None,
             )
             .unwrap();
         let mixed = persisted(&optional);
@@ -562,6 +597,7 @@ mod tests {
             first,
             2,
             Some(&Usage::new().input_tokens(2).output_tokens(3)),
+            None,
         )
         .unwrap();
         let second = log.begin_request().unwrap();
@@ -597,6 +633,7 @@ mod tests {
             request,
             20,
             Some(&Usage::new().input_tokens(1).output_tokens(1)),
+            None,
         )
         .unwrap();
         let during = persisted(&log);
@@ -654,6 +691,7 @@ mod tests {
 
     // {test}`requirements.authoring.usage_inputs`
     // {test}`requirements.authoring.usage_requests`
+    // {test}`requirements.authoring.usage_requests.failures`
     #[test]
     fn failed_submission_can_be_confirmed_on_a_later_attempt() {
         let state = tempfile::tempdir().unwrap();
@@ -664,10 +702,28 @@ mod tests {
             &[json!({"file": "source", "text": ["source content"]})],
         );
         let first = log.begin_request().unwrap();
-        log.end_request(first, 2, None).unwrap();
+        log.end_request(
+            first,
+            2,
+            None,
+            Some((Some(429), Some("ThrottlingException".to_owned()))),
+        )
+        .unwrap();
         assert!(persisted(&log)["inputs"][0]["sent_in_request"].is_null());
+        // A failed request records its status, code, and retry, but no
+        // message text.
+        assert_eq!(
+            persisted(&log)["requests"][first]["failure"],
+            json!({"http_status": 429, "error_code": "ThrottlingException", "retried": false})
+        );
+        log.retried(first).unwrap();
+        assert_eq!(
+            persisted(&log)["requests"][first]["failure"]["retried"],
+            true
+        );
         let retry = log.begin_request().unwrap();
-        log.end_request(retry, 3, Some(&Usage::new())).unwrap();
+        log.end_request(retry, 3, Some(&Usage::new()), None)
+            .unwrap();
         let value = persisted(&log);
         assert_eq!(value["inputs"][0]["submitted_in_request"], first);
         assert_eq!(value["inputs"][0]["sent_in_request"], retry);

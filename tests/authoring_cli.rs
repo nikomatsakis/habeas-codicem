@@ -2601,6 +2601,7 @@ fn the_refactor_skill_moves_first_then_updates_evidence_with_habeas_refactor() {
 }
 
 // {test}`requirements.cli.skill_structure`
+// {test}`requirements.cli.skill_conventions`
 #[test]
 fn bundled_skills_open_with_a_workflow_and_name_their_neighbors() {
     let skills = [

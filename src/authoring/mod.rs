@@ -1285,20 +1285,23 @@ async fn converse<T>(
                     "provider request had no response within ten minutes",
                 )),
             };
+        let failure = response.as_ref().err().map(providers::failure_codes);
         usage.end_request(
             index,
             started.elapsed().as_millis(),
             response.as_ref().ok().map(|r| &r.usage),
+            failure,
         )?;
         let response = match response {
             Ok(response) => response,
-            Err(error) => {
-                if let Some(delay) = backoff.next_delay(&error) {
+            Err(error) => match backoff.retry(error, Instant::now()) {
+                providers::Retry::Wait(delay) => {
+                    usage.retried(index)?;
                     tokio::time::sleep(delay).await;
                     continue;
                 }
-                return Err(error);
-            }
+                providers::Retry::Stop(error) => return Err(error),
+            },
         };
         backoff = providers::ProviderBackoff::default();
         sources.record_inputs(&pending);
