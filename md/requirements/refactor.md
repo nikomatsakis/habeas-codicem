@@ -56,6 +56,8 @@ old file or node. It MUST change nothing else in those files.
 ## Verifying that only addresses changed
 
 :::{definition} mapped_back
+:phrase: mapped-back
+
 The *mapped-back* form of current text or a current address is the text or
 address with each new side of the mappings replaced by its old side.
 :::
