@@ -148,6 +148,33 @@ requirement for a cross-cutting convention instead of marking each of its sites
 with `{impl}`.
 :::
 
+:::{req} refactor_skill
+Habeas MUST bundle a `habeas-refactor` skill whose description tells agents to
+use it when a change moves code, tests, or requirements to another file,
+chapter, or outline node, including splitting or merging modules or chapters,
+so that evidence whose content is unchanged is not invalidated.
+:::
+
+:::{req} refactor_skill.workflow
+The `habeas-refactor` skill MUST direct agents to make the move with their own
+edits, keeping it separate from any change to the moved code or text; to run
+`habeas refactor --dry-run` under {cite}`requirements.refactor.dry_run` with a
+mapping for every moved file, node, and definition name under
+{cite}`requirements.refactor.mappings`; to review its report, including
+records it would leave unchanged and the rationale spans it lists under
+{cite}`requirements.refactor.rationale.untouched`; to run it without
+`--dry-run`; to confirm with `habeas status` that only the reported records
+are stale; and to commit the move and evidence update before changing
+behavior, then reassess stale records with `habeas author` under the
+habeas-evidence skill.
+:::
+
+:::{req} refactor_skill.limits
+The `habeas-refactor` skill MUST tell agents not to edit evidence files by hand
+to follow a move, and that renaming a function or editing moved text is not a
+move and needs reassessment.
+:::
+
 :::{req} skill_structure
 :impl: assets/skills/habeas-requirements/SKILL.md
 :impl: assets/skills/habeas-requirements/references/distributed-requirements.md
@@ -163,7 +190,9 @@ agreeing requirements, directive syntax, the reference procedure, the review
 criteria, and distributed requirements; the `habeas-evidence` skill MUST be the
 home of the authoring workflow, outcomes and FIXME judgments, citation and site
 reviews, and disagreeing assessments; and the `habeas-bootstrap-requirements`
-skill MUST be the home of deriving an initial requirement set from existing code.
+skill MUST be the home of deriving an initial requirement set from existing code;
+and the `habeas-refactor` skill MUST be the home of moving code, tests, and
+requirements between files, chapters, and outline nodes.
 Each skill's description MUST state when to use it in terms of the user's task
 and name the other skills for neighboring tasks, and each skill MUST open with
 its workflow as ordered steps. Material needed only in specialized situations

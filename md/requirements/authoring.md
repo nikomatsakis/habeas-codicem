@@ -301,6 +301,12 @@ assessments judge by the same rules:
   itself a gap.
 - Explain your judgment in a Markdown rationale with source locations, including
   any acknowledged gaps.
+- Give a source location as its file and outline selector, the address the
+  habeas and outline tools use, in backticks: `src/config.rs#fn[load]`, or
+  `src/config.rs` for a whole file. Name requirements, examples, and
+  definitions by full name in backticks. Name functions, types, and tests in
+  backticks exactly as they are written. Do not give line numbers: they change
+  whenever nearby code changes, while a selector stays correct.
 ```
 :::
 
@@ -381,8 +387,10 @@ review's `applies`; a submission with `applies` false and a determination other
 than `true` MUST be invalid. It MUST use this prompt, replacing
 `{{requirement_name}}`, `{{site_file}}`, `{{site_selector}}`, `{{matches}}` (a
 JSON array giving, for each query match at the site, the query's kind, `sites`
-or `violations`, its name, and the match's line range, and for a violation
-match its matched source text),
+or `violations`, its name, and the selector, under
+{cite}`requirements.references.outline_selectors`, of the innermost outline node
+containing the match, but no line numbers, and for a violation match its
+matched source text),
 `{{habeas_background}}` under {cite}`requirements.authoring.habeas_background`,
 `{{distributed_background}}` under
 {cite}`requirements.authoring.habeas_background`, `{{judgment_rules}}` under
@@ -536,6 +544,17 @@ The model receives nine tools: `habeas`, `list_files`, `outline`, `ripgrep`, `as
 The following notation defines their arguments and results; names in uppercase
 are data types, and optional fields show their defaults.
 
+The tools locate code by file and outline selector, the form rationales cite
+under {cite}`requirements.authoring.judgment_rules`.
+
+:::{req} no_line_numbers
+No prompt, tool result, or tool error the harness gives the model MUST state a
+line number or line range of a project source, except within source text it
+quotes and where a tool error repeats a line number the model supplied. The
+harness MUST identify a source location by file and outline selector under
+{cite}`requirements.references.outline_selectors` instead.
+:::
+
 ### Request evidence inputs: `habeas`
 
 :::{req} source_tools
@@ -570,9 +589,9 @@ sources by outline selector and structural hash, never by line number. Request
 line numbers MUST be one-based and inclusive, and omitting `line_end` MUST read
 through EOF. A line-range request MUST be resolved to the innermost outline
 nodes covering the requested lines, which are `line` nodes in a file using the
-plain-text profile; the result MUST show the model each node's selector, current
-line range, and source text, and the harness MUST record those nodes as outline
-inputs. The model-facing tool description MUST include the argument conventions
+plain-text profile; the result MUST show the model each node's selector and
+source text, without line numbers, and the harness MUST record those nodes as
+outline inputs. The model-facing tool description MUST include the argument conventions
 from the cited requirements, including outline selector syntax, definition
 selections, and full definition names, with a short request example for each form.
 
@@ -695,17 +714,15 @@ OutlineEntry {
     item: String,
     kind: String,
     name: String?,
-    line_start: Integer,
-    line_end: Integer,
     children: Array<OutlineEntry>,
 }
 ```
 
 The tool MUST return the outline of a permitted file in a supported language
 under {cite}`requirements.references.outlines`, with each node's selector under
-{cite}`requirements.references.outline_selectors`, its kind, its name when it is
-named, and its current inclusive line range, nested by outline ancestry. Results
-MUST contain no source text and MUST NOT become evidence inputs; the model reads
+{cite}`requirements.references.outline_selectors`, its kind, and its name when it
+is named, nested by outline ancestry and in source order. Results MUST contain
+no source text or line numbers and MUST NOT become evidence inputs; the model reads
 the nodes it relies on with the `habeas` tool. For a file using the plain-text
 profile, the outline lists its `line` nodes. Explicitly requesting an excluded
 file MUST be handled as a denial under {cite}`requirements.authoring.read_denial`.
@@ -732,9 +749,7 @@ SearchMatch {
     file: String,
     item: String,        // selector of the innermost outline node
     kind: String,
-    line_start: Integer, // the node's current lines
-    line_end: Integer,
-    lines: Array<{ line: Integer, text: String }>,
+    lines: Array<{ text: String, matched: Boolean }>,
 }
 ```
 
@@ -753,9 +768,12 @@ boundaries, and overlapping windows in the same file MUST be merged. The result
 MUST give one entry for each innermost outline node containing a match, where a
 match in a comment belongs to the node the comment belongs to under
 {cite}`requirements.references.outline_comments`: the node's file, selector
-under {cite}`requirements.references.outline_selectors`, kind, and current line
-range, and its matching and context lines with their line numbers, redacted
-under {cite}`requirements.authoring.redaction`. Search results MUST NOT become
+under {cite}`requirements.references.outline_selectors`, kind, and its matching
+and context lines in source order, each marked as matching or not and redacted
+under {cite}`requirements.authoring.redaction`. Results MUST NOT give line
+numbers; the model locates and cites code by selector. Separate windows within
+one node MUST be distinguishable, such as by an elision line that is not
+marked as matching. Search results MUST NOT become
 evidence inputs and MUST NOT include definitions; the model-facing description
 MUST tell the model to read with the `habeas` tool any node whose code its
 conclusion relies on. Setting `context` to zero MUST return only matching lines.
@@ -855,7 +873,6 @@ ReferenceSite {
     name: String,
     role: "impl" | "cite" | "test",
     file: String,
-    line: Integer?,
     item: String?,
 }
 ```
@@ -867,11 +884,12 @@ order, with empty `sites`. With `selection`, it MUST return the selected definit
 in full-name order and one flattened `sites` array containing every valid
 `{impl}`, `{cite}`, and `{test}` reference to any match under
 {cite}`requirements.references.discovery`, each naming the definition it
-references, ordered by name, file, and line. An anchor under
-{cite}`requirements.references.anchors` MUST be reported as a site for its
-anchored file without a line. A site in a supported language MUST give the
-selector of its smallest enclosing outline node under
-{cite}`requirements.references.outline_comments`. Only sources reference discovery considers under
+references, ordered by name, file, and position in the file, without line
+numbers. An anchor under {cite}`requirements.references.anchors` MUST be
+reported as a site for its anchored file, with the anchored node's selector as
+`item` when it names one and no `item` when it names the whole file. Every
+other site MUST give as `item` the selector of its smallest enclosing outline
+node under {cite}`requirements.references.outline_comments`. Only sources reference discovery considers under
 {cite}`requirements.references.discovery` MUST contribute sites. If reading such a
 source fails, the tool MUST return an explanatory tool error naming the source.
 An invalid selection or one matching no definition MUST return an explanatory tool
@@ -1016,13 +1034,45 @@ The harness MUST check the complete model response for multiple submissions
 before accepting one. Invalid submission arguments MUST also fail the assessment.
 A valid single submission MUST finish the assessment; there is no submission
 repair or resubmission loop, except the one continuation after a response cut
-off at its output limit under {cite}`requirements.authoring.output_limit`. An assessment that fails before accepting a valid
+off at its output limit under {cite}`requirements.authoring.output_limit` and
+the one resubmission after a rejection under
+{cite}`requirements.authoring.line_numbers.rejection`. An assessment that fails before accepting a valid
 judgment MUST emit no evidence JSON to stdout.
 :::
 
 ## Initial prompt
 
 ### Mandatory inputs
+
+:::{req} line_numbers.detection
+A rationale MUST be treated as citing line numbers when it contains a file path
+followed by `:` and a digit, the word `line` or `lines` in any case followed by
+a number, or a parenthesized number range such as `(12–30)` or `(12-30)`.
+:::
+
+:::{req} line_numbers.rejection
+When the only submission in a response under
+{cite}`requirements.authoring.submission`, or a `submit_verification` call under
+{cite}`requirements.authoring.verifier_prompt`, is otherwise valid but its
+rationale cites line numbers under
+{cite}`requirements.authoring.line_numbers.detection`, and it is the
+assessment's first such submission, the harness MUST reject it instead of
+accepting it and continue the conversation. The tool result MUST quote the
+matched text, repeat the location guidance of
+{cite}`requirements.authoring.judgment_rules`, and give a fresh random UUID,
+saying the model may submit once more, either without line numbers or with
+`rationale` set to exactly that UUID to keep the rejected submission as it was.
+A rejection MUST be counted in usage like any other turn.
+:::
+
+:::{req} line_numbers.resubmission
+After a rejection under {cite}`requirements.authoring.line_numbers.rejection`,
+a submission whose `rationale` is exactly the UUID that rejection gave MUST
+accept the rejected submission unchanged, ignoring the new submission's other
+fields. Any other rationale that cites line numbers MUST fail the assessment, so
+an assessment rejects at most one submission. The UUID MUST NOT be recorded in
+evidence.
+:::
 
 :::{req} mandatory_inputs
 The harness MUST construct each assessment's mandatory input set by combining
@@ -1774,8 +1824,8 @@ requirement, both functions, and the required definition as evidence inputs.
 :::{example} additional_read
 The model calls `list_files` to find a directory, then `ripgrep` to find matching
 lines in a Rust file. The listing creates no evidence input; the search returns
-the selector and line range of the innermost Rust item containing each match,
-with the matching and context lines, and creates no evidence input. An `outline` request
+the selector of the innermost Rust item containing each match, with the
+matching and context lines but no line numbers, and creates no evidence input. An `outline` request
 for that file lists its items without content and creates no evidence input. A
 `habeas` request with the file and one item's selector returns and records that
 item, along with any required terminology. A line-range request omitting

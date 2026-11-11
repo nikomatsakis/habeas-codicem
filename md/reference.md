@@ -172,7 +172,9 @@ those lines, and those nodes are recorded as outline inputs. Searches only locat
 code: each ripgrep or ast-grep match is returned as the innermost outline node
 containing it with the matching lines and their context, and the model reads with
 `habeas` any node it relies on. Searches, listings, outlines, and reference
-lookups are not recorded as evidence.
+lookups are not recorded as evidence. No tool gives the model line numbers:
+every location it sees is a file and outline selector, which is also how its
+rationale cites code. {cite}`requirements.authoring.no_line_numbers`
 When authoring replaces a record and an item the old record read is no longer
 covered, Habeas runs a coverage-loss review: an independent conversation that
 decides, for each requirement or example whose old record read the item, whether
@@ -741,6 +743,34 @@ Profile details:
 - TOML and YAML: `#` comments are not hashed. Quoted keys keep their quotes in names. In YAML, a comment before a key belongs to that key, even though the grammar places it at the end of the previous key's node; in TOML, a comment after a table's last pair stays in that table.
 
 Grammar versions are pinned exactly in `Cargo.toml`. Upgrading a grammar or changing a profile can change selectors and hashes, so it is a deliberate change. {cite}`requirements.references.outlines`
+
+## Moving code and requirements
+
+Moving a function to another file or a requirement to another chapter changes
+addresses that evidence records without changing what was reviewed. Make the
+move with ordinary edits, then tell Habeas what moved:
+
+```sh
+habeas refactor --dry-run \
+  --map 'src/config.rs#fn[load]=src/config/load.rs#fn[load]' \
+  --map requirements.cli.check=requirements.core.check
+```
+
+A mapping names a file or directory, a `<file>#<selector>` node, or a definition
+name, which also covers the names beneath it. For a definition name, Habeas
+rewrites the `{impl}`, `{test}`, `{cite}`, `{fixme}`, and `{term}` references to
+it. It then rewrites the evidence that read the moved items, but only where the
+content is unchanged: the moved node's structural hash and the recorded
+definition text must match once the mapping is undone. A record that fails any
+check is left as it is and reported, and stays stale until `habeas author`
+reassesses it. Rationales that name a moved item in backticks, as
+`` `src/config.rs#fn[load]` `` or a full definition name, are updated too;
+assessments are asked to cite locations that way rather than by line number.
+Run without `--dry-run` to apply the changes. Moving and editing the same item
+in one step leaves its evidence stale, so commit the move first.
+{cite}`requirements.refactor.command` {cite}`requirements.refactor.mappings`
+{cite}`requirements.refactor.reference_rewrite` {cite}`requirements.refactor.whole_record`
+{cite}`requirements.refactor.rationale.addresses` {cite}`requirements.authoring.line_numbers.rejection`
 
 ## Checking and viewing
 
