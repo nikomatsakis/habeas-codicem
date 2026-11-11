@@ -57,6 +57,30 @@ The enabled Habeas Symposium plugin MUST request a global Cargo installation of 
 For an enabled Habeas plugin, a supported agent session started within a Cargo and mdBook project whose manifest lists `habeas` under `[dev-dependencies]`, as {cite}`requirements.cli.setup` adds it, MUST receive a Symposium `SessionStart` hook. The hook MUST check whether the configuration and files required by `requirements.cli.setup` are present and compatible. If not, it MUST provide nonblocking agent context saying that Habeas Codicem is not fully configured and suggesting `habeas setup`. If setup is complete or no applicable project is found, it MUST provide no setup advisory. The hook MUST NOT modify project files or run setup itself.
 :::
 
+:::{req} symposium_skill_hook
+For an enabled Habeas plugin, a supported agent session started within a Cargo and mdBook project whose manifest lists `habeas` under `[dev-dependencies]`, as {cite}`requirements.cli.setup` adds it, MUST receive nonblocking agent context from the `SessionStart` hook of {cite}`requirements.integration.symposium_setup_hook`. That context MUST contain exactly one sentence that points to the skill. The sentence says the project uses Habeas and tells the agent to load the `habeas` skill of {cite}`requirements.cli.overview_skill` before starting any work in the project.
+:::
+
+:::{example} symposium_skill_hook.configured
+In a project where `habeas setup` has completed, the whole session-start agent context is one sentence such as "This project tracks requirements with Habeas; load the `habeas` skill before starting any work." {test}`requirements.integration.symposium_skill_hook`
+:::
+
+:::{req} symposium_skill_hook.setup_state
+When the setup advisory of {cite}`requirements.integration.symposium_setup_hook` also applies, the hook MUST provide the sentence of {cite}`requirements.integration.symposium_skill_hook` and the advisory together in one agent context, with the sentence first.
+:::
+
+:::{example} symposium_skill_hook.incomplete_setup
+In a project that lists `habeas` under `[dev-dependencies]` but has no `habeas.css` in its book source directory, the agent context starts with the skill sentence, followed by the advisory saying Habeas Codicem is not fully configured and suggesting `habeas setup`. {test}`requirements.integration.symposium_skill_hook.setup_state`
+:::
+
+:::{req} symposium_skill_hook.not_applicable
+When a session starts outside every Cargo and mdBook project, or within one whose manifest does not list `habeas` under `[dev-dependencies]`, the hook MUST provide no agent context.
+:::
+
+:::{example} symposium_skill_hook.runtime_dependency_only
+A Cargo and mdBook project that lists `habeas` only under `[dependencies]` gets no session-start agent context, neither the skill sentence nor a setup advisory. {test}`requirements.integration.symposium_skill_hook.not_applicable`
+:::
+
 :::{req} ci
 :impl: .github/workflows/ci.yml#pair[jobs]
 A GitHub Actions CI workflow MUST run, for pull requests and pushes to `main`, these checks: `cargo test --locked --workspace`, `mdbook test`, the autofix controller tests with `node --test .github/scripts/autofix.test.mjs`, and, in a separate job, the Symposium session-start hook smoke test `tests/symposium_hook_smoke.py`. It MUST also build the book, and on a push to `main`, only after every check job passes, it MUST deploy the generated `book/` directory to GitHub Pages. The book MUST set `output.html.site-url` to `/habeas-codicem/` for project-site hosting.
