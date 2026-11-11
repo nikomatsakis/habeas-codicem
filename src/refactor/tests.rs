@@ -103,6 +103,7 @@ fn mapped_back_text_replaces_whole_new_names_and_paths() {
     assert_eq!(map.text_back("`src/d.rs#fn[f]`"), "`src/c.rs#fn[f]`");
 }
 
+// {test}`requirements.references.reference_contexts`
 // {test}`requirements.refactor.reference_rewrite`
 #[test]
 fn sources_rewrite_references_to_names_and_anchors_to_paths() {
@@ -145,6 +146,10 @@ fn sources_rewrite_references_to_names_and_anchors_to_paths() {
     );
     let (rewritten, edits) = rewrite_source(&map, Path::new("md/rules.md"), literal);
     assert_eq!((rewritten.as_str(), edits), (literal, 0));
+    // A role in a string literal is literal text, not a reference to rewrite.
+    let literal = format!("const S: &str = \"{}impl}}`rules.check`\";\n", '{');
+    let (rewritten, edits) = rewrite_source(&map, Path::new("src/lib.rs"), &literal);
+    assert_eq!((rewritten.as_str(), edits), (literal.as_str(), 0));
     // Plain text is not an anchor outside Markdown.
     let (_, edits) = rewrite_source(&map, Path::new("notes.txt"), ":impl: data.txt\n");
     assert_eq!(edits, 0);

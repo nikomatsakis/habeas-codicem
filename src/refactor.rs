@@ -212,6 +212,7 @@ enum Token {
     Path,
 }
 
+// {cite}`habeas:util`
 /// Replaces each occurrence of `from` in `text` that is a whole token, or
 /// the prefix of a token beneath it, with `to`.
 fn replace_tokens(text: &str, from: &str, to: &str, token: Token) -> String {
@@ -265,7 +266,13 @@ static CODE_SPAN: LazyLock<Regex> =
 fn rewrite_source(mappings: &Mappings, path: &Path, content: &str) -> (String, usize) {
     let markdown = crate::outline::is_markdown_path(path);
     let mut edits = Vec::new();
+    // Only roles that count as references are rewritten; a role in a string
+    // literal is literal text.
+    let contexts = crate::evidence::reference_contexts(path, content);
     for role in crate::reference_roles(content, markdown) {
+        if !crate::evidence::in_reference_context(contexts.as_deref(), role.start) {
+            continue;
+        }
         if !matches!(
             role.kind,
             ReferenceKind::Impl

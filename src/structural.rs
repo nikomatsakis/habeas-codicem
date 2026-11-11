@@ -21,6 +21,7 @@ use crate::evidence::Declaration;
 use crate::inputs::OutlineCache;
 use crate::outline::{Outline, Profile};
 
+// {cite}`habeas:util`
 /// An outline profile with a grammar, as an ast-grep language.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct QueryLanguage {
@@ -29,6 +30,7 @@ pub(crate) struct QueryLanguage {
 }
 
 impl QueryLanguage {
+    // {impl}`requirements.references.distributed`
     /// The language named by an outline profile with a grammar.
     pub(crate) fn named(name: &str) -> Result<Self, String> {
         crate::outline::profile::profiles()
@@ -43,6 +45,7 @@ impl QueryLanguage {
             })
     }
 
+    // {cite}`habeas:util`
     /// The names of the outline profiles with a grammar.
     pub(crate) fn names() -> Vec<&'static str> {
         crate::outline::profile::profiles()
@@ -52,6 +55,7 @@ impl QueryLanguage {
             .collect()
     }
 
+    // {impl}`requirements.references.distributed`
     /// Whether a file is a source of this language.
     pub(crate) fn covers(&self, path: &Path) -> bool {
         std::ptr::eq(crate::outline::profile_for_path(path), self.profile)
@@ -71,6 +75,7 @@ impl Language for QueryLanguage {
             .map(|field| field.get())
     }
 
+    // {cite}`habeas:util`
     /// Grammars where `$` cannot start an identifier parse metavariables
     /// under another character, as ast-grep's own language table does.
     fn expando_char(&self) -> char {
@@ -114,11 +119,13 @@ impl Language for QueryLanguage {
 }
 
 impl LanguageExt for QueryLanguage {
+    // {cite}`habeas:util`
     fn get_ts_language(&self) -> TSLanguage {
         (self.grammar)()
     }
 }
 
+// {cite}`habeas:util`
 /// A compiled ast-grep rule core for one language.
 pub(crate) struct StructuralRule {
     language: QueryLanguage,
@@ -166,6 +173,7 @@ impl StructuralRule {
     }
 }
 
+// {cite}`habeas:util`
 /// An error with each of its sources, since ast-grep's top-level messages
 /// name only the part of the rule that failed.
 fn error_chain(error: &dyn std::error::Error) -> String {
@@ -216,6 +224,7 @@ pub(crate) fn innermost_node(outline: &Outline, source: &str, range: &Range<usiz
     current
 }
 
+// {impl}`requirements.references.distributed`
 /// Which directive declares a query.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum QueryKind {
@@ -270,6 +279,7 @@ impl QueryBody {
     }
 }
 
+// {cite}`habeas:util`
 /// A query a distributed requirement declares.
 #[derive(Debug)]
 pub(crate) struct DeclaredQuery {
@@ -280,6 +290,7 @@ pub(crate) struct DeclaredQuery {
     pub(crate) line: usize,
 }
 
+// {cite}`habeas:util`
 /// The queries a requirement declaration contains, in declaration order,
 /// failing on the first malformed one.
 pub(crate) fn declared_queries(declaration: &Declaration) -> Result<Vec<DeclaredQuery>, String> {
@@ -290,6 +301,7 @@ pub(crate) fn declared_queries(declaration: &Declaration) -> Result<Vec<Declared
     }
 }
 
+// {cite}`habeas:util`
 /// Whether a declaration contains a query directive, well-formed or not.
 pub(crate) fn has_query_directive(declaration: &Declaration) -> bool {
     declaration
@@ -394,6 +406,7 @@ fn yaml_block(lines: &[&str]) -> Option<String> {
     Some(body.iter().map(|line| format!("{line}\n")).collect())
 }
 
+// {cite}`habeas:util`
 /// One site of a query: a project-relative file and an outline node of it.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct Site {
@@ -402,6 +415,7 @@ pub(crate) struct Site {
 }
 
 impl QueryKind {
+    // {impl}`requirements.references.distributed`
     /// The directive's role name, `sites` or `violations`.
     pub(crate) fn label(self) -> &'static str {
         match self {
@@ -411,6 +425,7 @@ impl QueryKind {
     }
 }
 
+// {cite}`habeas:util`
 /// One match of a declared query in the project, with its site.
 #[derive(Clone, Debug)]
 pub(crate) struct QueryMatch {

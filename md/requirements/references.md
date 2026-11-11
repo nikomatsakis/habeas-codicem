@@ -98,7 +98,8 @@ count as an item's reference for {cite}`requirements.references.rust_item_covera
 
 :::{req} discovery
 Habeas MUST find the references of {cite}`requirements.references.roles`
-throughout project source files and MUST fail with the source file and line if a
+in project source files, where {cite}`requirements.references.reference_contexts`
+says they count, and MUST fail with the source file and line if a
 name has no matching `{req}` or `{example}` definition. In Markdown, escaped
 roles and roles in code examples MUST remain literal. Reference discovery MUST
 consider exactly the project sources that source-access policy permits under
@@ -108,6 +109,18 @@ both cases excluding the project-root `book` and `evidence` directories, `.git`
 and `target` directories at any depth, and paths disallowed by
 {cite}`requirements.configuration.evidence_paths`. Evidence snapshots and
 generated build output MUST therefore not be counted as source references.
+:::
+
+:::{req} reference_contexts
+Each supported language profile MUST define where in its files roles count as
+references, and SHOULD exclude places that hold code or data rather than prose,
+such as string literals. In a file with a language outline under
+{cite}`requirements.references.outlines`, inline and fenced roles MUST count
+only within comments as its profile defines them, including doc comments; a
+role anywhere else, including in a string literal, MUST remain literal. In
+Markdown, escaped roles and roles in code examples remain literal under
+{cite}`requirements.references.discovery`. In a plain-text file, roles MUST
+count anywhere.
 :::
 
 :::{req} builtin_definitions

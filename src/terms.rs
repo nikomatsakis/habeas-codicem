@@ -99,11 +99,19 @@ fn direct_references(
                         referenced_terms(&text[range], false, &mut pending);
                     }
                 }
-                InputSelector::Outline { file, .. } => referenced_terms(
-                    &text,
-                    crate::outline::is_markdown_path(Path::new(&file)),
-                    &mut pending,
-                ),
+                // Other outlined languages count terms only in comments too.
+                // {impl}`requirements.references.reference_contexts`
+                InputSelector::Outline { file, .. } => {
+                    let markdown = crate::outline::is_markdown_path(Path::new(&file));
+                    match crate::evidence::reference_contexts(Path::new(&file), &text) {
+                        Some(ranges) => {
+                            for range in ranges {
+                                referenced_terms(&text[range], markdown, &mut pending);
+                            }
+                        }
+                        None => referenced_terms(&text, markdown, &mut pending),
+                    }
+                }
                 InputSelector::Requirements { .. } => {
                     // Scan bodies, not the surrounding colon fences: Markdown code
                     // protection must be evaluated in the declaration's own context.
@@ -252,5 +260,45 @@ mod tests {
         // The same text in a plain-text file is not Markdown.
         let error = dependencies("docs/e.txt").unwrap_err();
         assert!(error.contains("terms.missing"), "{error}");
+    }
+
+    // {test}`requirements.references.reference_contexts`
+    // {test}`requirements.definitions.dependencies`
+    #[test]
+    fn term_dependencies_of_outlined_sources_come_only_from_comments() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        fs::create_dir_all(root.join("md")).unwrap();
+        fs::write(root.join("book.toml"), "[book]\nsrc = \"md\"\n").unwrap();
+        fs::write(
+            root.join("md/terms.md"),
+            ":::{definition} unit\n:phrase: unit\nA unit.\n:::\n",
+        )
+        .unwrap();
+        let used = ["{", "term}`terms.unit`"].concat();
+        let missing = ["{", "term}`terms.missing`"].concat();
+        let declarations = crate::evidence::load_definitions(root).unwrap();
+        let outlines = OutlineCache::default();
+        for (file, text) in [
+            ("tool.py", format!("# Uses {used}.\nNAME = \"{missing}\"\n")),
+            (
+                "config.toml",
+                format!("# Uses {used}.\nname = \"{missing}\"\n"),
+            ),
+        ] {
+            fs::write(root.join(file), text).unwrap();
+            let record = json!({"inputs": [{"file": file, "item": ""}]});
+            assert_eq!(
+                dependencies(
+                    root,
+                    &declarations,
+                    &outlines,
+                    record.as_object().unwrap(),
+                    None
+                ),
+                Ok(BTreeSet::from(["terms.unit".to_owned()])),
+                "{file}"
+            );
+        }
     }
 }
