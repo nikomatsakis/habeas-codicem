@@ -3146,8 +3146,7 @@ no_match:
         // The subject message names the requirement, the site's file and
         // selector, and each query match with its kind, name and lines.
         let matches =
-            json!([{"kind": "sites", "query": "checkers", "line_start": 2, "line_end": 6}])
-                .to_string();
+            json!([{"kind": "sites", "query": "checkers", "item": "fn[check_two]"}]).to_string();
         let mandatory_inputs =
             serde_json::to_string_pretty(&sources.model_mandatory_inputs()).unwrap();
         let expected_subject = fill(

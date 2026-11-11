@@ -30,6 +30,8 @@ pub(crate) struct SiteMatch {
     pub(crate) query: String,
     pub(crate) line_start: usize,
     pub(crate) line_end: usize,
+    /// Selector of the innermost outline node containing the match.
+    pub(crate) item: String,
     pub(crate) text: String,
 }
 
@@ -75,7 +77,10 @@ impl SiteItem {
     }
 
     /// The matches as the model receives them: each query's kind and name
-    /// and the match's lines, and, for a violation match, its redacted text.
+    /// and the selector of the innermost node containing the match, without
+    /// line numbers, and, for a violation match, its redacted text.
+    // {impl}`requirements.authoring.site_prompt`
+    // {impl}`requirements.authoring.no_line_numbers`
     pub(crate) fn matches_value(&self) -> Value {
         Value::Array(
             self.matches
@@ -84,8 +89,7 @@ impl SiteItem {
                     let mut value = json!({
                         "kind": found.kind.label(),
                         "query": found.query,
-                        "line_start": found.line_start,
-                        "line_end": found.line_end,
+                        "item": found.item,
                     });
                     if found.kind == QueryKind::Violations {
                         value["text"] =
@@ -188,14 +192,19 @@ fn collect_sites(
     let mut sites = BTreeMap::<(String, String), SiteItem>::new();
     for (query, found) in matches {
         for found in found {
+            let parsed = outlines.parse(root, &found.site.file);
+            let parsed = parsed.as_ref().as_ref().ok();
+            let item = parsed.map_or_else(
+                || found.site.item.clone(),
+                |parsed| {
+                    let index = parsed.outline.owner_at_line(found.line_start);
+                    parsed.outline.nodes[index].selector.clone()
+                },
+            );
             let site = sites
                 .entry((found.site.file.clone(), found.site.item.clone()))
                 .or_insert_with(|| {
-                    let (line_start, line_end) = outlines
-                        .parse(root, &found.site.file)
-                        .as_ref()
-                        .as_ref()
-                        .ok()
+                    let (line_start, line_end) = parsed
                         .and_then(|parsed| {
                             let index = parsed.outline.resolve(&found.site.item).ok()?;
                             let node = &parsed.outline.nodes[index];
@@ -216,6 +225,7 @@ fn collect_sites(
                 query: query.name.clone(),
                 line_start: found.line_start,
                 line_end: found.line_end,
+                item,
                 text: found.text,
             });
         }
@@ -816,6 +826,7 @@ no_match:
             query: "q".to_owned(),
             line_start: 1,
             line_end: 1,
+            item: "fn[check]".to_owned(),
             text: text.to_owned(),
         };
         let site = SiteItem {
@@ -832,7 +843,7 @@ no_match:
         let value = site.matches_value();
         assert_eq!(
             value[0],
-            json!({"kind": "sites", "query": "q", "line_start": 1, "line_end": 1})
+            json!({"kind": "sites", "query": "q", "item": "fn[check]"})
         );
         assert_eq!(value[1]["kind"], "violations");
         assert_eq!(site.selector_label(), "fn[check]");
@@ -880,7 +891,7 @@ no_match:
         assert_eq!(violation.line_start, 6);
         assert_eq!(
             nested.matches_value()[1],
-            json!({"kind": "violations", "query": "panics", "line_start": 6, "line_end": 6, "text": "panic!(\"z\")"})
+            json!({"kind": "violations", "query": "panics", "item": "mod[inner]/fn[check_three]/fn[nested]", "text": "panic!(\"z\")"})
         );
         // No query problems; each site lacks a review, and being a site is
         // not a reference for Rust item coverage.

@@ -1359,8 +1359,6 @@ pub(super) mod tests {
                     "item": "",
                     "hash": hash,
                     "kind": "file",
-                    "line_start": 1,
-                    "line_end": 2,
                     "text": ["# Skill", "Be ready."]
                 }),
             ]

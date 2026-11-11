@@ -447,10 +447,11 @@ pub(crate) fn input_issue_states(
     inputs: &[Value],
 ) -> Vec<Vec<(String, &'static str)>> {
     let fixmes = fixme_issues(references);
+    let outlines = crate::inputs::OutlineCache::default();
     let named = inputs
         .iter()
         .map(|input| {
-            let ranges = input_ranges(input, definitions);
+            let ranges = input_ranges(root, &outlines, input, definitions);
             let mut issues = Vec::new();
             for (reference, names) in &fixmes {
                 let file = display_path(root, &reference.file);
@@ -489,21 +490,26 @@ pub(crate) fn input_issue_states(
 /// or the declarations a requirements or definition input matches.
 // {impl}`requirements.authoring.github_reads`
 fn input_ranges(
+    root: &Path,
+    outlines: &crate::inputs::OutlineCache,
     input: &Value,
     definitions: &BTreeMap<String, crate::evidence::Declaration>,
 ) -> Vec<(String, usize, usize)> {
-    let number = |field: &str| {
-        input
-            .get(field)
-            .and_then(Value::as_u64)
-            .and_then(|n| usize::try_from(n).ok())
-    };
-    if let (Some(file), Some(start), Some(end)) = (
+    if let (Some(file), Some(item)) = (
         input.get("file").and_then(Value::as_str),
-        number("line_start"),
-        number("line_end"),
+        input.get("item").and_then(Value::as_str),
     ) {
-        return vec![(file.to_owned(), start, end)];
+        let parsed = outlines.parse(root, file);
+        let Ok(parsed) = parsed.as_ref() else {
+            return Vec::new();
+        };
+        return parsed.resolve(file, item).map_or_else(
+            |_| Vec::new(),
+            |index| {
+                let (range, _) = parsed.node_range(file, index);
+                vec![(range.file, range.line_start, range.line_end)]
+            },
+        );
     }
     let names = if let Some(definition) = input.get("definition").and_then(Value::as_str) {
         vec![definition.to_owned()]
@@ -1010,8 +1016,8 @@ mod tests {
         let references = crate::evidence::collect_references(&root, &mut errors);
         let definitions = crate::evidence::load_definitions(&root).unwrap();
         let inputs = [
-            json!({"file": "src/lib.rs", "item": "fn[ready]", "line_start": 1, "line_end": 6}),
-            json!({"file": "src/lib.rs", "item": "fn[other]", "line_start": 8, "line_end": 12}),
+            json!({"file": "src/lib.rs", "item": "fn[ready]"}),
+            json!({"file": "src/lib.rs", "item": "fn[other]"}),
             json!({"requirements": "rules.ready", "matches": ["rules.ready"]}),
             json!({"requirements": "rules.other", "matches": ["rules.other"]}),
         ];

@@ -201,19 +201,15 @@ impl InputSelector {
     }
 
     /// The input as shown to the model: the recorded input plus, for an
-    /// outline input, the node's kind, current line range, and source text.
+    /// outline input, the node's kind and source text, without line numbers.
     // {impl}`requirements.authoring.mandatory_inputs`
+    // {impl}`requirements.authoring.no_line_numbers`
     pub(crate) fn to_model_input(&self, resolved: &ResolvedInput) -> Value {
         let mut input = self.to_input(resolved);
-        if let (Self::Outline { .. }, Some(node), Some(range), Some(object)) = (
-            self,
-            &resolved.node,
-            resolved.ranges.first(),
-            input.as_object_mut(),
-        ) {
+        if let (Self::Outline { .. }, Some(node), Some(object)) =
+            (self, &resolved.node, input.as_object_mut())
+        {
             object.insert("kind".to_owned(), json!(node.kind));
-            object.insert("line_start".to_owned(), json!(range.line_start));
-            object.insert("line_end".to_owned(), json!(range.line_end));
             object.insert("text".to_owned(), json!(resolved.text));
         }
         input

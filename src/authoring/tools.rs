@@ -30,7 +30,7 @@ pub(crate) fn definitions() -> Vec<Value> {
     let mut definitions = vec![
         json!({
             "name": "habeas",
-            "description": "Read project source as evidence. Supply exactly one request form: file + line_start (optional line_end), file + item, requirements, or definition. Do not combine forms. Paths may be project-relative or absolute when permitted by the evidence policy. A line range is one-based and inclusive (omitted line_end reads through EOF) and returns {inputs, definitions}: the innermost outline nodes covering those lines, each with its item selector, kind, current line_start and line_end, and source text, e.g. {\"file\":\"src/lib.rs\",\"line_start\":10,\"line_end\":20}. Line numbers only locate sources; evidence records each node's selector and structural hash. The item form reads one outline node and returns {input, definitions}, e.g. {\"file\":\"src/lib.rs\",\"item\":\"impl[Thing]/fn[run]\"}; use the outline tool to list a file's selectors. Selectors are /-separated paths from the file's root: kind[name] for named nodes (Rust trait impls use impl[Thing/Trait]), kind@hash for anonymous nodes such as use declarations and plain-text lines (line@hash), and #N (one-based) for otherwise identical siblings; the empty item selects the whole file. Characters %, [, ], /, #, @ and whitespace in names are percent-encoded UTF-8 bytes. The requirements form takes a definition selection: a full requirement or example name, or a glob matching complete names where * matches any characters including dots, e.g. {\"requirements\":\"requirements.cli.*\"}. Definition reads use the full terminology name, e.g. {\"definition\":\"glossary.command\"}. Required terminology is returned alongside the selected input. Defaults permit project files (Git-tracked in Git worktrees) and existing Cargo build-script output directories; evidence/ is excluded. Returned source text is redacted: credential values and credential-shaped text read [REDACTED:<kind>], with line numbers unchanged. The nearest habeas.toml can explicitly allow other paths or disallow paths; disallow wins. Denied reads of project paths abort the assessment and report to the operator; a path outside the project that no rule permits returns an ordinary tool error, as does a path in the book's build directory or the project-root target directory, which hold build output (existing Cargo build-script outputs excepted); read the sources they are built from instead. Paths outside the project may be absolute when allowed.",
+            "description": "Read project source as evidence. Supply exactly one request form: file + line_start (optional line_end), file + item, requirements, or definition. Do not combine forms. Paths may be project-relative or absolute when permitted by the evidence policy. A line range is one-based and inclusive (omitted line_end reads through EOF) and returns {inputs, definitions}: the innermost outline nodes covering those lines, each with its item selector, kind, and source text, e.g. {\"file\":\"src/lib.rs\",\"line_start\":10,\"line_end\":20}. Line numbers only locate sources: results never give line numbers, and evidence records each node's selector and structural hash. Cite code by file and selector. The item form reads one outline node and returns {input, definitions}, e.g. {\"file\":\"src/lib.rs\",\"item\":\"impl[Thing]/fn[run]\"}; use the outline tool to list a file's selectors. Selectors are /-separated paths from the file's root: kind[name] for named nodes (Rust trait impls use impl[Thing/Trait]), kind@hash for anonymous nodes such as use declarations and plain-text lines (line@hash), and #N (one-based) for otherwise identical siblings; the empty item selects the whole file. Characters %, [, ], /, #, @ and whitespace in names are percent-encoded UTF-8 bytes. The requirements form takes a definition selection: a full requirement or example name, or a glob matching complete names where * matches any characters including dots, e.g. {\"requirements\":\"requirements.cli.*\"}. Definition reads use the full terminology name, e.g. {\"definition\":\"glossary.command\"}. Required terminology is returned alongside the selected input. Defaults permit project files (Git-tracked in Git worktrees) and existing Cargo build-script output directories; evidence/ is excluded. Returned source text is redacted: credential values and credential-shaped text read [REDACTED:<kind>], with line breaks unchanged. The nearest habeas.toml can explicitly allow other paths or disallow paths; disallow wins. Denied reads of project paths abort the assessment and report to the operator; a path outside the project that no rule permits returns an ordinary tool error, as does a path in the book's build directory or the project-root target directory, which hold build output (existing Cargo build-script outputs excepted); read the sources they are built from instead. Paths outside the project may be absolute when allowed.",
             "parameters": {"type":"object", "properties": {
                 "file":{"type":"string"},
                 "line_start":{"type":"integer","minimum":1},
@@ -45,19 +45,19 @@ pub(crate) fn definitions() -> Vec<Value> {
             "parameters":{"type":"object","properties":{"path":{"type":"string","default":"."}},"additionalProperties":false}
         }),
         json!({
-            "name":"outline", "description":"List a permitted file's outline: its selectable nodes nested by ancestry, each with its item selector (for habeas {file, item} reads), kind, name (null when anonymous), and current one-based inclusive line_start and line_end. Rust, Python, TypeScript, CSS, Markdown, TOML, and YAML files have language outlines; other text files list one line node per nonblank line. Results contain no source text and are not evidence inputs; read the nodes you rely on with habeas. Requesting an excluded project file aborts the assessment; an unpermitted file outside the project returns a tool error.",
+            "name":"outline", "description":"List a permitted file's outline: its selectable nodes nested by ancestry, in source order, each with its item selector (for habeas {file, item} reads), kind, and name (null when anonymous), and no line numbers. Rust, Python, TypeScript, CSS, Markdown, TOML, and YAML files have language outlines; other text files list one line node per nonblank line. Results contain no source text and are not evidence inputs; read the nodes you rely on with habeas. Requesting an excluded project file aborts the assessment; an unpermitted file outside the project returns a tool error.",
             "parameters":{"type":"object","properties":{"file":{"type":"string"}},"required":["file"],"additionalProperties":false}
         }),
         json!({
-            "name":"ripgrep", "description":"Search a project-relative or policy-permitted absolute file or directory (default .) using ripgrep regex syntax, case-sensitive matching, and normal ignore rules (including .gitignore and hidden-file exclusions). Searches only locate code. The result is {matches: [{file, item, kind, line_start, line_end, lines: [{line, text}]}]}: one entry for each innermost outline node containing a match (a match in a comment belongs to the node the comment belongs to), with the node's item selector, kind, and current line range, and its matching lines plus context lines before and after each match (default 2; zero means matches only), with their line numbers. Windows stop at file boundaries, and overlapping windows are merged. Results are not evidence inputs and carry no definitions: read with the habeas tool, e.g. {file, item}, any node whose code your conclusion relies on. No matches returns an empty matches array. Results include only eligible sources, and their lines are redacted as habeas reads are. Defaults exclude evidence/ and untracked files; do not request excluded paths. Explicitly allowed paths and existing Cargo build-script outputs are searched even when ignored or hidden. Workspace disallow rules win; denied explicit requests for project paths abort the assessment, while unpermitted paths outside the project return a tool error. With referencing {selection, roles, scope}, search only sources within path that carry a reference in one of roles (impl, test, cite, or fixme; default [impl, test, cite]) to a requirement or example the selection matches (a full name, or a glob where * matches any characters including dots), including :impl: and :test: declaration anchors: scope node searches only the outline nodes that contain or are named by those references, and scope file (the default) their whole files, e.g. {\"pattern\":\"errors\",\"referencing\":{\"selection\":\"requirements.ci.*\",\"roles\":[\"impl\"],\"scope\":\"node\"}}. A selection matching no requirement or example, or an unknown role or scope, returns a tool error.",
+            "name":"ripgrep", "description":"Search a project-relative or policy-permitted absolute file or directory (default .) using ripgrep regex syntax, case-sensitive matching, and normal ignore rules (including .gitignore and hidden-file exclusions). Searches only locate code. The result is {matches: [{file, item, kind, lines: [{text, matched}]}]}: one entry for each innermost outline node containing a match (a match in a comment belongs to the node the comment belongs to), with the node's item selector and kind, and its matching lines (matched true) plus context lines before and after each match (default 2; zero means matches only), in source order and without line numbers. Windows stop at file boundaries, overlapping windows are merged, and a line with text \"…\" and matched false separates windows within one node. Results are not evidence inputs and carry no definitions: read with the habeas tool, e.g. {file, item}, any node whose code your conclusion relies on. No matches returns an empty matches array. Results include only eligible sources, and their lines are redacted as habeas reads are. Defaults exclude evidence/ and untracked files; do not request excluded paths. Explicitly allowed paths and existing Cargo build-script outputs are searched even when ignored or hidden. Workspace disallow rules win; denied explicit requests for project paths abort the assessment, while unpermitted paths outside the project return a tool error. With referencing {selection, roles, scope}, search only sources within path that carry a reference in one of roles (impl, test, cite, or fixme; default [impl, test, cite]) to a requirement or example the selection matches (a full name, or a glob where * matches any characters including dots), including :impl: and :test: declaration anchors: scope node searches only the outline nodes that contain or are named by those references, and scope file (the default) their whole files, e.g. {\"pattern\":\"errors\",\"referencing\":{\"selection\":\"requirements.ci.*\",\"roles\":[\"impl\"],\"scope\":\"node\"}}. A selection matching no requirement or example, or an unknown role or scope, returns a tool error.",
             "parameters":{"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string","default":"."},"context":{"type":"integer","minimum":0,"default":2},"referencing":reference_scope_schema()},"required":["pattern"],"additionalProperties":false}
         }),
         json!({
-            "name":"ast_grep", "description":"Search syntax trees in process with an ast-grep rule. Supply exactly one form: {language, rule, path (default .), referencing (optional)} or {query}. language is one of rust, python, typescript, tsx, css, markdown, toml, or yaml, matched with Habeas's pinned grammars; only files of that language are searched. rule is an object holding the keys of an ast-grep rule file's rule core, written as JSON: rule (required), and optional utils (named rules) and constraints (metavariable name to rule). A rule object combines atomic rules: pattern (code with metavariables, where $A matches one node, $$$A any number of nodes, and $_ one node without capturing), kind (a grammar node kind such as function_item), regex (a Rust regex the node's whole text must match), and nthChild; relational rules: inside, has, precedes, and follows, each taking a rule plus optional stopBy (neighbor, the default, end, or a rule) and field; and composite rules: all, any, not, and matches (a utils name). Patterns parse as standalone code, so a fragment that does not parse on its own, such as a type or parameter, needs the context and selector form: pattern: {context: \"fn f(x: &mut Vec<String>) {}\", selector: reference_type} parses context and matches the node of kind selector within it. Example: {\"language\":\"rust\",\"rule\":{\"rule\":{\"pattern\":\"$X.unwrap()\",\"inside\":{\"kind\":\"function_item\",\"stopBy\":\"end\"}}}}. path, referencing, file walking, ignore rules, ordering by path and then line, and source-access policy are as for ripgrep: explicitly allowed paths and existing Cargo build-script outputs are searched even when ignored or hidden, evidence/ and untracked files are excluded, workspace disallow rules win, denied explicit requests for project paths abort the assessment, and unpermitted paths outside the project return a tool error. The query form, e.g. {\"query\":\"requirements.ci.errors/error_accumulators\"}, runs a query a distributed requirement declares, named <full-name>/<query-name>, exactly as validation runs it, including its paths, exclude, and within, and returns each match's site. Searches only locate code. The result has ripgrep's form, {matches: [{file, item, kind, line_start, line_end, lines: [{line, text}]}]}: one entry for each innermost outline node containing a match (a match in a comment belongs to the node the comment belongs to; a query match belongs to its site), with the node's item selector, kind, and current line range, and the matched lines with their line numbers, redacted. Results are not evidence inputs and carry no definitions: read with the habeas tool, e.g. {file, item}, any node whose code your conclusion relies on. No matches returns an empty matches array; an invalid language or rule, or a failed search, returns a tool error.",
+            "name":"ast_grep", "description":"Search syntax trees in process with an ast-grep rule. Supply exactly one form: {language, rule, path (default .), referencing (optional)} or {query}. language is one of rust, python, typescript, tsx, css, markdown, toml, or yaml, matched with Habeas's pinned grammars; only files of that language are searched. rule is an object holding the keys of an ast-grep rule file's rule core, written as JSON: rule (required), and optional utils (named rules) and constraints (metavariable name to rule). A rule object combines atomic rules: pattern (code with metavariables, where $A matches one node, $$$A any number of nodes, and $_ one node without capturing), kind (a grammar node kind such as function_item), regex (a Rust regex the node's whole text must match), and nthChild; relational rules: inside, has, precedes, and follows, each taking a rule plus optional stopBy (neighbor, the default, end, or a rule) and field; and composite rules: all, any, not, and matches (a utils name). Patterns parse as standalone code, so a fragment that does not parse on its own, such as a type or parameter, needs the context and selector form: pattern: {context: \"fn f(x: &mut Vec<String>) {}\", selector: reference_type} parses context and matches the node of kind selector within it. Example: {\"language\":\"rust\",\"rule\":{\"rule\":{\"pattern\":\"$X.unwrap()\",\"inside\":{\"kind\":\"function_item\",\"stopBy\":\"end\"}}}}. path, referencing, file walking, ignore rules, ordering by path and then line, and source-access policy are as for ripgrep: explicitly allowed paths and existing Cargo build-script outputs are searched even when ignored or hidden, evidence/ and untracked files are excluded, workspace disallow rules win, denied explicit requests for project paths abort the assessment, and unpermitted paths outside the project return a tool error. The query form, e.g. {\"query\":\"requirements.ci.errors/error_accumulators\"}, runs a query a distributed requirement declares, named <full-name>/<query-name>, exactly as validation runs it, including its paths, exclude, and within, and returns each match's site. Searches only locate code. The result has ripgrep's form, {matches: [{file, item, kind, lines: [{text, matched}]}]}: one entry for each innermost outline node containing a match (a match in a comment belongs to the node the comment belongs to; a query match belongs to its site), with the node's item selector and kind, and the matched lines, redacted and without line numbers. Results are not evidence inputs and carry no definitions: read with the habeas tool, e.g. {file, item}, any node whose code your conclusion relies on. No matches returns an empty matches array; an invalid language or rule, or a failed search, returns a tool error.",
             "parameters":{"type":"object","properties":{"language":{"type":"string","enum":crate::structural::QueryLanguage::names()},"rule":{"type":"object"},"path":{"type":"string","default":"."},"referencing":reference_scope_schema(),"query":{"type":"string"}},"additionalProperties":false}
         }),
         json!({
-            "name":"references", "description":"List definitions and the sources that reference them. Without selection, return every requirement and named example name with its kind. With selection (a full requirement or example name, or a glob where * matches any characters including dots, e.g. requirements.cli.*), return the selected definitions plus every {impl}, {cite}, and {test} reference to them: definition name, role, file, line, and item, the selector of the smallest enclosing outline node when the file has a language outline (null otherwise). An :impl: or :test: anchor on a definition names a complete file, or one node as path#selector, and is reported with line null and item null or that selector. {impl} and {test} mark sources that implement or verify the definition; {cite} marks sources that only rely on or refer to it. Results contain no source text and are not evidence inputs; read the sources you rely on with habeas.",
+            "name":"references", "description":"List definitions and the sources that reference them. Without selection, return every requirement and named example name with its kind. With selection (a full requirement or example name, or a glob where * matches any characters including dots, e.g. requirements.cli.*), return the selected definitions plus every {impl}, {cite}, and {test} reference to them: definition name, role, file, and item, the selector of the smallest enclosing outline node (a line node in a plain-text file), in source order and without line numbers. An :impl: or :test: anchor on a definition names a complete file, or one node as path#selector, and is reported with item null or that selector. {impl} and {test} mark sources that implement or verify the definition; {cite} marks sources that only rely on or refer to it. Results contain no source text and are not evidence inputs; read the sources you rely on with habeas.",
             "parameters":{"type":"object","properties":{"selection":{"type":"string"}},"additionalProperties":false}
         }),
         crate::github::tool_definition(),
@@ -214,6 +214,7 @@ fn outline(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Result
 
 /// The outline entries for a node's children, nested by ancestry.
 // {impl}`requirements.authoring.outline_tool`
+// {impl}`requirements.authoring.no_line_numbers`
 fn outline_entries(outline: &crate::outline::Outline, parent: usize) -> Vec<Value> {
     outline.nodes[parent]
         .children
@@ -224,8 +225,6 @@ fn outline_entries(outline: &crate::outline::Outline, parent: usize) -> Vec<Valu
                 "item": node.selector,
                 "kind": node.kind,
                 "name": node.display_name(),
-                "line_start": node.line_start,
-                "line_end": node.line_end,
                 "children": outline_entries(outline, *child),
             })
         })
@@ -301,6 +300,7 @@ const REFERENCE_ARRAYS: &[&str] = &["definitions", "sites"];
 
 // {impl}`requirements.references.definition_globs`
 // {impl}`requirements.references.anchors`
+// {impl}`requirements.authoring.no_line_numbers`
 fn references(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Result<Listing> {
     check_keys(args, &["selection"])?;
     let selection = if args.contains_key("selection") {
@@ -358,13 +358,10 @@ fn references(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Res
     for reference in &found {
         let file = relative_path(&sources.root, &reference.file)?;
         let parsed = sources.outlines.parse(&sources.root, &file);
-        let item = match parsed.as_ref() {
-            Ok(parsed) if parsed.outline.profile.language.is_some() => {
-                let index = parsed.outline.owner_at_line(reference.line);
-                Some(parsed.outline.nodes[index].selector.clone())
-            }
-            _ => None,
-        };
+        let item = parsed.as_ref().as_ref().ok().map(|parsed| {
+            let index = parsed.outline.owner_at_line(reference.line);
+            parsed.outline.nodes[index].selector.clone()
+        });
         sites.push((
             reference.name.clone(),
             file,
@@ -373,7 +370,6 @@ fn references(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Res
                 "name": reference.name,
                 "role": reference.kind.label(),
                 "file": relative_path(&sources.root, &reference.file)?,
-                "line": reference.line,
                 "item": item,
             }),
         ));
@@ -399,7 +395,6 @@ fn references(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Res
                     "name": name,
                     "role": anchor.kind.label(),
                     "file": file,
-                    "line": null,
                     "item": (!anchor.item.is_empty()).then_some(&anchor.item),
                 }),
             ));
@@ -494,6 +489,9 @@ fn search(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Result<
     Ok(Listing::object(&["matches"], vec![entries]))
 }
 
+/// The line separating windows within one search entry.
+const ELISION: &str = "…";
+
 /// The entries of one file's search result being collected: each innermost
 /// outline node containing a match, with its matching lines and the context
 /// lines around them.
@@ -513,13 +511,16 @@ impl SearchNodes {
         around.extend(context);
     }
 
-    /// The entries in source order: each node's file, selector, kind, and
-    /// current line range, and its lines' numbers and redacted text. Windows
+    /// The entries in source order: each node's file, selector, and kind,
+    /// and its lines' redacted text, each marked as matching or not, with an
+    /// elision line between separate windows and no line numbers. Windows
     /// are merged across the file: each line appears once, with the node it
     /// matches in, or else with the first node whose window holds it. These
     /// are not evidence inputs.
     // {impl}`requirements.authoring.redaction`
     // {impl}`requirements.references.outline_selectors`
+    // {impl}`requirements.authoring.text_search`
+    // {impl}`requirements.authoring.no_line_numbers`
     fn entries(self, file: &str, parsed: &crate::inputs::ParsedSource) -> Vec<Value> {
         let text = parsed.redacted.lines().collect::<Vec<_>>();
         let mut nodes = self.0.into_iter().collect::<Vec<_>>();
@@ -531,25 +532,33 @@ impl SearchNodes {
             .iter()
             .flat_map(|(_, (matched, _))| matched.iter().copied())
             .collect::<BTreeSet<_>>();
+        let matching = shown.clone();
         nodes
             .into_iter()
-            .map(|(index, (mut matched, around))| {
+            .map(|(index, (mut lines, around))| {
                 for line in around {
                     if shown.insert(line) {
-                        matched.insert(line);
+                        lines.insert(line);
                     }
                 }
                 let node = &parsed.outline.nodes[index];
+                let mut shown_lines = Vec::new();
+                let mut previous = None;
+                for line in lines {
+                    let Some(source) = line.checked_sub(1).and_then(|line| text.get(line)) else {
+                        continue;
+                    };
+                    if previous.is_some_and(|previous: usize| previous + 1 < line) {
+                        shown_lines.push(json!({"text": ELISION, "matched": false}));
+                    }
+                    previous = Some(line);
+                    shown_lines.push(json!({"text": source, "matched": matching.contains(&line)}));
+                }
                 json!({
                     "file": file,
                     "item": node.selector,
                     "kind": if index == 0 { "file" } else { node.kind },
-                    "line_start": node.line_start,
-                    "line_end": node.line_end.max(node.line_start),
-                    "lines": matched
-                        .into_iter()
-                        .filter_map(|line| Some(json!({"line": line, "text": text.get(line.checked_sub(1)?)?})))
-                        .collect::<Vec<_>>(),
+                    "lines": shown_lines,
                 })
             })
             .collect()
@@ -1103,8 +1112,7 @@ mod tests {
             search.result,
             json!({"matches": [{
                 "file": "src/lib.rs", "item": "fn[work]", "kind": "fn",
-                "line_start": 1, "line_end": 2,
-                "lines": [{"line": 2, "text": "fn work() {}"}],
+                "lines": [{"text": "fn work() {}", "matched": true}],
             }]})
         );
         // Outlining it lists its items without content and records nothing.
@@ -1192,8 +1200,9 @@ mod tests {
         assert_eq!(read.inputs.len(), 2);
         assert_eq!(read.result["input"]["item"], "fn[work]");
         assert_eq!(read.result["input"]["kind"], "fn");
-        assert_eq!(read.result["input"]["line_start"], 1);
-        assert_eq!(read.result["input"]["line_end"], 2);
+        // Results give the selector, never line numbers.
+        assert!(read.result["input"].get("line_start").is_none());
+        assert!(read.result["input"].get("line_end").is_none());
         assert_eq!(read.result["input"]["text"][1], "fn work() {}");
         assert_eq!(read.result["definitions"][0]["definition"], "terms.value");
         assert!(sources.recorded_inputs().is_empty());
@@ -1213,7 +1222,7 @@ mod tests {
         .unwrap();
         assert_eq!(eof.result["inputs"].as_array().unwrap().len(), 1);
         assert_eq!(eof.result["inputs"][0]["item"], "fn[work]");
-        assert_eq!(eof.result["inputs"][0]["line_end"], 2);
+        assert!(eof.result["inputs"][0].get("line_end").is_none());
         // A line-range read supplies the terminology of what it delivers.
         let fresh = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
         let lines = dispatch(
@@ -1487,15 +1496,16 @@ mod tests {
             .map(|entry| {
                 assert_eq!(entry["file"], "sample.txt");
                 assert_eq!(entry["kind"], "line");
-                assert_eq!(entry["line_start"], entry["line_end"]);
+                assert!(entry.get("line_start").is_none());
                 entry["lines"]
                     .as_array()
                     .unwrap()
                     .iter()
                     .map(|line| {
+                        assert!(line.get("line").is_none());
                         (
-                            line["line"].as_u64().unwrap(),
                             line["text"].as_str().unwrap(),
+                            line["matched"].as_bool().unwrap(),
                         )
                     })
                     .collect::<Vec<_>>()
@@ -1503,12 +1513,10 @@ mod tests {
             .collect::<Vec<_>>();
         let window = |range: std::ops::RangeInclusive<usize>| {
             range
-                .map(|number| (number as u64, lines[number - 1].as_str()))
+                .map(|number| (lines[number - 1].as_str(), number == 2 || number == 6))
                 .collect::<Vec<_>>()
         };
         assert_eq!(shown, [window(1..=4), window(5..=8)]);
-        assert_eq!(matches[0]["line_start"], 2);
-        assert_eq!(matches[1]["line_start"], 6);
         let exact = dispatch(
             &sources,
             "ripgrep",
@@ -1517,11 +1525,11 @@ mod tests {
         .unwrap();
         assert_eq!(
             exact.result["matches"][0]["lines"],
-            json!([{"line": 2, "text": "needle"}])
+            json!([{"text": "needle", "matched": true}])
         );
         assert_eq!(
             exact.result["matches"][1]["lines"],
-            json!([{"line": 6, "text": "needle"}])
+            json!([{"text": "needle", "matched": true}])
         );
         let absent = dispatch(&sources, "ripgrep", &json!({"pattern":"NEEDLE"})).unwrap();
         assert_eq!(absent.result, json!({"matches":[]}));
@@ -2176,7 +2184,7 @@ mod tests {
         assert_eq!(matched(&result)[0]["file"], "actual/needle.txt");
         assert_eq!(
             matched(&result)[0]["lines"],
-            json!([{"line": 1, "text": "actual needle"}])
+            json!([{"text": "actual needle", "matched": true}])
         );
     }
 
@@ -2242,9 +2250,9 @@ mod tests {
         assert_eq!(
             result,
             json!({"definitions": [{"name": "requirements.ready", "kind": "requirement"}], "sites": [
-                {"name": "requirements.ready", "role": "cite", "file": "md/requirements.md", "line": 10, "item": null},
-                {"name": "requirements.ready", "role": "impl", "file": "src/lib.rs", "line": 1, "item": "fn[work]"},
-                {"name": "requirements.ready", "role": "test", "file": "src/lib.rs", "line": 6, "item": "fn[check]"},
+                {"name": "requirements.ready", "role": "cite", "file": "md/requirements.md", "item": null},
+                {"name": "requirements.ready", "role": "impl", "file": "src/lib.rs", "item": "fn[work]"},
+                {"name": "requirements.ready", "role": "test", "file": "src/lib.rs", "item": "fn[check]"},
             ]})
         );
         assert!(ready.inputs.is_empty());
@@ -2282,8 +2290,8 @@ mod tests {
         assert_eq!(
             other.result["sites"],
             json!([
-                {"name": "requirements.other", "role": "impl", "file": "src/fenced.rs", "line": 1, "item": "fn[fenced]"},
-                {"name": "requirements.other", "role": "cite", "file": "src/lib.rs", "line": 3, "item": "fn[work]"},
+                {"name": "requirements.other", "role": "impl", "file": "src/fenced.rs", "item": "fn[fenced]"},
+                {"name": "requirements.other", "role": "cite", "file": "src/lib.rs", "item": "fn[work]"},
             ])
         );
         fs::remove_file(root.path().join("src/fenced.rs")).unwrap();
@@ -2330,7 +2338,7 @@ mod tests {
             .map(|input| {
                 (
                     input["file"].as_str().unwrap().to_owned(),
-                    input["line_start"].as_u64().unwrap(),
+                    input["item"].as_str().unwrap().to_owned(),
                 )
             })
             .collect();
@@ -2344,7 +2352,7 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .iter()
-                .all(|input| input["item"] == "fn[a]" && input["line_end"] == 4)
+                .all(|input| input["item"] == "fn[a]" && input.get("line_end").is_none())
         );
         for _ in 0..5 {
             let again = dispatch(
@@ -2398,9 +2406,9 @@ mod tests {
         assert_eq!(
             sites,
             json!([
-                {"name": "requirements.case", "role": "test", "file": "skills/ready.md", "line": null, "item": null},
-                {"name": "requirements.ready", "role": "cite", "file": "md/requirements.md", "line": 9, "item": null},
-                {"name": "requirements.ready", "role": "impl", "file": "skills/ready.md", "line": null, "item": "section[Skill]"},
+                {"name": "requirements.case", "role": "test", "file": "skills/ready.md", "item": null},
+                {"name": "requirements.ready", "role": "cite", "file": "md/requirements.md", "item": null},
+                {"name": "requirements.ready", "role": "impl", "file": "skills/ready.md", "item": "section[Skill]"},
             ])
         );
         assert!(result.inputs.is_empty());
@@ -2692,8 +2700,7 @@ mod tests {
             "item selector",
             "kind",
             "name",
-            "line_start",
-            "line_end",
+            "no line numbers",
             "no source text",
         ] {
             assert!(description.contains(phrase), "{description}");
@@ -2739,9 +2746,9 @@ mod tests {
         assert_eq!(
             outline.result,
             json!([
-                {"item": "struct[Thing]", "kind": "struct", "name": "Thing", "line_start": 1, "line_end": 2, "children": []},
-                {"item": "impl[Thing]", "kind": "impl", "name": "Thing", "line_start": 4, "line_end": 6, "children": [
-                    {"item": "impl[Thing]/fn[run]", "kind": "fn", "name": "run", "line_start": 5, "line_end": 5, "children": []},
+                {"item": "struct[Thing]", "kind": "struct", "name": "Thing", "children": []},
+                {"item": "impl[Thing]", "kind": "impl", "name": "Thing", "children": [
+                    {"item": "impl[Thing]/fn[run]", "kind": "fn", "name": "run", "children": []},
                 ]},
             ])
         );
@@ -2752,7 +2759,7 @@ mod tests {
         assert!(entries.iter().all(|entry| entry["kind"] == "line"
             && entry["name"].is_null()
             && entry["item"].as_str().unwrap().starts_with("line@")));
-        assert_eq!(entries[1]["line_start"], 3);
+        assert!(entries[1].get("line_start").is_none());
         assert!(dispatch(&sources, "outline", &json!({"file":"missing.rs"})).is_err());
         assert!(dispatch(&sources, "outline", &json!({})).is_err());
 
@@ -2789,16 +2796,13 @@ mod tests {
             .unwrap()
             .iter()
             .map(|input| {
-                (
-                    input["item"].as_str().unwrap(),
-                    input["line_start"].as_u64().unwrap(),
-                    input["line_end"].as_u64().unwrap(),
-                )
+                assert!(input.get("line_start").is_none());
+                input["item"].as_str().unwrap()
             })
             .collect::<Vec<_>>();
         assert_eq!(
             items,
-            [("fn[first]", 3, 3), ("mod[inner]", 5, 9)],
+            ["fn[first]", "mod[inner]"],
             "line 5 is mod inner's own line, so the module is selected"
         );
         let nested = dispatch(
@@ -2863,12 +2867,11 @@ mod tests {
         assert_eq!(
             matched(&search)[1],
             json!({"file": "src/lib.rs", "item": "fn[after]", "kind": "fn",
-                "line_start": 7, "line_end": 8,
-                "lines": [{"line": 7, "text": "// needle in a comment"}]})
+                "lines": [{"text": "// needle in a comment", "matched": true}]})
         );
         assert_eq!(
             matched(&search)[0]["lines"],
-            json!([{"line": 3, "text": "        needle();"}])
+            json!([{"text": "        needle();", "matched": true}])
         );
         // Entries carry no hash: they are not evidence inputs.
         assert!(matched(&search)[0].get("hash").is_none());
@@ -2919,7 +2922,9 @@ mod tests {
             "overlapping windows are merged",
             "Windows stop at file boundaries",
             "Searches only locate code",
-            "{matches: [{file, item, kind, line_start, line_end, lines: [{line, text}]}]}",
+            "{matches: [{file, item, kind, lines: [{text, matched}]}]}",
+            "without line numbers",
+            "separates windows within one node",
             "one entry for each innermost outline node containing a match",
             "a match in a comment belongs to the node the comment belongs to",
             "Results are not evidence inputs and carry no definitions",
@@ -2980,11 +2985,11 @@ mod tests {
             matched(&search),
             &vec![
                 json!({"file": "src/lib.rs", "item": "fn[needle]", "kind": "fn",
-                "line_start": 3, "line_end": 4, "lines": [
-                    {"line": 1, "text": "fn first() {}"},
-                    {"line": 2, "text": ""},
-                    {"line": 3, "text": concat!("// {", "term}`terms.value`")},
-                    {"line": 4, "text": "fn needle() {}"},
+                "lines": [
+                    {"text": "fn first() {}", "matched": false},
+                    {"text": "", "matched": false},
+                    {"text": concat!("// {", "term}`terms.value`"), "matched": false},
+                    {"text": "fn needle() {}", "matched": true},
                 ]})
             ]
         );
@@ -3351,10 +3356,10 @@ mod tests {
             "denied explicit requests for project paths abort the assessment",
             "named <full-name>/<query-name>, exactly as validation runs it, including its paths, exclude, and within, and returns each match's site",
             "Searches only locate code",
-            "{matches: [{file, item, kind, line_start, line_end, lines: [{line, text}]}]}",
+            "{matches: [{file, item, kind, lines: [{text, matched}]}]}",
             "one entry for each innermost outline node containing a match",
             "a match in a comment belongs to the node the comment belongs to",
-            "the matched lines with their line numbers, redacted",
+            "the matched lines, redacted and without line numbers",
             "Results are not evidence inputs and carry no definitions",
             "read with the habeas tool, e.g. {file, item}, any node whose code your conclusion relies on",
             "No matches returns an empty matches array; an invalid language or rule, or a failed search, returns a tool error",
@@ -3412,14 +3417,14 @@ mod tests {
         // Each entry shows the matched lines, redacted; no terminology is
         // supplied.
         let second = &matched(&search)[2]["lines"];
-        assert_eq!(second[0]["line"], 8);
+        assert_eq!(second[0]["matched"], true);
         assert!(second.to_string().contains("[REDACTED:"), "{second}");
         assert!(!second.to_string().contains(&token), "{second}");
         assert_eq!(
             matched(&search)[3]["lines"],
             json!([
-                {"line": 13, "text": "        a.unwrap();"},
-                {"line": 14, "text": "        b.unwrap();"},
+                {"text": "        a.unwrap();", "matched": true},
+                {"text": "        b.unwrap();", "matched": true},
             ])
         );
         assert!(search.result.get("definitions").is_none());
@@ -3605,10 +3610,10 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .iter()
-                .map(|line| line["line"].as_u64().unwrap())
+                .map(|line| line["matched"].as_bool().unwrap())
                 .collect::<Vec<_>>()
         };
-        assert_eq!(lines(&sites, 0), [1, 2, 3, 4, 5, 6]);
+        assert_eq!(lines(&sites, 0), [true; 6]);
         assert!(sites.result.get("definitions").is_none());
         // Violation matches belong to the innermost containing site; matches
         // inside no site are discarded.
@@ -3616,7 +3621,7 @@ mod tests {
         assert_eq!(found(&violations), ["src/lib.rs#fn[check]"]);
         assert_eq!(
             matched(&violations)[0]["lines"],
-            json!([{"line": 4, "text": "        return;"}])
+            json!([{"text": "        return;", "matched": true}])
         );
         for (name, message) in [
             (
