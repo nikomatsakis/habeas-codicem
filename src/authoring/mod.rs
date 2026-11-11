@@ -1252,6 +1252,7 @@ async fn verify(
 // {impl}`requirements.authoring.output_limit`
 // {impl}`requirements.authoring.line_numbers.rejection`
 // {impl}`requirements.authoring.line_numbers.resubmission`
+// {impl}`requirements.authoring.submission`
 async fn converse<T>(
     provider: &impl CompletionProvider,
     sources: &mut AssessmentSources,
@@ -1270,6 +1271,8 @@ async fn converse<T>(
     let mut continued = false;
     // The one rejection of a rationale citing line numbers.
     let mut rejection = line_numbers::Rejection::default();
+    // Whether the one reminder to submit has been sent.
+    let mut reminded = false;
     loop {
         let index = usage.begin_request()?;
         let started = Instant::now();
@@ -1399,9 +1402,20 @@ async fn converse<T>(
             }
         }
         if calls.is_empty() {
-            return Err(io::Error::other(format!(
-                "model finished without invoking {submit}"
-            )));
+            if reminded {
+                return Err(io::Error::other(format!(
+                    "model finished without invoking {submit}, even after a reminder"
+                )));
+            }
+            reminded = true;
+            request.chat_history.extend(response.message());
+            request.chat_history.push(Message::User {
+                content: vec![UserContent::text(format!(
+                    "Reminder: you MUST submit your result with the {submit} tool."
+                ))],
+            });
+            usage.save()?;
+            continue;
         }
         request.chat_history.push(
             response
@@ -2178,7 +2192,7 @@ mod tests {
         let prompt = initial_prompt(&sources).unwrap().joined();
         for guidance in [
             "Choose true when your task finds no gap, {\"FIXME\": [\"...\"]} when every gap is\nacknowledged, and false otherwise.",
-            "Call submit_judgment exactly once with\ndetermination and rationale.",
+            "You MUST end by calling submit_judgment\nexactly once with determination and rationale. A judgment written in your\nreply text is not accepted.",
             "A gap is acknowledged only by a {fixme} reference",
             "a {fixme} naming a\n  closed issue no longer acknowledges its gap",
             "including\n  any acknowledged gaps",
@@ -2392,6 +2406,88 @@ mod tests {
         };
         assess(&provider, &mut sources, &mut usage).await.unwrap();
         assert_eq!(provider.requests.borrow().len(), 1);
+    }
+
+    /// Records each request's conversation and answers with the next
+    /// scripted tool calls.
+    struct RemindedProvider {
+        turns: Vec<Vec<(&'static str, Value)>>,
+        requests: RefCell<Vec<String>>,
+    }
+
+    impl CompletionProvider for RemindedProvider {
+        // {cite}`habeas:util`
+        async fn complete(&self, request: CompletionRequest) -> io::Result<CompletionResponse> {
+            let turn = self.requests.borrow().len();
+            self.requests
+                .borrow_mut()
+                .push(serde_json::to_string(&request.chat_history).unwrap());
+            let mut content: Vec<AssistantContent> = self.turns[turn]
+                .iter()
+                .enumerate()
+                .map(|(index, (name, arguments))| {
+                    AssistantContent::ToolCall(ToolCall::from_wire(
+                        format!("call-{turn}-{index}"),
+                        ToolFunction::new(ToolName::new(*name).unwrap(), arguments.clone()),
+                    ))
+                })
+                .collect();
+            if content.is_empty() {
+                content.push(AssistantContent::text("The judgment is true."));
+            }
+            Ok(CompletionResponse::new(
+                content,
+                Usage::default(),
+                Origin::new("fixture", "fixture", "fixture"),
+                Value::Null,
+            )
+            .with_finish_reason(FinishReason::Stop))
+        }
+    }
+
+    // {test}`requirements.authoring.submission`
+    // {test}`requirements.authoring.submission_count`
+    #[tokio::test]
+    async fn a_response_without_a_submission_is_reminded_once() {
+        let submit = json!({"determination": true, "rationale": "Fine."});
+        for (turns, accepted) in [
+            (
+                vec![vec![], vec![("submit_judgment", submit.clone())]],
+                true,
+            ),
+            (vec![vec![], vec![]], false),
+        ] {
+            let project = inputs::tests::project();
+            let mut sources =
+                AssessmentSources::prepare(project.path(), "requirements.ready").unwrap();
+            let state = tempfile::tempdir().unwrap();
+            let mut usage =
+                UsageLog::start(state.path(), project.path(), &sources.subject_name).unwrap();
+            let provider = RemindedProvider {
+                turns,
+                requests: RefCell::default(),
+            };
+            let result = assess(&provider, &mut sources, &mut usage).await;
+            let requests = provider.requests.borrow();
+            assert_eq!(requests.len(), 2);
+            assert!(!requests[0].contains("Reminder:"));
+            assert!(
+                requests[1].contains(
+                    "Reminder: you MUST submit your result with the submit_judgment tool."
+                ),
+                "{}",
+                requests[1]
+            );
+            // Both turns are counted in usage.
+            let record = serde_json::to_value(&usage.record).unwrap();
+            assert_eq!(record["requests"].as_array().unwrap().len(), 2);
+            if accepted {
+                assert_eq!(result.unwrap().1["rationale"], "Fine.");
+            } else {
+                let error = result.unwrap_err().to_string();
+                assert!(error.contains("even after a reminder"), "{error}");
+            }
+        }
     }
 
     // {test}`requirements.authoring.submission`

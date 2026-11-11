@@ -338,7 +338,7 @@ fn ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free() {
         "SECRET_DEFINITION_TEXT",
         "fn ready()",
         "fn ready_test()",
-        "submit_judgment exactly once",
+        "You MUST end by calling submit_judgment",
     ] {
         assert!(prompt.contains(text), "prompt missing {text}");
     }
@@ -1427,7 +1427,8 @@ fn missing_duplicate_and_invalid_submissions_preserve_existing_evidence() {
                 if stdout { "stdout" } else { "file" }
             );
             assert_eq!(usage["evidence_written"], false);
-            assert_eq!(usage["request_count"], 1);
+            // A response without a submission is reminded once.
+            assert_eq!(usage["request_count"], if calls.is_empty() { 2 } else { 1 });
             assert!(usage["determination"].is_null());
         }
     }
