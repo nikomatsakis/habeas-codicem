@@ -218,6 +218,7 @@ impl LoadedDetailEvidence {
         }
     }
 
+    // {cite}`habeas:util`
     pub(crate) fn state(&self) -> EvidenceState {
         self.state
     }
@@ -227,6 +228,7 @@ impl LoadedDetailEvidence {
         &self.errors
     }
 
+    // {cite}`habeas:util`
     /// The recorded determination's kind, when the record has a valid
     /// determination, and whether its rationale states that its assessments
     /// disagreed under the `confirm` policy.
@@ -1065,6 +1067,7 @@ mod tests {
     // {test}`requirements.cli.shared_status_rendering`
     // {test}`requirements.index.detail_format`
     // {test}`requirements.index.invalid_detail`
+    // {test}`requirements.index.detail_pages`
     #[test]
     fn index_shows_evidence_states_and_links_generated_chapters() {
         let temp = TempDir::new().unwrap();

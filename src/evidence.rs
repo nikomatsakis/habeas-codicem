@@ -79,6 +79,7 @@ impl Anchor {
         }
     }
 
+    // {impl}`requirements.references.anchors`
     /// Resolves the anchored file and node.
     pub(crate) fn resolve(
         &self,
@@ -3491,10 +3492,11 @@ pub(crate) mod tests {
     }
 
     // {test}`requirements.examples.definition`
+    // {test}`requirements.definitions.references`
     #[test]
     fn examples_may_reference_their_requirement_with_cite_or_test() {
         let temp = fixture();
-        let chapter = ":::{req} ready\nReady.\n:::\n\n:::{example} tested\nGiven ready. {test}`rules.ready`\n:::\n\n:::{example} cited\nGiven ready. {cite}`rules.ready`\n:::\n\n:::{example} nested\nLike the tested case. {cite}`rules.tested`\n:::\n\n:::{example} implemented\nGiven ready. {impl}`rules.ready`\n:::\n\n:::{example} literal\nGiven ready. `{cite}`rules.ready`` and \\{cite}`rules.ready`\n:::\n\n:::{example} unknown\nGiven ready. {cite}`rules.absent`\n:::\n";
+        let chapter = ":::{req} ready\nReady.\n:::\n\n:::{example} tested\nGiven ready. {test}`rules.ready`\n:::\n\n:::{example} cited\nGiven ready. {cite}`rules.ready`\n:::\n\n:::{example} nested\nLike the tested case. {cite}`rules.tested`\n:::\n\n:::{example} implemented\nGiven ready. {impl}`rules.ready`\n:::\n\n:::{example} literal\nGiven ready. `{cite}`rules.ready`` and \\{cite}`rules.ready`\n:::\n\n:::{example} unknown\nGiven ready. {cite}`rules.absent`\n:::\n\n:::{example} termed\nGiven ready. {term}`rules.ready`\n:::\n";
         fs::write(temp.path().join("md/rules.md"), chapter).unwrap();
         let errors = validate_repository(temp.path()).unwrap().errors.join("\n");
         assert!(
@@ -3511,8 +3513,9 @@ pub(crate) mod tests {
             ),
             "{errors}"
         );
-        // Only `{cite}` or `{test}` counts, and only as a valid reference.
-        for name in ["implemented", "literal", "unknown"] {
+        // Only `{cite}` or `{test}` counts, and only as a valid reference; a
+        // `{term}` naming the requirement does not.
+        for name in ["implemented", "literal", "unknown", "termed"] {
             assert!(
                 errors.contains(&format!(
                     "example rules.{name} must reference at least one requirement with {{cite}} or {{test}}"

@@ -287,3 +287,16 @@ fn site_reviews_follow_their_site_and_renamed_requirement() {
     assert!(!root.join("evidence/sites/requirements.rule").exists());
     assert_eq!(site_errors(root), Vec::<String>::new());
 }
+
+// {test}`requirements.refactor.reference_rewrite`
+#[test]
+fn anchors_follow_a_node_mapping_and_leave_other_nodes_alone() {
+    let map = mappings(&[("node", "src/a.rs#fn[f]", "src/b.rs#fn[g]")]);
+    let markdown = ":::{req} r\n:impl: src/a.rs#fn[f]\n:test: src/a.rs#fn[other]\nBody.\n:::\n";
+    let (rewritten, edits) = rewrite_source(&map, Path::new("md/rules.md"), markdown);
+    assert_eq!(edits, 1, "{rewritten}");
+    assert_eq!(
+        rewritten,
+        ":::{req} r\n:impl: src/b.rs#fn[g]\n:test: src/a.rs#fn[other]\nBody.\n:::\n"
+    );
+}

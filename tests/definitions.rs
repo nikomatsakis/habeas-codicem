@@ -64,6 +64,7 @@ fn requirements(root: &Path, selection: &str, matches: &[&str]) -> Value {
     json!({ "requirements": selection, "matches": matches, "text": text })
 }
 
+// {cite}`habeas:util`
 /// Writes a pending evidence record for the requirement or example `name`
 /// containing exactly `inputs`, and returns its path.
 fn record(root: &Path, name: &str, inputs: Vec<Value>) -> PathBuf {

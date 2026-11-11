@@ -703,6 +703,8 @@ pub(crate) fn definition_blocks(content: &str) -> Vec<DefinitionBlock> {
     blocks
 }
 
+// {impl}`requirements.ci.requirement_text`
+// {impl}`requirements.examples.definition`
 /// Parse an option line of the form `:name: value`.
 pub(crate) fn option_line(line: &str) -> Option<(&str, &str)> {
     let rest = line.trim_start_matches(' ').strip_prefix(':')?;
@@ -861,12 +863,14 @@ fn protected_ranges(content: &str) -> Vec<Range<usize>> {
     ranges
 }
 
+// {cite}`habeas:util`
 fn is_protected(position: usize, ranges: &[Range<usize>]) -> bool {
     ranges
         .iter()
         .any(|range| range.start <= position && position < range.end)
 }
 
+// {cite}`habeas:util`
 fn is_escaped(content: &str, position: usize) -> bool {
     content[..position]
         .bytes()

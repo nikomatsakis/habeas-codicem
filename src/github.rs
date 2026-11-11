@@ -250,6 +250,7 @@ impl Client {
     /// Records a definitive result. A failed cache write only means the
     /// next read contacts GitHub again.
     // {impl}`requirements.authoring.github_reads`
+    // {impl}`requirements.configuration.state_location`
     fn store(&self, issue: &str, now: u64, read: &IssueRead) {
         let Some(path) = self.cache_path(issue) else {
             return;

@@ -187,6 +187,7 @@ fn local_path_setup_rejects_a_missing_crate_directory() {
 // {test}`requirements.cli.setup_css`
 // {test}`requirements.cli.setup_local_path`
 // {test}`requirements.cli.mdbook`
+// {test}`requirements.index.detail_pages`
 #[test]
 fn setup_is_repeatable() {
     let temp = fixture();

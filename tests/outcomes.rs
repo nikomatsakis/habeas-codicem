@@ -6,6 +6,7 @@ use mdbook_preprocessor::book::{Book, BookItem, Chapter};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
+// {cite}`habeas:util`
 /// A role written so this file's own source does not contain it.
 fn role(kind: &str) -> String {
     format!("{{{kind}}}")
@@ -87,6 +88,7 @@ fn fixture() -> TempDir {
     temp
 }
 
+// {cite}`habeas:util`
 fn write_record(root: &Path, name: &str, mut value: Value) {
     if value.get("references").is_none() {
         value["references"] =
@@ -99,6 +101,7 @@ fn write_record(root: &Path, name: &str, mut value: Value) {
     .unwrap();
 }
 
+// {cite}`habeas:util`
 fn replace_judgment(root: &Path, name: &str, judgment: Value) {
     let path = root.join(format!("evidence/requirements.{name}.json"));
     let mut record: Value = serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();

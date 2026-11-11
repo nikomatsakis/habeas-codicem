@@ -1155,3 +1155,59 @@ fn a_moved_example_rewrites_its_example_field() {
         .collect::<Vec<_>>();
     assert_eq!(after, before);
 }
+
+// {test}`requirements.refactor.equivalence`
+// {test}`requirements.refactor.whole_record`
+#[test]
+fn a_citation_review_whose_citations_changed_in_the_move_is_left_unchanged() {
+    let temp = project();
+    let root = temp.path();
+    fs::write(
+        root.join("src/config.rs"),
+        format!(
+            "{}\n// {{cite}}`rules.load`\nfn helper() {{}}\n",
+            config_source("")
+        ),
+    )
+    .unwrap();
+    author(root);
+    let path = root.join("evidence/citations/src/config.rs/fn[helper].json");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(
+        &path,
+        serde_json::to_string_pretty(&json!({
+            "file": "src/config.rs",
+            "item": "fn[helper]",
+            "citations": [{"role": "cite", "name": "rules.load", "commentary": ""}],
+            "determination": true,
+            "rationale": "`src/config.rs#fn[helper]` relies on `rules.load`.",
+            "inputs": [
+                habeas::outline_input(root, "src/config.rs", "fn[helper]").unwrap(),
+                requirements_input("rules.load", &["rules.load"], &LOAD_TEXT),
+            ],
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let before = fs::read(&path).unwrap();
+    // The helper moves, and now cites a different requirement. Plain
+    // comments are not hashed, so only its citations reveal the change.
+    fs::write(root.join("src/config.rs"), config_source("")).unwrap();
+    fs::write(
+        root.join("src/helper.rs"),
+        "// {cite}`rules.check`\nfn helper() {}\n",
+    )
+    .unwrap();
+    let report = stdout(&refactor(
+        root,
+        &["--map", "src/config.rs#fn[helper]=src/helper.rs#fn[helper]"],
+    ));
+    assert!(
+        report.contains(
+            "- evidence/citations/src/config.rs/fn[helper].json: the citations of src/helper.rs#fn[helper] differ from the recorded ones"
+        ),
+        "{report}"
+    );
+    assert_eq!(fs::read(&path).unwrap(), before);
+    assert!(!root.join("evidence/citations/src/helper.rs").exists());
+}
