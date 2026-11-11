@@ -447,3 +447,138 @@ fn a_rename_onto_an_existing_record_is_refused() {
     );
     assert!(root.join("evidence/rules.load.json").exists());
 }
+
+// {test}`requirements.refactor.outline_inputs`
+// {test}`requirements.refactor.reference_rewrite`
+// {test}`requirements.refactor.equivalence`
+#[test]
+fn a_rename_rewrites_the_hash_of_a_node_whose_doc_comment_names_it() {
+    let temp = project();
+    let root = temp.path();
+    // Doc comments are hashed, so the rewritten reference changes the hash.
+    fs::write(
+        root.join("src/config.rs"),
+        config_source("").replace("// {impl}`rules.load`", "/// {impl}`rules.load`"),
+    )
+    .unwrap();
+    author(root);
+    assert_eq!(errors(root), Vec::<String>::new());
+    let hash = |root: &Path| {
+        habeas::outline_input(root, "src/config.rs", "fn[load]").unwrap()["hash"].clone()
+    };
+    let before = hash(root);
+    fs::write(
+        root.join("md/rules.md"),
+        "# Rules\n\n:::{req} check\n:impl: data.txt\nThe data MUST be checked.\n:::\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("md/core.md"),
+        "# Core\n\n:::{req} load\nConfiguration MUST load.\n:::\n",
+    )
+    .unwrap();
+    let output = refactor(root, &["--map", "rules.load=core.load"]);
+    assert!(output.status.success(), "{output:?}");
+    let source = fs::read_to_string(root.join("src/config.rs")).unwrap();
+    assert!(source.contains("/// {impl}`core.load`"), "{source}");
+    let after = hash(root);
+    assert_ne!(before, after);
+    let record: Value =
+        serde_json::from_str(&fs::read_to_string(root.join("evidence/core.load.json")).unwrap())
+            .unwrap();
+    assert_eq!(record["inputs"][1]["hash"], after);
+    // Only the glob record, whose match set changed, remains stale.
+    let remaining = errors(root);
+    assert!(
+        remaining
+            .iter()
+            .all(|error| error.starts_with("evidence/rules.check.json")),
+        "{remaining:#?}"
+    );
+}
+
+// {test}`requirements.refactor.record_files`
+// {test}`requirements.refactor.record_fields`
+// {test}`requirements.refactor.equivalence`
+#[test]
+fn a_citation_review_follows_its_item_and_the_name_it_cites() {
+    let temp = project();
+    let root = temp.path();
+    let cited = format!(
+        "{}\n// {{cite}}`rules.load`\nfn helper() {{}}\n",
+        config_source("")
+    );
+    fs::write(root.join("src/config.rs"), &cited).unwrap();
+    author(root);
+    let review = |root: &Path, file: &str, name: &str, text: &[&str]| {
+        json!({
+            "file": file,
+            "item": "fn[helper]",
+            "citations": [{"role": "cite", "name": name, "commentary": ""}],
+            "determination": true,
+            "rationale": format!("`{file}#fn[helper]` relies on `{name}`."),
+            "inputs": [
+                habeas::outline_input(root, file, "fn[helper]").unwrap(),
+                requirements_input(name, &[name], text),
+            ],
+        })
+    };
+    fs::create_dir_all(root.join("evidence/citations/src/config.rs")).unwrap();
+    fs::write(
+        root.join("evidence/citations/src/config.rs/fn[helper].json"),
+        serde_json::to_string_pretty(&review(root, "src/config.rs", "rules.load", &LOAD_TEXT))
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(errors(root), Vec::<String>::new());
+    // The helper moves to its own file, and `load` to the `core` chapter.
+    fs::write(root.join("src/config.rs"), config_source("")).unwrap();
+    fs::write(
+        root.join("src/helper.rs"),
+        "// {cite}`rules.load`\nfn helper() {}\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("md/rules.md"),
+        "# Rules\n\n:::{req} check\n:impl: data.txt\nThe data MUST be checked.\n:::\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("md/core.md"),
+        "# Core\n\n:::{req} load\nConfiguration MUST load.\n:::\n",
+    )
+    .unwrap();
+    let output = refactor(
+        root,
+        &[
+            "--map",
+            "src/config.rs#fn[helper]=src/helper.rs#fn[helper]",
+            "--map",
+            "rules.load=core.load",
+        ],
+    );
+    assert!(output.status.success(), "{output:?}");
+    assert!(
+        stdout(&output).contains(
+            "- evidence/citations/src/config.rs/fn[helper].json -> evidence/citations/src/helper.rs/fn[helper].json"
+        ),
+        "{}",
+        stdout(&output)
+    );
+    assert!(!root.join("evidence/citations/src/config.rs").exists());
+    let moved: Value = serde_json::from_str(
+        &fs::read_to_string(root.join("evidence/citations/src/helper.rs/fn[helper].json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        moved,
+        review(root, "src/helper.rs", "core.load", &LOAD_TEXT)
+    );
+    let remaining = errors(root);
+    assert!(
+        remaining
+            .iter()
+            .all(|error| error.starts_with("evidence/rules.check.json")),
+        "{remaining:#?}"
+    );
+}
