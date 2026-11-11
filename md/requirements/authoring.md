@@ -155,7 +155,8 @@ applied.
 
 # Submitting
 
-Call submit_verification exactly once. That tool call is your final answer.
+You MUST end by calling submit_verification exactly once. A verification
+written in your reply text is not accepted.
 ```
 
 ```text
@@ -362,8 +363,9 @@ requirements or examples the item does not cite, except as step 3 requires.
 # Submitting
 
 Choose true when your task finds no gap, {"FIXME": ["..."]} when every gap is
-acknowledged, and false otherwise. Call submit_judgment exactly once with
-determination and rationale. That tool call is your final answer.
+acknowledged, and false otherwise. You MUST end by calling submit_judgment
+exactly once with determination and rationale. A judgment written in your
+reply text is not accepted.
 ```
 
 ```text
@@ -444,8 +446,9 @@ site's callers, or other sites.
 # Submitting
 
 Choose true when your task finds no gap, {"FIXME": ["..."]} when every gap is
-acknowledged, and false otherwise. Call submit_judgment exactly once with
-applies, determination, and rationale. That tool call is your final answer.
+acknowledged, and false otherwise. You MUST end by calling submit_judgment
+exactly once with applies, determination, and rationale. A judgment written in
+your reply text is not accepted.
 ```
 
 ```text
@@ -969,9 +972,10 @@ implementation or is not needed for it.
 
 # Submitting
 
-Call submit_coverage_review exactly once with findings: one entry for each
-listed definition, with definition (its full name), finding ("root" or
-"not needed"), and a nonempty rationale. That tool call is your final answer.
+You MUST end by calling submit_coverage_review exactly once with findings: one
+entry for each listed definition, with definition (its full name), finding
+("root" or "not needed"), and a nonempty rationale. Findings written in your
+reply text are not accepted.
 ```
 
 ```text
@@ -1028,14 +1032,19 @@ The judgment MUST use the three outcomes and nonempty FIXME entries defined by
 {cite}`requirements.ci.outcomes`.
 `rationale` MUST be nonempty Markdown. This tool call MUST supply the final
 assessment result. The model MUST invoke it exactly once over the entire
-assessment. If the model finishes without invoking it, or invokes it more than
-once, the harness MUST report an error and leave existing evidence unchanged.
+assessment. If a response ends without invoking it, and the assessment has
+not already been reminded, the harness MUST continue the conversation with one
+user message, `Reminder: you MUST submit your result with the submit_judgment
+tool.`, naming the assessment's submission tool. If a later response also ends
+without invoking it, or the model invokes it more than once, the harness MUST
+report an error and leave existing evidence unchanged. The reminder MUST be
+counted in usage like any other turn.
 The harness MUST check the complete model response for multiple submissions
 before accepting one. Invalid submission arguments MUST also fail the assessment.
 A valid single submission MUST finish the assessment; there is no submission
 repair or resubmission loop, except the one continuation after a response cut
-off at its output limit under {cite}`requirements.authoring.output_limit` and
-the one resubmission after a rejection under
+off at its output limit under {cite}`requirements.authoring.output_limit`, the
+one reminder above, and the one resubmission after a rejection under
 {cite}`requirements.authoring.line_numbers.rejection`. An assessment that fails before accepting a valid
 judgment MUST emit no evidence JSON to stdout.
 :::
@@ -1157,8 +1166,9 @@ reassess its implementation or tests, and those obligations need no test here.
 # Submitting
 
 Choose true when your task finds no gap, {"FIXME": ["..."]} when every gap is
-acknowledged, and false otherwise. Call submit_judgment exactly once with
-determination and rationale. That tool call is your final answer.
+acknowledged, and false otherwise. You MUST end by calling submit_judgment
+exactly once with determination and rationale. A judgment written in your
+reply text is not accepted.
 ```
 
 ```text
@@ -1837,8 +1847,9 @@ item, along with any required terminology. A line-range request omitting
 :::
 
 :::{example} submission_count
-A model finishes with prose but never calls `submit_judgment`: the assessment
-fails without writing evidence. A response with two `submit_judgment` calls also
+A model finishes with prose but no `submit_judgment` call: the harness reminds
+it once, and when it then calls `submit_judgment`, the assessment succeeds. When
+it ends with prose again, the assessment fails without writing evidence. A response with two `submit_judgment` calls also
 fails, even when their payloads are identical. A single call with invalid
 arguments fails without requesting a replacement submission.
 {cite}`requirements.authoring.submission`
