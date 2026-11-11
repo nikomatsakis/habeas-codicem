@@ -3,13 +3,11 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
-use toml_edit::{Array, DocumentMut, Item, value};
+use toml_edit::{Array, DocumentMut, Item, Table, value};
 
 const TEST_SOURCE: &str = "#[test]\nfn habeas() {\n    habeas::validate();\n}\n";
 const BADGE_CSS: &str = include_str!("../md/habeas.css");
 
-// {impl}`requirements.cli.setup_css`
-// {impl}`requirements.integration.symposium_setup_hook`
 fn css_relative(source_path: &Path) -> String {
     source_path
         .join("habeas.css")
@@ -22,8 +20,6 @@ fn css_relative(source_path: &Path) -> String {
         .join("/")
 }
 
-// {impl}`requirements.cli.setup_local_path`
-// {impl}`requirements.integration.symposium_setup_hook`
 fn has_habeas_dev_dependency(manifest: &DocumentMut) -> bool {
     manifest
         .get("dev-dependencies")
@@ -32,7 +28,17 @@ fn has_habeas_dev_dependency(manifest: &DocumentMut) -> bool {
         .is_some()
 }
 
-// {impl}`requirements.integration.symposium_setup_hook`
+fn book_source(book: &DocumentMut) -> Result<&str, &'static str> {
+    let table = book
+        .get("book")
+        .map(|item| item.as_table_like().ok_or("book must be a table"))
+        .transpose()?;
+    match table.and_then(|table| table.get("src")) {
+        Some(item) => item.as_str().ok_or("book.src must be a string"),
+        None => Ok("src"),
+    }
+}
+
 pub(crate) fn project_depends_on_habeas(root: &Path) -> bool {
     fs::read_to_string(root.join("Cargo.toml"))
         .ok()
@@ -40,8 +46,6 @@ pub(crate) fn project_depends_on_habeas(root: &Path) -> bool {
         .is_some_and(|manifest| has_habeas_dev_dependency(&manifest))
 }
 
-// {impl}`requirements.cli.setup_project`
-// {impl}`requirements.integration.symposium_setup_hook`
 pub(crate) fn find_project_root(cwd: &Path) -> Option<PathBuf> {
     cwd.ancestors()
         .find(|directory| {
@@ -50,14 +54,12 @@ pub(crate) fn find_project_root(cwd: &Path) -> Option<PathBuf> {
         .map(Path::to_path_buf)
 }
 
-// {impl}`requirements.cli.setup_project`
 pub(crate) fn project_root() -> Result<PathBuf, Box<dyn Error>> {
     let cwd = std::env::current_dir()?;
     find_project_root(&cwd)
         .ok_or_else(|| "cannot find a project with Cargo.toml and book.toml".into())
 }
 
-// {impl}`requirements.cli.setup`
 pub(crate) fn write_new_or_same(path: &Path, content: &str) -> Result<(), Box<dyn Error>> {
     if path.exists() {
         if fs::read_to_string(path)? != content {
@@ -76,13 +78,12 @@ pub(crate) fn write_new_or_same(path: &Path, content: &str) -> Result<(), Box<dy
     Ok(())
 }
 
-// {impl}`requirements.cli.setup`
 pub(crate) fn run(local_crate: Option<&Path>) -> Result<(), Box<dyn Error>> {
     let root = project_root()?;
     let book_path = root.join("book.toml");
     let mut book: DocumentMut = fs::read_to_string(&book_path)?.parse()?;
     // {impl}`requirements.cli.setup_project`
-    let source = book["book"]["src"].as_str().unwrap_or("src").to_owned();
+    let source = book_source(&book)?.to_owned();
     let source_path = Path::new(&source);
     if source.is_empty()
         || !source_path
@@ -127,9 +128,22 @@ pub(crate) fn run(local_crate: Option<&Path>) -> Result<(), Box<dyn Error>> {
         return Err("output.html.additional-css must be an array".into());
     }
 
+    // {impl}`requirements.index.detail_pages`
+    let fold = &mut book["output"]["html"]["fold"];
+    if fold.is_none() {
+        let mut table = Table::new();
+        table.insert("enable", value(true));
+        *fold = Item::Table(table);
+    } else if let Some(fold) = fold.as_table_like_mut() {
+        if fold.get("enable").is_none() {
+            fold.insert("enable", value(true));
+        }
+    } else {
+        return Err("output.html.fold must be a table".into());
+    }
+
     let manifest_path = root.join("Cargo.toml");
     let manifest: DocumentMut = fs::read_to_string(&manifest_path)?.parse()?;
-    // {impl}`requirements.cli.setup_local_path`
     let has_dev_dependency = has_habeas_dev_dependency(&manifest);
     if !has_dev_dependency {
         let mut command = Command::new("cargo");
@@ -159,7 +173,8 @@ pub(crate) fn run(local_crate: Option<&Path>) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-// {impl}`requirements.integration.symposium_setup_hook`
+// {impl}`requirements.cli.setup_project`
+// {cite}`requirements.cli.setup_css`
 pub(crate) fn is_configured(root: &Path) -> bool {
     let manifest = match fs::read_to_string(root.join("Cargo.toml"))
         .ok()
@@ -179,12 +194,9 @@ pub(crate) fn is_configured(root: &Path) -> bool {
         Some(book) => book,
         None => return false,
     };
-    let source = book
-        .get("book")
-        .and_then(Item::as_table_like)
-        .and_then(|table| table.get("src"))
-        .and_then(Item::as_str)
-        .unwrap_or("src");
+    let Ok(source) = book_source(&book) else {
+        return false;
+    };
     let source_path = Path::new(source);
     if source.is_empty()
         || !source_path
@@ -214,12 +226,22 @@ pub(crate) fn is_configured(root: &Path) -> bool {
         return false;
     }
 
-    let css_relative = css_relative(source_path);
-    let css_list = book
+    let html = book
         .get("output")
         .and_then(Item::as_table_like)
         .and_then(|table| table.get("html"))
+        .and_then(Item::as_table_like);
+    // Setup leaves an existing `enable` value alone, so any value counts.
+    if !html
+        .and_then(|table| table.get("fold"))
         .and_then(Item::as_table_like)
+        .is_some_and(|fold| fold.get("enable").is_some())
+    {
+        return false;
+    }
+
+    let css_relative = css_relative(source_path);
+    let css_list = html
         .and_then(|table| table.get("additional-css"))
         .and_then(Item::as_array);
     if !css_list.is_some_and(|css| {

@@ -4,6 +4,7 @@ import {
   isOwner,
   ownerLinks,
   verifyPaths,
+  anchorOnlyChange,
   planForEvent,
   approvedOnHead,
   publicationResult,
@@ -354,7 +355,63 @@ test('dismissed approval or changed requirements tree blocks further code', asyn
   routes[`/repos/owner/project/git/trees/${different}?recursive=1`] = {
     truncated: false, tree: [{ path: 'md/requirements.md', type: 'blob', mode: '100644', sha: different }],
   };
+  routes[`/repos/owner/project/git/blobs/${different}`] = blob(anchoredDoc);
+  routes[`/repos/owner/project/git/blobs/${oldHead}`] = blob(anchoredDoc.replace('Body text.', 'Changed text.'));
   assert.equal(await planForEvent(fakeApi(routes), 'issue_comment', commentEvent(), bot), null);
+});
+
+const anchoredDoc = ':::{req} failure\n:impl: src/lib.rs\nBody text.\n:::\n';
+
+function blob(text) {
+  return { encoding: 'base64', content: Buffer.from(text).toString('base64') };
+}
+
+test('code commits that only changed anchor lines keep the approved requirements tree', async () => {
+  const routes = cycleRoutes('implementation');
+  const different = 'c'.repeat(40);
+  routes[`/repos/owner/project/git/commits/${oldHead}`] = { tree: { sha: different } };
+  routes[`/repos/owner/project/git/trees/${different}?recursive=1`] = {
+    truncated: false, tree: [{ path: 'md/requirements.md', type: 'blob', mode: '100644', sha: different }],
+  };
+  routes[`/repos/owner/project/git/blobs/${different}`] = blob(anchoredDoc);
+  routes[`/repos/owner/project/git/blobs/${oldHead}`] = blob(anchoredDoc.replace('src/lib.rs', 'src/retry.rs'));
+  const plan = await planForEvent(fakeApi(routes), 'issue_comment', commentEvent(), bot);
+  assert.equal(plan.stage, 'implementation');
+});
+
+test('code commits may change md/ only by editing anchor option lines', () => {
+  const before = ':::{req} failure\n:impl: src/lib.rs\nBody text.\n:::\n\n:::{example} retry\nExample text.\n:::\n';
+  const accepted = {
+    add: before.replace(':::{example} retry\n', ':::{example} retry\n:test: tests/retry.rs\n'),
+    change: before.replace(':impl: src/lib.rs', ':impl: src/failure.rs'),
+    remove: before.replace(':impl: src/lib.rs\n', ''),
+    second: before.replace(':impl: src/lib.rs\n', ':impl: src/lib.rs\n:test: tests/retry.rs\n'),
+  };
+  const rejected = {
+    body: before.replace('Body text.', 'Other text.'),
+    anchorAndBody: accepted.change.replace('Body text.', 'Other text.'),
+    midBody: before.replace('Example text.\n', 'Example text.\n:test: tests/retry.rs\n'),
+    outsideDefinition: `:impl: src/lib.rs\n${before}`,
+    notAnchor: before.replace(':impl: src/lib.rs', ':impl: src/lib.rs\n:label: x'),
+    unchanged: before,
+  };
+  const plan = { ...intentPlan, stage: 'implementation' };
+  for (const [name, after] of Object.entries(accepted)) {
+    assert.equal(anchorOnlyChange(before, after), true, name);
+    const md = { 'md/requirements.md': { before, after } };
+    assert.equal(publicationResult(plan, implementation, ['md/requirements.md', 'src/lib.rs'], md).stage, 'implementation', name);
+  }
+  for (const [name, after] of Object.entries(rejected)) {
+    assert.equal(anchorOnlyChange(before, after), false, name);
+    const md = { 'md/requirements.md': { before, after } };
+    assert.throws(() => publicationResult(plan, implementation, ['md/requirements.md', 'src/lib.rs'], md), /Disallowed/, name);
+  }
+  const code = '```text\n:::{req} literal\n```\n';
+  assert.equal(anchorOnlyChange(code, code.replace('literal\n', 'literal\n:impl: src/lib.rs\n')), false);
+  assert.throws(() => verifyPaths('implementation', ['md/new.md'], { 'md/new.md': { before: null, after: ':::{req} x\n:impl: a\n:::\n' } }), /Disallowed/);
+  assert.throws(() => verifyPaths('implementation', ['md/gone.md'], { 'md/gone.md': { before: ':::{req} x\n:impl: a\n:::\n', after: null } }), /Disallowed/);
+  assert.throws(() => verifyPaths('implementation', ['md/requirements.md']), /Disallowed/);
+  assert.throws(() => verifyPaths('implementation', ['md/notes.txt'], { 'md/notes.txt': { before, after: accepted.change } }), /Disallowed/);
 });
 
 test('history includes owner and contributor context, agent summaries, and inline source locations', async () => {

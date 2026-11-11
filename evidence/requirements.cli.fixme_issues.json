@@ -1,0 +1,228 @@
+{
+  "requirement": "`habeas status` MUST look up, under {cite}`requirements.authoring.github_reads`,\nevery issue that a `:github:` option line of a named or unnamed `{fixme}` under\n{cite}`requirements.references.roles` names, and MUST report each `{fixme}`\nnaming an issue that is closed or does not exist as an error, with its file and\nline and the issue. It MUST also report the item that contains that `{fixme}` as\nfailing: the outline node containing it, or the requirement or example\ndeclaration whose body contains it, in the same way it reports an uncovered\nRust item. When GitHub cannot be reached, the issue MUST be assumed open.\nRepository validation MUST NOT contact GitHub.",
+  "determination": true,
+  "rationale": "I found no gaps. The one point of interpretation is that I read \"in the same way it reports an uncovered Rust item\" as \"as a validation error that shows up in `habeas status`\", which is how the code reports it.\n\n**Obligations and the code that carries them out**\n\n- **Root and reachability.** `src/main.rs` `fn[main]` carries `{impl}` for this requirement on the `Command::Status` arm. That arm calls `habeas::status_markdown_with_github(..., &GithubIssues::from_env(&root))`. This reaches `src/commands.rs` `status_markdown_with_github`, which calls `crate::github::add_issue_findings` on the repository inspection. All the behavior below is reachable from `main` by following calls.\n- **Look up every issue a `:github:` line of a named or unnamed `{fixme}` names, under github_reads.**\n  - `fixme_issues` collects every closed `{fixme}` fence that has at least one issue. It does not filter on whether the fence is named, so both named and unnamed fences are included.\n  - `add_issue_findings` reads all those issues through `GithubIssues::read_all`.\n  - `read_all` goes through the shared cache with the one-hour lifetime. That requirement's own implementation is not reassessed here.\n- **Report each `{fixme}` naming a closed or nonexistent issue as an error, with file, line and issue.** `add_issue_findings` emits `\"{file}:{line}: {fixme} names {issue}, which is closed\"` or `\"... which does not exist\"`. `IssueRead::not_open` maps `Found` with `open == false` to \"is closed\" and `Missing` to \"does not exist\".\n- **Report the containing item as failing.** `containing_item` returns the requirement or example declaration when the `{fixme}` is in its body, using the declaration's start line and `declaration.kind.noun()`. Otherwise it returns the outline node containing the `{fixme}`. The error is `\"{file}:{line}: {item} fails: its {fixme} at line N names {issue}, which ...\"`. These are added to `inspection.report.errors`, the same channel the uncovered-item errors use (`rust_coverage::uncovered_error`). The integration test confirms that the requirement's status row becomes `Invalid`.\n- **Assume open when GitHub cannot be reached.** `IssueRead::Failed` and `GithubIssues::offline()` both give `not_open() == None`, so nothing is reported.\n- **Repository validation MUST NOT contact GitHub.** `add_issue_findings` is called only from the status path. `validate_repository` and `inspect_repository` do not call it.\n\n**Tests**\n\n- `src/github.rs` `closed_and_missing_issues_fail_their_fixmes_items_and_acknowledged_records` carries `{test}` for this requirement. It covers:\n  - a closed issue on a named `{fixme}` on a Rust fn;\n  - a missing issue on an unnamed `{fixme}` in a requirement body, where the requirement is reported as failing;\n  - an open issue, which adds no error;\n  - an offline client and an unreachable endpoint, both treated as open;\n  - that inspection alone reads no issues.\n- `tests/authoring_batch.rs` `closing_an_acknowledged_issue_makes_the_fixme_record_stale_and_reassessed` carries `{test}` for this requirement. It runs `habeas status` as a real process against a fake GitHub server. It asserts the three error lines, the `Invalid` row, and that `validate_repository` stays clean and makes no further requests.\n\nAn example declaration is reported through the same code path as a requirement declaration; only the noun differs, so it needs no separate test.",
+  "references": "c9019c94526434f6eedab824c57f8df250c1a2528d67f91f578ed0b0fc1966ca",
+  "inputs": [
+    {
+      "requirements": "requirements.cli.fixme_issues",
+      "matches": [
+        "requirements.cli.fixme_issues"
+      ],
+      "text": [
+        ":::{req} fixme_issues",
+        "`habeas status` MUST look up, under {cite}`requirements.authoring.github_reads`,",
+        "every issue that a `:github:` option line of a named or unnamed `{fixme}` under",
+        "{cite}`requirements.references.roles` names, and MUST report each `{fixme}`",
+        "naming an issue that is closed or does not exist as an error, with its file and",
+        "line and the issue. It MUST also report the item that contains that `{fixme}` as",
+        "failing: the outline node containing it, or the requirement or example",
+        "declaration whose body contains it, in the same way it reports an uncovered",
+        "Rust item. When GitHub cannot be reached, the issue MUST be assumed open.",
+        "Repository validation MUST NOT contact GitHub.",
+        ":::"
+      ]
+    },
+    {
+      "requirements": "requirements.authoring.github_reads",
+      "matches": [
+        "requirements.authoring.github_reads"
+      ],
+      "text": [
+        ":::{req} github_reads",
+        "The harness MUST expose a `github` tool with this interface:",
+        "",
+        "```text",
+        "github({ issue: String }) -> Issue",
+        "",
+        "Issue { reference: String, state: \"open\" | \"closed\", title: String, body: String }",
+        "```",
+        "",
+        "`issue` MUST have the form `<owner>/<repo>#<number>`. The tool MUST read the issue",
+        "or pull request through the GitHub API, authenticating with the `GITHUB_TOKEN`",
+        "environment variable when that is set, and MUST return its body redacted under",
+        "{cite}`requirements.authoring.redaction`. GitHub reads cannot be reproduced",
+        "later, so their results MUST NOT be recorded as evidence inputs and MUST NOT",
+        "make evidence stale. Every GitHub read by Habeas, including this tool's, the",
+        "lookups below, and those of {cite}`requirements.cli.fixme_issues`, MUST go",
+        "through one cache under the state root of",
+        "{cite}`requirements.configuration.state_location`, keyed by issue, and MUST",
+        "reuse a cached result less than one hour old instead of contacting GitHub. A malformed reference, a missing issue, or a failed request",
+        "MUST return an explanatory tool error.",
+        "",
+        "When the mandatory inputs contain a `{fixme}` reference under",
+        "{cite}`requirements.references.roles`, the harness MUST look up the state of",
+        "each issue its `:github:` lines name, in the same way, and MUST supply each state with that input to the model as `open` or `closed`; when GitHub cannot be reached, the issue MUST be assumed open. These states MUST NOT be recorded either. Instead, `habeas status` and `habeas author` MUST treat a recorded FIXME determination as stale, exactly as if one of its inputs had changed, when an issue that one of its acknowledging `{fixme}` references names, or for a site review the `{fixme}` references inside the site, is closed or does not exist; repository validation, which never contacts GitHub, MUST NOT.",
+        "",
+        "The harness MAY take the GitHub API base URL from `HABEAS_GITHUB_API_URL`,",
+        "accepting only `http://127.0.0.1:<port>`, so that tests can use a local server.",
+        ":::"
+      ]
+    },
+    {
+      "requirements": "requirements.references.roles",
+      "matches": [
+        "requirements.references.roles"
+      ],
+      "text": [
+        ":::{req} roles",
+        "Project text files MAY use the `{impl}`, `{cite}`, and `{test}` roles with a backtick-delimited full requirement or example name, or with a built-in name under {cite}`requirements.references.builtin_definitions`, and MAY use the `{fixme}` role in fenced form. A reference MAY instead be written in fenced form, `:::{role} name` on one line, a body, and a closing fence, following the fence rules of {cite}`requirements.ci.span` and {cite}`requirements.ci.fence_lengths`; the fenced form is the same edge with attached commentary, and the inline form carries none. In a source comment, fence lines MUST be recognized after removing each line's comment delimiters within one comment run under {cite}`requirements.references.outline_comments`, and a fence that does not close within its comment run MUST be a validation error. Each reference is a directed edge between its source and the named definition. A source is a project source item or a requirement or example declaration. The roles MUST mean:",
+        "",
+        "- `{cite}`: the source relies on, supports, or refers to the definition. It is an",
+        "  edge from the source to the definition.",
+        "- `{impl}`: the source implements part of the definition: it makes a decision,",
+        "  performs a check, produces an output, or handles a case that the definition",
+        "  specifies. A requirement MAY implement part of another requirement by refining",
+        "  one of its obligations. Calling code that implements a definition, or",
+        "  producing a result a caller uses to meet it, MUST NOT by itself count as",
+        "  implementing it. A check MUST count only if the definition states it, or the",
+        "  source could not meet one of the definition's obligations without it; source",
+        "  that checks it is consistent with a definition, such as recognizing a form the",
+        "  definition specifies in order to decide whether to run other behavior, relies",
+        "  on that definition and calls for `{cite}`. A requirement stating a convention",
+        "  for every output of a kind, such as every validation error, is implemented by",
+        "  the source that carries out the convention as a whole, such as the step that",
+        "  collects and reports those outputs.",
+        "- `{test}`: the source is designed to verify behavior the definition specifies:",
+        "  a test through its scenario and the assertions about that scenario's outcome,",
+        "  or a named example through the concrete case it describes.",
+        "- `{fixme}`: the source acknowledges a known gap in fulfilling the definition. It",
+        "  MUST use the fenced form, and its body MUST describe the gap. The body MAY",
+        "  begin with option lines naming issues that track the gap, one per line, in the",
+        "  form `:github: <owner>/<repo>#<number>`, such as",
+        "  `:github: rust-lang/rust#123`. `github` MUST be the only recognized option.",
+        "  A named `{fixme}` MAY appear only in sources outside the book. Validation MUST report",
+        "  any other option line, a `:github:` value not in that form, an inline",
+        "  `{fixme}`, a `{fixme}` in a requirement or example declaration, and a",
+        "  `{fixme}` whose body, without option lines and comment delimiters, is empty.",
+        "  An unnamed `{fixme}`, a fence of `:::{fixme}` with no name, MAY appear in any",
+        "  project text, including a requirement or example body, to tie that place to",
+        "  the issues it names. It MUST have at least one `:github:` option line and MAY",
+        "  have a description; it is not a reference edge, acknowledges no gap, needs no",
+        "  coverage, and does not count as a reference for Rust item coverage. Its",
+        "  issues are checked under {cite}`requirements.cli.fixme_issues`.",
+        "",
+        "`{impl}`, `{test}`, and `{fixme}` are edges from the definition to the source.",
+        "Only requirements and examples are assessed; code is reviewed as part of the",
+        "definitions it implements or tests.",
+        "",
+        "```text",
+        "{impl}`requirements.references.roles`",
+        "{cite}`requirements.references.roles`",
+        "{test}`requirements.references.roles`",
+        "```",
+        ":::"
+      ]
+    },
+    {
+      "file": "src/github.rs",
+      "item": "mod[tests]/fn[closed_and_missing_issues_fail_their_fixmes_items_and_acknowledged_records]",
+      "hash": "0ac32b7f2e9b648e6e451f6b9770036bc2b535b7e031bd0de81b4d11b2b97e4d"
+    },
+    {
+      "file": "src/main.rs",
+      "item": "fn[main]",
+      "hash": "868ad3db215d07150b0a0c3b700e5e8da9d49bd6b4a4101ed0f258a7ab4109d6"
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "item": "fn[closing_an_acknowledged_issue_makes_the_fixme_record_stale_and_reassessed]",
+      "hash": "a0fe132a4b33a7fe3b4907aab0223d21faef58b9002990c507139aff8778fe2f"
+    },
+    {
+      "file": "src/github.rs",
+      "item": "impl[IssueRead]",
+      "hash": "74c33e85770c001bc727d0885ca90769ce95fbe5b47ad90dd7db1fbf6d67e2db"
+    },
+    {
+      "file": "src/github.rs",
+      "item": "struct[GithubIssues]",
+      "hash": "e1a727231be10c4bc226c5cd26c781190636a6a1fd3f21ae680cfea446bc2dc7"
+    },
+    {
+      "file": "src/github.rs",
+      "item": "fn[is_loopback_api_url]",
+      "hash": "0cccf8111edbf6bef5e23d22f763e75eb97a104e9e8e0459fbf23e0968014ee4"
+    },
+    {
+      "file": "src/github.rs",
+      "item": "struct[Client]",
+      "hash": "1aa11ecbd166235c25fb0a32fcc22356dd62f1ecadff174e77616056cab06972"
+    },
+    {
+      "file": "src/github.rs",
+      "item": "impl[GithubIssues]",
+      "hash": "64c1103791c613a1c65ef19d935493f3dcda908f086d55baa98ec3b3aca25934"
+    },
+    {
+      "file": "src/github.rs",
+      "item": "impl[Client]",
+      "hash": "71906ecf2c5bb266223e06db234465045589c855fafe64da657995fee53e3608"
+    },
+    {
+      "file": "src/github.rs",
+      "item": "fn[fetch]",
+      "hash": "699793741d2bd0d4290442a66f5495e36d08d44eafb4f90867b544c7263173d9"
+    },
+    {
+      "file": "src/github.rs",
+      "item": "fn[split_issue]",
+      "hash": "a95d5ac844416e2e42247df84cca075cf111d178898664b1c63174a360aa93a9"
+    },
+    {
+      "file": "src/github.rs",
+      "item": "fn[tool]",
+      "hash": "f538cbe6e5790c8a724e8e47f3874fb88f66f83a3cacb9dba27f9b8f511870e6"
+    },
+    {
+      "file": "src/github.rs",
+      "item": "fn[tool_definition]",
+      "hash": "f511dc212090debf5c80739eee2a72427663a51618a6e7c37f04f6d70da19aab"
+    },
+    {
+      "file": "src/github.rs",
+      "item": "fn[fixme_issues]",
+      "hash": "7f86ec2e17bdd6265ec1153dbf4a38d481896e354ff21b6c5d0b9f148ba40afe"
+    },
+    {
+      "file": "src/github.rs",
+      "item": "fn[input_issue_states]",
+      "hash": "1b11f606c921c08775517ca730d13e78abd1e7027ecbb01630a0eaf836964485"
+    },
+    {
+      "file": "src/github.rs",
+      "item": "fn[input_ranges]",
+      "hash": "95542da0e7c289b956ec5e52c94e438969d8d270903ffca76aa0ba4f37ced601"
+    },
+    {
+      "file": "src/github.rs",
+      "item": "fn[add_issue_findings]",
+      "hash": "04993674af703642444080bd7aec802680f96b248cda1e0035d23f9541ffa0b1"
+    },
+    {
+      "file": "src/github.rs",
+      "item": "fn[containing_item]",
+      "hash": "3a25a5c63afbdbfaa258ec15251c4d847085f1db74784c609f8702a23438e569"
+    },
+    {
+      "file": "src/commands.rs",
+      "item": "fn[status_markdown_with_github]",
+      "hash": "97c232fcafa28d716e38590087fea62a771c08a248acaed7ddddb56d68c04e58"
+    },
+    {
+      "file": "src/github.rs",
+      "item": "mod[tests]/fn[results_are_cached_by_issue_for_an_hour_and_failures_are_not]",
+      "hash": "78edd8fe873a5be1863c38fefbd9007a18e50de2b7f7fc10657941b3ac328655"
+    },
+    {
+      "file": "src/github.rs",
+      "item": "mod[tests]/fn[a_closed_issue_of_a_fixme_inside_a_site_makes_only_its_site_review_stale]",
+      "hash": "d13a26282abc2c99567f69cb2fefebebd7ffe58170070d46d423f51cd3ba82d6"
+    },
+    {
+      "file": "src/github.rs",
+      "item": "mod[tests]/fn[project]",
+      "hash": "8913f4ac2216aa3b6f24c0b753ab265aae577cab9f99b95721ee0837f29b3b50"
+    }
+  ]
+}

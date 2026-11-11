@@ -1,435 +1,442 @@
 {
-  "requirement": "Every project file named directly by an evidence input or resolved from its selector MUST resolve within the project root, including when its path contains symlinks. Validation MUST report a missing or unreadable file and a path that resolves outside the project.",
+  "requirement": "Every file named directly by an evidence input or resolved from its selector MUST resolve within the project root unless permitted by workspace path configuration or discovered Cargo generated-output policy. Symlink targets MUST follow the same policy. Validation MUST enforce explicit workspace disallow entries and report missing, unreadable, or excluded files. It MUST check existing generated inputs without running a build. {cite}`requirements.configuration.evidence_paths` {cite}`requirements.authoring.generated_inputs`",
   "determination": true,
-  "rationale": "Input parsing rejects paths that are not relative. File validation canonicalizes the resolved path, rejects targets outside the root, and reports open or read failures. The error fixture checks a parent path and invalid line input.",
+  "rationale": "I found no gaps. Each obligation has code reachable from the `{impl}` items and a test that exercises it.\n\n**Reachability.** `validate_input` (src/evidence.rs:762) leads to `validate_outline_input` / `validate_resolved_input`, then to `InputSelector::resolve`. From there, `OutlineCache::parse` calls `read_project_file`, which calls `check_project_file`, which calls `resolve_evidence_file` (src/authoring/access.rs:676). Definition and requirements inputs call `check_project_file` directly for each declaring file (src/inputs.rs:~255 and ~275). `project_path` in src/authoring/tools.rs calls `SourceAccess::path`, which covers authoring reads.\n\n| Obligation | Code | Tests |\n|---|---|---|\n| Every file named directly or resolved from a selector resolves within the project root, unless workspace configuration or Cargo generated-output policy permits it. | `resolve_evidence_file` rejects a requested path or target outside the canonical root unless `policy.allowed(..)` or a discovered generated root contains both. It returns \"resolves outside the repository without an allowed evidence path\". `SourceAccess::path` applies the same containment on the authoring side. | `symlinks_may_resolve_inside_but_not_to_a_sibling_with_the_same_prefix` (outside rejected, inside accepted). `configured_external_inputs_validate_and_remain_subject_to_freshness_and_disallow` (external path rejected without allow, accepted with allow). `definition_and_requirements_inputs_obey_containment_for_declaring_files`. `explicit_allow_overrides_defaults_but_disallow_wins_for_alias_targets` (access.rs). |\n| Symlink targets follow the same policy. | `resolve` canonicalizes the target and `requested_location` resolves the requested path without following the final symlink. Both are checked against containment and `check_disallow`, which also walks ancestor locations. | The sibling-prefix symlink test, `disallowed_ancestors_cannot_redirect_reads_into_allowed_targets`, `policy_resolves_symlinks_before_parent_components_without_allowing_wrong_subtrees`, and `evidence_rejects_disallowed_ancestors_even_when_symlinks_target_allowed_sources`. |\n| Validation enforces explicit workspace disallow entries. | `PathPolicy::check_disallow` runs in `resolve_evidence_file` before the allow and generated checks. | `configured_external_inputs_…` and `discovered_external_cargo_outputs_validate_freshness_and_obey_disallow` (disallow beats allow and generated roots). `definition_and_requirements_inputs_obey_containment_for_declaring_files`. `status_applies_workspace_disallow_to_existing_evidence` (tests/commands.rs). |\n| Validation reports missing files. | `resolve` returns \"cannot open X\". `validate_outline_input` and `validate_resolved_input` push the error with the `inputs[n]` label. | `unreadable_and_missing_inputs_are_reported` asserts \"inputs[1]: cannot open gone.txt\". `collects_missing_orphan_format_false_and_changed_line_errors` covers further input errors. |\n| Validation reports unreadable files. | `read_project_file` returns \"cannot read X: …\". | `unreadable_and_missing_inputs_are_reported` asserts \"inputs[0]: cannot read locked.txt\". It skips this assertion when the process can read the file regardless of mode, as when running as a privileged user. |\n| Validation reports excluded files. | The \"disallowed\" and \"outside the repository\" errors are pushed with the input label. | The disallow and containment tests above assert these messages. |\n| Validation checks existing generated inputs without running a build. | `generated_roots` runs `cargo metadata --offline --locked --no-deps` and `discover_generated_roots` reads existing `root-output` records. Neither runs a build. | `discovered_external_cargo_outputs_validate_freshness_and_obey_disallow` validates and freshness-checks a generated input, and asserts `!target.exists()` (\"metadata must not run a build\"). |\n\nThere is no unspecified behavior and no `{fixme}` to consider.",
+  "references": "df189d0591d47592539799a51d220c6299d3199df8d90d3749f3fedb916e3a35",
   "inputs": [
     {
-      "file": "src/evidence.rs",
-      "line_start": 1358,
-      "line_end": 1433,
+      "requirements": "requirements.ci.input_containment",
+      "matches": [
+        "requirements.ci.input_containment"
+      ],
       "text": [
-        "    // {test}`requirements.ci.input_containment`",
-        "    // {test}`requirements.ci.definition_errors`",
-        "    #[test]",
-        "    fn collects_missing_orphan_format_false_and_changed_line_errors() {",
-        "        let temp = fixture();",
-        "        fs::write(",
-        "            temp.path().join(\"md/requirements.md\"),",
-        "            \"# Requirements\\n\\n:::{req} one\\nFirst.\\n:::\\n\\n:::{req} two\\nSecond.\\n:::\\n\\n:::{req} three\\nThird.\\n:::\\n\\n:::{req} one\\nDuplicate.\\n:::\\n\\n:::{req} empty\\n  \\n:::\\n\",",
-        "        )",
-        "        .unwrap();",
-        "        fs::write(",
-        "            temp.path().join(\"evidence/requirements.one.json\"),",
-        "            json!({",
-        "                \"requirement\": \"Old text.\",",
-        "                \"determination\": false,",
-        "                \"rationale\": \"Work remains.\",",
-        "                \"inputs\": [",
-        "                    {",
-        "                        \"file\": \"src/main.rs\",",
-        "                        \"line_start\": 1,",
-        "                        \"line_end\": 1,",
-        "                        \"text\": [\"changed line\"]",
-        "                    },",
-        "                    {",
-        "                        \"file\": \"../outside\",",
-        "                        \"line_start\": 0,",
-        "                        \"line_end\": 2,",
-        "                        \"text\": [1]",
-        "                    }",
-        "                ]",
-        "            })",
-        "            .to_string(),",
-        "        )",
-        "        .unwrap();",
-        "        fs::write(",
-        "            temp.path().join(\"evidence/requirements.three.json\"),",
-        "            json!({\"requirement\": 3, \"inputs\": {}}).to_string(),",
-        "        )",
-        "        .unwrap();",
-        "        fs::write(",
-        "            temp.path().join(\"evidence/ghost.json\"),",
-        "            json!({",
-        "                \"requirement\": \"Ghost.\",",
-        "                \"determination\": true,",
-        "                \"rationale\": \"A valid but orphaned file.\",",
-        "                \"inputs\": []",
-        "            })",
-        "            .to_string(),",
-        "        )",
-        "        .unwrap();",
-        "        fs::write(temp.path().join(\"evidence/broken.json\"), \"{\").unwrap();",
+        ":::{req} input_containment",
+        "Every file named directly by an evidence input or resolved from its selector MUST resolve within the project root unless permitted by workspace path configuration or discovered Cargo generated-output policy. Symlink targets MUST follow the same policy. Validation MUST enforce explicit workspace disallow entries and report missing, unreadable, or excluded files. It MUST check existing generated inputs without running a build. {cite}`requirements.configuration.evidence_paths` {cite}`requirements.authoring.generated_inputs`",
+        ":::"
+      ]
+    },
+    {
+      "requirements": "requirements.configuration.evidence_paths",
+      "matches": [
+        "requirements.configuration.evidence_paths"
+      ],
+      "text": [
+        ":::{req} evidence_paths",
+        "The workspace `[evidence]` table MUST serialize EvidenceConfig. `allow` and",
+        "`disallow` MUST be arrays of nonempty literal paths, each naming a file or a",
+        "directory subtree. Relative paths MUST resolve from the selected `habeas.toml`",
+        "directory; absolute paths MUST be supported. These paths are not glob patterns.",
+        "An omitted `allow` or `disallow` MUST mean an empty array, and an absent",
+        "`[evidence]` table MUST mean both are empty, so only the default source-access",
+        "rules apply. No operation requires the section. The table has no user-file",
+        "counterpart, and these rules have no invocation options. This section refines",
+        "{impl}`requirements.configuration.feature_sections` for the evidence feature.",
         "",
-        "        let report = validate_repository(temp.path()).unwrap();",
-        "        let errors = report.errors.join(\"\\n\");",
-        "        for detail in [",
-        "            \"no matching requirement\",",
-        "            \"invalid JSON\",",
-        "            \"missing for requirement\",",
-        "            \"requirement text changed\",",
-        "            \"- Old text.\",",
-        "            \"+ First.\",",
-        "            \"determination is false\",",
-        "            \"input text changed\",",
-        "            \"- changed line\",",
-        "            \"+ // first line\",",
-        "            \"requirement must be a string\",",
-        "            \"missing field \\\"determination\\\"\",",
-        "            \"inputs must be an array\",",
-        "            \"file must be a path relative to the repository\",",
-        "            \"line_start must be a positive integer\",",
-        "            \"text[0] must be a string\",",
-        "            \"duplicate requirement requirements.one; first declared at md/requirements.md:3\",",
-        "            \"requirement requirements.empty has no text\",",
-        "        ] {",
-        "            assert!(errors.contains(detail), \"missing {detail:?} in:\\n{errors}\");",
-        "        }"
+        "For authoring reads, a matching disallow MUST reject the path; otherwise a",
+        "matching allow MUST permit it; otherwise the default source-access rules MUST",
+        "apply. Explicit allow MUST override every default, including Git tracking,",
+        "project containment, generated-evidence exclusion, and automatic generated-output",
+        "rules. Disallow MUST win even when an allow or generated-output rule also matches.",
+        "Both the requested path and its resolved symlink target MUST be checked for",
+        "disallow, so an allowed alias cannot expose a disallowed target.",
+        "",
+        "The same explicit disallow rules and external-path exceptions MUST apply when",
+        "resolving recorded evidence inputs, including ordinary validation. Validation MUST",
+        "remain independent of Git index membership: it",
+        "checks the recorded inputs' existence and contents. Loading path policy MUST NOT",
+        "resolve credentials or validate unused authoring settings.",
+        ":::"
       ]
+    },
+    {
+      "requirements": "requirements.authoring.generated_inputs",
+      "matches": [
+        "requirements.authoring.generated_inputs"
+      ],
+      "text": [
+        ":::{req} generated_inputs",
+        "Habeas MUST permit existing Cargo build-script output directories as an exception",
+        "to default Git tracking and containment restrictions. It MUST discover the Cargo",
+        "build directory using metadata and inspect existing build-script output records,",
+        "without running a build or executing build scripts. It MUST NOT treat its own",
+        "inherited `OUT_DIR` environment variable as the workspace's output directory.",
+        "Only discovered output directories and their contents MUST receive this default",
+        "permission; unrelated build artifacts MUST remain subject to ordinary rules.",
+        "Workspace disallow entries MUST override this permission.",
+        "",
+        "Discovery MUST tolerate missing builds or unavailable metadata; callers MUST be",
+        "able to allow undiscovered outputs explicitly using `habeas.toml`. The model's",
+        "root directory listing MUST expose available generated-output directories,",
+        "including external ones. Generated inputs MUST use outline inputs and receive",
+        "ordinary freshness checks. Validation MUST NOT",
+        "invoke a build to materialize an input.",
+        ":::"
+      ]
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "mod[tests]/fn[explicit_allow_overrides_defaults_but_disallow_wins_for_alias_targets]",
+      "hash": "761b47712ef2c180dad13743d3211303eae1a9d74565d6d97eb1ac579f372865"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "mod[tests]/fn[disallowed_ancestors_cannot_redirect_reads_into_allowed_targets]",
+      "hash": "2ea3922fded2a225a891313be5037801e371c248314c6a9325f7627d917b67b6"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "mod[tests]/fn[policy_resolves_symlinks_before_parent_components_without_allowing_wrong_subtrees]",
+      "hash": "2f2d8e111030ceb4fe779808eb183f8865ca9106498fbabc52491a9b61890fff"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "fn[project_path]",
+      "hash": "e406a07f376df81c7ac469398fa5821e601355d1d7db20819318fe99be7f5bb6"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "mod[tests]/fn[search_uses_the_validated_target_when_symlinks_precede_parent_components]",
+      "hash": "be14b1f1115089c2e41dee7fd269d72bc8bf13a969b3a667107c90688fa29ed4"
     },
     {
       "file": "src/evidence.rs",
-      "line_start": 642,
-      "line_end": 694,
-      "text": [
-        "// {impl}`requirements.ci.input_containment`",
-        "fn validate_input_lines(",
-        "    root: &Path,",
-        "    file: &str,",
-        "    start: usize,",
-        "    end: usize,",
-        "    text: &[&str],",
-        "    label: &str,",
-        "    errors: &mut Vec<String>,",
-        ") {",
-        "    let path = match fs::canonicalize(root.join(file)) {",
-        "        Ok(path) => path,",
-        "        Err(error) => {",
-        "            errors.push(format!(\"{label}: cannot open {file}: {error}\"));",
-        "            return;",
-        "        }",
-        "    };",
-        "    if !path.starts_with(root) {",
-        "        errors.push(format!(\"{label}: {file} resolves outside the repository\"));",
-        "        return;",
-        "    }",
-        "    let content = match fs::read_to_string(&path) {",
-        "        Ok(content) => content,",
-        "        Err(error) => {",
-        "            errors.push(format!(\"{label}: cannot read {file}: {error}\"));",
-        "            return;",
-        "        }",
-        "    };",
-        "    let lines: Vec<_> = content",
-        "        .lines()",
-        "        .map(|line| line.strip_suffix('\\r').unwrap_or(line))",
-        "        .collect();",
-        "    if end > lines.len() {",
-        "        errors.push(format!(",
-        "            \"{label}: {file}:{start}-{end} exceeds the file's {} lines\",",
-        "            lines.len()",
-        "        ));",
-        "        return;",
-        "    }",
-        "    let expected_count = end - start + 1;",
-        "    if text.len() != expected_count {",
-        "        errors.push(format!(",
-        "            \"{label}: text has {} lines, but {file}:{start}-{end} has {expected_count}\",",
-        "            text.len()",
-        "        ));",
-        "    }",
-        "    let actual = &lines[start - 1..end];",
-        "    if text != actual {",
-        "        errors.push(format!(",
-        "            \"{label}: input text changed at {file}:{start}-{end}{}\",",
-        "            compact_diff(text, actual)",
-        "        ));",
-        "    }"
-      ]
+      "item": "fn[validate_input]",
+      "hash": "33ba22d600c5d951631b03507b63324e9b11d8d358cc20011506777f5b322be7"
     },
     {
-      "rust_file": "src/evidence.rs",
-      "rust_item": "fn[validate_input]",
-      "text": [
-        "// {impl}`requirements.ci.schema`",
-        "// {impl}`requirements.ci.input_containment`",
-        "// {impl}`requirements.ci.rust_item_inputs`",
-        "// {impl}`requirements.ci.requirements_inputs`",
-        "// {impl}`requirements.definitions.inputs`",
-        "fn validate_input(",
-        "    root: &Path,",
-        "    definitions: &BTreeMap<String, Declaration>,",
-        "    input: &Value,",
-        "    label: &str,",
-        "    errors: &mut Vec<String>,",
-        ") -> Option<ResolvedInput> {",
-        "    let Some(object) = input.as_object() else {",
-        "        errors.push(format!(\"{label}: expected a JSON object\"));",
-        "        return None;",
-        "    };",
-        "    if object.contains_key(\"rust_file\") || object.contains_key(\"rust_item\") {",
-        "        check_keys(object, &[\"rust_file\", \"rust_item\", \"text\"], label, errors);",
-        "        let rust_file = string_field(object, \"rust_file\", label, errors);",
-        "        let rust_item = string_field(object, \"rust_item\", label, errors);",
-        "        let text = text_field(object, label, errors);",
-        "        let (Some(rust_file), Some(rust_item), Some(text)) = (rust_file, rust_item, text) else {",
-        "            return None;",
-        "        };",
-        "        let selector = InputSelector::RustItem {",
-        "            rust_file: rust_file.to_owned(),",
-        "            rust_item: rust_item.to_owned(),",
-        "        };",
-        "        return validate_resolved_input(root, definitions, &selector, &text, None, label, errors);",
-        "    }",
-        "    if object.contains_key(\"definition\") {",
-        "        check_keys(object, &[\"definition\", \"text\"], label, errors);",
-        "        let definition = string_field(object, \"definition\", label, errors);",
-        "        let text = text_field(object, label, errors);",
-        "        let (Some(definition), Some(text)) = (definition, text) else {",
-        "            return None;",
-        "        };",
-        "        return validate_resolved_input(",
-        "            root,",
-        "            definitions,",
-        "            &InputSelector::Definition {",
-        "                definition: definition.to_owned(),",
-        "            },",
-        "            &text,",
-        "            None,",
-        "            label,",
-        "            errors,",
-        "        );",
-        "    }",
-        "    if object.contains_key(\"requirements\") || object.contains_key(\"matches\") {",
-        "        check_keys(object, &[\"requirements\", \"matches\", \"text\"], label, errors);",
-        "        let requirements = string_field(object, \"requirements\", label, errors);",
-        "        let matches = array_field(object, \"matches\", label, errors).and_then(|values| {",
-        "            let mut names = Vec::new();",
-        "            for (index, value) in values.iter().enumerate() {",
-        "                match value.as_str() {",
-        "                    Some(name) => names.push(name.to_owned()),",
-        "                    None => errors.push(format!(\"{label}: matches[{index}] must be a string\")),",
-        "                }",
-        "            }",
-        "            if names.len() != values.len() {",
-        "                return None;",
-        "            }",
-        "            if names.iter().collect::<BTreeSet<_>>().len() != names.len() {",
-        "                errors.push(format!(",
-        "                    \"{label}: matches must have distinct definition names\"",
-        "                ));",
-        "            }",
-        "            Some(names)",
-        "        });",
-        "        let text = text_field(object, label, errors);",
-        "        let (Some(requirements), Some(matches), Some(text)) = (requirements, matches, text) else {",
-        "            return None;",
-        "        };",
-        "        let selector = InputSelector::Requirements {",
-        "            requirements: requirements.to_owned(),",
-        "        };",
-        "        return validate_resolved_input(",
-        "            root,",
-        "            definitions,",
-        "            &selector,",
-        "            &text,",
-        "            Some(&matches),",
-        "            label,",
-        "            errors,",
-        "        );",
-        "    }",
-        "    validate_file_range_input(root, definitions, object, label, errors)",
-        "}"
-      ]
+      "file": "src/evidence.rs",
+      "item": "mod[tests]/fn[collects_missing_orphan_format_false_and_changed_line_errors]",
+      "hash": "b1a25c52c79806b9102798b8514db58bbaa876fa9bf48ce39fdade9402d20d1d"
     },
     {
-      "rust_file": "src/evidence.rs",
-      "rust_item": "fn[validate_input_lines]",
-      "text": [
-        "// {impl}`requirements.ci.inputs`",
-        "// {impl}`requirements.ci.input_containment`",
-        "fn validate_input_lines(",
-        "    root: &Path,",
-        "    file: &str,",
-        "    start: usize,",
-        "    end: usize,",
-        "    text: &[&str],",
-        "    label: &str,",
-        "    errors: &mut Vec<String>,",
-        ") {",
-        "    let path = match fs::canonicalize(root.join(file)) {",
-        "        Ok(path) => path,",
-        "        Err(error) => {",
-        "            errors.push(format!(\"{label}: cannot open {file}: {error}\"));",
-        "            return;",
-        "        }",
-        "    };",
-        "    if !path.starts_with(root) {",
-        "        errors.push(format!(\"{label}: {file} resolves outside the repository\"));",
-        "        return;",
-        "    }",
-        "    let content = match fs::read_to_string(&path) {",
-        "        Ok(content) => content,",
-        "        Err(error) => {",
-        "            errors.push(format!(\"{label}: cannot read {file}: {error}\"));",
-        "            return;",
-        "        }",
-        "    };",
-        "    let lines: Vec<_> = content",
-        "        .lines()",
-        "        .map(|line| line.strip_suffix('\\r').unwrap_or(line))",
-        "        .collect();",
-        "    if end > lines.len() {",
-        "        errors.push(format!(",
-        "            \"{label}: {file}:{start}-{end} exceeds the file's {} lines\",",
-        "            lines.len()",
-        "        ));",
-        "        return;",
-        "    }",
-        "    let expected_count = end - start + 1;",
-        "    if text.len() != expected_count {",
-        "        errors.push(format!(",
-        "            \"{label}: text has {} lines, but {file}:{start}-{end} has {expected_count}\",",
-        "            text.len()",
-        "        ));",
-        "    }",
-        "    let actual = &lines[start - 1..end];",
-        "    if text != actual {",
-        "        errors.push(format!(",
-        "            \"{label}: input text changed at {file}:{start}-{end}{}\",",
-        "            compact_diff(text, actual)",
-        "        ));",
-        "    }",
-        "}"
-      ]
+      "file": "tests/commands.rs",
+      "item": "fn[status_applies_workspace_disallow_to_existing_evidence]",
+      "hash": "49a37589f20de14d662421cdc3a473dc73813bfc2f4df71ab09846154d6d62d5"
     },
     {
-      "rust_file": "src/evidence.rs",
-      "rust_item": "mod[tests]/fn[collects_missing_orphan_format_false_and_changed_line_errors]",
-      "text": [
-        "    // {test}`requirements.integration.report_api`",
-        "    // {test}`requirements.ci.errors`",
-        "    // {test}`requirements.ci.diagnostics`",
-        "    // {test}`requirements.ci.input_containment`",
-        "    // {test}`requirements.ci.definition_errors`",
-        "    #[test]",
-        "    fn collects_missing_orphan_format_false_and_changed_line_errors() {",
-        "        let temp = fixture();",
-        "        fs::write(",
-        "            temp.path().join(\"md/requirements.md\"),",
-        "            \"# Requirements\\n\\n:::{req} one\\nFirst.\\n:::\\n\\n:::{req} two\\nSecond.\\n:::\\n\\n:::{req} three\\nThird.\\n:::\\n\\n:::{req} one\\nDuplicate.\\n:::\\n\\n:::{req} empty\\n  \\n:::\\n\",",
-        "        )",
-        "        .unwrap();",
-        "        fs::write(",
-        "            temp.path().join(\"evidence/requirements.one.json\"),",
-        "            json!({",
-        "                \"requirement\": \"Old text.\",",
-        "                \"determination\": false,",
-        "                \"rationale\": \"Work remains.\",",
-        "                \"inputs\": [",
-        "                    {",
-        "                        \"file\": \"src/main.rs\",",
-        "                        \"line_start\": 1,",
-        "                        \"line_end\": 1,",
-        "                        \"text\": [\"changed line\"]",
-        "                    },",
-        "                    {",
-        "                        \"file\": \"../outside\",",
-        "                        \"line_start\": 0,",
-        "                        \"line_end\": 2,",
-        "                        \"text\": [1]",
-        "                    }",
-        "                ]",
-        "            })",
-        "            .to_string(),",
-        "        )",
-        "        .unwrap();",
-        "        fs::write(",
-        "            temp.path().join(\"evidence/requirements.three.json\"),",
-        "            json!({\"requirement\": 3, \"inputs\": {}}).to_string(),",
-        "        )",
-        "        .unwrap();",
-        "        fs::write(",
-        "            temp.path().join(\"evidence/ghost.json\"),",
-        "            json!({",
-        "                \"requirement\": \"Ghost.\",",
-        "                \"determination\": true,",
-        "                \"rationale\": \"A valid but orphaned file.\",",
-        "                \"inputs\": []",
-        "            })",
-        "            .to_string(),",
-        "        )",
-        "        .unwrap();",
-        "        fs::write(temp.path().join(\"evidence/broken.json\"), \"{\").unwrap();",
-        "",
-        "        let report = validate_repository(temp.path()).unwrap();",
-        "        let errors = report.errors.join(\"\\n\");",
-        "        for detail in [",
-        "            \"no matching requirement\",",
-        "            \"invalid JSON\",",
-        "            \"missing for requirement\",",
-        "            \"requirement text changed\",",
-        "            \"- Old text.\",",
-        "            \"+ First.\",",
-        "            \"determination is false\",",
-        "            \"input text changed\",",
-        "            \"- changed line\",",
-        "            \"+ // first line\",",
-        "            \"requirement must be a string\",",
-        "            \"missing field \\\"determination\\\"\",",
-        "            \"inputs must be an array\",",
-        "            \"file must be a path relative to the repository\",",
-        "            \"line_start must be a positive integer\",",
-        "            \"text[0] must be a string\",",
-        "            \"duplicate requirement requirements.one; first declared at md/requirements.md:3\",",
-        "            \"requirement requirements.empty has no text\",",
-        "        ] {",
-        "            assert!(errors.contains(detail), \"missing {detail:?} in:\\n{errors}\");",
-        "        }",
-        "    }"
-      ]
+      "file": "tests/evidence_boundaries.rs",
+      "item": "fn[outline_inputs_survive_moves_and_unhashed_comments_but_not_edits]",
+      "hash": "169f61d6456c59ffb1e0167c16bb956447e0fdfa593682e456db805eb7690199"
     },
     {
-      "rust_file": "src/inputs.rs",
-      "rust_item": "fn[check_project_file]",
-      "text": [
-        "// {impl}`requirements.ci.input_containment`",
-        "fn check_project_file(root: &Path, file: &str) -> Result<PathBuf, String> {",
-        "    let relative = Path::new(file);",
-        "    if file.is_empty()",
-        "        || !relative",
-        "            .components()",
-        "            .all(|part| matches!(part, Component::Normal(_) | Component::CurDir))",
-        "    {",
-        "        return Err(format!(",
-        "            \"{file:?}: file must be a path relative to the repository\"",
-        "        ));",
-        "    }",
-        "    let root =",
-        "        fs::canonicalize(root).map_err(|error| format!(\"cannot open repository root: {error}\"))?;",
-        "    let path = fs::canonicalize(root.join(relative))",
-        "        .map_err(|error| format!(\"cannot open {file}: {error}\"))?;",
-        "    if !path.starts_with(root) {",
-        "        return Err(format!(\"{file} resolves outside the repository\"));",
-        "    }",
-        "    if !path.is_file() {",
-        "        return Err(format!(\"{file} is not a project file\"));",
-        "    }",
-        "    Ok(path)",
-        "}"
-      ]
+      "file": "tests/evidence_boundaries.rs",
+      "item": "fn[symlinks_may_resolve_inside_but_not_to_a_sibling_with_the_same_prefix]",
+      "hash": "87cd0850f43eabc90395b43268a523fe6563bcb31a65d2960dad988d77e7aabd"
     },
     {
-      "rust_file": "src/inputs.rs",
-      "rust_item": "fn[read_project_file]",
-      "text": [
-        "// {impl}`requirements.ci.input_containment`",
-        "pub(crate) fn read_project_file(root: &Path, file: &str) -> Result<(PathBuf, String), String> {",
-        "    let path = check_project_file(root, file)?;",
-        "    let content =",
-        "        fs::read_to_string(&path).map_err(|error| format!(\"cannot read {file}: {error}\"))?;",
-        "    Ok((path, content))",
-        "}"
-      ]
+      "file": "tests/evidence_boundaries.rs",
+      "item": "fn[definition_and_requirements_inputs_obey_containment_for_declaring_files]",
+      "hash": "c40f0ea056a4480433c552d0e9acfafcfbee195deffe498d7bb2a9387744933e"
+    },
+    {
+      "file": "tests/evidence_boundaries.rs",
+      "item": "fn[unreadable_and_missing_inputs_are_reported]",
+      "hash": "6053961d5902519ae572ed3c4be92d95b917a99f0fda409d53a5aa2045a030dd"
+    },
+    {
+      "file": "tests/evidence_boundaries.rs",
+      "item": "fn[configured_external_inputs_validate_and_remain_subject_to_freshness_and_disallow]",
+      "hash": "666c657e7eefe99ac693087326725a1c73db4fadef23e4ad1e85ca58269a8b9a"
+    },
+    {
+      "file": "tests/evidence_boundaries.rs",
+      "item": "fn[evidence_rejects_disallowed_ancestors_even_when_symlinks_target_allowed_sources]",
+      "hash": "4bce67c979ce5df2df09d50ba04e201158f7a36f139ad681b3aa57be31c5b6cf"
+    },
+    {
+      "file": "tests/evidence_boundaries.rs",
+      "item": "fn[discovered_external_cargo_outputs_validate_freshness_and_obey_disallow]",
+      "hash": "19d6a226e72b4d7938409fc623714cbb20bb42d6c1d2bee81c25f946ad6c679b"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "use@e1f72b0ff927",
+      "hash": "e1f72b0ff927b84b9330bf2862b7f33ee8526b4ced8475735c2d0d791d89280f"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "use@0aa5aad345a4",
+      "hash": "0aa5aad345a497ea8555581d02720ca86969e0aff012fce65b6f20d384262fb4"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "use@95d18074761c",
+      "hash": "95d18074761c14b8220fb84209e9962ff3574d980745386a08bdf70bbe55d61e"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "use@b9fce3e500fd",
+      "hash": "b9fce3e500fd3a00ebdaf2d4fc72de53a65eeeecb67ee5a0fa31ed7efaf452db"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "use@005abb79b847",
+      "hash": "005abb79b847cee7b52f03243914d0dd411ba748e7d501c9e832350d806830ad"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "use@ef65439d8cc7",
+      "hash": "ef65439d8cc74c158422cabd1ec60521294b3c6957a6537215772e59fd8221f2"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "struct[PathPolicy]",
+      "hash": "9e45b50bd4280a3e83f6a45351d8af7240cc76b6a46a3151611219b5b0d4343a"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "impl[PathPolicy]",
+      "hash": "682d26ee9171ec9d76183444c82d48e36efdb578d3e036f2a3c29c4476301659"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "struct[SourceAccess]",
+      "hash": "5415eda7c44356c91fa32ceb8ae19560446cf11ed6680c3066d19a121815e88d"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "impl[SourceAccess]",
+      "hash": "cd4c710e68d67b962930478fc59896e6fd80cbf2cd3b69fcf6a4732e5c540b9a"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "struct[DiscoverySources]",
+      "hash": "d41ede64ceca6cda2eedddc6f88391e3b8f5a84145ae93206993582d0e5b6bc5"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "impl[DiscoverySources]",
+      "hash": "29c2b4760a0ed897cf9ea002a5b63d416b7f3dfed6c68f03eaccbf72a156942c"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "fn[excluded_from_discovery]",
+      "hash": "783c0e5bf8c9b5e0db70ea8fa331bb5983e44affa49b0967a4cdc57190c24f04"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "fn[matches_rule]",
+      "hash": "41a6bde2409d645263e8718dbf4190aaba96c3ad46f7d580508c42aa699df699"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "fn[requested_location]",
+      "hash": "88ae2a3be5517f6679f8f0cd3f455aaca565d527667600ec1a188cf3663c15e3"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "fn[normalize]",
+      "hash": "bb1e805afc5749bc709aaf7f081599fc4a7bcd0a200fe95533e597ce3875bf16"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "struct[OutsideProject]",
+      "hash": "7347610821cd9fab235933e4bd26f16e77d06a98de4ee5e15ac76199b5d54259"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "impl[OutsideProject/std::fmt::Display]",
+      "hash": "37ab1896f6f1ef901ca863a0c3bf4dfc591e157ede4f628818cd12e84f050641"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "impl[OutsideProject/std::error::Error]",
+      "hash": "c06028f18c3247654a7404d78b9fa4c2dcafb65b43a6f1dc99a6fd9e33b882ca"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "fn[recoverable_outside_request]",
+      "hash": "fddd4231f739c424aaf7cf4f661961ed9393506663f6f819a24ea48f6b3fe8e1"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "struct[PolicyDenial]",
+      "hash": "d978d7071e3dc1426fb83069c97767038dc86a9d1777183a498fe1051cd34e0e"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "impl[PolicyDenial/std::fmt::Display]",
+      "hash": "1fd13f9334e07ecdf01dab38508d3398eab948069c60b59a6635fffc8d0e24ad"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "impl[PolicyDenial/std::error::Error]",
+      "hash": "8f7d3b4e6db68c7f2bfb1d520eadc6e697fafe0ac0b2abe9b762dd79b85720bc"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "fn[recoverable_os_denial]",
+      "hash": "fae2c51d8a39059ef6c6eb68c3518216c2e1f83c2982f3b83fc68be89b37db56"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "fn[denied]",
+      "hash": "5bcbb1e7d1663d4d819cc3cb025d40ec923edbf0314b3dd67c7f887671f7e1c7"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "fn[resolve]",
+      "hash": "59b08bae87803bd25ca4b28f134c942dc849636a9837264612b98c6f457ce973"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "fn[tracked_sources]",
+      "hash": "ddeda4bbf817788cc8952ba926a0e63408e3b35ddc72ded2692f32981abca498"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "fn[build_output_dirs]",
+      "hash": "e0b14328fb7b7e6c9372be7de8fff7e80c2d1c944dc77e13724522cdff2271fd"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "fn[generated_roots]",
+      "hash": "9dd7146ab5036c06150dcc167104190647ba9db76fd8be516605664ce825bbf3"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "fn[discover_generated_roots]",
+      "hash": "c841d9d538fd8ff27cc1a0e979a7c0a85848034f579cd5c58ce0f087c08f9488"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "fn[resolve_evidence_file]",
+      "hash": "9418006962cb9105a2ab4972bf23159a668c8b08d8994df21d81362cf800473b"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "use@a26087e08c80",
+      "hash": "a26087e08c80d5c75559c00d6f08909f5a03a0bd909c8c903061c37b78950102"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "use@0aa5aad345a4",
+      "hash": "0aa5aad345a497ea8555581d02720ca86969e0aff012fce65b6f20d384262fb4"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "use@3970e6901143",
+      "hash": "3970e6901143920563d8805f9c3cc3a00f3047d12ba98064de8508cf8fd075f2"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "use@17891119f0eb",
+      "hash": "17891119f0eb9d10b48f727e590ef4be9050f4cdc2813283f53abf585dfe721a"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "use@6e42e0801700",
+      "hash": "6e42e08017009abb18f33fa65d11a99391be1f47814478d1337e25ea5a0189ec"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "use@945e92f43fad",
+      "hash": "945e92f43fad9a4c59b94afe789e6ef9514106d005841b29a86ecf6cee616e26"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "use@329c335dba2c",
+      "hash": "329c335dba2cdba11067fef8c3a11caf3c7059e9c3ca39d0f580b295da43c88c"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "use@94c7012d1800",
+      "hash": "94c7012d18006bc204d06850f929668e869b47eba6b9b2d8ef109add66dee46f"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "use@167510602cb3",
+      "hash": "167510602cb34e66d4c8c78e9beeae3cee5655de55ff522a33ded8622af1c7f2"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "enum[InputSelector]",
+      "hash": "08a32d6d16b33bb0240b295f12f62e2fcc9e56aa8fa1b81e3551a705e6ade5f9"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "struct[SourceRange]",
+      "hash": "00a39f28430d5e153770e7b84515cae45e86675d442339e72386be6b8c178ff6"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "struct[ResolvedNode]",
+      "hash": "bf313fc4a64fd3c230d6433e360e30d613feaddc7ff28a17282a8d7d91afe2fa"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "struct[ResolvedInput]",
+      "hash": "747340a2a8f82c0e6547761dfa62a27ff890b8cd6eee80eca966088f5b7ae385"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "struct[ParsedSource]",
+      "hash": "60fdf5fdf9a375c3cd8f87afaaa15d7a3796bce2af9fab6835be52f3ba8c3be7"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "struct[OutlineCache]",
+      "hash": "51cd8476bb8fb67663a9845e54dfd7a7c7104ed0128e9c417c6f9a89960712f7"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "impl[OutlineCache]",
+      "hash": "3d341a2ee9eac04b06cfb061e5d8e4be1c1d7c45470e654d500a607e1c173f13"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "impl[ParsedSource]",
+      "hash": "1e8736402977d749ed722b0ca3a943de21dc5d0a8617f735f9f34650bc549907"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "impl[InputSelector]",
+      "hash": "65872609b4c4184eb51c5f1a3acbd2b3aaab02313acb77a9ddac15ab752a4154"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "fn[recorded_input]",
+      "hash": "e367b914f4385dbb6fa5352d25621130a8d501d28d36793e28b80228806689b5"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "fn[project_relative]",
+      "hash": "2bacdf705f69e79ecb7e7b649562d949c57508036bb5e1ddc1ea1387c585ebf1"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "fn[check_project_file]",
+      "hash": "d229a2e14bc49aad09e4bca7ab3bdab6d475f05819973da2477323152e7aa4e5"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "fn[read_project_file]",
+      "hash": "e41f9a27f04e9f92ef30a0f9364eb43397ec3142bd9947b7c34d0d4ea691ba1d"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "fn[outline_input]",
+      "hash": "c1b23bc16454f46cd2402e7867e2067b6c69ce6c7051760c3c77847c1f5804dc"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "fn[outline_inputs_for_lines]",
+      "hash": "1a71201d6c638e1ad96c8664db6788c9c99992c61d19e49ba3902bed73995d4f"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[validate_outline_input]",
+      "hash": "0bfab0f3093185b18122d349a70a23b379326bd79611fac1753184bff16d08bb"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[text_field]",
+      "hash": "f8bad25c98677d02faba4f36b2d36588ee6bd34c61c42347773874b820e31718"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[validate_resolved_input]",
+      "hash": "709c631128ce311965ed9c48a959634962d08ce9a66c64705e6eaff7ceb9b0e1"
     }
   ]
 }

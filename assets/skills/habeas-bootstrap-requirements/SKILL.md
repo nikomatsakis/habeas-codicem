@@ -1,36 +1,142 @@
 ---
 name: habeas-bootstrap-requirements
-description: Build an initial Habeas requirement set from an existing codebase by tracing its tests and user-visible behavior; use for requirements bootstrapping or coverage audits.
+description: Use when adopting Habeas in an existing codebase, when validation reports uncovered items across most of a project's code, or when the user asks for a requirements coverage audit. Inventories tests, Rust items, and user-visible behavior; proposes an initial requirement set for the user's approval; tags every test and each requirement's root items; and drives `habeas author --all` and validation to full coverage. For a single behavior change, use habeas-requirements; to refresh evidence or fix a few validation failures, use habeas-evidence.
 ---
 
 # Bootstrap requirements
 
-Read the project's existing requirements, documentation, public entry points, implementation, and tests before writing new requirements. Follow behavior through the code rather than relying only on test names or top-level dispatch.
+Habeas traces requirements, written in a project's mdBook, to the code and tests
+that implement and verify them. Bootstrapping derives requirements from code
+that already exists, so every requirement starts as a proposal: observed
+behavior may be intended, a bug, or incidental.
 
-Keep two working inventories:
+## Workflow
 
-- Every first-party runnable test or test case, including integration tests, doctests, and parameterized cases where present. Record the requirement or example IDs each test checks.
-- Every explicit function or method in first-party Rust sources, including trait declarations, test helpers, and internal helpers. Record its file location and the requirement or example IDs it cites. Also inventory relevant public APIs, commands, handlers, UI actions, configuration, outputs, errors, and distinct observable branches. Do not count one tagged entry point as coverage for deeper code.
+Steps 1 to 3 run once. Repeat steps 4 to 7 for each area, such as one command
+or module, then do steps 8 and 9. In a large codebase, give each area's reading
+to a subagent to keep it out of your context.
 
-Exclude generated and third-party code from the inventories. If a candidate looks user-facing but its purpose is unclear, keep it on the gap list until resolved.
+- [ ] 1. Read the habeas-requirements skill; it defines the directive syntax,
+      the reference procedure, and the review criteria. Aim for accurate
+      references, not a coverage number. If the project has no
+      `tests/habeas.rs` calling `habeas::validate()`, Habeas is not set up: ask
+      before running `habeas setup`. If a requirement already exists, confirm
+      authoring works with `habeas author --stdout <full-name>`, which always
+      assesses and writes no evidence. If it fails, see the habeas-evidence
+      skill.
+- [ ] 2. Read the existing requirements, documentation, public entry points,
+      implementation, and tests. Follow behavior through the code rather than
+      relying on test names or top-level dispatch.
+- [ ] 3. Build the inventories and the gap list (below).
+- [ ] 4. Propose requirements for the area (below), reusing existing ones by
+      full name and proposing any changes to their text. Review them with the
+      user in turn as habeas-requirements step 3 describes; a general request to
+      bootstrap is not agreement to specific text.
+      **Gate:** drafts may be uncommitted edits to the chapter, as in
+      habeas-requirements step 2, but don't commit a requirement or tag code
+      against it until the user agrees to its text. Remove undecided drafts
+      from the chapter and keep them on the gap list.
+- [ ] 5. Install the agreed requirements in the area's chapter, one file per
+      area, such as `md/requirements/cli.md` for `requirements.cli.*`; add a
+      new chapter to `SUMMARY.md` and `git add` it.
+- [ ] 6. Tag the area's tests and root items (below). In the first area, if step 1
+      had no requirement to try, run `habeas author <full-name>` on one of the
+      area's requirements to confirm authoring works before going on.
+- [ ] 7. Run `cargo test --workspace`, which makes no model calls, and fix the
+      reference errors in this area's files. Leave uncovered items for now:
+      assessments that read reached code cover it, and none have run yet.
+      Uncovered items in areas not yet bootstrapped wait for their own pass;
+      never give them placeholder references. Tell the user how many
+      definitions `habeas status` says need authoring, then follow the
+      habeas-evidence workflow for this area's definitions, running
+      `habeas author <full-name>` for each, or `habeas author --all`, which
+      authors everything needing it and costs more, until each passes or is on
+      the gap list with a reason, and this area's items are covered. Full
+      validation can pass only after the last area.
+- [ ] 8. Have a fresh subagent recount both inventories from the source and tests
+      without your lists, and reconcile any differences.
+- [ ] 9. Report (below).
 
-Treat requirements inferred from existing code as proposals. Show the user their proposed full IDs and exact text, along with uncertainty about whether observed behavior is intended or a bug. Obtain agreement on the proposals before installing them in the mdBook; prior explicit agreement to the same requirements counts.
+## Inventories
 
-Create or reuse the agreed, stable, chapter-qualified `{req}` requirements in the mdBook. State observable obligations with BCP 14 terms. Group tests that check the same behavior under one requirement; several tests MAY share an ID. For tests of internal invariants, write a requirement for the invariant they actually check rather than inventing a user-facing promise. Distinguish intended behavior from a possible bug or incidental implementation detail.
+Keep the inventories and the gap list in the conversation or in a file outside
+the repository; a staged file listing names in role syntax would add
+references.
 
-Put at least one `{test}` reference with a full requirement or example name on each test definition or individual case. A parameterized test can carry a reference at its case source or generating declaration when that is the only editable source. Add multiple references when a test checks multiple definitions. Do not use one file-level tag to stand in for unrelated tests.
+- **Tests:** every first-party runnable test or test case, including integration
+  tests and parameterized cases. Record the behavior each test checks; fill in
+  requirement names once they are installed.
+- **Items and behavior:** in Rust projects, every function, method, struct,
+  enum, and union, listed from the source rather than from validation's
+  uncovered items, since an assessment's read can cover an item whose
+  behavior no requirement states. Add by hand the observable surface: public
+  APIs, commands, handlers, UI actions, configuration, outputs, errors, and
+  distinct observable branches. A tagged entry point doesn't mean every observable branch beneath
+  it has a requirement.
+- **Gap list:** each item or behavior you cannot yet map, with its location, the
+  reason, and the open question.
 
-Add a requirement or example reference in a Rust comment attached to each inventoried function or method or within its body. An example must cite a requirement, so an example reference still traces the function to a requirement. A reference on an enclosing module or `impl` does not cover its functions. There is no waiver for an uncited function. If no behavior-specific requirement explains an internal helper, propose an explicit project requirement such as `internal-detail`, get the user's agreement, and cite it. Record evidence explaining why each such function adds no end-user-observable behavior beyond the requirements it supports. Do not use an internal-detail requirement to justify unspecified end-user-visible behavior.
+Exclude third-party and checked-in generated code. Rust item coverage already
+skips the project-root `vendor` directory; for any other such path, add it to
+`[evidence] disallow` in `habeas.toml` with the user's agreement, which also
+hides it from authoring.
 
-Create a function attestation for each such function in `evidence/rust/<rust_file>.json`. Its purpose is to confirm that the function cites every applicable requirement or named example. Read the entire function and the relevant definitions, including ones not already cited. Explain how you found the relevant set, why the requirements input globs cover it, and how cited texts together account for each observable branch. Add a Rust-item input selecting the function and a requirements input covering every citation. A matching snapshot and citation list are insufficient for a true determination. Reassess after either input changes.
+## Proposing requirements
 
-Review every end-user-observable result and branch, including errors and input handling. Verify that the code fulfills each applicable requirement and does not introduce additional observable behavior without an agreed requirement. When requirements interact, cite all of them at meaningful implementation points and explain how their texts jointly account for the behavior. For example, a `^C` shortcut needs a requirement that explains why it is accepted. A tag alone does not establish that the behavior matches the requirement. Use the bundled `habeas-requirements` and `habeas-evidence` guidance for directive syntax and evidence records. Each evidence record must cite exact current lines covering every reference to its definition. Judge each requirement or example from the code and test results; a tag alone does not justify `determination: true`.
+Write one requirement per obligation a user could rely on; one requirement can
+cover a command's branches when one sentence states them. For tests of internal
+invariants, write a requirement for the invariant they check rather than
+inventing a user-facing promise. Label each proposal and act on the label:
 
-For example, source comments can carry these references:
+- **Intended:** state the observed behavior.
+- **Possible bug:** ask the user what behavior is intended and write the
+  requirement for that. Don't change the code during bootstrap unless the user
+  asks; the resulting false judgment stays on the gap list, or gets a
+  `{fixme}` reference if the user defers it (see habeas-evidence).
+- **Incidental:** the user chooses between a requirement, often with MAY, and
+  removing the behavior. For example, a command that also accepts an
+  undocumented alias.
+
+When a convention applies on its own at many sites, such as how every
+validation function continues after a failed check, propose a distributed
+requirement instead of marking each site `{impl}`; read the
+habeas-requirements skill's
+[references/distributed-requirements.md](../habeas-requirements/references/distributed-requirements.md).
+
+## Tagging
+
+Give every inventoried test and each requirement's roots their references by
+the procedure in the habeas-requirements skill: `{test}` on tests and `{impl}`
+on roots; code a root or test reaches needs none. Map each other inventoried
+item to the requirement whose root reaches it. Every test must end up with a `{test}` reference to a requirement or example,
+attached to the test as the habeas-requirements skill describes; a test whose behavior no agreed requirement states goes on the gap
+list, never `habeas:util`. For a parameterized test, put the reference on the
+case source or the generating declaration; one file-level tag must not stand in
+for unrelated tests. Where one behavior follows from several requirements,
+mark each with `{impl}` where it applies and explain how they combine, as the
+habeas-requirements skill describes. An item that neither carries out a
+requirement nor serves other code goes on the gap list: it needs a requirement
+or is not needed.
+
+## Report
 
 ```text
-// {test}`requirements.foo`
-// {impl}`requirements.foo`
+Tests mapped: <mapped>/<total>
+Items mapped: <referenced or reached from a mapped root>/<total>  (covered only by reads: <count>)
+Independent recount: <agrees | differences and how reconciled>
+Gaps:
+- <item or behavior> (<file>:<line>): <reason>; <open question>
 ```
 
-Run the project tests and Habeas validation, then review both inventories independently: Habeas can report an uncited Rust function but cannot judge whether its cited requirements fully explain its behavior. Report test-tag coverage and function coverage as mapped counts over total counts. Claim 100% only when both inventories have no unmapped items and every observable branch has been reviewed. List remaining gaps with file locations and reasons; do not invent evidence or silently exclude difficult cases.
+Claim 100% only when both inventories have no unmapped items, the independent
+recount agrees, and every observable branch has been reviewed. Don't silently
+exclude difficult cases.
+
+## Gotchas
+
+- Never write evidence yourself or ask another agent to, even over a long
+  session (habeas-evidence explains why).
+- When assessments of the same subject disagree, follow "Disagreeing
+  assessments" in the habeas-evidence skill.
+- `git add` new chapter and source files; references in untracked files don't
+  count.

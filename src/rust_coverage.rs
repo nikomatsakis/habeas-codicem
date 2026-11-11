@@ -1,68 +1,16 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::ops::Range;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use proc_macro2::Span;
-use syn::spanned::Spanned;
-use syn::visit::{self, Visit};
-
-use crate::evidence::Declaration;
+use crate::evidence::{Declaration, InspectionProgress};
+use crate::outline::{self, OutlineError};
 use crate::reference_roles;
 
-// {impl}`requirements.references.rust_function_coverage`
-struct Function {
-    name: String,
-    line: usize,
-    start: usize,
-    end: usize,
-}
+/// The inspection phase label for Rust function coverage.
+// {impl}`requirements.authoring.progress`
+const RUST_COVERAGE_STAGE: &str = "Rust function coverage";
 
-// {impl}`requirements.references.rust_function_coverage`
-struct FunctionCollector {
-    functions: Vec<Function>,
-}
-
-impl FunctionCollector {
-    // {impl}`requirements.references.rust_function_coverage`
-    fn add(&mut self, name: &syn::Ident, span: Span) {
-        let range = span.byte_range();
-        self.functions.push(Function {
-            name: name.to_string(),
-            line: span.start().line,
-            start: range.start,
-            end: range.end,
-        });
-    }
-}
-
-impl<'ast> Visit<'ast> for FunctionCollector {
-    // {impl}`requirements.references.rust_function_coverage`
-    fn visit_item_fn(&mut self, node: &'ast syn::ItemFn) {
-        self.add(&node.sig.ident, node.span());
-        visit::visit_item_fn(self, node);
-    }
-
-    // {impl}`requirements.references.rust_function_coverage`
-    fn visit_impl_item_fn(&mut self, node: &'ast syn::ImplItemFn) {
-        self.add(&node.sig.ident, node.span());
-        visit::visit_impl_item_fn(self, node);
-    }
-
-    // {impl}`requirements.references.rust_function_coverage`
-    fn visit_trait_item_fn(&mut self, node: &'ast syn::TraitItemFn) {
-        self.add(&node.sig.ident, node.span());
-        visit::visit_trait_item_fn(self, node);
-    }
-
-    // {impl}`requirements.references.rust_function_coverage`
-    fn visit_foreign_item_fn(&mut self, node: &'ast syn::ForeignItemFn) {
-        self.add(&node.sig.ident, node.span());
-        visit::visit_foreign_item_fn(self, node);
-    }
-}
-
-// {impl}`requirements.references.rust_function_coverage`
 fn quoted_end(bytes: &[u8], start: usize) -> usize {
     let mut position = start + 1;
     while position < bytes.len() {
@@ -75,7 +23,6 @@ fn quoted_end(bytes: &[u8], start: usize) -> usize {
     bytes.len()
 }
 
-// {impl}`requirements.references.rust_function_coverage`
 fn char_end(source: &str, start: usize) -> Option<usize> {
     let bytes = source.as_bytes();
     let mut position = start + 1;
@@ -101,7 +48,6 @@ fn char_end(source: &str, start: usize) -> Option<usize> {
     (bytes.get(position) == Some(&b'\'')).then_some(position + 1)
 }
 
-// {impl}`requirements.references.rust_function_coverage`
 fn raw_string_end(bytes: &[u8], start: usize) -> Option<usize> {
     let mut position = match bytes.get(start..) {
         Some([b'r', ..]) => start + 1,
@@ -130,7 +76,8 @@ fn raw_string_end(bytes: &[u8], start: usize) -> Option<usize> {
     Some(bytes.len())
 }
 
-// {impl}`requirements.references.rust_function_coverage`
+/// Byte ranges of the comments in Rust source, skipping string and character
+/// literals; used to find term references in recorded Rust inputs.
 pub(crate) fn comments(source: &str) -> Vec<Range<usize>> {
     let bytes = source.as_bytes();
     let mut ranges = Vec::new();
@@ -177,189 +124,272 @@ pub(crate) fn comments(source: &str) -> Vec<Range<usize>> {
     ranges
 }
 
-// {impl}`requirements.references.rust_function_coverage`
-pub(crate) fn attached_comment_indices(
-    source: &str,
-    comments: &[Range<usize>],
-    function_start: usize,
-) -> Vec<usize> {
-    let mut position = function_start;
-    let mut indices = Vec::new();
-    for (index, comment) in comments.iter().enumerate().rev() {
-        if comment.end > position {
-            continue;
+/// The outline inputs recorded by every evidence record, citation review,
+/// and site review, as `file -> item -> hashes`, read once per validation.
+/// An item is covered when its node or an enclosing node is recorded here
+/// with its current hash.
+#[derive(Default)]
+pub(crate) struct EvidenceReads(HashMap<String, HashMap<String, HashSet<String>>>);
+
+impl EvidenceReads {
+    /// Reads the outline inputs of the given evidence files. A file that
+    /// cannot be read or parsed contributes nothing; evidence validation
+    /// reports it.
+    pub(crate) fn load(files: &[PathBuf]) -> Self {
+        let mut reads = Self::default();
+        for file in files {
+            let Ok(text) = fs::read_to_string(file) else {
+                continue;
+            };
+            let Ok(record) = serde_json::from_str::<serde_json::Value>(&text) else {
+                continue;
+            };
+            reads.add_record(&record);
         }
-        if source[comment.clone()].starts_with("//!") || source[comment.clone()].starts_with("/*!")
-        {
-            break;
-        }
-        let line_start = source[..comment.start]
-            .rfind('\n')
-            .map_or(0, |index| index + 1);
-        if source[comment.clone()].starts_with("//")
-            && !source[line_start..comment.start].trim().is_empty()
-        {
-            break;
-        }
-        let gap = &source[comment.end..position];
-        if !gap.trim().is_empty() || gap.bytes().filter(|byte| *byte == b'\n').count() > 1 {
-            break;
-        }
-        indices.push(index);
-        position = comment.start;
+        reads
     }
-    indices
+
+    /// Adds the outline inputs of one record.
+    pub(crate) fn add_record(&mut self, record: &serde_json::Value) {
+        for input in record
+            .get("inputs")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let field = |name: &str| input.get(name).and_then(serde_json::Value::as_str);
+            if let (Some(file), Some(item), Some(hash)) =
+                (field("file"), field("item"), field("hash"))
+            {
+                self.0
+                    .entry(file.to_owned())
+                    .or_default()
+                    .entry(item.to_owned())
+                    .or_default()
+                    .insert(hash.to_owned());
+            }
+        }
+    }
+
+    /// Whether any outline input of `file` is recorded.
+    pub(crate) fn has_file(&self, file: &str) -> bool {
+        self.0.contains_key(file)
+    }
+
+    /// Whether node `index` of `file`'s outline, or a node containing it, is
+    /// recorded with its current hash.
+    pub(crate) fn covers(&self, file: &str, outline: &outline::Outline, index: usize) -> bool {
+        let Some(items) = self.0.get(file) else {
+            return false;
+        };
+        let mut current = Some(index);
+        while let Some(index) = current {
+            let node = &outline.nodes[index];
+            if items
+                .get(&node.selector)
+                .is_some_and(|hashes| hashes.contains(&node.structural_hash))
+            {
+                return true;
+            }
+            current = node.parent;
+        }
+        false
+    }
 }
 
-// {impl}`requirements.references.rust_function_coverage`
-// {impl}`requirements.definitions.references`
+/// An item Rust item coverage reports: its file, outline selector, and the
+/// validation error naming it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct UncoveredItem {
+    pub(crate) file: String,
+    pub(crate) item: String,
+    pub(crate) error: String,
+}
+
+/// The validation error for an uncovered item.
+fn uncovered_error(label: &str, line: usize, kind: &str, name: &str) -> String {
+    format!(
+        "{label}:{line}: {kind} {name} is uncovered: it has no requirement or example reference, and no evidence record or review read it"
+    )
+}
+
+/// Lists functions, methods, structs, enums, and unions with no valid
+/// reference in a comment belonging to them, as `(line, kind, name)`.
+// {impl}`requirements.references.rust_item_coverage`
+#[cfg(test)]
 fn missing_function_references(
     source: &str,
     definitions: &BTreeMap<String, Declaration>,
-) -> Result<Vec<(usize, String)>, syn::Error> {
-    let syntax = syn::parse_file(source)?;
-    let mut collector = FunctionCollector {
-        functions: Vec::new(),
-    };
-    collector.visit_file(&syntax);
-    let functions = collector.functions;
-    let comments = comments(source);
-    let mut owners = vec![None; comments.len()];
-
-    for (function_index, function) in functions.iter().enumerate() {
-        for comment_index in attached_comment_indices(source, &comments, function.start) {
-            owners[comment_index] = Some(function_index);
-        }
-    }
-    for (comment_index, comment) in comments.iter().enumerate() {
-        if source[comment.clone()].starts_with("//!") || source[comment.clone()].starts_with("/*!")
-        {
-            continue;
-        }
-        if owners[comment_index].is_none() {
-            owners[comment_index] = functions
-                .iter()
-                .enumerate()
-                .filter(|(_, function)| {
-                    function.start <= comment.start && comment.end <= function.end
-                })
-                .min_by_key(|(_, function)| function.end - function.start)
-                .map(|(index, _)| index);
-        }
-    }
-
-    let mut cited = vec![false; functions.len()];
-    for (comment_index, owner) in owners.iter().enumerate() {
-        let Some(function_index) = owner else {
-            continue;
-        };
-        if reference_roles(&source[comments[comment_index].clone()], false)
-            .iter()
-            .any(|role| {
-                role.kind != crate::ReferenceKind::Term
-                    && definitions
-                        .get(role.name)
-                        .is_some_and(|d| d.kind != crate::DefinitionKind::Term)
-            })
-        {
-            cited[*function_index] = true;
-        }
-    }
-    Ok(functions
+) -> Result<Vec<(usize, &'static str, String)>, OutlineError> {
+    let (_, missing) = unreferenced_items(source, definitions)?;
+    Ok(missing
         .into_iter()
-        .zip(cited)
-        .filter_map(|(function, cited)| (!cited).then_some((function.line, function.name)))
+        .map(|(_, line, kind, name)| (line, kind, name))
         .collect())
 }
 
-// {impl}`requirements.references.rust_function_coverage`
-pub(crate) fn rust_files(root: &Path, errors: &mut Vec<String>) -> Vec<std::path::PathBuf> {
-    let mut stack = vec![root.to_path_buf()];
-    let mut files = Vec::new();
-    while let Some(directory) = stack.pop() {
-        let entries = match fs::read_dir(&directory) {
-            Ok(entries) => entries,
-            Err(error) => {
-                errors.push(format!(
-                    "{}: cannot scan Rust sources: {error}",
-                    display_path(root, &directory)
-                ));
-                continue;
+/// Items without a valid reference, as `(node, line, kind, name)`.
+type Unreferenced = Vec<(usize, usize, &'static str, String)>;
+
+/// The functions, methods, structs, enums, and unions of a Rust source with
+/// no valid reference in a comment belonging to them, with the source's
+/// outline.
+// {impl}`requirements.references.builtin_definitions`
+// {impl}`requirements.references.procedure`
+// {impl}`requirements.references.outline_comments`
+// {impl}`requirements.references.roles`
+// {impl}`requirements.definitions.references`
+// {impl}`requirements.references.util`
+pub(crate) fn unreferenced_items(
+    source: &str,
+    definitions: &BTreeMap<String, Declaration>,
+) -> Result<(outline::Outline, Unreferenced), OutlineError> {
+    let outline = outline::parse_with(&outline::RUST_PROFILE, source)?;
+    let mut cited = vec![false; outline.nodes.len()];
+    // A built-in counts only in a role it permits.
+    let counts = |kind: crate::ReferenceKind, name: &str| {
+        // A `{fixme}` acknowledges a gap; it does not say why the item exists.
+        if matches!(
+            kind,
+            crate::ReferenceKind::Term | crate::ReferenceKind::Fixme
+        ) {
+            return false;
+        }
+        if let Some(builtin) = crate::builtins::builtin(name) {
+            return builtin.check(kind).is_ok();
+        }
+        definitions.get(name).is_some_and(|d| match d.kind {
+            crate::DefinitionKind::Requirement => true,
+            // An example counts only when it traces to a
+            // requirement itself.
+            crate::DefinitionKind::Example => {
+                crate::evidence::example_references_requirement(d, definitions)
             }
-        };
-        for entry in entries {
-            let entry = match entry {
-                Ok(entry) => entry,
-                Err(error) => {
-                    errors.push(format!(
-                        "{}: cannot read Rust source directory entry: {error}",
-                        display_path(root, &directory)
-                    ));
-                    continue;
-                }
-            };
-            let path = entry.path();
-            let kind = match entry.file_type() {
-                Ok(kind) => kind,
-                Err(error) => {
-                    errors.push(format!(
-                        "{}: cannot inspect Rust source: {error}",
-                        display_path(root, &path)
-                    ));
-                    continue;
-                }
-            };
-            if kind.is_dir() {
-                let name = entry.file_name();
-                if !matches!(name.to_str(), Some(".git" | "target"))
-                    && !(directory == root
-                        && matches!(name.to_str(), Some("book" | "evidence" | "vendor")))
-                {
-                    stack.push(path);
-                }
-            } else if kind.is_file() && path.extension().is_some_and(|value| value == "rs") {
-                files.push(path);
-            }
+            crate::DefinitionKind::Term => false,
+        })
+    };
+    for comment in &outline.comments {
+        if reference_roles(&source[comment.byte_start..comment.byte_end], false)
+            .iter()
+            .any(|role| counts(role.kind, role.name))
+        {
+            cited[comment.owner] = true;
         }
     }
-    files.sort();
-    files
+    for fence in crate::fenced::comment_fences(source, &outline) {
+        if let Some(owner) = fence.owner
+            && fence.closed
+            && counts(fence.kind, &fence.name)
+        {
+            cited[owner] = true;
+        }
+    }
+    let missing = outline
+        .nodes
+        .iter()
+        .zip(cited)
+        .enumerate()
+        .filter_map(|(index, (node, cited))| {
+            let kind = item_kind(node.kind)?;
+            let name = node.display_name()?;
+            (!cited).then_some((index, node.declaration_line, kind, name))
+        })
+        .collect();
+    Ok((outline, missing))
 }
 
-// {impl}`requirements.references.rust_function_coverage`
+/// The kind coverage reports for an outline node kind that must be covered:
+/// functions and methods, structs, enums, and unions.
+pub(crate) fn item_kind(kind: &str) -> Option<&'static str> {
+    Some(match kind {
+        "fn" => "function",
+        "struct" => "struct",
+        "enum" => "enum",
+        "union" => "union",
+        _ => return None,
+    })
+}
+
+/// The first-party Rust files among the sources reference discovery
+/// considers: every `.rs` file outside the project-root `vendor` directory.
+pub(crate) fn rust_files(root: &Path, sources: &[PathBuf]) -> Vec<PathBuf> {
+    let vendor = root.join("vendor");
+    sources
+        .iter()
+        .filter(|path| path.extension().is_some_and(|value| value == "rs"))
+        .filter(|path| !path.starts_with(&vendor))
+        .cloned()
+        .collect()
+}
+
+// {impl}`requirements.ci.errors`
+// {impl}`requirements.references.procedure`
 pub(crate) fn validate_rust_functions(
     root: &Path,
+    sources: &[PathBuf],
     definitions: &BTreeMap<String, Declaration>,
+    reads: &EvidenceReads,
     errors: &mut Vec<String>,
-) {
-    for file in rust_files(root, errors) {
+    discovery_errors: &mut Vec<String>,
+    progress: &mut impl FnMut(InspectionProgress),
+) -> Vec<UncoveredItem> {
+    let mut uncovered = Vec::new();
+    progress(InspectionProgress {
+        stage: RUST_COVERAGE_STAGE,
+        completed: 0,
+        total: None,
+    });
+    let files = rust_files(root, sources);
+    let total = files.len();
+    for (completed, file) in files.into_iter().enumerate() {
+        progress(InspectionProgress {
+            stage: RUST_COVERAGE_STAGE,
+            completed,
+            total: Some(total),
+        });
         let label = display_path(root, &file);
         let source = match fs::read_to_string(&file) {
             Ok(source) => source,
             Err(error) => {
-                errors.push(format!("{label}: cannot read Rust source: {error}"));
+                let error = format!("{label}: cannot read Rust source: {error}");
+                discovery_errors.push(error.clone());
+                errors.push(error);
                 continue;
             }
         };
-        match missing_function_references(&source, definitions) {
-            Ok(missing) => {
-                for (line, name) in missing {
-                    errors.push(format!(
-                        "{label}:{line}: function {name} has no requirement or example citation"
-                    ));
+        match unreferenced_items(&source, definitions) {
+            Ok((outline, missing)) => {
+                for (index, line, kind, name) in missing {
+                    if reads.covers(&label, &outline, index) {
+                        continue;
+                    }
+                    let error = uncovered_error(&label, line, kind, &name);
+                    errors.push(error.clone());
+                    uncovered.push(UncoveredItem {
+                        file: label.clone(),
+                        item: outline.nodes[index].selector.clone(),
+                        error,
+                    });
                 }
             }
             Err(error) => {
-                errors.push(format!(
-                    "{label}:{}: cannot parse Rust source: {error}",
-                    error.span().start().line
-                ));
+                let error = format!(
+                    "{label}:{}: cannot parse Rust source: {}",
+                    error.line, error.message
+                );
+                discovery_errors.push(error.clone());
+                errors.push(error);
             }
         }
     }
+    progress(InspectionProgress {
+        stage: RUST_COVERAGE_STAGE,
+        completed: total,
+        total: Some(total),
+    });
+    uncovered
 }
 
-// {impl}`requirements.references.rust_function_coverage`
 fn display_path(root: &Path, path: &Path) -> String {
     path.strip_prefix(root)
         .unwrap_or(path)
@@ -374,11 +404,70 @@ mod tests {
 
     use tempfile::TempDir;
 
-    use super::{missing_function_references, validate_rust_functions};
+    use super::{comments, missing_function_references, validate_rust_functions};
     use crate::DefinitionKind;
     use crate::evidence::Declaration;
 
-    // {test}`requirements.references.rust_function_coverage`
+    /// The text of each comment `comments` finds in `source`.
+    // {test}`requirements.definitions.dependencies`
+    fn comment_texts(source: &str) -> Vec<&str> {
+        comments(source)
+            .into_iter()
+            .map(|range| &source[range])
+            .collect()
+    }
+
+    // {test}`requirements.definitions.dependencies`
+    #[test]
+    fn comment_scan_skips_string_and_character_literals() {
+        for (source, expected) in [
+            // Strings, including escaped quotes and comment markers inside them.
+            (r#"let s = "// no"; // yes"#, vec!["// yes"]),
+            (r#"let s = "a \" // no"; /* yes */"#, vec!["/* yes */"]),
+            (r#"let s = b"// no"; // yes"#, vec!["// yes"]),
+            (r#"let s = c"/* no */"; // yes"#, vec!["// yes"]),
+            // Raw strings, with and without hashes, may contain quotes.
+            (r#"let s = r"// no"; // yes"#, vec!["// yes"]),
+            (r##"let s = r#"" // no "#; // yes"##, vec!["// yes"]),
+            (r###"let s = br##"#" // no"##; // yes"###, vec!["// yes"]),
+            (r#"let s = cr"// no"; // yes"#, vec!["// yes"]),
+            // Character literals, including quote characters and escapes.
+            (r#"let c = '"'; // yes"#, vec!["// yes"]),
+            (r"let c = '\''; // yes", vec!["// yes"]),
+            (r#"let c = ('\\', "// no"); // yes"#, vec!["// yes"]),
+            (
+                r#"let c = ('\u{1F600}', '\x41', "// no"); // yes"#,
+                vec!["// yes"],
+            ),
+            (r#"let c = ('é', "// no"); // yes"#, vec!["// yes"]),
+            // A lifetime is not a character literal.
+            (
+                r#"fn f<'a>(x: &'a str) -> &'a str { "// no" } // yes"#,
+                vec!["// yes"],
+            ),
+            // Block comments nest, and line comments end at the newline.
+            (
+                "/* a /* b */ c */ d // e\nf",
+                vec!["/* a /* b */ c */", "// e"],
+            ),
+            (
+                "/** doc */ //! inner\n/// outer",
+                vec!["/** doc */", "//! inner", "/// outer"],
+            ),
+            // Unterminated literals and comments extend to the end of the source.
+            (r#"let s = "// no"#, vec![]),
+            (r##"let s = r#"// no"##, vec![]),
+            (
+                "/* open /* nested */ still",
+                vec!["/* open /* nested */ still"],
+            ),
+            ("let c = '", vec![]),
+        ] {
+            assert_eq!(comment_texts(source), expected, "{source}");
+        }
+    }
+
+    // {cite}`habeas:util`
     fn definitions() -> BTreeMap<String, Declaration> {
         BTreeMap::from([
             (
@@ -391,6 +480,7 @@ mod tests {
                     line_start: 1,
                     line_end: 1,
                     raw_lines: vec![],
+                    anchors: vec![],
                 },
             ),
             (
@@ -404,12 +494,14 @@ mod tests {
                     line_start: 5,
                     line_end: 5,
                     raw_lines: vec![],
+                    anchors: vec![],
                 },
             ),
         ])
     }
 
-    // {test}`requirements.references.rust_function_coverage`
+    // {test}`requirements.references.rust_item_coverage`
+    // {test}`requirements.references.outline_comments`
     #[test]
     fn finds_uncited_functions_without_using_enclosing_or_string_references() {
         let source = r##"
@@ -440,9 +532,10 @@ mod feature {
         /* @impl@`requirements.example` */
     }
 
+    // A comment run belongs to the next item even across a blank line.
     // @impl@`requirements.example`
 
-    fn distant_comment() {}
+    fn after_blank_line() {}
 
     // @impl@`requirements.example`
     fn previous() {} // @impl@`requirements.example`
@@ -462,20 +555,20 @@ fn cited_by_outer_doc() {}
         assert_eq!(
             missing
                 .into_iter()
-                .map(|(_, name)| name)
+                .map(|(_, _, name)| name)
                 .collect::<Vec<_>>(),
             [
                 "missing_method",
+                "Widget",
                 "containing_string",
                 "unknown_reference",
-                "distant_comment",
                 "after_trailing_comment",
                 "after_inner_doc"
             ]
         );
     }
 
-    // {test}`requirements.references.rust_function_coverage`
+    // {test}`requirements.references.rust_item_coverage`
     #[test]
     fn checks_trait_test_helper_and_nested_functions_separately() {
         let source = r#"
@@ -503,13 +596,78 @@ fn test_helper() {}
         assert_eq!(
             missing
                 .into_iter()
-                .map(|(_, name)| name)
+                .map(|(_, _, name)| name)
                 .collect::<Vec<_>>(),
             ["uncited_trait_method", "outer", "test_helper"]
         );
     }
 
-    // {test}`requirements.references.rust_function_coverage`
+    // {test}`requirements.references.rust_item_coverage`
+    #[test]
+    fn an_example_counts_only_when_it_references_a_requirement() {
+        let mut definitions = definitions();
+        let example = |text: &str| Declaration {
+            kind: DefinitionKind::Example,
+            text: text.replace("CITE", "{cite}").replace("TEST", "{test}"),
+            source: "md/requirements.md:9".to_owned(),
+            file: "md/requirements.md".to_owned(),
+            line_start: 9,
+            line_end: 9,
+            raw_lines: vec![],
+            anchors: vec![],
+        };
+        definitions.insert(
+            "requirements.tested".to_owned(),
+            example("A tested case. TEST`requirements.example`"),
+        );
+        definitions.insert("requirements.orphan".to_owned(), example("No requirement."));
+        definitions.insert(
+            "requirements.chained".to_owned(),
+            example("Only another example. CITE`requirements.case`"),
+        );
+        definitions.insert(
+            "terms.word".to_owned(),
+            Declaration {
+                kind: DefinitionKind::Term,
+                ..example("A word.")
+            },
+        );
+        definitions.insert(
+            "requirements.termed".to_owned(),
+            example("Only a term. CITE`terms.word`"),
+        );
+        let source = r#"
+// @test@`requirements.case`
+fn cites_example() {}
+// @test@`requirements.tested`
+fn tests_example() {}
+// @test@`requirements.orphan`
+fn orphan_example() {}
+// @test@`requirements.chained`
+fn chained_example() {}
+// @test@`requirements.termed`
+fn termed_example() {}
+// @impl@`terms.word`
+fn names_a_term() {}
+"#
+        .replace("@impl@", "{impl}")
+        .replace("@test@", "{test}");
+        let missing = missing_function_references(&source, &definitions).unwrap();
+        assert_eq!(
+            missing
+                .into_iter()
+                .map(|(_, _, name)| name)
+                .collect::<Vec<_>>(),
+            [
+                "orphan_example",
+                "chained_example",
+                "termed_example",
+                "names_a_term"
+            ]
+        );
+    }
+
+    // {test}`requirements.references.rust_item_coverage`
     #[test]
     fn locates_functions_after_unicode_text() {
         let source = r#"
@@ -522,10 +680,10 @@ fn outer() {
 "#
         .replace("@impl@", "{impl}");
         let missing = missing_function_references(&source, &definitions()).unwrap();
-        assert_eq!(missing, [(6, "missing_inner".to_owned())]);
+        assert_eq!(missing, [(6, "function", "missing_inner".to_owned())]);
     }
 
-    // {test}`requirements.references.rust_function_coverage`
+    // {test}`requirements.references.rust_item_coverage`
     #[test]
     fn reports_all_files_and_parse_failures() {
         let project = TempDir::new().unwrap();
@@ -551,22 +709,136 @@ fn outer() {
             "fn ignored() {}\n",
         )
         .unwrap();
+        // Build output and repository metadata are skipped at any depth; the
+        // book, evidence, and vendored sources only at the project root.
+        for (file, source) in [
+            ("crates/sub/target/debug/build.rs", "fn ignored() {}\n"),
+            (".git/hooks/hook.rs", "fn ignored() {}\n"),
+            ("vendor/dep/lib.rs", "fn ignored() {}\n"),
+            ("book/listing.rs", "fn ignored() {}\n"),
+            ("src/vendor/own.rs", "fn own_vendor() {}\n"),
+            ("src/book/own.rs", "fn own_book() {}\n"),
+        ] {
+            let path = project.path().join(file);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, source).unwrap();
+        }
 
         let mut errors = Vec::new();
-        validate_rust_functions(project.path(), &definitions(), &mut errors);
-        assert_eq!(errors.len(), 3, "{errors:?}");
+        validate_rust_functions(
+            project.path(),
+            &crate::evidence::discovered_files(project.path(), &mut Vec::new()),
+            &definitions(),
+            &super::EvidenceReads::default(),
+            &mut errors,
+            &mut Vec::new(),
+            &mut |_| {},
+        );
+        assert_eq!(errors.len(), 5, "{errors:?}");
+        for expected in [
+            "src/vendor/own.rs:1: function own_vendor",
+            "src/book/own.rs:1: function own_book",
+        ] {
+            assert!(
+                errors.iter().any(|error| error.contains(expected)),
+                "{expected}: {errors:?}"
+            );
+        }
         assert!(errors.iter().any(|error| {
-            error.contains("src/lib.rs:1: function uncited has no requirement or example citation")
+            error.contains("src/lib.rs:1: function uncited is uncovered: it has no requirement or example reference, and no evidence record or review read it")
         }));
         assert!(errors.iter().any(|error| {
             error.contains(
-                "src/evidence/check.rs:1: function nested_source has no requirement or example citation",
+                "src/evidence/check.rs:1: function nested_source is uncovered: it has no requirement or example reference, and no evidence record or review read it",
             )
         }));
         assert!(
             errors
                 .iter()
                 .any(|error| error.contains("tests/broken.rs:1: cannot parse Rust source"))
+        );
+    }
+
+    // {test}`requirements.authoring.progress`
+    #[test]
+    fn rust_function_coverage_reports_counted_progress_per_file() {
+        let project = TempDir::new().unwrap();
+        fs::create_dir_all(project.path().join("src")).unwrap();
+        for name in ["a", "b", "c"] {
+            fs::write(project.path().join(format!("src/{name}.rs")), "").unwrap();
+        }
+        let mut updates = Vec::new();
+        validate_rust_functions(
+            project.path(),
+            &crate::evidence::discovered_files(project.path(), &mut Vec::new()),
+            &definitions(),
+            &super::EvidenceReads::default(),
+            &mut Vec::new(),
+            &mut Vec::new(),
+            &mut |update| updates.push((update.stage, update.completed, update.total)),
+        );
+        let stage = "Rust function coverage";
+        assert_eq!(
+            updates,
+            [
+                (stage, 0, None),
+                (stage, 0, Some(3)),
+                (stage, 1, Some(3)),
+                (stage, 2, Some(3)),
+                (stage, 3, Some(3)),
+            ]
+        );
+    }
+
+    // {test}`requirements.references.rust_item_coverage`
+    #[test]
+    fn structs_enums_and_unions_need_references_attached_or_inside() {
+        let source = r##"
+// @impl@`requirements.example`
+#[derive(Debug)]
+struct Attached {
+    field: u8,
+}
+
+struct Inside {
+    // @impl@`requirements.example`
+    #[allow(dead_code)]
+    field: u8,
+}
+
+enum Variants {
+    // @cite@`requirements.example`
+    One,
+}
+
+struct Missing;
+
+enum MissingEnum {
+    One,
+}
+
+union MissingUnion {
+    value: u8,
+}
+
+// @impl@`requirements.example`
+fn outer() {
+    struct Nested;
+}
+"##
+        .replace('@', "");
+        let source = source
+            .replace("impl`", "{impl}`")
+            .replace("cite`", "{cite}`");
+        let missing = missing_function_references(&source, &definitions()).unwrap();
+        assert_eq!(
+            missing,
+            vec![
+                (19, "struct", "Missing".to_owned()),
+                (21, "enum", "MissingEnum".to_owned()),
+                (25, "union", "MissingUnion".to_owned()),
+                (31, "struct", "Nested".to_owned()),
+            ]
         );
     }
 }

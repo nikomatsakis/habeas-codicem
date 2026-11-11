@@ -6,16 +6,19 @@ Apply the shared one-PR protocol. Start in **📝 Adjust requirements**.
    commits, mdBook chapters, source, and tests. Use `cargo habeas info` in this
    repository or installed `habeas info`. Reuse existing requirements where
    appropriate. Distinguish user requests from your proposed interpretations.
-2. Write the smallest coherent proposal using only Markdown under `md/` and
-   matching JSON records under `evidence/`. Use stable, unique `{req}` and
-   `{example}` IDs; cite the requirements illustrated by each example. Keep
+2. Write the smallest coherent proposal using only Markdown under `md/`.
+   Use stable, unique `{req}` and
+   `{example}` IDs; reference the requirements illustrated by each example with
+   `{test}` or `{cite}`. Keep
    requirements observable and avoid prescribing a design unless requested.
-   Give changed or new definitions truthful evidence with `determination: false`
-   while unverified. Preserve earlier implementation commits. Do not write code
+   Leave changed or new definitions' evidence pending; missing or stale evidence
+   is expected at this stage. Do not write placeholder judgments or snapshots.
+   After approval, the implementation workflow uses `habeas author --all` to
+   assess evidence with the configured model. Preserve earlier implementation commits. Do not write code
    or tests until the current proposal receives owner approval. If feedback only
    asks a question, you may leave files unchanged and answer in the final message.
 3. Run `git diff --check`, `mdbook build`, and `cargo habeas status` (or installed
-   `habeas status`). Fix malformed definitions/evidence and report unavailable
+   `habeas status`). Fix malformed definitions and report unavailable
    checks. Pending determinations are expected; do not claim success merely to
    make validation pass. Explain conflicting obligations as open choices.
 4. Write `.autofix-output.json` with `stage: "requirements"`, the intent behind

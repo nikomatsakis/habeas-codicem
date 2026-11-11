@@ -1,12 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
 
 use serde_json::{Map, Value};
 
 use crate::evidence::Declaration;
-use crate::inputs::InputSelector;
+use crate::inputs::{InputSelector, OutlineCache};
 use crate::{DefinitionKind, ReferenceKind, reference_roles};
 
-// {impl}`requirements.definitions.declaration`
 pub(crate) fn declaration(text: &str) -> Result<(&str, &str), String> {
     let text = text.trim_start();
     let (option, body) = text.split_once('\n').unwrap_or((text, ""));
@@ -30,8 +30,6 @@ pub(crate) fn declaration(text: &str) -> Result<(&str, &str), String> {
     Ok((phrase, body))
 }
 
-// {impl}`requirements.definitions.dependencies`
-// {impl}`requirements.definitions.references`
 fn referenced_terms(text: &str, markdown: bool, names: &mut BTreeSet<String>) {
     names.extend(
         reference_roles(text, markdown)
@@ -42,12 +40,31 @@ fn referenced_terms(text: &str, markdown: bool, names: &mut BTreeSet<String>) {
 }
 
 // {impl}`requirements.definitions.dependencies`
-// {impl}`requirements.definitions.selection`
 pub(crate) fn dependencies(
+    root: &Path,
     declarations: &BTreeMap<String, Declaration>,
+    outlines: &OutlineCache,
     record: &Map<String, Value>,
     subject: Option<&str>,
 ) -> Result<BTreeSet<String>, String> {
+    let pending = direct_references(root, declarations, outlines, record, subject);
+    let (required, problems) = close_dependencies(declarations, pending);
+    match problems.into_iter().next() {
+        Some(problem) => Err(problem),
+        None => Ok(required),
+    }
+}
+
+/// Terms referenced directly by the subject text or the record's inputs.
+// {impl}`requirements.references.markdown_literals`
+// Malformed or unresolvable inputs are skipped: their own checks report them.
+fn direct_references(
+    root: &Path,
+    declarations: &BTreeMap<String, Declaration>,
+    outlines: &OutlineCache,
+    record: &Map<String, Value>,
+    subject: Option<&str>,
+) -> BTreeSet<String> {
     let mut pending = BTreeSet::new();
     if let Some(text) = subject {
         referenced_terms(text, true, &mut pending);
@@ -57,31 +74,36 @@ pub(crate) fn dependencies(
             let Some(selector) = InputSelector::from_input(input) else {
                 continue;
             };
-            let Some(lines) = input.get("text").and_then(Value::as_array) else {
-                continue;
+            // Recorded outline inputs carry no text; read the node's current source.
+            let text = match input.get("text").and_then(Value::as_array) {
+                Some(lines) => lines
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                None => match selector.resolve(root, declarations, outlines) {
+                    Ok(resolved) if matches!(selector, InputSelector::Outline { .. }) => {
+                        resolved.text.join("\n")
+                    }
+                    _ => continue,
+                },
             };
-            let text = lines
-                .iter()
-                .filter_map(Value::as_str)
-                .collect::<Vec<_>>()
-                .join("\n");
             match selector {
                 InputSelector::Definition { definition } => {
                     pending.insert(definition);
                 }
-                InputSelector::RustItem { .. } => {
+                InputSelector::Outline { file, .. }
+                    if crate::outline::profile_for_path(Path::new(&file)).name == "rust" =>
+                {
                     for range in crate::rust_coverage::comments(&text) {
                         referenced_terms(&text[range], false, &mut pending);
                     }
                 }
-                InputSelector::FileRange { file, .. } if file.ends_with(".rs") => {
-                    for range in crate::rust_coverage::comments(&text) {
-                        referenced_terms(&text[range], false, &mut pending);
-                    }
-                }
-                InputSelector::FileRange { file, .. } => {
-                    referenced_terms(&text, file.ends_with(".md"), &mut pending)
-                }
+                InputSelector::Outline { file, .. } => referenced_terms(
+                    &text,
+                    crate::outline::is_markdown_path(Path::new(&file)),
+                    &mut pending,
+                ),
                 InputSelector::Requirements { .. } => {
                     // Scan bodies, not the surrounding colon fences: Markdown code
                     // protection must be evaluated in the declaration's own context.
@@ -96,53 +118,72 @@ pub(crate) fn dependencies(
             }
         }
     }
-    let mut required = BTreeSet::new();
-    while let Some(name) = pending.pop_first() {
-        if !required.insert(name.clone()) {
-            continue;
-        }
-        let definition = declarations
-            .get(&name)
-            .filter(|d| d.kind == DefinitionKind::Term)
-            .ok_or_else(|| format!("term {name}: no matching named definition"))?;
-        let (_, body) = declaration(&definition.text)?;
-        referenced_terms(body, true, &mut pending);
-    }
-    Ok(required)
+    pending
 }
 
-// {impl}`requirements.definitions.dependencies`
-pub(crate) fn validate_dependencies(
+/// Expands referenced terms to a fixed point. Returns the resolvable
+/// definitions and one problem per unresolvable term, continuing past each
+/// problem so every one is found.
+// {impl}`requirements.ci.errors`
+fn close_dependencies(
     declarations: &BTreeMap<String, Declaration>,
+    mut pending: BTreeSet<String>,
+) -> (BTreeSet<String>, Vec<String>) {
+    let mut visited = BTreeSet::new();
+    let mut required = BTreeSet::new();
+    let mut errors = Vec::new();
+    while let Some(name) = pending.pop_first() {
+        if !visited.insert(name.clone()) {
+            continue;
+        }
+        let Some(definition) = declarations
+            .get(&name)
+            .filter(|d| d.kind == DefinitionKind::Term)
+        else {
+            errors.push(format!("term {name}: no matching named definition"));
+            // Without a definition there is no body whose terms to expand.
+            continue;
+        };
+        match declaration(&definition.text) {
+            Ok((_, body)) => referenced_terms(body, true, &mut pending),
+            Err(problem) => errors.push(problem),
+        }
+        required.insert(name);
+    }
+    (required, errors)
+}
+
+// {impl}`requirements.ci.errors`
+pub(crate) fn validate_dependencies(
+    root: &Path,
+    declarations: &BTreeMap<String, Declaration>,
+    outlines: &OutlineCache,
     record: &Map<String, Value>,
     subject: Option<&str>,
     label: &str,
     errors: &mut Vec<String>,
 ) {
-    match dependencies(declarations, record, subject) {
-        Ok(required) => {
-            for name in required {
-                let count = record
-                    .get("inputs")
-                    .and_then(Value::as_array)
-                    .into_iter()
-                    .flatten()
-                    .filter(|input| {
-                        input.get("definition").and_then(Value::as_str) == Some(name.as_str())
-                    })
-                    .count();
-                if count != 1 {
-                    errors.push(format!(
-                        "{label}: expected exactly one definition input for {name}, found {count}"
-                    ));
-                }
-            }
+    let pending = direct_references(root, declarations, outlines, record, subject);
+    let (required, problems) = close_dependencies(declarations, pending);
+    for problem in problems {
+        errors.push(format!("{label}: definition dependencies: {problem}"));
+    }
+    for name in required {
+        let count = record
+            .get("inputs")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter(|input| input.get("definition").and_then(Value::as_str) == Some(name.as_str()))
+            .count();
+        if count != 1 {
+            errors.push(format!(
+                "{label}: expected exactly one definition input for {name}, found {count}"
+            ));
         }
-        Err(error) => errors.push(format!("{label}: definition dependencies: {error}")),
     }
 }
 
-// {impl}`requirements.definitions.references`
 pub(crate) fn escaped_phrase(phrase: &str) -> String {
     let mut output = String::new();
     for ch in phrase.chars() {
@@ -154,4 +195,62 @@ pub(crate) fn escaped_phrase(phrase: &str) -> String {
         }
     }
     output
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use serde_json::json;
+
+    use super::*;
+
+    // {test}`requirements.references.markdown_literals`
+    // {test}`requirements.definitions.dependencies`
+    #[test]
+    fn term_dependencies_of_every_markdown_extension_skip_literal_roles() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        fs::create_dir_all(root.join("md")).unwrap();
+        fs::create_dir_all(root.join("docs")).unwrap();
+        fs::write(root.join("book.toml"), "[book]\nsrc = \"md\"\n").unwrap();
+        fs::write(
+            root.join("md/terms.md"),
+            ":::{definition} unit\n:phrase: unit\nA unit.\n:::\n",
+        )
+        .unwrap();
+        let used = ["{", "term}`terms.unit`"].concat();
+        let missing = ["{", "term}`terms.missing`"].concat();
+        let notes = format!(
+            "Uses {used}.\n\n`{missing}` and \\{missing}\n\n```text\n{missing}\n```\n\n<span title=\"{missing}\"></span>\n"
+        );
+        let declarations = crate::evidence::load_definitions(root).unwrap();
+        let outlines = OutlineCache::default();
+        let dependencies = |file: &str| {
+            fs::write(root.join(file), &notes).unwrap();
+            let record = json!({"inputs": [{"file": file, "item": ""}]});
+            dependencies(
+                root,
+                &declarations,
+                &outlines,
+                record.as_object().unwrap(),
+                None,
+            )
+        };
+        for file in [
+            "docs/a.md",
+            "docs/b.markdown",
+            "docs/C.MD",
+            "docs/d.Markdown",
+        ] {
+            assert_eq!(
+                dependencies(file),
+                Ok(BTreeSet::from(["terms.unit".to_owned()])),
+                "{file}"
+            );
+        }
+        // The same text in a plain-text file is not Markdown.
+        let error = dependencies("docs/e.txt").unwrap_err();
+        assert!(error.contains("terms.missing"), "{error}");
+    }
 }
