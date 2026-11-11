@@ -1,7 +1,7 @@
 {
   "requirement": "When the only submission in a response under\n{cite}`requirements.authoring.submission`, or a `submit_verification` call under\n{cite}`requirements.authoring.verifier_prompt`, is otherwise valid but its\nrationale cites line numbers under\n{cite}`requirements.authoring.line_numbers.detection`, and it is the\nassessment's first such submission, the harness MUST reject it instead of\naccepting it and continue the conversation. The tool result MUST quote the\nmatched text, repeat the location guidance of\n{cite}`requirements.authoring.judgment_rules`, and give a fresh random UUID,\nsaying the model may submit once more, either without line numbers or with\n`rationale` set to exactly that UUID to keep the rejected submission as it was.\nA rejection MUST be counted in usage like any other turn.",
   "determination": true,
-  "rationale": "I found no gaps. The `{impl}` items cover every obligation of `requirements.authoring.line_numbers.rejection`, and tests cover each one.\n\n**Obligations and the code that carries them out**\n\n1. **Reject instead of accepting, and continue the conversation, when the only submission is otherwise valid, cites line numbers, and is the first such submission.**\n   - In `src/authoring/mod.rs#fn[converse]`, any response with other than exactly one submission returns an error before rejection is considered, so rejection applies only to a lone submission.\n   - `converse` calls `parse(&arguments)` and returns on error, so a submission is \"otherwise valid\" before `rejection.decide` runs.\n   - `src/authoring/line_numbers.rs#impl[Rejection]/fn[decide]` returns `Accept` when the rationale does not cite line numbers. For the first citing submission it records the rejection and returns `Outcome::Reject`.\n   - On `Reject`, `converse` pushes the model message, answers every call with an error result, and `continue`s the loop. A later citing submission returns `Fail`.\n   - `converse` takes the submission tool name as a parameter and passes it to `decide`, so the same path serves `submit_judgment` and `submit_verification`.\n2. **The tool result quotes the matched text.** `decide` formats the matched text (`found`) in debug quotes into the message.\n3. **The tool result repeats the location guidance.**\n   - `decide` embeds the `guidance` argument.\n   - `converse` passes `location_guidance()` (`src/authoring/mod.rs#fn[location_guidance]`), which extracts the \"Give a source location\" bullet from the approved `judgment_rules` text.\n4. **The tool result gives a fresh random UUID.** `decide` uses `uuid::Uuid::new_v4()` for each rejection.\n5. **The tool result says the model may submit once more, either without line numbers or with `rationale` set to exactly that UUID.** The message says exactly that.\n6. **The rejection is counted in usage like any other turn.**\n   - Each loop iteration calls `usage.begin_request` and `usage.end_request`.\n   - The rejected submission is recorded with `usage.tool(submit, true)`, and `usage.save()` follows.\n\n**Tests**\n- `src/authoring/mod.rs#mod[tests]/fn[a_rationale_citing_line_numbers_is_rejected_once]` drives `converse` through a provider.\n  - It asserts that exactly two requests are made, that the second request quotes the matched citation, and that it contains the \"Give a source location\" guidance.\n  - It asserts that the usage record holds two requests.\n  - It covers the UUID keep, the clean replacement and the failure on a second citation.\n  - It asserts that the UUID is not recorded in the evidence.\n- `src/authoring/line_numbers.rs#mod[tests]/fn[a_rejection_gives_a_uuid_that_keeps_the_rejected_submission]` tests `decide` directly.\n  - It checks that a clean first submission is accepted.\n  - It checks that the quoted text and the guidance appear in the message.\n  - It checks that the message contains a parseable UUID, that the UUID is fresh on each new `Rejection`, and that a second citation fails.\n- `src/authoring/mod.rs#mod[tests]/fn[a_rationale_without_line_numbers_is_accepted_at_once]` covers the non-citing case: one request and acceptance.\n\nThe code that is shared between `submit_judgment` and `submit_verification` has no separate branch for either, so one test path covers both.\n\n**Unspecified behavior.** The `Fail` outcome on a second citation is specified by the sibling requirement `requirements.authoring.line_numbers.resubmission`, which the same code marks. I found no other unspecified behavior.",
+  "rationale": "I found no gaps. Each obligation maps to code that implements it and a test that asserts its outcome.\n\n**Where the rejection happens.** `src/authoring/mod.rs#fn[converse]` handles both `submit_judgment` and `submit_verification` through its `submit` parameter. It already fails the assessment when a response holds more than one submission. It parses the single submission first, which is the \"otherwise valid\" check. It then calls `Rejection::decide` in `src/authoring/line_numbers.rs#impl[Rejection]/fn[decide]`.\n\n**Obligations**\n- **Reject a first line-number-citing submission and continue.** `decide` returns `Outcome::Reject` when `cited(rationale(..))` matches and no rejection has happened yet. `converse` then pushes the model's message and the tool results onto the history and continues the loop. The submit call's result carries the rejection message. Any other calls in the same response get a \"not run\" result.\n- **Rejection only for the assessment's first such submission.** `decide` stores `rejected` on the first rejection. A later submission citing line numbers returns `Outcome::Fail`.\n- **Quote the matched text.** The message includes `{found:?}`, the quoted match.\n- **Repeat the location guidance.** `converse` passes `location_guidance()` (`src/authoring/mod.rs#fn[location_guidance]`). It extracts the \"Give a source location…\" bullet from the approved `judgment_rules` text, and `decide` embeds it in the message.\n- **Fresh random UUID.** `decide` generates a new `Uuid::new_v4()` for each rejection.\n- **Tell the model its two options.** The message says the model may submit once more, either without line numbers or with `rationale` set to exactly the UUID to keep the rejected submission. `Rejection::resubmitted` and the `converse` branch before `parse` then keep the rejected submission when the rationale equals the UUID exactly.\n- **Count the rejection in usage.** `converse` calls `usage.begin_request` and `usage.end_request` for every turn, and `usage.tool(submit, true)` for the rejection.\n\n**Tests**\n- `src/authoring/line_numbers.rs#mod[tests]/fn[a_rejection_gives_a_uuid_that_keeps_the_rejected_submission]` checks the quoted match and the guidance in the message. It checks the UUID is fresh for each rejection, that exactly the UUID keeps the rejected submission (and UUID plus a space does not), and that a clean resubmission is accepted. It also checks that a second citing submission fails.\n- `src/authoring/mod.rs#mod[tests]/fn[a_rationale_citing_line_numbers_is_rejected_once]` runs the full `converse` loop over three cases:\n  - Resubmitting with the UUID keeps the original rationale, and the UUID is not recorded.\n  - A clean resubmission replaces the original.\n  - A second citing resubmission fails the assessment.\n\n  It also asserts that the second request contains the quote and the guidance, and that usage records both requests.\n- `src/authoring/mod.rs#mod[tests]/fn[a_rationale_without_line_numbers_is_accepted_at_once]` covers the case where no rejection happens.\n\n**Unspecified behavior.** The extra \"Another rationale that cites line numbers fails the assessment\" sentence, and the failure on a second citing submission, are covered by `requirements.authoring.submission`. That requirement allows only one resubmission after a rejection. The code also carries `requirements.authoring.line_numbers.resubmission` as an `{impl}` reference.",
   "references": "da65d162329356d916dfef5950fd78a682c13ec83f9cfa16840d7cc8e962d413",
   "inputs": [
     {
@@ -45,14 +45,19 @@
         "{cite}`requirements.ci.outcomes`.",
         "`rationale` MUST be nonempty Markdown. This tool call MUST supply the final",
         "assessment result. The model MUST invoke it exactly once over the entire",
-        "assessment. If the model finishes without invoking it, or invokes it more than",
-        "once, the harness MUST report an error and leave existing evidence unchanged.",
+        "assessment. If a response ends without invoking it, and the assessment has",
+        "not already been reminded, the harness MUST continue the conversation with one",
+        "user message, `Reminder: you MUST submit your result with the submit_judgment",
+        "tool.`, naming the assessment's submission tool. If a later response also ends",
+        "without invoking it, or the model invokes it more than once, the harness MUST",
+        "report an error and leave existing evidence unchanged. The reminder MUST be",
+        "counted in usage like any other turn.",
         "The harness MUST check the complete model response for multiple submissions",
         "before accepting one. Invalid submission arguments MUST also fail the assessment.",
         "A valid single submission MUST finish the assessment; there is no submission",
         "repair or resubmission loop, except the one continuation after a response cut",
-        "off at its output limit under {cite}`requirements.authoring.output_limit` and",
-        "the one resubmission after a rejection under",
+        "off at its output limit under {cite}`requirements.authoring.output_limit`, the",
+        "one reminder above, and the one resubmission after a rejection under",
         "{cite}`requirements.authoring.line_numbers.rejection`. An assessment that fails before accepting a valid",
         "judgment MUST emit no evidence JSON to stdout.",
         ":::"
@@ -130,7 +135,8 @@
         "",
         "# Submitting",
         "",
-        "Call submit_verification exactly once. That tool call is your final answer.",
+        "You MUST end by calling submit_verification exactly once. A verification",
+        "written in your reply text is not accepted.",
         "```",
         "",
         "```text",
@@ -240,7 +246,7 @@
     {
       "file": "src/authoring/mod.rs",
       "item": "fn[converse]",
-      "hash": "643470d44d6b968a04b6b93623e4ff8c56f7568a4d09c542feed775a0eaedd40"
+      "hash": "0a489333b08e6891b106174ad576dbedfab8ce9ae237a872f8092858b195a8e0"
     },
     {
       "file": "src/authoring/mod.rs",
@@ -251,6 +257,11 @@
       "file": "src/authoring/mod.rs",
       "item": "mod[tests]/fn[a_rationale_without_line_numbers_is_accepted_at_once]",
       "hash": "fd506ee9b26cc252200f1f59095606ed1e38b124e2ba24884c450a0c4465e871"
+    },
+    {
+      "file": "src/authoring/line_numbers.rs",
+      "item": "",
+      "hash": "b66e87e037661996adca678c52025e5543e7bf42e2f11f7d0bb384a673250ac0"
     }
   ]
 }

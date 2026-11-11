@@ -1,8 +1,8 @@
 {
   "requirement": "No prompt, tool result, or tool error the harness gives the model MUST state a\nline number or line range of a project source, except within source text it\nquotes and where a tool error repeats a line number the model supplied. The\nharness MUST identify a source location by file and outline selector under\n{cite}`requirements.references.outline_selectors` instead.",
   "determination": false,
-  "rationale": "**Verdict:** the requirement is not fully met. The success paths drop line numbers, but two tool-error paths state line numbers the model did not supply, and no test covers either.\n\n**What is implemented and tested**\n- **Outline tool:** `src/authoring/tools.rs#fn[outline_entries]` returns selector, kind and name only. `outline_lists_nested_nodes_without_text_or_inputs` checks that no line field appears.\n- **Search tools (ripgrep, ast_grep, declared queries):** `src/authoring/tools.rs#impl[SearchNodes]/fn[entries]` emits file, selector, kind and `{text, matched}` lines, with no line numbers. `search_merges_context_windows_and_respects_ignore_rules` and `separate_windows_in_one_node_are_divided_by_an_elision_line` assert this.\n- **References tool:** `src/authoring/tools.rs#fn[references]` identifies sites by file and selector. `references_list_names_and_flattened_sites_without_recording_inputs` tests it.\n- **Habeas reads:** `src/inputs.rs#impl[InputSelector]/fn[to_model_input]` drops line fields. `reading_records_only_delivered_sources_and_their_terms` and `line_range_reads_record_the_innermost_covering_nodes` check this.\n- **Site prompt matches:** `src/sites.rs#impl[SiteItem]/fn[matches_value]` gives each match's selector rather than lines. `site_reviews_use_their_prompt_and_record_applies_and_the_site` tests it.\n\n**Gap 1: a parse failure reaches the model with a line number**\n- `src/inputs.rs#impl[OutlineCache]/fn[parse]` formats the error as the file, then \"cannot parse <lang> source\", then the outline error.\n- The `Display` implementation of `OutlineError` in `src/outline/mod.rs` writes \"line N: message\". N is the line of the first syntax error in the project source.\n- Tool paths propagate this message to the model as a tool error. Examples are `src/authoring/tools.rs#fn[outline]`, `src/authoring/tools.rs#fn[search]` and `src/authoring/inputs.rs#impl[AssessmentSources]/fn[read_lines]`, which all turn the parse error into an `io::Error`.\n- The model did not supply that number, so this violates \"No … tool error … MUST state a line number … of a project source\". The exception covers only numbers the model supplied.\n- No test asserts that this error is free of line numbers.\n\n**Gap 2: the line-range error states a line number the model did not supply**\n- When `line_end` is omitted, `src/authoring/inputs.rs#impl[AssessmentSources]/fn[read_lines]` defaults it to the file's line count. It then reports an error of the form `<file>:<start>-<end> is not an inclusive range…`.\n- With a start line past the end of a short file and no end line given, the error therefore states the file's last line number as the range end. The model never supplied that number.\n- `malformed_and_failed_reads_return_to_the_model_and_the_assessment_continues` exercises an out-of-range start line, but it only checks that the error is delivered. It does not check that the message omits unsupplied line numbers.\n\n**Not counted as gaps**\n- The `habeas` tool description includes an example request using line fields. I treated it as a request example rather than a source location.\n- The TOML parse error in `src/config.rs` carries a line number, but I did not see it reach the model.\n\n**Acknowledgments:** there are no `{fixme}` references to this requirement, so neither gap is acknowledged.",
-  "references": "c17e9b829521d240bc312e8bab065ab62eab668da78561a456ac049780f2d93f",
+  "rationale": "The requirement is mostly met, but one tool-error path still gives the model line numbers it did not supply, so I judge it unmet.\n\n**What is covered**\n- **Tool results.**\n  - `src/authoring/tools.rs#fn[outline_entries]` gives the selector, kind and name of each outline node, with no line numbers.\n  - `src/authoring/tools.rs#impl[SearchNodes]/fn[entries]` gives file, selector, kind and text lines with an elision marker, with no line numbers.\n  - `src/authoring/tools.rs#fn[references]` gives file and selector only.\n  - `src/inputs.rs#impl[InputSelector]/fn[to_model_input]` gives the file, selector, hash, kind and text of each input.\n  - `src/sites.rs#impl[SiteItem]/fn[matches_value]` gives selectors for site matches.\n  - Tests in `src/authoring/tools.rs#mod[tests]` assert that results carry no `line_start`, `line_end` or `line` fields. Examples are `reading_records_only_delivered_sources_and_their_terms`, `search_merges_context_windows_and_respects_ignore_rules` and `outline_lists_nested_nodes_without_text_or_inputs`.\n- **Tool errors that repeat the model's own numbers.** `src/authoring/inputs.rs#impl[AssessmentSources]/fn[read_lines]` repeats only the line numbers the model supplied. `src/authoring/mod.rs#mod[tests]/fn[tool_errors_give_the_model_no_line_numbers_it_did_not_supply]` tests this.\n- **Source parse errors.** `src/authoring/line_numbers.rs#fn[without_source_lines]` strips `line N: ` from parse errors. `converse` in `src/authoring/mod.rs` applies it to every tool error. `tool_errors_drop_the_source_line_of_a_parse_error` and the `mod.rs` test above exercise it.\n- **Location by file and selector.** The code above gives locations as file plus selector.\n\n**Gap: some tool errors state project-source line numbers the model did not supply**\n- The `ast_grep` tool's `{query}` form (`src/authoring/tools.rs#fn[declared_query]`) calls `crate::structural::declared_queries`. That function returns the first problem from `src/structural.rs#fn[parse_queries]`.\n- Those problems are formatted as `\"{file}:{line}: query {name} is not closed\"`, `\"{file}:{line}: query {name} must contain exactly one fenced yaml code block\"`, and `\"{file}:{line}: query {name}: the yaml block must be a mapping ...: {error}\"`. They give the line of a project chapter file (for example `md/requirements.md`), and the YAML decoder's own message may add more.\n- `declared_query` returns that string unchanged as an `io::Error`. `converse` then runs it through `without_source_lines`, whose pattern `\\bline \\d+: ` does not match `file:LINE:`. The model therefore receives a project-source line number it did not supply.\n- Nothing carries an `{impl}` reference for this path, and no test covers it. The existing tests only exercise `read_lines` and parse errors of the form `line N: `.\n- The requirement says \"No … tool error … MUST state a line number or line range of a project source\", so this is a violation of its text, not an edge case it leaves open.\n- The reference-discovery error aggregation in `fn[references]` and `declared_query` could carry the same kind of message. I did not trace whether it does.\n\nNo `{fixme}` acknowledges this gap.\n\n**Smaller point**\n- `converse` in `src/authoring/mod.rs` is the code that applies the line-number filter to every tool error, but it carries no `{impl}` reference to this requirement.",
+  "references": "06e4867be7f1f0d3a36c1da9bf5472583e609269d4e98349a38a30fe727c5d44",
   "inputs": [
     {
       "requirements": "requirements.authoring.no_line_numbers",
@@ -42,8 +42,28 @@
     },
     {
       "file": "src/authoring/inputs.rs",
+      "item": "impl[AssessmentSources]/fn[read_lines]",
+      "hash": "ffb8fff7f402ce20532747b6a86449b5dc723fd94c58a0e27d8b646295fde062"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
       "item": "mod[tests]/fn[anchored_files_contribute_root_node_inputs]",
       "hash": "39de7ee8eac909ce392e9467a76852248ee416c04dd99e027f28672c69f7d905"
+    },
+    {
+      "file": "src/authoring/line_numbers.rs",
+      "item": "fn[without_source_lines]",
+      "hash": "44698120c705c2988338bec6a0e14056d9dc103b64e3e4597a00eb0e39468925"
+    },
+    {
+      "file": "src/authoring/line_numbers.rs",
+      "item": "mod[tests]/fn[tool_errors_drop_the_source_line_of_a_parse_error]",
+      "hash": "04ff3a37888f7b08ae9655cc1ec13e2c1fd61a2a5f4eab73e7530dc964554861"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "mod[tests]/fn[tool_errors_give_the_model_no_line_numbers_it_did_not_supply]",
+      "hash": "50449f2d854bfe64f7e34bc578131a7da9454d7aa0ff5aa854f96721c1b340b3"
     },
     {
       "file": "src/authoring/mod.rs",
@@ -104,21 +124,6 @@
       "file": "src/sites.rs",
       "item": "impl[SiteItem]/fn[matches_value]",
       "hash": "1d2ffe7e74141b4952c561e0442f92f477fc825e56a0391f3eb9cba594de01c1"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "impl[AssessmentSources]/fn[read_lines]",
-      "hash": "47c928e8e36e283df69585820f0ff8bd8cfeaac3125a6a384036270038629632"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "fn[search]",
-      "hash": "5f043c14c80c5dac1610f3c0add854edd22e785a20a3ac707fbe24c4fcb424aa"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "mod[tests]/fn[malformed_and_failed_reads_return_to_the_model_and_the_assessment_continues]",
-      "hash": "e5630659d5e2c9e46e565150b92c6695e933bd8645696550aab793ca3b5ea755"
     }
   ]
 }
