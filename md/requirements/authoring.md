@@ -567,10 +567,26 @@ obvious, and the form of a successful result.
 :::
 
 :::{req} tool_descriptions.special_cases
-Model tool descriptions MUST NOT explain cases the model meets only
+Model tool descriptions SHOULD NOT explain cases the model meets only
 occasionally, such as access policy, excluded or build-output paths, redaction,
-paging, and failures. The harness MUST explain each of these where it occurs: in
-the tool error, or in a note in the result it affects.
+paging, and failures, and the harness SHOULD explain each of these where it
+occurs: in the tool error, or in a note in the result it affects. The model reads
+every description on every assessment, so explaining rare cases there costs
+attention on every review for a case most never meet, and access-policy wording
+in particular can steer its reasoning away from the review. A tool whose purpose
+is one of these cases, such as `next_page`, explains it in its description.
+:::
+
+:::{req} not_listed
+A `list_files`, `ripgrep`, or `ast_grep` result MUST include `not_listed`, an
+array of `{path, reason}` with reason `untracked`, naming each untracked file
+inside the project that the listing would otherwise include or that contains a
+match, so the model can tell that sources exist which it cannot read. It MUST
+be omitted when there are none, and for a paged result it MUST appear on the
+first page. It MUST NOT give those files' contents, and they MUST NOT become
+evidence inputs. Files excluded for another reason, such as a workspace disallow
+rule or generated `evidence/` output, MUST NOT be read to find matches and MUST
+NOT be listed.
 :::
 
 :::{req} redaction_notice
@@ -654,7 +670,8 @@ an explanatory tool error.
 When source-access policy denies a path that a model tool call names
 explicitly, the harness MUST return a tool error naming the path and the reason
 it cannot be read, add no evidence input, and continue the assessment.
-Discovery and search MAY omit denied candidates without an error. Malformed tool
+Discovery and search MUST leave denied candidates out of their entries,
+reporting untracked ones under {cite}`requirements.authoring.not_listed`. Malformed tool
 arguments and ordinary read failures MUST also return explanatory tool errors.
 :::
 
