@@ -72,6 +72,22 @@ fn session_start(project: &Path, cwd: &Path) -> Value {
     serde_json::from_slice(&output.stdout).unwrap()
 }
 
+const SKILL_SENTENCE: &str = "This project tracks requirements with Habeas; load the `habeas` skill before starting any work.";
+
+// {cite}`habeas:util`
+/// The response for an applicable project whose setup is complete.
+fn skill_sentence_only() -> Value {
+    json!({"SessionStart": {"additionalContext": SKILL_SENTENCE}})
+}
+
+// {cite}`habeas:util`
+/// Whether a session-start response carries the setup advisory.
+fn advises_setup(response: &Value) -> bool {
+    response["SessionStart"]["additionalContext"]
+        .as_str()
+        .is_some_and(|context| context.contains("Habeas Codicem is not fully configured"))
+}
+
 // {cite}`habeas:util`
 /// Every `habeas` entry in the manifest's dependency tables.
 fn habeas_dependencies(project: &Path) -> Vec<(String, toml_edit::Item)> {
@@ -268,14 +284,14 @@ fn setup_uses_src_when_book_table_or_source_setting_is_absent() {
         fs::write(project.join("src/SUMMARY.md"), "# Summary\n").unwrap();
         run(project, &["setup", "--path", env!("CARGO_MANIFEST_DIR")]);
         assert!(project.join("src/habeas.css").is_file());
-        assert_eq!(session_start(project, project), json!({"SessionStart": {}}));
+        assert_eq!(session_start(project, project), skill_sentence_only());
         let mut book: toml_edit::DocumentMut = fs::read_to_string(project.join("book.toml"))
             .unwrap()
             .parse()
             .unwrap();
         book["book"]["src"] = toml_edit::value(7);
         fs::write(project.join("book.toml"), book.to_string()).unwrap();
-        assert!(session_start(project, project)["SessionStart"]["additionalContext"].is_string());
+        assert!(advises_setup(&session_start(project, project)));
     }
 }
 
@@ -360,7 +376,7 @@ fn session_start_advises_only_when_setup_is_incomplete() {
 
     let nested = project.join("src/nested");
     fs::create_dir_all(&nested).unwrap();
-    assert_eq!(session_start(project, &nested), json!({"SessionStart": {}}));
+    assert_eq!(session_start(project, &nested), skill_sentence_only());
 
     let css = project.join("md/habeas.css");
     fs::remove_file(&css).unwrap();
@@ -381,10 +397,10 @@ fn session_start_advises_only_when_setup_is_incomplete() {
     )
     .unwrap();
     let response = session_start(project, &nested);
-    assert!(response["SessionStart"]["additionalContext"].is_string());
+    assert!(advises_setup(&response));
 
     fs::write(project.join("book.toml"), &book).unwrap();
-    assert_eq!(session_start(project, &nested), json!({"SessionStart": {}}));
+    assert_eq!(session_start(project, &nested), skill_sentence_only());
     let mut without_fold: toml_edit::DocumentMut = book.parse().unwrap();
     without_fold["output"]["html"]["fold"]
         .as_table_like_mut()
@@ -393,7 +409,7 @@ fn session_start_advises_only_when_setup_is_incomplete() {
     fs::write(project.join("book.toml"), without_fold.to_string()).unwrap();
     let response = session_start(project, &nested);
     assert!(
-        response["SessionStart"]["additionalContext"].is_string(),
+        advises_setup(&response),
         "a book without `output.html.fold.enable` is not fully configured"
     );
     let mut disabled_fold = without_fold;
@@ -401,7 +417,7 @@ fn session_start_advises_only_when_setup_is_incomplete() {
     fs::write(project.join("book.toml"), disabled_fold.to_string()).unwrap();
     assert_eq!(
         session_start(project, &nested),
-        json!({"SessionStart": {}}),
+        skill_sentence_only(),
         "setup keeps an existing fold setting, so any value is complete"
     );
 
@@ -411,7 +427,7 @@ fn session_start_advises_only_when_setup_is_incomplete() {
     without_css["output"]["html"]["additional-css"] = toml_edit::value(toml_edit::Array::new());
     fs::write(project.join("book.toml"), without_css.to_string()).unwrap();
     assert!(
-        session_start(project, &nested)["SessionStart"]["additionalContext"].is_string(),
+        advises_setup(&session_start(project, &nested)),
         "a book without the stylesheet entry is not fully configured"
     );
     fs::write(project.join("book.toml"), &book).unwrap();
@@ -423,14 +439,14 @@ fn session_start_advises_only_when_setup_is_incomplete() {
     ] {
         fs::write(path, "user content\n").unwrap();
         assert!(
-            session_start(project, &nested)["SessionStart"]["additionalContext"].is_string(),
+            advises_setup(&session_start(project, &nested)),
             "{} with different content is not compatible",
             path.display()
         );
         assert_eq!(fs::read_to_string(path).unwrap(), "user content\n");
         fs::remove_file(path).unwrap();
         assert!(
-            session_start(project, &nested)["SessionStart"]["additionalContext"].is_string(),
+            advises_setup(&session_start(project, &nested)),
             "a missing {} is not fully configured",
             path.display()
         );
@@ -440,11 +456,114 @@ fn session_start_advises_only_when_setup_is_incomplete() {
             path.display()
         );
         fs::write(path, original).unwrap();
-        assert_eq!(session_start(project, &nested), json!({"SessionStart": {}}));
+        assert_eq!(session_start(project, &nested), skill_sentence_only());
     }
 
     fs::remove_file(project.join("book.toml")).unwrap();
     assert_eq!(session_start(project, &nested), json!({"SessionStart": {}}));
+}
+
+// {test}`requirements.integration.symposium_skill_hook`
+// {test}`requirements.integration.symposium_skill_hook.configured`
+#[test]
+fn session_start_points_to_the_habeas_skill_once_setup_is_complete() {
+    let temp = fixture();
+    let project = temp.path();
+    run(project, &["setup", "--path", env!("CARGO_MANIFEST_DIR")]);
+    let nested = project.join("src/nested");
+    fs::create_dir_all(&nested).unwrap();
+
+    for cwd in [project, nested.as_path()] {
+        let response = session_start(project, cwd);
+        assert_eq!(
+            response,
+            skill_sentence_only(),
+            "the whole context of a configured project is the skill sentence"
+        );
+        assert!(!advises_setup(&response));
+    }
+}
+
+// {test}`requirements.integration.symposium_skill_hook`
+// {test}`requirements.integration.symposium_skill_hook.setup_state`
+// {test}`requirements.integration.symposium_skill_hook.incomplete_setup`
+#[test]
+fn session_start_puts_the_skill_sentence_before_the_setup_advisory() {
+    let temp = fixture();
+    let project = temp.path();
+    let manifest = fs::read_to_string(project.join("Cargo.toml")).unwrap();
+    fs::write(
+        project.join("Cargo.toml"),
+        format!("{manifest}\n[dev-dependencies]\nhabeas = \"0.2\"\n"),
+    )
+    .unwrap();
+    assert!(!project.join("md/habeas.css").exists());
+
+    let response = session_start(project, project);
+    let event = response["SessionStart"].as_object().unwrap();
+    assert_eq!(event.len(), 1, "one agent context: {response}");
+    let context = event["additionalContext"].as_str().unwrap();
+    let advisory = context
+        .strip_prefix(SKILL_SENTENCE)
+        .unwrap_or_else(|| panic!("the skill sentence must come first: {context:?}"));
+    let advisory = advisory.trim_start();
+    assert!(
+        advisory.starts_with("Habeas Codicem is not fully configured"),
+        "{advisory:?}"
+    );
+    assert!(advisory.contains("habeas setup"), "{advisory:?}");
+    assert_eq!(
+        context.matches("`habeas` skill").count(),
+        1,
+        "exactly one sentence points to the skill: {context:?}"
+    );
+}
+
+// {test}`requirements.integration.symposium_skill_hook.not_applicable`
+// {test}`requirements.integration.symposium_skill_hook.runtime_dependency_only`
+#[test]
+fn session_start_gives_no_context_outside_habeas_projects() {
+    let no_context = json!({"SessionStart": {}});
+
+    let outside = TempDir::new().unwrap();
+    assert_eq!(
+        session_start(outside.path(), outside.path()),
+        no_context,
+        "a directory outside every Cargo and mdBook project"
+    );
+
+    let temp = fixture();
+    let project = temp.path();
+    let manifest = fs::read_to_string(project.join("Cargo.toml")).unwrap();
+    let nested = project.join("src/nested");
+    fs::create_dir_all(&nested).unwrap();
+    assert_eq!(
+        session_start(project, &nested),
+        no_context,
+        "a project that does not list Habeas"
+    );
+
+    for table in ["dependencies", "build-dependencies"] {
+        fs::write(
+            project.join("Cargo.toml"),
+            format!("{manifest}\n[{table}]\nhabeas = \"0.2\"\n"),
+        )
+        .unwrap();
+        assert_eq!(
+            session_start(project, project),
+            no_context,
+            "a project listing Habeas only under [{table}]"
+        );
+    }
+
+    // A Habeas dev dependency outside an mdBook project is not applicable either.
+    fs::write(
+        project.join("Cargo.toml"),
+        format!("{manifest}\n[dev-dependencies]\nhabeas = \"0.2\"\n"),
+    )
+    .unwrap();
+    fs::remove_file(project.join("book.toml")).unwrap();
+    assert_eq!(session_start(project, project), no_context);
 }
 
 // {test}`requirements.cli.setup`

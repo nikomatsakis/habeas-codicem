@@ -6,16 +6,6 @@ A requirement's full name comes from its chapter path relative to the book's
 source directory. In nested chapters, omit a leading `reqs/` and a trailing
 `/index` or `/README`: `md/reqs/cli/index.md` gives `cli.<name>`.
 
-## References that do not count
-
-A reference inside a string literal does not count, so a test fixture can
-contain role text without adding references.
-
-## Vocabulary definitions
-
-Changing a vocabulary definition's phrase or body makes the evidence of every
-requirement and example that uses it stale.
-
 ## Anchors
 
 When a file that implements or tests a requirement cannot carry a reference,

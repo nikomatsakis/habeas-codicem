@@ -59,6 +59,7 @@ pub(crate) struct AnchorTarget {
 
 impl Anchor {
     /// Parses an option value: a path, optionally followed by `#selector`.
+    // {impl}`requirements.references.anchors`
     pub(crate) fn parse(kind: ReferenceKind, value: &str) -> Self {
         let (file, item) = value.split_once('#').unwrap_or((value, ""));
         Self {
@@ -69,6 +70,7 @@ impl Anchor {
     }
 
     /// The option value as written.
+    // {impl}`requirements.references.anchors`
     pub(crate) fn label(&self) -> String {
         if self.item.is_empty() {
             self.file.clone()
@@ -105,6 +107,7 @@ impl Anchor {
     }
 
     /// The outline input selecting the anchored node.
+    // {cite}`habeas:util`
     pub(crate) fn selector(&self) -> InputSelector {
         InputSelector::Outline {
             file: self.file.clone(),
@@ -1122,6 +1125,7 @@ impl SourceReference {
 
 /// One edge of a definition's reference set: its origin (an in-source
 /// reference or a declaration anchor), role, file, and outline selector.
+// {impl}`requirements.ci.reference_set`
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct ReferenceSetEntry {
     pub(crate) origin: &'static str,

@@ -1,6 +1,7 @@
 # Getting started
 
 {impl}`requirements.install.symposium`
+{impl}`requirements.install.symposium.skill_hook`
 
 Start with a Cargo project that already has an mdBook (`book.toml` and a `SUMMARY.md` in the book source directory).
 
@@ -20,7 +21,7 @@ cargo agents sync
 
 Run `cargo agents sync` in your terminal and choose **Enable** when Symposium offers Habeas's plugin. Its default **Ask me later** choice leaves the plugin disabled.
 
-Habeas's hook checks setup when an agent starts a session in this project. If configuration is missing or incompatible, it advises the agent to run `habeas setup`. The hook does not change project files itself.
+When an agent starts a session in this project, Habeas's hook tells it that the project tracks requirements with Habeas and to load the `habeas` skill before starting any work. The hook also checks setup: if configuration is missing or incompatible, it advises the agent to run `habeas setup`. The hook does not change project files itself.
 
 To configure the project before starting an agent session, or if your agent is not running Symposium hooks, install the CLI and configure the project yourself:
 

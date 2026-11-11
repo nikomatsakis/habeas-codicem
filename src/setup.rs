@@ -8,6 +8,7 @@ use toml_edit::{Array, DocumentMut, Item, Table, value};
 const TEST_SOURCE: &str = "#[test]\nfn habeas() {\n    habeas::validate();\n}\n";
 const BADGE_CSS: &str = include_str!("../md/habeas.css");
 
+// {cite}`habeas:util`
 fn css_relative(source_path: &Path) -> String {
     source_path
         .join("habeas.css")
@@ -20,6 +21,7 @@ fn css_relative(source_path: &Path) -> String {
         .join("/")
 }
 
+// {impl}`requirements.cli.setup`
 fn has_habeas_dev_dependency(manifest: &DocumentMut) -> bool {
     manifest
         .get("dev-dependencies")
@@ -28,6 +30,7 @@ fn has_habeas_dev_dependency(manifest: &DocumentMut) -> bool {
         .is_some()
 }
 
+// {impl}`requirements.cli.setup_project`
 fn book_source(book: &DocumentMut) -> Result<&str, &'static str> {
     let table = book
         .get("book")
@@ -54,6 +57,7 @@ pub(crate) fn find_project_root(cwd: &Path) -> Option<PathBuf> {
         .map(Path::to_path_buf)
 }
 
+// {impl}`requirements.cli.setup_project`
 pub(crate) fn project_root() -> Result<PathBuf, Box<dyn Error>> {
     let cwd = std::env::current_dir()?;
     find_project_root(&cwd)

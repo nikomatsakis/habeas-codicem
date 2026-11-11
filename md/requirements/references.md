@@ -166,8 +166,6 @@ declaration is reviewed as part of that definition's own assessment instead.
 :::
 
 :::{req} anchors
-:impl: assets/skills/habeas-requirements/SKILL.md
-:impl: assets/skills/habeas-requirements/references/syntax-details.md
 A `{req}` declaration MAY list `:impl:` and `:test:` options, and an `{example}`
 declaration MAY list `:test:` options, immediately after its opening fence and
 before its body, one per option line, naming a project file path or
@@ -185,10 +183,12 @@ does not resolve to a readable, permitted file or node MUST be a validation erro
 definition and the path; authoring MUST report it before inference, because the
 definition cannot be assessed without it. Any other option line in a `{req}` or
 `{example}` declaration MUST be a validation error.
+:::
 
-Agents SHOULD NOT anchor a file when a more precise reference is available, such
-as a reference attached to the Rust item that implements or tests the
-definition. Habeas's bundled agent skills MUST give this direction.
+:::{req} anchors.guidance
+:impl: assets/skills/habeas/SKILL.md
+:impl: assets/skills/habeas/references/syntax-details.md
+Agents SHOULD NOT anchor a file under {cite}`requirements.references.anchors` when a more precise reference is available, such as a reference attached to the Rust item that implements or tests the definition. Habeas's bundled agent skills MUST give this direction.
 :::
 
 :::{req} book_badges

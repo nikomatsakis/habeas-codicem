@@ -186,8 +186,17 @@ def main():
                 raise RuntimeError(f"Invalid Symposium output: {result.stdout}") from error
             return output.get("hookSpecificOutput", {}).get("additionalContext", "")
 
+        skill_sentence = (
+            "This project tracks requirements with Habeas; "
+            "load the `habeas` skill before starting any work."
+        )
+        # {test}`requirements.integration.symposium_skill_hook`
+        # {test}`requirements.integration.symposium_skill_hook.setup_state`
         incomplete_context = session_start()
-        if "Habeas Codicem is not fully configured" not in incomplete_context:
+        if (
+            not incomplete_context.startswith(skill_sentence)
+            or "Habeas Codicem is not fully configured" not in incomplete_context
+        ):
             status = subprocess.run(
                 [symposium, "status"],
                 cwd=project,
@@ -196,7 +205,7 @@ def main():
                 capture_output=True,
             )
             raise AssertionError(
-                "Symposium did not deliver Habeas's setup advisory. "
+                "Symposium did not deliver Habeas's skill sentence and setup advisory. "
                 f"Agent output: {incomplete_context!r}\n"
                 f"Hook diagnostics: {last_stderr}\n"
                 f"Plugin status: {status.stdout}\n{status.stderr}"
@@ -207,6 +216,11 @@ def main():
         configured_context = session_start()
         if "Habeas Codicem is not fully configured" in configured_context:
             raise AssertionError("Symposium kept advising setup after it was complete")
+        if configured_context.strip() != skill_sentence:
+            raise AssertionError(
+                "Symposium did not deliver only the skill sentence once setup was complete: "
+                f"{configured_context!r}"
+            )
 
         # {test}`requirements.integration.symposium`
         skills_dir = project / ".agents" / "skills"
@@ -273,7 +287,7 @@ def main():
 
     print(
         "Symposium dispatched the local CLI, installed current skills, refreshed changed skills, "
-        "and delivered setup advice only when needed."
+        "pointed the agent to the habeas skill, and delivered setup advice only when needed."
     )
 
 

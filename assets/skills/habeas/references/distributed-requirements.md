@@ -123,7 +123,8 @@ that contains it.
 - Write a violation query, with `within` naming the site query, for every kind
   of construct that could break the obligation, such as each early exit in a
   function that must keep going.
-- Before review, check that the site queries select every place the obligation
+- Before the habeas-requirements review (its step 3), check that the site
+  queries select every place the obligation
   applies and no others: think about places they could miss, such as a list
   held in a local variable or under another name, and places they select that
   the obligation does not cover. Widen or narrow the query, or state the
@@ -132,7 +133,7 @@ that contains it.
 - Present the queries and snippets with the requirement text when reviewing it
   with the user.
 - Check with `habeas info <full-name>` that the sites are the ones you expect.
-- Run `habeas author --all` to author the site reviews.
+- Let `habeas author --all` author the site reviews.
 
 ## Don't
 
@@ -149,8 +150,8 @@ that contains it.
   other obligations, such as the function that reports the collected errors,
   gets `{impl}` of this one like any other root.
 - Don't re-run a false site review for a different result; fix the site, or
-  tighten the queries or the text, as "Site reviews" in the habeas-evidence
-  skill describes.
+  tighten the queries or the text, as the habeas-evidence skill's
+  `references/reviews.md` describes.
 
 ## Gotchas
 
@@ -168,5 +169,4 @@ that contains it.
 
 `habeas author --all` authors a site review for each site, judging the per-site
 obligations and each violation match in it. The requirement's own review checks
-the Do list above. To fix a false site review, see "Site reviews" in the
-habeas-evidence skill.
+the Do list above.
