@@ -351,6 +351,8 @@ no checkable obligation.
 :::
 
 :::{req} flip_guidance
+:impl: assets/skills/habeas/SKILL.md
+:impl: assets/skills/habeas-refactor/SKILL.md
 :impl: assets/skills/habeas-evidence/SKILL.md
 :impl: assets/skills/habeas-requirements/SKILL.md
 :impl: assets/skills/habeas-bootstrap-requirements/SKILL.md

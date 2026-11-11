@@ -7,7 +7,13 @@ description: Use when Habeas evidence needs creating or refreshing, or when `car
 
 `habeas author` records, for each requirement and example, a model's judgment
 of whether the code and tests satisfy it; `cargo test --workspace` validates
-those records without calling a model.
+those records without calling a model. A judgment is one of three outcomes:
+
+- `true`: the code and tests satisfy the definition, with no gap.
+- `false`: there is a gap that no `{fixme}` reference acknowledges; the
+  rationale names it.
+- FIXME: `{fixme}` references acknowledge every remaining gap; validation
+  accepts it while each named issue is open.
 
 ## Workflow
 

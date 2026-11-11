@@ -2597,6 +2597,7 @@ fn home_markers(home: &str) -> &'static [&'static str] {
             "**Compound:** a requirement that lists several independent forms",
         ],
         "habeas-evidence" => &[
+            "A judgment is one of three outcomes",
             "`habeas author --all` assesses every definition whose evidence is missing, stale, or invalid",
             "## Fixing findings",
             "An item is covered by its own reference or by a current record or review that read it",
@@ -3677,6 +3678,11 @@ fn the_review_prompt_lists_the_mechanical_changes() {
             "Update other requirements a change makes stale",
         ],
     );
+    assert_text(
+        "mechanical changes",
+        &review_prompt_between("**Mechanical changes:**", "**Design questions:**"),
+        &["make them yourself in the revised text, and never phrase them as questions"],
+    );
 }
 
 // {test}`requirements.cli.requirements_review_skill.review_prompt.names`
@@ -4053,6 +4059,16 @@ fn bundled_skills_direct_the_reference_procedure_and_report_items_without_one() 
 // {test}`requirements.cli.behavior_review_guidance`
 #[test]
 fn bundled_skills_direct_behavior_review_against_requirements() {
+    // The three outcomes.
+    assert_phrases(
+        "habeas-evidence",
+        &[
+            "A judgment is one of three outcomes",
+            "`true`: the code and tests satisfy the definition, with no gap",
+            "`false`: there is a gap that no `{fixme}` reference acknowledges",
+            "FIXME: `{fixme}` references acknowledge every remaining gap",
+        ],
+    );
     // Every observable branch, and no unspecified behavior.
     assert_phrases(
         "habeas-requirements",
