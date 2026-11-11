@@ -1806,10 +1806,53 @@ pub(crate) fn collect_references_with_progress(
 }
 
 /// The inline and fenced references in one text file, in line order.
+/// Where roles count as references in a file's content: the byte ranges of
+/// its comments when it has a language outline, or `None` where roles count
+/// anywhere: Markdown, which has its own rules, plain text, and a file that
+/// cannot be parsed, which is reported elsewhere.
+// {impl}`requirements.references.reference_contexts`
+pub(crate) fn reference_contexts(
+    file: &Path,
+    content: &str,
+) -> Option<Vec<std::ops::Range<usize>>> {
+    if crate::outline::is_markdown_path(file) {
+        return None;
+    }
+    let profile = crate::outline::profile_for_path(file);
+    profile.language?;
+    let outline = crate::outline::parse_with(profile, content).ok()?;
+    Some(
+        outline
+            .comments
+            .iter()
+            .map(|comment| comment.byte_start..comment.byte_end)
+            .collect(),
+    )
+}
+
+/// Whether a role at byte `start` counts under [`reference_contexts`].
+// {impl}`requirements.references.reference_contexts`
+pub(crate) fn in_reference_context(
+    contexts: Option<&[std::ops::Range<usize>]>,
+    start: usize,
+) -> bool {
+    contexts.is_none_or(|ranges| ranges.iter().any(|range| range.contains(&start)))
+}
+
+// {impl}`requirements.references.reference_contexts`
 fn file_references(file: &Path, content: &str, in_book: bool) -> Vec<SourceReference> {
     let markdown = crate::outline::is_markdown_path(file);
     let mut references = Vec::new();
-    for role in reference_roles(content, markdown) {
+    let roles = reference_roles(content, markdown);
+    let contexts = if roles.is_empty() {
+        None
+    } else {
+        reference_contexts(file, content)
+    };
+    for role in roles {
+        if !in_reference_context(contexts.as_deref(), role.start) {
+            continue;
+        }
         let line = content[..role.start]
             .bytes()
             .filter(|byte| *byte == b'\n')
@@ -1910,6 +1953,66 @@ fn evidence_input_ranges(
 
 #[cfg(test)]
 pub(crate) mod tests {
+    // {test}`requirements.references.reference_contexts`
+    #[test]
+    fn roles_count_only_in_comments_of_outlined_files() {
+        // The role's brace is built at run time, so this source holds none.
+        let role = |name: &str| format!("{}impl}}`{name}`", '{');
+        let names = |file: &str, content: String| {
+            super::file_references(Path::new(file), &content, false)
+                .into_iter()
+                .map(|reference| reference.name)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            names(
+                "src/lib.rs",
+                format!(
+                    "// {}\n/// {}\nfn f() -> &'static str {{ \"{}\" }}\n",
+                    role("a.comment"),
+                    role("a.doc"),
+                    role("a.string")
+                )
+            ),
+            ["a.comment", "a.doc"]
+        );
+        assert_eq!(
+            names(
+                "config.toml",
+                format!("# {}\nkey = \"{}\"\n", role("b.comment"), role("b.string"))
+            ),
+            ["b.comment"]
+        );
+        assert_eq!(
+            names(
+                "tool.py",
+                format!(
+                    "# {}\ndef f():\n    \"\"\"{}\"\"\"\n",
+                    role("c.comment"),
+                    role("c.docstring")
+                )
+            ),
+            ["c.comment"]
+        );
+        // Plain text has no comments: roles count anywhere.
+        assert_eq!(
+            names("notes.txt", format!("see {}\n", role("d.text"))),
+            ["d.text"]
+        );
+        // Markdown keeps its own rules.
+        assert_eq!(
+            names(
+                "md/rules.md",
+                format!(
+                    "Uses {}.\n\n```text\n{}\n```\n",
+                    role("e.prose"),
+                    role("e.code")
+                )
+            ),
+            ["e.prose"]
+        );
+    }
+
     use super::{ReferenceSetEntry, digest_entries};
 
     // {test}`requirements.ci.reference_set`

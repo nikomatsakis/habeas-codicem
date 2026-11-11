@@ -99,11 +99,19 @@ fn direct_references(
                         referenced_terms(&text[range], false, &mut pending);
                     }
                 }
-                InputSelector::Outline { file, .. } => referenced_terms(
-                    &text,
-                    crate::outline::is_markdown_path(Path::new(&file)),
-                    &mut pending,
-                ),
+                // Other outlined languages count terms only in comments too.
+                // {impl}`requirements.references.reference_contexts`
+                InputSelector::Outline { file, .. } => {
+                    let markdown = crate::outline::is_markdown_path(Path::new(&file));
+                    match crate::evidence::reference_contexts(Path::new(&file), &text) {
+                        Some(ranges) => {
+                            for range in ranges {
+                                referenced_terms(&text[range], markdown, &mut pending);
+                            }
+                        }
+                        None => referenced_terms(&text, markdown, &mut pending),
+                    }
+                }
                 InputSelector::Requirements { .. } => {
                     // Scan bodies, not the surrounding colon fences: Markdown code
                     // protection must be evaluated in the declaration's own context.
