@@ -60,16 +60,30 @@ pub(crate) struct ParsedSource {
 #[derive(Default)]
 pub(crate) struct OutlineCache {
     files: Mutex<HashMap<PathBuf, Arc<Result<ParsedSource, String>>>>,
+    /// Content to parse in place of a file's, by project-relative path.
+    overrides: HashMap<String, String>,
 }
 
 impl OutlineCache {
+    /// A cache that parses `overrides` in place of those files' contents.
+    pub(crate) fn with_overrides(overrides: HashMap<String, String>) -> Self {
+        Self {
+            files: Mutex::default(),
+            overrides,
+        }
+    }
+
     /// Reads and parses a permitted file, or returns the cached result.
     pub(crate) fn parse(&self, root: &Path, file: &str) -> Arc<Result<ParsedSource, String>> {
         let key = root.join(file);
         if let Some(parsed) = self.files.lock().expect("outline cache lock").get(&key) {
             return parsed.clone();
         }
-        let parsed = Arc::new(read_project_file(root, file).and_then(|(path, source)| {
+        let read = match self.overrides.get(file) {
+            Some(content) => check_project_file(root, file).map(|path| (path, content.clone())),
+            None => read_project_file(root, file),
+        };
+        let parsed = Arc::new(read.and_then(|(path, source)| {
             let redaction = Redaction::of_file(&path, &source);
             let profile = outline::profile_for_path(&path);
             let outline =

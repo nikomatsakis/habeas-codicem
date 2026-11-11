@@ -21,6 +21,7 @@ pub struct EvidenceReport {
     pub errors: Vec<String>,
 }
 
+#[derive(Clone)]
 pub(crate) struct Declaration {
     pub(crate) kind: DefinitionKind,
     pub(crate) text: String,
@@ -1110,13 +1111,13 @@ impl SourceReference {
 /// One edge of a definition's reference set: its origin (an in-source
 /// reference or a declaration anchor), role, file, and outline selector.
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
-struct ReferenceSetEntry {
-    origin: &'static str,
-    role: &'static str,
-    file: String,
-    item: String,
+pub(crate) struct ReferenceSetEntry {
+    pub(crate) origin: &'static str,
+    pub(crate) role: &'static str,
+    pub(crate) file: String,
+    pub(crate) item: String,
     /// The words of a fenced reference's body, for a source outside the book.
-    words: Vec<String>,
+    pub(crate) words: Vec<String>,
 }
 
 /// The reference-set digest of a definition: SHA-256 over a length-prefixed
@@ -1135,8 +1136,23 @@ pub(crate) fn reference_set_digest<'a>(
     references: impl IntoIterator<Item = &'a SourceReference>,
     sites: &crate::sites::Sites,
 ) -> String {
-    use sha2::{Digest, Sha256};
+    digest_entries(reference_set_entries(
+        root, outlines, name, definition, references, sites,
+    ))
+}
 
+/// The entries of a definition's reference set, unsorted, as
+/// [`reference_set_digest`] encodes them.
+// {impl}`requirements.references.outline_comments`
+// {impl}`requirements.ci.reference_set`
+pub(crate) fn reference_set_entries<'a>(
+    root: &Path,
+    outlines: &OutlineCache,
+    name: &str,
+    definition: &Declaration,
+    references: impl IntoIterator<Item = &'a SourceReference>,
+    sites: &crate::sites::Sites,
+) -> Vec<ReferenceSetEntry> {
     let mut entries = Vec::new();
     for reference in references {
         // A `{fixme}` inside a site of a distributed definition belongs to
@@ -1190,8 +1206,15 @@ pub(crate) fn reference_set_digest<'a>(
             words: Vec::new(),
         });
     }
-    entries.sort();
+    entries
+}
 
+/// The reference-set digest of a set of entries, in sorted order.
+// {impl}`requirements.ci.reference_set`
+pub(crate) fn digest_entries(mut entries: Vec<ReferenceSetEntry>) -> String {
+    use sha2::{Digest, Sha256};
+
+    entries.sort();
     let mut hasher = Sha256::new();
     let mut field = |bytes: &[u8]| {
         hasher.update((bytes.len() as u64).to_le_bytes());

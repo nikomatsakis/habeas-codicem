@@ -172,7 +172,7 @@ pub(crate) fn citation_items(
 /// Whether two citation lists are the same, comparing commentary by its
 /// words so reflowing it does not change the review.
 // {cite}`habeas:util`
-fn same_citations(recorded: &[Citation], current: &[Citation]) -> bool {
+pub(crate) fn same_citations(recorded: &[Citation], current: &[Citation]) -> bool {
     let key = |citations: &[Citation]| {
         let mut keys = citations
             .iter()

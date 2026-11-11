@@ -20,6 +20,7 @@ mod inputs;
 pub mod judgment;
 mod outline;
 mod redaction;
+mod refactor;
 mod rust_coverage;
 mod sites;
 mod structural;
@@ -28,6 +29,7 @@ mod terms;
 pub use evidence::{EvidenceReport, reference_set_digest_for, validate_repository};
 pub use github::GithubIssues;
 pub use inputs::{outline_input, outline_inputs_for_lines};
+pub use refactor::{RefactorError, refactor};
 
 /// Validate the current Cargo and mdBook project for use in a Cargo test.
 ///
@@ -154,7 +156,7 @@ impl ReferenceKind {
 
 pub(crate) struct ReferenceMatch<'a> {
     pub(crate) start: usize,
-    end: usize,
+    pub(crate) end: usize,
     pub(crate) name: &'a str,
     pub(crate) kind: ReferenceKind,
 }
