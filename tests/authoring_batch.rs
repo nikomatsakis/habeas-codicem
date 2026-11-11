@@ -345,8 +345,8 @@ impl Fixture {
             "# Summary\n\n- [Requirements](requirements.md)\n",
         )
         .unwrap();
-        fs::write(project.join("md/requirements.md"), ":::{req} alpha\nalpha MUST return one.\n:::\n\n:::{req} beta\nbeta MUST return two.\n:::\n\n:::{example} alpha_case\nCalling alpha returns one. CITE`requirements.alpha`\n:::\n\n:::{req} delta\ndelta MUST return four.\n:::\n\n:::{req} gamma\ngamma MUST return three.\n:::\n\n:::{example} gamma_case\nCalling gamma returns three. CITE`requirements.gamma`\n:::\n".replace("CITE", "{cite}")).unwrap();
-        fs::write(project.join("src/lib.rs"), "// IMPL`requirements.alpha`\npub fn alpha() -> u8 { 1 }\n\n// IMPL`requirements.beta`\npub fn beta() -> u8 { 2 }\n\n// TEST`requirements.alpha_case`\n#[test]\nfn alpha_case() { assert_eq!(alpha(), 1); }\n\n// IMPL`requirements.gamma`\npub fn gamma() -> u8 { 3 }\n\n// IMPL`requirements.delta`\npub fn delta() -> u8 { 4 }\n\n// TEST`requirements.gamma_case`\n#[test]\nfn gamma_case() { assert_eq!(gamma(), 3); }\n".replace("IMPL", "{impl}").replace("TEST", "{test}")).unwrap();
+        fs::write(project.join("md/requirements.md"), ":::{req} alpha\nalpha MUST return one.\n:::\n\n:::{req} beta\nbeta MUST return two.\n:::\n\n:::{example} alpha_case\nCalling alpha returns one. {cite}`requirements.alpha`\n:::\n\n:::{req} delta\ndelta MUST return four.\n:::\n\n:::{req} gamma\ngamma MUST return three.\n:::\n\n:::{example} gamma_case\nCalling gamma returns three. {cite}`requirements.gamma`\n:::\n").unwrap();
+        fs::write(project.join("src/lib.rs"), "// {impl}`requirements.alpha`\npub fn alpha() -> u8 { 1 }\n\n// {impl}`requirements.beta`\npub fn beta() -> u8 { 2 }\n\n// {test}`requirements.alpha_case`\n#[test]\nfn alpha_case() { assert_eq!(alpha(), 1); }\n\n// {impl}`requirements.gamma`\npub fn gamma() -> u8 { 3 }\n\n// {impl}`requirements.delta`\npub fn delta() -> u8 { 4 }\n\n// {test}`requirements.gamma_case`\n#[test]\nfn gamma_case() { assert_eq!(gamma(), 3); }\n").unwrap();
         let mut config_text = format!(
             "version = 1\n[authoring]\ndefault = 'mock'\n[authoring.configs.mock]\npolicy = 'once'\nbackend = 'ollama'\nmodel = 'fixture-model'\nendpoint = '{endpoint}'\n"
         );
@@ -1241,8 +1241,7 @@ fn batch_reauthors_a_false_judgment_when_its_reference_set_changes() {
         &source,
         fs::read_to_string(&source).unwrap().replace(
             "pub fn delta() -> u8 { 4 }",
-            &"pub fn delta() -> u8 {\n    // TEST`requirements.delta`\n    4\n}"
-                .replace("TEST", "{test}"),
+            "pub fn delta() -> u8 {\n    // {test}`requirements.delta`\n    4\n}",
         ),
     )
     .unwrap();
@@ -1537,7 +1536,7 @@ fn batch_authors_citation_reviews_and_preserves_current_ones() {
     let server = Server::start(false, None);
     let fixture = Fixture::new(&server.endpoint, None);
     let source = fixture.project.join("src/lib.rs");
-    let cite = ["// {", "cite}`requirements.alpha`\n"].concat();
+    let cite = "// {cite}`requirements.alpha`\n".to_owned();
     fs::write(
         &source,
         format!(
@@ -1982,9 +1981,7 @@ fn closing_an_acknowledged_issue_makes_the_fixme_record_stale_and_reassessed() {
         &source,
         fs::read_to_string(&source).unwrap().replace(
             "pub fn beta()",
-            "// :::FIXME requirements.beta\n// :github: example/queue#125\n// Zero capacity is untested.\n// :::\npub fn beta()"
-                .replace("FIXME", "{fixme}")
-                .as_str(),
+            "// :::{fixme} requirements.beta\n// :github: example/queue#125\n// Zero capacity is untested.\n// :::\npub fn beta()",
         ),
     )
     .unwrap();
@@ -2077,9 +2074,7 @@ fn github_reads_do_not_cache_in_a_state_root_inside_the_project() {
         &source,
         fs::read_to_string(&source).unwrap().replace(
             "pub fn beta()",
-            "// :::FIXME requirements.beta\n// :github: example/queue#125\n// Zero capacity is untested.\n// :::\npub fn beta()"
-                .replace("FIXME", "{fixme}")
-                .as_str(),
+            "// :::{fixme} requirements.beta\n// :github: example/queue#125\n// Zero capacity is untested.\n// :::\npub fn beta()",
         ),
     )
     .unwrap();

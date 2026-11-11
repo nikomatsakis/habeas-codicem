@@ -227,8 +227,8 @@ mod tests {
             ":::{definition} unit\n:phrase: unit\nA unit.\n:::\n",
         )
         .unwrap();
-        let used = ["{", "term}`terms.unit`"].concat();
-        let missing = ["{", "term}`terms.missing`"].concat();
+        let used = "{term}`terms.unit`".to_owned();
+        let missing = "{term}`terms.missing`".to_owned();
         let notes = format!(
             "Uses {used}.\n\n`{missing}` and \\{missing}\n\n```text\n{missing}\n```\n\n<span title=\"{missing}\"></span>\n"
         );
@@ -275,8 +275,8 @@ mod tests {
             ":::{definition} unit\n:phrase: unit\nA unit.\n:::\n",
         )
         .unwrap();
-        let used = ["{", "term}`terms.unit`"].concat();
-        let missing = ["{", "term}`terms.missing`"].concat();
+        let used = "{term}`terms.unit`".to_owned();
+        let missing = "{term}`terms.missing`".to_owned();
         let declarations = crate::evidence::load_definitions(root).unwrap();
         let outlines = OutlineCache::default();
         for (file, text) in [

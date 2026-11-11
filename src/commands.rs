@@ -400,10 +400,9 @@ mod tests {
             crate::sites::tests::RULE
         );
         let source = format!(
-            "{}// CITE`requirements.other`\nfn cited() {{}}\n",
+            "{}// {{cite}}`requirements.other`\nfn cited() {{}}\n",
             crate::sites::tests::SOURCE
-        )
-        .replace("CITE", "{cite}");
+        );
         let temp = crate::sites::tests::project(&chapter, &source);
         let root = temp.path();
         write_record(

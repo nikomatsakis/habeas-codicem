@@ -494,8 +494,7 @@ mod tests {
                 "requirements.case".to_owned(),
                 Declaration {
                     kind: DefinitionKind::Example,
-                    text: "Given the example, it works. CITE`requirements.example`"
-                        .replace("CITE", "{cite}"),
+                    text: "Given the example, it works. {cite}`requirements.example`".to_owned(),
                     source: "md/requirements.md:5".to_owned(),
                     file: "md/requirements.md".to_owned(),
                     line_start: 5,
@@ -512,53 +511,52 @@ mod tests {
     #[test]
     fn finds_uncited_functions_without_using_enclosing_or_string_references() {
         let source = r##"
-// @impl@`requirements.example`
+// {impl}`requirements.example`
 mod feature {
-    // @impl@`requirements.example`
+    // {impl}`requirements.example`
     impl Widget {
         fn missing_method() {}
     }
 
     struct Widget;
     impl Widget {
-        // @impl@`requirements.example`
+        // {impl}`requirements.example`
         fn cited_method() {}
     }
 
     fn containing_string() {
-        let _ = "// @impl@`requirements.example`";
-        let _ = r#"/* @impl@`requirements.example` */"#;
+        let _ = "// {impl}`requirements.example`";
+        let _ = r#"/* {impl}`requirements.example` */"#;
         let _ = '/';
     }
 
     fn unknown_reference() {
-        // @impl@`requirements.unknown`
+        // {impl}`requirements.unknown`
     }
 
     fn body_reference() {
-        /* @impl@`requirements.example` */
+        /* {impl}`requirements.example` */
     }
 
     // A comment run belongs to the next item even across a blank line.
-    // @impl@`requirements.example`
+    // {impl}`requirements.example`
 
     fn after_blank_line() {}
 
-    // @impl@`requirements.example`
-    fn previous() {} // @impl@`requirements.example`
+    // {impl}`requirements.example`
+    fn previous() {} // {impl}`requirements.example`
     fn after_trailing_comment() {}
 }
 
 mod inner_docs {
-    //! @impl@`requirements.example`
+    //! {impl}`requirements.example`
     fn after_inner_doc() {}
 }
 
-/// @impl@`requirements.example`
+/// {impl}`requirements.example`
 fn cited_by_outer_doc() {}
-"##
-        .replace("@impl@", "{impl}");
-        let missing = missing_function_references(&source, &definitions()).unwrap();
+"##;
+        let missing = missing_function_references(source, &definitions()).unwrap();
         assert_eq!(
             missing
                 .into_iter()
@@ -581,25 +579,23 @@ fn cited_by_outer_doc() {}
         let source = r#"
 trait Work {
     fn uncited_trait_method(&self);
-    // @impl@`requirements.example`
+    // {impl}`requirements.example`
     fn cited_trait_method(&self);
 }
 fn outer() {
-    // @impl@`requirements.example`
+    // {impl}`requirements.example`
     fn inner() {}
     inner();
 }
-// @test@`requirements.example`
+// {test}`requirements.example`
 #[test]
 fn tagged_test() {}
-// @test@`requirements.case`
+// {test}`requirements.case`
 #[test]
 fn named_example_test() {}
 fn test_helper() {}
-"#
-        .replace("@impl@", "{impl}")
-        .replace("@test@", "{test}");
-        let missing = missing_function_references(&source, &definitions()).unwrap();
+"#;
+        let missing = missing_function_references(source, &definitions()).unwrap();
         assert_eq!(
             missing
                 .into_iter()
@@ -615,7 +611,7 @@ fn test_helper() {}
         let mut definitions = definitions();
         let example = |text: &str| Declaration {
             kind: DefinitionKind::Example,
-            text: text.replace("CITE", "{cite}").replace("TEST", "{test}"),
+            text: text.to_owned(),
             source: "md/requirements.md:9".to_owned(),
             file: "md/requirements.md".to_owned(),
             line_start: 9,
@@ -625,12 +621,12 @@ fn test_helper() {}
         };
         definitions.insert(
             "requirements.tested".to_owned(),
-            example("A tested case. TEST`requirements.example`"),
+            example("A tested case. {test}`requirements.example`"),
         );
         definitions.insert("requirements.orphan".to_owned(), example("No requirement."));
         definitions.insert(
             "requirements.chained".to_owned(),
-            example("Only another example. CITE`requirements.case`"),
+            example("Only another example. {cite}`requirements.case`"),
         );
         definitions.insert(
             "terms.word".to_owned(),
@@ -641,25 +637,23 @@ fn test_helper() {}
         );
         definitions.insert(
             "requirements.termed".to_owned(),
-            example("Only a term. CITE`terms.word`"),
+            example("Only a term. {cite}`terms.word`"),
         );
         let source = r#"
-// @test@`requirements.case`
+// {test}`requirements.case`
 fn cites_example() {}
-// @test@`requirements.tested`
+// {test}`requirements.tested`
 fn tests_example() {}
-// @test@`requirements.orphan`
+// {test}`requirements.orphan`
 fn orphan_example() {}
-// @test@`requirements.chained`
+// {test}`requirements.chained`
 fn chained_example() {}
-// @test@`requirements.termed`
+// {test}`requirements.termed`
 fn termed_example() {}
-// @impl@`terms.word`
+// {impl}`terms.word`
 fn names_a_term() {}
-"#
-        .replace("@impl@", "{impl}")
-        .replace("@test@", "{test}");
-        let missing = missing_function_references(&source, &definitions).unwrap();
+"#;
+        let missing = missing_function_references(source, &definitions).unwrap();
         assert_eq!(
             missing
                 .into_iter()
@@ -678,15 +672,14 @@ fn names_a_term() {}
     #[test]
     fn locates_functions_after_unicode_text() {
         let source = r#"
-// @impl@`requirements.example`
+// {impl}`requirements.example`
 fn outer() {
     let _ = "é";
-    /* @impl@`requirements.example` */ fn cited_inner() {}
+    /* {impl}`requirements.example` */ fn cited_inner() {}
     fn missing_inner() {}
 }
-"#
-        .replace("@impl@", "{impl}");
-        let missing = missing_function_references(&source, &definitions()).unwrap();
+"#;
+        let missing = missing_function_references(source, &definitions()).unwrap();
         assert_eq!(missing, [(6, "function", "missing_inner".to_owned())]);
     }
 
@@ -801,20 +794,20 @@ fn outer() {
     #[test]
     fn structs_enums_and_unions_need_references_attached_or_inside() {
         let source = r##"
-// @impl@`requirements.example`
+// {impl}`requirements.example`
 #[derive(Debug)]
 struct Attached {
     field: u8,
 }
 
 struct Inside {
-    // @impl@`requirements.example`
+    // {impl}`requirements.example`
     #[allow(dead_code)]
     field: u8,
 }
 
 enum Variants {
-    // @cite@`requirements.example`
+    // {cite}`requirements.example`
     One,
 }
 
@@ -828,16 +821,12 @@ union MissingUnion {
     value: u8,
 }
 
-// @impl@`requirements.example`
+// {impl}`requirements.example`
 fn outer() {
     struct Nested;
 }
-"##
-        .replace('@', "");
-        let source = source
-            .replace("impl`", "{impl}`")
-            .replace("cite`", "{cite}`");
-        let missing = missing_function_references(&source, &definitions()).unwrap();
+"##;
+        let missing = missing_function_references(source, &definitions()).unwrap();
         assert_eq!(
             missing,
             vec![

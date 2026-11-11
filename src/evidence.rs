@@ -1962,7 +1962,7 @@ pub(crate) mod tests {
     #[test]
     fn roles_count_only_in_comments_of_outlined_files() {
         // The role's brace is built at run time, so this source holds none.
-        let role = |name: &str| format!("{}impl}}`{name}`", '{');
+        let role = |name: &str| format!("{{impl}}`{name}`");
         let names = |file: &str, content: String| {
             super::file_references(Path::new(file), &content, false)
                 .into_iter()
@@ -2277,7 +2277,7 @@ pub(crate) mod tests {
             ":::{req} ready\nReady.\n:::\n",
         )
         .unwrap();
-        let cite = ["{", "cite}`requirements.ready`"].concat();
+        let cite = "{cite}`requirements.ready`".to_owned();
         fs::write(
             root.join("src/main.rs"),
             format!("// {cite}\nfn one() {{}}\n// {cite}\nfn two() {{}}\n"),
@@ -2528,7 +2528,7 @@ pub(crate) mod tests {
     fn failed_checks_do_not_hide_later_independent_checks() {
         let temp = fixture();
         let root = temp.path();
-        let fixme = ["{", "fixme}`requirements.missing`"].concat();
+        let fixme = "{fixme}`requirements.missing`".to_owned();
         fs::create_dir_all(root.join("md/bad dir")).unwrap();
         // Invalid and reserved names still have their fence and text checked.
         fs::write(root.join("md/bad dir/rules.md"), ":::{req} good\n:::\n").unwrap();
@@ -2602,10 +2602,10 @@ pub(crate) mod tests {
             "# Requirements\n\n:::{req} ready\nReady.\n:::\n",
         )
         .unwrap();
-        let implementation = ["{", "impl}`foo.bar.ready`"].concat();
-        let citation = ["{", "cite}`foo.bar.ready`"].concat();
-        let test = ["{", "test}`foo.bar.ready`"].concat();
-        let example = ["{", "cite}`missing.example`"].concat();
+        let implementation = "{impl}`foo.bar.ready`".to_owned();
+        let citation = "{cite}`foo.bar.ready`".to_owned();
+        let test = "{test}`foo.bar.ready`".to_owned();
+        let example = "{cite}`missing.example`".to_owned();
         let source = format!("// {implementation}\n// {citation}\n");
         let notes = format!("# Notes\n\n{test}\n\n`{example}`\n\n```text\n{example}\n```\n");
         fs::write(temp.path().join("src/main.rs"), &source).unwrap();
@@ -2635,8 +2635,8 @@ pub(crate) mod tests {
     #[test]
     fn every_markdown_extension_keeps_escaped_and_code_roles_literal() {
         let temp = fixture();
-        let role = ["{", "cite}`code.role`"].concat();
-        let fence = [":::", "{cite} fenced.role\nBody.\n:::"].concat();
+        let role = "{cite}`code.role`".to_owned();
+        let fence = ":::{cite} fenced.role\nBody.\n:::".to_owned();
         let notes = format!(
             "`{role}` and \\{role}\n\n```text\n{role}\n{fence}\n```\n\n<span title=\"{role}\"></span>\n"
         );
@@ -2675,8 +2675,8 @@ pub(crate) mod tests {
             "# Requirements\n\n:::{req} ready\nReady.\n:::\n",
         )
         .unwrap();
-        let known = ["{", "test}`foo.bar.ready`"].concat();
-        let unknown = ["{", "impl}`missing.requirement`"].concat();
+        let known = "{test}`foo.bar.ready`".to_owned();
+        let unknown = "{impl}`missing.requirement`".to_owned();
         let source = format!("// {known}\n// {known}\n// {unknown}\n");
         fs::write(temp.path().join("src/notes.txt"), &source).unwrap();
         // Identical plain-text lines are interchangeable, so this selects the
@@ -2718,8 +2718,7 @@ pub(crate) mod tests {
     fn requirements_inputs_track_matched_declarations_in_full_name_order() {
         let temp = fixture();
         let bar = ":::{req} a.bar\nBar.\n:::\n";
-        let nested =
-            ":::{example} a.b.bar\nNested. CITE`foo.a.bar`\n:::\n".replace("CITE", "{cite}");
+        let nested = ":::{example} a.b.bar\nNested. {cite}`foo.a.bar`\n:::\n";
         let other = ":::{req} other\nOther.\n:::\n";
         let write = |declarations: &[&str]| {
             fs::write(
@@ -2729,7 +2728,7 @@ pub(crate) mod tests {
             .unwrap();
         };
         let lines = |declaration: &str| declaration.lines().map(str::to_owned).collect::<Vec<_>>();
-        let mut text = lines(&nested);
+        let mut text = lines(nested);
         text.push(String::new());
         text.extend(lines(bar));
         let record = |glob: &str| {
@@ -2761,13 +2760,13 @@ pub(crate) mod tests {
 
         // `*` crosses dots, the example sorts before the requirement by full
         // name, and the stored text is both complete fenced declarations.
-        write(&[bar, &nested, other]);
+        write(&[bar, nested, other]);
         assert!(errors().is_empty(), "{:?}", errors());
         // Moving unchanged declarations does not invalidate the input.
-        write(&[other, "Some prose.\n", &nested, "More prose.\n", bar]);
+        write(&[other, "Some prose.\n", nested, "More prose.\n", bar]);
         assert!(errors().is_empty(), "{:?}", errors());
 
-        write(&[&bar.replace("Bar.", "Changed."), &nested, other]);
+        write(&[&bar.replace("Bar.", "Changed."), nested, other]);
         let changed = errors().join("\n");
         assert!(
             changed.contains(
@@ -2777,7 +2776,7 @@ pub(crate) mod tests {
         );
 
         let added = ":::{req} z.bar\nAdded.\n:::\n";
-        write(&[bar, &nested, other, added]);
+        write(&[bar, nested, other, added]);
         assert!(
             errors().join("\n").contains(
                 "inputs[0]: requirements glob \"foo.*.bar\" matches changed; added [\"foo.z.bar\"], removed []"
@@ -2793,7 +2792,7 @@ pub(crate) mod tests {
             "{:?}",
             errors()
         );
-        write(&[&bar.replace("a.bar", "c.bar"), &nested, other]);
+        write(&[&bar.replace("a.bar", "c.bar"), nested, other]);
         assert!(
             errors().join("\n").contains(
                 "requirements glob \"foo.*.bar\" matches changed; added [\"foo.c.bar\"], removed [\"foo.a.bar\"]"
@@ -2802,7 +2801,7 @@ pub(crate) mod tests {
             errors()
         );
 
-        write(&[bar, &nested, other]);
+        write(&[bar, nested, other]);
         fs::write(
             temp.path().join("evidence/foo.other.json"),
             record("foo.*.none"),
@@ -2835,14 +2834,13 @@ pub(crate) mod tests {
         let temp = fixture();
         fs::write(
             temp.path().join("md/rules.md"),
-            ":::{req} ready\nUse TERM`rules.missing` and TERM`rules.absent`.\n:::\n\n:::{req} other\nOther.\n:::\n"
-                .replace("TERM", "{term}"),
+            ":::{req} ready\nUse {term}`rules.missing` and {term}`rules.absent`.\n:::\n\n:::{req} other\nOther.\n:::\n",
         )
         .unwrap();
         fs::write(
             temp.path().join("evidence/rules.ready.json"),
             json!({
-                "requirement": "Use TERM`rules.missing` and TERM`rules.absent`.".replace("TERM", "{term}"),
+                "requirement": "Use {term}`rules.missing` and {term}`rules.absent`.",
                 "determination": true,
                 "rationale": "Examined.",
                 "inputs": [{"definition": "rules.gone", "text": ["x"]}]
@@ -2867,7 +2865,7 @@ pub(crate) mod tests {
         fs::write(temp.path().join("habeas.toml"), "version = 2\n").unwrap();
         fs::write(temp.path().join("book.toml"), "[book]\nsrc = 'md'\n[").unwrap();
         fs::write(temp.path().join("evidence/ghost.json"), "{").unwrap();
-        let unknown = ["{", "impl}`missing.name`"].concat();
+        let unknown = "{impl}`missing.name`".to_owned();
         fs::write(temp.path().join("src/main.rs"), format!("// {unknown}\n")).unwrap();
         let errors = validate_repository(temp.path()).unwrap().errors.join("\n");
         for detail in [
@@ -2998,10 +2996,8 @@ pub(crate) mod tests {
     #[test]
     fn a_false_determination_fails_only_its_own_record_with_its_rationale() {
         let temp = fixture();
-        let chapter = "# Rules\n\n:::{req} ready\nReady.\n:::\n\n:::{req} refined\nRefines IMPL`rules.ready` and CITE`rules.ready`.\n:::\n"
-            .replace("IMPL", "{impl}")
-            .replace("CITE", "{cite}");
-        fs::write(temp.path().join("md/rules.md"), &chapter).unwrap();
+        let chapter = "# Rules\n\n:::{req} ready\nReady.\n:::\n\n:::{req} refined\nRefines {impl}`rules.ready` and {cite}`rules.ready`.\n:::\n";
+        fs::write(temp.path().join("md/rules.md"), chapter).unwrap();
         fs::write(
             temp.path().join("evidence/rules.ready.json"),
             json!({
@@ -3146,7 +3142,7 @@ pub(crate) mod tests {
     #[test]
     fn reference_discovery_skips_evidence_snapshots_and_build_output() {
         let temp = fixture();
-        let reference = ["{", "impl}`foo.bar.ready`"].concat();
+        let reference = "{impl}`foo.bar.ready`".to_owned();
         let line = format!("// {reference}\n");
         for file in [
             "src/counted.rs",
@@ -3292,12 +3288,10 @@ pub(crate) mod tests {
     #[test]
     fn cited_example_with_a_test_and_matching_evidence_validates() {
         let temp = fixture();
-        let chapter = "# Rules\n\n:::{req} ready\nReady.\n:::\n\n:::{example} case\nGiven ready, it succeeds. CITE`rules.ready`\n:::\n"
-            .replace("CITE", "{cite}");
-        fs::write(temp.path().join("md/rules.md"), &chapter).unwrap();
-        let test_source = "// TEST`rules.case`\n#[test]\nfn checks_case() { assert!(true); }\n"
-            .replace("TEST", "{test}");
-        fs::write(temp.path().join("src/main.rs"), &test_source).unwrap();
+        let chapter = "# Rules\n\n:::{req} ready\nReady.\n:::\n\n:::{example} case\nGiven ready, it succeeds. {cite}`rules.ready`\n:::\n";
+        fs::write(temp.path().join("md/rules.md"), chapter).unwrap();
+        let test_source = "// {test}`rules.case`\n#[test]\nfn checks_case() { assert!(true); }\n";
+        fs::write(temp.path().join("src/main.rs"), test_source).unwrap();
         fs::write(
             temp.path().join("evidence/rules.ready.json"),
             json!({
@@ -3314,7 +3308,7 @@ pub(crate) mod tests {
         fs::write(
             &example_path,
             json!({
-                "example": "Given ready, it succeeds. CITE`rules.ready`".replace("CITE", "{cite}"),
+                "example": "Given ready, it succeeds. {cite}`rules.ready`",
                 "determination": true,
                 "rationale": "checks_case sets up ready and asserts the result.",
                 "inputs": [
@@ -3364,7 +3358,7 @@ pub(crate) mod tests {
             ),
             "{errors}"
         );
-        fs::write(temp.path().join("src/main.rs"), &test_source).unwrap();
+        fs::write(temp.path().join("src/main.rs"), test_source).unwrap();
         fs::write(
             temp.path().join("md/rules.md"),
             format!("{chapter}\n:::{req} added\nAdded.\n:::\n", req = "{req}"),
@@ -3415,11 +3409,8 @@ pub(crate) mod tests {
             ":::{req} ready\nReady.\n:::\n",
         )
         .unwrap();
-        let source = "// CITE`rules.ready`\nfn helper() {}\n// IMPL`rules.ready`\nfn run() {}\n// TEST`rules.ready`\nfn check() {}\n"
-            .replace("CITE", "{cite}")
-            .replace("IMPL", "{impl}")
-            .replace("TEST", "{test}");
-        fs::write(temp.path().join("src/main.rs"), &source).unwrap();
+        let source = "// {cite}`rules.ready`\nfn helper() {}\n// {impl}`rules.ready`\nfn run() {}\n// {test}`rules.ready`\nfn check() {}\n";
+        fs::write(temp.path().join("src/main.rs"), source).unwrap();
         let record = |inputs: serde_json::Value| {
             json!({
                 "requirement": "Ready.",
@@ -3472,13 +3463,12 @@ pub(crate) mod tests {
     #[test]
     fn example_errors_include_duplicates_invalid_bodies_and_missing_tests() {
         let temp = fixture();
-        let chapter = ":::{req} repeated\nReady.\n:::\n\n:::{req} repeated\nAgain.\n:::\n\n:::{example} repeated\nGiven ready. CITE`rules.repeated`\n:::\n\n:::{example} case\nGiven ready. CITE`rules.repeated`\n:::\n\n:::{example} case\nAgain. CITE`rules.repeated`\n:::\n\n:::{example} empty\n \n:::\n\n:::{example} unclosed\nNo close."
-            .replace("CITE", "{cite}");
+        let chapter = ":::{req} repeated\nReady.\n:::\n\n:::{req} repeated\nAgain.\n:::\n\n:::{example} repeated\nGiven ready. {cite}`rules.repeated`\n:::\n\n:::{example} case\nGiven ready. {cite}`rules.repeated`\n:::\n\n:::{example} case\nAgain. {cite}`rules.repeated`\n:::\n\n:::{example} empty\n \n:::\n\n:::{example} unclosed\nNo close.";
         fs::write(temp.path().join("md/rules.md"), chapter).unwrap();
         fs::write(
             temp.path().join("evidence/rules.case.json"),
             json!({
-                "example": "Given ready. CITE`rules.repeated`".replace("CITE", "{cite}"),
+                "example": "Given ready. {cite}`rules.repeated`",
                 "determination": true,
                 "rationale": "No test has been cited yet.",
                 "inputs": []
@@ -3504,10 +3494,7 @@ pub(crate) mod tests {
     #[test]
     fn examples_may_reference_their_requirement_with_cite_or_test() {
         let temp = fixture();
-        let chapter = ":::{req} ready\nReady.\n:::\n\n:::{example} tested\nGiven ready. TEST`rules.ready`\n:::\n\n:::{example} cited\nGiven ready. CITE`rules.ready`\n:::\n\n:::{example} nested\nLike the tested case. CITE`rules.tested`\n:::\n\n:::{example} implemented\nGiven ready. IMPL`rules.ready`\n:::\n\n:::{example} literal\nGiven ready. `CITE`rules.ready`` and \\CITE`rules.ready`\n:::\n\n:::{example} unknown\nGiven ready. CITE`rules.absent`\n:::\n"
-            .replace("CITE", "{cite}")
-            .replace("TEST", "{test}")
-            .replace("IMPL", "{impl}");
+        let chapter = ":::{req} ready\nReady.\n:::\n\n:::{example} tested\nGiven ready. {test}`rules.ready`\n:::\n\n:::{example} cited\nGiven ready. {cite}`rules.ready`\n:::\n\n:::{example} nested\nLike the tested case. {cite}`rules.tested`\n:::\n\n:::{example} implemented\nGiven ready. {impl}`rules.ready`\n:::\n\n:::{example} literal\nGiven ready. `{cite}`rules.ready`` and \\{cite}`rules.ready`\n:::\n\n:::{example} unknown\nGiven ready. {cite}`rules.absent`\n:::\n";
         fs::write(temp.path().join("md/rules.md"), chapter).unwrap();
         let errors = validate_repository(temp.path()).unwrap().errors.join("\n");
         assert!(
@@ -3546,7 +3533,7 @@ pub(crate) mod tests {
         fs::write(root.join("skills/ready.md"), "# Skill\nUse ready.\n").unwrap();
         fs::write(
             root.join("md/requirements.md"),
-            ":::{req} ready\n:impl: skills/ready.md\n:test: missing.sh\nReady MUST hold.\n:::\n\n:::{example} case\n:test: skills/ready.md\nA ready case. CITE`requirements.ready`\n:::\n".replace("CITE", "{cite}"),
+            ":::{req} ready\n:impl: skills/ready.md\n:test: missing.sh\nReady MUST hold.\n:::\n\n:::{example} case\n:test: skills/ready.md\nA ready case. {cite}`requirements.ready`\n:::\n",
         )
         .unwrap();
         // The root node is the whole file; its heading's section is not.
@@ -3574,7 +3561,7 @@ pub(crate) mod tests {
         write(
             "requirements.case",
             "example",
-            &"A ready case. CITE`requirements.ready`".replace("CITE", "{cite}"),
+            "A ready case. {cite}`requirements.ready`",
             json!([skill("")]),
         );
         let errors = validate_repository(root).unwrap().errors.join("\n");
@@ -3591,7 +3578,7 @@ pub(crate) mod tests {
 
         fs::write(
             root.join("md/requirements.md"),
-            ":::{req} ready\n:impl: skills/ready.md\nReady MUST hold.\n:::\n\n:::{example} case\n:test: skills/ready.md\nA ready case. CITE`requirements.ready`\n:::\n".replace("CITE", "{cite}"),
+            ":::{req} ready\n:impl: skills/ready.md\nReady MUST hold.\n:::\n\n:::{example} case\n:test: skills/ready.md\nA ready case. {cite}`requirements.ready`\n:::\n",
         )
         .unwrap();
         write(
@@ -3680,7 +3667,7 @@ pub(crate) mod tests {
         let temp = fixture();
         fs::write(
             temp.path().join("md/requirements.md"),
-            ":::{req} ready\n:phrase: ready\n:impl:\nReady MUST hold.\n:::\n\n:::{example} case\n:impl: src/main.rs\nA case. CITE`requirements.ready`\n:::\n".replace("CITE", "{cite}"),
+            ":::{req} ready\n:phrase: ready\n:impl:\nReady MUST hold.\n:::\n\n:::{example} case\n:impl: src/main.rs\nA case. {cite}`requirements.ready`\n:::\n",
         )
         .unwrap();
         let errors = validate_repository(temp.path()).unwrap().errors.join("\n");
@@ -3872,8 +3859,8 @@ pub(crate) mod tests {
             ":::{req} ready\nReady MUST hold.\n:::\n",
         )
         .unwrap();
-        let impl_role = "IMPL`requirements.ready`".replace("IMPL", "{impl}");
-        let cite_role = "CITE`requirements.ready`".replace("CITE", "{cite}");
+        let impl_role = "{impl}`requirements.ready`";
+        let cite_role = "{cite}`requirements.ready`";
         fs::write(
             root.join("src/lib.rs"),
             format!(

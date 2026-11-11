@@ -1233,7 +1233,7 @@ pub(super) mod tests {
             ),
         )
         .unwrap();
-        let util = ["// :::", "{cite} habeas:util\n// Glue.\n// :::\n"].concat();
+        let util = "// :::{cite} habeas:util\n// Glue.\n// :::\n".to_owned();
         fs::write(
             root.path().join("src/lib.rs"),
             format!(

@@ -74,9 +74,8 @@ fn outline_inputs_survive_moves_and_unhashed_comments_but_not_edits() {
         write_inputs(&root, inputs);
         without_citation_reviews(validate_repository(&root).unwrap().errors).join("\n")
     };
-    let rust = "// CITE`rules.ready`\nfn alpha() { work(1); }\n\n/// Docs.\n// CITE`rules.ready`\nfn beta() {}\n"
-        .replace("CITE", "{cite}");
-    fs::write(root.join("src/lib.rs"), &rust).unwrap();
+    let rust = "// {cite}`rules.ready`\nfn alpha() { work(1); }\n\n/// Docs.\n// {cite}`rules.ready`\nfn beta() {}\n";
+    fs::write(root.join("src/lib.rs"), rust).unwrap();
     let inputs = vec![
         outline(&root, "src/lib.rs", "fn[alpha]"),
         outline(&root, "src/lib.rs", "fn[beta]"),
@@ -89,8 +88,7 @@ fn outline_inputs_survive_moves_and_unhashed_comments_but_not_edits() {
     // Moving nodes and lines, and editing unhashed comments, keeps inputs valid.
     fs::write(
         root.join("src/lib.rs"),
-        format!("// CITE`rules.ready` moved below a new line\n\n{rust}")
-            .replacen("CITE", "{cite}", 1)
+        format!("// {{cite}}`rules.ready` moved below a new line\n\n{rust}")
             .replace("fn alpha() { work(1); }", "fn alpha() {\n    work(1);\n}"),
     )
     .unwrap();
@@ -125,8 +123,7 @@ fn outline_inputs_survive_moves_and_unhashed_comments_but_not_edits() {
 
     fs::write(
         root.join("src/lib.rs"),
-        "// CITE`rules.ready`\n#[cfg(a)]\nfn dup() {}\n// CITE`rules.ready`\n#[cfg(b)]\nfn dup() {}\n"
-            .replace("CITE", "{cite}"),
+        "// {cite}`rules.ready`\n#[cfg(a)]\nfn dup() {}\n// {cite}`rules.ready`\n#[cfg(b)]\nfn dup() {}\n",
     )
     .unwrap();
     let hash = "0".repeat(64);
@@ -464,7 +461,7 @@ fn evidence_rejects_disallowed_ancestors_even_when_symlinks_target_allowed_sourc
         fs::create_dir(root.join(directory)).unwrap();
     }
     // Every struct needs a reference under rust_item_coverage.
-    let cite = ["// {", "cite}`rules.ready`"].concat();
+    let cite = "// {cite}`rules.ready`".to_owned();
     fs::write(
         root.join("public/source.rs"),
         format!("{cite}\npub struct Source;\n"),

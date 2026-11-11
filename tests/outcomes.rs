@@ -35,7 +35,7 @@ fn fixture() -> TempDir {
     )
     .unwrap();
     fs::write(temp.path().join("book.toml"), "[book]\nsrc = 'md'\n").unwrap();
-    let example = "Timeout handling retries. CITE`requirements.ready`".replace("CITE", "{cite}");
+    let example = "Timeout handling retries. {cite}`requirements.ready`".to_owned();
     let example_lines = vec![
         ":::{example} timeout".to_owned(),
         example.clone(),
@@ -395,7 +395,7 @@ fn fixme_does_not_hide_stale_inputs_or_uncovered_references() {
     assert!(status.contains("outline input changed"), "{status}");
     fs::write(
         temp.path().join("other.txt"),
-        "IMPL`requirements.timeout`".replace("IMPL", "{impl}"),
+        "{impl}`requirements.timeout`",
     )
     .unwrap();
     let report = habeas::validate_repository(temp.path()).unwrap();
@@ -500,10 +500,7 @@ fn editing_or_adding_a_fixme_makes_evidence_stale_or_uncovered() {
     let errors = habeas::validate_repository(temp.path()).unwrap().errors;
     assert!(
         errors.iter().any(|error| error
-            == concat!(
-                "evidence/requirements.timeout.json: no input covers {",
-                "fixme}`requirements.timeout` at other.rs:1"
-            )),
+            == "evidence/requirements.timeout.json: no input covers {fixme}`requirements.timeout` at other.rs:1"),
         "{errors:?}"
     );
 }

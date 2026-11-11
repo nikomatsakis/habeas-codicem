@@ -85,10 +85,10 @@ fn fenced_references_in_comments_and_built_in_rules_are_validated() {
     let errors = errors(root);
     for expected in [
         // `habeas:none` was removed: it is an unknown name in either form.
-        "src/lib.rs:6: CITE`habeas:none` has no matching built-in definition",
-        "src/lib.rs:30: CITE`habeas:none` has no matching built-in definition",
+        "src/lib.rs:6: {cite}`habeas:none` has no matching built-in definition",
+        "src/lib.rs:30: {cite}`habeas:none` has no matching built-in definition",
         "src/lib.rs:14: built-in habeas:util may only be referenced with {cite}",
-        "src/lib.rs:19: CITE`habeas:other` has no matching built-in definition",
+        "src/lib.rs:19: {cite}`habeas:other` has no matching built-in definition",
         "src/lib.rs:24: fenced {cite} reference to rules.ready has no closing fence",
         "src/lib.rs:7: function inline is uncovered: it has no requirement or example reference, and no evidence record or review read it",
         "src/lib.rs:17: function wrong_role is uncovered: it has no requirement or example reference, and no evidence record or review read it",
@@ -96,8 +96,7 @@ fn fenced_references_in_comments_and_built_in_rules_are_validated() {
         "src/lib.rs:28: function unclosed is uncovered: it has no requirement or example reference, and no evidence record or review read it",
         "src/lib.rs:33: function fenced_none is uncovered: it has no requirement or example reference, and no evidence record or review read it",
     ] {
-        let expected = expected.replace("CITE", &cr);
-        assert!(has(&errors, &expected), "missing {expected:?}: {errors:#?}");
+        assert!(has(&errors, expected), "missing {expected:?}: {errors:#?}");
     }
     // A fenced citation of habeas:util covers its function, as does an
     // inline reference in a fence body.
@@ -195,13 +194,10 @@ fn built_ins_have_no_evidence_index_entry_or_status_and_are_validated_in_the_boo
     let errors = errors(root);
     for expected in [
         // `habeas:none` was removed, so it is an unknown built-in.
-        "md/rules.md:7: CITE`habeas:none` has no matching built-in definition",
-        "md/rules.md:9: built-in habeas:util may only be referenced with {impl}",
+        "md/rules.md:7: {cite}`habeas:none` has no matching built-in definition",
+        "md/rules.md:9: built-in habeas:util may only be referenced with {cite}",
     ] {
-        let expected = expected
-            .replace("{impl}", &role("cite"))
-            .replace("CITE", &cr);
-        assert!(has(&errors, &expected), "missing {expected:?}: {errors:#?}");
+        assert!(has(&errors, expected), "missing {expected:?}: {errors:#?}");
     }
     assert!(
         has(&errors, "evidence/habeas:util.json"),
@@ -338,12 +334,11 @@ fn fixme_references_are_fenced_described_and_named_only_outside_the_book() {
         "src/gaps.rs:3: :github: value \"example/rules\" is not of the form <owner>/<repo>#<number>",
         "src/gaps.rs:10: {fixme} to rules.ready has an empty body",
         "src/gaps.rs:14: an unnamed {fixme} must name at least one issue",
-        "src/gaps.rs:23: FIXME`rules.missing` has no matching requirement or example",
+        "src/gaps.rs:23: {fixme}`rules.missing` has no matching requirement or example",
         "md/rules.md:4: a named {fixme} to rules.ready must not appear in a requirement or example declaration",
         "md/rules.md:13: a named {fixme} to rules.ready must appear in a source outside the book",
     ] {
-        let expected = expected.replace("FIXME", &fx);
-        assert!(has(&errors, &expected), "missing {expected:?}: {errors:#?}");
+        assert!(has(&errors, expected), "missing {expected:?}: {errors:#?}");
     }
     // An unnamed `{fixme}` with an issue is valid anywhere, including a
     // requirement body, and is not an edge needing coverage.
