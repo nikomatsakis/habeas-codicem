@@ -194,12 +194,19 @@ In a Git worktree, stage new source files with `git add` before authoring. The
 model can read unstaged edits to tracked files. By default, reads exclude untracked files,
 generated `evidence/` content, and paths outside the project, including symlink
 aliases. Standalone projects use the same containment rules without requiring Git.
-An explicitly requested excluded path aborts that assessment and reports an error
-to the caller; it is not sent back to the model to work around. In a batch, other
-assessments continue and successful writes are retained. The command exits
-unsuccessfully after the batch finishes.
+When the model requests an excluded path, the tool returns an error naming the
+path and the reason, such as an untracked file that `git add` would make
+readable, and the assessment continues. A denied mandatory input instead aborts
+that assessment and reports the path to you; in a batch, other assessments
+continue and successful writes are retained, and the command exits
+unsuccessfully after the batch finishes. Tool descriptions cover only the common
+case; redaction, paging, and errors are explained in the results where they
+occur.
 {cite}`requirements.authoring.source_tools`
 {cite}`requirements.authoring.read_denial`
+{cite}`requirements.authoring.read_denial.untracked`
+{cite}`requirements.authoring.read_denial.mandatory`
+{cite}`requirements.authoring.tool_descriptions.special_cases`
 
 Source text sent to the model, and source text shown on book detail pages and by
 `habeas info`, is redacted. In a workspace `habeas.toml` or your user

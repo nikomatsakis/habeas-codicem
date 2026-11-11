@@ -39,8 +39,8 @@ authoring error under {cite}`requirements.authoring.reporting`, and retain
 successful writes when another assessment fails. It MUST return a nonzero
 exit status if any assessment fails. False judgments MUST still be written as
 completed assessments; they remain failures under ordinary evidence validation.
-An access-policy denial MUST abort only the affected assessment under
-{cite}`requirements.authoring.read_denial`. Interruption MUST instead stop the
+A denied mandatory input MUST abort only the affected assessment under
+{cite}`requirements.authoring.read_denial.mandatory`. Interruption MUST instead stop the
 whole batch: queued assessments MUST NOT start, running assessments MUST be
 cancelled, and an assessment whose evidence has not been written when the
 interruption arrives MUST NOT write it. Evidence already written MUST be
@@ -550,6 +550,27 @@ are data types, and optional fields show their defaults.
 The tools locate code by file and outline selector, the form rationales cite
 under {cite}`requirements.authoring.judgment_rules`.
 
+:::{req} tool_descriptions.common_case
+Each model tool's description MUST give what the model needs in the common
+case: what the tool does, when to use it rather than another tool, each
+argument's meaning and form, with a short example where the form is not
+obvious, and the form of a successful result.
+:::
+
+:::{req} tool_descriptions.special_cases
+Model tool descriptions MUST NOT explain cases the model meets only
+occasionally, such as access policy, excluded or build-output paths, redaction,
+paging, and failures. The harness MUST explain each of these where it occurs: in
+the tool error, or in a note in the result it affects.
+:::
+
+:::{req} redaction_notice
+A tool result containing text the harness redacted under
+{cite}`requirements.authoring.redaction` MUST include a note saying that
+`[REDACTED:<kind>]` replaces credential-shaped text and that the original is not
+available. A result with no redacted text MUST NOT include the note.
+:::
+
 :::{req} no_line_numbers
 No prompt, tool result, or tool error the harness gives the model MUST state a
 line number or line range of a project source, except within source text it
@@ -584,8 +605,9 @@ default, including symlink aliases. Every source the harness supplies to the
 model MUST be redacted under {cite}`requirements.authoring.redaction`. Generated build outputs MUST follow
 {cite}`requirements.authoring.generated_inputs`. Workspace path overrides MUST
 follow {cite}`requirements.configuration.evidence_paths`, including explicit
-permission for otherwise excluded inputs. A denied mandatory input or explicit
-read MUST abort under {cite}`requirements.authoring.read_denial`.
+permission for otherwise excluded inputs. A denied mandatory input MUST abort
+under {cite}`requirements.authoring.read_denial.mandatory`, and a denied model
+read MUST return a tool error under {cite}`requirements.authoring.read_denial`.
 
 Line numbers are only a way to request sources; recorded evidence MUST identify
 sources by outline selector and structural hash, never by line number. Request
@@ -614,43 +636,43 @@ HabeasResult {
 
 `definitions` MUST be empty when no additional terminology is required. The
 harness MUST record inputs supplied to the model in the assessment's evidence.
-A failed read MUST add no evidence input. Access-policy denials MUST abort
-except where {cite}`requirements.authoring.read_denial` makes them ordinary read
-failures; other failed reads MUST return an explanatory tool error.
+A failed read MUST add no evidence input. Access-policy denials MUST be handled
+under {cite}`requirements.authoring.read_denial`; other failed reads MUST return
+an explanatory tool error.
 :::
 
 :::{req} read_denial
-When a mandatory input or dispatched model read is denied by source-access
-policy, the assessment MUST abort and report the denied path and reason to its caller.
-It MUST NOT return the denial to the model as a recoverable tool result or make
-another model request for that assessment. An untracked-file diagnostic MUST
-explain that the caller can stage the file with `git add` or configure a workspace
-allow rule; the harness MUST NOT stage or permit the file itself.
+When source-access policy denies a path that a model tool call names
+explicitly, the harness MUST return a tool error naming the path and the reason
+it cannot be read, add no evidence input, and continue the assessment.
+Discovery and search MAY omit denied candidates without an error. Malformed tool
+arguments and ordinary read failures MUST also return explanatory tool errors.
+:::
 
-The aborted assessment MUST NOT write evidence or emit evidence JSON. Its usage
-record MUST identify the failure and any failed tool call. In a batch, other
-assessments MUST continue, including queued assessments, and their successful
-writes MUST be retained. The command MUST return a nonzero exit status after
-the batch finishes. Discovery and search MAY omit denied candidates without
-aborting, but explicitly requesting a denied file or directory MUST abort the
-affected assessment.
-Malformed tool arguments and ordinary read failures MUST retain their existing
-recoverable tool-error behavior.
+:::{req} read_denial.untracked
+A tool error for a denied file inside the project that is not in the Git index
+MUST say that the file is untracked and that the caller can stage it with
+`git add` or permit it with a workspace allow rule. The harness MUST NOT stage or
+permit the file itself.
+:::
 
-A dispatched model request naming a path inside the book's build directory,
-`book` unless `book.toml` sets `[build] build-dir`, or inside the project-root
-`target` directory, that no workspace allow rule or generated-output rule
-permits MUST also be treated as an ordinary read failure. Its tool error MUST
-say that the path holds build output and that the sources it is built from
-are elsewhere in the project.
+:::{req} read_denial.build_output
+A tool error for a path inside the book's build directory, `book` unless
+`book.toml` sets `[build] build-dir`, or inside the project-root `target`
+directory, that no workspace allow rule or generated-output rule permits MUST say
+that the path holds build output and that the sources it is built from are
+elsewhere in the project.
+:::
 
-A dispatched model request naming a path outside the project root, before
-symlinks are resolved, that no workspace allow rule or generated-output rule
-permits MUST be treated as an ordinary read failure rather than an abort: it
-MUST return an explanatory tool error, add no evidence input, and let the
-assessment continue. An explicit workspace disallow matching such a path MUST
-still abort. A mandatory input naming such a path, and a request inside the
-project whose symlink target leaves it, MUST still abort.
+:::{req} read_denial.mandatory
+When source-access policy denies a mandatory input, the assessment MUST abort
+before any model request and report the denied path and reason to its caller;
+for an untracked file, the report MUST say what {cite}`requirements.authoring.read_denial.untracked`
+says. The aborted assessment MUST NOT write evidence or emit evidence JSON, and
+its usage record MUST identify the failure. In a batch, other assessments MUST
+continue, including queued assessments, and their successful writes MUST be
+retained; the command MUST return a nonzero exit status after the batch
+finishes.
 :::
 
 :::{req} generated_inputs
@@ -701,8 +723,8 @@ explanatory tool error unless access was denied, which MUST be handled under
 Listings MUST omit files excluded by {cite}`requirements.authoring.source_tools`.
 In a Git worktree, directories MUST have at least one eligible source
 descendant to be listed unless explicitly allowed or discovered as generated
-output. Explicitly requesting an excluded path MUST return an
-authoring error under {cite}`requirements.authoring.read_denial`.
+output. Explicitly requesting an excluded path MUST be handled as a denial under
+{cite}`requirements.authoring.read_denial`.
 :::
 
 ### List a file's outline: `outline`
@@ -764,7 +786,7 @@ walking files rather than filtering results afterwards. It MAY search files in
 parallel; results MUST be ordered by path and then line regardless of
 parallelism, so the same sources always produce the same inputs. Explicitly allowed paths and discovered generated-output directories MUST
 be searched even when ignored or hidden; workspace disallow rules still apply.
-Its model-facing description MUST explain those conventions. `context`
+`context`
 MUST be nonnegative and specify how many lines before and after each matching
 line to include, defaulting to two on each side. Windows MUST stop at file
 boundaries, and overlapping windows in the same file MUST be merged. The result
@@ -1010,7 +1032,9 @@ page: {
 }
 ```
 
-`next` MUST be an opaque token when entries remain and null on the last page. The
+`next` MUST be an opaque token when entries remain and null on the last page.
+While entries remain, the page MUST also include a `note` saying that more
+entries remain and that `next_page` with `next` returns them. The
 harness MUST expose a `next_page({ token: String })` tool returning the following
 page of the same result, in the same shape. Pages MUST be kept only until the
 assessment that requested them finishes; an unknown token, including one from
@@ -1094,7 +1118,7 @@ in the initial model request.
 Generated output under project-root `evidence/`, including symlink aliases, MUST
 be omitted from mandatory inputs when the default exclusion applies. An explicit
 workspace allow MUST permit those selections; an explicit disallow MUST abort
-under {cite}`requirements.authoring.read_denial`.
+under {cite}`requirements.authoring.read_denial.mandatory`.
 :::
 
 The contribution rules live with [requirements](../requirements.md#requirements-as-authoring-inputs),
