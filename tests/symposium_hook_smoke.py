@@ -92,6 +92,14 @@ def main():
         )
         runner.chmod(0o755)
         manifest = (repo / "Cargo.toml").read_text()
+        # The stub crates below live outside the repository, so the vendored
+        # fork's relative path must point back into it.
+        fork_path = 'path = "vendor/habeas-rig"'
+        if manifest.count(fork_path) != 1:
+            raise AssertionError("Habeas's habeas-rig dependency changed")
+        manifest = manifest.replace(
+            fork_path, f"path = {json.dumps(str(repo / 'vendor' / 'habeas-rig'))}", 1
+        )
         cargo_installation = (
             'source = "cargo"\ncrate = "habeas"\n'
             'executable = "habeas"\nglobal = true'
