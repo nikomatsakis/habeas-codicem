@@ -13,6 +13,7 @@ use crate::{
     reference_roles, valid_name,
 };
 
+// {impl}`requirements.integration.report_api`
 #[derive(Debug)]
 pub struct EvidenceReport {
     pub requirements: usize,
@@ -21,6 +22,7 @@ pub struct EvidenceReport {
     pub errors: Vec<String>,
 }
 
+// {cite}`habeas:util`
 #[derive(Clone)]
 pub(crate) struct Declaration {
     pub(crate) kind: DefinitionKind,
@@ -33,6 +35,7 @@ pub(crate) struct Declaration {
     pub(crate) anchors: Vec<Anchor>,
 }
 
+// {cite}`habeas:util`
 /// An `:impl:` or `:test:` option naming a project file, or one outline node
 /// in it as `path#selector`.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -43,6 +46,7 @@ pub(crate) struct Anchor {
     pub(crate) item: String,
 }
 
+// {cite}`habeas:util`
 /// The node an anchor currently resolves to.
 pub(crate) struct AnchorTarget {
     /// Canonical path of the anchored file.
@@ -132,6 +136,7 @@ pub(crate) struct RepositoryInspection {
     pub(crate) discovery_errors: Vec<String>,
 }
 
+// {cite}`habeas:util`
 /// Progress within one inspection phase; discovery has no known total.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct InspectionProgress {
@@ -1865,6 +1870,7 @@ fn declaration_line_ranges(content: &str) -> Vec<(usize, usize)> {
         .collect()
 }
 
+// {impl}`requirements.references.evidence_coverage`
 /// Unreadable records and unresolvable inputs contribute no ranges: their
 /// own checks report them, and coverage checking continues.
 fn evidence_input_ranges(

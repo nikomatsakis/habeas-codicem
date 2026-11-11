@@ -90,6 +90,7 @@ impl DefinitionKind {
     }
 }
 
+// {cite}`habeas:util`
 pub(crate) struct DefinitionBlock {
     pub(crate) start: usize,
     pub(crate) end: usize,
@@ -103,6 +104,7 @@ pub(crate) struct DefinitionBlock {
     pub(crate) options: Vec<DefinitionOption>,
 }
 
+// {cite}`habeas:util`
 /// An option line such as `:impl: src/skill.md` immediately after the opening
 /// fence of a `{req}` or `{example}` directive.
 pub(crate) struct DefinitionOption {
@@ -120,6 +122,7 @@ pub(crate) struct Definition {
     pub(crate) kind: DefinitionKind,
 }
 
+// {cite}`habeas:util`
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ReferenceKind {
     Impl,
@@ -154,6 +157,7 @@ impl ReferenceKind {
     }
 }
 
+// {cite}`habeas:util`
 pub(crate) struct ReferenceMatch<'a> {
     pub(crate) start: usize,
     pub(crate) end: usize,

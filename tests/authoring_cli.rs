@@ -245,10 +245,12 @@ impl Fixture {
     }
 }
 
+// {cite}`habeas:util`
 fn call(id: &str, name: &str, arguments: Value) -> Value {
     json!({"id":id,"type":"function","function":{"name":name,"arguments":arguments}})
 }
 
+// {cite}`habeas:util`
 fn reply(calls: Vec<Value>) -> Value {
     json!({"model":MODEL,"created_at":"2026-01-01T00:00:00Z",
         "message":{"role":"assistant","content":"review complete","tool_calls":calls},

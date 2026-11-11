@@ -34,6 +34,7 @@ fn project() -> TempDir {
     temp
 }
 
+// {cite}`habeas:util`
 /// `src/config.rs`, with `extra` at the end of `load`'s body.
 fn config_source(extra: &str) -> String {
     format!(
@@ -74,6 +75,7 @@ fn write_evidence(root: &Path, name: &str, rationale: &str, inputs: Vec<Value>) 
     .unwrap();
 }
 
+// {cite}`habeas:util`
 /// A requirements input selecting `selection` from the current book.
 fn requirements_input(selection: &str, matches: &[&str], text: &[&str]) -> Value {
     json!({"requirements": selection, "matches": matches, "text": text})
@@ -117,6 +119,7 @@ fn errors(root: &Path) -> Vec<String> {
     habeas::validate_repository(root).unwrap().errors
 }
 
+// {cite}`habeas:util`
 /// Runs `habeas refactor` in `root`.
 fn refactor(root: &Path, args: &[&str]) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_habeas"))
@@ -145,6 +148,7 @@ fn snapshot(root: &Path) -> BTreeMap<String, Vec<u8>> {
     files
 }
 
+// {cite}`habeas:util`
 fn stdout(output: &std::process::Output) -> String {
     String::from_utf8_lossy(&output.stdout).into_owned()
 }
@@ -646,6 +650,7 @@ fn a_citation_review_follows_its_item_and_the_name_it_cites() {
     );
 }
 
+// {cite}`habeas:util`
 /// Moves `load` from the `rules` chapter to `core`, with `body`.
 fn move_load_requirement(root: &Path, body: &str) {
     fs::write(
@@ -778,6 +783,7 @@ fn a_reference_set_changed_beyond_the_mapping_blocks_every_rewrite() {
     );
 }
 
+// {cite}`habeas:util`
 /// Adds `usage.use`, which uses the term `terms.term`, with current
 /// evidence reading both.
 fn add_term(root: &Path) {
@@ -812,6 +818,7 @@ fn add_term(root: &Path) {
     .unwrap();
 }
 
+// {cite}`habeas:util`
 /// The validation errors of `usage.use`.
 fn usage_errors(root: &Path) -> Vec<String> {
     errors(root)

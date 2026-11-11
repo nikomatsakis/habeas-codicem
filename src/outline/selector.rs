@@ -59,6 +59,7 @@ pub(crate) fn decode_name(encoded: &str) -> Result<String, SelectorError> {
         .map_err(|_| SelectorError::new(encoded, "percent escapes are not UTF-8"))
 }
 
+// {impl}`requirements.references.outline_selectors`
 /// A segment's label: a name, made of `/`-joined parts, or an identity hash.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Label {
@@ -101,6 +102,7 @@ impl fmt::Display for Segment {
     }
 }
 
+// {cite}`habeas:util`
 /// An invalid selector.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct SelectorError {
@@ -109,6 +111,7 @@ pub(crate) struct SelectorError {
 }
 
 impl SelectorError {
+    // {cite}`habeas:util`
     pub(crate) fn new(selector: &str, message: impl Into<String>) -> Self {
         Self {
             selector: selector.to_owned(),
@@ -118,6 +121,7 @@ impl SelectorError {
 }
 
 impl fmt::Display for SelectorError {
+    // {cite}`habeas:util`
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             formatter,
@@ -129,6 +133,7 @@ impl fmt::Display for SelectorError {
 
 impl std::error::Error for SelectorError {}
 
+// {impl}`requirements.references.outline_selectors`
 /// Splits a selector at `/` outside brackets.
 fn split_segments(selector: &str) -> Result<Vec<&str>, SelectorError> {
     let mut segments = Vec::new();

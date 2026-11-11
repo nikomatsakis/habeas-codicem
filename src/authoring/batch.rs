@@ -571,6 +571,7 @@ fn cancel_on_error(cancel: &watch::Sender<Option<&'static str>>, error: &io::Err
     }
 }
 
+// {impl}`requirements.authoring.batch`
 /// Records an interruption that has already arrived, without waiting. The
 /// first poll registers the listener.
 async fn observe_interrupt(
@@ -593,6 +594,7 @@ async fn observe_interrupt(
     }
 }
 
+// {impl}`requirements.authoring.batch`
 /// Signals every assessment and the launcher that the batch is stopping.
 fn stop(cancel: &watch::Sender<Option<&'static str>>) {
     cancel.send_if_modified(|current| {

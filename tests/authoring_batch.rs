@@ -385,11 +385,13 @@ impl Fixture {
         command
     }
 
+    // {cite}`habeas:util`
     #[cfg(unix)]
     fn run_in_pty(&self, interrupt: bool, term: &str) -> Output {
         self.run_in_pty_with_args(interrupt, term, &["author", "--all"])
     }
 
+    // {cite}`habeas:util`
     #[cfg(unix)]
     fn run_in_pty_with_args(&self, interrupt: bool, term: &str, args: &[&str]) -> Output {
         // Keep stdout piped: the bar belongs to stderr and must detect that
@@ -469,6 +471,7 @@ raise SystemExit(process.returncode if process.returncode >= 0 else 128 - proces
             .expect("PTY progress tests require python3 on Unix")
     }
 
+    // {cite}`habeas:util`
     fn evidence(&self, name: &str) -> Value {
         serde_json::from_slice(
             &fs::read(self.project.join(format!("evidence/{name}.json"))).unwrap(),
@@ -923,6 +926,7 @@ fn interrupted_terminal_progress_keeps_unstarted_work_incomplete() {
     }
 }
 
+// {cite}`habeas:util`
 #[cfg(unix)]
 fn assert_interruption_stops_the_batch(overlap: bool, concurrency: usize) {
     let server = Server::start_with(overlap, Behavior::WaitAfterFirst);

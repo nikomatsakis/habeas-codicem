@@ -23,6 +23,7 @@ pub(crate) const SITES_DIR: &str = "sites";
 // {impl}`requirements.authoring.progress`
 const SITE_STAGE: &str = "site reviews";
 
+// {cite}`habeas:util`
 /// One query match at a site.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct SiteMatch {
@@ -35,6 +36,7 @@ pub(crate) struct SiteMatch {
     pub(crate) text: String,
 }
 
+// {cite}`habeas:util`
 /// One site of a distributed requirement: the innermost outline node
 /// containing a match of one of its queries.
 #[derive(Clone, Debug)]
@@ -52,11 +54,13 @@ pub(crate) struct SiteItem {
 }
 
 impl SiteItem {
+    // {cite}`habeas:util`
     /// The review's path relative to the project root.
     pub(crate) fn review_path(&self) -> String {
         review_path(&self.requirement, &self.file, &self.item)
     }
 
+    // {cite}`habeas:util`
     /// The selector as displayed, `<root>` for the root node.
     pub(crate) fn selector_label(&self) -> &str {
         if self.item.is_empty() {
@@ -66,6 +70,7 @@ impl SiteItem {
         }
     }
 
+    // {impl}`requirements.references.site_review`
     /// The sorted names of the queries with a match at the site.
     pub(crate) fn queries(&self) -> Vec<String> {
         self.matches
@@ -101,6 +106,7 @@ impl SiteItem {
         )
     }
 
+    // {impl}`requirements.references.site_review`
     /// Whether a reference lies inside the site's node.
     pub(crate) fn contains(&self, root: &Path, reference: &SourceReference) -> bool {
         display_path(root, &reference.file) == self.file
@@ -108,6 +114,7 @@ impl SiteItem {
             && reference.line <= self.line_end
     }
 
+    // {impl}`requirements.references.site_review`
     /// The `{fixme}` references naming the requirement inside the site,
     /// which acknowledge gaps at this site only.
     pub(crate) fn fixmes<'a>(
@@ -140,6 +147,7 @@ pub(crate) fn in_own_site(root: &Path, sites: &Sites, reference: &SourceReferenc
             .is_some_and(|sites| sites.iter().any(|site| site.contains(root, reference)))
 }
 
+// {impl}`requirements.references.site_review`
 /// `evidence/sites/<full-name>/<file>/<selector>.json`, with the selector
 /// encoded as for citation reviews.
 pub(crate) fn review_path(requirement: &str, file: &str, item: &str) -> String {
@@ -149,6 +157,7 @@ pub(crate) fn review_path(requirement: &str, file: &str, item: &str) -> String {
     )
 }
 
+// {cite}`habeas:util`
 /// `sites:<full-name>/<file>#<selector>`.
 pub(crate) fn subject_label(requirement: &str, file: &str, item: &str) -> String {
     format!("sites:{requirement}/{file}#{item}")
@@ -442,6 +451,7 @@ pub(crate) fn cited_declarations(
     cited
 }
 
+// {cite}`habeas:util`
 /// One acknowledgment inside a site as recorded: the outline node it
 /// belongs to and its body.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -451,10 +461,12 @@ pub(crate) struct SiteFixme {
 }
 
 impl SiteFixme {
+    // {cite}`habeas:util`
     pub(crate) fn to_value(&self) -> Value {
         json!({"item": self.item, "commentary": self.commentary})
     }
 
+    // {impl}`requirements.references.site_review`
     /// The comparison key: the node and the body's words, so reflowing the
     /// body does not make the review stale.
     fn key(&self) -> (String, Vec<String>) {
@@ -468,6 +480,7 @@ impl SiteFixme {
     }
 }
 
+// {impl}`requirements.references.site_review`
 /// The `{fixme}` references naming the requirement inside a site, in source
 /// order, as recorded in its review.
 pub(crate) fn site_fixmes(
@@ -496,6 +509,7 @@ pub(crate) fn site_fixmes(
         .collect()
 }
 
+// {impl}`requirements.references.site_review`
 /// Whether two lists of site `{fixme}` references are the same, by node and
 /// body words.
 fn same_fixmes(recorded: &[SiteFixme], current: &[SiteFixme]) -> bool {

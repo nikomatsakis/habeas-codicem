@@ -381,6 +381,7 @@ fn tool_name(name: &str) -> &str {
     }
 }
 
+// {cite}`habeas:util`
 fn timestamp() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -394,6 +395,7 @@ mod tests {
     use serde_json::json;
     use std::time::Duration;
 
+    // {cite}`habeas:util`
     fn persisted(log: &UsageLog) -> Value {
         serde_json::from_str(&fs::read_to_string(&log.path).unwrap()).unwrap()
     }

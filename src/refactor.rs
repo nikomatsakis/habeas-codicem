@@ -23,6 +23,7 @@ use crate::ReferenceKind;
 use crate::evidence::{Anchor, Declaration, SourceReference, display_path};
 use crate::inputs::{InputSelector, OutlineCache};
 
+// {impl}`requirements.refactor.invalid_mappings`
 /// A failure of `habeas refactor`: an invalid mapping, reported as a usage
 /// error before anything changes, or an I/O failure.
 #[derive(Debug)]
@@ -32,12 +33,14 @@ pub enum RefactorError {
 }
 
 impl From<io::Error> for RefactorError {
+    // {cite}`habeas:util`
     fn from(error: io::Error) -> Self {
         Self::Io(error)
     }
 }
 
 impl std::fmt::Display for RefactorError {
+    // {cite}`habeas:util`
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Usage(message) => f.write_str(message),
@@ -198,6 +201,7 @@ impl Mappings {
     }
 }
 
+// {cite}`habeas:util`
 /// The kind of token [`replace_tokens`] replaces, which decides where a
 /// token may continue.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -358,6 +362,7 @@ fn rewrite_rationale(mappings: &Mappings, rationale: &str) -> (String, Vec<Strin
     (rewritten.into_owned(), mentions)
 }
 
+// {cite}`habeas:util`
 /// The repository before and after the rewrite, and mapped back.
 struct States {
     root: PathBuf,
@@ -549,6 +554,7 @@ impl States {
     }
 }
 
+// {impl}`requirements.refactor.definition_inputs`
 /// A declaration's opening fence with its short name mapped back from the
 /// current full name `new` to `old`.
 fn opening_back(opening: &str, new: &str, old: &str) -> String {
@@ -564,6 +570,7 @@ fn opening_back(opening: &str, new: &str, old: &str) -> String {
     format!("{fence} {old_short}")
 }
 
+// {cite}`habeas:util`
 /// What `habeas refactor` does with one record.
 enum Outcome {
     /// No mapping affects it.
@@ -578,6 +585,7 @@ enum Outcome {
     Unchanged(String),
 }
 
+// {cite}`habeas:util`
 /// The kind of an evidence record, from its path.
 enum RecordKind {
     Definition(String),
@@ -585,6 +593,7 @@ enum RecordKind {
     Site,
 }
 
+// {cite}`habeas:util`
 fn record_kind(path: &str) -> Option<RecordKind> {
     let rest = path.strip_prefix("evidence/")?;
     if rest.starts_with(&format!("{}/", crate::citations::CITATIONS_DIR)) {
@@ -1080,6 +1089,7 @@ fn load_records(root: &Path) -> io::Result<Vec<(String, Value)>> {
     Ok(records)
 }
 
+// {cite}`habeas:util`
 /// Removes the empty directories between `path` and `evidence/`.
 fn prune(root: &Path, path: &Path) {
     let evidence = root.join("evidence");

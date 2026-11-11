@@ -41,6 +41,7 @@ impl Default for ProviderBackoff {
 // {impl}`requirements.authoring.provider_backoff.limit`
 pub(super) const RETRY_LIMIT: Duration = Duration::from_secs(60);
 
+// {cite}`habeas:util`
 /// What to do after a failed request.
 pub(super) enum Retry {
     /// Wait this long, then retry.
@@ -128,6 +129,7 @@ impl ProviderBackoff {
     }
 }
 
+// {cite}`habeas:util`
 /// Wraps Rig's error unchanged, so `ProviderBackoff::next_delay` can read its
 /// HTTP status, provider code, and `Retry-After` header.
 fn provider_failure(error: ProviderError) -> io::Error {
@@ -280,6 +282,7 @@ impl CompletionProvider for RigProvider {
     }
 }
 
+// {cite}`habeas:util`
 fn normalize_bedrock_client_calls(response: &mut CompletionResponse) -> io::Result<()> {
     // Rig 0.44 treats every typed Converse toolUse block as a hosted tool.
     // Newer Claude responses explicitly identify client calls as "tool_use".

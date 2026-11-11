@@ -6,6 +6,7 @@ use std::process::{Command, Stdio};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
+// {cite}`habeas:util`
 fn fixture() -> TempDir {
     let temp = TempDir::new().unwrap();
     fs::create_dir_all(temp.path().join("src")).unwrap();
@@ -25,6 +26,7 @@ fn fixture() -> TempDir {
     temp
 }
 
+// {cite}`habeas:util`
 fn run(project: &Path, args: &[&str]) {
     let output = Command::new(env!("CARGO_BIN_EXE_habeas"))
         .args(args)
@@ -40,6 +42,7 @@ fn run(project: &Path, args: &[&str]) {
     );
 }
 
+// {cite}`habeas:util`
 fn session_start(project: &Path, cwd: &Path) -> Value {
     let mut child = Command::new(env!("CARGO_BIN_EXE_habeas"))
         .args(["hook", "session-start"])
@@ -69,6 +72,7 @@ fn session_start(project: &Path, cwd: &Path) -> Value {
     serde_json::from_slice(&output.stdout).unwrap()
 }
 
+// {cite}`habeas:util`
 /// Every `habeas` entry in the manifest's dependency tables.
 fn habeas_dependencies(project: &Path) -> Vec<(String, toml_edit::Item)> {
     let manifest: toml_edit::DocumentMut = fs::read_to_string(project.join("Cargo.toml"))

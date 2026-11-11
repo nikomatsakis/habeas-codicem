@@ -135,6 +135,7 @@ pub(crate) fn dispatch_paged(
     .map_err(super::access::recoverable_outside_request)
 }
 
+// {cite}`habeas:util`
 /// Which untracked files a result names under `not_listed`.
 enum NotListed {
     /// The requested directory's entries that would otherwise be listed.
@@ -655,6 +656,7 @@ fn search(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Result<
 /// The line separating windows within one search entry.
 const ELISION: &str = "…";
 
+// {cite}`habeas:util`
 /// The entries of one file's search result being collected: each innermost
 /// outline node containing a match, with its matching lines and the context
 /// lines around them.
@@ -662,6 +664,7 @@ const ELISION: &str = "…";
 struct SearchNodes(BTreeMap<usize, (BTreeSet<usize>, BTreeSet<usize>)>);
 
 impl SearchNodes {
+    // {impl}`requirements.authoring.text_search`
     /// Adds a match on `lines` in a node, with `context` lines around it.
     fn add(
         &mut self,
@@ -819,17 +822,20 @@ fn walk_sources<T: Send>(
     Ok(found.into_inner().expect("search results lock"))
 }
 
+// {cite}`habeas:util`
 /// The sources a `referencing` scope restricts a search to, by
 /// project-relative file: the inclusive line ranges of each referencing
 /// outline node, or `None` for the whole file.
 struct ReferenceRegions(BTreeMap<String, Option<Vec<(usize, usize)>>>);
 
 impl ReferenceRegions {
+    // {impl}`requirements.authoring.text_search`
     /// Whether a file carries a selected reference.
     fn has(&self, file: &str) -> bool {
         self.0.contains_key(file)
     }
 
+    // {impl}`requirements.authoring.text_search`
     /// The searched region containing an inclusive line range: `None` when
     /// none does, `Some(None)` for a whole file, and otherwise the smallest
     /// referencing node's lines.
@@ -844,6 +850,7 @@ impl ReferenceRegions {
         }
     }
 
+    // {impl}`requirements.authoring.text_search`
     /// Adds a referencing node's lines, or a whole file.
     fn add(&mut self, file: String, lines: Option<(usize, usize)>) {
         let entry = self.0.entry(file).or_insert_with(|| Some(Vec::new()));

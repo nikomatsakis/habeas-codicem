@@ -466,6 +466,7 @@ pub(crate) fn recoverable_outside_request(error: io::Error) -> io::Error {
     }
 }
 
+// {cite}`habeas:util`
 /// A source-access policy denial. Only these, and [`OutsideProject`] denials
 /// of mandatory inputs, abort an assessment; an operating-system permission
 /// failure is an ordinary read failure.
@@ -496,6 +497,7 @@ pub(crate) fn recoverable_os_denial(error: io::Error) -> io::Error {
     }
 }
 
+// {cite}`habeas:util`
 fn denied(message: impl Into<String>) -> io::Error {
     io::Error::new(
         io::ErrorKind::PermissionDenied,

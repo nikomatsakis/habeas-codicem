@@ -10,6 +10,7 @@ use crate::evidence::Declaration;
 use crate::outline::{self, Outline, ResolveError};
 use crate::redaction::Redaction;
 
+// {cite}`habeas:util`
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum InputSelector {
     Outline { file: String, item: String },
@@ -37,6 +38,7 @@ pub(crate) struct ResolvedNode {
     pub(crate) hash: String,
 }
 
+// {cite}`habeas:util`
 pub(crate) struct ResolvedInput {
     pub(crate) ranges: Vec<SourceRange>,
     /// Current source text; recorded only for requirements and definition inputs.
@@ -45,6 +47,7 @@ pub(crate) struct ResolvedInput {
     pub(crate) node: Option<ResolvedNode>,
 }
 
+// {cite}`habeas:util`
 /// A parsed source file.
 pub(crate) struct ParsedSource {
     /// Canonical path.
@@ -56,6 +59,7 @@ pub(crate) struct ParsedSource {
     pub(crate) outline: Outline,
 }
 
+// {cite}`habeas:util`
 /// Parsed outlines, cached per file for one validation or authoring run.
 #[derive(Default)]
 pub(crate) struct OutlineCache {
@@ -65,6 +69,7 @@ pub(crate) struct OutlineCache {
 }
 
 impl OutlineCache {
+    // {cite}`habeas:util`
     /// A cache that parses `overrides` in place of those files' contents.
     pub(crate) fn with_overrides(overrides: HashMap<String, String>) -> Self {
         Self {
@@ -73,6 +78,7 @@ impl OutlineCache {
         }
     }
 
+    // {impl}`requirements.authoring.outline_tool`
     /// Reads and parses a permitted file, or returns the cached result.
     pub(crate) fn parse(&self, root: &Path, file: &str) -> Arc<Result<ParsedSource, String>> {
         let key = root.join(file);
@@ -159,6 +165,7 @@ impl ParsedSource {
         }
     }
 
+    // {impl}`requirements.ci.outline_inputs`
     /// A node's current inclusive line range and redacted source text.
     pub(crate) fn node_range(&self, file: &str, index: usize) -> (SourceRange, Vec<String>) {
         let node = &self.outline.nodes[index];
@@ -175,6 +182,7 @@ impl ParsedSource {
 }
 
 impl InputSelector {
+    // {cite}`habeas:util`
     pub(crate) fn from_input(input: &Value) -> Option<Self> {
         let object = input.as_object()?;
         if let Some(item) = object.get("item").and_then(Value::as_str) {
@@ -355,6 +363,7 @@ pub(crate) fn project_relative(root: &Path, file: &str) -> String {
     }
 }
 
+// {cite}`habeas:util`
 fn check_project_file(root: &Path, file: &str) -> Result<PathBuf, String> {
     crate::authoring::access::resolve_evidence_file(root, file).map_err(|error| error.to_string())
 }

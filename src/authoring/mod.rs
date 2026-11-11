@@ -530,6 +530,7 @@ async fn configured_record(
     assess_subject(&provider, root, &state, subject, sources, usage, policy).await
 }
 
+// {impl}`requirements.authoring.usage_storage`
 /// The backend name usage records give a model's backend.
 fn backend_name(model: &config::ModelRef) -> &'static str {
     match model.backend {
@@ -679,6 +680,7 @@ fn followup_log(
     Ok(usage)
 }
 
+// {cite}`habeas:util`
 /// Fresh sources for an independent conversation, recorded in its usage.
 fn followup_sources(
     root: &Path,
@@ -692,6 +694,7 @@ fn followup_sources(
     Ok(sources)
 }
 
+// {cite}`habeas:util`
 /// Finishes a further conversation's usage record with its outcome.
 fn finish_followup<T>(mut usage: UsageLog, purpose: &str, result: io::Result<T>) -> io::Result<T> {
     let outcome = match &result {
@@ -1008,6 +1011,8 @@ fn site_submission(arguments: &Value) -> io::Result<(Judgment, String, bool)> {
     Ok((judgment, rationale, applies))
 }
 
+// {impl}`requirements.authoring.verifier_outcome`
+// {impl}`requirements.authoring.verifier_prompt`
 /// A verifier's findings about the claimed gaps of an assessment, and, for a
 /// site review, whether the requirement applies to the site.
 #[derive(Debug, PartialEq)]
@@ -2334,6 +2339,7 @@ mod tests {
         }
     }
 
+    // {cite}`habeas:util`
     /// Submits `first`, then, on each later request, the submission
     /// `next` makes from the UUID in the conversation's last rejection.
     struct ResubmittingProvider {
@@ -2463,6 +2469,7 @@ mod tests {
         assert_eq!(provider.requests.borrow().len(), 1);
     }
 
+    // {cite}`habeas:util`
     /// Records each request's conversation and answers with the next
     /// scripted tool calls.
     struct RemindedProvider {
