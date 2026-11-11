@@ -1,7 +1,7 @@
 {
   "requirement": "For an outline input, Habeas MUST parse `file` with its language's grammar under\n{cite}`requirements.references.outlines` and resolve `item` to exactly one\noutline node under {cite}`requirements.references.outline_selectors`. It MUST\ncompare `hash` with the node's current structural hash under\n{cite}`requirements.references.structural_hash`. It MUST derive the node's\ninclusive line range, including attached comments and attributes, during\nvalidation for display and reference coverage. Moving the node, editing other\nnodes, or editing comments its profile does not hash MUST NOT invalidate the\ninput. Habeas MUST report a missing file, unsupported language, parse failure,\ninvalid or ambiguous selector, or changed hash.",
   "determination": true,
-  "rationale": "I found no gap in the code or tests for `requirements.ci.outline_inputs`.\n\n**Obligations and their code**\n- **Parse `file` with its language's grammar.** `src/inputs.rs#impl[OutlineCache]/fn[parse]` reads the file and picks a profile by extension through `outline::profile_for_path`. It then parses with `outline::parse_redacted`, which runs the pinned grammar and rejects any syntax error. `src/inputs.rs#impl[InputSelector]/fn[resolve]` calls it for outline inputs. `src/evidence.rs#fn[validate_input]` reaches that through `validate_outline_input`.\n- **Resolve `item` to exactly one node.** `src/inputs.rs#impl[ParsedSource]/fn[resolve]` returns the node index or one of three errors:\n  - an invalid-selector error;\n  - an \"is ambiguous; add a #N disambiguator\" error (it detects this when `item#1` would resolve);\n  - a \"no outline node matches\" error.\n- **Compare `hash` with the node's current structural hash.** `src/evidence.rs#fn[validate_outline_input]` compares `node.hash` (the node's `structural_hash`) with the recorded hash. It reports \"outline input changed: file selector (now lines a-b) no longer has the recorded hash\".\n- **Derive the inclusive line range, including attached comments and attributes, during validation.** `src/inputs.rs#impl[ParsedSource]/fn[node_range]` takes the start and end lines from the outline node. The outline node includes its attached siblings. `validate_outline_input` uses this range in the \"now lines\" message, and `src/index.rs#fn[render_input]` and `InputLocation::resolve` use it for display.\n- **Moving a node, editing other nodes, or editing unhashed comments does not invalidate the input.** The check compares structural hashes, not positions, so none of these changes the hash.\n- **Report a missing file, unsupported language, parse failure, invalid or ambiguous selector, or changed hash.** All are reported as strings pushed to `errors`.\n  - Missing file: `check_project_file` and `read_project_file` report \"cannot open\" or \"cannot read\" errors.\n  - Parse failure: reported as \"cannot parse rust source\".\n  - Unsupported language: every other text file gets the plain-text profile, so no extension is unsupported. A non-UTF-8 file fails in `read_project_file` with \"cannot read\".\n\n**Tests**\n- `tests/evidence_boundaries.rs#fn[outline_inputs_survive_moves_and_unhashed_comments_but_not_edits]` covers most obligations:\n  - Moving nodes, reflowing lines, and editing an unhashed comment keep the inputs valid.\n  - Editing code or a doc comment reports a changed hash with the file, selector, and current range. The expected range for the beta function includes its attached comments.\n  - Editing one node does not invalidate another.\n  - It covers a missing node, an ambiguous selector, an invalid selector, a missing file, and a parse failure.\n- `src/evidence.rs#mod[tests]/fn[collects_missing_orphan_format_false_and_changed_line_errors]` also covers the changed-hash message and the missing-node error.\n- `src/evidence.rs#mod[tests]/fn[selector_anchors_are_covered_by_inputs_selecting_the_node_or_an_ancestor]` asserts a derived range in its reference-coverage error message.\n- The `tests/evidence_boundaries.rs` tests for external and generated files exercise outline-input freshness through `validate_repository`.\n- `src/index.rs#mod[tests]/fn[detail_page_renders_markdown_and_highlighted_input_sections]` tests the display of the range and of a stale hash.\n\n**Other behavior in the `{impl}` code**\n`read_lines` and `outline_inputs_for_lines` also carry `requirements.authoring.source_tools`, and `read_lines` carries `requirements.authoring.no_line_numbers`. The key and hash-format checks are part of the input schema. I found no unspecified behavior.",
+  "rationale": "I found no gap in the code or tests for `requirements.ci.outline_inputs`.\n\n**Implementation**\n- **Parse, resolve, hash.**\n  - `src/evidence.rs#fn[validate_input]` dispatches to `validate_outline_input`, which is reached from it.\n  - That function checks the keys, `file`, `item` and `hash` shapes, then calls `InputSelector::resolve` (`src/inputs.rs#impl[InputSelector]/fn[resolve]`).\n  - `resolve` parses the file through `OutlineCache::parse`, which picks a profile by path and returns `cannot parse <lang> source: …` on a syntax error. It then resolves the selector through `ParsedSource::resolve`.\n  - `validate_outline_input` compares `node.hash` (the node's structural hash) with the recorded hash. It reports `outline input changed: <file> <item> (now lines a-b) no longer has the recorded hash`.\n- **Exactly one node.** `ParsedSource::resolve` reports an invalid selector, an ambiguous selector (a bare selector that does match once `#1` is added), and no matching node as separate errors.\n- **Line range.**\n  - `ParsedSource::node_range` derives the inclusive range from the outline node, which includes attached comments and attributes. The range is computed at validation time and returned in `ResolvedInput.ranges`.\n  - `src/index.rs#fn[render_input]` and `InputLocation::resolve` use those ranges for display.\n  - `outline_inputs_for_lines` and `AssessmentSources::read_lines` build outline inputs from line ranges.\n- **Missing file.** `read_project_file` and `check_project_file` report a file that cannot be opened or read.\n- **Unsupported language.** This case cannot arise in practice, because every non-grammar file falls back to the plain-text profile. The only related failure is a file that cannot be read as UTF-8, which `read_project_file` reports as `cannot read`.\n\n**Tests**\n- `tests/evidence_boundaries.rs#fn[outline_inputs_survive_moves_and_unhashed_comments_but_not_edits]` covers most obligations:\n  - Moving nodes, reflowing a body, inserting a line before an item and editing a citation comment all leave the inputs valid.\n  - Editing code or a doc comment reports \"changed hash\" with the file, selector and current range. The range for the doc-commented function includes its attached doc and citation comments.\n  - An edited plain-text line is no longer found.\n  - The error cases are a missing selector, an ambiguous selector, an invalid selector, a missing file and a parse failure (`cannot parse rust source`).\n- `src/evidence.rs#mod[tests]/fn[collects_missing_orphan_format_false_and_changed_line_errors]` also asserts the changed-hash message on the root node with its range, and the missing-node message.\n- `src/evidence.rs#mod[tests]/fn[selector_anchors_are_covered_by_inputs_selecting_the_node_or_an_ancestor]` covers ranges used for coverage.\n- `tests/outcomes.rs#fn[fixme_does_not_hide_stale_inputs_or_uncovered_references]` covers the stale-input report.\n- `src/authoring/tools.rs#mod[tests]/fn[line_range_reads_record_the_innermost_covering_nodes]` covers the line-range reads and the recorded inputs.\n- The remaining `tests/evidence_boundaries.rs` tests cover outline inputs for files outside the repository root: symlinks, configured external paths and generated inputs.\n\nI saw no unspecified observable behavior in the `{impl}` items.",
   "references": "48f39e89dd065343bdc1a247b9f903fcb5573ed552583335b7585b466857bb79",
   "inputs": [
     {
@@ -160,7 +160,7 @@
     {
       "file": "tests/evidence_boundaries.rs",
       "item": "fn[outline_inputs_survive_moves_and_unhashed_comments_but_not_edits]",
-      "hash": "169f61d6456c59ffb1e0167c16bb956447e0fdfa593682e456db805eb7690199"
+      "hash": "9ae3216cd1f487646179be6964b144a815e61ee3011a021f0610ea78ca2fe0d4"
     },
     {
       "file": "tests/evidence_boundaries.rs",
@@ -175,7 +175,7 @@
     {
       "file": "tests/evidence_boundaries.rs",
       "item": "fn[evidence_rejects_disallowed_ancestors_even_when_symlinks_target_allowed_sources]",
-      "hash": "4bce67c979ce5df2df09d50ba04e201158f7a36f139ad681b3aa57be31c5b6cf"
+      "hash": "d907d992bc14eff1ac8d02791e1dc469026eabd2af25b1550d0fe698ee2a30d5"
     },
     {
       "file": "tests/evidence_boundaries.rs",
@@ -185,12 +185,17 @@
     {
       "file": "tests/outcomes.rs",
       "item": "fn[fixme_does_not_hide_stale_inputs_or_uncovered_references]",
-      "hash": "1573472c9b006092db4f055077c2b7e852439a8d3bf57523ed9d7e599f7eb9ce"
+      "hash": "cc145cc79002908e8ebd6f374842fa3bde1cacfa625001fd46e4926ea7f01459"
     },
     {
       "file": "src/evidence.rs",
       "item": "fn[validate_outline_input]",
       "hash": "0bfab0f3093185b18122d349a70a23b379326bd79611fac1753184bff16d08bb"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[validate_resolved_input]",
+      "hash": "709c631128ce311965ed9c48a959634962d08ce9a66c64705e6eaff7ceb9b0e1"
     },
     {
       "file": "src/inputs.rs",
@@ -199,8 +204,8 @@
     },
     {
       "file": "src/inputs.rs",
-      "item": "impl[ParsedSource]",
-      "hash": "1e8736402977d749ed722b0ca3a943de21dc5d0a8617f735f9f34650bc549907"
+      "item": "impl[ParsedSource]/fn[resolve]",
+      "hash": "c106e10387313183962db02ddf86622667c13e1be885bc44eeba1050a542736e"
     },
     {
       "file": "src/inputs.rs",
@@ -211,6 +216,16 @@
       "file": "src/inputs.rs",
       "item": "fn[read_project_file]",
       "hash": "e41f9a27f04e9f92ef30a0f9364eb43397ec3142bd9947b7c34d0d4ea691ba1d"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "fn[check_project_file]",
+      "hash": "d229a2e14bc49aad09e4bca7ab3bdab6d475f05819973da2477323152e7aa4e5"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "impl[ParsedSource]/fn[nodes_for_range]",
+      "hash": "f7e912b83a6bfedf37bfb1070d2605d97964a8c14beb8fd1138e38455e2fb044"
     }
   ]
 }

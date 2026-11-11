@@ -1,7 +1,7 @@
 {
   "requirement": "A record MUST be changed only if every rewrite a mapping calls for in it\nverifies under {cite}`requirements.refactor.outline_inputs`,\n{cite}`requirements.refactor.definition_inputs`,\n{cite}`requirements.refactor.subject_text`, and\n{cite}`requirements.refactor.reference_digest`; otherwise the whole record MUST\nbe left unchanged and reported with the check that failed. Records that no\nmapping affects MUST be left byte-identical.",
-  "determination": true,
-  "rationale": "I found no gap against `requirements.refactor.whole_record`. I did not reassess the cited sub-requirements' own implementations or tests. I checked only that the subject applies them to the whole record.\n\n**Whole-record gating (the first obligation)**\n- `src/refactor.rs#fn[rewrite_record]` is the root. It computes the updated value and collects every verification failure in `failures` before deciding anything.\n- It returns `Outcome::Changed` only when `failures` is empty. Otherwise it returns `Outcome::Unchanged(failures.join(\"; \"))`. `fn[refactor]` then writes nothing for such a record and reports it as `- {path}: {reason}`.\n- Each of the four checks feeds that single decision:\n  - `outline_inputs` and `definition_inputs`: `rewrite_input` is called for every entry of `inputs`, and any `Err` is pushed into `failures` as `inputs[i]: …`.\n    - The outline branch requires the mapped-back hash to equal the recorded hash.\n    - The requirements and definition branch requires the mapped-back selection to equal the recorded input and the current matches to equal the mapped recorded matches.\n  - `subject_text`: the mapped-back body (`definitions_back`) must equal the recorded `requirement` or `example` field. Otherwise it pushes `\"{field} text of {new} changed\"`, or `\"no current definition\"` when there is no current definition.\n  - `reference_digest`: `States::digests` returns the current digest and the mapped-back digest. The record's `references` is rewritten only if the mapped-back digest equals the recorded one. Otherwise it pushes `\"the reference set of {new} changed\"`.\n- Citation and site records go through `same_citations` and `sites::review_path`, and their inputs use the same gating.\n\n**Unaffected records**\n- `rewrite_record` returns `Outcome::Unaffected` when `changed` is false, and `refactor` never writes those records. Their bytes therefore stay identical.\n\n**Tests**\n- `tests/refactor.rs#fn[a_moved_function_keeps_its_evidence_current]` covers the success path. It asserts that the unaffected `rules.check.json` is byte-identical before and after, and that it is not mentioned in the report.\n- `fn[a_function_edited_while_moving_leaves_its_records_stale]` covers an outline-hash failure. It asserts the specific reason in the report and that the file is unchanged.\n- `fn[a_term_edited_while_moving_leaves_its_definition_input_stale]` covers a definition-input failure. It asserts the reason and that the file is unchanged.\n- `fn[a_requirement_edited_while_moving_keeps_its_old_record]` covers a subject-text failure. It asserts the reason, that the old record is unchanged, and that no new record is created.\n- `fn[a_reference_set_changed_beyond_the_mapping_blocks_every_rewrite]` covers a digest failure where the text and requirements-input rewrites would otherwise have been made. It asserts that nothing is rewritten and that only the digest check is reported.\n- `fn[a_changed_reference_set_is_reported_on_a_record_reading_nothing_moved]` covers a digest failure on a record with no moved node. It asserts the reason and that the file is unchanged.\n\nAll tests carry `{test}` references to `whole_record`, and the failure and unaffected paths are asserted. I found no unspecified extra behavior in the gating logic.",
+  "determination": false,
+  "rationale": "**Verdict: false.** The four named checks are implemented and tested. One extra check in `rewrite_record` is not specified by any requirement the function is marked for, and it has no test.\n\n**Implementation of the named checks**\n\n`src/refactor.rs#fn[rewrite_record]` is the root. It collects `failures` and `changed`, and it returns `Outcome::Unchanged(failures.join(\"; \"))` if any failure was found. `refactor` reports those records as \"left unchanged … stay stale\" and never writes them. A record is changed only if nothing failed, and `Outcome::Unaffected` leaves untouched records alone.\n\n- **`outline_inputs` and `definition_inputs`:**\n  - `src/refactor.rs#fn[rewrite_input]` is reached from `rewrite_record`.\n  - For outline inputs, it compares the mapped-back hash (`outlines_back`) with the recorded hash. A mismatch gives \"no longer has the recorded hash\".\n  - For requirements and definition inputs, it resolves the mapped-back selector against `definitions_back`. The result must equal the recorded input, including the recorded text. For requirements inputs, the current matches must equal the recorded matches with the mapping applied.\n  - Any `Err` from `rewrite_input` goes into `failures`.\n- **`subject_text`:** In the `RecordKind::Definition` branch, the `requirement` or `example` field is rewritten only if `definitions_back` text equals the recorded field. Otherwise it records \"{field} text of {new} changed\" or \"no current definition\".\n- **`reference_digest`:**\n  - `States::digests` computes the current digest and the mapped-back digest.\n  - The `references` field is rewritten only if the mapped-back digest equals the recorded one. Otherwise it records \"the reference set of {new} changed\".\n- **Unaffected records:** these return `Unaffected` and are never written.\n- **Site reviews:** their `requirement` field holds a name, not a body, so `subject_text` does not apply to it.\n\n**Tests**\n\nEach named failure case has a test that asserts the record's bytes are unchanged and that the failing check is reported.\n\n- **Outline hash:** `a_function_edited_while_moving_leaves_its_records_stale`.\n- **Subject text:** `a_requirement_edited_while_moving_keeps_its_old_record`.\n- **Reference set:** `a_reference_set_changed_beyond_the_mapping_blocks_every_rewrite`, and `a_changed_reference_set_is_reported_on_a_record_reading_nothing_moved` for a record that reads nothing moved.\n- **Definition input:** `a_term_edited_while_moving_leaves_its_definition_input_stale`.\n- **Success path and unaffected records:** `a_moved_function_keeps_its_evidence_current` asserts the rewrite, and that `rules.check.json` stays byte-identical.\n\n**Gap: an extra check with no specification and no test**\n\nIn the `RecordKind::Citation` branch, `rewrite_record` calls the local `same_citations`. If the record changed and the rewritten citations differ from the post-state citations, it pushes \"the citations of {} differ from the recorded ones\". That leaves the whole record unchanged.\n\n- **Not specified:** this is a fifth reason to leave a record unchanged. `whole_record` lists only four checks. `rewrite_record` is marked `{impl}` only for `whole_record`, `subject_text`, `record_fields` and `reference_digest`. `record_fields` says nothing about verifying citations, so none of these specifies the check.\n- **Not tested:** no test marked `{test}` for `whole_record`, and nothing under `src/refactor`, exercises this failure.\n\nA reviewer could read this check as the citation-review analogue of `subject_text`, but the requirement's wording does not support that reading.",
   "references": "1c2f6dda9dc7df5fce115d79580c7369eeab01fce035cfe1a635ea30176702dc",
   "inputs": [
     {
@@ -100,7 +100,7 @@
     {
       "file": "tests/refactor.rs",
       "item": "fn[a_reference_set_changed_beyond_the_mapping_blocks_every_rewrite]",
-      "hash": "487eb2783205dbbf2d144c8c44d3f304773a3e84df82bc9a21f82c3ab2ff85e2"
+      "hash": "0afc3b82e5f447f35fc82f3bccad6613357432042bfcb02ab9ca9ca2a29af38c"
     },
     {
       "file": "tests/refactor.rs",
@@ -110,7 +110,7 @@
     {
       "file": "tests/refactor.rs",
       "item": "fn[a_changed_reference_set_is_reported_on_a_record_reading_nothing_moved]",
-      "hash": "3657cd172dace81cc885dfec4e383ec8f76669c379a44d187f430725fb96553b"
+      "hash": "f75fa5584a05afe7aee232656c20a0d3c9f14594a57d154335e639b82583bd05"
     },
     {
       "definition": "requirements.refactor.mapped_back",
@@ -137,6 +137,21 @@
       "file": "src/refactor.rs",
       "item": "impl[States]/fn[digests]",
       "hash": "6d0ee78664ce8df21c398467026def8a6cc0cc6620dbc388621bd549e5e9e603"
+    },
+    {
+      "requirements": "requirements.refactor.record_fields",
+      "matches": [
+        "requirements.refactor.record_fields"
+      ],
+      "text": [
+        ":::{req} record_fields",
+        "For each changed record, `habeas refactor` MUST rewrite every recorded file,",
+        "selector, definition name, definition selection, and match the mappings cover,",
+        "including the `citations`, `requirement`, `file`, and `item` fields of citation",
+        "and site reviews, and MUST record the current text, hash, and reference-set",
+        "digest where it rewrote the corresponding field.",
+        ":::"
+      ]
     }
   ]
 }
