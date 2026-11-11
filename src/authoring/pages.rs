@@ -161,7 +161,13 @@ impl ResultPages {
             Vec::new()
         };
         let whole = listing.render(&values, &indexes, &definitions, None, true);
-        if whole.to_string().len() + NOTE_RESERVE <= PAGE_LIMIT {
+        // Room for the redaction note only when it will be added.
+        let reserve = if super::tools::needs_redaction_note(sources, &whole) {
+            NOTE_RESERVE
+        } else {
+            0
+        };
+        if whole.to_string().len() + reserve <= PAGE_LIMIT {
             return Ok(ToolDelivery {
                 result: whole,
                 inputs: delivered(&listing, owned, definitions),
@@ -173,7 +179,7 @@ impl ResultPages {
             vec![Vec::new(); owned.len()]
         };
         let total = values.len();
-        let pages = paginate(&listing, &values, &accompanying);
+        let pages = paginate(&listing, &values, &accompanying, reserve);
         let tokens: Vec<String> = (1..pages.len()).map(|_| self.token()).collect();
         let mut rendered = Vec::new();
         for (number, range) in pages.iter().enumerate() {
@@ -269,6 +275,7 @@ fn paginate(
     listing: &Listing,
     values: &[&Value],
     accompanying: &[Vec<Value>],
+    reserve: usize,
 ) -> Vec<std::ops::Range<usize>> {
     let total = values.len();
     let longest = json!({
@@ -281,7 +288,7 @@ fn paginate(
         .render(&[], &[], &[], Some(longest), true)
         .to_string()
         .len()
-        + NOTE_RESERVE;
+        + reserve;
     let mut pages = Vec::new();
     let mut start = 0;
     let mut size = overhead;
@@ -352,6 +359,29 @@ mod tests {
         assert_eq!(returned, total);
         assert!(delivered.len() > 1);
         delivered
+    }
+
+    // {test}`requirements.authoring.result_pages`
+    #[test]
+    fn a_result_just_within_the_limit_is_returned_whole() {
+        let root = project();
+        let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        let entries = |length: usize| {
+            (0..4)
+                .map(|index| json!({"path": format!("{index}{}", "x".repeat(length)), "kind": "file"}))
+                .collect::<Vec<_>>()
+        };
+        // Grow the entries until the whole result is a few bytes under the limit.
+        let size = |length: usize| Value::Array(entries(length)).to_string().len();
+        // Each unit of length adds one byte to each of the four entries.
+        let length = 1 + (PAGE_LIMIT - 5 - size(1)) / 4;
+        assert!(size(length) > PAGE_LIMIT - NOTE_RESERVE);
+        let result = ResultPages::default()
+            .deliver(&sources, Listing::array(entries(length)))
+            .unwrap()
+            .result;
+        assert!(result.is_array(), "paged: {}", &result.to_string()[..200]);
+        assert!(result.to_string().len() <= PAGE_LIMIT);
     }
 
     // {test}`requirements.authoring.result_pages`

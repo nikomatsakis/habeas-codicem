@@ -1820,6 +1820,7 @@ mod tests {
 
     // {test}`requirements.authoring.read_denial`
     #[cfg(unix)]
+    // {test}`requirements.authoring.tool_descriptions.special_cases`
     #[tokio::test]
     async fn a_read_through_a_symlink_leaving_the_project_returns_an_error_to_the_model() {
         let project = inputs::tests::project();

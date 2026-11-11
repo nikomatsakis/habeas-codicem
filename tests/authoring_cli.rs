@@ -1107,7 +1107,11 @@ fn bundled_skills_treat_disagreeing_assessments_as_findings() {
         &["When the user agrees to a change to a requirement's text"],
     );
     // The other skills point to it rather than restate it.
-    for name in ["habeas-requirements", "habeas-bootstrap-requirements"] {
+    for name in [
+        "habeas-requirements",
+        "habeas-bootstrap-requirements",
+        "habeas-refactor",
+    ] {
         let text = bundled_skill(name);
         assert!(
             text.contains("\"Disagreeing assessments\" in the habeas-evidence skill"),
@@ -1117,7 +1121,10 @@ fn bundled_skills_treat_disagreeing_assessments_as_findings() {
     }
     // No skill keeps a separate log of requirement changes.
     for name in SKILLS {
-        assert!(!bundled_skill(name).contains("audit log"), "{name} mentions an audit log");
+        assert!(
+            !bundled_skill(name).contains("audit log"),
+            "{name} mentions an audit log"
+        );
     }
 }
 
@@ -2604,6 +2611,15 @@ fn the_refactor_skill_moves_first_then_updates_evidence_with_habeas_refactor() {
             "A rename is not a move",
             "Editing moved code or text in the same step leaves every record that read it stale",
         ],
+    );
+}
+
+// {test}`requirements.references.anchors`
+#[test]
+fn bundled_skills_limit_anchors_to_files_whose_items_cannot_carry_references() {
+    assert_phrases(
+        "habeas-requirements",
+        &["Don't anchor a file whose items can carry a reference themselves"],
     );
 }
 

@@ -66,3 +66,5 @@ Run commands from the project root, the directory with `book.toml` and
   stale when a definition moves out of it or into it: what it matches changed.
 - An invalid mapping, such as one whose new side does not exist or one that
   overlaps another, fails with a usage error before anything changes.
+- When reassessing after a move, if assessments of the same subject disagree,
+  follow "Disagreeing assessments" in the habeas-evidence skill.

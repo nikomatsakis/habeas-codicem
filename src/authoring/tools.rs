@@ -246,14 +246,25 @@ pub(crate) const REDACTION_NOTE: &str = "[REDACTED:<kind>] replaces credential-s
 // {impl}`requirements.authoring.redaction_notice`
 // {impl}`requirements.authoring.tool_descriptions.special_cases`
 fn with_redaction_note(sources: &AssessmentSources, mut delivery: ToolDelivery) -> ToolDelivery {
-    if !delivery.result.to_string().contains("[REDACTED:") {
-        return delivery;
+    if needs_redaction_note(sources, &delivery.result)
+        && let Some(object) = delivery.result.as_object_mut()
+    {
+        object.insert("note".to_owned(), json!(REDACTION_NOTE));
+    }
+    delivery
+}
+
+/// Whether a result contains text the harness redacted.
+// {impl}`requirements.authoring.redaction_notice`
+pub(crate) fn needs_redaction_note(sources: &AssessmentSources, result: &Value) -> bool {
+    if !result.to_string().contains("[REDACTED:") {
+        return false;
     }
     let mut redacted = false;
     // Requirement and definition text carries no file; its lines come from
     // the book's raw declarations.
     let declarations = std::cell::OnceCell::new();
-    marked_lines(&delivery.result, None, &mut |file, line| {
+    marked_lines(result, None, &mut |file, line| {
         let literal = match file {
             Some(file) => {
                 let parsed = sources.outlines.parse(&sources.root, file);
@@ -271,10 +282,7 @@ fn with_redaction_note(sources: &AssessmentSources, mut delivery: ToolDelivery) 
         };
         redacted |= !literal;
     });
-    if redacted && let Some(object) = delivery.result.as_object_mut() {
-        object.insert("note".to_owned(), json!(REDACTION_NOTE));
-    }
-    delivery
+    redacted
 }
 
 /// Calls `visit` with each string in `value` showing the redaction marker,
@@ -1709,6 +1717,7 @@ mod tests {
     // {test}`requirements.authoring.text_search`
     // {test}`requirements.authoring.structural_search`
     // {test}`requirements.authoring.read_denial`
+    // {test}`requirements.authoring.tool_descriptions.special_cases`
     #[test]
     fn generated_evidence_is_excluded_from_reads_search_and_discovery() {
         let root = project();
@@ -2664,6 +2673,7 @@ mod tests {
     // {test}`requirements.authoring.file_discovery`
     // {test}`requirements.authoring.text_search`
     // {test}`requirements.authoring.outline_tool`
+    // {test}`requirements.authoring.tool_descriptions.special_cases`
     #[test]
     fn unpermitted_requests_outside_the_project_are_recoverable_tool_errors() {
         let root = project();
