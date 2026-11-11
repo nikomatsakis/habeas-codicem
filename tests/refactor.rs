@@ -170,6 +170,7 @@ fn move_load(root: &Path, extra: &str) {
 // {test}`requirements.refactor.record_fields`
 // {test}`requirements.refactor.equivalence`
 // {test}`requirements.refactor.whole_record`
+// {test}`requirements.refactor.mappings`
 #[test]
 fn a_moved_function_keeps_its_evidence_current() {
     let temp = project();
@@ -272,6 +273,7 @@ fn a_function_edited_while_moving_leaves_its_records_stale() {
 // {test}`requirements.refactor.subject_text`
 // {test}`requirements.refactor.rationale.names`
 // {test}`requirements.refactor.command`
+// {test}`requirements.refactor.mappings`
 #[test]
 fn a_moved_requirement_renames_its_references_and_evidence() {
     let temp = project();
@@ -363,6 +365,7 @@ fn a_moved_requirement_renames_its_references_and_evidence() {
 // {test}`requirements.refactor.reference_digest`
 // {test}`requirements.refactor.rationale.paths`
 // {test}`requirements.refactor.equivalence`
+// {test}`requirements.refactor.mappings`
 #[test]
 fn a_moved_file_rewrites_anchors_and_paths() {
     let temp = project();
@@ -856,6 +859,7 @@ fn a_moved_term_rewrites_definition_inputs_and_the_texts_using_it() {
 }
 
 // {test}`requirements.refactor.definition_inputs`
+// {test}`requirements.refactor.whole_record`
 #[test]
 fn a_term_edited_while_moving_leaves_its_definition_input_stale() {
     let temp = project();
@@ -942,6 +946,7 @@ fn a_record_failing_before_the_move_fails_the_same_way_after_it() {
 // {test}`requirements.refactor.record_fields`
 // {test}`requirements.refactor.definition_inputs`
 // {test}`requirements.refactor.equivalence`
+// {test}`requirements.refactor.mappings`
 #[test]
 fn a_moved_chapter_rewrites_glob_selections_and_their_matches() {
     let temp = project();

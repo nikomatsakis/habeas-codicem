@@ -1098,6 +1098,7 @@ fn prune(root: &Path, path: &Path) {
 // {impl}`requirements.refactor.dry_run`
 // {impl}`requirements.refactor.record_files`
 // {impl}`requirements.refactor.equivalence`
+// {impl}`requirements.refactor.rationale.untouched`
 pub fn refactor(root: &Path, values: &[String], dry_run: bool) -> Result<String, RefactorError> {
     let root = fs::canonicalize(root)?;
     let records = load_records(&root)?;
