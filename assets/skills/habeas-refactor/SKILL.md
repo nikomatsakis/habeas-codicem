@@ -1,6 +1,6 @@
 ---
 name: habeas-refactor
-description: Use when a change moves code, tests, or requirements in a Habeas project to another file, chapter, or outline node, such as moving a function to another module, renaming or splitting a file, splitting or merging modules or chapters, or moving a requirement to another chapter, so that evidence whose content is unchanged is not invalidated. Covers making the move and running `habeas refactor` to update evidence, references, and anchors. To change what code or requirements say, use habeas-requirements; to reassess evidence the move leaves stale, use habeas-evidence; to derive an initial requirement set for an existing codebase, use habeas-bootstrap-requirements.
+description: Use when a change moves code, tests, or requirements in a Habeas project to another file, chapter, or outline node, such as moving a function to another module, renaming or splitting a file, splitting or merging modules or chapters, or moving or renaming a requirement, so that evidence whose content is unchanged is not invalidated. Covers making the move and running `habeas refactor` to update evidence, references, and anchors. Not for changing what code or requirements say; use habeas-requirements.
 ---
 
 # Habeas refactor
@@ -22,8 +22,9 @@ Run commands from the project root, the directory with `book.toml` and
       `{impl}`, `{test}`, `{cite}`, `{fixme}`, and `{term}` references to a
       moved definition, and `:impl:` and `:test:` anchors to a moved file,
       as they are; the command rewrites them.
-- [ ] 2. `git add` the new files. Reference discovery reads only files in the
-      Git index.
+- [ ] 2. Record the move in the Git index: `git mv` for a moved file, or
+      `git add -A` on both the old and new paths. Reference discovery reads
+      only files in the Git index, so a stale old path still counts.
 - [ ] 3. `habeas refactor --dry-run` with one `--map <old>=<new>` for every
       moved file or directory, node, and definition name:
       - a file or directory: `--map src/config.rs=src/settings.rs`, which also
@@ -39,7 +40,10 @@ Run commands from the project root, the directory with `book.toml` and
 - [ ] 4. Review the report:
       - "Would rewrite" lists the sources whose references or anchors change;
       - "Would change" lists the records it updates, with each code span in
-        their rationales that still mentions an old path, for you to check;
+        their rationales that still mentions an old path. The command leaves
+        rationale prose alone; show these spans to the user, and if they ask
+        for a record to be reassessed, run `habeas author --force <full-name>`
+        after step 7;
       - "Would leave ... unchanged" lists records a mapping affects that fail a
         check, with the reason. An unexpected one usually means the moved text
         changed, or a mapping is missing; fix that and run the dry run again.
@@ -48,11 +52,12 @@ Run commands from the project root, the directory with `book.toml` and
       that were stale before, should need attention.
 - [ ] 7. Commit the move, the rewritten references, and the `evidence/` changes
       together, before any change to behavior or text.
-- [ ] 8. Reassess what remains stale with `habeas author`, following the
-      habeas-evidence workflow, then
-      make any behavior or text changes as separate commits.
+- [ ] 8. Next, reassess what remains stale with `habeas author --all`,
+      following the habeas-evidence skill, and if assessments disagree, its
+      "Disagreeing assessments"; then make any behavior or text changes as separate commits under
+      the habeas-requirements skill.
 
-## Rules
+## Gotchas
 
 - Never edit evidence files by hand to follow a move; `habeas refactor` updates
   them only where it can check that nothing reviewed changed.
@@ -64,7 +69,3 @@ Run commands from the project root, the directory with `book.toml` and
   stale. Move first, run the command, commit, then edit.
 - A requirements input that selects a glob, such as `requirements.cli.*`, stays
   stale when a definition moves out of it or into it: what it matches changed.
-- An invalid mapping, such as one whose new side does not exist or one that
-  overlaps another, fails with a usage error before anything changes.
-- When reassessing after a move, if assessments of the same subject disagree,
-  follow "Disagreeing assessments" in the habeas-evidence skill.

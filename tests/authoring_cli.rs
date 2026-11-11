@@ -967,169 +967,6 @@ fn author_rejects_unknown_subjects_and_conflicting_targets() {
     );
 }
 
-// {test}`requirements.authoring.batch`
-#[test]
-fn bundled_skills_direct_the_agent_to_the_authoring_harness() {
-    // habeas-evidence is the home of the authoring workflow.
-    assert_phrases(
-        "habeas-evidence",
-        &[
-            "`habeas author --all` assesses every definition whose evidence is missing, stale, or invalid",
-            "Never write or edit evidence JSON, determinations, rationales, or inputs yourself, and never hand that to another agent",
-            "Fix the source, tests, references, or requirement text",
-        ],
-    );
-    // The other skills run the command and defer to habeas-evidence.
-    assert_phrases(
-        "habeas-requirements",
-        &[
-            "`habeas author` has a model, the reviewer, assess each one",
-            "Follow the habeas-evidence workflow to author evidence and fix the gaps it reports",
-            "Never write evidence JSON, rationales, determinations, or inputs yourself, and never ask another agent to",
-        ],
-    );
-    assert_phrases(
-        "habeas-bootstrap-requirements",
-        &[
-            "`habeas author --all`",
-            "follow the habeas-evidence workflow for this area's definitions",
-            "Never write evidence yourself or ask another agent to",
-        ],
-    );
-}
-
-// {test}`requirements.cli.internal_detail_guidance`
-// {test}`requirements.cli.skill_structure`
-// {test}`requirements.cli.behavior_review_guidance`
-#[test]
-fn bundled_skills_direct_the_reference_procedure_and_report_items_without_one() {
-    // habeas-requirements is the home of the reference procedure; its steps
-    // come in order.
-    assert_in_order(
-        "habeas-requirements",
-        &[
-            "a type does when the requirement constrains its fields, variants, serialized form, or validation",
-            "Choose each item's references by this procedure",
-            "designed to verify the requirement or example, use `{test}`",
-            "if the item is a root of the requirement's implementation, use `{impl}`",
-            "re-checked or kept in sync when the requirement or example changes, use `{cite}`",
-            "cite the built-in `habeas:util` when the item serves other code and carries out no requirement itself",
-            "such as a library calling a trait implementation it requires",
-            "An item that does neither needs a requirement or is not needed; report it to the user instead of adding a reference",
-            "If no code reaches the item, it is dead code: report it to the user instead of deleting it unasked",
-            "Otherwise it carries out behavior that needs a requirement: report it with a proposed requirement for that behavior",
-        ],
-    );
-    assert_phrases(
-        "habeas-requirements",
-        &[
-            "propose a requirement stating the invariant and implement it with `{impl}`",
-            "Don't propose grouping requirements that state no checkable obligation",
-            "Code must not implement observable behavior that no requirement specifies",
-            "There is no waiver",
-        ],
-    );
-    // The other skills refer to the procedure rather than restate it.
-    assert_phrases(
-        "habeas-evidence",
-        &[
-            "references by the procedure in the habeas-requirements skill",
-            "or `habeas:util` for a helper that serves its callers",
-            "Report an item that does neither to the user: it needs a requirement or is not needed",
-        ],
-    );
-    assert_phrases(
-        "habeas-bootstrap-requirements",
-        &[
-            "references by the procedure in the habeas-requirements skill",
-            "write a requirement for the invariant they check",
-        ],
-    );
-    for name in ["habeas-evidence", "habeas-bootstrap-requirements"] {
-        assert!(
-            !bundled_skill(name).contains("fields, variants, serialized form, or validation"),
-            "{name} restates the reference procedure"
-        );
-    }
-    for name in SKILLS {
-        let text = bundled_skill(name);
-        for grouping in [
-            "internal.config_parsing",
-            "catch-all",
-            "internal-detail requirement",
-        ] {
-            assert!(!text.contains(grouping), "{name} suggests {grouping:?}");
-        }
-        for waiver in ["may waive", "can waive", "waiver applies", "is exempt"] {
-            assert!(
-                !text.to_lowercase().contains(waiver),
-                "{name} offers a waiver"
-            );
-        }
-    }
-}
-
-// {test}`requirements.cli.flip_guidance`
-// {test}`requirements.cli.skill_structure`
-#[test]
-fn bundled_skills_treat_disagreeing_assessments_as_findings() {
-    const GOAL: &str = "The goal is that independent assessments of the same subject reach the same determination, because the requirement, code, and tests leave no gap a careful reviewer could find and no reading a careful reviewer could take differently";
-    // habeas-evidence is the home: the goal leads and the procedure follows.
-    assert_in_order(
-        "habeas-evidence",
-        &[
-            "## Disagreeing assessments",
-            GOAL,
-            "Assessments that disagree are findings against that goal",
-            "Read both assessments",
-            "Decide whether one assessment found a real gap or the requirement text admits more than one reading",
-            "Fix the source or tests, or tighten the requirement text, reviewing substantive changes with the user",
-            "Don't re-run for a different result",
-            "explain why in the commit message as the Rules say",
-        ],
-    );
-    assert_phrases(
-        "habeas-evidence",
-        &[
-            "give the reason and the rationale that prompted it in the message of the commit that makes the change",
-            "Describe the change relative to the prior commit, not the drafts that led to it: document the destination, not the journey",
-        ],
-    );
-    // A change to agreed text is reviewed with the user, then explained in
-    // its commit message.
-    assert_in_order(
-        "habeas-requirements",
-        &[
-            "Review every other change to agreed text with the user first too, even a rewording for precision",
-            "then explain why in the commit message as the habeas-evidence Rules say",
-        ],
-    );
-    assert_phrases(
-        "habeas-evidence",
-        &["When the user agrees to a change to a requirement's text"],
-    );
-    // The other skills point to it rather than restate it.
-    for name in [
-        "habeas-requirements",
-        "habeas-bootstrap-requirements",
-        "habeas-refactor",
-    ] {
-        let text = bundled_skill(name);
-        assert!(
-            text.contains("\"Disagreeing assessments\" in the habeas-evidence skill"),
-            "{name} does not refer to habeas-evidence"
-        );
-        assert!(!text.contains(GOAL), "{name} restates the goal");
-    }
-    // No skill keeps a separate log of requirement changes.
-    for name in SKILLS {
-        assert!(
-            !bundled_skill(name).contains("audit log"),
-            "{name} mentions an audit log"
-        );
-    }
-}
-
 // {test}`requirements.authoring.usage_storage`
 #[cfg(unix)]
 #[test]
@@ -2516,470 +2353,1473 @@ fn unresolvable_mandatory_inputs_fail_before_any_model_request() {
     );
 }
 
-// {test}`requirements.cli.distributed_guidance`
-#[test]
-fn bundled_skills_guide_distributed_requirements_with_do_and_dont_lists() {
-    let reference =
-        include_str!("../assets/skills/habeas-requirements/references/distributed-requirements.md");
-    let list = |heading: &str| {
-        let (_, rest) = reference.split_once(heading).unwrap();
-        let list = rest.split("\n## ").next().unwrap();
-        list.split_whitespace().collect::<Vec<_>>().join(" ")
-    };
-    let (dos, donts) = (list("\n## Do\n"), list("\n## Don't\n"));
-    for phrase in [
-        "Make a requirement distributed only when its obligation applies on its own at each site; when particular code carries out the requirement as a whole, use `{impl}` there.",
-        "Separate obligations each site upholds from obligations particular code carries out, and mark that code `{impl}`.",
-        "check that the site queries select every place the obligation applies and no others",
-        "Write a violation query, with `within` naming the site query, for every kind of construct that could break the obligation",
-        "Give every query `match` and `no_match` snippets that test its conditions the way you would test code",
-        "Describe sites exactly as the site queries select them. When a query relies on a convention, such as how a variable is named, state the convention as an obligation",
-        "Present the queries and snippets with the requirement text when reviewing it with the user.",
-        "Run `habeas author --all` to author the site reviews.",
-    ] {
-        assert!(dos.contains(phrase), "Do list lacks {phrase:?}");
-    }
-    for phrase in [
-        "Don't describe sites more broadly than the queries select",
-        "Don't state a per-site obligation that a reviewer cannot check from the site and the helpers it calls",
-        "Don't reference the distributed requirement from a site just because it is a site; sites need none.",
-        "Don't re-run a false site review for a different result; fix the site, or tighten the queries or the text",
-    ] {
-        assert!(donts.contains(phrase), "Don't list lacks {phrase:?}");
-    }
-    // The reference explains distributed requirements: what they are, the
-    // two query kinds, and each query's keys.
-    assert_in_order(
-        "habeas-requirements",
-        &[
-            "# Distributed requirements",
-            "A distributed requirement instead declares queries that find its sites, and Habeas reviews each site separately",
-            "## Queries",
-            "`:::{sites} <name>` selects the places the obligation applies",
-            "`:::{violations} <name>` selects constructs likely to break it",
-            "Each needs `within: <site query>`",
-            "Each body has these keys: `language`",
-            "`within`, required for violation queries; and `match` and `no_match` snippet lists",
-        ],
-    );
-    assert_phrases(
-        "habeas-requirements",
-        &["`habeas author --all` authors a site review for each site"],
-    );
-    assert_phrases(
-        "habeas-evidence",
-        &[
-            "1. If it does apply, fix the code at the site.",
-            "2. If the site should not be covered, narrow the site query or tighten the text describing sites; if the obligation's text admits a reading under which the site fails, tighten that text",
-            "Don't re-run a false site review for a different result.",
-        ],
-    );
-    assert_phrases(
-        "habeas-bootstrap-requirements",
-        &["propose a distributed requirement instead of marking each site `{impl}`"],
-    );
-}
-
-// {test}`requirements.cli.refactor_skill`
-// {test}`requirements.cli.refactor_skill.workflow`
-// {test}`requirements.cli.refactor_skill.limits`
-#[test]
-fn the_refactor_skill_moves_first_then_updates_evidence_with_habeas_refactor() {
-    let description = bundled_skill("habeas-refactor");
-    assert!(description.contains(
-        "Use when a change moves code, tests, or requirements in a Habeas project to another file, chapter, or outline node"
-    ));
-    assert!(description.contains("splitting or merging modules or chapters"));
-    assert!(description.contains("so that evidence whose content is unchanged is not invalidated"));
-    assert_in_order(
-        "habeas-refactor",
-        &[
-            "Make the move with your own edits",
-            "Change nothing else in this step",
-            "`habeas refactor --dry-run` with one `--map <old>=<new>` for every moved file or directory, node, and definition name",
-            "Review the report",
-            "lists the records it updates, with each code span in their rationales that still mentions an old path, for you to check",
-            "lists records a mapping affects that fail a check",
-            "Run the same command without `--dry-run`",
-            "`habeas status`. Only the records the report left unchanged",
-            "Commit the move, the rewritten references, and the `evidence/` changes together, before any change to behavior or text",
-            "Reassess what remains stale with `habeas author`, following the habeas-evidence workflow",
-        ],
-    );
-    assert_phrases(
-        "habeas-refactor",
-        &[
-            "Never edit evidence files by hand to follow a move",
-            "A rename is not a move",
-            "Editing moved code or text in the same step leaves every record that read it stale",
-        ],
-    );
-}
-
-// {test}`requirements.references.anchors`
-#[test]
-fn bundled_skills_limit_anchors_to_files_whose_items_cannot_carry_references() {
-    assert_phrases(
-        "habeas-requirements",
-        &["Don't anchor a file whose items can carry a reference themselves"],
-    );
-}
-
-// {test}`requirements.cli.skill_structure`
-// {test}`requirements.cli.skill_conventions`
-#[test]
-fn bundled_skills_open_with_a_workflow_and_name_their_neighbors() {
-    let skills = [
-        (
-            "habeas-requirements",
-            include_str!("../assets/skills/habeas-requirements/SKILL.md"),
-        ),
-        (
-            "habeas-evidence",
-            include_str!("../assets/skills/habeas-evidence/SKILL.md"),
-        ),
-        (
-            "habeas-bootstrap-requirements",
-            include_str!("../assets/skills/habeas-bootstrap-requirements/SKILL.md"),
-        ),
-        (
-            "habeas-refactor",
-            include_str!("../assets/skills/habeas-refactor/SKILL.md"),
-        ),
-    ];
-    for (name, text) in skills {
-        let description = text
-            .lines()
-            .find_map(|line| line.strip_prefix("description: "))
-            .unwrap_or_else(|| panic!("{name} has no description"));
-        assert!(
-            description.starts_with("Use when") || description.starts_with("Use before"),
-            "{name}: {description}"
-        );
-        for (other, _) in skills.iter().filter(|(other, _)| *other != name) {
-            assert!(description.contains(other), "{name} does not name {other}");
-        }
-        // The first section after the title is the workflow, as ordered steps.
-        let first = text.lines().find(|line| line.starts_with("## ")).unwrap();
-        assert_eq!(first, "## Workflow", "{name}");
-        let workflow = text.split("## Workflow\n").nth(1).unwrap();
-        let workflow = workflow.split("\n## ").next().unwrap();
-        let first_step = workflow
-            .find("- [ ] 1. ")
-            .unwrap_or_else(|| panic!("{name}"));
-        let second_step = workflow
-            .find("- [ ] 2. ")
-            .unwrap_or_else(|| panic!("{name}"));
-        assert!(first_step < second_step, "{name}");
-    }
-
-    // Each topic's home holds its section.
-    let [
-        (_, requirements),
-        (_, evidence),
-        (_, bootstrap),
-        (_, refactor),
-    ] = skills;
-    assert!(refactor.contains("habeas refactor --dry-run"));
-    for heading in [
-        "## Writing requirements",
-        "## Choosing references",
-        "## What the review checks",
-    ] {
-        assert!(requirements.contains(heading), "{heading}");
-    }
-    for heading in [
-        "### FIXME",
-        "### Citation reviews",
-        "### Site reviews",
-        "## Disagreeing assessments",
-    ] {
-        assert!(evidence.contains(heading), "{heading}");
-    }
-    assert!(bootstrap.contains("## Proposing requirements"));
-    // habeas-evidence is the home of fixing findings, and habeas-refactor of
-    // moves: its workflow and mapping forms, which the others do not restate.
-    assert!(evidence.contains("## Fixing findings"));
-    for text in [
-        "Make the move with your own edits",
-        "habeas refactor --dry-run",
-        "`--map 'src/config.rs#fn[load]=src/config/load.rs#fn[load]'`",
-        "A rename is not a move",
-    ] {
-        assert!(refactor.contains(text), "habeas-refactor: {text}");
-    }
-    for (name, text) in [
-        ("habeas-requirements", requirements),
-        ("habeas-evidence", evidence),
-        ("habeas-bootstrap-requirements", bootstrap),
-    ] {
-        assert!(
-            !text.contains("--dry-run"),
-            "{name} restates the refactor workflow"
-        );
-        assert!(
-            !text.contains("--map "),
-            "{name} restates the refactor mappings"
-        );
-    }
-    // Moving a requirement defers to habeas-refactor.
-    assert!(requirements.contains("follow the habeas-refactor skill"));
-
-    // Each reference file is linked with a statement of when to read it.
-    let collapsed = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
-    for (skill, link) in [
-        (
-            requirements,
-            "read [references/distributed-requirements.md](references/distributed-requirements.md) before drafting",
-        ),
-        (
-            requirements,
-            "read [references/syntax-details.md](references/syntax-details.md)",
-        ),
-        (
-            evidence,
-            "If authoring fails on configuration, credentials, throttling, or a denied read, read [references/authoring-failures.md](references/authoring-failures.md)",
-        ),
-    ] {
-        assert!(collapsed(skill).contains(link), "{link}");
-    }
-}
-
 /// The bundled skills, by name.
-// {test}`requirements.cli.behavior_review_guidance`
-const SKILLS: [&str; 4] = [
+// {cite}`habeas:util`
+const SKILLS: [&str; 5] = [
+    "habeas",
     "habeas-requirements",
     "habeas-evidence",
     "habeas-bootstrap-requirements",
     "habeas-refactor",
 ];
 
-/// A bundled skill together with the reference files it links to, with line
-/// wrapping collapsed so phrases can be matched across lines.
+/// The files of a bundled skill, by path relative to its directory: its
+/// `SKILL.md` first, then every file under its `references/` directory.
 // {cite}`habeas:util`
-fn bundled_skill(name: &str) -> String {
-    let files: &[&str] = match name {
-        "habeas-requirements" => &[
-            include_str!("../assets/skills/habeas-requirements/SKILL.md"),
-            include_str!(
-                "../assets/skills/habeas-requirements/references/distributed-requirements.md"
+fn skill_files(name: &str) -> &'static [(&'static str, &'static str)] {
+    match name {
+        "habeas" => &[
+            ("SKILL.md", include_str!("../assets/skills/habeas/SKILL.md")),
+            (
+                "references/distributed-requirements.md",
+                include_str!("../assets/skills/habeas/references/distributed-requirements.md"),
             ),
-            include_str!("../assets/skills/habeas-requirements/references/syntax-details.md"),
+            (
+                "references/syntax-details.md",
+                include_str!("../assets/skills/habeas/references/syntax-details.md"),
+            ),
+        ],
+        "habeas-requirements" => &[
+            (
+                "SKILL.md",
+                include_str!("../assets/skills/habeas-requirements/SKILL.md"),
+            ),
+            (
+                "references/review-prompt.md",
+                include_str!("../assets/skills/habeas-requirements/references/review-prompt.md"),
+            ),
         ],
         "habeas-evidence" => &[
-            include_str!("../assets/skills/habeas-evidence/SKILL.md"),
-            include_str!("../assets/skills/habeas-evidence/references/authoring-failures.md"),
+            (
+                "SKILL.md",
+                include_str!("../assets/skills/habeas-evidence/SKILL.md"),
+            ),
+            (
+                "references/authoring-failures.md",
+                include_str!("../assets/skills/habeas-evidence/references/authoring-failures.md"),
+            ),
+            (
+                "references/fixme.md",
+                include_str!("../assets/skills/habeas-evidence/references/fixme.md"),
+            ),
+            (
+                "references/reviews.md",
+                include_str!("../assets/skills/habeas-evidence/references/reviews.md"),
+            ),
         ],
-        "habeas-bootstrap-requirements" => &[include_str!(
-            "../assets/skills/habeas-bootstrap-requirements/SKILL.md"
+        "habeas-bootstrap-requirements" => &[(
+            "SKILL.md",
+            include_str!("../assets/skills/habeas-bootstrap-requirements/SKILL.md"),
         )],
-        "habeas-refactor" => &[include_str!("../assets/skills/habeas-refactor/SKILL.md")],
+        "habeas-refactor" => &[(
+            "SKILL.md",
+            include_str!("../assets/skills/habeas-refactor/SKILL.md"),
+        )],
         _ => panic!("unknown skill {name}"),
-    };
-    files
-        .iter()
-        .flat_map(|file| file.split_whitespace())
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-// {cite}`habeas:util`
-fn assert_phrases(name: &str, phrases: &[&str]) {
-    let text = bundled_skill(name);
-    for phrase in phrases {
-        assert!(text.contains(phrase), "{name} lacks {phrase:?}");
     }
 }
 
-/// Asserts that the skill contains each phrase, each after the previous one.
+/// Text with line wrapping collapsed, so phrases can be matched across lines.
 // {cite}`habeas:util`
-fn assert_in_order(name: &str, phrases: &[&str]) {
-    let text = bundled_skill(name);
+fn collapse(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// A bundled skill's raw `SKILL.md`.
+// {cite}`habeas:util`
+fn skill_md(name: &str) -> &'static str {
+    skill_files(name)[0].1
+}
+
+/// One file of a bundled skill, raw.
+// {cite}`habeas:util`
+fn skill_file(name: &str, path: &str) -> &'static str {
+    skill_files(name)
+        .iter()
+        .find(|(file, _)| *file == path)
+        .unwrap_or_else(|| panic!("{name} has no {path}"))
+        .1
+}
+
+/// A bundled skill: its `SKILL.md` together with its reference files,
+/// collapsed.
+// {cite}`habeas:util`
+fn bundled_skill(name: &str) -> String {
+    let files = skill_files(name)
+        .iter()
+        .map(|(_, text)| *text)
+        .collect::<Vec<_>>();
+    collapse(&files.join("\n"))
+}
+
+/// A bundled skill's front-matter description.
+// {cite}`habeas:util`
+fn description(name: &str) -> &'static str {
+    skill_md(name)
+        .lines()
+        .find_map(|line| line.strip_prefix("description: "))
+        .unwrap_or_else(|| panic!("{name} has no description"))
+}
+
+/// The collapsed body of a Markdown section, from the line after `heading` to
+/// the next heading of the same or a higher level outside a code fence.
+// {cite}`habeas:util`
+fn section(raw: &str, heading: &str) -> String {
+    let level = heading.chars().take_while(|c| *c == '#').count();
+    let mut lines = raw.lines().skip_while(|line| *line != heading);
+    assert!(lines.next().is_some(), "no section {heading:?}");
+    let mut fence: Option<usize> = None;
+    let mut body = Vec::new();
+    for line in lines {
+        let ticks = line.trim_start().chars().take_while(|c| *c == '`').count();
+        match fence {
+            Some(open) if ticks >= open && line.trim().chars().all(|c| c == '`') => fence = None,
+            Some(_) => {}
+            None if ticks >= 3 => fence = Some(ticks),
+            None => {
+                let hashes = line.chars().take_while(|c| *c == '#').count();
+                if hashes > 0 && hashes <= level && line[hashes..].starts_with(' ') {
+                    break;
+                }
+            }
+        }
+        body.push(line);
+    }
+    collapse(&body.join("\n"))
+}
+
+/// The numbered steps of a bundled skill's "Workflow" section, each with its
+/// number and collapsed text, including its indented continuation lines.
+// {cite}`habeas:util`
+fn workflow_steps(name: &str) -> Vec<(u32, String)> {
+    let (_, rest) = skill_md(name)
+        .split_once("\n## Workflow\n")
+        .unwrap_or_else(|| panic!("{name} has no workflow"));
+    let mut steps: Vec<(u32, Vec<&str>)> = Vec::new();
+    let mut open = false;
+    for line in rest.lines() {
+        if line.starts_with("## ") {
+            break;
+        }
+        let numbered = line
+            .strip_prefix("- [ ] ")
+            .and_then(|step| step.split_once(". "))
+            .and_then(|(number, text)| Some((number.parse().ok()?, text)));
+        if let Some((number, text)) = numbered {
+            steps.push((number, vec![text]));
+            open = true;
+            continue;
+        }
+        if !line.is_empty() && !line.starts_with(' ') {
+            open = false;
+        }
+        if open {
+            steps.last_mut().unwrap().1.push(line);
+        }
+    }
+    steps
+        .into_iter()
+        .map(|(number, lines)| (number, collapse(&lines.join("\n"))))
+        .collect()
+}
+
+/// The text of one numbered workflow step.
+// {cite}`habeas:util`
+fn step(name: &str, number: u32) -> String {
+    workflow_steps(name)
+        .into_iter()
+        .find(|(n, _)| *n == number)
+        .unwrap_or_else(|| panic!("{name} has no step {number}"))
+        .1
+}
+
+/// The number of the workflow step that contains `phrase`.
+// {cite}`habeas:util`
+fn step_of(name: &str, phrase: &str) -> u32 {
+    workflow_steps(name)
+        .into_iter()
+        .find(|(_, text)| text.contains(phrase))
+        .unwrap_or_else(|| panic!("no step of {name} contains {phrase:?}"))
+        .0
+}
+
+// {cite}`habeas:util`
+fn assert_text(label: &str, text: &str, phrases: &[&str]) {
+    for phrase in phrases {
+        assert!(text.contains(phrase), "{label} lacks {phrase:?}");
+    }
+}
+
+/// Asserts that the text contains each phrase, each after the previous one.
+// {cite}`habeas:util`
+fn assert_text_in_order(label: &str, text: &str, phrases: &[&str]) {
     let mut from = 0;
     for phrase in phrases {
         let at = text[from..]
             .find(phrase)
-            .unwrap_or_else(|| panic!("{name} lacks {phrase:?} after byte {from}"));
+            .unwrap_or_else(|| panic!("{label} lacks {phrase:?} after byte {from}"));
         from += at + phrase.len();
     }
 }
 
-// {test}`requirements.cli.behavior_review_guidance`
-#[test]
-fn bundled_skills_direct_behavior_review_against_requirements() {
-    // habeas-requirements is the home of the review criteria: every observable
-    // branch, and no unspecified behavior.
-    assert_phrases(
-        "habeas-requirements",
-        &[
-            "Every end-user-observable result, including errors and input handling, must follow from some agreed requirement",
-            "check that the code adds no observable behavior beyond the requirements",
+// {cite}`habeas:util`
+fn assert_phrases(name: &str, phrases: &[&str]) {
+    assert_text(name, &bundled_skill(name), phrases);
+}
+
+// {cite}`habeas:util`
+fn assert_in_order(name: &str, phrases: &[&str]) {
+    assert_text_in_order(name, &bundled_skill(name), phrases);
+}
+
+/// Phrases that state part of a topic in full, by the skill that is its home.
+// {cite}`habeas:util`
+fn home_markers(home: &str) -> &'static [&'static str] {
+    match home {
+        "habeas" => &[
+            "| Task | Skill |",
+            "A selection is a full name or a glob in which `*` matches any characters",
+            "Its full name is the chapter path relative to that directory",
+            "Fence a reference to attach commentary",
+            "`:::{violations} <name>` selects constructs likely to break it",
+            "Each site-query match makes a site",
+            "omit a leading `reqs/` and a trailing `/index` or `/README`",
+            "silently defines nothing",
+            "needs a longer outer fence such as `::::{req}`",
         ],
-    );
-    assert_phrases(
-        "habeas-bootstrap-requirements",
-        &[
-            "distinct observable branches",
-            "every observable branch has been reviewed",
-        ],
-    );
-    // The requirement and example review criteria, including test adequacy and
-    // justified absence of tests.
-    assert_phrases(
-        "habeas-requirements",
-        &[
+        "habeas-requirements" => &[
+            "Write drafts from the request straight into the chapter",
+            "For each group, start a read-only subagent",
+            "**Gate:** no implementation or test code",
+            "A *root* is an item that carries out part of a requirement",
             "## What the review checks",
-            "does not implement completely and exactly as stated",
-            "code that carries out part of the requirement but that the reviewer cannot reach from its `{impl}` items and found only by searching, including code that only cites it",
-            "observable behavior in `{impl}` code that no requirement implemented there specifies",
-            "obligations, boundaries, and failure cases no test runs and asserts",
-            "A test may be omitted only for code with no logic of its own",
-            "An example's review checks that tests' setup and assertions cover its scenario and each expected outcome",
+            "# Requirement group review",
+            "**Compound:** a requirement that lists several independent forms",
+        ],
+        "habeas-evidence" => &[
+            "`habeas author --all` assesses every definition whose evidence is missing, stale, or invalid",
+            "## Fixing findings",
+            "An item is covered by its own reference or by a current record or review that read it",
+            "A FIXME judgment, such as",
+            "gets a citation review, which checks that each citation is sensible",
+            "A site the requirement does not apply to is judged true",
+            "The goal is that independent assessments of the same subject reach the same determination",
+            "describing the change relative to the prior commit rather than the drafts that led to it",
+        ],
+        "habeas-bootstrap-requirements" => &[
+            "every first-party runnable test or test case",
+            "## Proposing requirements",
+            "Independent recount:",
+        ],
+        "habeas-refactor" => &[
+            "habeas refactor --dry-run",
+            "`--map 'src/config.rs#fn[load]=src/config/load.rs#fn[load]'`",
+            "\"Would leave ... unchanged\" lists records a mapping affects that fail a check",
+        ],
+        _ => panic!("unknown skill {home}"),
+    }
+}
+
+/// Asserts that `home` states each of its markers and no other skill does.
+// {cite}`habeas:util`
+fn assert_home(home: &str) {
+    assert_phrases(home, home_markers(home));
+    for other in SKILLS.into_iter().filter(|other| *other != home) {
+        let text = bundled_skill(other);
+        for marker in home_markers(home) {
+            assert!(
+                !text.contains(marker),
+                "{other} restates {home}'s {marker:?}"
+            );
+        }
+    }
+}
+
+// {test}`requirements.cli.skill_structure`
+#[test]
+fn bundled_skills_are_five_skill_directories_each_home_to_its_topics() {
+    // Symposium publishes every skill under assets/skills.
+    let manifest: toml::Value =
+        toml::from_str(include_str!("../Cargo.toml")).expect("Cargo.toml parses");
+    let published = manifest["package"]["metadata"]["symposium"]["skills"]
+        .as_array()
+        .unwrap();
+    assert!(
+        published
+            .iter()
+            .any(|skill| skill["source"]["path"].as_str() == Some("assets/skills")),
+        "{published:?}"
+    );
+    // A skill is its SKILL.md and the files under its references/ directory;
+    // the files these tests read are exactly those.
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/skills");
+    let mut dirs = fs::read_dir(&root)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect::<Vec<_>>();
+    dirs.sort();
+    let mut expected = SKILLS.map(String::from).to_vec();
+    expected.sort();
+    assert_eq!(dirs, expected);
+    for name in SKILLS {
+        assert!(
+            skill_md(name).starts_with(&format!("---\nname: {name}\ndescription: ")),
+            "{name} front matter"
+        );
+        let mut on_disk = vec!["SKILL.md".to_owned()];
+        if let Ok(entries) = fs::read_dir(root.join(name).join("references")) {
+            for entry in entries {
+                let file = entry.unwrap().file_name().into_string().unwrap();
+                on_disk.push(format!("references/{file}"));
+            }
+        }
+        on_disk.sort();
+        let mut listed = skill_files(name)
+            .iter()
+            .map(|(path, _)| path.to_string())
+            .collect::<Vec<_>>();
+        listed.sort();
+        assert_eq!(on_disk, listed, "{name}");
+    }
+    // Each topic is stated in full in exactly one skill.
+    for home in SKILLS {
+        assert_home(home);
+    }
+}
+
+// {test}`requirements.cli.skill_structure.refer`
+#[test]
+fn bundled_skills_refer_to_a_topic_home_instead_of_restating_it() {
+    for (name, referrals) in [
+        (
+            "habeas",
+            &[
+                "the habeas-requirements skill says which to use",
+                "the habeas-evidence skill's `references/fixme.md`",
+                "(habeas-evidence, \"Rules\")",
+            ][..],
+        ),
+        (
+            "habeas-requirements",
+            &[
+                "The habeas skill has the directive and reference syntax",
+                "use `{fixme}` as the habeas-evidence skill's `references/fixme.md` describes",
+                "follow the habeas-evidence skill to author evidence",
+                "follow its \"Disagreeing assessments\"",
+                "\"Uncovered Rust items\" in the habeas-evidence skill",
+                "is a habeas-refactor task",
+            ][..],
+        ),
+        (
+            "habeas-evidence",
+            &[
+                "\"What the review checks\" in the habeas-requirements skill",
+                "\"Choosing references\" in the habeas-requirements skill",
+                "goes through habeas-requirements steps 3 to 5",
+                "(habeas-refactor)",
+                "the habeas skill's `references/distributed-requirements.md`",
+            ][..],
+        ),
+        (
+            "habeas-bootstrap-requirements",
+            &[
+                "Read the habeas skill for directive syntax, and the habeas-requirements skill",
+                "through habeas-requirements steps 3 to 5",
+                "\"Choosing references\" in the habeas-requirements skill",
+                "the habeas-evidence skill's `references/authoring-failures.md`",
+                "the habeas skill's `references/distributed-requirements.md`",
+                "\"Disagreeing assessments\" in the habeas-evidence skill",
+            ][..],
+        ),
+        (
+            "habeas-refactor",
+            &[
+                "following the habeas-evidence skill",
+                "under the habeas-requirements skill",
+                "needs reassessment with habeas-evidence",
+            ][..],
+        ),
+    ] {
+        assert_phrases(name, referrals);
+        // No skill restates what another skill is the home of.
+        let text = bundled_skill(name);
+        for home in SKILLS.into_iter().filter(|home| *home != name) {
+            for marker in home_markers(home) {
+                assert!(!text.contains(marker), "{name} restates {marker:?}");
+            }
+        }
+    }
+}
+
+// {test}`requirements.cli.skill_structure.habeas`
+#[test]
+fn the_habeas_skill_is_home_of_routing_inspection_syntax_and_shared_gotchas() {
+    let raw = skill_md("habeas");
+    assert_text(
+        "routing",
+        &section(raw, "## Workflow"),
+        &["| Task | Skill |"],
+    );
+    assert_text(
+        "inspecting",
+        &section(raw, "## Inspecting"),
+        &["`habeas status [<selection>]`", "`habeas info <selection>`"],
+    );
+    assert_text(
+        "syntax",
+        &section(raw, "## Requirements, examples, and definitions"),
+        &[
+            "fenced `{req}` directive",
+            "An `{example}`",
+            "A `{definition}`",
         ],
     );
-    // The three outcomes and the documented-gap convention; habeas-evidence is
-    // the home of FIXME judgments.
-    assert_phrases(
-        "habeas-requirements",
+    assert_text(
+        "references",
+        &section(raw, "## References"),
         &[
-            "judges each requirement `true`, `false`, or FIXME",
-            "To acknowledge a gap the user agrees to defer, use a `{fixme}` reference",
-            "One acknowledged gap does not excuse others",
+            "Write a reference with a full name in a comment on the relevant source line",
+            "Fence a reference",
+        ],
+    );
+    assert_text(
+        "gotchas",
+        &section(raw, "## Gotchas"),
+        &["Reference discovery and authoring read only files in the Git index"],
+    );
+    assert_text(
+        "distributed requirements",
+        skill_file("habeas", "references/distributed-requirements.md"),
+        &["# Distributed requirements"],
+    );
+    assert_text(
+        "syntax details",
+        skill_file("habeas", "references/syntax-details.md"),
+        &["## Full names in nested chapters", "## Anchors"],
+    );
+    assert_home("habeas");
+}
+
+// {test}`requirements.cli.skill_structure.requirements`
+#[test]
+fn the_requirements_skill_is_home_of_drafting_review_references_and_criteria() {
+    let raw = skill_md("habeas-requirements");
+    for (phrase, topic) in [
+        ("Draft. Write drafts", "drafting"),
+        ("Review. Sort the new and changed requirements", "reviewing"),
+        ("**Gate:**", "agreeing"),
+    ] {
+        assert!(
+            workflow_steps("habeas-requirements")
+                .iter()
+                .any(|(_, text)| text.contains(phrase)),
+            "{topic}"
+        );
+    }
+    assert_text(
+        "choosing references",
+        &section(raw, "## Choosing references"),
+        &["A *root* is"],
+    );
+    assert_text(
+        "what the review checks",
+        &section(raw, "## What the review checks"),
+        &["an obligation the `{impl}` code does not implement completely and exactly as stated"],
+    );
+    assert_text(
+        "requirement review criteria",
+        &section(
+            skill_file("habeas-requirements", "references/review-prompt.md"),
+            "## Criteria",
+        ),
+        &["**Compound:**", "**Checkable:**", "**One reading:**"],
+    );
+    assert_home("habeas-requirements");
+}
+
+// {test}`requirements.cli.skill_structure.evidence`
+#[test]
+fn the_evidence_skill_is_home_of_authoring_findings_and_assessment_outcomes() {
+    let raw = skill_md("habeas-evidence");
+    assert_text(
+        "authoring workflow",
+        &section(raw, "## Workflow"),
+        &["`habeas author --all`"],
+    );
+    assert_text(
+        "fixing findings",
+        &section(raw, "## Fixing findings"),
+        &["| Finding | Action |", "### Uncovered Rust items"],
+    );
+    assert_text(
+        "disagreeing assessments",
+        &section(raw, "## Disagreeing assessments"),
+        &["The goal is"],
+    );
+    assert_text(
+        "commit message",
+        &section(raw, "## Rules"),
+        &["in the message of the commit that makes it"],
+    );
+    assert_text(
+        "FIXME judgments",
+        skill_file("habeas-evidence", "references/fixme.md"),
+        &["# FIXME judgments"],
+    );
+    let reviews = skill_file("habeas-evidence", "references/reviews.md");
+    assert_text(
+        "reviews",
+        reviews,
+        &["## Citation reviews", "## Site reviews"],
+    );
+    assert_home("habeas-evidence");
+}
+
+// {test}`requirements.cli.skill_structure.bootstrap`
+#[test]
+fn the_bootstrap_skill_is_home_of_deriving_an_initial_requirement_set() {
+    let raw = skill_md("habeas-bootstrap-requirements");
+    for heading in [
+        "## Inventories",
+        "## Proposing requirements",
+        "## Tagging",
+        "## Report",
+    ] {
+        section(raw, heading);
+    }
+    assert_home("habeas-bootstrap-requirements");
+}
+
+// {test}`requirements.cli.skill_structure.refactor`
+#[test]
+fn the_refactor_skill_is_home_of_moves_and_requirement_renames() {
+    assert_text(
+        "habeas-refactor workflow",
+        &section(skill_md("habeas-refactor"), "## Workflow"),
+        &[
+            "move the `{req}` directive to its new chapter",
+            "a file or directory: `--map src/config.rs=src/settings.rs`",
+            "a node: `--map",
+            "a definition: `--map requirements.cli.check=requirements.core.check`",
         ],
     );
     assert_phrases(
-        "habeas-evidence",
+        "habeas-refactor",
+        &["Renaming a requirement's ID is a definition mapping"],
+    );
+    assert_home("habeas-refactor");
+}
+
+/// A bundled skill's front matter as key and raw value pairs, one per line.
+/// Panics unless every line is a `key: value` pair whose value, if it is a
+/// plain (unquoted) YAML scalar, contains no `": "`, which YAML rejects there.
+// {cite}`habeas:util`
+fn front_matter(name: &str) -> Vec<(&'static str, &'static str)> {
+    let raw = skill_md(name);
+    let body = raw
+        .strip_prefix("---\n")
+        .and_then(|rest| rest.split_once("\n---\n"))
+        .unwrap_or_else(|| panic!("{name} has no front matter"))
+        .0;
+    body.lines()
+        .map(|line| {
+            let (key, value) = line
+                .split_once(": ")
+                .unwrap_or_else(|| panic!("{name}: {line:?} is not `key: value`"));
+            assert!(
+                !key.is_empty()
+                    && key
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
+                "{name}: key {key:?}"
+            );
+            let quoted = value.len() >= 2
+                && ((value.starts_with('"') && value.ends_with('"'))
+                    || (value.starts_with('\'') && value.ends_with('\'')));
+            if !quoted {
+                assert!(
+                    !value.contains(": ") && !value.ends_with(':'),
+                    "{name}: plain YAML scalar for {key} contains \": \": {value}"
+                );
+                assert!(
+                    !value.contains(" #"),
+                    "{name}: {key} contains a YAML comment"
+                );
+            }
+            (key, value)
+        })
+        .collect()
+}
+
+// {test}`requirements.cli.skill_conventions`
+#[test]
+fn bundled_skill_descriptions_say_when_to_use_them() {
+    // Each skill's front matter is valid YAML with the name and description
+    // Symposium requires; a skill whose front matter fails to parse is skipped.
+    for name in SKILLS {
+        let fields = front_matter(name);
+        let field = |key: &str| {
+            let values = fields
+                .iter()
+                .filter(|(k, _)| *k == key)
+                .map(|(_, v)| *v)
+                .collect::<Vec<_>>();
+            assert_eq!(values.len(), 1, "{name}: {key}");
+            values[0]
+        };
+        assert_eq!(field("name"), name);
+        let description = field("description");
+        assert!(!description.trim().is_empty(), "{name}");
+        assert!(
+            description.chars().count() <= 1024,
+            "{name}: description has {} characters",
+            description.chars().count()
+        );
+        assert_eq!(description, self::description(name));
+    }
+    for (name, when) in [
+        (
+            "habeas",
+            "Use at the start of any work in a project that tracks requirements with Habeas",
+        ),
+        (
+            "habeas-requirements",
+            "Use during design sessions and before changing code, tests, or requirement text",
+        ),
+        (
+            "habeas-evidence",
+            "Use when Habeas evidence needs creating or refreshing",
+        ),
+        (
+            "habeas-bootstrap-requirements",
+            "Use when adopting Habeas in an existing codebase",
+        ),
+        (
+            "habeas-refactor",
+            "Use when a change moves code, tests, or requirements",
+        ),
+    ] {
+        let description = description(name);
+        assert!(description.starts_with(when), "{name}: {description}");
+        // A skill a description names is a bundled one.
+        for word in description.split(|c: char| !(c.is_alphanumeric() || c == '-')) {
+            if word.starts_with("habeas-") {
+                assert!(SKILLS.contains(&word), "{name} names {word}");
+            }
+        }
+    }
+    // Skills an agent could confuse name the other to use instead.
+    for (name, instead) in [
+        ("habeas-requirements", "use habeas-refactor"),
+        ("habeas-requirements", "use habeas-evidence"),
+        ("habeas-evidence", "use habeas-refactor first"),
+        ("habeas-bootstrap-requirements", "use habeas-evidence"),
+        ("habeas-refactor", "use habeas-requirements"),
+    ] {
+        assert!(description(name).contains(instead), "{name}: {instead}");
+    }
+}
+
+// {test}`requirements.cli.skill_conventions.workflow`
+#[test]
+fn bundled_skills_open_with_their_workflow_as_ordered_steps() {
+    for name in SKILLS {
+        let raw = skill_md(name);
+        let first = raw.lines().find(|line| line.starts_with("## ")).unwrap();
+        assert_eq!(first, "## Workflow", "{name}");
+        let numbers = workflow_steps(name)
+            .into_iter()
+            .map(|(number, _)| number)
+            .collect::<Vec<_>>();
+        assert!(numbers.len() >= 2, "{name}: {numbers:?}");
+        assert_eq!(
+            numbers,
+            (1..=numbers.len() as u32).collect::<Vec<_>>(),
+            "{name}"
+        );
+    }
+}
+
+// {test}`requirements.cli.skill_conventions.next`
+#[test]
+fn bundled_skill_workflows_end_by_naming_the_skill_for_the_next_task() {
+    for (name, next) in [
+        // The habeas skill's next task is the one its routing table picks.
+        ("habeas", &["Follow that skill"][..]),
+        (
+            "habeas-requirements",
+            &["Next, follow the habeas-evidence skill"][..],
+        ),
+        (
+            "habeas-evidence",
+            &[
+                "Next: for findings that need code or tests, or requirement text that must change, return to the habeas-requirements skill",
+            ][..],
+        ),
+        (
+            "habeas-bootstrap-requirements",
+            &["Next: for gap-list items the user decides, follow the habeas-requirements skill"][..],
+        ),
+        (
+            "habeas-refactor",
+            &[
+                "Next, reassess what remains stale with `habeas author --all`, following the habeas-evidence skill",
+                "then make any behavior or text changes as separate commits under the habeas-requirements skill",
+            ][..],
+        ),
+    ] {
+        let (_, last) = workflow_steps(name).pop().unwrap();
+        assert_text(&format!("{name}'s last step"), &last, next);
+    }
+    // The table the habeas skill routes from names every other skill.
+    let table = step("habeas", 1);
+    for name in SKILLS.into_iter().filter(|name| *name != "habeas") {
+        assert!(table.contains(&format!("| {name} |")), "{name}");
+    }
+}
+
+// {test}`requirements.cli.skill_conventions.references`
+#[test]
+fn bundled_skills_say_when_to_read_each_reference_file() {
+    let links = [
+        (
+            "habeas",
+            "references/distributed-requirements.md",
+            "For an obligation that applies separately at each of many sites, such as a convention every validation function follows, read [references/distributed-requirements.md](references/distributed-requirements.md) before drafting it, and whenever you edit a `{req}` that contains `{sites}` or `{violations}`",
+        ),
+        (
+            "habeas",
+            "references/syntax-details.md",
+            "If a file that implements or tests a requirement cannot carry a comment, such as a shipped skill or a stylesheet copied into other projects, or a requirement lives in a nested chapter, read [references/syntax-details.md](references/syntax-details.md)",
+        ),
+        (
+            "habeas-requirements",
+            "references/review-prompt.md",
+            "For each group, start a read-only subagent, all in parallel. Tell it to read this skill's `references/review-prompt.md`",
+        ),
+        (
+            "habeas-evidence",
+            "references/authoring-failures.md",
+            "If authoring fails on configuration, credentials, throttling, or a denied mandatory input, read [references/authoring-failures.md](references/authoring-failures.md)",
+        ),
+        (
+            "habeas-evidence",
+            "references/fixme.md",
+            "| a real gap the user agrees to defer, a FIXME judgment, or a `{fixme}` issue that closed | read [references/fixme.md](references/fixme.md) |",
+        ),
+        (
+            "habeas-evidence",
+            "references/reviews.md",
+            "| false citation or site review | read [references/reviews.md](references/reviews.md) |",
+        ),
+    ];
+    for name in SKILLS {
+        let text = collapse(skill_md(name));
+        for (path, _) in &skill_files(name)[1..] {
+            let found = links
+                .iter()
+                .filter(|(skill, file, _)| *skill == name && file == path)
+                .collect::<Vec<_>>();
+            assert!(!found.is_empty(), "{name} links {path} with no check here");
+            for (_, _, link) in found {
+                assert!(text.contains(link), "{name} lacks {link:?}");
+            }
+        }
+    }
+}
+
+// {test}`requirements.cli.overview_skill`
+#[test]
+fn the_habeas_skill_is_used_at_the_start_of_any_work_in_a_habeas_project() {
+    let description = description("habeas");
+    assert!(description.starts_with(
+        "Use at the start of any work in a project that tracks requirements with Habeas"
+    ));
+    for sign in [
+        "a `habeas` dev-dependency",
+        "a `habeas.toml`",
+        "`{req}` directives in its mdBook",
+        "`{impl}`/`{test}`/`{cite}` references in code",
+    ] {
+        assert!(description.contains(sign), "{sign}");
+    }
+}
+
+// {test}`requirements.cli.overview_skill.routing`
+#[test]
+fn the_habeas_skill_routes_each_task_to_the_skill_that_covers_it() {
+    let rows = skill_md("habeas")
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with('|'))
+        .collect::<Vec<_>>();
+    for (task, skill) in [
+        (
+            &[
+                "A design session",
+                "any change to behavior, code, tests, or requirement text",
+                "including renaming code in place",
+            ][..],
+            "habeas-requirements",
+        ),
+        (
+            &[
+                "Moving code, tests, or requirements to another file, chapter, or outline node",
+                "renaming a requirement",
+            ][..],
+            "habeas-refactor",
+        ),
+        (
+            &[
+                "Creating or refreshing evidence",
+                "`cargo test` or `habeas status` reports Habeas findings",
+            ][..],
+            "habeas-evidence",
+        ),
+        (
+            &["Adopting Habeas in an existing codebase"][..],
+            "habeas-bootstrap-requirements",
+        ),
+    ] {
+        let row = rows
+            .iter()
+            .find(|row| task.iter().all(|part| row.contains(part)))
+            .unwrap_or_else(|| panic!("no row for {task:?}"));
+        let cells = row
+            .split('|')
+            .map(str::trim)
+            .filter(|cell| !cell.is_empty())
+            .collect::<Vec<_>>();
+        assert_eq!(cells.last(), Some(&skill), "{row}");
+    }
+    assert!(step("habeas", 1).starts_with("Pick the skill for the task"));
+}
+
+// {test}`requirements.cli.overview_skill.move_then_edit`
+#[test]
+fn the_habeas_skill_does_a_move_that_also_edits_as_the_move_first() {
+    assert_text(
+        "habeas workflow",
+        &step("habeas", 2),
         &[
-            "A FIXME judgment, such as `{\"FIXME\": [\"rust-lang/rust#123\"]}`, means `{fixme}` references to the definition acknowledge every remaining gap",
-            "// :github: rust-lang/rust#123",
-            "A plain `FIXME` or `TODO` comment does not count",
-            "Validation accepts it like `true` when all other checks pass",
-        ],
-    );
-    // Reference roles, stated in habeas-requirements and referred to elsewhere.
-    assert_phrases(
-        "habeas-requirements",
-        &[
-            "designed to verify the requirement or example, use `{test}`",
-            "if the item is a root of the requirement's implementation, use `{impl}`",
-            "`{cite}` needs no coverage and does not count as implementing anything",
-        ],
-    );
-    assert_phrases(
-        "habeas-evidence",
-        &["references by the procedure in the habeas-requirements skill"],
-    );
-    assert_phrases(
-        "habeas-bootstrap-requirements",
-        &["references by the procedure in the habeas-requirements skill"],
-    );
-    // Interacting requirements, and a citation alone is not an explanation.
-    assert_phrases(
-        "habeas-requirements",
-        &[
-            "If a behavior follows only from several requirements together, mark each with `{impl}` where it applies and add fenced commentary explaining how they combine",
-            "a reference alone would not say why `^C` is accepted",
-        ],
-    );
-    assert_phrases(
-        "habeas-bootstrap-requirements",
-        &[
-            "Where one behavior follows from several requirements, mark each with `{impl}` where it applies and explain how they combine",
+            "A change that both moves and edits code, tests, or requirements is the move first (habeas-refactor), then the edit under the skill the table gives for it",
         ],
     );
 }
 
-// {test}`requirements.cli.behavior_review_guidance`
-// {test}`requirements.cli.internal_detail_guidance`
-// {test}`requirements.cli.skill_structure`
+// {test}`requirements.cli.overview_skill.setup`
 #[test]
-fn bundled_skills_mark_roots_and_handle_uncovered_items() {
-    const ROOT: &str = "A *root* of a requirement is an item that carries out part of it and that no other `{impl}` item for that requirement reaches";
-    // habeas-requirements is the home of roots: reach goes downward only, and
-    // types and test helpers follow the same rule.
-    assert_in_order(
-        "habeas-requirements",
+fn the_habeas_skill_asks_before_setup_and_does_no_work_without_it() {
+    assert_text(
+        "habeas workflow",
+        &step("habeas", 1),
         &[
-            "what an item calls, the types it uses, and the implementations of trait methods it calls, and what those reach in turn",
-            "its callers don't count",
-            ROOT,
-            "leave what it reaches, functions and types alike, without a reference to that requirement",
-            "Roots are per requirement",
-            "Helpers a test reaches need no reference",
-            "Don't remove an existing `{impl}` from code a root reaches unless the user asks",
+            "If Habeas is not configured yet (no `tests/habeas.rs` calling `habeas::validate()`), ask the user before running `habeas setup`",
+            "if setup is not completed, do no Habeas requirements work in the project",
         ],
     );
-    // Coverage comes from a reference or a current read, never a search, and
-    // reads exist only after authoring.
-    assert_phrases(
-        "habeas-requirements",
+}
+
+// {test}`requirements.cli.overview_skill.new_project`
+#[test]
+fn the_habeas_skill_starts_a_new_project_with_the_requirements_skill() {
+    let routing = step("habeas", 1);
+    assert_text(
+        "habeas workflow",
+        &routing,
         &[
-            "If nothing gives the item a reference, and after `habeas author` nothing reads it either",
-            "or by a current evidence record, citation review, or site review that read it or an outline node",
-            "Search results (ripgrep and ast_grep matches) only locate code and cover nothing",
-            "Reads exist only after `habeas author`, so author before treating an item as uncovered",
-            "the rationale names the item that should carry `{impl}`",
+            "Adopting Habeas in an existing codebase, or most of the code has no references | habeas-bootstrap-requirements",
+            "A new project with little code starts with habeas-requirements, not habeas-bootstrap-requirements, even though most of its code has no references",
         ],
     );
-    // habeas-evidence handles items still uncovered after authoring, acting on
-    // the coverage-loss review.
-    assert_phrases(
-        "habeas-evidence",
-        &[
-            "Leave uncovered Rust items until after step 4",
-            "When a rationale names code the reviewer found only by searching, add `{impl}` to the item it names",
-            "Editing an item without a reference makes every record that read it stale",
-        ],
-    );
-    assert_in_order(
-        "habeas-evidence",
-        &[
-            "### Uncovered Rust items",
-            "reports uncovered after `habeas author --all`",
-            "If `habeas status` shows a coverage-loss review beside the item, act on each finding",
-            "`root`: add `{impl}` of that definition to the item",
-            "`not needed`: before changing anything, determine from its rationale and the code whether the item is dead code, serves its callers, or the earlier read was mistaken",
-            "Report dead code to the user instead of deleting it unasked",
-            "An item that serves other code, carrying out no requirement itself, gets `` // {cite}`habeas:util` ``",
-            "add references by the procedure in the habeas-requirements skill",
-            "never re-run or `--force` authoring just to get an item read",
-        ],
-    );
-    assert_phrases(
-        "habeas-bootstrap-requirements",
-        &[
-            "`{test}` on tests and `{impl}` on roots; code a root or test reaches needs none",
-            "Leave uncovered items for now",
-        ],
-    );
-    // The other skills refer to the definition of a root rather than restate it.
-    for name in ["habeas-evidence", "habeas-bootstrap-requirements"] {
-        assert!(!bundled_skill(name).contains(ROOT), "{name} restates roots");
+}
+
+// {test}`requirements.cli.requirements_skill`
+#[test]
+fn the_requirements_skill_is_used_for_design_and_before_any_change() {
+    let description = description("habeas-requirements");
+    for phrase in [
+        "Use during design sessions and before changing code, tests, or requirement text in a project that tracks requirements with Habeas",
+        "even when the user only asks for a feature, bug fix,",
+        "and never says \"requirement\"",
+    ] {
+        assert!(description.contains(phrase), "{phrase}");
     }
+}
+
+// {test}`requirements.cli.requirements_review_skill`
+#[test]
+fn the_requirements_skill_commits_agreed_requirements_before_code() {
+    const SKILL: &str = "habeas-requirements";
+    assert_phrases(
+        SKILL,
+        &[
+            "Every end-user-observable result of the code, including errors and input handling, must follow from a requirement the user agreed to",
+        ],
+    );
+    let draft = step_of(SKILL, "Write drafts");
+    let review = step_of(SKILL, "start a read-only subagent");
+    let gate = step_of(
+        SKILL,
+        "**Gate:** no implementation or test code, and no commit, until the user has agreed to, rejected, or deferred every group",
+    );
+    let commit = step_of(
+        SKILL,
+        "then commit it, all groups together, before any code",
+    );
+    let implement = step_of(SKILL, "Implement and test");
+    assert!(draft < review && review < gate && gate < commit && commit < implement);
+}
+
+// {test}`requirements.cli.requirements_review_skill.agreed_text`
+#[test]
+fn the_requirements_skill_reviews_every_change_to_agreed_text() {
+    assert!(
+        description("habeas-requirements")
+            .contains("before changing code, tests, or requirement text")
+    );
+    assert_eq!(
+        step_of(
+            "habeas-requirements",
+            "Sort the new and changed requirements into groups"
+        ),
+        3
+    );
+    assert_phrases(
+        "habeas-requirements",
+        &[
+            "Every change to agreed text, including a rewording for precision or removing a requirement, goes through steps 3 to 5 before it is committed",
+        ],
+    );
+}
+
+// {test}`requirements.cli.requirements_review_skill.no_change`
+#[test]
+fn the_requirements_skill_skips_drafting_when_no_requirement_changes() {
+    const SKILL: &str = "habeas-requirements";
+    assert_text(
+        "step 1",
+        &step(SKILL, 1),
+        &[
+            "If the change adds, alters, or removes no observable behavior",
+            "or an existing requirement already specifies it (most bug fixes), tell the user which requirement covers it, or that none is needed, and go to step 6",
+        ],
+    );
+    assert_eq!(step_of(SKILL, "Implement and test"), 6);
+}
+
+// {test}`requirements.cli.requirements_review_skill.drafts`
+#[test]
+fn the_requirements_skill_writes_drafts_as_unstaged_edits_without_markers() {
+    assert_text(
+        "draft step",
+        &step(
+            "habeas-requirements",
+            step_of("habeas-requirements", "Write drafts"),
+        ),
+        &[
+            "Write drafts from the request straight into the chapter as uncommitted, unstaged edits, with no draft marker",
+            "For a new chapter, add it to `SUMMARY.md` and `git add -N` it",
+        ],
+    );
+}
+
+// {test}`requirements.cli.requirements_review_skill.drafts.rough`
+#[test]
+fn the_requirements_skill_allows_rough_drafts_before_review() {
+    assert_text(
+        "draft step",
+        &step(
+            "habeas-requirements",
+            step_of("habeas-requirements", "Write drafts"),
+        ),
+        &[
+            "Drafts may be high-level, compound, or incomplete",
+            "Ask the user only what the request can't answer; the review in step 3 finds the rest",
+        ],
+    );
+}
+
+// {test}`requirements.cli.requirements_review_skill.drafts.foreign_edits`
+#[test]
+fn the_requirements_skill_asks_about_foreign_edits_before_drafting() {
+    const SKILL: &str = "habeas-requirements";
+    let ask = step_of(
+        SKILL,
+        "If it has uncommitted edits you did not make in this task, ask the user whether they belong to it",
+    );
+    assert!(step(SKILL, ask).contains("Run `git status` on the book's source directory"));
+    assert!(ask < step_of(SKILL, "Write drafts"));
+}
+
+// {test}`requirements.cli.requirements_review_skill.review`
+#[test]
+fn the_requirements_skill_reviews_each_group_with_a_parallel_read_only_subagent() {
+    const SKILL: &str = "habeas-requirements";
+    let review = step_of(SKILL, "start a read-only subagent");
+    assert_text(
+        "review step",
+        &step(SKILL, review),
+        &[
+            "Sort the new and changed requirements into groups",
+            "requirements that cite each other or describe one feature",
+            "For each group, start a read-only subagent, all in parallel",
+        ],
+    );
+    assert!(review < step_of(SKILL, "Present each group to the user"));
+}
+
+// {test}`requirements.cli.requirements_review_skill.review.inputs`
+#[test]
+fn the_requirements_skill_gives_reviewers_the_prompt_names_and_brief() {
+    assert_text(
+        "review step",
+        &step(
+            "habeas-requirements",
+            step_of("habeas-requirements", "start a read-only subagent"),
+        ),
+        &[
+            "Tell it to read this skill's `references/review-prompt.md` and the habeas skill's `SKILL.md` by absolute path",
+            "give it the group's full names and a brief: what the user asked for, the decisions already made, and the open choices already noted",
+        ],
+    );
+}
+
+// {test}`requirements.cli.requirements_review_skill.review.fallback`
+#[test]
+fn the_requirements_skill_reviews_groups_itself_without_subagents() {
+    const SKILL: &str = "habeas-requirements";
+    let fallback = step_of(
+        SKILL,
+        "If you can't start subagents, review each group yourself against the prompt, one group at a time",
+    );
+    assert!(fallback < step_of(SKILL, "Present each group to the user"));
+}
+
+// {test}`requirements.cli.requirements_review_skill.present`
+#[test]
+fn the_requirements_skill_presents_exact_text_and_design_questions() {
+    assert_phrases(
+        "habeas-requirements",
+        &[
+            "Present each group to the user: its exact text, including any `{sites}` and `{violations}` queries, and the design questions the review returned, each with its options and your recommendation",
+        ],
+    );
+}
+
+// {test}`requirements.cli.requirements_review_skill.present.apply`
+#[test]
+fn the_requirements_skill_applies_and_reconciles_reviews_before_presenting() {
+    const SKILL: &str = "habeas-requirements";
+    let apply = step_of(SKILL, "Apply the revised text the reviews return");
+    assert_text(
+        "review step",
+        &step(SKILL, apply),
+        &[
+            "reconcile reviews that clash, such as two that split the same requirement differently",
+            "a clash whose resolution changes what is promised becomes a design question",
+        ],
+    );
+    assert!(apply < step_of(SKILL, "Present each group to the user"));
+}
+
+// {test}`requirements.cli.requirements_review_skill.present.mechanical`
+#[test]
+fn the_requirements_skill_shows_mechanical_changes_without_asking() {
+    assert_phrases(
+        "habeas-requirements",
+        &[
+            "Show text that was already agreed or that the user supplied as a diff against that text, then a \"Mechanical:\" list of the changes",
+            "Don't raise mechanical changes to new text as questions",
+        ],
+    );
+}
+
+// {test}`requirements.cli.requirements_review_skill.present.outside`
+#[test]
+fn the_requirements_skill_shows_edits_outside_a_group_and_added_examples() {
+    assert_in_order(
+        "habeas-requirements",
+        &[
+            "as a diff against that text, then a \"Mechanical:\" list",
+            "Show the edits reviewers made outside their group the same way, and list added `{example}`s, which each need a test",
+        ],
+    );
+}
+
+// {test}`requirements.cli.requirements_review_skill.present.rereview`
+#[test]
+fn the_requirements_skill_rereviews_a_group_a_decision_extends() {
+    assert_text_in_order(
+        "present step",
+        &step(
+            "habeas-requirements",
+            step_of("habeas-requirements", "Present each group to the user"),
+        ),
+        &[
+            "Apply the user's decisions",
+            "If a decision adds an obligation no reviewer saw, review that group again",
+            "**Gate:**",
+        ],
+    );
+}
+
+// {test}`requirements.cli.requirements_review_skill.agreement`
+#[test]
+fn the_requirements_skill_gates_commit_and_code_on_every_group_being_decided() {
+    assert_phrases(
+        "habeas-requirements",
+        &[
+            "**Gate:** no implementation or test code, and no commit, until the user has agreed to, rejected, or deferred every group",
+        ],
+    );
+}
+
+// {test}`requirements.cli.requirements_review_skill.agreement.what_counts`
+#[test]
+fn the_requirements_skill_says_what_counts_as_agreement() {
+    assert_phrases(
+        "habeas-requirements",
+        &[
+            "Exact text the user supplied, or explicit agreement earlier in the conversation, counts; a general request to build the feature does not",
+        ],
+    );
+}
+
+// {test}`requirements.cli.requirements_review_skill.agreement.no_user`
+#[test]
+fn the_requirements_skill_stops_and_reports_when_it_cannot_ask_the_user() {
+    assert_phrases(
+        "habeas-requirements",
+        &[
+            "If you cannot ask the user in this session, stop, leave the drafts uncommitted, and report them with the design questions",
+        ],
+    );
+}
+
+// {test}`requirements.cli.requirements_review_skill.commit`
+#[test]
+fn the_requirements_skill_commits_every_group_together_before_code() {
+    const SKILL: &str = "habeas-requirements";
+    let commit = step_of(
+        SKILL,
+        "then commit it, all groups together, before any code",
+    );
+    assert!(step(SKILL, commit).contains("leave out unrelated edits found in step 1"));
+    assert!(commit > step_of(SKILL, "**Gate:**"));
+}
+
+// {test}`requirements.cli.requirements_review_skill.commit.revert`
+#[test]
+fn the_requirements_skill_reverts_rejected_and_deferred_drafts_before_committing() {
+    assert_text_in_order(
+        "commit step",
+        &step(
+            "habeas-requirements",
+            step_of("habeas-requirements", "all groups together"),
+        ),
+        &[
+            "Revert drafts the user rejected or deferred (`git restore -p`) and list them in your report",
+            "then commit it",
+        ],
+    );
+}
+
+// {test}`requirements.cli.requirements_review_skill.commit.check`
+#[test]
+fn the_requirements_skill_checks_the_book_holds_exactly_the_agreed_text() {
+    assert_phrases(
+        "habeas-requirements",
+        &["Check with `git diff` that the book holds exactly the agreed text, then commit it"],
+    );
+}
+
+// {test}`requirements.cli.requirements_review_skill.commit.validation`
+#[test]
+fn the_requirements_skill_expects_the_requirements_commit_to_fail_validation() {
+    assert_phrases(
+        "habeas-requirements",
+        &[
+            "This commit fails validation until evidence is authored; that is expected, as only the pull request as a whole must pass",
+        ],
+    );
+}
+
+// {test}`requirements.cli.requirements_review_skill.commit.design_session`
+#[test]
+fn the_requirements_skill_stops_after_the_commit_in_a_design_session() {
+    assert_text_in_order(
+        "commit step",
+        &step(
+            "habeas-requirements",
+            step_of("habeas-requirements", "all groups together"),
+        ),
+        &[
+            "then commit it",
+            "In a design session with no code to write, stop here",
+        ],
+    );
+}
+
+// {test}`requirements.cli.requirements_review_skill.text_change`
+#[test]
+fn the_requirements_skill_stops_dependent_work_when_agreed_text_must_change() {
+    assert_phrases(
+        "habeas-requirements",
+        &[
+            "If implementation shows that agreed text must change, stop work that depends on it and take the changed requirements through steps 3 to 5 first",
+        ],
+    );
+    for (number, start) in [(3, "Review."), (4, "Present"), (5, "Commit.")] {
+        assert!(step("habeas-requirements", number).starts_with(start));
+    }
+}
+
+// {test}`requirements.cli.requirements_review_skill.text_change.uncovered`
+#[test]
+fn the_requirements_skill_drafts_a_requirement_for_uncovered_behavior() {
+    assert_phrases(
+        "habeas-requirements",
+        &["Behavior no requirement covers goes back to step 2"],
+    );
+    assert!(step("habeas-requirements", 2).starts_with("Draft."));
+}
+
+// {test}`requirements.cli.requirements_review_skill.text_change.rename`
+#[test]
+fn the_requirements_skill_renames_requirements_through_refactor_before_editing() {
+    assert_phrases(
+        "habeas-requirements",
+        &[
+            "Renaming or moving a committed requirement is a habeas-refactor task, agreed with the user and committed before its text changes",
+        ],
+    );
+}
+
+// {test}`requirements.cli.requirements_review_skill.code_rename`
+#[test]
+fn the_requirements_skill_needs_no_review_for_renaming_code_in_place() {
+    assert_phrases(
+        "habeas-requirements",
+        &[
+            "Restructuring code in place, including renaming an item, needs no requirement review, but references move with the code and the evidence is reassessed",
+        ],
+    );
+}
+
+/// The review prompt the habeas-requirements skill supplies, raw.
+// {cite}`habeas:util`
+fn review_prompt() -> &'static str {
+    skill_file("habeas-requirements", "references/review-prompt.md")
+}
+
+/// The review prompt's text from `start` up to `end`, collapsed.
+// {cite}`habeas:util`
+fn review_prompt_between(start: &str, end: &str) -> String {
+    let text = collapse(review_prompt());
+    let (_, rest) = text.split_once(start).unwrap_or_else(|| panic!("{start}"));
+    let (span, _) = rest.split_once(end).unwrap_or_else(|| panic!("{end}"));
+    span.to_owned()
+}
+
+// {test}`requirements.cli.requirements_review_skill.review_prompt`
+#[test]
+fn the_review_prompt_makes_mechanical_changes_and_returns_design_questions() {
+    assert_text(
+        "review prompt",
+        &collapse(review_prompt()),
+        &[
+            "Don't edit files; make your changes in the revised text you return",
+            "**Mechanical changes:** make them yourself in the revised text, and never phrase them as questions",
+            "**Design questions:** return these; the user decides",
+        ],
+    );
+}
+
+// {test}`requirements.cli.requirements_review_skill.review_prompt.context`
+#[test]
+fn the_review_prompt_reads_the_syntax_drafts_chapter_and_related_requirements() {
+    assert_text(
+        "review prompt",
+        &collapse(review_prompt()),
+        &[
+            "Read the habeas skill's `SKILL.md` first for the directive syntax",
+            "The drafts are uncommitted edits in the book: `git diff` on the book's source directory shows them",
+            "Read the surrounding chapter and every requirement the group cites or overlaps",
+        ],
+    );
+}
+
+// {test}`requirements.cli.requirements_review_skill.review_prompt.brief`
+#[test]
+fn the_review_prompt_does_not_reraise_the_brief() {
+    assert_text_in_order(
+        "review prompt",
+        &collapse(review_prompt()),
+        &[
+            "the decisions already made, and the open choices already noted",
+            "Don't re-raise those",
+        ],
+    );
+}
+
+// {test}`requirements.cli.requirements_review_skill.review_prompt.mechanical`
+#[test]
+fn the_review_prompt_lists_the_mechanical_changes() {
+    assert_text(
+        "mechanical changes",
+        &review_prompt_between("**Mechanical changes:**", "**Design questions:**"),
+        &[
+            "Split a compound requirement",
+            "Choose MUST, SHOULD, or MAY when the draft's intent is clear. Default to MUST; keep a SHOULD or MAY the draft already chose",
+            "Fix wording whose resolution is obvious: vague terms, inconsistent terms, an ambiguity with one sensible reading",
+            "Add an `{example}` where a concrete case pins an obligation down",
+            "Update other requirements a change makes stale",
+        ],
+    );
+}
+
+// {test}`requirements.cli.requirements_review_skill.review_prompt.names`
+#[test]
+fn the_review_prompt_never_renames_and_names_split_parts() {
+    assert_text(
+        "mechanical changes",
+        &review_prompt_between("**Mechanical changes:**", "**Design questions:**"),
+        &[
+            "Never rename or move a committed requirement; if its name is wrong, raise it as a design question",
+            "When you split one, keep its full name on the core obligation and name the parts `<name>.<part>`",
+            "List every new name",
+        ],
+    );
+}
+
+// {test}`requirements.cli.requirements_review_skill.review_prompt.design`
+#[test]
+fn the_review_prompt_lists_the_design_questions_with_options_and_recommendation() {
+    assert_text(
+        "design questions",
+        &review_prompt_between("**Design questions:**", "## Finding gaps"),
+        &[
+            "A gap: a case the text says nothing about, where either answer is plausible",
+            "A conflict with another requirement; cite it by full name",
+            "MUST or SHOULD when the choice depends on the user's intent",
+            "An obligation nothing could check, where any fix changes what is promised",
+            "For each question give why it matters, the options, and your recommendation",
+        ],
+    );
+}
+
+// {test}`requirements.cli.requirements_review_skill.review_prompt.compound`
+#[test]
+fn the_review_prompt_splits_compound_requirements() {
+    assert_text(
+        "criteria",
+        &section(review_prompt(), "## Criteria"),
+        &[
+            "**Compound:** a requirement that lists several independent forms, checks, or outputs",
+            "A sentence beginning \"It MUST also\" is a strong hint",
+            "could one part be implemented, change, or fail while another holds? Then split it",
+            "Move shared detail, such as a template or a format, into its own requirement that the others cite",
+        ],
+    );
+}
+
+// {test}`requirements.cli.requirements_review_skill.review_prompt.criteria`
+#[test]
+fn the_review_prompt_criteria_find_ambiguous_uncheckable_and_prescriptive_text() {
+    assert_text(
+        "criteria",
+        &section(review_prompt(), "## Criteria"),
+        &[
+            "**Checkable:** a reviewer can judge the obligation from the requirement text, the code, and the tests, and something would fail if it were broken",
+            "**One reading:** text a careful reviewer could read two ways is a finding",
+            "**Outcome, not implementation:** the text says what must hold, not how",
+        ],
+    );
+}
+
+// {test}`requirements.cli.requirements_review_skill.review_prompt.distributed`
+#[test]
+fn the_review_prompt_applies_the_distributed_guidance() {
+    assert_text(
+        "criteria",
+        &section(review_prompt(), "## Criteria"),
+        &[
+            "for a requirement with `{sites}` or `{violations}` queries, apply the Do and Don't lists in the habeas skill's `references/distributed-requirements.md`",
+        ],
+    );
+}
+
+// {test}`requirements.cli.requirements_review_skill.review_prompt.gaps`
+#[test]
+fn the_review_prompt_finds_gaps_case_by_case() {
+    assert_text(
+        "finding gaps",
+        &section(review_prompt(), "## Finding gaps"),
+        &[
+            "For each requirement, list the inputs and states it applies to, its boundaries and failure cases (empty, missing, duplicate, invalid), and its observable outputs",
+            "Then list the observable behavior the brief implies that no requirement in the group or the book states",
+            "Each case the text does not decide is a gap: resolve it mechanically if only one answer is sensible, otherwise ask",
+        ],
+    );
+}
+
+// {test}`requirements.cli.requirements_review_skill.review_prompt.examples`
+#[test]
+fn the_review_prompt_works_a_mechanical_example_and_a_design_question() {
+    assert_text_in_order(
+        "examples",
+        &section(review_prompt(), "## Examples"),
+        &[
+            "Compound, with a mechanical fix:",
+            "> The `refactor` command MUST",
+            "Split into",
+            "Not a question",
+            "A design question:",
+            "Options:",
+            "Recommend",
+        ],
+    );
+}
+
+// {test}`requirements.cli.requirements_review_skill.review_prompt.report`
+#[test]
+fn the_review_prompt_gives_a_report_template() {
+    assert_text_in_order(
+        "report",
+        &section(review_prompt(), "## Report"),
+        &[
+            "### Revised text",
+            "as complete directives ready to paste, including new split requirements",
+            "### Edits outside the group",
+            "### Mechanical changes",
+            "list new full names and added examples",
+            "### Design questions",
+        ],
+    );
+}
+
+// {test}`requirements.cli.requirements_review_skill.review_prompt.no_questions`
+#[test]
+fn the_review_prompt_rejects_a_report_with_only_wording_changes() {
+    assert_text_in_order(
+        "report",
+        &section(review_prompt(), "## Report"),
+        &[
+            "A report with only wording changes means you have not looked hard enough for gaps and for conflicts",
+            "Look again",
+            "If you still find no design questions, write \"No design questions.\"",
+        ],
+    );
 }
 
 // {test}`requirements.cli.bootstrap_skill`
 #[test]
 fn bootstrap_skill_is_bundled_and_directs_complete_inventories() {
-    // Bundled: Symposium publishes every skill under assets/skills, and this one
-    // is discoverable there by its name.
-    let manifest: toml::Value =
-        toml::from_str(include_str!("../Cargo.toml")).expect("Cargo.toml parses");
-    let skills = manifest["package"]["metadata"]["symposium"]["skills"]
-        .as_array()
-        .unwrap();
+    assert!(SKILLS.contains(&"habeas-bootstrap-requirements"));
     assert!(
-        skills
-            .iter()
-            .any(|skill| skill["source"]["path"].as_str() == Some("assets/skills")),
-        "{skills:?}"
-    );
-    let raw = include_str!("../assets/skills/habeas-bootstrap-requirements/SKILL.md");
-    assert!(
-        raw.starts_with(
-            "---\nname: habeas-bootstrap-requirements\ndescription: Use when adopting Habeas in an existing codebase"
-        ),
-        "{raw}"
+        description("habeas-bootstrap-requirements")
+            .starts_with("Use when adopting Habeas in an existing codebase"),
     );
     assert_phrases(
         "habeas-bootstrap-requirements",
@@ -3010,62 +3850,647 @@ fn bootstrap_skill_is_bundled_and_directs_complete_inventories() {
     );
 }
 
-// {test}`requirements.cli.requirements_review_skill`
+// {test}`requirements.cli.bootstrap_skill.review`
 #[test]
-fn bundled_skills_require_agreed_requirements_before_code() {
-    // Draft IDs and exact text, review in turn, obtain agreement, install, and
-    // only then code.
-    assert_in_order(
-        "habeas-requirements",
-        &[
-            "the smallest set of new or changed obligations",
-            "full names, and exact fenced text",
-            "Write the drafts into the chapter as uncommitted edits",
-            "Review each new or changed requirement with the user in turn",
-            "present its exact text",
-            "point out ambiguity, obligations that are hard to test or that nothing would enforce, and conflicts with other requirements",
-            "propose specific improvements to accept, revise, or reject",
-            "apply the decisions before moving on",
-            "no implementation or test code, and no commit of the drafts, until the user agrees",
-            "a general request to build the feature does not",
-            "Make sure the book contains exactly the approved text",
-            "Implement, add tests",
-        ],
+fn bootstrap_skill_reviews_inferred_requirements_before_committing_or_tagging() {
+    const SKILL: &str = "habeas-bootstrap-requirements";
+    assert_phrases(SKILL, &["every requirement starts as a proposal"]);
+    let propose = step_of(SKILL, "Propose requirements for the area");
+    let review = step_of(
+        SKILL,
+        "Review, agree, and commit them through habeas-requirements steps 3 to 5",
     );
-    // Substantive changes to agreed obligations.
-    assert_phrases(
-        "habeas-requirements",
+    let tag = step_of(SKILL, "Tag the area's tests and root items");
+    assert!(propose < review && review < tag);
+    assert!(step(SKILL, propose).contains("proposing any changes to their text"));
+    assert_text(
+        "review step",
+        &step(SKILL, review),
         &[
-            "If implementation shows that an approved obligation must change substantively, review the revised text with the user before coding the change",
-        ],
-    );
-    assert_phrases(
-        "habeas-evidence",
-        &[
-            "Review every change to an agreed requirement's text with the user first, as the habeas-requirements skill describes, even a rewording for precision",
-        ],
-    );
-    // Inferred requirements are reviewed with the user, area by area, before
-    // installation.
-    assert_in_order(
-        "habeas-bootstrap-requirements",
-        &[
-            "every requirement starts as a proposal",
-            "Repeat steps 4 to 7 for each area",
-            "Propose requirements for the area",
-            "Review them with the user in turn as habeas-requirements step 3 describes",
             "a general request to bootstrap is not agreement to specific text",
             "don't commit a requirement or tag code against it until the user agrees to its text",
-            "Install the agreed requirements in the area's chapter",
-            "Tag the area's tests and root items",
+            "Remove drafts the user rejects, defers, or has not decided from the chapter, and keep them on the gap list",
         ],
     );
-    // Missing or false evidence is acceptable; no placeholder evidence.
+    // Each area's requirements are committed together, as habeas-requirements
+    // commits all groups, before that area is tagged.
+    assert!(
+        section(skill_md(SKILL), "## Workflow")
+            .contains(&format!("Repeat steps {propose} to 7 for each area"))
+    );
+    assert_phrases("habeas-requirements", &["commit it, all groups together"]);
+}
+
+// {test}`requirements.cli.pending_evidence_guidance`
+#[test]
+fn the_evidence_skill_reports_findings_expected_while_implementation_is_pending() {
+    assert_text(
+        "report step",
+        &step(
+            "habeas-evidence",
+            step_of(
+                "habeas-evidence",
+                "Stop and report each finding that needs the user",
+            ),
+        ),
+        &[
+            "a missing record or false judgment whose rationale names only implementation that is still pending, which is expected",
+            "Don't keep iterating on those",
+        ],
+    );
+}
+
+// {test}`requirements.cli.pending_evidence_guidance.no_placeholder`
+#[test]
+fn the_evidence_skill_never_writes_placeholder_evidence_for_pending_work() {
+    assert_text_in_order(
+        "report step",
+        &step(
+            "habeas-evidence",
+            step_of(
+                "habeas-evidence",
+                "Stop and report each finding that needs the user",
+            ),
+        ),
+        &[
+            "names only implementation that is still pending",
+            "never write placeholder evidence",
+        ],
+    );
+}
+
+// {test}`requirements.authoring.batch`
+#[test]
+fn bundled_skills_direct_the_agent_to_the_authoring_harness() {
+    // habeas-evidence is the home of the authoring workflow.
     assert_phrases(
         "habeas-evidence",
         &[
-            "each missing evidence record or false judgment expected because implementation is pending",
-            "Never write or edit evidence JSON, determinations, rationales, or inputs yourself",
+            "`habeas author --all` assesses every definition whose evidence is missing, stale, or invalid and skips current ones",
+            "Never write or edit evidence JSON, determinations, rationales, or inputs yourself, and never hand that to another agent",
+            "Fix the source, tests, references, or requirement text instead",
+        ],
+    );
+    // The other skills run the command or defer to habeas-evidence.
+    assert_phrases(
+        "habeas-requirements",
+        &["Next, follow the habeas-evidence skill to author evidence and fix what it reports"],
+    );
+    assert_phrases(
+        "habeas-bootstrap-requirements",
+        &[
+            "Citation reviews are authored only by `habeas author --all`",
+            "Follow the habeas-evidence workflow for this area's definitions",
+            "Never write evidence yourself or ask another agent to",
+        ],
+    );
+    assert_phrases(
+        "habeas",
+        &["Never write or edit evidence yourself, or ask another agent to"],
+    );
+}
+
+// {test}`requirements.cli.info`
+#[test]
+fn bundled_skills_inspect_definitions_with_habeas_info() {
+    assert_phrases(
+        "habeas",
+        &[
+            "`habeas info <selection>` prints requirement and example text, evidence state, rationale, inputs, and validation findings",
+        ],
+    );
+    assert_phrases(
+        "habeas-requirements",
+        &["`habeas info <selection>` prints a requirement's text and state"],
+    );
+    assert_phrases(
+        "habeas-evidence",
+        &["`habeas info <name>` shows one definition's judgment, rationale, and findings"],
+    );
+}
+
+// {test}`requirements.references.anchors.guidance`
+#[test]
+fn bundled_skills_limit_anchors_to_files_whose_items_cannot_carry_references() {
+    assert_text(
+        "syntax details",
+        &section(
+            skill_file("habeas", "references/syntax-details.md"),
+            "## Anchors",
+        ),
+        &[
+            "When a file that implements or tests a requirement cannot carry a reference",
+            "Don't anchor a file whose items can carry a reference themselves",
+        ],
+    );
+}
+
+// {test}`requirements.cli.internal_detail_guidance`
+// {test}`requirements.cli.behavior_review_guidance`
+#[test]
+fn bundled_skills_direct_the_reference_procedure_and_report_items_without_one() {
+    // habeas-requirements is the home of the reference procedure; its steps
+    // come in order.
+    assert_text_in_order(
+        "choosing references",
+        &section(skill_md("habeas-requirements"), "## Choosing references"),
+        &[
+            "a type does when the requirement constrains its fields, variants, serialized form, or validation",
+            "For each requirement or example an item could reference",
+            "1. A test designed to verify it gets `{test}`",
+            "2. Otherwise a root gets `{impl}`",
+            "3. Otherwise, code that should be re-checked when the requirement changes gets `{cite}`",
+            "and it serves other code and carries out no requirement itself, it gets `` // {cite}`habeas:util` ``",
+            "That includes code a library calls, such as a trait implementation it requires",
+            "propose a requirement stating the invariant and `{impl}` it",
+            "Don't propose grouping requirements that state no checkable obligation",
+            "An item that neither carries out a requirement nor serves other code needs a requirement or is not needed: report it to the user with a proposed requirement, or as dead code if nothing reaches it. Don't delete it unasked",
+        ],
+    );
+    // The other skills refer to the procedure rather than restate it.
+    assert_phrases(
+        "habeas-evidence",
+        &[
+            "choose references by \"Choosing references\" in the habeas-requirements skill",
+            "| coverage-loss review says `not needed`, and the item serves other code | add `` // {cite}`habeas:util` `` |",
+        ],
+    );
+    assert_phrases(
+        "habeas-bootstrap-requirements",
+        &[
+            "\"Choosing references\" in the habeas-requirements skill",
+            "write a requirement for the invariant they check",
+            "An item that neither carries out a requirement nor serves other code goes on the gap list: it needs a requirement or is not needed",
+        ],
+    );
+    for name in SKILLS
+        .into_iter()
+        .filter(|name| *name != "habeas-requirements")
+    {
+        assert!(
+            !bundled_skill(name).contains("fields, variants, serialized form, or validation"),
+            "{name} restates the reference procedure"
+        );
+    }
+    for name in SKILLS {
+        let text = bundled_skill(name);
+        for grouping in [
+            "internal.config_parsing",
+            "catch-all",
+            "internal-detail requirement",
+        ] {
+            assert!(!text.contains(grouping), "{name} suggests {grouping:?}");
+        }
+        for waiver in ["may waive", "can waive", "waiver applies", "is exempt"] {
+            assert!(
+                !text.to_lowercase().contains(waiver),
+                "{name} offers a waiver"
+            );
+        }
+    }
+}
+
+// {test}`requirements.cli.behavior_review_guidance`
+#[test]
+fn bundled_skills_direct_behavior_review_against_requirements() {
+    // Every observable branch, and no unspecified behavior.
+    assert_phrases(
+        "habeas-requirements",
+        &[
+            "Every end-user-observable result of the code, including errors and input handling, must follow from a requirement the user agreed to",
+        ],
+    );
+    assert_phrases(
+        "habeas-bootstrap-requirements",
+        &[
+            "distinct observable branches",
+            "every observable branch has been reviewed",
+        ],
+    );
+    assert_phrases(
+        "habeas-evidence",
+        &["Behavior with no requirement needs one agreed with the user"],
+    );
+    // The requirement and example review criteria, including test adequacy and
+    // justified absence of tests; habeas-requirements is their home.
+    assert_text(
+        "what the review checks",
+        &section(skill_md("habeas-requirements"), "## What the review checks"),
+        &[
+            "an obligation the `{impl}` code does not implement completely and exactly as stated",
+            "code that carries out part of the requirement but is not reachable from its `{impl}` items, including code that only cites it, and a test that verifies it without `{test}`",
+            "observable behavior in `{impl}` code that no requirement implemented there specifies",
+            "obligations, boundaries, and failure cases no test runs and asserts",
+            "A test may be omitted only for code with no logic of its own, or code that needs network services, real time, or process-wide state no project test sets up",
+            "an obligation that a value stays unchanged, distinct, or present always needs a test",
+            "An example's review checks that tests' setup and assertions cover its scenario and each expected outcome",
+            "One acknowledged gap does not excuse others",
+        ],
+    );
+    assert_phrases(
+        "habeas-evidence",
+        &[
+            "A false rationale names one of the gaps listed in \"What the review checks\" in the habeas-requirements skill",
+        ],
+    );
+    // The three outcomes and the documented-gap convention; habeas-evidence is
+    // the home of FIXME judgments.
+    assert_phrases(
+        "habeas-evidence",
+        &[
+            "| false judgment | read the rationale",
+            "A FIXME judgment, such as `{\"FIXME\": [\"rust-lang/rust#123\"]}`, means `{fixme}` references to the definition acknowledge every remaining gap",
+            "Validation accepts it like `true` when all other checks pass",
+            "// :github: rust-lang/rust#123",
+            "A plain `FIXME` or `TODO` comment does not count",
+        ],
+    );
+    assert_phrases(
+        "habeas-requirements",
+        &["To defer a gap the user agrees to, use `{fixme}`"],
+    );
+    // Roots get `{impl}`, tests `{test}`, and `{cite}` only for related code.
+    assert_text(
+        "choosing references",
+        &section(skill_md("habeas-requirements"), "## Choosing references"),
+        &[
+            "1. A test designed to verify it gets `{test}`",
+            "2. Otherwise a root gets `{impl}`. Leave what it reaches unmarked",
+            "`{cite}` needs no coverage and implements nothing",
+        ],
+    );
+    assert_phrases(
+        "habeas-bootstrap-requirements",
+        &["`{test}` on tests and `{impl}` on roots; code a root or test reaches needs none"],
+    );
+    // Interacting requirements, and a citation alone is not an explanation.
+    assert_phrases(
+        "habeas-requirements",
+        &[
+            "If a behavior follows only from several requirements together, mark each with `{impl}` where it applies and add fenced commentary saying how they combine",
+            "a reference alone would not say why `^C` is accepted",
+        ],
+    );
+    assert_phrases(
+        "habeas-bootstrap-requirements",
+        &[
+            "Where one behavior follows from several requirements, mark each with `{impl}` where it applies and explain how they combine",
+        ],
+    );
+}
+
+// {test}`requirements.cli.behavior_review_guidance`
+// {test}`requirements.cli.internal_detail_guidance`
+#[test]
+fn bundled_skills_mark_roots_and_handle_uncovered_items() {
+    const ROOT: &str = "A *root* is an item that carries out part of a requirement and that no other `{impl}` item for it reaches";
+    // habeas-requirements is the home of roots: reach goes downward only.
+    assert_text_in_order(
+        "choosing references",
+        &section(skill_md("habeas-requirements"), "## Choosing references"),
+        &[
+            "what an item calls, the types it uses, and the trait methods it calls, transitively",
+            "Callers don't count",
+            ROOT,
+            "Roots are per requirement",
+            "Helpers the test calls need nothing",
+            "Leave what it reaches unmarked",
+            "Don't remove an existing `{impl}` from code a root reaches unless the user asks",
+        ],
+    );
+    // Coverage comes from a reference or a current read, never a search, and
+    // reads exist only after authoring.
+    assert_text(
+        "requirements gotchas",
+        &section(skill_md("habeas-requirements"), "## Gotchas"),
+        &[
+            "by its own reference, or by a current assessment that read it or an enclosing item",
+            "Search results only locate code; they cover nothing",
+            "Reads exist only after `habeas author`, so author before treating an item as uncovered",
+        ],
+    );
+    // habeas-evidence handles items still uncovered after authoring, acting on
+    // the coverage-loss review.
+    assert_text_in_order(
+        "uncovered Rust items",
+        &section(skill_md("habeas-evidence"), "### Uncovered Rust items"),
+        &[
+            "`habeas author` runs a coverage-loss review when a record it replaces read the item and the new one does not",
+            "Before acting on a `not needed` finding, check from its rationale and the code whether the earlier read was mistaken",
+            "for each item still uncovered after `habeas author --all`",
+            "| coverage-loss review says `root` | add `{impl}` of that definition to the item |",
+            "| coverage-loss review says `not needed`, and nothing reaches the item | report it to the user as dead code; don't delete it unasked |",
+        ],
+    );
+    assert_phrases(
+        "habeas-evidence",
+        &[
+            "except uncovered Rust items: leave those until after step 3, because an assessment that reads an item covers it",
+            "| rationale names code the reviewer found only by searching | add `{impl}` to the item it names, making it a root",
+        ],
+    );
+    assert_phrases(
+        "habeas-bootstrap-requirements",
+        &["Leave uncovered items for now"],
+    );
+    // The other skills refer to the definition of a root rather than restate it.
+    for name in SKILLS
+        .into_iter()
+        .filter(|name| *name != "habeas-requirements")
+    {
+        assert!(!bundled_skill(name).contains(ROOT), "{name} restates roots");
+    }
+}
+
+// {test}`requirements.cli.flip_guidance`
+#[test]
+fn bundled_skills_treat_disagreeing_assessments_as_findings() {
+    const GOAL: &str = "The goal is that independent assessments of the same subject reach the same determination, because the requirement, code, and tests leave no gap a careful reviewer could find and no reading a careful reviewer could take differently";
+    // habeas-evidence is the home: the goal leads and the procedure follows.
+    assert_text_in_order(
+        "disagreeing assessments",
+        &section(skill_md("habeas-evidence"), "## Disagreeing assessments"),
+        &[
+            GOAL,
+            "Assessments that disagree are findings against that goal",
+            "Read both assessments",
+            "Decide whether one found a real gap or the requirement text admits more than one reading",
+            "Fix the source or tests, or tighten the requirement text through habeas-requirements steps 3 to 5",
+        ],
+    );
+    // Never re-run for a different determination; a change to agreed text is
+    // reviewed with the user, then explained in its commit message.
+    assert_text_in_order(
+        "rules",
+        &section(skill_md("habeas-evidence"), "## Rules"),
+        &[
+            "Never re-run an assessment to get a different result",
+            "Fix the source, tests, references, or requirement text instead",
+            "A change to agreed requirement text, even a rewording, goes through habeas-requirements steps 3 to 5 (subagent review, the user's agreement, commit) first",
+            "Then give the reason, and the rationale that prompted it, in the message of the commit that makes it, describing the change relative to the prior commit rather than the drafts that led to it",
+        ],
+    );
+    assert_phrases(
+        "habeas-requirements",
+        &[
+            "For a change to agreed text, the message gives the reason and the rationale that prompted it, relative to the prior commit (habeas-evidence, \"Rules\")",
+        ],
+    );
+    // The other skills point to it rather than restate it.
+    assert_phrases(
+        "habeas-requirements",
+        &["When assessments disagree, follow its \"Disagreeing assessments\""],
+    );
+    assert_phrases(
+        "habeas-bootstrap-requirements",
+        &["follow \"Disagreeing assessments\" in the habeas-evidence skill"],
+    );
+    assert_text(
+        "habeas gotchas",
+        &section(skill_md("habeas"), "## Gotchas"),
+        &[
+            "When assessments of the same subject disagree, follow \"Disagreeing assessments\" in the habeas-evidence skill",
+        ],
+    );
+    let (_, last) = workflow_steps("habeas-refactor").pop().unwrap();
+    assert_text(
+        "habeas-refactor's last step",
+        &last,
+        &[
+            "following the habeas-evidence skill, and if assessments disagree, its \"Disagreeing assessments\"",
+        ],
+    );
+    for name in SKILLS.into_iter().filter(|name| *name != "habeas-evidence") {
+        assert!(
+            !bundled_skill(name).contains(GOAL),
+            "{name} restates the goal"
+        );
+    }
+    // No skill keeps a separate log of requirement changes.
+    for name in SKILLS {
+        assert!(
+            !bundled_skill(name).contains("audit log"),
+            "{name} mentions an audit log"
+        );
+    }
+}
+
+/// The habeas skill's reference on distributed requirements, raw.
+// {cite}`habeas:util`
+fn distributed_reference() -> &'static str {
+    skill_file("habeas", "references/distributed-requirements.md")
+}
+
+// {test}`requirements.cli.distributed_guidance`
+#[test]
+fn bundled_skills_explain_distributed_requirements() {
+    assert_phrases(
+        "habeas",
+        &[
+            "read [references/distributed-requirements.md](references/distributed-requirements.md) before drafting it",
+        ],
+    );
+    // What they are, the two query kinds, and each query's keys.
+    assert_text_in_order(
+        "distributed requirements",
+        &collapse(distributed_reference()),
+        &[
+            "# Distributed requirements",
+            "A distributed requirement instead declares queries that find its sites, and Habeas reviews each site separately",
+            "## Queries",
+            "`:::{sites} <name>` selects the places the obligation applies",
+            "`:::{violations} <name>` selects constructs likely to break it",
+            "Each needs `within: <site query>`",
+            "Each body has these keys: `language`",
+            "`within`, required for violation queries; and `match` and `no_match` snippet lists",
+            "Each site-query match makes a site",
+        ],
+    );
+}
+
+// {test}`requirements.cli.distributed_guidance.when`
+#[test]
+fn bundled_skills_make_a_requirement_distributed_only_for_per_site_obligations() {
+    assert_text(
+        "Do list",
+        &section(distributed_reference(), "## Do"),
+        &[
+            "Make a requirement distributed only when its obligation applies on its own at each site; when particular code carries out the requirement as a whole, use `{impl}` there.",
+            "Separate obligations each site upholds from obligations particular code carries out, and mark that code `{impl}`.",
+        ],
+    );
+}
+
+// {test}`requirements.cli.distributed_guidance.queries`
+#[test]
+fn bundled_skills_direct_exact_site_queries_violation_queries_and_snippets() {
+    assert_text(
+        "Do list",
+        &section(distributed_reference(), "## Do"),
+        &[
+            "check that the site queries select every place the obligation applies and no others",
+            "Write a violation query, with `within` naming the site query, for every kind of construct that could break the obligation",
+            "Give every query `match` and `no_match` snippets that test its conditions",
+            "This applies to violation queries too.",
+        ],
+    );
+}
+
+// {test}`requirements.cli.distributed_guidance.site_text`
+#[test]
+fn bundled_skills_describe_sites_as_queries_select_them_with_checkable_obligations() {
+    assert_text(
+        "Do list",
+        &section(distributed_reference(), "## Do"),
+        &[
+            "Describe sites exactly as the site queries select them. When a query relies on a convention, such as how a variable is named, state the convention as an obligation",
+        ],
+    );
+    assert_text(
+        "Don't list",
+        &section(distributed_reference(), "## Don't"),
+        &[
+            "Don't describe sites more broadly than the queries select",
+            "Don't state a per-site obligation that a reviewer cannot check from the site and the helpers it calls",
+        ],
+    );
+}
+
+// {test}`requirements.cli.distributed_guidance.reviews`
+#[test]
+fn bundled_skills_explain_site_references_and_site_reviews() {
+    assert_text(
+        "Do list",
+        &section(distributed_reference(), "## Do"),
+        &["Let `habeas author --all` author the site reviews."],
+    );
+    assert_text(
+        "Don't list",
+        &section(distributed_reference(), "## Don't"),
+        &[
+            "Don't reference the distributed requirement from a site just because it is a site; sites need none.",
+            "Don't re-run a false site review for a different result; fix the site, or tighten the queries or the text",
+        ],
+    );
+    assert_text(
+        "distributed review",
+        &section(distributed_reference(), "## Review"),
+        &["`habeas author --all` authors a site review for each site"],
+    );
+    assert_text_in_order(
+        "site reviews",
+        &section(
+            skill_file("habeas-evidence", "references/reviews.md"),
+            "## Site reviews",
+        ),
+        &[
+            "authored by `habeas author --all`",
+            "1. If it does apply, fix the code at the site.",
+            "2. If the site should not be covered, narrow the site query or tighten the text describing sites; if the obligation's text admits a reading under which the site fails, tighten that text",
+            "take them through habeas-requirements steps 3 to 5",
+        ],
+    );
+}
+
+// {test}`requirements.cli.distributed_guidance.lists`
+#[test]
+fn bundled_skills_give_distributed_guidance_as_do_and_dont_lists() {
+    let reference = distributed_reference();
+    for (heading, prefix) in [("## Do", "- "), ("## Don't", "- Don't ")] {
+        let (_, rest) = reference.split_once(&format!("\n{heading}\n")).unwrap();
+        let list = rest.split("\n## ").next().unwrap();
+        let items = list
+            .lines()
+            .filter(|line| line.starts_with("- "))
+            .collect::<Vec<_>>();
+        assert!(items.len() >= 2, "{heading}");
+        for item in &items {
+            assert!(item.starts_with(prefix), "{heading}: {item}");
+        }
+    }
+    // The guidance of each part is an item of one of the lists.
+    let lists = format!(
+        "{} {}",
+        section(reference, "## Do"),
+        section(reference, "## Don't")
+    );
+    assert_text(
+        "Do and Don't lists",
+        &lists,
+        &[
+            "- Make a requirement distributed only when",
+            "- Separate obligations each site upholds",
+            "- Write a violation query",
+            "- Give every query `match` and `no_match` snippets",
+            "check that the site queries select every place the obligation applies and no others",
+            "- Describe sites exactly as the site queries select them",
+            "- Don't describe sites more broadly",
+            "- Don't state a per-site obligation",
+            "- Don't reference the distributed requirement from a site",
+            "- Let `habeas author --all` author the site reviews.",
+            "- Don't re-run a false site review for a different result",
+        ],
+    );
+}
+
+// {test}`requirements.cli.distributed_guidance.bootstrap`
+#[test]
+fn bootstrap_skill_proposes_distributed_requirements_for_conventions() {
+    assert_text(
+        "proposing requirements",
+        &section(
+            skill_md("habeas-bootstrap-requirements"),
+            "## Proposing requirements",
+        ),
+        &["propose a distributed requirement instead of marking each site `{impl}`"],
+    );
+}
+
+// {test}`requirements.cli.refactor_skill`
+#[test]
+fn the_refactor_skill_is_used_for_moves_and_requirement_renames() {
+    let description = description("habeas-refactor");
+    for phrase in [
+        "Use when a change moves code, tests, or requirements in a Habeas project to another file, chapter, or outline node",
+        "splitting or merging modules or chapters",
+        "moving or renaming a requirement",
+        "so that evidence whose content is unchanged is not invalidated",
+    ] {
+        assert!(description.contains(phrase), "{phrase}");
+    }
+}
+
+// {test}`requirements.cli.refactor_skill.workflow`
+#[test]
+fn the_refactor_skill_moves_first_then_updates_evidence_with_habeas_refactor() {
+    assert_in_order(
+        "habeas-refactor",
+        &[
+            "Make the move with your own edits",
+            "Change nothing else in this step",
+            "`habeas refactor --dry-run` with one `--map <old>=<new>` for every moved file or directory, node, and definition name",
+            "Review the report",
+            "lists the records it updates, with each code span in their rationales that still mentions an old path",
+            "lists records a mapping affects that fail a check",
+            "Run the same command without `--dry-run`",
+            "`habeas status`. Only the records the report left unchanged",
+            "Commit the move, the rewritten references, and the `evidence/` changes together, before any change to behavior or text",
+            "Next, reassess what remains stale with `habeas author --all`, following the habeas-evidence skill",
+        ],
+    );
+}
+
+// {test}`requirements.cli.refactor_skill.limits`
+#[test]
+fn the_refactor_skill_never_hand_edits_evidence_and_a_rename_is_not_a_move() {
+    assert_text(
+        "refactor gotchas",
+        &section(skill_md("habeas-refactor"), "## Gotchas"),
+        &[
+            "Never edit evidence files by hand to follow a move",
+            "A rename is not a move. Renaming a function, type, or other item changes its code",
+            "its evidence needs reassessment",
+            "Editing moved code or text in the same step leaves every record that read it stale",
         ],
     );
 }

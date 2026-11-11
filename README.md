@@ -20,7 +20,7 @@ cargo add --dev habeas
 cargo agents sync
 ```
 
-Run `cargo agents sync` in your terminal and choose **Enable** when it offers Habeas's plugin. The plugin provides Habeas's bundled skills. Its session-start hook checks the project and advises the agent to run `habeas setup` when configuration is incomplete.
+Run `cargo agents sync` in your terminal and choose **Enable** when it offers Habeas's plugin. The plugin provides Habeas's bundled skills. Its session-start hook tells the agent that the project tracks requirements with Habeas and to load the `habeas` skill before starting any work. The hook also checks the project and advises the agent to run `habeas setup` when configuration is incomplete.
 
 To configure the project before starting an agent session, or if the hook is unavailable in your agent, run `cargo install habeas` and `habeas setup` yourself. For development from a checkout, use `cargo install --path .`.
 

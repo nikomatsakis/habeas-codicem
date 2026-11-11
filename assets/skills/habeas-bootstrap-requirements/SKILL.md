@@ -1,6 +1,6 @@
 ---
 name: habeas-bootstrap-requirements
-description: Use when adopting Habeas in an existing codebase, when validation reports uncovered items across most of a project's code, or when the user asks for a requirements coverage audit. Inventories tests, Rust items, and user-visible behavior; proposes an initial requirement set for the user's approval; tags every test and each requirement's root items; and drives `habeas author --all` and validation to full coverage. For a single behavior change, use habeas-requirements; to refresh evidence or fix a few validation failures, use habeas-evidence; to move code or requirements without changing them, use habeas-refactor.
+description: Use when adopting Habeas in an existing codebase, when validation reports uncovered items across most of a project's code, or when the user asks for a requirements coverage audit. Inventories tests, Rust items, and user-visible behavior; proposes an initial requirement set for the user's approval; tags every test and each requirement's root items; and drives `habeas author` and validation to full coverage. For a few uncovered items, use habeas-evidence.
 ---
 
 # Bootstrap requirements
@@ -16,46 +16,52 @@ Steps 1 to 3 run once. Repeat steps 4 to 7 for each area, such as one command
 or module, then do steps 8 and 9. In a large codebase, give each area's reading
 to a subagent to keep it out of your context.
 
-- [ ] 1. Read the habeas-requirements skill; it defines the directive syntax,
-      the reference procedure, and the review criteria. Aim for accurate
-      references, not a coverage number. If the project has no
+- [ ] 1. Read the habeas skill for directive syntax, and the habeas-requirements
+      skill: its steps 3 to 5 review, agree, and commit requirements, and its "Choosing
+      references" and "What the review checks" sections govern tagging. Aim for
+      accurate references, not a coverage number. If the project has no
       `tests/habeas.rs` calling `habeas::validate()`, Habeas is not set up: ask
       before running `habeas setup`. If a requirement already exists, confirm
       authoring works with `habeas author --stdout <full-name>`, which always
-      assesses and writes no evidence. If it fails, see the habeas-evidence
-      skill.
+      assesses and writes no evidence. If it fails, read the habeas-evidence
+      skill's `references/authoring-failures.md`.
 - [ ] 2. Read the existing requirements, documentation, public entry points,
       implementation, and tests. Follow behavior through the code rather than
       relying on test names or top-level dispatch.
 - [ ] 3. Build the inventories and the gap list (below).
 - [ ] 4. Propose requirements for the area (below), reusing existing ones by
-      full name and proposing any changes to their text. Review them with the
-      user in turn as habeas-requirements step 3 describes; a general request to
-      bootstrap is not agreement to specific text.
-      **Gate:** drafts may be uncommitted edits to the chapter, as in
-      habeas-requirements step 2, but don't commit a requirement or tag code
-      against it until the user agrees to its text. Remove undecided drafts
-      from the chapter and keep them on the gap list.
-- [ ] 5. Install the agreed requirements in the area's chapter, one file per
-      area, such as `md/requirements/cli.md` for `requirements.cli.*`; add a
-      new chapter to `SUMMARY.md` and `git add` it.
+      full name and proposing any changes to their text. Write them as
+      uncommitted edits to the area's chapter, one file per area, such as
+      `md/requirements/cli.md` for `requirements.cli.*`; for a new chapter, add
+      it to `SUMMARY.md` and `git add -N` it so reviewers see it.
+- [ ] 5. Review, agree, and commit them through habeas-requirements steps 3 to
+      5; a general request to bootstrap is not agreement to specific text.
+      **Gate:** don't commit a requirement or tag code against it until the user
+      agrees to its text. Remove drafts the user rejects, defers, or has not
+      decided from the chapter, and keep them on the gap list.
 - [ ] 6. Tag the area's tests and root items (below). In the first area, if step 1
       had no requirement to try, run `habeas author <full-name>` on one of the
       area's requirements to confirm authoring works before going on.
-- [ ] 7. Run `cargo test --workspace`, which makes no model calls, and fix the
-      reference errors in this area's files. Leave uncovered items for now:
-      assessments that read reached code cover it, and none have run yet.
-      Uncovered items in areas not yet bootstrapped wait for their own pass;
-      never give them placeholder references. Tell the user how many
-      definitions `habeas status` says need authoring, then follow the
-      habeas-evidence workflow for this area's definitions, running
-      `habeas author <full-name>` for each, or `habeas author --all`, which
-      authors everything needing it and costs more, until each passes or is on
-      the gap list with a reason, and this area's items are covered. Full
-      validation can pass only after the last area.
+- [ ] 7. Validate and author the area:
+      - [ ] a. Run `cargo test --workspace`, which makes no model calls, and fix
+            the reference errors in this area's files. Leave uncovered items for
+            now: assessments that read reached code cover them, and none have
+            run yet. Items in areas not yet bootstrapped wait for their own
+            pass; never give them placeholder references.
+      - [ ] b. Tell the user how many definitions `habeas status` says need
+            authoring.
+      - [ ] c. Follow the habeas-evidence workflow for this area's definitions,
+            running `habeas author <full-name>` for each, and
+            `habeas author sites:<full-name>` for each distributed requirement,
+            until each passes or is on the gap list with a reason. Citation
+            reviews are authored only by `habeas author --all`, which also
+            authors other areas' definitions: run it once the area's own
+            definitions pass, then check that this area's items are covered.
+            Full validation can pass only after the last area.
 - [ ] 8. Have a fresh subagent recount both inventories from the source and tests
       without your lists, and reconcile any differences.
-- [ ] 9. Report (below).
+- [ ] 9. Report (below). Next: for gap-list items the user decides, follow the
+      habeas-requirements skill.
 
 ## Inventories
 
@@ -83,8 +89,8 @@ hides it from authoring.
 
 ## Proposing requirements
 
-Write one requirement per obligation a user could rely on; one requirement can
-cover a command's branches when one sentence states them. For tests of internal
+Write one requirement per obligation a user could rely on; the
+habeas-requirements review (step 3) splits compound ones. For tests of internal
 invariants, write a requirement for the invariant they check rather than
 inventing a user-facing promise. Label each proposal and act on the label:
 
@@ -92,21 +98,21 @@ inventing a user-facing promise. Label each proposal and act on the label:
 - **Possible bug:** ask the user what behavior is intended and write the
   requirement for that. Don't change the code during bootstrap unless the user
   asks; the resulting false judgment stays on the gap list, or gets a
-  `{fixme}` reference if the user defers it (see habeas-evidence).
+  `{fixme}` reference if the user defers it (the habeas-evidence skill's
+  `references/fixme.md`).
 - **Incidental:** the user chooses between a requirement, often with MAY, and
   removing the behavior. For example, a command that also accepts an
   undocumented alias.
 
 When a convention applies on its own at many sites, such as how every
 validation function continues after a failed check, propose a distributed
-requirement instead of marking each site `{impl}`; read the
-habeas-requirements skill's
-[references/distributed-requirements.md](../habeas-requirements/references/distributed-requirements.md).
+requirement instead of marking each site `{impl}`; read the habeas skill's
+`references/distributed-requirements.md`.
 
 ## Tagging
 
 Give every inventoried test and each requirement's roots their references by
-the procedure in the habeas-requirements skill: `{test}` on tests and `{impl}`
+"Choosing references" in the habeas-requirements skill: `{test}` on tests and `{impl}`
 on roots; code a root or test reaches needs none. Map each other inventoried
 item to the requirement whose root reaches it. Every test must end up with a `{test}` reference to a requirement or example,
 attached to the test as the habeas-requirements skill describes; a test whose behavior no agreed requirement states goes on the gap
@@ -138,5 +144,3 @@ exclude difficult cases.
   session (habeas-evidence explains why).
 - When assessments of the same subject disagree, follow "Disagreeing
   assessments" in the habeas-evidence skill.
-- `git add` new chapter and source files; references in untracked files don't
-  count.
