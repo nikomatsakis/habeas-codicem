@@ -100,10 +100,11 @@ no checkable obligation.
 :impl: assets/skills/habeas-evidence/SKILL.md
 :impl: assets/skills/habeas-requirements/SKILL.md
 :impl: assets/skills/habeas-bootstrap-requirements/SKILL.md
-Habeas's bundled agent skills MUST state the goal that independent assessments
+The `habeas-evidence` skill MUST state the goal that independent assessments
 of the same subject reach the same determination, because the requirement, code,
 and tests leave no gap a careful reviewer could find and no reading a careful
-reviewer could take differently. They MUST tell agents that assessments of the
+reviewer could take differently, and the other bundled skills MUST refer to it
+rather than restate it. The skills MUST tell agents that assessments of the
 same subject that disagree are findings against that goal. They MUST direct agents to read both
 rationales and decide whether one assessment found a real gap or the requirement
 text admits more than one reading, then fix the source or tests, or tighten the
@@ -111,9 +112,10 @@ requirement text, rather than re-running an assessment to obtain a different
 determination. Every change to agreed requirement text, including a rewording for precision,
 MUST be reviewed with the user under
 {cite}`requirements.cli.requirements_review_skill` before it is made, and the
-skills MUST then direct agents to record the old text, new text, reason, and the
-rationale that prompted the change in the project's audit log, such as
-`audits/requirement-rewordings/`.
+skills MUST then direct agents to give the reason, and the rationale that
+prompted the change, in the message of the commit that makes it. That message
+MUST describe the change relative to the prior commit, not the intermediate
+drafts that led to it.
 :::
 :::{req} distributed_guidance
 :impl: assets/skills/habeas-requirements/SKILL.md
