@@ -998,6 +998,7 @@ fn bundled_skills_direct_the_agent_to_the_authoring_harness() {
 
 // {test}`requirements.cli.internal_detail_guidance`
 // {test}`requirements.cli.skill_structure`
+// {test}`requirements.cli.behavior_review_guidance`
 #[test]
 fn bundled_skills_direct_the_reference_procedure_and_report_items_without_one() {
     // habeas-requirements is the home of the reference procedure; its steps

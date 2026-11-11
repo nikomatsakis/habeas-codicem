@@ -908,6 +908,7 @@ pub(crate) mod tests {
     }
 
     // {test}`requirements.configuration.evidence_paths`
+    // {test}`requirements.authoring.tool_descriptions.special_cases`
     #[test]
     fn evidence_rules_are_literal_paths_not_globs() {
         let root = tempfile::tempdir().unwrap();

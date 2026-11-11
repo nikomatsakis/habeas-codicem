@@ -1395,6 +1395,23 @@ pub(super) mod tests {
             "{error}"
         );
 
+        // An anchor naming a node its existing file lacks fails the same way.
+        fs::write(root.path().join("src/lib.rs"), "fn present() {}\n").unwrap();
+        fs::write(
+            root.path().join("md/requirements.md"),
+            ":::{req} ready\n:impl: src/lib.rs#fn[missing]\nThe project MUST be ready.\n:::\n",
+        )
+        .unwrap();
+        let error = AssessmentSources::prepare(root.path(), "requirements.ready")
+            .err()
+            .unwrap();
+        assert!(
+            error
+                .to_string()
+                .contains("cannot read :impl: anchor src/lib.rs#fn[missing]"),
+            "{error}"
+        );
+
         fs::create_dir_all(root.path().join("private")).unwrap();
         fs::write(root.path().join("private/skill.md"), "secret\n").unwrap();
         fs::write(

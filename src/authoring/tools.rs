@@ -100,22 +100,24 @@ pub(crate) fn dispatch_paged(
             Ok(delivery) => Ok(delivery),
             Err(listing) => deliver(Ok(listing)),
         }),
-        "list_files" => deliver(list_files(sources, arguments)).and_then(|delivery| {
-            with_not_listed(sources, arguments, NotListed::Children, delivery)
-        }),
+        "list_files" => {
+            deliver(list_files(sources, arguments).and_then(|listing| {
+                with_not_listed(sources, arguments, NotListed::Children, listing)
+            }))
+        }
         "outline" => deliver(outline(sources, arguments)),
-        "ripgrep" => deliver(search(sources, arguments)).and_then(|delivery| {
+        "ripgrep" => deliver(search(sources, arguments).and_then(|listing| {
             let pattern = regex::Regex::new(string(arguments, "pattern")?).ok();
-            with_not_listed(sources, arguments, NotListed::Text(pattern), delivery)
-        }),
-        "ast_grep" => deliver(structural(sources, arguments)).and_then(|delivery| {
+            with_not_listed(sources, arguments, NotListed::Text(pattern), listing)
+        })),
+        "ast_grep" => deliver(structural(sources, arguments).and_then(|listing| {
             let rule = arguments
                 .get("language")
                 .and_then(Value::as_str)
                 .zip(arguments.get("rule").and_then(Value::as_object))
                 .and_then(|(language, rule)| StructuralRule::compile(language, rule).ok());
-            with_not_listed(sources, arguments, NotListed::Rule(rule), delivery)
-        }),
+            with_not_listed(sources, arguments, NotListed::Rule(rule), listing)
+        })),
         "references" => deliver(references(sources, arguments)),
         "next_page" => check_keys(arguments, &["token"])
             .and_then(|()| pages.next_page(string(arguments, "token")?)),
@@ -153,11 +155,11 @@ fn with_not_listed(
     sources: &AssessmentSources,
     arguments: &Map<String, Value>,
     kind: NotListed,
-    mut delivery: ToolDelivery,
-) -> io::Result<ToolDelivery> {
+    listing: Listing,
+) -> io::Result<Listing> {
     // This is the first page; later pages come from next_page.
     if arguments.contains_key("referencing") {
-        return Ok(delivery);
+        return Ok(listing);
     }
     let requested = optional_path(arguments)?.trim_end_matches('/');
     let requested = if requested == "." { "" } else { requested };
@@ -218,33 +220,25 @@ fn with_not_listed(
         named.insert(name);
     }
     // A directory listing already shows a child it lists.
-    let listed: BTreeSet<String> = match delivery.result.get("entries").unwrap_or(&delivery.result)
-    {
-        Value::Array(entries) => entries
-            .iter()
-            .filter_map(|entry| entry.get("path").and_then(Value::as_str))
-            .map(str::to_owned)
-            .collect(),
-        _ => BTreeSet::new(),
-    };
+    let listed: BTreeSet<&str> = listing
+        .values()
+        .filter_map(|entry| entry.get("path").and_then(Value::as_str))
+        .collect();
     let not_listed: Vec<Value> = named
-        .into_iter()
-        .filter(|name| !listed.contains(name))
+        .iter()
+        .filter(|name| !listed.contains(name.as_str()))
         .map(|path| json!({"path": path, "reason": "untracked"}))
         .collect();
     if not_listed.is_empty() {
-        return Ok(delivery);
+        return Ok(listing);
     }
-    if !delivery.result.is_object() {
-        delivery.result = json!({"entries": delivery.result});
-    }
-    delivery.result["not_listed"] = Value::Array(not_listed);
-    Ok(delivery)
+    // On the first page, counted toward its size.
+    Ok(listing.with_extra("not_listed", Value::Array(not_listed)))
 }
 
 /// What a result containing redacted text tells the model, since tool
 /// descriptions do not explain redaction.
-const REDACTION_NOTE: &str = "[REDACTED:<kind>] replaces credential-shaped text in this result; the original text is not available.";
+pub(crate) const REDACTION_NOTE: &str = "[REDACTED:<kind>] replaces credential-shaped text in this result; the original text is not available.";
 
 /// Adds the redaction note to a result that contains redacted text, and only
 /// to such a result. A line showing the marker is redacted unless it appears
@@ -256,14 +250,25 @@ fn with_redaction_note(sources: &AssessmentSources, mut delivery: ToolDelivery) 
         return delivery;
     }
     let mut redacted = false;
+    // Requirement and definition text carries no file; its lines come from
+    // the book's raw declarations.
+    let declarations = std::cell::OnceCell::new();
     marked_lines(&delivery.result, None, &mut |file, line| {
-        let literal = file.is_some_and(|file| {
-            let parsed = sources.outlines.parse(&sources.root, file);
-            parsed
-                .as_ref()
-                .as_ref()
-                .is_ok_and(|parsed| parsed.source.lines().any(|source| source == line))
-        });
+        let literal = match file {
+            Some(file) => {
+                let parsed = sources.outlines.parse(&sources.root, file);
+                parsed
+                    .as_ref()
+                    .as_ref()
+                    .is_ok_and(|parsed| parsed.source.lines().any(|source| source == line))
+            }
+            None => declarations
+                .get_or_init(|| {
+                    crate::evidence::load_definitions(&sources.root).unwrap_or_default()
+                })
+                .values()
+                .any(|declaration| declaration.raw_lines.iter().any(|raw| raw == line)),
+        };
         redacted |= !literal;
     });
     if redacted && let Some(object) = delivery.result.as_object_mut() {
@@ -1922,6 +1927,7 @@ mod tests {
 
     // {test}`requirements.authoring.read_denial`
     // {test}`requirements.authoring.read_denial.untracked`
+    // {test}`requirements.authoring.tool_descriptions.special_cases`
     #[test]
     fn untracked_diagnostics_name_git_add_and_an_allow_rule() {
         let root = project();
@@ -3535,6 +3541,66 @@ mod tests {
         );
     }
 
+    // {test}`requirements.authoring.generated_inputs`
+    #[test]
+    fn an_external_build_directory_lists_its_generated_output() {
+        let root = project();
+        let external = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("src/lib.rs"), "pub fn ready() {}\n").unwrap();
+        fs::write(
+            root.path().join("Cargo.lock"),
+            "version = 4\n\n[[package]]\nname = 'fixture'\nversion = '0.1.0'\n",
+        )
+        .unwrap();
+        fs::create_dir_all(root.path().join(".cargo")).unwrap();
+        fs::write(
+            root.path().join(".cargo/config.toml"),
+            format!(
+                "[build]\ntarget-dir = {}\n",
+                toml::Value::String(external.path().display().to_string())
+            ),
+        )
+        .unwrap();
+        git(root.path(), &["init", "--quiet"]);
+        git(root.path(), &["add", "."]);
+        let out = external.path().join("debug/build/fixture-hash/out");
+        fs::create_dir_all(&out).unwrap();
+        fs::write(out.join("generated.rs"), "pub fn generated_needle() {}\n").unwrap();
+        fs::write(
+            out.parent().unwrap().join("root-output"),
+            out.to_str().unwrap(),
+        )
+        .unwrap();
+        let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        let listing = dispatch(&sources, "list_files", &json!({})).unwrap();
+        let out = fs::canonicalize(&out).unwrap();
+        let paths = listing
+            .result
+            .get("entries")
+            .unwrap_or(&listing.result)
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["path"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>();
+        assert!(
+            paths.iter().any(|path| std::path::Path::new(path) == out),
+            "{paths:?}"
+        );
+        let search = dispatch(
+            &sources,
+            "ripgrep",
+            &json!({"pattern": "generated_needle", "path": out.to_str().unwrap()}),
+        )
+        .unwrap();
+        assert_eq!(
+            search.result["matches"].as_array().unwrap().len(),
+            1,
+            "{}",
+            search.result
+        );
+    }
+
     // {test}`requirements.authoring.file_discovery`
     #[test]
     fn failed_listings_return_explanatory_tool_errors() {
@@ -3644,6 +3710,26 @@ mod tests {
         .result;
         assert!(literal.to_string().contains("[REDACTED:kind]"), "{literal}");
         assert!(literal.get("note").is_none(), "{literal}");
+        // So is requirement text that contains it, which names no file.
+        fs::write(
+            root.path().join("md/requirements.md"),
+            ":::{req} ready\nSecrets MUST read [REDACTED:kind].\n:::\n",
+        )
+        .unwrap();
+        let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        let requirement = dispatch_paged(
+            &sources,
+            &mut ResultPages::default(),
+            "habeas",
+            &json!({"requirements": "requirements.ready"}),
+        )
+        .unwrap()
+        .result;
+        assert!(
+            requirement.to_string().contains("[REDACTED:kind]"),
+            "{requirement}"
+        );
+        assert!(requirement.get("note").is_none(), "{requirement}");
     }
 
     // {test}`requirements.authoring.result_pages`
