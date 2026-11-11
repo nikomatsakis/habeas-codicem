@@ -1,7 +1,7 @@
 {
   "requirement": "A definition glob MUST match a complete full name. `*` MUST match zero or more characters, including dots; all other valid name characters MUST match literally. An empty glob MUST be invalid. Every definition selection MUST use this matching rule, including requirements evidence inputs, CLI definition filters, and the authoring `references` tool, and MUST match against both requirements and named examples.",
   "determination": true,
-  "rationale": "I found no gaps. Every definition selection goes through one shared matcher, and each obligation has a test that asserts its outcome.\n\n**Shared matcher (`src/definition_glob.rs`)**\n- `matches` is a dynamic-programming match over the whole name. `*` matches zero or more bytes, including dots, and every other byte must match literally. That covers \"match a complete full name\", \"`*` matches zero or more characters including dots\", and \"all other characters literal\".\n- `validate` rejects an empty glob. It also rejects any character other than ASCII alphanumerics, `.`, `_`, `-` and `*`, so only valid name characters are accepted.\n\n**Every selection path uses it and excludes named definitions**\n- `src/inputs.rs` `InputSelector::resolve`, `Requirements` arm: validates, then matches, skipping `DefinitionKind::Term`. It errors if nothing matches.\n  - It is reached from `source_input` in `src/authoring/inputs.rs` and from the `habeas` tool's `read`.\n  - Evidence input validation in `src/evidence.rs` (`validate_input`) also builds `InputSelector::Requirements`, so the same rule applies there.\n- `src/authoring/tools.rs` `references`: validates the selection, matches definitions (not terms), and matches reference sites and anchors with the same function.\n- `src/authoring/tools.rs` `referencing` (the `ripgrep` and `ast_grep` filters): validates and matches the same way.\n- `src/commands.rs` `status_markdown_with_options`, which calls `status_markdown_with_github`, and `info_markdown`: both validate the glob, match with `definition_glob::matches`, and skip terms.\n- Because every path matches against both requirements and examples and never terms, the \"against both requirements and named examples\" obligation is met.\n\n**Tests**\n- Matching rule (whole-name, `*` crossing dots, zero-or-more, literal characters, empty and invalid characters rejected): `definition_glob::tests::wildcard_crosses_dot_segments_and_matches_the_whole_name`.\n- Evidence inputs: `evidence::tests::requirements_inputs_track_matched_declarations_in_full_name_order`.\n  - It checks `foo.*.bar` matching `foo.a.bar` and `foo.a.b.bar` (an example and a requirement, with `*` crossing dots).\n  - It checks that `\"\"` and `foo.[a].bar` are rejected.\n- The authoring `habeas` read: `requirements_reads_select_requirements_and_examples_but_not_definitions`.\n- The `references` tool: `references_list_names_and_flattened_sites_without_recording_inputs`. It covers glob selection and rejection of `\"\"` and `\"bad name\"`.\n- `referencing` for `ripgrep` and `ast_grep`: `ripgrep_referencing_searches_only_referencing_files_or_nodes` and `ast_grep_referencing_restricts_the_search_as_ripgrep_does`.\n- CLI filters: `commands_report_invalid_arguments_and_unmatched_selectors` covers an invalid glob and `requirements.*ready` matching both `ready` and `xready`. `selections_match_requirements_and_examples_but_never_named_definitions` covers `status` and `info` on a glob, and exact selection of a named definition failing.",
+  "rationale": "The code meets `requirements.references.definition_globs`, and I found no gap.\n\n**Obligations and the code that carries them out**\n\n- **Match a complete full name, with `*` matching zero or more characters including dots.** `src/definition_glob.rs#fn[matches]` runs a dynamic-programming match over the whole name. `*` can consume zero or more bytes, dots included, and every other byte must equal the name's byte.\n- **Other valid name characters match literally, and an empty glob is invalid.** `src/definition_glob.rs#fn[validate]` rejects an empty pattern. It also rejects any character outside ASCII alphanumerics, `.`, `_`, `-` and `*`.\n- **Every definition selection uses this rule.** Each selection path calls `validate` and `matches`:\n  - Requirements evidence inputs and the `habeas` tool's `requirements` form: `src/inputs.rs#impl[InputSelector]/fn[resolve]` validates and then filters by `matches`. `src/authoring/inputs.rs#fn[source_input]` applies the same `matches`.\n  - CLI filters: `src/commands.rs#fn[status_markdown_with_github]`, reached through `status_markdown_with_options`, and `src/commands.rs#fn[info_markdown]`.\n  - Authoring `references` tool: `src/authoring/tools.rs#fn[references]`.\n  - `referencing` argument of `ripgrep` and `ast_grep`: `src/authoring/tools.rs#fn[referencing]`.\n- **Match both requirements and named examples.** Every one of those paths excludes only `DefinitionKind::Term`. Requirements and examples are therefore both selectable, and named definitions never are.\n\n**Reachability and unspecified behavior**\n\nAll glob logic goes through the single `definition_glob` module. The `{impl}` items reach everything else by calling it. I found no separate glob implementation. The one other \"selection\" I checked, `src/authoring/batch.rs#fn[run_batch]`, takes a config name rather than a definition glob. Behaviors such as the \"matches no requirement or example\" errors are part of the selection rule the text describes, so they are not unspecified.\n\n**Tests**\n\n- **Matching rule:** `src/definition_glob.rs#mod[tests]/fn[wildcard_crosses_dot_segments_and_matches_the_whole_name]` covers dot crossing, whole-name matching, zero characters, an empty glob and an invalid character.\n- **Evidence inputs:** `src/evidence.rs#mod[tests]/fn[requirements_inputs_track_matched_declarations_in_full_name_order]` covers a glob matching a requirement and an example, a `[` glob and an empty glob.\n- **Terms excluded:** `tests/definitions.rs#fn[selections_match_requirements_and_examples_but_never_named_definitions]` covers examples and requirements matching, named definitions not matching, and the CLI `status` and `info` paths.\n- **CLI:** `tests/commands.rs#fn[commands_report_invalid_arguments_and_unmatched_selectors]` covers an invalid `[` glob for `info` and `status`, an unmatched glob, and a `requirements.*ready` glob. The `status` glob tests in `tests/commands.rs#fn[verbose_status_lists_fixme_judgments_and_globs_scope_issue_groups]` and `tests/commands.rs#fn[status_preserves_repository_wide_rust_findings_in_every_form]` also exercise it.\n- **Authoring `references` tool:** `src/authoring/tools.rs#mod[tests]/fn[references_list_names_and_flattened_sites_without_recording_inputs]` covers a glob, an empty selection (`\"\"`) and a non-name selection (`\"bad name\"`).\n- **`habeas` tool:** `src/authoring/tools.rs#mod[tests]/fn[requirements_reads_select_requirements_and_examples_but_not_definitions]` covers a glob over requirements and examples, and a named definition not selected.\n- **`referencing` argument:** `src/authoring/tools.rs#mod[tests]/fn[ripgrep_referencing_searches_only_referencing_files_or_nodes]` and `src/authoring/tools.rs#mod[tests]/fn[ast_grep_referencing_restricts_the_search_as_ripgrep_does]` cover globs in the `referencing` argument.\n\nThere are no `{fixme}` references to acknowledge.",
   "references": "e33afeaa4a252d265fbc645047b6ff36bea7de48291c4c2dd1b57ee30dd597e3",
   "inputs": [
     {
@@ -23,7 +23,7 @@
     {
       "file": "src/authoring/tools.rs",
       "item": "fn[references]",
-      "hash": "547a8222c0aa3ef5b5844675be612e0690a23cd79bb1f7901fd8a3ac4ec9e760"
+      "hash": "7e9fe10423ecbfeee265dd4e33b0f9df01c429fdb20ff61fb87c24e085c72147"
     },
     {
       "file": "src/authoring/tools.rs",
@@ -38,7 +38,7 @@
     {
       "file": "src/authoring/tools.rs",
       "item": "mod[tests]/fn[references_list_names_and_flattened_sites_without_recording_inputs]",
-      "hash": "318774800234951b4558210f0083ba4b8331af1539cdab1d4585a52bff0e38c5"
+      "hash": "7aed1b9c5c360b2c97025b11ccfcd09309f6b8516767c80a412ff4296c135673"
     },
     {
       "file": "src/authoring/tools.rs",
@@ -92,28 +92,18 @@
     },
     {
       "file": "src/definition_glob.rs",
-      "item": "fn[validate]",
-      "hash": "a9c6ac4bd687d127e8cdd7c5d37c348cc921377fa1bec049296f5e7b1ea93594"
-    },
-    {
-      "file": "src/definition_glob.rs",
-      "item": "fn[matches]",
-      "hash": "a30bed9ac91239d8993e09d3c29e80176ffb7e0dca5aae286510e3f3be32f136"
-    },
-    {
-      "file": "src/definition_glob.rs",
-      "item": "mod[tests]",
-      "hash": "4b95b1fdb8f14bedc0e602c763ba8fd2aa1ca5208eaa7f60a6fa01693c608d1d"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "fn[read]",
-      "hash": "b6c181bdb647f5969daad3a4bdccea56aa57026e5b81c88a9a573a8071527038"
+      "item": "",
+      "hash": "993cd689a87caa558025bf91d8bb13141f619b6541dffd0f91a13ca2463f24d5"
     },
     {
       "file": "src/inputs.rs",
       "item": "impl[InputSelector]/fn[resolve]",
       "hash": "1aedf847e4e2e74844ccedb3ccd88dd42b0805acfbb266f8e7f4bea8574853d3"
+    },
+    {
+      "file": "src/commands.rs",
+      "item": "fn[status_markdown_with_github]",
+      "hash": "97c232fcafa28d716e38590087fea62a771c08a248acaed7ddddb56d68c04e58"
     }
   ]
 }

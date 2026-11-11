@@ -1,7 +1,7 @@
 {
   "requirement": "When a provider reports a transient failure, the harness MUST wait and retry\nthe same completion request. Transient failures are throttling, reported\nthrough HTTP 429 or a Bedrock `ThrottlingException`; temporary unavailability,\nreported through HTTP 500, 502, 503, or 504 or a Bedrock\n`ServiceUnavailableException`, `InternalServerException`, or\n`ModelNotReadyException`; and a request with no response after ten minutes,\nwhich the harness MUST abandon. The retry MUST retain its prompt, history,\ntools, and pending inputs. It MUST NOT\nrestart the assessment or repeat already completed tool calls. A permanent\ninput/context-length error, authentication failure, or invalid request MUST\nremain an error; mentioning tokens in an error message alone MUST NOT trigger\nretries.\n\nThe backoff window MUST start at one second and double after each consecutive\ntransient failure, up to sixty seconds. Each delay MUST be randomly selected\nbetween half and all of that window to spread parallel retries. An available\nprovider `Retry-After` value, in seconds or HTTP-date form, MUST be honored as a\nminimum delay even when longer than the window. A successful response MUST reset\nbackoff for the next completion request. There MUST be no retry-attempt limit;\ninterruption MUST cancel both the wait and further retries.\n\nEach attempt MUST be recorded under {cite}`requirements.authoring.usage_requests`.\nHidden SDK retries MUST remain disabled so the harness can account for attempts.\nTransient retries MUST NOT be reported as finished judgments or terminal\nassessment errors while recovery is still in progress. Pending inputs MUST be\nrecorded as evidence only after the request succeeds.\n{cite}`requirements.authoring.provider` {cite}`requirements.authoring.delivered_inputs`",
   "determination": true,
-  "rationale": "I found no gap. Every obligation maps to code reachable from the `{impl}` items and has a `{test}`.\n\n**Transient classification** (`ProviderBackoff::next_delay`, `src/authoring/providers.rs`, reached from `converse`)\n- It retries HTTP 429, 500, 502, 503 and 504, and the Bedrock codes `ThrottlingException`, `ServiceUnavailableException`, `InternalServerException` and `ModelNotReadyException`.\n- It treats `io::ErrorKind::TimedOut` as transient.\n- Other errors, and messages that merely mention tokens, return `None` and stay errors. 400 `ValidationException` and 403 are permanent. The code never infers throttling from message text.\n- Tests:\n  - `retries_throttling_unavailability_and_timeouts_but_not_permanent_errors`\n  - `transient_bedrock_codes_retry_whatever_their_http_status`\n  - `permanent_provider_failure_returns_without_waiting_or_retrying`\n\n**Ten-minute abandon** (`REQUEST_TIMEOUT` and the `tokio::time::timeout` in `converse`)\n- A request with no response in ten minutes is abandoned, turned into a `TimedOut` error, and retried.\n- Test: `unanswered_requests_are_abandoned_and_retried`.\n\n**Retry of the same request, with prompt, history, tools and pending inputs kept**\n- `converse` clones the same `request` for each attempt and does not touch the history on failure.\n- Tool calls are not repeated, because the retry is the `continue` of the loop before any tool dispatch.\n- Tests: `throttled_requests_retry_unchanged_and_record_every_attempt` (every request equal) and `success_resets_backoff_and_retries_keep_history_without_repeating_tools` (the tool ran once and the history was resent).\n\n**Backoff window and delay**\n- The window starts at 1s, doubles each failure, and is capped at 60s.\n- Each delay is drawn from `fastrand::u64(millis/2..=millis)`.\n- `Retry-After` is parsed in seconds or HTTP-date form by `retry_after`. The result is `max`ed with the jittered delay, so it is honored even when longer than the window.\n- Tests: `jittered_backoff_grows_to_a_ceiling_without_limiting_attempts` and `retry_after_accepts_seconds_and_dates_without_shortening_provider_delay`.\n\n**Reset and attempt limit**\n- A successful response resets the backoff with `backoff = ProviderBackoff::default()`.\n- The loop has no attempt limit. The test runs 100 attempts, and the other tests run 8 and 9.\n- Tests: `success_resets_backoff_and_retries_keep_history_without_repeating_tools` and the jitter test.\n\n**Interruption**\n- `converse` awaits `tokio::time::sleep` and the provider call inline, so dropping the future cancels both the wait and any further retries.\n- The `tokio::select!` with `ctrl_c` in `author_evidence_with_options` and `prepare_assessment` drops it.\n- Test: `cancelling_during_backoff_prevents_another_request`. After a timeout cancels the future mid-backoff, no further request is sent and no inputs are recorded.\n\n**Attempt recording**\n- `usage.begin_request` and `usage.end_request` wrap every attempt, including failed ones.\n- The tests assert 9 recorded requests, 8 `failed` and 1 `completed`.\n\n**Hidden SDK retries**\n- `bedrock_sdk_loader` sets `RetryConfig::disabled()`, and `bedrock_sdk_config` is marked `{impl}`.\n- Test: `bedrock_sdk_retries_are_disabled`, which asserts `max_attempts()` is 1.\n- The Ollama path uses Rig's reqwest client, which is commented as having no retry layer.\n\n**No premature judgment or terminal error**\n- On a transient error `converse` only sleeps and continues. It returns an error only when `next_delay` is `None`.\n\n**Pending inputs recorded after success**\n- `sources.record_inputs(&pending)` runs only after a successful response.\n- Tests: the first test asserts `sent_in_request` is 8 and `submitted_in_request` is 0, the cancel test asserts nothing was recorded, and the tool-retry test asserts the input was recorded after the retried request succeeded.\n\n**Unspecified behavior**\n- None found. The extra `Length` and continuation handling in `converse` is governed by other requirements that the same function marks `{impl}`.",
+  "rationale": "I found no gaps. Each obligation has code reachable from the `{impl}` items and a test that asserts its outcome.\n\n**Retry on transient failures**\n- `src/authoring/mod.rs#fn[converse]` loops: it calls `provider.complete(request.clone())`, and on error asks `backoff.next_delay`.\n- If `next_delay` returns a delay, it sleeps and `continue`s with the same `request`. The request keeps its prompt, history and tools, and no tool call is repeated.\n- If `next_delay` returns `None`, it returns the error. That is how permanent errors remain errors.\n- `src/authoring/providers.rs#impl[ProviderBackoff]/fn[next_delay]` classifies the error. It treats HTTP 429, 500, 502, 503 and 504 as transient. It also treats the Bedrock codes `ThrottlingException`, `ServiceUnavailableException`, `InternalServerException` and `ModelNotReadyException` as transient. It reads these from the structured `ProviderError` report, not from message text, so mentioning tokens in a message does not trigger a retry.\n- `providers.rs#fn[provider_failure]` keeps Rig's error intact, and `RigProvider::complete` uses it.\n\n**Ten-minute abandonment**\n- `src/authoring/mod.rs#const[REQUEST_TIMEOUT]` is 600 seconds. `converse` wraps the call in `tokio::time::timeout` and turns expiry into an `io::ErrorKind::TimedOut` error. `next_delay` treats that kind as transient.\n- Test: `mod[tests]/fn[unanswered_requests_are_abandoned_and_retried]`.\n\n**Backoff window and delay**\n- `impl[ProviderBackoff/Default]` starts the window at 1 second. `next_delay` doubles it up to 60 seconds. It picks a delay uniformly between half the window and the whole window with `fastrand::u64(millis/2..=millis)`. It then takes the maximum with the `Retry-After` minimum.\n- `fn[retry_after]` parses both the seconds form and the HTTP-date form. A past date gives zero.\n- No attempt limit exists in the loop.\n- Tests: `jittered_backoff_grows_to_a_ceiling_without_limiting_attempts` runs 100 attempts and checks the window bounds. `retry_after_accepts_seconds_and_dates_without_shortening_provider_delay` covers both `Retry-After` forms, an invalid value, and a 90-second minimum applied through `next_delay`.\n\n**Reset on success**\n- `converse` rebuilds `ProviderBackoff::default()` after each successful response.\n- Test: `success_resets_backoff_and_retries_keep_history_without_repeating_tools` checks that the second throttled request waits within the first window.\n\n**Retained state and no repeated tools**\n- The same test checks that retried requests are identical, the `habeas` tool ran once, and the read input is recorded only after the retried request succeeded.\n- `converse` calls `sources.record_inputs(&pending)` only after a successful response, which implements \"pending inputs recorded only after success\".\n- `throttled_requests_retry_unchanged_and_record_every_attempt` checks that 8 failures then a success send 9 identical requests, with the inputs recorded in the final record.\n\n**Permanent errors**\n- Tests: `permanent_provider_failure_returns_without_waiting_or_retrying` returns an error with no wait and one request. `retries_throttling_unavailability_and_timeouts_but_not_permanent_errors` checks 400, 403 and 501, plus an error message containing \"Too many tokens\". `transient_bedrock_codes_retry_whatever_their_http_status` and `rig_failures_keep_their_provider_report_for_backoff` cover the transient-code cases.\n\n**Interruption**\n- The wait and the retries live inside the future that `author_evidence_with_options` and `prepare_assessment` race against `tokio::signal::ctrl_c()` in a `select!`. Dropping that future cancels both the sleep and any further requests.\n- Test: `cancelling_during_backoff_prevents_another_request` drops the future during backoff and checks that only one request was made and no inputs were recorded.\n\n**Usage recording**\n- `converse` calls `usage.begin_request()` and `usage.end_request(...)` for every attempt, including failed ones.\n- Tests: `throttled_requests_retry_unchanged_and_record_every_attempt` and `unanswered_requests_are_abandoned_and_retried` check the per-attempt outcomes in the usage log.\n\n**SDK retries disabled**\n- `providers.rs#fn[bedrock_sdk_config]` goes through `bedrock_sdk_loader`, which calls `RetryConfig::disabled()`. `RigProvider::connect` uses it to build the Bedrock client.\n- Test: `bedrock_sdk_retries_are_disabled` asserts `max_attempts() == 1`.\n\n**No terminal error or finished judgment during recovery**\n- Failures with a delay `continue` inside `converse`, so no judgment or terminal error is produced until the loop returns. The retry tests check this by getting a final judgment after the retries.\n\n**Unspecified behavior**\n- None found.",
   "references": "eba764efb2a743451a869d773c46c1ab72c34ed4983b0e4579853f812b66b31c",
   "inputs": [
     {
@@ -94,7 +94,7 @@
     {
       "file": "src/authoring/mod.rs",
       "item": "fn[converse]",
-      "hash": "91b233ba0dffb3e843685d68dd936b7b134fe8cfc47a6096bff42891be25d6ff"
+      "hash": "643470d44d6b968a04b6b93623e4ff8c56f7568a4d09c542feed775a0eaedd40"
     },
     {
       "file": "src/authoring/mod.rs",
@@ -158,68 +158,8 @@
     },
     {
       "file": "src/authoring/providers.rs",
-      "item": "use@95d18074761c",
-      "hash": "95d18074761c14b8220fb84209e9962ff3574d980745386a08bdf70bbe55d61e"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "use@7d949f3dd9b8",
-      "hash": "7d949f3dd9b8f004dc89a84c71fe59a62b5f5ca0e84320f27245e882f1d23189"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "use@0c41d25d6b96",
-      "hash": "0c41d25d6b96c99ac8844c0075397e44740bd051c56980f6d400fc1353dd540a"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "use@36004768e609",
-      "hash": "36004768e609c764cdec317e08fe2e411f75a96c197839308024bff4d7c951a8"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "use@fafb3a0aec25",
-      "hash": "fafb3a0aec25cddf8ec4d346f92f03126df2fce1b33c779de5ad2aa5866794b4"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "use@bd1b5107617c",
-      "hash": "bd1b5107617c0609840c71d2ae9c53a0c9e99ea8d688d0bc0518063a8cf292a2"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "use@4e5e9454aa1a",
-      "hash": "4e5e9454aa1ab83d750fcb27213aa0a8f5555a297df34a370a7745fa8e0c17d4"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "use@4b4262645144",
-      "hash": "4b426264514446318af5d7118fad8cce9bdae44294b7d3e84d4ce1d90aab12af"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "trait[CompletionProvider]",
-      "hash": "7740e093d70282a0cba399b7aa8ca8144cecc7e867facefee60e9bb244275d77"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "struct[ProviderBackoff]",
-      "hash": "c47de749676284131db513d04d0958e226a545276a080ec1ecb8375a298cfe94"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "impl[ProviderBackoff/Default]",
-      "hash": "efd5a0d411191c5a5cd2788e1ef275a16f9ca4f940f564173c3b77905988c782"
-    },
-    {
-      "file": "src/authoring/providers.rs",
       "item": "impl[ProviderBackoff]",
       "hash": "0ad38b31bd78d48ec381548c2eed28f8e5a65ae0fd8a579e561873fcbc92589d"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "fn[provider_failure]",
-      "hash": "12241b3ea13d123e305af8735f2329f9e2e99d71dbce5f9bf5676122404cd80f"
     },
     {
       "file": "src/authoring/providers.rs",
@@ -228,53 +168,18 @@
     },
     {
       "file": "src/authoring/providers.rs",
-      "item": "struct[RigProvider]",
-      "hash": "69a21fc611e263a663515d042242900d7e55a59d647fdaa7a72d16b000728db0"
+      "item": "impl[ProviderBackoff/Default]",
+      "hash": "efd5a0d411191c5a5cd2788e1ef275a16f9ca4f940f564173c3b77905988c782"
     },
     {
       "file": "src/authoring/providers.rs",
-      "item": "impl[RigProvider]",
-      "hash": "458feda64b5c2c88da1bd11936178bf11b5df8ebf1963b26cd1f5c4319c3057a"
+      "item": "fn[provider_failure]",
+      "hash": "12241b3ea13d123e305af8735f2329f9e2e99d71dbce5f9bf5676122404cd80f"
     },
     {
       "file": "src/authoring/providers.rs",
-      "item": "fn[bedrock_sdk_loader]",
-      "hash": "00149b3270a8dd337fa000357dd3b4d553b3cc65fc102a921444757205b85be3"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "impl[RigProvider/CompletionProvider]",
-      "hash": "48b04dec980a94d2a61b5afaa85bb9f6d1d6791ed93613db6972977b0e988518"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "fn[normalize_bedrock_client_calls]",
-      "hash": "b68cbbdb67f2496ab0bbc4467656e47cebda90a56965e93d4381b3a663d24bd7"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "const[DEFAULT_BEDROCK_MAX_TOKENS]",
-      "hash": "7771b138f2adc95a6e477f96b27f6f9947828a1183504d7b2bd1bf72329aa7cc"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "fn[apply_bedrock_options]",
-      "hash": "f469a46a9d4ff0bdb10ee9b7acff7bdc793b65f5a1247eaaf9133c7e46e63025"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "fn[bedrock_caches]",
-      "hash": "c316c3bccc7a2cc2f13634677639ec3cd79776825f5a843115d9098a97948485"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "fn[place_cache_checkpoints]",
-      "hash": "faf094ed40b166db2eaebd7866bb146bf9ea99f97597a3eb116802016cdee96a"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "fn[option_type]",
-      "hash": "0654c240bf76e5d922abbfbd0c44b1b149914a0687d7d718899237175aa89b82"
+      "item": "impl[RigProvider/CompletionProvider]/fn[complete]",
+      "hash": "5ef22d9aeefb3a96a508f39f4a00cbc4d49201508ab909e7079551bcffac0476"
     }
   ]
 }

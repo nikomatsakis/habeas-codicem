@@ -1,7 +1,7 @@
 {
   "requirement": "`habeas author --all [--config <name>] [--missing | --force] [-v|--verbose]` MUST author\nthe evidence of every current requirement and named example, together with the\nreviews {cite}`requirements.references.citation_review` and\n{cite}`requirements.references.site_review` include, under\n{cite}`requirements.authoring.refresh`.\n`--all` MUST be mutually exclusive with a subject name and `--stdout`. It MUST\nalso delete each orphaned citation review under\n{cite}`requirements.references.citation_review` and each orphaned site review\nunder {cite}`requirements.references.site_review`, and report each deletion; the\ndeletion MUST NOT require model configuration or credentials.\nFailure to discover declarations or to read, scan, or parse project sources MUST report an error,\nnot a successful empty batch.\n\nEach subject MUST receive an independent assessment with its own prompt, inputs,\njudgment, and usage record. The command MUST report aggregate completion and each\nauthoring error under {cite}`requirements.authoring.reporting`, and retain\nsuccessful writes when another assessment fails. It MUST return a nonzero\nexit status if any assessment fails. False judgments MUST still be written as\ncompleted assessments; they remain failures under ordinary evidence validation.\nAn access-policy denial MUST abort only the affected assessment under\n{cite}`requirements.authoring.read_denial`. Interruption MUST instead stop the\nwhole batch: queued assessments MUST NOT start, running assessments MUST be\ncancelled, and an assessment whose evidence has not been written when the\ninterruption arrives MUST NOT write it. Evidence already written MUST be\nretained, and the command MUST report the number of assessments not started as\na batch failure.\n\nThe bundled Habeas skills MUST direct the supervising agent to run this command\nto create or refresh evidence. They MUST leave judgments, rationales, and input\nsnapshots to the authoring harness; the supervising agent addresses findings by\nchanging requirements, source citations, implementation, or tests.\n{cite}`requirements.authoring.concurrency`\n{cite}`requirements.authoring.usage_storage`\n{cite}`requirements.authoring.persistence`",
   "determination": true,
-  "rationale": "I found no gap against `requirements.authoring.batch`. Each obligation maps to code reachable from the `{impl}` roots (`author_all`, `fn main`, and `RepositoryInspection`), and each has a test.\n\n- **Scope of `--all`.** `select_subjects` in `src/authoring/batch.rs`, reached from `run_batch`, selects every non-term definition (requirements and examples), every citation-review item, and every site review. This is covered by the unit tests `selection_counts_definitions_and_citation_reviews_in_one_phase` and `selection_includes_site_reviews_and_sites_of_selects_only_them`. It is also covered by the CLI tests `batch_authors_citation_reviews_and_preserves_current_ones` and `site_reviews_are_authored_by_requirement_and_orphans_deleted_by_all`.\n- **Refresh rules.** `current(...)` together with `force` implements the `--missing`/`--force` behaviour that the batch cites under `requirements.authoring.refresh`. Tests: `missing_keeps_current_records_and_force_reassesses_every_selected_subject` and `batch_preserves_current_false_judgments_and_reauthors_stale_ones`.\n- **Mutual exclusion.** In `src/main.rs`, the `author_target` ArgGroup makes `subject` and `--all` mutually exclusive, and `all` has `conflicts_with = \"stdout\"`. Tests: `author_rejects_unknown_subjects_and_conflicting_targets` and `batch_stdout_is_rejected_before_authoring`.\n- **Orphan deletion.**\n  - `delete_orphaned_reviews` removes orphaned citation and site reviews, and `run_batch` reports each one with \"Deleted orphaned review …\".\n  - It runs before `config::resolve_authoring`, so it needs no configuration or credentials.\n  - Tests: the unit test `orphaned_citation_and_site_reviews_are_deleted`, and the CLI test `site_reviews_are_authored_by_requirement_and_orphans_deleted_by_all`, which removes the config and checks the stderr message.\n- **Discovery, read, scan and parse failures.** `RepositoryInspection.discovery_errors` is checked in `run_batch`, which returns an error before configuration is resolved or any model is invoked. A failure to list review files also aborts. Tests: `discovery_errors_fail_before_configuration_or_inference` (Rust parse error and unclosed fence) and `unreadable_reference_sources_fail_the_batch_before_inference`.\n- **Independent assessments, aggregate reporting, partial success and exit status.**\n  - Each subject is spawned as its own `prepare_assessment` task in a `JoinSet`, with its own usage record.\n  - `run_batch` collects `failures`, writes successful records through `write_record`, and `main` prints the summary and returns an error when `failures` is non-empty.\n  - Tests: `failed_assessment_keeps_other_results_and_reports_failure`, and `terminal_progress_distinguishes_judgments_from_authoring_errors`, which asserts a false determination is written.\n- **Read denial.** A denial surfaces as that assessment's failure only, and queued assessments continue. Tests: `denied_read_aborts_only_its_assessment_and_runs_queued_assessments` and `denied_read_preserves_in_flight_assessments_and_their_evidence`.\n- **Interruption.**\n  - `run_batch` listens for ctrl_c and calls `stop` on the watch channel. The launch loop stops starting tasks once it is set.\n  - Running tasks receive the cancellation. A completed but unwritten result is discarded with an `Interrupted` error.\n  - The count of queued, unstarted assessments is pushed as a \"batch\" failure.\n  - The test `interrupted_terminal_progress_keeps_unstarted_work_incomplete` runs at concurrency 2 and 1. It asserts \"assessments not started\", a nonzero exit, exactly one evidence file written, and a cancelled usage record with `evidence_written` false.\n- **Bundled skills.** The skills direct the agent to run `habeas author --all` (habeas-evidence step 4, habeas-bootstrap). They forbid writing judgments, rationales or inputs, and say to fix source, tests, references or requirement text. Test: `bundled_skills_direct_the_agent_to_the_authoring_harness`.\n\nThe extra observable behaviours in the batch code are specified by other requirements the same code marks `{impl}`: the policy summary, cache warm-up, coverage-loss reviews, and `sites:<name>`.",
+  "rationale": "I found no gap against `requirements.authoring.batch`. Each obligation maps to code that is reachable from the `{impl}` items and has a test that asserts its outcome.\n\n**Selection and refresh**\n- `--all` authors every requirement and example, plus citation and site reviews. `src/authoring/batch.rs#fn[select_subjects]` selects all definitions except terms, then citation items, then sites. It skips current records unless `force` is set.\n- Tests: `tests/authoring_batch.rs#fn[batch_fills_evidence_preserves_current_records_and_reauthors_only_changed_inputs]` and `#fn[missing_keeps_current_records_and_force_reassesses_every_selected_subject]`. The unit tests in `src/authoring/batch.rs` cover the selection itself: `selection_counts_definitions_and_citation_reviews_in_one_phase` and `selection_includes_site_reviews_and_sites_of_selects_only_them`. `batch_authors_citation_reviews_and_preserves_current_ones` and `site_reviews_are_authored_by_requirement_and_orphans_deleted_by_all` cover the citation and site review cases.\n\n**Mutual exclusion**\n- `--all` is exclusive with a subject name and with `--stdout`. clap enforces this in `src/main.rs#fn[main]`'s `Command::Author`.\n- Tests: `tests/authoring_cli.rs#fn[author_rejects_unknown_subjects_and_conflicting_targets]` asserts exit code 2 and \"cannot be used with\". `tests/authoring_batch.rs#fn[batch_stdout_is_rejected_before_authoring]` asserts that no model call and no evidence directory result.\n\n**Orphan deletion**\n- `src/authoring/batch.rs#fn[delete_orphaned_reviews]` removes orphaned citation and site review files. `fn[run_batch]` runs it before any configuration is resolved and reports each deletion with \"Deleted orphaned review …\".\n- Tests: the unit test `orphaned_citation_and_site_reviews_are_deleted` covers both kinds. The integration test `site_reviews_are_authored_by_requirement_and_orphans_deleted_by_all` removes the config and checks the stderr report.\n\n**Discovery and read errors**\n- `fn[run_batch]` returns an error when `inspection.discovery_errors` is non-empty. The `src/evidence.rs#struct[RepositoryInspection]` field carries those errors apart from validation findings.\n- Tests: `discovery_errors_fail_before_configuration_or_inference` (Rust parse failure and unclosed fence) and `unreadable_reference_sources_fail_the_batch_before_inference`. Both assert a nonzero exit, the diagnostic, and no config resolution.\n\n**Independent assessments, failures, and exit status**\n- `fn[run_batch]` spawns one `prepare_assessment` task per subject.\n- Failures are collected without stopping the others, and successful writes are kept.\n- `src/main.rs#fn[main]` prints the aggregate summary and returns an error when `outcome.failures` is non-empty.\n- Tests: `failed_assessment_keeps_other_results_and_reports_failure` (6 usage records, 5 completed, 1 failed, other evidence kept, nonzero exit). `terminal_progress_distinguishes_judgments_from_authoring_errors` and `batch_reports_false_rationales_only_when_verbose` show a false judgment is written and counted as authored.\n\n**Read denial**\n- A denial aborts only the affected assessment. Queued and in-flight assessments continue, and their evidence is retained.\n- Tests: `denied_read_aborts_only_its_assessment_and_runs_queued_assessments` and `denied_read_preserves_in_flight_assessments_and_their_evidence`.\n\n**Interruption**\n- `fn[run_batch]` listens for ctrl-c through `observe_interrupt` and `stop`, which set the cancellation watch.\n- Once cancelled, the launcher stops spawning tasks and running tasks see the cancellation.\n- A completed result is discarded with an `Interrupted` error instead of being written. The unstarted count is reported as a \"batch\" failure with \"N assessments not started\".\n- Test: `interrupted_terminal_progress_keeps_unstarted_work_incomplete` runs at concurrency 2 and 1. It asserts \"assessments not started\", fewer than 6 subjects started, exactly one record with `evidence_written` true, a cancelled usage record that wrote nothing, and one evidence file.\n\n**Skills**\n- The skills `assets/skills/habeas-evidence/SKILL.md`, `habeas-requirements/SKILL.md` and `habeas-bootstrap-requirements/SKILL.md` direct the agent to run `habeas author --all`. They forbid writing judgments, rationales, or inputs, and tell the agent to fix source, tests, references, or requirement text.\n- Test: `tests/authoring_cli.rs#fn[bundled_skills_direct_the_agent_to_the_authoring_harness]`.\n\n**Unspecified behavior**\n- Warm-up, the confirm policy, GitHub issue reads, and the coverage-loss reviews are each specified by other requirements. Those requirements are marked on `author_all_with_options`, `run_batch`, and `main`. The coverage-loss reviews are not marked on `run_batch` itself but are marked on `main`. I did not count any of them as unspecified behavior.",
   "references": "7019568b90ab74074e917e61aeaa53c7665f2e6a17dbf91e55b4df9370eb0db7",
   "inputs": [
     {
@@ -307,7 +307,7 @@
     {
       "file": "src/main.rs",
       "item": "fn[main]",
-      "hash": "868ad3db215d07150b0a0c3b700e5e8da9d49bd6b4a4101ed0f258a7ab4109d6"
+      "hash": "888be3d52168dcc2f6444cf4540e0011b45a284eab45ba7f629c65ec79e8d703"
     },
     {
       "file": "tests/authoring_batch.rs",
@@ -417,82 +417,17 @@
     {
       "file": "assets/skills/habeas-requirements/SKILL.md",
       "item": "",
-      "hash": "2721e75af7fc01cfafcd89935416a0c149bf6ac588ab50ee570056cb7263fe4c"
+      "hash": "44918c3080efe04da1ff3a609fc8e215e8f008b8685604e7dac84b7bf7834ecb"
     },
     {
       "file": "assets/skills/habeas-evidence/SKILL.md",
       "item": "",
-      "hash": "8f06b008ab9c69bbb3405ae6919bcda6aeb5559fbf488e9e741390ca3585ba62"
+      "hash": "ffdfc1c8f0e2b9e38e493ac900c6393259bf72eea672294b049e4844cb790af8"
     },
     {
       "file": "assets/skills/habeas-bootstrap-requirements/SKILL.md",
       "item": "",
-      "hash": "12da2c5383357e614b3a6fdc80a5cf13c580d495a72e5ab4339d3a9bce0cf5ca"
-    },
-    {
-      "file": "src/authoring/batch.rs",
-      "item": "use@0aa5aad345a4",
-      "hash": "0aa5aad345a497ea8555581d02720ca86969e0aff012fce65b6f20d384262fb4"
-    },
-    {
-      "file": "src/authoring/batch.rs",
-      "item": "use@b9ad51f029df",
-      "hash": "b9ad51f029df0e9b3352de6ee80b9fc5085d69b914654d0181d2570afbfc446f"
-    },
-    {
-      "file": "src/authoring/batch.rs",
-      "item": "use@3970e6901143",
-      "hash": "3970e6901143920563d8805f9c3cc3a00f3047d12ba98064de8508cf8fd075f2"
-    },
-    {
-      "file": "src/authoring/batch.rs",
-      "item": "use@a5eb9cdffbce",
-      "hash": "a5eb9cdffbce8b59ff0b6bc52bf79c4bba1be795b1e1e0a4facee1be9def0aa2"
-    },
-    {
-      "file": "src/authoring/batch.rs",
-      "item": "use@5fce6f8b0f71",
-      "hash": "5fce6f8b0f718a3191fd06b9d137a4d7e97b067a3422b3c97e2a46142bbfd085"
-    },
-    {
-      "file": "src/authoring/batch.rs",
-      "item": "use@34072261f783",
-      "hash": "34072261f783e90507393611161d8db1b3cd112e85ee5e22459dbc9005b52048"
-    },
-    {
-      "file": "src/authoring/batch.rs",
-      "item": "use@18dc39a869d7",
-      "hash": "18dc39a869d79efeb360785e63c656bdc3fa8ff5bc7365b86167012bfa4d4014"
-    },
-    {
-      "file": "src/authoring/batch.rs",
-      "item": "use@d3e0d9ac0ad2",
-      "hash": "d3e0d9ac0ad2ee9e013d5071a145d5488e0d5b5b2b58097bf4c7aeb5fd7b9f58"
-    },
-    {
-      "file": "src/authoring/batch.rs",
-      "item": "use@ceeb4bb3d982",
-      "hash": "ceeb4bb3d98231501664cb5bca5eac8e66189dd3c0dd112367db315ebe7e08a1"
-    },
-    {
-      "file": "src/authoring/batch.rs",
-      "item": "use@781570f9932b",
-      "hash": "781570f9932b991a59c57f56ffd3c4d99d928730a55c3eb7c02d0569b66d6bcb"
-    },
-    {
-      "file": "src/authoring/batch.rs",
-      "item": "use@bf004211229c",
-      "hash": "bf004211229cb4035b27140a2de8e0971c31027846ff274d8fa94f471d8f26ae"
-    },
-    {
-      "file": "src/authoring/batch.rs",
-      "item": "struct[BatchOutcome]",
-      "hash": "240bf5e070bac2680af0e845c49a48514a2edd647c6a8c605d13eb27bc20663e"
-    },
-    {
-      "file": "src/authoring/batch.rs",
-      "item": "const[SELECTION_STAGE]",
-      "hash": "4d434e28963791dcdac129b4b1cf43df93a1c130e41197bf023a7772d6eaa517"
+      "hash": "02bf83ac91fddc3cd05e2c8c2e9e99d47512672607670a05d71444ae8abea2f2"
     },
     {
       "file": "src/authoring/batch.rs",
@@ -501,43 +436,13 @@
     },
     {
       "file": "src/authoring/batch.rs",
-      "item": "fn[author_sites_with_options]",
-      "hash": "6e7344c480582c07c88d0cba1a89895dc9457a0553f7830e6a87922a391ccc84"
-    },
-    {
-      "file": "src/authoring/batch.rs",
       "item": "fn[run_batch]",
       "hash": "20e4f35b99f63811252bda542d2e93c05e7f3cb8ffdf0b2160da49ace25f2636"
     },
     {
       "file": "src/authoring/batch.rs",
-      "item": "fn[assessment_kind]",
-      "hash": "149693597f72e4db4b630bc8e5596156abf8c183f290ce996e3dfc30b6f9435b"
-    },
-    {
-      "file": "src/authoring/batch.rs",
-      "item": "struct[CacheWarmup]",
-      "hash": "91a8598ac70e393429a82c759fbeb434eee59ec9f1be57961525b3b3760cc88d"
-    },
-    {
-      "file": "src/authoring/batch.rs",
-      "item": "impl[CacheWarmup]",
-      "hash": "6028876d23bc77c0005a15d8866b7715a1f3c3b2c0e59238ce50ab0695076717"
-    },
-    {
-      "file": "src/authoring/batch.rs",
       "item": "fn[delete_orphaned_reviews]",
       "hash": "96fb6ba4b0a09a49ded10ee373d24784b50ca62cfd966d9c21e1b888ca6de2e4"
-    },
-    {
-      "file": "src/authoring/batch.rs",
-      "item": "fn[current]",
-      "hash": "82ee5cda71398b83eedf2848a81baa96a6929cb1e0d9d329398b8d3cb8c1eaed"
-    },
-    {
-      "file": "src/authoring/batch.rs",
-      "item": "fn[subject_is_current]",
-      "hash": "376d98a1cf3cb12976e60944dd8f9c32de2f2b8b4def10533289d3c388576e91"
     },
     {
       "file": "src/authoring/batch.rs",
@@ -558,16 +463,6 @@
       "file": "src/authoring/batch.rs",
       "item": "fn[stop]",
       "hash": "e11c1ec939d5608bee7b5b157f1ac3b9280da7c0f742a9bac3771cfb3c59bceb"
-    },
-    {
-      "file": "src/authoring/batch.rs",
-      "item": "fn[write_record]",
-      "hash": "39e4351cd5474dd2c0e585212443b4f0b7c327da32296502e85a777649d6da8e"
-    },
-    {
-      "file": "src/main.rs",
-      "item": "enum[Command]",
-      "hash": "071d7e37d3ed89f5e75a46e9c819a9781597f6b5ce4ece6f0150adff4788a503"
     }
   ]
 }

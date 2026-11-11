@@ -1,8 +1,8 @@
 {
   "requirement": "Repository validation MUST continue after a failed check and report every failed\ncheck it finds in one run, each as a {term}`requirements.ci.validation_error`.\nThis is a convention for every validation error; the requirement for each check\nstates which conditions that check reports. A file that cannot be parsed, such as\na malformed `habeas.toml`, `book.toml`, or evidence file, is one failed check:\nits error MAY report only the first parse or decoding problem in that file, and\nchecks that do not depend on its contents MUST still run.\n\nThe code that sequences the repository's checks carries out the first paragraph.\nA repository-validation function that collects validation errors MUST hold them\nin a parameter or local variable named `errors`, and a function with such a\nvariable is a site below; authoring code that collects errors only to abort is\nnot one. After one of its checks fails, a site MUST still run every later check\nthat does not depend on the failed check's result, including later checks in the\nsame loop iteration, and MUST NOT report one failure twice.\n\n::::{sites} error_accumulators\n```yaml\nlanguage: rust\npaths: [src]\nexclude: [src/authoring/inputs.rs, src/authoring/tools.rs]\nrule:\n  kind: function_item\n  has:\n    stopBy: { kind: function_item }\n    any:\n      - kind: parameter\n        has: { field: pattern, regex: \"^errors$\" }\n      - kind: let_declaration\n        has: { field: pattern, regex: \"^errors$\" }\n  not:\n    inside:\n      stopBy: end\n      kind: mod_item\n      has: { field: name, regex: \"^tests$\" }\nmatch:\n  - \"fn check(value: &str, errors: &mut Vec<String>) {}\"\n  - |\n    fn run() {\n        let mut errors: BTreeSet<String> = BTreeSet::new();\n        check(\"\", &mut errors);\n    }\nno_match:\n  - \"fn check(value: &str, discovery_errors: &mut Vec<String>) {}\"\n  - |\n    fn run() {\n        let mut problems = Vec::new();\n        check(\"\", &mut problems);\n    }\n  - |\n    mod tests {\n        fn check(errors: &mut Vec<String>) {}\n    }\n```\n::::\n\n::::{violations} early_exits\n```yaml\nlanguage: rust\npaths: [src]\nwithin: error_accumulators\nrule:\n  any:\n    - kind: try_expression\n    - kind: return_expression\n    - kind: continue_expression\n    - kind: break_expression\nmatch:\n  - |\n    fn check(v: &Value, errors: &mut Vec<String>) -> Option<u8> {\n        let n = v.as_u64()?;\n        if v.is_null() { errors.push(\"null\".into()); }\n        Some(n as u8)\n    }\n  - |\n    fn check(items: &[Value], errors: &mut Vec<String>) {\n        for item in items {\n            if !item.is_object() { errors.push(\"object\".into()); continue; }\n            if item.is_null() { errors.push(\"null\".into()); }\n        }\n    }\n  - |\n    fn check(v: &Value, errors: &mut Vec<String>) {\n        if !v.is_object() { errors.push(\"object\".into()); return; }\n        if v.is_null() { errors.push(\"null\".into()); }\n    }\n  - |\n    fn check(items: &[Value], errors: &mut Vec<String>) {\n        for item in items {\n            if !item.is_object() { errors.push(\"object\".into()); break; }\n        }\n        if items.is_empty() { errors.push(\"empty\".into()); }\n    }\nno_match:\n  - |\n    fn parse(v: &Value) -> Option<u8> {\n        let n = v.as_u64()?;\n        Some(n as u8)\n    }\n```\n::::",
   "determination": true,
-  "rationale": "**Verdict:** no gap found. One edge case is noted below and not counted as a gap.\n\n**Obligations and where they are carried out**\n- **Continue after a failed check and report every failure in one run, each as a validation error.** The sequencer `inspect_repository_with_progress` in `src/evidence.rs` carries this out. It pushes a workspace-config failure into `errors` and goes on. It then runs definitions, evidence files, coverage, reference discovery, credentials, site discovery, reference validation, citation validation, site validation and Rust coverage in turn, so a failure in one does not stop the rest.\n  - Tests that run it: `failed_checks_do_not_hide_later_independent_checks`, `configuration_and_dependency_failures_do_not_stop_later_checks`, `git_index_failure_is_reported_once_and_later_checks_still_run`, `collects_missing_orphan_format_false_and_changed_line_errors`, `inspection_progress_preserves_validation_and_finishes_each_phase`.\n  - Formatting each message as a validation error is a convention each site upholds on its own. The `validation_error` definition is cited context.\n- **A parse failure is one failed check (MAY report only the first problem), and independent checks MUST still run.**\n  - `book_source_dir` falls back to `md` after any `book.toml` problem.\n  - `validate_evidence_file` returns after the first JSON problem in that file.\n  - The sequencer pushes a `habeas.toml` failure into `errors` and continues.\n  - In `main`, `status` and `info` are exempted from the early config abort. The test `status_loads_nearest_workspace_file_without_validating_authoring` in `tests/commands.rs` covers this.\n  - `configuration_and_dependency_failures_do_not_stop_later_checks` covers an invalid `habeas.toml`, `book.toml` and evidence file, each followed by later checks that still ran.\n- **A function holds its errors in `errors`.** I checked this by search of `src` for other collector names (`failures`, `findings`, `problems`, `discovery_errors`).\n  - Every non-test hit is either a function that also has `errors` or an abort-only collector. Those are `load_definitions` and `reference_set_digest_for` in `src/evidence.rs`, each commented as \"not a validation site\", plus the excluded `src/authoring/inputs.rs` and `src/authoring/tools.rs`.\n  - `coverage_loss.rs` and `batch.rs` use `failures` and `findings`, but they are authoring code.\n- **A site MUST run later independent checks, including within a loop iteration, and MUST NOT report one failure twice.** This is a per-site obligation and each site has its own review, so I did not vet it here. `failed_checks_do_not_hide_later_independent_checks` also asserts that no error repeats.\n\n**Site query `error_accumulators`**\n- I ran it. It returns 35 non-test functions in `src`: the `errors`-taking helpers and validators in `evidence.rs`, `citations.rs`, `sites.rs`, `terms.rs`, `structural.rs`, `rust_coverage.rs` and `authoring/access.rs`, plus `add_issue_findings` in `github.rs` and `LoadedDetailEvidence::load_path` in `index.rs`.\n- The last two are borderline. They gather or add validation errors rather than run checks, but the project tests `load_path` against this requirement (`an_unreadable_record_is_reported_once`), so I treat both as in scope.\n- My searches (`errors` as a parameter or `let`, `mut errors`, destructuring, closures) found no `errors` function in `src` that the query misses.\n  - Closure and destructuring uses of `errors` occur only in test modules, which the query excludes.\n  - `src` has no separate test-module files.\n- The query excludes the two authoring files that collect errors only to abort, which matches the stated scope.\n\n**Query snippets**\n- The match snippets cover both the parameter and the `let` form.\n- The no_match snippets cover a near-miss name (`discovery_errors`), a different local name (`problems`), and a `mod tests` function.\n- The `stopBy: function_item` condition (a nested function's `errors` does not make the outer function a site) has no snippet of its own. That is a minor omission, not a gap.\n\n**Violation query `early_exits`**\n- Its match snippets cover `?`, `return`, `continue` and `break` inside a site. Its no_match snippet is a non-site function using `?`.\n- It does not flag `std::process::exit`, panics, or an early `return` outside the site's own body. That is noted only.\n\n**Noted edge case, not counted as a gap:** an unreadable `.rs` file yields two differently worded errors. They come from `collect_references_with_progress` (\"cannot read reference source\") and `validate_rust_functions` (\"cannot read Rust source\"). The text does not name this case, and each message comes from a different site's check.",
-  "references": "c1a9ea384d7a77ae40f06f362c3e62f68fc03e32d7ca7ef1ce85607d6f4f7c7d",
+  "rationale": "I found no gap in the obligations, the site query or the query snippets.\n\n**Obligations (steps 2–6)**\n- **Continue after a failed check and report every failure in one run, each as a `requirements.ci.validation_error`.** The sequencing code is `src/evidence.rs#fn[inspect_repository_with_progress]`, which carries an `{impl}`.\n  - It runs config loading, `book_source_dir`, `collect_definitions`, evidence validation, coverage, discovery, credentials, `sites::discover`, `validate_references`, `citations::validate`, `sites::validate` and `validate_rust_functions` in turn, all into one `errors` vector.\n  - Tests that run it end to end: `src/evidence.rs#mod[tests]/fn[failed_checks_do_not_hide_later_independent_checks]`, `fn[configuration_and_dependency_failures_do_not_stop_later_checks]`, `fn[git_index_failure_is_reported_once_and_later_checks_still_run]`, and `fn[collects_missing_orphan_format_false_and_changed_line_errors]`.\n- **A malformed file is one failed check, and checks that do not depend on it still run.**\n  - `src/evidence.rs#fn[book_source_dir]` falls back to `md` after a bad `book.toml`.\n  - `src/evidence.rs#fn[validate_evidence_file]` returns after the first parse or decoding problem.\n  - The main-flow code in `src/main.rs` (the `fn[main]/use@…` item) does not stop on an invalid workspace file for `status` or `info`.\n  - Tests: `configuration_and_dependency_failures_do_not_stop_later_checks` writes an invalid `habeas.toml`, an invalid `book.toml` and an invalid evidence file and asserts the later checks still report. `tests/commands.rs#fn[status_loads_nearest_workspace_file_without_validating_authoring]` covers the CLI path.\n- **MUST NOT report one failure twice.**\n  - `failed_checks_do_not_hide_later_independent_checks` asserts all reported errors are unique.\n  - `git_index_failure_is_reported_once_and_later_checks_still_run`, `src/index.rs#mod[tests]/fn[an_unreadable_record_is_reported_once]` and `tests/evidence_boundaries.rs#fn[an_unlistable_review_directory_is_reported_once]` cover single reporting of specific failures.\n- **Hold errors in a variable named `errors`.** The site query decides this, because a function with such a variable is by definition a site. Each site's own review covers whether it keeps running later checks.\n- **Every later independent check still runs, including in the same loop iteration.** Each site upholds this. The `early_exits` violation query flags the constructs that would break it.\n- **Reachability.** The helpers that collect errors (`walk`, `files_with_extension`, `validate_input`, `close_dependencies`, `parse_queries` and similar) are marked `{impl}` or are reached from marked items.\n\n**Site query `error_accumulators` (step 7)**\n- I ran it and it selects 35 functions. These are functions in `src/` with an `errors` parameter or `let errors`: the validators in `src/evidence.rs`, `src/citations.rs`, `src/sites.rs`, `src/terms.rs`, `src/rust_coverage.rs`, `src/authoring/access.rs`, `src/structural.rs`, `src/github.rs` and `src/index.rs`.\n- Authoring code that collects errors only to abort is excluded, as the text says. The `exclude` list drops `src/authoring/inputs.rs` and `src/authoring/tools.rs`, and the `mod tests` clause drops test modules.\n- `load_definitions` and `reference_set_digest_for` deliberately use `failures` and carry comments saying they abort, so they are correctly not sites.\n- I searched for validation collectors under other names (`problems`, `findings`, `failures`) and for `&mut Vec<String>` parameters. I found no function that collects validation errors without being a site. Every `&mut Vec<String>` error collector in `src/` is already selected; `config.rs#fn[credential_values]` collects values, not errors.\n- Two selections are borderline but fit the text's rule that a function holding such a variable is a site:\n  - `src/index.rs#impl[LoadedDetailEvidence]/fn[load_path]` filters validation errors for display. It has a `{test}` for this requirement.\n  - `src/github.rs#fn[add_issue_findings]` appends validation findings.\n\n**Snippets (step 8)**\n- The `match` snippets show both the parameter form and the `let` form (`BTreeSet`).\n- The `no_match` snippets cover a differently named parameter (`discovery_errors`), a differently named local (`problems`), and a `mod tests` function with `errors`.\n- The nested-function `stopBy` condition has no snippet of its own, which is not by itself a gap.\n- For the `early_exits` violation query, the four `match` snippets cover `?`, `continue`, `return` and `break`. The `no_match` snippet is a function with no `errors`, so it is not a site. The query would miss other early exits such as `panic!` or diverging calls; that is not a gap.",
+  "references": "8ac2421b1dc3a93050f7b19f1fcf2c5d338cdd7d1fc5735d21d97afdd2881c77",
   "inputs": [
     {
       "requirements": "requirements.ci.errors",
@@ -237,8 +237,8 @@
     },
     {
       "file": "src/main.rs",
-      "item": "fn[main]",
-      "hash": "868ad3db215d07150b0a0c3b700e5e8da9d49bd6b4a4101ed0f258a7ab4109d6"
+      "item": "fn[main]/use@118842506675",
+      "hash": "1188425066753adbc843c210d52e91685623838c7019aff619a61ce6f920a749"
     },
     {
       "file": "src/rust_coverage.rs",
@@ -316,68 +316,13 @@
     },
     {
       "file": "src/github.rs",
-      "item": "fn[input_ranges]",
-      "hash": "95542da0e7c289b956ec5e52c94e438969d8d270903ffca76aa0ba4f37ced601"
-    },
-    {
-      "file": "src/github.rs",
       "item": "fn[add_issue_findings]",
       "hash": "04993674af703642444080bd7aec802680f96b248cda1e0035d23f9541ffa0b1"
     },
     {
-      "file": "src/github.rs",
-      "item": "fn[containing_item]",
-      "hash": "3a25a5c63afbdbfaa258ec15251c4d847085f1db74784c609f8702a23438e569"
-    },
-    {
       "file": "src/index.rs",
-      "item": "enum[EvidenceState]",
-      "hash": "6a845f420dc533ad3dcb656d3188d9eb1bc4ad724b5a843930aae6967a5697a3"
-    },
-    {
-      "file": "src/index.rs",
-      "item": "struct[LoadedDetailEvidence]",
-      "hash": "75cf2243573bee2624afbfa6895a134eeda5ad495d220c141593305423923e44"
-    },
-    {
-      "file": "src/index.rs",
-      "item": "struct[DetailEvidence]",
-      "hash": "2f1e313f2d698e693a9f494ca743c7b73444bf3cb0e72311362309ccf6933c52"
-    },
-    {
-      "file": "src/index.rs",
-      "item": "impl[LoadedDetailEvidence]",
-      "hash": "d4feaf3659df7a7bdada3f198ef4cbf07d6ecb2c3212c4e2727ecb480af7978d"
-    },
-    {
-      "file": "src/index.rs",
-      "item": "impl[EvidenceState]",
-      "hash": "52f9687ee35767424d89917de8732f29c1d0e964aca30c4eb332934fe68b93e4"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "struct[InspectionProgress]",
-      "hash": "57e8d77034129fdee83660ba2a1d0dcf407e1b421753bede77620f4e1caf469b"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[load_definitions]",
-      "hash": "cfe575123d40406dab954b5425650cafaa4fb20bfdb4f8c809f9924e5fb7d6de"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[reference_set_digest]",
-      "hash": "bf4ecee44b22c35aa92df3535e6d5b981ee81740ffff2d7b236a1d36c4c70343"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[reference_set_digest_for]",
-      "hash": "28fa1b0cda51c2f4b0230473f69c65ccd49e9874921d37cc80eb69889c7babd2"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[definition_sites]",
-      "hash": "edcd4e08ab4bea39aa6b011ee7bd4729134902e02273f09ea17b5818611a5de7"
+      "item": "impl[LoadedDetailEvidence]/fn[load_path]",
+      "hash": "44bc4be7a9cede94c94c96f0ff61494fa87d510050d7c9f2f0c4213d4b4a1b6e"
     }
   ]
 }
