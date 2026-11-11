@@ -48,7 +48,8 @@ Run commands from the project root, the directory with `book.toml` and
       that were stale before, should need attention.
 - [ ] 7. Commit the move, the rewritten references, and the `evidence/` changes
       together, before any change to behavior or text.
-- [ ] 8. Reassess what remains stale with the habeas-evidence workflow, then
+- [ ] 8. Reassess what remains stale with `habeas author`, following the
+      habeas-evidence workflow, then
       make any behavior or text changes as separate commits.
 
 ## Rules

@@ -93,6 +93,7 @@ pub(crate) struct Mappings {
     nodes: Vec<((String, String), (String, String))>,
 }
 
+// {impl}`requirements.refactor.mappings`
 impl Mappings {
     /// A definition name's new name, if a mapping covers it.
     fn name(&self, name: &str) -> Option<String> {
@@ -698,6 +699,7 @@ fn rewrite_input(states: &States, input: &Value) -> Option<Result<Value, String>
 // {impl}`requirements.refactor.whole_record`
 // {impl}`requirements.refactor.subject_text`
 // {impl}`requirements.refactor.record_fields`
+// {impl}`requirements.refactor.reference_digest`
 fn rewrite_record(states: &States, path: &str, record: &Value) -> io::Result<Outcome> {
     let mappings = &states.mappings;
     let Some(kind) = record_kind(path) else {
@@ -1108,19 +1110,28 @@ pub fn refactor(root: &Path, values: &[String], dry_run: bool) -> Result<String,
             }
         }
     }
-    let moving = changed
-        .iter()
-        .filter(|(path, target, ..)| path != target)
-        .map(|(path, ..)| path.clone())
-        .collect::<BTreeSet<_>>();
-    changed.retain(|(path, target, ..)| {
-        let conflict = targets[target] > 1
-            || (path != target && root.join(target).exists() && !moving.contains(target));
-        if conflict {
-            unchanged.push((path.clone(), format!("{target} would be overwritten")));
+    // A move may take the place of a record that moves away, but only if
+    // that record's move survives: dropping one conflict can expose another,
+    // so conflicts are dropped until none remain.
+    loop {
+        let moving = changed
+            .iter()
+            .filter(|(path, target, ..)| path != target)
+            .map(|(path, ..)| path.clone())
+            .collect::<BTreeSet<_>>();
+        let before = changed.len();
+        changed.retain(|(path, target, ..)| {
+            let conflict = targets[target] > 1
+                || (path != target && root.join(target).exists() && !moving.contains(target));
+            if conflict {
+                unchanged.push((path.clone(), format!("{target} would be overwritten")));
+            }
+            !conflict
+        });
+        if changed.len() == before {
+            break;
         }
-        !conflict
-    });
+    }
     unchanged.sort();
 
     if !dry_run {

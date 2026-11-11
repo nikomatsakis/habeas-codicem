@@ -1,6 +1,9 @@
 //! Tests of `habeas refactor`'s mapping and rewriting helpers.
 
+use std::fs;
 use std::path::Path;
+
+use serde_json::{Value, json};
 
 use super::*;
 
@@ -182,4 +185,92 @@ fn opening_fences_map_their_short_names_back() {
         ),
         ":::{req} lines.detection"
     );
+}
+
+// {test}`requirements.refactor.rationale.addresses`
+#[test]
+fn rationales_rewrite_addresses_of_nodes_in_mapped_files() {
+    let map = mappings(&[("path", "src/old", "src/new")]);
+    let (rewritten, mentions) = rewrite_rationale(
+        &map,
+        "`src/old/x.rs#fn[f]` and `src/old/x.rs#mod[m]/fn[g]` do it.",
+    );
+    assert_eq!(
+        rewritten,
+        "`src/new/x.rs#fn[f]` and `src/new/x.rs#mod[m]/fn[g]` do it."
+    );
+    assert!(mentions.is_empty());
+}
+
+// {test}`requirements.refactor.record_files`
+// {test}`requirements.refactor.record_fields`
+// {test}`requirements.refactor.equivalence`
+#[test]
+fn site_reviews_follow_their_site_and_renamed_requirement() {
+    use crate::sites::tests::{RULE, SOURCE, inspect, project, write_review};
+
+    let temp = project(RULE, SOURCE);
+    let root = temp.path();
+    fs::write(
+        root.join("evidence/requirements.rule.json"),
+        json!({"requirement": "x", "determination": true, "rationale": "Fine.", "inputs": []})
+            .to_string(),
+    )
+    .unwrap();
+    crate::evidence::tests::stamp_reference_sets(root);
+    write_review(
+        root,
+        "fn[check_one]",
+        json!({"queries": ["checkers", "panics"]}),
+    );
+    write_review(root, "fn[check_two]", json!({}));
+    write_review(
+        root,
+        "mod[inner]/fn[check_three]",
+        json!({"queries": ["checkers", "panics"]}),
+    );
+    let site_errors = |root: &Path| {
+        let (errors, _) = inspect(root);
+        errors
+            .into_iter()
+            .filter(|error| error.starts_with("evidence/sites/"))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(site_errors(root), Vec::<String>::new());
+    // The requirement moves to the `rules` chapter and `check_two` to its
+    // own file, both unchanged.
+    let chapter = fs::read_to_string(root.join("md/requirements.md")).unwrap();
+    fs::remove_file(root.join("md/requirements.md")).unwrap();
+    fs::write(root.join("md/rules.md"), chapter).unwrap();
+    fs::write(
+        root.join("src/lib.rs"),
+        SOURCE.replace("fn check_two() {}\n", ""),
+    )
+    .unwrap();
+    fs::write(root.join("src/other.rs"), "fn check_two() {}\n").unwrap();
+    let report = refactor(
+        root,
+        &[
+            "requirements.rule=rules.rule".to_owned(),
+            "src/lib.rs#fn[check_two]=src/other.rs#fn[check_two]".to_owned(),
+        ],
+        false,
+    )
+    .unwrap();
+    assert!(
+        report.contains(
+            "- evidence/sites/requirements.rule/src/lib.rs/fn[check_two].json -> evidence/sites/rules.rule/src/other.rs/fn[check_two].json"
+        ),
+        "{report}"
+    );
+    let moved: Value = serde_json::from_str(
+        &fs::read_to_string(root.join("evidence/sites/rules.rule/src/other.rs/fn[check_two].json"))
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(moved["requirement"], "rules.rule");
+    assert_eq!(moved["file"], "src/other.rs");
+    assert_eq!(moved["item"], "fn[check_two]");
+    assert!(!root.join("evidence/sites/requirements.rule").exists());
+    assert_eq!(site_errors(root), Vec::<String>::new());
 }

@@ -1174,6 +1174,7 @@ mod tests {
     // {test}`requirements.authoring.file_discovery`
     // {test}`requirements.authoring.delivered_inputs`
     // {test}`requirements.definitions.authoring_inputs`
+    // {test}`requirements.authoring.no_line_numbers`
     #[test]
     fn reading_records_only_delivered_sources_and_their_terms() {
         let root = project();
@@ -1465,6 +1466,7 @@ mod tests {
     // {test}`requirements.authoring.text_search`
     // {test}`requirements.authoring.additional_read`
     // {test}`requirements.authoring.file_discovery`
+    // {test}`requirements.authoring.no_line_numbers`
     #[test]
     fn search_merges_context_windows_and_respects_ignore_rules() {
         let root = project();
@@ -2190,6 +2192,7 @@ mod tests {
 
     // {test}`requirements.authoring.reference_index`
     // {test}`requirements.references.definition_globs`
+    // {test}`requirements.authoring.no_line_numbers`
     #[test]
     fn references_list_names_and_flattened_sites_without_recording_inputs() {
         let root = project();
@@ -2731,6 +2734,7 @@ mod tests {
 
     // {test}`requirements.authoring.outline_tool`
     // {test}`requirements.references.outlines`
+    // {test}`requirements.authoring.no_line_numbers`
     #[test]
     fn outline_lists_nested_nodes_without_text_or_inputs() {
         let root = project();
@@ -2778,6 +2782,7 @@ mod tests {
     // {test}`requirements.authoring.source_tools`
     // {test}`requirements.authoring.delivered_inputs`
     // {test}`requirements.ci.outline_inputs`
+    // {test}`requirements.authoring.no_line_numbers`
     #[test]
     fn line_range_reads_record_the_innermost_covering_nodes() {
         let root = project();
@@ -2839,6 +2844,48 @@ mod tests {
                 .starts_with("use@")
         );
         assert_eq!(whole.result["inputs"].as_array().unwrap().len(), 3);
+    }
+
+    // {test}`requirements.authoring.text_search`
+    // {test}`requirements.authoring.no_line_numbers`
+    #[test]
+    fn separate_windows_in_one_node_are_divided_by_an_elision_line() {
+        let root = project();
+        fs::write(
+            root.path().join("src/lib.rs"),
+            "fn long() {\n    needle(1);\n    a();\n    b();\n    c();\n    needle(2);\n    d();\n}\n",
+        )
+        .unwrap();
+        let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        let search = dispatch(
+            &sources,
+            "ripgrep",
+            &json!({"pattern":"needle","path":"src/lib.rs","context":0}),
+        )
+        .unwrap();
+        assert_eq!(
+            matched(&search),
+            &vec![
+                json!({"file": "src/lib.rs", "item": "fn[long]", "kind": "fn", "lines": [
+                    {"text": "    needle(1);", "matched": true},
+                    {"text": ELISION, "matched": false},
+                    {"text": "    needle(2);", "matched": true},
+                ]})
+            ]
+        );
+        // Adjacent windows are one run, with no elision.
+        let joined = dispatch(
+            &sources,
+            "ripgrep",
+            &json!({"pattern":"needle","path":"src/lib.rs","context":2}),
+        )
+        .unwrap();
+        let lines = matched(&joined)[0]["lines"].as_array().unwrap().clone();
+        assert!(
+            lines.iter().all(|line| line["text"] != ELISION),
+            "{lines:?}"
+        );
+        assert_eq!(lines.len(), 8);
     }
 
     // {test}`requirements.authoring.text_search`

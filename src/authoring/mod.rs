@@ -856,6 +856,7 @@ impl Prompt {
 // {impl}`requirements.authoring.github_reads`
 // {impl}`requirements.authoring.site_prompt`
 // {impl}`requirements.authoring.habeas_background`
+// {impl}`requirements.authoring.judgment_rules`
 fn initial_prompt(sources: &AssessmentSources) -> io::Result<Prompt> {
     let mandatory = serde_json::to_string_pretty(&sources.model_mandatory_inputs())?;
     let mut values = shared_blocks().to_vec();
@@ -928,6 +929,7 @@ fn review_instructions(prompt: &Prompt, site: bool) -> String {
 const SITE_STEP: &str = "4. Also set applies to whether the requirement governs the site, as the reviewer's step 1 decides it; if it does not, set real to false.";
 
 /// The verifier's prompt for a determination and its rationale.
+// {impl}`requirements.authoring.judgment_rules`
 // {impl}`requirements.authoring.github_reads`
 // {impl}`requirements.authoring.habeas_background`
 // {impl}`requirements.authoring.prompt_parts`
@@ -3307,6 +3309,7 @@ no_match:
     // {test}`requirements.references.site_review`
     // {test}`requirements.authoring.mandatory_inputs`
     // {test}`requirements.authoring.judgment_rules`
+    // {test}`requirements.authoring.no_line_numbers`
     #[tokio::test]
     async fn site_reviews_use_their_prompt_and_record_applies_and_the_site() {
         let project = crate::sites::tests::project(

@@ -2569,11 +2569,12 @@ fn the_refactor_skill_moves_first_then_updates_evidence_with_habeas_refactor() {
             "Change nothing else in this step",
             "`habeas refactor --dry-run` with one `--map <old>=<new>` for every moved file or directory, node, and definition name",
             "Review the report",
+            "lists the records it updates, with each code span in their rationales that still mentions an old path, for you to check",
             "lists records a mapping affects that fail a check",
             "Run the same command without `--dry-run`",
             "`habeas status`. Only the records the report left unchanged",
             "Commit the move, the rewritten references, and the `evidence/` changes together, before any change to behavior or text",
-            "Reassess what remains stale with the habeas-evidence workflow",
+            "Reassess what remains stale with `habeas author`, following the habeas-evidence workflow",
         ],
     );
     assert_phrases(

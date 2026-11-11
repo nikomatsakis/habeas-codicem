@@ -875,6 +875,7 @@ pub(crate) mod tests {
     }
 
     // {test}`requirements.configuration.evidence_paths`
+    // {test}`requirements.authoring.generated_inputs`
     #[test]
     fn explicit_allow_overrides_the_build_output_refusal() {
         let root = tempfile::tempdir().unwrap();

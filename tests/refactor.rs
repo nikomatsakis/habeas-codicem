@@ -182,6 +182,7 @@ fn a_moved_function_keeps_its_evidence_current() {
         stale.iter().any(|error| error.contains("fn[load]")),
         "{stale:#?}"
     );
+    let unaffected = fs::read(root.join("evidence/rules.check.json")).unwrap();
 
     let output = refactor(
         root,
@@ -201,8 +202,12 @@ fn a_moved_function_keeps_its_evidence_current() {
         report.contains("review the rationale's `src/config.rs`"),
         "{report}"
     );
-    // `rules.check` reads no moved node, so it is unaffected.
+    // `rules.check` reads no moved node, so it is unaffected and unchanged.
     assert!(!report.contains("rules.check"), "{report}");
+    assert_eq!(
+        fs::read(root.join("evidence/rules.check.json")).unwrap(),
+        unaffected
+    );
     assert_eq!(errors(root), Vec::<String>::new());
     let record: Value =
         serde_json::from_str(&fs::read_to_string(root.join("evidence/rules.load.json")).unwrap())
@@ -230,6 +235,7 @@ fn a_moved_function_keeps_its_evidence_current() {
 // {test}`requirements.refactor.edited_while_moving`
 // {test}`requirements.refactor.outline_inputs`
 // {test}`requirements.refactor.whole_record`
+// {test}`requirements.refactor.command`
 #[test]
 fn a_function_edited_while_moving_leaves_its_records_stale() {
     let temp = project();
@@ -265,11 +271,17 @@ fn a_function_edited_while_moving_leaves_its_records_stale() {
 // {test}`requirements.refactor.definition_inputs`
 // {test}`requirements.refactor.subject_text`
 // {test}`requirements.refactor.rationale.names`
+// {test}`requirements.refactor.command`
 #[test]
 fn a_moved_requirement_renames_its_references_and_evidence() {
     let temp = project();
     let root = temp.path();
     author(root);
+    fs::write(
+        root.join("md/notes.md"),
+        "Loading follows {cite}`rules.load`.\n",
+    )
+    .unwrap();
     // `load` moves to the `core` chapter; references still name the old name.
     fs::write(
         root.join("md/rules.md"),
@@ -281,10 +293,33 @@ fn a_moved_requirement_renames_its_references_and_evidence() {
         "# Core\n\n:::{req} load\nConfiguration MUST load.\n:::\n",
     )
     .unwrap();
+    let before = snapshot(root);
     let output = refactor(root, &["--map", "rules.load=core.load"]);
     assert!(output.status.success(), "{output:?}");
     let report = stdout(&output);
     assert!(report.contains("- src/config.rs (2)"), "{report}");
+    assert!(report.contains("- md/notes.md (1)"), "{report}");
+    assert_eq!(
+        fs::read_to_string(root.join("md/notes.md")).unwrap(),
+        "Loading follows {cite}`core.load`.\n"
+    );
+    // Only the rewritten references and the moved evidence changed.
+    let after = snapshot(root);
+    let differing = before
+        .keys()
+        .chain(after.keys())
+        .filter(|file| before.get(*file) != after.get(*file))
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        differing.into_iter().collect::<Vec<_>>(),
+        [
+            "evidence/core.load.json",
+            "evidence/rules.load.json",
+            "md/notes.md",
+            "src/config.rs",
+        ]
+    );
     assert!(
         report.contains("- evidence/rules.load.json -> evidence/core.load.json"),
         "{report}"
@@ -400,6 +435,28 @@ fn invalid_mappings_fail_with_a_usage_error_and_change_nothing() {
         (
             vec!["--map", "src=md", "--map", "src/config.rs=data.txt"],
             "overlap",
+        ),
+        (
+            vec![
+                "--map",
+                "rules.check=rules.load",
+                "--map",
+                "rules=rules.load",
+            ],
+            "mappings of rules.check and rules overlap",
+        ),
+        (
+            vec![
+                "--map",
+                "src/config.rs#fn[load]=src/config.rs#fn[check]",
+                "--map",
+                "src/config.rs#=src/config.rs#fn[verify]",
+            ],
+            "overlap",
+        ),
+        (
+            vec!["--map", "#fn[load]=src/config.rs#fn[load]"],
+            "a node needs a file",
         ),
         (
             vec!["--map", "nothing.here=data.txt"],
@@ -581,4 +638,299 @@ fn a_citation_review_follows_its_item_and_the_name_it_cites() {
             .all(|error| error.starts_with("evidence/rules.check.json")),
         "{remaining:#?}"
     );
+}
+
+/// Moves `load` from the `rules` chapter to `core`, with `body`.
+fn move_load_requirement(root: &Path, body: &str) {
+    fs::write(
+        root.join("md/rules.md"),
+        "# Rules\n\n:::{req} check\n:impl: data.txt\nThe data MUST be checked.\n:::\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("md/core.md"),
+        format!("# Core\n\n:::{{req}} load\n{body}\n:::\n"),
+    )
+    .unwrap();
+}
+
+// {test}`requirements.refactor.record_files`
+#[test]
+fn a_move_onto_a_record_whose_own_move_is_refused_is_refused_too() {
+    let temp = project();
+    let root = temp.path();
+    // `core.load` exists, with evidence of its own.
+    fs::write(
+        root.join("md/core.md"),
+        "# Core\n\n:::{req} load\nConfiguration MUST load.\n:::\n",
+    )
+    .unwrap();
+    author(root);
+    write_evidence(
+        root,
+        "core.load",
+        "Fine.",
+        vec![requirements_input("core.load", &["core.load"], &LOAD_TEXT)],
+    );
+    // `rules.load` becomes `core.load`, and `core.load` becomes `next.load`,
+    // whose evidence path is already taken.
+    fs::write(
+        root.join("md/rules.md"),
+        "# Rules\n\n:::{req} check\n:impl: data.txt\nThe data MUST be checked.\n:::\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("md/next.md"),
+        "# Next\n\n:::{req} load\nConfiguration MUST load.\n:::\n",
+    )
+    .unwrap();
+    fs::write(root.join("evidence/next.load.json"), "{}\n").unwrap();
+    let before = snapshot(root);
+    let output = refactor(
+        root,
+        &[
+            "--map",
+            "rules.load=core.load",
+            "--map",
+            "core.load=next.load",
+        ],
+    );
+    assert!(output.status.success(), "{output:?}");
+    let report = stdout(&output);
+    assert!(
+        report.contains("- evidence/core.load.json: evidence/next.load.json would be overwritten"),
+        "{report}"
+    );
+    assert!(
+        report.contains("- evidence/rules.load.json: evidence/core.load.json would be overwritten"),
+        "{report}"
+    );
+    let after = snapshot(root);
+    for file in [
+        "evidence/core.load.json",
+        "evidence/next.load.json",
+        "evidence/rules.load.json",
+    ] {
+        assert_eq!(after.get(file), before.get(file), "{file}");
+    }
+}
+
+// {test}`requirements.refactor.subject_text`
+// {test}`requirements.refactor.whole_record`
+#[test]
+fn a_requirement_edited_while_moving_keeps_its_old_record() {
+    let temp = project();
+    let root = temp.path();
+    author(root);
+    move_load_requirement(root, "Configuration MUST load quickly.");
+    let before = fs::read(root.join("evidence/rules.load.json")).unwrap();
+    let output = refactor(root, &["--map", "rules.load=core.load"]);
+    assert!(output.status.success(), "{output:?}");
+    let report = stdout(&output);
+    assert!(
+        report.contains("- evidence/rules.load.json: requirement text of core.load changed"),
+        "{report}"
+    );
+    assert_eq!(
+        fs::read(root.join("evidence/rules.load.json")).unwrap(),
+        before
+    );
+    assert!(!root.join("evidence/core.load.json").exists());
+}
+
+// {test}`requirements.refactor.reference_digest`
+// {test}`requirements.refactor.whole_record`
+#[test]
+fn a_reference_set_changed_beyond_the_mapping_blocks_every_rewrite() {
+    let temp = project();
+    let root = temp.path();
+    author(root);
+    move_load_requirement(root, "Configuration MUST load.");
+    // A new `{impl}` is not part of the move.
+    fs::write(
+        root.join("src/config.rs"),
+        config_source("").replace(
+            "// {impl}`rules.check`\n",
+            "// {impl}`rules.check`\n// {impl}`rules.load`\n",
+        ),
+    )
+    .unwrap();
+    let before = fs::read(root.join("evidence/rules.load.json")).unwrap();
+    let output = refactor(root, &["--map", "rules.load=core.load"]);
+    assert!(output.status.success(), "{output:?}");
+    let report = stdout(&output);
+    // Its text and requirements input would be rewritten, but the reference
+    // set check fails, so nothing is.
+    assert!(
+        report.contains("- evidence/rules.load.json: the reference set of core.load changed"),
+        "{report}"
+    );
+    assert!(!report.contains("text of core.load changed"), "{report}");
+    assert_eq!(
+        fs::read(root.join("evidence/rules.load.json")).unwrap(),
+        before
+    );
+}
+
+/// Adds `usage.use`, which uses the term `terms.term`, with current
+/// evidence reading both.
+fn add_term(root: &Path) {
+    fs::write(
+        root.join("md/terms.md"),
+        "# Terms\n\n:::{definition} term\n:phrase: term\n\nA word.\n:::\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("md/usage.md"),
+        "# Usage\n\n:::{req} use\nThe {term}`terms.term` MUST be used.\n:::\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("evidence/usage.use.json"),
+        serde_json::to_string_pretty(&json!({
+            "requirement": "The {term}`terms.term` MUST be used.",
+            "determination": true,
+            "rationale": "Nothing implements `usage.use`, which uses `terms.term`.",
+            "references": habeas::reference_set_digest_for(root, "usage.use").unwrap(),
+            "inputs": [
+                requirements_input(
+                    "usage.use",
+                    &["usage.use"],
+                    &[":::{req} use", "The {term}`terms.term` MUST be used.", ":::"],
+                ),
+                {"definition": "terms.term", "text": [":::{definition} term", ":phrase: term", "", "A word.", ":::"]},
+            ],
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+}
+
+/// The validation errors of `usage.use`.
+fn usage_errors(root: &Path) -> Vec<String> {
+    errors(root)
+        .into_iter()
+        .filter(|error| error.starts_with("evidence/usage.use.json"))
+        .collect()
+}
+
+// {test}`requirements.refactor.definition_inputs`
+// {test}`requirements.refactor.subject_text`
+// {test}`requirements.refactor.reference_rewrite`
+// {test}`requirements.refactor.rationale.names`
+#[test]
+fn a_moved_term_rewrites_definition_inputs_and_the_texts_using_it() {
+    let temp = project();
+    let root = temp.path();
+    add_term(root);
+    assert_eq!(usage_errors(root), Vec::<String>::new());
+    fs::remove_file(root.join("md/terms.md")).unwrap();
+    fs::write(
+        root.join("md/glossary.md"),
+        "# Glossary\n\n:::{definition} term\n:phrase: term\n\nA word.\n:::\n",
+    )
+    .unwrap();
+    let output = refactor(root, &["--map", "terms.term=glossary.term"]);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        fs::read_to_string(root.join("md/usage.md")).unwrap(),
+        "# Usage\n\n:::{req} use\nThe {term}`glossary.term` MUST be used.\n:::\n"
+    );
+    let record: Value =
+        serde_json::from_str(&fs::read_to_string(root.join("evidence/usage.use.json")).unwrap())
+            .unwrap();
+    assert_eq!(
+        record["requirement"],
+        "The {term}`glossary.term` MUST be used."
+    );
+    assert_eq!(record["inputs"][1]["definition"], "glossary.term");
+    assert_eq!(
+        record["rationale"],
+        "Nothing implements `usage.use`, which uses `glossary.term`."
+    );
+    assert_eq!(usage_errors(root), Vec::<String>::new());
+}
+
+// {test}`requirements.refactor.definition_inputs`
+#[test]
+fn a_term_edited_while_moving_leaves_its_definition_input_stale() {
+    let temp = project();
+    let root = temp.path();
+    add_term(root);
+    fs::remove_file(root.join("md/terms.md")).unwrap();
+    fs::write(
+        root.join("md/glossary.md"),
+        "# Glossary\n\n:::{definition} term\n:phrase: term\n\nA longer word.\n:::\n",
+    )
+    .unwrap();
+    let before = fs::read(root.join("evidence/usage.use.json")).unwrap();
+    let report = stdout(&refactor(root, &["--map", "terms.term=glossary.term"]));
+    assert!(
+        report.contains(
+            "- evidence/usage.use.json: inputs[1]: glossary.term no longer selects what it recorded"
+        ),
+        "{report}"
+    );
+    assert_eq!(
+        fs::read(root.join("evidence/usage.use.json")).unwrap(),
+        before
+    );
+}
+
+// {test}`requirements.refactor.outline_inputs`
+#[test]
+fn an_input_whose_node_is_missing_after_the_move_is_not_rewritten() {
+    let temp = project();
+    let root = temp.path();
+    author(root);
+    // The file moves, but `verify` does not come with it.
+    fs::remove_file(root.join("src/config.rs")).unwrap();
+    fs::write(
+        root.join("src/settings.rs"),
+        config_source("").replace("fn verify() { load(); check(); }\n", ""),
+    )
+    .unwrap();
+    let before = fs::read(root.join("evidence/rules.load.json")).unwrap();
+    let report = stdout(&refactor(root, &["--map", "src/config.rs=src/settings.rs"]));
+    assert!(
+        report.contains("inputs[2]: src/settings.rs: no outline node matches \"fn[verify]\""),
+        "{report}"
+    );
+    assert_eq!(
+        fs::read(root.join("evidence/rules.load.json")).unwrap(),
+        before
+    );
+}
+
+// {test}`requirements.refactor.equivalence`
+#[test]
+fn a_record_failing_before_the_move_fails_the_same_way_after_it() {
+    let temp = project();
+    let root = temp.path();
+    author(root);
+    let path = root.join("evidence/rules.load.json");
+    let mut record: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    record["determination"] = json!(false);
+    fs::write(&path, serde_json::to_string_pretty(&record).unwrap()).unwrap();
+    let failing = errors(root);
+    assert!(!failing.is_empty());
+    move_load(root, "");
+    let output = refactor(
+        root,
+        &[
+            "--map",
+            "src/config.rs#fn[load]=src/config/load.rs#fn[load]",
+        ],
+    );
+    assert!(
+        stdout(&output).contains("- evidence/rules.load.json\n"),
+        "{}",
+        stdout(&output)
+    );
+    // The same failure, quoting the rationale as rewritten.
+    let expected = failing
+        .iter()
+        .map(|error| error.replace("`src/config.rs#fn[load]`", "`src/config/load.rs#fn[load]`"))
+        .collect::<Vec<_>>();
+    assert_eq!(errors(root), expected);
 }

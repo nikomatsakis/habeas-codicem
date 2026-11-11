@@ -1387,6 +1387,43 @@ no_match: ["struct S;"]
             crate::evidence::reference_set_digest_for(root, "requirements.rule").unwrap(),
             digest
         );
+
+        // A review recording the in-site `{fixme}` is current; reflowing its
+        // body keeps it current, and changing its words makes it stale.
+        fs::write(root.join("src/lib.rs"), &source).unwrap();
+        crate::evidence::tests::stamp_reference_sets(root);
+        write_review(
+            root,
+            "fn[check_two]",
+            json!({
+                "determination": {"FIXME": ["o/r#1"]},
+                "fixmes": [{"item": "fn[check_two]", "commentary": ":github: o/r#1\n Panics instead of reporting."}],
+            }),
+        );
+        let changed = |root: &Path| {
+            let (errors, _) = inspect(root);
+            review_errors(&errors, "fn[check_two]")
+                .into_iter()
+                .filter(|error| error.contains("{fixme} references"))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(changed(root), Vec::<String>::new());
+        fs::write(
+            root.join("src/lib.rs"),
+            source.replacen(
+                "    // Panics instead of reporting.\n",
+                "    // Panics instead\n    // of reporting.\n",
+                1,
+            ),
+        )
+        .unwrap();
+        assert_eq!(changed(root), Vec::<String>::new());
+        fs::write(
+            root.join("src/lib.rs"),
+            source.replacen("Panics instead", "Still panics instead", 1),
+        )
+        .unwrap();
+        assert_eq!(changed(root).len(), 1);
     }
 
     // {test}`requirements.ci.outcomes`

@@ -1331,6 +1331,7 @@ pub(super) mod tests {
     // {test}`requirements.references.authoring_inputs`
     // {test}`requirements.authoring.mandatory_inputs`
     // {test}`requirements.authoring_input`
+    // {test}`requirements.authoring.no_line_numbers`
     #[test]
     fn anchored_files_contribute_root_node_inputs() {
         let root = project();
