@@ -81,7 +81,8 @@ fn mappings_cover_names_paths_and_nodes_beneath_them() {
     );
 }
 
-// {test}`requirements.refactor.mapped_back`
+// {test}`requirements.refactor.outline_inputs`
+// {test}`requirements.refactor.definition_inputs`
 #[test]
 fn mapped_back_text_replaces_whole_new_names_and_paths() {
     let map = mappings(&[
@@ -90,8 +91,8 @@ fn mapped_back_text_replaces_whole_new_names_and_paths() {
         ("node", "src/c.rs#fn[f]", "src/d.rs#fn[f]"),
     ]);
     assert_eq!(
-        map.text_back("{impl}`rules.core.check` and rules.core.check.case"),
-        "{impl}`rules.cli.check` and rules.cli.check.case"
+        map.text_back("\u{7b}impl}`rules.core.check` and rules.core.check.case"),
+        "\u{7b}impl}`rules.cli.check` and rules.cli.check.case"
     );
     // Longer names and other paths are left alone.
     assert_eq!(map.text_back("rules.core.checker"), "rules.core.checker");
@@ -110,9 +111,9 @@ fn sources_rewrite_references_to_names_and_anchors_to_paths() {
         ("path", "data.txt", "info.txt"),
     ]);
     let rust = concat!(
-        "// {impl}`rules.check`\n",
-        "// {cite}`rules.checker`\n",
-        "// :::{fixme} rules.check\n// A gap.\n// :::\n",
+        "// \u{7b}impl}`rules.check`\n",
+        "// \u{7b}cite}`rules.checker`\n",
+        "// :::\u{7b}fixme} rules.check\n// A gap.\n// :::\n",
         "fn f() {}\n",
     );
     let (rewritten, edits) = rewrite_source(&map, Path::new("src/lib.rs"), rust);
@@ -120,9 +121,9 @@ fn sources_rewrite_references_to_names_and_anchors_to_paths() {
     assert_eq!(
         rewritten,
         concat!(
-            "// {impl}`core.check`\n",
-            "// {cite}`rules.checker`\n",
-            "// :::{fixme} core.check\n// A gap.\n// :::\n",
+            "// \u{7b}impl}`core.check`\n",
+            "// \u{7b}cite}`rules.checker`\n",
+            "// :::\u{7b}fixme} core.check\n// A gap.\n// :::\n",
             "fn f() {}\n",
         )
     );
@@ -130,13 +131,13 @@ fn sources_rewrite_references_to_names_and_anchors_to_paths() {
     // and references in code blocks stay literal.
     let markdown = concat!(
         ":::{req} other\n:impl: data.txt\n:test: data.txt#line@abc\n",
-        "Uses {term}`rules.check`.\n:::\n\n```text\n{cite}`rules.check`\n```\n",
+        "Uses \u{7b}term}`rules.check`.\n:::\n\n```text\n\u{7b}cite}`rules.check`\n```\n",
     );
     let (rewritten, edits) = rewrite_source(&map, Path::new("md/rules.md"), markdown);
     assert_eq!(edits, 3, "{rewritten}");
     assert!(rewritten.contains(":impl: info.txt\n:test: info.txt#line@abc\n"));
-    assert!(rewritten.contains("Uses {term}`core.check`."));
-    assert!(rewritten.contains("```text\n{cite}`rules.check`\n```"));
+    assert!(rewritten.contains("Uses \u{7b}term}`core.check`."));
+    assert!(rewritten.contains("```text\n\u{7b}cite}`rules.check`\n```"));
     // Option-like lines outside a directive's options are literal.
     let literal = concat!(
         ":::{req} other\nBody.\n:impl: data.txt\n:::\n\n",

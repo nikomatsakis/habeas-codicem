@@ -51,7 +51,7 @@ fn config_source(extra: &str) -> String {
 }
 
 /// `load` alone, as it reads after moving to its own file.
-const LOAD_ALONE: &str = "// {impl}`rules.load`\nfn load() { read(); }\n";
+const LOAD_ALONE: &str = "// \u{7b}impl}`rules.load`\nfn load() { read(); }\n";
 
 /// Writes current evidence for `name` reading `inputs`.
 // {cite}`habeas:util`
@@ -279,7 +279,7 @@ fn a_moved_requirement_renames_its_references_and_evidence() {
     author(root);
     fs::write(
         root.join("md/notes.md"),
-        "Loading follows {cite}`rules.load`.\n",
+        "Loading follows \u{7b}cite}`rules.load`.\n",
     )
     .unwrap();
     // `load` moves to the `core` chapter; references still name the old name.
@@ -301,7 +301,7 @@ fn a_moved_requirement_renames_its_references_and_evidence() {
     assert!(report.contains("- md/notes.md (1)"), "{report}");
     assert_eq!(
         fs::read_to_string(root.join("md/notes.md")).unwrap(),
-        "Loading follows {cite}`core.load`.\n"
+        "Loading follows \u{7b}cite}`core.load`.\n"
     );
     // Only the rewritten references and the moved evidence changed.
     let after = snapshot(root);
@@ -333,7 +333,10 @@ fn a_moved_requirement_renames_its_references_and_evidence() {
     );
     assert!(!root.join("evidence/rules.load.json").exists());
     let source = fs::read_to_string(root.join("src/config.rs")).unwrap();
-    assert!(source.contains("// {impl}`core.load`") && source.contains("// {test}`core.load`"));
+    assert!(
+        source.contains("// \u{7b}impl}`core.load`")
+            && source.contains("// \u{7b}test}`core.load`")
+    );
     let record: Value =
         serde_json::from_str(&fs::read_to_string(root.join("evidence/core.load.json")).unwrap())
             .unwrap();
@@ -515,7 +518,7 @@ fn a_rename_rewrites_the_hash_of_a_node_whose_doc_comment_names_it() {
     // Doc comments are hashed, so the rewritten reference changes the hash.
     fs::write(
         root.join("src/config.rs"),
-        config_source("").replace("// {impl}`rules.load`", "/// {impl}`rules.load`"),
+        config_source("").replace("// \u{7b}impl}`rules.load`", "/// \u{7b}impl}`rules.load`"),
     )
     .unwrap();
     author(root);
@@ -537,7 +540,7 @@ fn a_rename_rewrites_the_hash_of_a_node_whose_doc_comment_names_it() {
     let output = refactor(root, &["--map", "rules.load=core.load"]);
     assert!(output.status.success(), "{output:?}");
     let source = fs::read_to_string(root.join("src/config.rs")).unwrap();
-    assert!(source.contains("/// {impl}`core.load`"), "{source}");
+    assert!(source.contains("/// \u{7b}impl}`core.load`"), "{source}");
     let after = hash(root);
     assert_ne!(before, after);
     let record: Value =
@@ -592,7 +595,7 @@ fn a_citation_review_follows_its_item_and_the_name_it_cites() {
     fs::write(root.join("src/config.rs"), config_source("")).unwrap();
     fs::write(
         root.join("src/helper.rs"),
-        "// {cite}`rules.load`\nfn helper() {}\n",
+        "// \u{7b}cite}`rules.load`\nfn helper() {}\n",
     )
     .unwrap();
     fs::write(
@@ -750,8 +753,8 @@ fn a_reference_set_changed_beyond_the_mapping_blocks_every_rewrite() {
     fs::write(
         root.join("src/config.rs"),
         config_source("").replace(
-            "// {impl}`rules.check`\n",
-            "// {impl}`rules.check`\n// {impl}`rules.load`\n",
+            "// \u{7b}impl}`rules.check`\n",
+            "// \u{7b}impl}`rules.check`\n// \u{7b}impl}`rules.load`\n",
         ),
     )
     .unwrap();
@@ -782,13 +785,13 @@ fn add_term(root: &Path) {
     .unwrap();
     fs::write(
         root.join("md/usage.md"),
-        "# Usage\n\n:::{req} use\nThe {term}`terms.term` MUST be used.\n:::\n",
+        "# Usage\n\n:::{req} use\nThe \u{7b}term}`terms.term` MUST be used.\n:::\n",
     )
     .unwrap();
     fs::write(
         root.join("evidence/usage.use.json"),
         serde_json::to_string_pretty(&json!({
-            "requirement": "The {term}`terms.term` MUST be used.",
+            "requirement": "The \u{7b}term}`terms.term` MUST be used.",
             "determination": true,
             "rationale": "Nothing implements `usage.use`, which uses `terms.term`.",
             "references": habeas::reference_set_digest_for(root, "usage.use").unwrap(),
@@ -796,7 +799,7 @@ fn add_term(root: &Path) {
                 requirements_input(
                     "usage.use",
                     &["usage.use"],
-                    &[":::{req} use", "The {term}`terms.term` MUST be used.", ":::"],
+                    &[":::{req} use", "The \u{7b}term}`terms.term` MUST be used.", ":::"],
                 ),
                 {"definition": "terms.term", "text": [":::{definition} term", ":phrase: term", "", "A word.", ":::"]},
             ],
@@ -835,14 +838,14 @@ fn a_moved_term_rewrites_definition_inputs_and_the_texts_using_it() {
     assert!(output.status.success(), "{output:?}");
     assert_eq!(
         fs::read_to_string(root.join("md/usage.md")).unwrap(),
-        "# Usage\n\n:::{req} use\nThe {term}`glossary.term` MUST be used.\n:::\n"
+        "# Usage\n\n:::{req} use\nThe \u{7b}term}`glossary.term` MUST be used.\n:::\n"
     );
     let record: Value =
         serde_json::from_str(&fs::read_to_string(root.join("evidence/usage.use.json")).unwrap())
             .unwrap();
     assert_eq!(
         record["requirement"],
-        "The {term}`glossary.term` MUST be used."
+        "The \u{7b}term}`glossary.term` MUST be used."
     );
     assert_eq!(record["inputs"][1]["definition"], "glossary.term");
     assert_eq!(
@@ -1047,16 +1050,16 @@ fn a_changed_reference_set_is_reported_on_a_record_reading_nothing_moved() {
     fs::write(
         root.join("src/config.rs"),
         config_source("")
-            .replace("// {impl}`rules.check`\nfn check() {}\n\n", "")
+            .replace("// \u{7b}impl}`rules.check`\nfn check() {}\n\n", "")
             .replace(
-                "// {impl}`rules.load`\n",
-                "// {impl}`rules.load`\n// {impl}`rules.check`\n",
+                "// \u{7b}impl}`rules.load`\n",
+                "// \u{7b}impl}`rules.load`\n// \u{7b}impl}`rules.check`\n",
             ),
     )
     .unwrap();
     fs::write(
         root.join("src/check.rs"),
-        "// {impl}`rules.check`\nfn check() {}\n",
+        "// \u{7b}impl}`rules.check`\nfn check() {}\n",
     )
     .unwrap();
     let report = stdout(&refactor(

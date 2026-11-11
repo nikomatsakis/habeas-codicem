@@ -181,7 +181,6 @@ impl Mappings {
 
     /// The {term}`requirements.refactor.mapped_back` form of text: each new
     /// node address, definition name, and path replaced by its old side.
-    // {impl}`requirements.refactor.mapped_back`
     fn text_back(&self, text: &str) -> String {
         let mut text = text.to_owned();
         for ((old_file, old_item), (new_file, new_item)) in &self.nodes {
