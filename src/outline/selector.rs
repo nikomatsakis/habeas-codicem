@@ -21,6 +21,7 @@ pub(crate) fn encode_name(name: &str) -> String {
     encoded
 }
 
+// {impl}`requirements.references.outline_selectors`
 /// Reverses [`encode_name`], rejecting malformed escapes and unescaped
 /// delimiters.
 pub(crate) fn decode_name(encoded: &str) -> Result<String, SelectorError> {

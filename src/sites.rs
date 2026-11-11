@@ -432,6 +432,7 @@ pub(crate) fn validate_query_placement(
     }
 }
 
+// {impl}`requirements.references.site_review`
 /// The declarations a requirement cites, which every site review receives.
 pub(crate) fn cited_declarations(
     declaration: &Declaration,

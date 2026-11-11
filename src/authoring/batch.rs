@@ -397,6 +397,7 @@ fn delete_orphaned_reviews(
     Ok(deleted)
 }
 
+// {cite}`habeas:util`
 /// Whether a record is current: valid, an accepted FIXME, or a false
 /// judgment whose subject and inputs are unchanged.
 fn current(evidence: &LoadedDetailEvidence) -> bool {

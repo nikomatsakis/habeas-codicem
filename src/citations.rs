@@ -101,6 +101,7 @@ pub(crate) fn review_path(file: &str, item: &str) -> String {
     )
 }
 
+// {impl}`requirements.references.citation_review`
 /// A selector as a review file name: `/` and `%` percent-encoded, and
 /// `_root` for the root node.
 pub(crate) fn encoded_selector(item: &str) -> String {

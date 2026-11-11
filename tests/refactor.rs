@@ -1084,3 +1084,77 @@ fn a_changed_reference_set_is_reported_on_a_record_reading_nothing_moved() {
     );
     assert_eq!(fs::read(&path).unwrap(), before);
 }
+
+// {test}`requirements.refactor.subject_text`
+// {test}`requirements.refactor.record_files`
+#[test]
+fn a_moved_example_rewrites_its_example_field() {
+    let temp = project();
+    let root = temp.path();
+    author(root);
+    // The role's brace is an argument, so this source holds no reference.
+    let body = |name: &str| format!("Loading works. {}cite}}`{name}`", '{');
+    fs::write(
+        root.join("md/cases.md"),
+        format!(
+            "# Cases\n\n:::{{example}} loading\n{}\n:::\n",
+            body("rules.load")
+        ),
+    )
+    .unwrap();
+    fs::write(
+        root.join("evidence/cases.loading.json"),
+        serde_json::to_string_pretty(&json!({
+            "example": body("rules.load"),
+            "determination": false,
+            "rationale": "No test covers `cases.loading`.",
+            "references": habeas::reference_set_digest_for(root, "cases.loading").unwrap(),
+            "inputs": [
+                requirements_input("cases.loading", &["cases.loading"], &[":::{example} loading", &body("rules.load"), ":::"]),
+                requirements_input("rules.load", &["rules.load"], &LOAD_TEXT),
+            ],
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let case_errors = |root: &Path| {
+        errors(root)
+            .into_iter()
+            .filter(|error| error.starts_with("evidence/cases."))
+            .collect::<Vec<_>>()
+    };
+    let before = case_errors(root);
+    // The example moves to the `examples` chapter.
+    fs::remove_file(root.join("md/cases.md")).unwrap();
+    fs::write(
+        root.join("md/examples.md"),
+        format!(
+            "# Examples\n\n:::{{example}} loading\n{}\n:::\n",
+            body("rules.load")
+        ),
+    )
+    .unwrap();
+    let output = refactor(root, &["--map", "cases.loading=examples.loading"]);
+    assert!(output.status.success(), "{output:?}");
+    let record: Value = serde_json::from_str(
+        &fs::read_to_string(root.join("evidence/examples.loading.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(record["example"], body("rules.load"));
+    assert!(record.get("requirement").is_none());
+    // It fails validation exactly as before, under its new name.
+    let after = errors(root)
+        .into_iter()
+        .filter(|error| error.starts_with("evidence/examples."))
+        .map(|error| error.replace("examples.loading", "cases.loading"))
+        .collect::<Vec<_>>();
+    let before = before
+        .into_iter()
+        .map(|error| {
+            error
+                .replacen("evidence/cases.", "evidence/examples.", 1)
+                .replace("examples.loading", "cases.loading")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(after, before);
+}

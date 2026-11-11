@@ -902,6 +902,7 @@ fn initial_prompt(sources: &AssessmentSources) -> io::Result<Prompt> {
     })
 }
 
+// {impl}`requirements.authoring.verifier_prompt`
 /// The body of a filled prompt's `# heading` section, up to the next heading.
 fn prompt_section<'a>(prompt: &'a str, heading: &str) -> &'a str {
     let opening = format!("# {heading}\n\n");
