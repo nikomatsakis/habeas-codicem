@@ -2551,6 +2551,41 @@ fn bundled_skills_guide_distributed_requirements_with_do_and_dont_lists() {
     );
 }
 
+// {test}`requirements.cli.refactor_skill`
+// {test}`requirements.cli.refactor_skill.workflow`
+// {test}`requirements.cli.refactor_skill.limits`
+#[test]
+fn the_refactor_skill_moves_first_then_updates_evidence_with_habeas_refactor() {
+    let description = bundled_skill("habeas-refactor");
+    assert!(description.contains(
+        "Use when a change moves code, tests, or requirements in a Habeas project to another file, chapter, or outline node"
+    ));
+    assert!(description.contains("splitting or merging modules or chapters"));
+    assert!(description.contains("so that evidence whose content is unchanged is not invalidated"));
+    assert_in_order(
+        "habeas-refactor",
+        &[
+            "Make the move with your own edits",
+            "Change nothing else in this step",
+            "`habeas refactor --dry-run` with one `--map <old>=<new>` for every moved file or directory, node, and definition name",
+            "Review the report",
+            "lists records a mapping affects that fail a check",
+            "Run the same command without `--dry-run`",
+            "`habeas status`. Only the records the report left unchanged",
+            "Commit the move, the rewritten references, and the `evidence/` changes together, before any change to behavior or text",
+            "Reassess what remains stale with the habeas-evidence workflow",
+        ],
+    );
+    assert_phrases(
+        "habeas-refactor",
+        &[
+            "Never edit evidence files by hand to follow a move",
+            "A rename is not a move",
+            "Editing moved code or text in the same step leaves every record that read it stale",
+        ],
+    );
+}
+
 // {test}`requirements.cli.skill_structure`
 #[test]
 fn bundled_skills_open_with_a_workflow_and_name_their_neighbors() {
@@ -2566,6 +2601,10 @@ fn bundled_skills_open_with_a_workflow_and_name_their_neighbors() {
         (
             "habeas-bootstrap-requirements",
             include_str!("../assets/skills/habeas-bootstrap-requirements/SKILL.md"),
+        ),
+        (
+            "habeas-refactor",
+            include_str!("../assets/skills/habeas-refactor/SKILL.md"),
         ),
     ];
     for (name, text) in skills {
@@ -2595,7 +2634,13 @@ fn bundled_skills_open_with_a_workflow_and_name_their_neighbors() {
     }
 
     // Each topic's home holds its section.
-    let [(_, requirements), (_, evidence), (_, bootstrap)] = skills;
+    let [
+        (_, requirements),
+        (_, evidence),
+        (_, bootstrap),
+        (_, refactor),
+    ] = skills;
+    assert!(refactor.contains("habeas refactor --dry-run"));
     for heading in [
         "## Writing requirements",
         "## Choosing references",
@@ -2635,10 +2680,11 @@ fn bundled_skills_open_with_a_workflow_and_name_their_neighbors() {
 
 /// The bundled skills, by name.
 // {test}`requirements.cli.behavior_review_guidance`
-const SKILLS: [&str; 3] = [
+const SKILLS: [&str; 4] = [
     "habeas-requirements",
     "habeas-evidence",
     "habeas-bootstrap-requirements",
+    "habeas-refactor",
 ];
 
 /// A bundled skill together with the reference files it links to, with line
@@ -2660,6 +2706,7 @@ fn bundled_skill(name: &str) -> String {
         "habeas-bootstrap-requirements" => &[include_str!(
             "../assets/skills/habeas-bootstrap-requirements/SKILL.md"
         )],
+        "habeas-refactor" => &[include_str!("../assets/skills/habeas-refactor/SKILL.md")],
         _ => panic!("unknown skill {name}"),
     };
     files

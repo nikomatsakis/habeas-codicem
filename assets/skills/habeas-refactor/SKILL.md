@@ -1,6 +1,6 @@
 ---
 name: habeas-refactor
-description: Use when a change moves code, tests, or requirements in a Habeas project to another file, chapter, or outline node, such as moving a function to another module, renaming or splitting a file, splitting or merging modules or chapters, or moving a requirement to another chapter, so that evidence whose content is unchanged is not invalidated. Covers making the move and running `habeas refactor` to update evidence, references, and anchors. To change what code or requirements say, use habeas-requirements; to reassess evidence the move leaves stale, use habeas-evidence.
+description: Use when a change moves code, tests, or requirements in a Habeas project to another file, chapter, or outline node, such as moving a function to another module, renaming or splitting a file, splitting or merging modules or chapters, or moving a requirement to another chapter, so that evidence whose content is unchanged is not invalidated. Covers making the move and running `habeas refactor` to update evidence, references, and anchors. To change what code or requirements say, use habeas-requirements; to reassess evidence the move leaves stale, use habeas-evidence; to derive an initial requirement set for an existing codebase, use habeas-bootstrap-requirements.
 ---
 
 # Habeas refactor
