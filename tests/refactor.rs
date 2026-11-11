@@ -818,6 +818,7 @@ fn usage_errors(root: &Path) -> Vec<String> {
 // {test}`requirements.refactor.subject_text`
 // {test}`requirements.refactor.reference_rewrite`
 // {test}`requirements.refactor.rationale.names`
+// {test}`requirements.refactor.record_fields`
 #[test]
 fn a_moved_term_rewrites_definition_inputs_and_the_texts_using_it() {
     let temp = project();
@@ -933,4 +934,138 @@ fn a_record_failing_before_the_move_fails_the_same_way_after_it() {
         .map(|error| error.replace("`src/config.rs#fn[load]`", "`src/config/load.rs#fn[load]`"))
         .collect::<Vec<_>>();
     assert_eq!(errors(root), expected);
+}
+
+// {test}`requirements.refactor.record_fields`
+// {test}`requirements.refactor.definition_inputs`
+// {test}`requirements.refactor.equivalence`
+#[test]
+fn a_moved_chapter_rewrites_glob_selections_and_their_matches() {
+    let temp = project();
+    let root = temp.path();
+    author(root);
+    let chapter = fs::read_to_string(root.join("md/rules.md")).unwrap();
+    fs::remove_file(root.join("md/rules.md")).unwrap();
+    fs::write(
+        root.join("md/core.md"),
+        chapter.replace("# Rules", "# Core"),
+    )
+    .unwrap();
+    let output = refactor(root, &["--map", "rules=core"]);
+    assert!(output.status.success(), "{output:?}");
+    let record: Value =
+        serde_json::from_str(&fs::read_to_string(root.join("evidence/core.check.json")).unwrap())
+            .unwrap();
+    assert_eq!(record["inputs"][0]["requirements"], "core.*");
+    assert_eq!(
+        record["inputs"][0]["matches"],
+        json!(["core.check", "core.load"])
+    );
+    assert_eq!(errors(root), Vec::<String>::new());
+}
+
+// {test}`requirements.refactor.record_fields`
+#[test]
+fn a_citation_reviews_commentary_follows_a_renamed_requirement() {
+    let temp = project();
+    let root = temp.path();
+    let source = |name: &str| {
+        format!(
+            "{}\n// :::{{cite}} rules.check\n// Shares {{term}}`{name}` wording.\n// :::\nfn helper() {{}}\n",
+            config_source("")
+        )
+    };
+    fs::write(
+        root.join("md/terms.md"),
+        "# Terms\n\n:::{definition} word\n:phrase: word\n\nA word.\n:::\n",
+    )
+    .unwrap();
+    fs::write(root.join("src/config.rs"), source("terms.word")).unwrap();
+    author(root);
+    let review = |name: &str| {
+        json!({
+            "file": "src/config.rs",
+            "item": "fn[helper]",
+            "citations": [{"role": "cite", "name": "rules.check", "commentary": format!("Shares {{term}}`{name}` wording.")}],
+            "determination": true,
+            "rationale": "It relies on `rules.check`.",
+            "inputs": [
+                habeas::outline_input(root, "src/config.rs", "fn[helper]").unwrap(),
+                requirements_input("rules.check", &["rules.check"], &CHECK_TEXT),
+                {"definition": name, "text": [":::{definition} word", ":phrase: word", "", "A word.", ":::"]},
+            ],
+        })
+    };
+    let path = root.join("evidence/citations/src/config.rs/fn[helper].json");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(
+        &path,
+        serde_json::to_string_pretty(&review("terms.word")).unwrap(),
+    )
+    .unwrap();
+    let citation_errors = |root: &Path| {
+        errors(root)
+            .into_iter()
+            .filter(|error| error.starts_with("evidence/citations/"))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(citation_errors(root), Vec::<String>::new());
+    fs::remove_file(root.join("md/terms.md")).unwrap();
+    fs::write(
+        root.join("md/glossary.md"),
+        "# Glossary\n\n:::{definition} word\n:phrase: word\n\nA word.\n:::\n",
+    )
+    .unwrap();
+    let output = refactor(root, &["--map", "terms.word=glossary.word"]);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        fs::read_to_string(root.join("src/config.rs")).unwrap(),
+        source("glossary.word")
+    );
+    let record: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(record["citations"], review("glossary.word")["citations"]);
+    assert_eq!(record["inputs"][2]["definition"], "glossary.word");
+    assert_eq!(citation_errors(root), Vec::<String>::new());
+}
+
+// {test}`requirements.refactor.reference_digest`
+// {test}`requirements.refactor.whole_record`
+// {test}`requirements.refactor.command`
+#[test]
+fn a_changed_reference_set_is_reported_on_a_record_reading_nothing_moved() {
+    let temp = project();
+    let root = temp.path();
+    author(root);
+    // `rules.check` records only its glob input, so a move touches only its
+    // reference set.
+    let path = root.join("evidence/rules.check.json");
+    let mut record: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    record["inputs"] = json!([record["inputs"][0]]);
+    fs::write(&path, serde_json::to_string_pretty(&record).unwrap()).unwrap();
+    let before = fs::read(&path).unwrap();
+    // `check` moves, and an extra `{impl}` is added that is not part of it.
+    fs::write(
+        root.join("src/config.rs"),
+        config_source("")
+            .replace("// {impl}`rules.check`\nfn check() {}\n\n", "")
+            .replace(
+                "// {impl}`rules.load`\n",
+                "// {impl}`rules.load`\n// {impl}`rules.check`\n",
+            ),
+    )
+    .unwrap();
+    fs::write(
+        root.join("src/check.rs"),
+        "// {impl}`rules.check`\nfn check() {}\n",
+    )
+    .unwrap();
+    let report = stdout(&refactor(
+        root,
+        &["--map", "src/config.rs#fn[check]=src/check.rs#fn[check]"],
+    ));
+    assert!(
+        report.contains("- evidence/rules.check.json: the reference set of rules.check changed"),
+        "{report}"
+    );
+    assert_eq!(fs::read(&path).unwrap(), before);
 }

@@ -1429,8 +1429,9 @@ async fn converse<T>(
                     if error.kind() == io::ErrorKind::PermissionDenied {
                         return Err(error);
                     }
-                    results
-                        .push(call.error_result(vec![ToolResultContent::text(error.to_string())]));
+                    results.push(call.error_result(vec![ToolResultContent::text(
+                        line_numbers::without_source_lines(&error.to_string()),
+                    )]));
                 }
             }
         }
@@ -1690,6 +1691,59 @@ mod tests {
         assert_eq!(recorded, (0..=last).collect::<Vec<_>>());
         let log: Value = serde_json::from_str(&fs::read_to_string(&usage.path).unwrap()).unwrap();
         assert_eq!(log["tool_calls"]["next_page"], 1);
+    }
+
+    // {test}`requirements.authoring.no_line_numbers`
+    #[tokio::test]
+    async fn tool_errors_give_the_model_no_line_numbers_it_did_not_supply() {
+        let project = inputs::tests::project();
+        fs::write(project.path().join("src/lib.rs"), "fn work() {}\n").unwrap();
+        fs::write(
+            project.path().join("src/broken.rs"),
+            "fn ok() {}\nfn broken( {\n",
+        )
+        .unwrap();
+        let sources = AssessmentSources::prepare(project.path(), "requirements.ready").unwrap();
+        // A range past the end repeats only the supplied start line.
+        let past = tools::dispatch(
+            &sources,
+            "habeas",
+            &json!({"file": "src/lib.rs", "line_start": 99}),
+        )
+        .err()
+        .unwrap()
+        .to_string();
+        assert!(
+            past.starts_with("src/lib.rs:99 is not an inclusive range"),
+            "{past}"
+        );
+        // A parse error names its line, but the model receives it without.
+        let read = json!({"file": "src/broken.rs", "item": ""});
+        let parse = tools::dispatch(&sources, "habeas", &read)
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(
+            regex::Regex::new(r"line \d+: ").unwrap().is_match(&parse),
+            "{parse}"
+        );
+        let mut sources = sources;
+        let state = tempfile::tempdir().unwrap();
+        let mut usage =
+            UsageLog::start(state.path(), project.path(), &sources.subject_name).unwrap();
+        let provider = ReadingProvider {
+            read,
+            requests: RefCell::default(),
+        };
+        assess(&provider, &mut sources, &mut usage).await.unwrap();
+        let delivered = provider.requests.borrow()[1].to_string();
+        assert!(delivered.contains("cannot parse"), "{delivered}");
+        assert!(
+            !regex::Regex::new(r"line \d+: ")
+                .unwrap()
+                .is_match(&delivered),
+            "{delivered}"
+        );
     }
 
     // {test}`requirements.authoring.read_denial`

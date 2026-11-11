@@ -1897,6 +1897,33 @@ fn evidence_input_ranges(
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use super::{ReferenceSetEntry, digest_entries};
+
+    // {test}`requirements.ci.reference_set`
+    #[test]
+    fn the_reference_set_digest_does_not_depend_on_the_order_entries_are_found() {
+        let entry = |role: &'static str, file: &str, item: &str| ReferenceSetEntry {
+            origin: "reference",
+            role,
+            file: file.to_owned(),
+            item: item.to_owned(),
+            words: Vec::new(),
+        };
+        let entries = || {
+            vec![
+                entry("impl", "src/a.rs", "fn[a]"),
+                entry("test", "src/b.rs", "fn[b]"),
+                entry("impl", "src/b.rs", ""),
+            ]
+        };
+        let mut reversed = entries();
+        reversed.reverse();
+        assert_eq!(digest_entries(entries()), digest_entries(reversed));
+        let mut other = entries();
+        other[0].item = "fn[c]".to_owned();
+        assert_ne!(digest_entries(entries()), digest_entries(other));
+    }
+
     /// Validation errors other than citation reviews, for fixtures that test
     /// other checks.
     // {test}`requirements.references.citation_review`
@@ -3378,6 +3405,7 @@ pub(crate) mod tests {
 
     // {test}`requirements.references.anchors`
     // {test}`requirements.ci.requirement_text`
+    // {test}`requirements.references.evidence_coverage`
     #[test]
     fn anchored_files_must_be_completely_covered_and_resolvable() {
         let temp = fixture();
@@ -3454,6 +3482,7 @@ pub(crate) mod tests {
 
     // {test}`requirements.references.anchors`
     // {test}`requirements.ci.outline_inputs`
+    // {test}`requirements.references.evidence_coverage`
     #[test]
     fn selector_anchors_are_covered_by_inputs_selecting_the_node_or_an_ancestor() {
         let temp = fixture();

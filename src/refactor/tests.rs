@@ -137,6 +137,13 @@ fn sources_rewrite_references_to_names_and_anchors_to_paths() {
     assert!(rewritten.contains(":impl: info.txt\n:test: info.txt#line@abc\n"));
     assert!(rewritten.contains("Uses {term}`core.check`."));
     assert!(rewritten.contains("```text\n{cite}`rules.check`\n```"));
+    // Option-like lines outside a directive's options are literal.
+    let literal = concat!(
+        ":::{req} other\nBody.\n:impl: data.txt\n:::\n\n",
+        "```text\n:::{req} shown\n:impl: data.txt\n:::\n```\n",
+    );
+    let (rewritten, edits) = rewrite_source(&map, Path::new("md/rules.md"), literal);
+    assert_eq!((rewritten.as_str(), edits), (literal, 0));
     // Plain text is not an anchor outside Markdown.
     let (_, edits) = rewrite_source(&map, Path::new("notes.txt"), ":impl: data.txt\n");
     assert_eq!(edits, 0);

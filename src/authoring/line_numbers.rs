@@ -24,6 +24,17 @@ pub(crate) fn cited(rationale: &str) -> Option<&str> {
     LINE_NUMBERS.find(rationale).map(|found| found.as_str())
 }
 
+/// The position a source parse error states, `line N: `.
+static PARSE_POSITION: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\bline \d+: ").expect("parse position pattern"));
+
+/// A tool error as the model receives it: without the source line a parse
+/// error names, which the model did not supply.
+// {impl}`requirements.authoring.no_line_numbers`
+pub(crate) fn without_source_lines(error: &str) -> String {
+    PARSE_POSITION.replace_all(error, "").into_owned()
+}
+
 /// The rationale of a submission's arguments.
 // {cite}`habeas:util`
 pub(crate) fn rationale(arguments: &Value) -> &str {
@@ -120,6 +131,19 @@ mod tests {
             assert_eq!(cited(text), None, "{text}");
         }
         assert_eq!(cited("at src/a.rs:5 and line 3"), Some("src/a.rs:5"));
+    }
+
+    // {test}`requirements.authoring.no_line_numbers`
+    #[test]
+    fn tool_errors_drop_the_source_line_of_a_parse_error() {
+        assert_eq!(
+            without_source_lines("src/a.rs: cannot parse Rust source: line 3: unexpected token"),
+            "src/a.rs: cannot parse Rust source: unexpected token"
+        );
+        assert_eq!(
+            without_source_lines("src/a.rs:9 is not an inclusive range"),
+            "src/a.rs:9 is not an inclusive range"
+        );
     }
 
     // {test}`requirements.authoring.line_numbers.rejection`

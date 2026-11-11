@@ -628,10 +628,16 @@ impl AssessmentSources {
             .as_ref()
             .map_err(|error| io::Error::other(error.clone()))?;
         let count = parsed.source.lines().count();
+        // The error repeats only the numbers the model supplied.
+        // {impl}`requirements.authoring.no_line_numbers`
+        let requested = match line_end {
+            Some(line_end) => format!("{line_start}-{line_end}"),
+            None => line_start.to_string(),
+        };
         let line_end = line_end.unwrap_or(count);
-        if line_start == 0 || line_end < line_start || line_end > count {
+        if line_start == 0 || line_end < line_start || line_end > count || line_start > count {
             return Err(io::Error::other(format!(
-                "{file}:{line_start}-{line_end} is not an inclusive range within the file; read it by selector instead"
+                "{file}:{requested} is not an inclusive range within the file; read it by selector instead"
             )));
         }
         parsed

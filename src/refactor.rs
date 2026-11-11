@@ -251,10 +251,6 @@ fn replace_tokens(text: &str, from: &str, to: &str, token: Token) -> String {
 static FENCE_ROLE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\{(?:impl|test|cite|fixme)\}[ \t]+").expect("fence pattern"));
 
-/// An `:impl:` or `:test:` option line: the text before the value.
-static ANCHOR_OPTION: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?m)^:(?:impl|test):[ \t]+").expect("anchor pattern"));
-
 /// A backtick-delimited code span.
 static CODE_SPAN: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"`([^`\n]+)`").expect("code span pattern"));
@@ -304,13 +300,21 @@ fn rewrite_source(mappings: &Mappings, path: &Path, content: &str) -> (String, u
         }
     }
     if markdown {
-        for option in ANCHOR_OPTION.find_iter(content) {
-            let end = content[option.end()..]
-                .find('\n')
-                .map_or(content.len(), |end| option.end() + end);
-            let value = content[option.end()..end].trim_end();
-            if let Some(new) = mappings.address(value) {
-                edits.push((option.end()..option.end() + value.len(), new));
+        // Only the options of real directives are anchors; an `:impl:` line
+        // in body text or a code block is literal.
+        for block in crate::definition_blocks(content) {
+            for option in &block.options {
+                if !matches!(option.name.as_str(), "impl" | "test") {
+                    continue;
+                }
+                let Some(new) = mappings.address(&option.value) else {
+                    continue;
+                };
+                let line = &content[option.start..option.end];
+                if let Some(offset) = line.rfind(option.value.as_str()) {
+                    let start = option.start + offset;
+                    edits.push((start..start + option.value.len(), new));
+                }
             }
         }
     }
@@ -734,8 +738,14 @@ fn rewrite_record(states: &States, path: &str, record: &Value) -> io::Result<Out
                         value[field] = Value::String(current);
                         changed = true;
                     }
-                    (_, None) => failures.push(format!("{new}: no current definition")),
-                    _ => failures.push(format!("{field} text of {new} changed")),
+                    (_, None) => {
+                        failures.push(format!("{new}: no current definition"));
+                        changed = true;
+                    }
+                    _ => {
+                        failures.push(format!("{field} text of {new} changed"));
+                        changed = true;
+                    }
                 }
             }
             if let Some(recorded) = record.get("references").and_then(Value::as_str)
@@ -748,6 +758,7 @@ fn rewrite_record(states: &States, path: &str, record: &Value) -> io::Result<Out
                     changed = true;
                 } else {
                     failures.push(format!("the reference set of {new} changed"));
+                    changed = true;
                 }
             }
             if new != *name {
