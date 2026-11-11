@@ -149,6 +149,7 @@ with `{impl}`.
 :::
 
 :::{req} refactor_skill
+:impl: assets/skills/habeas-refactor/SKILL.md
 Habeas MUST bundle a `habeas-refactor` skill whose description tells agents to
 use it when a change moves code, tests, or requirements to another file,
 chapter, or outline node, including splitting or merging modules or chapters,
@@ -156,6 +157,7 @@ so that evidence whose content is unchanged is not invalidated.
 :::
 
 :::{req} refactor_skill.workflow
+:impl: assets/skills/habeas-refactor/SKILL.md
 The `habeas-refactor` skill MUST direct agents to make the move with their own
 edits, keeping it separate from any change to the moved code or text; to run
 `habeas refactor --dry-run` under {cite}`requirements.refactor.dry_run` with a
@@ -170,12 +172,14 @@ habeas-evidence skill.
 :::
 
 :::{req} refactor_skill.limits
+:impl: assets/skills/habeas-refactor/SKILL.md
 The `habeas-refactor` skill MUST tell agents not to edit evidence files by hand
 to follow a move, and that renaming a function or editing moved text is not a
 move and needs reassessment.
 :::
 
 :::{req} skill_structure
+:impl: assets/skills/habeas-refactor/SKILL.md
 :impl: assets/skills/habeas-requirements/SKILL.md
 :impl: assets/skills/habeas-requirements/references/distributed-requirements.md
 :impl: assets/skills/habeas-evidence/SKILL.md

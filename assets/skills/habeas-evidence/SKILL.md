@@ -1,6 +1,6 @@
 ---
 name: habeas-evidence
-description: Use when Habeas evidence needs creating or refreshing, or when `cargo test` or `habeas status` reports Habeas findings such as missing, stale, or false evidence, uncovered `{impl}` or `{test}` lines, uncovered Rust items, coverage-loss reviews, FIXME judgments, citation or site reviews, or disagreeing assessments, even if the user only says "the habeas test is failing". Covers running `habeas author` and fixing the code, tests, or references it flags. To design new or changed requirements before coding, use habeas-requirements; to derive an initial requirement set when most of a codebase has no references, use habeas-bootstrap-requirements.
+description: Use when Habeas evidence needs creating or refreshing, or when `cargo test` or `habeas status` reports Habeas findings such as missing, stale, or false evidence, uncovered `{impl}` or `{test}` lines, uncovered Rust items, coverage-loss reviews, FIXME judgments, citation or site reviews, or disagreeing assessments, even if the user only says "the habeas test is failing". Covers running `habeas author` and fixing the code, tests, or references it flags. To design new or changed requirements before coding, use habeas-requirements; to keep evidence current while moving code or requirements to another file or chapter, use habeas-refactor; to derive an initial requirement set when most of a codebase has no references, use habeas-bootstrap-requirements.
 ---
 
 # Habeas evidence
