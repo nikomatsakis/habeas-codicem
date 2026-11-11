@@ -1,8 +1,8 @@
 {
   "requirement": "Usage MUST record, for each failed provider request, its HTTP status and\nprovider error code when the provider reports them, and whether the harness\nretried it. It MUST NOT record the failure's message text.",
-  "determination": false,
-  "rationale": "**Obligations**\n1. Record each failed request's HTTP status when the provider reports it.\n2. Record each failed request's provider error code when the provider reports it.\n3. Record whether the harness retried each failed request.\n4. Do not record the failure's message text.\n\n**Code mapping**\n- Obligations 1 and 2: `src/authoring/providers.rs#fn[failure_codes]` extracts the status and code from a `ProviderError`. `src/authoring/usage.rs#impl[UsageLog]/fn[end_request]` stores them in `RequestFailure`.\n- Obligation 3: `src/authoring/usage.rs#impl[UsageLog]/fn[retried]` sets `retried` to true, and `end_request` initialises it to false.\n- Obligation 4: `RequestFailure` has no message field, so no message text is stored.\n\n**Gaps**\n1. **Missing test for `failure_codes`.** `failure_codes` has its own logic: it downcasts the `io::Error` to a `ProviderError` and falls back to `(None, None)`. No test calls it. I searched for tests referencing the requirement and for `failure_codes` calls, and found only `src/authoring/usage.rs#mod[tests]/fn[failed_submission_can_be_confirmed_on_a_later_attempt]`. That test hands `(Some(429), Some(\"ThrottlingException\"))` straight to `end_request`, so it never checks that the status and code are extracted from a real provider error. It also never checks the case where the provider reports neither.\n2. **Missing `{impl}` on `converse`.** `src/authoring/mod.rs#fn[converse]` decides what gets recorded. It passes `failure_codes` output to `end_request`, so a timeout is recorded as a failure with no codes. It calls `usage.retried(index)` only when the backoff returns `Retry::Wait`, so a final failure (`Retry::Stop`) keeps `retried: false`. This decision is the \"whether the harness retried it\" obligation. `converse` carries `{impl}` for `requirements.authoring.usage_requests` but not for `usage_requests.failures`. It is not reachable from the marked items, because callers are not followed.\n3. **Missing test for that decision.** No test runs the `converse` decision that a retried failure is marked retried and a final failure is not. The only test calls `log.retried` directly.\n\nThe remaining behaviour is covered. The test checks the persisted `failure` object (status, code, `retried`), flips `retried` to true, and checks that no message field is persisted.\n\nNone of these gaps is acknowledged by a `{fixme}` reference.",
-  "references": "e0631a4b4668d292e47823e77a7788d45f55e7e161b0af47f49f523bc705f4fd",
+  "determination": true,
+  "rationale": "I found no gaps. Every obligation has code that carries it out and a test that asserts its outcome.\n\n**Obligations and code**\n- **Record HTTP status and provider error code when the provider reports them.**\n  - `src/authoring/providers.rs#fn[failure_codes]` extracts `(Option<u16>, Option<String>)` from a `ProviderError` and returns `(None, None)` when the error has none.\n  - `src/authoring/mod.rs#fn[converse]` passes that result to `usage.end_request`.\n  - `src/authoring/usage.rs#impl[UsageLog]/fn[end_request]` stores it in `RequestFailure { http_status, error_code, retried }`.\n  - That struct is the serialized form, and it is marked `{impl}`.\n- **Record whether the harness retried the failed request.**\n  - `end_request` first sets `retried: false`.\n  - When `backoff.retry` returns `Retry::Wait`, `converse` calls `usage.retried(index)`. That function, `src/authoring/usage.rs#impl[UsageLog]/fn[retried]`, sets `retried = true` and saves.\n  - When `backoff.retry` returns `Retry::Stop`, `converse` returns the error without calling `retried`, so the flag stays false.\n- **MUST NOT record the failure's message text.** `RequestFailure` has no message field, and `end_request` receives only the codes from `failure_codes`. The message text appears only in the returned `Retry::Stop` error and is never put in the usage log.\n\n**Tests**\n- `src/authoring/mod.rs#mod[tests]/fn[throttled_requests_retry_unchanged_and_record_every_attempt]` runs `converse` through five 429 `ThrottlingException` failures. It asserts that each failed request's `failure` equals exactly `{http_status: 429, error_code: \"ThrottlingException\", retried: true}`, which also shows no message field is present. It also asserts that the successful request has no `failure`.\n- `src/authoring/usage.rs#mod[tests]/fn[failed_submission_can_be_confirmed_on_a_later_attempt]` asserts the exact failure JSON with `retried: false` and no message. After `retried()` it asserts `retried` is true.\n- `src/authoring/providers.rs#mod[tests]/fn[failure_codes_are_the_status_and_code_a_provider_reports]` covers the provider-reported case and the \"not reported\" cases (plain error and timeout both give `(None, None)`).\n\nAll three tests carry `{test}` references to the subject.",
+  "references": "97cfd6fd367df6efd875cd70b49fad58db2981d293fdee5a2a0ba1d4f8d679ba",
   "inputs": [
     {
       "requirements": "requirements.authoring.usage_requests.failures",
@@ -18,9 +18,24 @@
       ]
     },
     {
+      "file": "src/authoring/mod.rs",
+      "item": "fn[converse]",
+      "hash": "aca1babb5cde30dc5c4370e99e43d4e99b711ca04bf74da60edb1ecc99a46d25"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "mod[tests]/fn[throttled_requests_retry_unchanged_and_record_every_attempt]",
+      "hash": "846f99e20583b8e0e402c0d3786b9cf03c0bf314528847dc5ebf44bf91883258"
+    },
+    {
       "file": "src/authoring/providers.rs",
       "item": "fn[failure_codes]",
       "hash": "a38ad0707032c481b80b9fdcedcd699e5028860dcd89985e5b32ee59c56162a0"
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "item": "mod[tests]/fn[failure_codes_are_the_status_and_code_a_provider_reports]",
+      "hash": "411c6076f15a532e6e5b9d54eab336d27b773bae67cde1bdd5f26d09dd93c288"
     },
     {
       "file": "src/authoring/usage.rs",
@@ -43,9 +58,9 @@
       "hash": "c8c24e43409f1c7aff6305ff0e4cc8d368450501a4ea70eddca4d5181d330780"
     },
     {
-      "file": "src/authoring/mod.rs",
-      "item": "fn[converse]",
-      "hash": "0a489333b08e6891b106174ad576dbedfab8ce9ae237a872f8092858b195a8e0"
+      "file": "src/authoring/providers.rs",
+      "item": "impl[ProviderBackoff]/fn[retry]",
+      "hash": "958021aa3691e784ae5198c34f147bba0e613c8d462f0d16b8342dc16012da4e"
     }
   ]
 }

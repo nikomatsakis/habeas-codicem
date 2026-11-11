@@ -1,7 +1,7 @@
 {
   "requirement": "A result of the `habeas` line-range form, `list_files`, `outline`, `ripgrep`,\n`ast_grep`, or `references` whose serialized JSON exceeds 32 KiB MUST be\nreturned in pages. Each page MUST hold whole entries of the result's arrays, such\nas inputs, matches, nodes, or sites, with its accompanying definitions, in the\nresult's order, and MUST NOT exceed 32 KiB unless a single entry does, which\nthen forms a page of its own. Every paged result MUST include:\n\n```text\npage: {\n    total_entries: Integer,\n    returned_entries: Integer,\n    next: String?,\n}\n```\n\n`next` MUST be an opaque token when entries remain and null on the last page.\nWhile entries remain, the page MUST also include a `note` saying that more\nentries remain and that `next_page` with `next` returns them. The\nharness MUST expose a `next_page({ token: String })` tool returning the following\npage of the same result, in the same shape. Pages MUST be kept only until the\nassessment that requested them finishes; an unknown token, including one from\nanother assessment, MUST return an explanatory tool error. A result within the\nlimit MUST be returned whole, without `page`. Only inputs on pages delivered to\nthe model MUST be recorded under {cite}`requirements.authoring.delivered_inputs`.",
-  "determination": true,
-  "rationale": "I found no gaps. Every obligation in `requirements.authoring.result_pages` has code that carries it out, and each has a test, except the tools that share one code path.\n\n**Which results are paged.**\n- `src/authoring/tools.rs#fn[dispatch_paged]` sends the `habeas` line-range form, `list_files`, `outline`, `ripgrep`, `ast_grep` and `references` through `ResultPages::deliver`.\n- Each tool builds a `Listing` of whole entries. `fn[read]` uses `Listing::inputs` for the line-range form, `list_files` and `outline` use `Listing::array`, and `ripgrep`, `ast_grep` and `references` use `Listing::object`. `references` takes its array keys from `REFERENCE_ARRAYS`.\n\n**Limit and page contents.**\n- `src/authoring/pages.rs#const[PAGE_LIMIT]` is 32 KiB.\n- `ResultPages::deliver` returns the result whole, with no `page` key, when its JSON is within the limit.\n- Otherwise `fn[paginate]` splits the entries into consecutive pages of whole entries, in the result's order.\n  - Each page's size counts its definitions, commas and page fields, so it stays within the limit.\n  - A single entry that exceeds the limit forms a page of its own.\n  - `fn[page_definitions]` attaches each page's own definitions.\n\n**Page fields, note and token.**\n- Each page carries `page.total_entries`, `returned_entries` and `next`.\n- `next` is a fixed-length opaque hex token from `ResultPages::token`, and it is null on the last page.\n- `PAGE_NOTE` is added only while entries remain. It says more entries remain and to call `next_page` with the page's `next` token.\n\n**`next_page` and page lifetime.**\n- `dispatch_paged` handles `next_page` through `ResultPages::next_page`, which returns the stored page in the same shape.\n- An unknown token returns an error explaining that a token is valid only in the assessment that returned it.\n- `converse` in `src/authoring/mod.rs` creates `ResultPages` as a local, so pages live only for that assessment. Errors reach the model as tool errors.\n- The tool definitions include `next_page`, as the test `ast_grep_tool_is_advertised_with_both_forms_and_rule_syntax` checks.\n\n**Recording only delivered inputs.** `converse` records only the `inputs` of each delivery, and `delivered` returns a page's entries plus its definitions. Undelivered pages hold their inputs inside `ResultPages` and are recorded only when `next_page` returns them.\n\n**Tests.**\n- `large_listings_and_outlines_page_whole_entries_in_order` covers `list_files` and `outline`: whole entries, order, page size, the note, and null `next` on the last page.\n- `paged_inputs_carry_their_definitions_and_deliver_only_their_own_inputs` covers the `habeas` line-range form, per-page definitions, an unknown or foreign token, and repeating a token.\n- `an_entry_exceeding_the_limit_forms_a_page_of_its_own_and_small_results_stay_whole` covers the oversize single entry and the no-`page` whole result.\n- `reference_results_page_definitions_then_sites` covers `references` with two arrays.\n- `only_inputs_on_delivered_pages_are_recorded` in `src/authoring/mod.rs` covers recording only delivered pages end to end, with `next_page` called once.\n- `ripgrep` and `ast_grep` have no paging test of their own. They use the same `Listing::object` and `deliver` path as `references`, with a single array, and the text does not distinguish them, so they need none.",
+  "determination": false,
+  "rationale": "Paging is implemented and tested, but pages can still exceed the 32 KiB limit once the tool wrappers add fields to them.\n\n**Obligations that are met**\n- **Threshold and whole entries.** `src/authoring/pages.rs#impl[ResultPages]/fn[deliver]` returns a result whole, without `page`, when its serialized JSON is within `PAGE_LIMIT`. Otherwise it splits the result with `fn[paginate]` into consecutive pages of whole entries, in the result's order. Pages carry their own accompanying definitions through `fn[page_definitions]`.\n- **Oversized entry.** `fn[paginate]` gives a single entry that exceeds the limit a page of its own.\n- **`page` fields and `note`.** Each page carries `page.total_entries`, `page.returned_entries` and `page.next`. `next` is a random 16-hex-character token, and null on the last page. A page with entries remaining also gets `PAGE_NOTE`, which names `next_page` and `next`. I treat the `note` inside `page` as the note the text requires.\n- **Tool wiring.**\n  - `src/authoring/tools.rs#fn[dispatch_paged]` exposes `next_page` and routes `habeas` (line-range form), `list_files`, `outline`, `ripgrep`, `ast_grep` and `references` through `ResultPages::deliver`.\n  - `const[REFERENCE_ARRAYS]` gives `references` results their ordered `definitions` and `sites` arrays.\n- **Unknown tokens.** `ResultPages::next_page` returns an explanatory error for an unknown token.\n- **Page lifetime.** `ResultPages` is created inside `src/authoring/mod.rs#fn[converse]` and dropped when the assessment ends, so a token from another assessment is unknown.\n- **Delivered inputs.** `delivered` and `deliver` return only the inputs of the page actually delivered, so only those are recorded.\n- **Tests.** These cover the obligations above:\n  - `large_listings_and_outlines_page_whole_entries_in_order` and `reference_results_page_definitions_then_sites` check ordering, the `page` fields and the notes.\n  - `an_entry_exceeding_the_limit_forms_a_page_of_its_own_and_small_results_stay_whole` checks the oversized-entry page and the no-`page` case for small results.\n  - `paged_inputs_carry_their_definitions_and_deliver_only_their_own_inputs` checks definitions per page, the unknown-token errors and a repeated token.\n  - `only_inputs_on_delivered_pages_are_recorded` in `src/authoring/mod.rs` checks that only delivered pages' inputs are recorded.\n\n**Gap: pages can exceed 32 KiB**\n- **Page size.** Size is enforced only inside `paginate`, and its overhead covers just the `page` object. After paging, `src/authoring/tools.rs#fn[dispatch_paged]` applies two wrappers, and each adds a top-level key.\n  - `fn[with_not_listed]` adds `not_listed` to the first page of `list_files`, `ripgrep` and `ast_grep`. It also adds it to a small result that was returned whole.\n  - `fn[with_redaction_note]` adds a top-level `note` to any result or page containing redacted text, including every `next_page` page.\n- **Effect.** Pages are filled to within about 200 bytes of `PAGE_LIMIT`; the test asserts `first > PAGE_LIMIT - 200`. So these additions can push a page over the limit without the page being a single oversized entry. A whole result just under the limit can likewise go over it.\n- **Text violated.** This breaks \"`MUST NOT exceed 32 KiB unless a single entry does`\", and the whole-result threshold.\n- **Tests.** No test covers paging together with `not_listed` or the redaction note. Every size assertion uses `dispatch_paged` on inputs without untracked or redacted content.\n- **Acknowledgment.** No `{fixme}` acknowledges the gap.\n\nBecause of this unacknowledged, untested violation of the page-size MUST NOT, the requirement is not fully satisfied.",
   "references": "86edb926e7b414f7e01527303c84adf64ba7e6a66f8de02f376703644369db57",
   "inputs": [
     {
@@ -57,7 +57,7 @@
     {
       "file": "src/authoring/mod.rs",
       "item": "fn[converse]",
-      "hash": "0a489333b08e6891b106174ad576dbedfab8ce9ae237a872f8092858b195a8e0"
+      "hash": "aca1babb5cde30dc5c4370e99e43d4e99b711ca04bf74da60edb1ecc99a46d25"
     },
     {
       "file": "src/authoring/mod.rs",
@@ -107,7 +107,7 @@
     {
       "file": "src/authoring/tools.rs",
       "item": "mod[tests]/fn[descriptions_leave_paging_policy_redaction_and_failures_to_results]",
-      "hash": "61164c6011c09482666e09854ac9e547beb16164c18d448c2eecf92654a5f5ab"
+      "hash": "ecc9a6fef54904a565bbb8924f7f82b01cdc73f83511be1ad0d95f14bdd66846"
     },
     {
       "file": "src/authoring/tools.rs",
@@ -122,17 +122,17 @@
     {
       "file": "src/authoring/tools.rs",
       "item": "fn[dispatch_paged]",
-      "hash": "e4b1f74dca5dba987d98124991ca0dd0f90deabc9e9c13d461b468f00c3a5843"
+      "hash": "14cb0bb405d235580d9fb781ade4fbcf228351fe0b2d2d31d92177393f6c430b"
     },
     {
       "file": "src/authoring/tools.rs",
-      "item": "fn[read]",
-      "hash": "b6c181bdb647f5969daad3a4bdccea56aa57026e5b81c88a9a573a8071527038"
+      "item": "fn[with_not_listed]",
+      "hash": "b3f32de1c5a42a563f38ca4f838c234d7a8286f0e5b1cf8acc7ea7028216374b"
     },
     {
       "file": "src/authoring/tools.rs",
-      "item": "fn[references]",
-      "hash": "7e9fe10423ecbfeee265dd4e33b0f9df01c429fdb20ff61fb87c24e085c72147"
+      "item": "fn[with_redaction_note]",
+      "hash": "d97fbb7e5e4513653da314ee7ee57cb0c6e63d8d5a5b15c0af175d9171d4eade"
     }
   ]
 }

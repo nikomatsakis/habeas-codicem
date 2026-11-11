@@ -1,7 +1,7 @@
 {
   "requirement": "When preparing the mandatory input set defined by\n{cite}`requirements.authoring.mandatory_inputs`, every terminology definition\nreferenced by the subject or any contributed source MUST contribute its complete\nfenced declaration, including its phrase option. Definitions referenced by those\ndefinitions MUST also be included transitively, without duplicates or\nnontermination on cycles.\n\nWhen an additional source read introduces a terminology dependency, the same\ncomplete, transitive definition set MUST be supplied to the model and recorded\nbefore accepting a submission.",
   "determination": true,
-  "rationale": "I found no gaps.\n\n**Obligations**\n1. Every definition referenced by the subject or any contributed source contributes its complete fenced declaration, including the phrase option.\n2. Definitions referenced by those definitions are included transitively.\n3. The transitive set has no duplicates.\n4. The transitive set does not fail to terminate on cycles.\n5. When an additional source read introduces a terminology dependency, the same complete transitive definition set is supplied to the model.\n6. That set is recorded before a submission is accepted.\n\n**Implementation**\n- **Initial set (1, 2):** `src/authoring/inputs.rs#impl[AssessmentSources]/fn[prepare]` builds the mandatory inputs and then calls `definition_inputs`. It passes the contributed inputs and `Some(&subject.text)`, so terms in both the subject text and the contributed sources are covered. Each resulting definition becomes an `InputSelector::Definition` and goes through `source_input`, which yields the full declaration input (the fenced text, including `:phrase:`).\n- **Closure (2, 3, 4):** `definition_inputs` calls `src/terms.rs#fn[dependencies]`.\n  - `direct_references` collects terms from the subject text and from the text of each input. It scans Rust comments, Markdown bodies, requirement bodies, and definition inputs.\n  - `close_dependencies` expands the terms to a fixed point with a `visited` set. That set gives no duplicates and no endless loop on cycles. The result is a `BTreeSet`.\n- **Additional reads (5, 6):** `src/authoring/tools.rs#fn[read]` calls `sources.additional_definitions`, which runs the same `definition_inputs` closure. It drops definitions that were already delivered or recorded. The definitions are added to the tool result and to `ToolDelivery.inputs`. Line-range reads get their definitions through `src/authoring/pages.rs#impl[ResultPages]/fn[deliver]`. In `src/authoring/mod.rs#fn[converse]`, delivered inputs go into `pending`. After the next response, `record_inputs(&pending)` runs before any submission is parsed or accepted.\n\n**Tests**\n- `src/authoring/inputs.rs#mod[tests]/fn[bundle_combines_direct_references_terms_and_current_existing_selectors]` covers the initial set. The subject cites `terms.unit`, which references `terms.value`, and the test asserts exactly two definition inputs. It therefore covers direct and transitive inclusion and no duplicates.\n- `src/authoring/inputs.rs#mod[tests]/fn[mandatory_git_inputs_require_staging_declarations_sources_and_terms]` covers a term referenced by a contributed source.\n- `src/authoring/mod.rs#mod[tests]/fn[definitions_introduced_by_a_read_are_supplied_and_recorded_before_submission]` covers the read-introduced dependency.\n  - The definitions `terms.unit` and `terms.value` reference each other, which exercises the cycle.\n  - It asserts each definition appears once, in the recorded evidence.\n  - Each definition's text starts with `:::{definition}`, and its second line starts with `:phrase: `.\n  - The second request contains the definition text and the first does not, so supply happens before the submission.\n- `src/authoring/tools.rs#mod[tests]/fn[reading_records_only_delivered_sources_and_their_terms]` and `src/authoring/pages.rs#mod[tests]/fn[paged_inputs_carry_their_definitions_and_deliver_only_their_own_inputs]` cover definitions delivered with item reads, line-range reads, and paged reads.\n\nAll obligations are implemented and tested, and I saw no unspecified behavior.",
+  "rationale": "I found no gaps. Each obligation maps to code reachable from the `{impl}` items, and each has a test carrying a `{test}` reference.\n\n**Initial set.** `src/authoring/inputs.rs#impl[AssessmentSources]/fn[prepare]` first collects the subject, the cited requirements, the reference-owning outline nodes and the anchors. It then calls `definition_inputs` with those mandatory inputs and `Some(&subject.text)`. That calls `crate::terms::dependencies`, which has two steps:\n- `direct_references` gathers terms from the subject text and from each contributed input. For Requirements and Markdown inputs it scans declaration bodies. For Rust it scans only comments. For a Definition input it takes the named definition itself.\n- `close_dependencies` expands those terms to a fixed point. Its `visited` and `required` sets give \"without duplicates\" and \"nontermination on cycles\". It also returns the transitive definitions.\n\n`definition_inputs` turns each result into an `InputSelector::Definition` input via `source_input`, which resolves the full declaration text. `prepare` appends only dependencies not already in the set. The mandatory set is supplied in the first request, because `converse` in `src/authoring/mod.rs` starts `pending` from `sources.mandatory_inputs()`.\n\n**Additional reads.**\n- `src/authoring/tools.rs#fn[read]` calls `additional_definitions`, which runs `definition_inputs` over the delivered input. It filters out inputs already delivered or already recorded, so there are no duplicates. It returns the definitions with the read result.\n- `src/authoring/pages.rs#impl[ResultPages]/fn[deliver]` uses `additional_definitions` and `definitions_each` for paged line-range reads.\n- `src/authoring/mod.rs#fn[converse]` pushes the delivered inputs, including the definitions, onto `pending`. It records them with `sources.record_inputs(&pending)` only after the next response arrives. A submission is accepted only after that step, so the definitions are supplied and recorded before acceptance.\n\n**Tests.**\n- `src/authoring/inputs.rs#mod[tests]/fn[bundle_combines_direct_references_terms_and_current_existing_selectors]` builds terms `unit` and `value` that reference each other, so they form a cycle. It asserts exactly 2 definition inputs.\n- `src/authoring/inputs.rs#mod[tests]/fn[mandatory_git_inputs_require_staging_declarations_sources_and_terms]` shows a term referenced from a contributed source becomes a mandatory input.\n- `src/authoring/mod.rs#mod[tests]/fn[definitions_introduced_by_a_read_are_supplied_and_recorded_before_submission]` asserts these points:\n  - the transitive set is `terms.unit` and `terms.value`, once each;\n  - each definition's text begins with `:::{definition}` followed by `:phrase:`;\n  - the definitions appear in the second request, before the submission;\n  - they appear in the recorded evidence.\n- `src/authoring/tools.rs#mod[tests]/fn[reading_records_only_delivered_sources_and_their_terms]` and `src/authoring/pages.rs#mod[tests]/fn[paged_inputs_carry_their_definitions_and_deliver_only_their_own_inputs]` cover definitions delivered with item reads, line-range reads and pages.\n\nI found no unspecified behavior in the `{impl}` code that the requirement doesn't cover.",
   "references": "d84596f6144eca7a86bf39fd1006964e6b12510f9a2faba3563b51592329370e",
   "inputs": [
     {
@@ -63,7 +63,7 @@
     {
       "file": "src/authoring/mod.rs",
       "item": "fn[converse]",
-      "hash": "0a489333b08e6891b106174ad576dbedfab8ce9ae237a872f8092858b195a8e0"
+      "hash": "aca1babb5cde30dc5c4370e99e43d4e99b711ca04bf74da60edb1ecc99a46d25"
     },
     {
       "file": "src/authoring/mod.rs",
@@ -91,11 +91,6 @@
       "hash": "2b96ffc0104a7cae1a9be5aea04d79199d7524031c262ab97c1bb5d712e6d49b"
     },
     {
-      "file": "src/authoring/inputs.rs",
-      "item": "fn[source_input]",
-      "hash": "abf52301996c9c036aac288b677c0d3852378f66031886583d303dc16e5969cc"
-    },
-    {
       "file": "src/terms.rs",
       "item": "fn[direct_references]",
       "hash": "95af724648a6d7edc37e268e348db3c74fad4d48c0fcaabe85f24e9b511cf2f8"
@@ -107,8 +102,18 @@
     },
     {
       "file": "src/authoring/inputs.rs",
+      "item": "fn[source_input]",
+      "hash": "abf52301996c9c036aac288b677c0d3852378f66031886583d303dc16e5969cc"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
       "item": "impl[AssessmentSources]/fn[additional_definitions]",
       "hash": "e3388ed319591fc0df5b8e46fb83dff637a95befa4eff8d8e597d4410c6b963c"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "impl[AssessmentSources]/fn[definitions_each]",
+      "hash": "62962e7444031e169f5c761b0c200908a0bfba1763efad3cb60275a8e6c18f75"
     },
     {
       "file": "src/authoring/tools.rs",
