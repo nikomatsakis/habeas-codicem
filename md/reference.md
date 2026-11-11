@@ -759,7 +759,7 @@ habeas refactor --dry-run \
 A mapping names a file or directory, a `<file>#<selector>` node, or a definition
 name, which also covers the names beneath it. For a definition name, Habeas
 rewrites the `{impl}`, `{test}`, `{cite}`, `{fixme}`, and `{term}` references to
-it. It then rewrites the evidence that read the moved items, but only where the
+it; for a file or node, the `:impl:` and `:test:` anchors naming it. It then rewrites the evidence that read the moved items, but only where the
 content is unchanged: the moved node's structural hash and the recorded
 definition text must match once the mapping is undone. A record that fails any
 check is left as it is and reported, and stays stale until `habeas author`

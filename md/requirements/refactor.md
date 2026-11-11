@@ -47,9 +47,10 @@ new side does not exist.
 
 :::{req} reference_rewrite
 For a definition-name mapping, `habeas refactor` MUST rewrite each `{impl}`,
-`{test}`, `{cite}`, `{fixme}`, and `{term}` reference and each `:impl:` or
-`:test:` anchor that names an old name, in the book and in the sources
-reference discovery considers, and MUST change nothing else in those files.
+`{test}`, `{cite}`, `{fixme}`, and `{term}` reference that names an old name,
+in the book and in the sources reference discovery considers. For a path or
+node mapping, it MUST rewrite each `:impl:` or `:test:` anchor that names an
+old file or node. It MUST change nothing else in those files.
 :::
 
 ## Verifying that only addresses changed
