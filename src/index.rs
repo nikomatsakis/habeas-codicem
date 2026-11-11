@@ -2084,6 +2084,7 @@ mod tests {
     // {test}`requirements.index.detail_format`
     // {test}`requirements.definitions.inputs`
     // {test}`requirements.ci.requirements_inputs`
+    // {test}`requirements.index.source_links`
     #[test]
     fn detail_page_shows_recorded_text_locations_and_first_matching_group() {
         let temp = TempDir::new().unwrap();
