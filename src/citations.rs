@@ -324,6 +324,8 @@ pub(crate) fn validate_review(
             .map(|(index, citation)| {
                 parse_citation(citation, &format!("{label}: citations[{index}]"), errors)
             })
+            // Parse every entry before combining validity: collecting
+            // directly into Option would hide errors after the first None.
             .collect::<Vec<_>>()
             .into_iter()
             .collect::<Option<Vec<_>>>();

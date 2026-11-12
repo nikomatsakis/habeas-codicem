@@ -366,6 +366,7 @@ impl DiscoverySources {
 /// Whether a file, or a directory when `directory` is set, lies in a `.git`
 /// or `target` directory at any depth or in the project-root `book` or
 /// `evidence` directory.
+// {impl}`requirements.references.discovery`
 fn excluded_from_discovery(root: &Path, path: &Path, directory: bool) -> bool {
     let Ok(relative) = path.strip_prefix(root) else {
         return true;
@@ -417,6 +418,7 @@ pub fn normalize(path: &Path) -> PathBuf {
 /// permitted by workspace or generated-output policy, or of a path holding
 /// build output. Mandatory inputs abort on it; a model's dispatched request
 /// receives it as a recoverable tool error.
+// {cite}`habeas:util`
 #[derive(Debug)]
 pub struct OutsideProject(String);
 
@@ -463,6 +465,7 @@ impl std::error::Error for PolicyDenial {}
 /// Turns a permission error that did not come from source-access policy, such
 /// as an operating-system `EACCES`, into an ordinary read failure, leaving
 /// policy denials and every other error unchanged.
+// {impl}`requirements.authoring.read_denial`
 pub fn recoverable_os_denial(error: io::Error) -> io::Error {
     if error.kind() == io::ErrorKind::PermissionDenied
         && !error
