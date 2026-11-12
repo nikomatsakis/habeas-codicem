@@ -321,6 +321,7 @@ pub(crate) fn inspect_repository_with_progress(
         &mut errors,
         &mut progress,
     );
+    crate::rust_coverage::validate_cargo_examples(&root, &definitions, &references, &mut errors);
     // An item an evidence record or review read is covered.
     // {impl}`requirements.references.rust_item_coverage`
     let reads = crate::rust_coverage::EvidenceReads::load(&evidence_files);
@@ -2226,13 +2227,18 @@ pub(crate) mod tests {
             assert_eq!(inspected.report.examples, 0);
             if invalid {
                 let errors = inspected.report.errors.join("\n");
-                for error in [
-                    "invalid JSON",
-                    "cannot parse Rust source",
-                    "src/lib.rs:1: function retained is uncovered: it has no requirement or example reference, and no evidence record or review read it",
-                ] {
+                for error in ["invalid JSON", "cannot parse Rust source"] {
                     assert!(errors.contains(error), "missing {error:?}: {errors}");
                 }
+                // An uncovered item is reported, not a validation error.
+                assert!(!errors.contains("retained"), "{errors}");
+                assert!(
+                    inspected.uncovered.iter().any(|item| item
+                        .error
+                        .starts_with("src/lib.rs:1: function retained has no recent coverage")),
+                    "{:?}",
+                    inspected.uncovered
+                );
                 let discovery = inspected.discovery_errors.join("\n");
                 assert!(
                     discovery.contains("src/broken.rs")

@@ -116,6 +116,10 @@ pub(crate) fn lost_items(root: &Path, replaced: &[ReplacedRecord]) -> io::Result
         Vec::new()
     };
     let current = EvidenceReads::load(&evidence_files);
+    // A review runs only once the item has no recent coverage either.
+    // {impl}`requirements.references.coverage.history`
+    let depth = crate::config::load_coverage_reauthorings(&root)? as usize;
+    let recent = crate::coverage_history::RecentCoverage::load(&root, &evidence_files, depth);
     let files = crate::evidence::discovered_files(&root, &mut failures);
     if !failures.is_empty() {
         return Err(io::Error::other(failures.join("\n")));
@@ -136,7 +140,10 @@ pub(crate) fn lost_items(root: &Path, replaced: &[ReplacedRecord]) -> io::Result
             continue;
         };
         for (index, ..) in missing {
-            if current.covers(&file, &outline, index) {
+            if current.covers(&file, &outline, index)
+                || recent.covers(&file, &outline, index)
+                || crate::coverage_history::in_tests_module(&outline, index)
+            {
                 continue;
             }
             let mut readers: Vec<Reader> = Vec::new();

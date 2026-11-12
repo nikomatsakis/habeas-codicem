@@ -180,7 +180,59 @@ pub fn status_markdown_with_github(
         output.push_str(&escape_html(
             &other_findings
                 .into_iter()
-                .map(|error| with_coverage_loss_review(&inspection, error))
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                .join("\n\n"),
+        ));
+        output.push_str("</code></pre>\n");
+    }
+    output.push_str(&coverage_warnings(&inspection)?);
+    Ok(output)
+}
+
+/// The coverage warnings `habeas author` prints after it finishes: one line
+/// per item without recent coverage, and a note when coverage history was
+/// incomplete. Empty when there is nothing to warn about.
+// {impl}`requirements.references.coverage.report`
+pub fn coverage_warning_lines(root: &Path) -> io::Result<Vec<String>> {
+    let inspection = crate::evidence::inspect_repository(root)?;
+    let (warned, incomplete) =
+        crate::coverage_history::warnings(&inspection.root, &inspection.uncovered)?;
+    let mut lines: Vec<String> = warned.into_iter().map(|item| item.error).collect();
+    if incomplete && !lines.is_empty() {
+        lines.push(
+            "coverage history is incomplete, so only the available history was used".to_owned(),
+        );
+    }
+    Ok(lines)
+}
+
+/// The "Coverage warnings" section of `habeas status`: items without recent
+/// coverage, each followed by its latest coverage-loss review, if any. These
+/// do not fail validation.
+// {impl}`requirements.references.coverage.report`
+// {impl}`requirements.cli.status`
+fn coverage_warnings(inspection: &crate::evidence::RepositoryInspection) -> io::Result<String> {
+    let (warned, incomplete) =
+        crate::coverage_history::warnings(&inspection.root, &inspection.uncovered)?;
+    let mut output = String::new();
+    if warned.is_empty() && !incomplete {
+        return Ok(output);
+    }
+    output.push_str(
+        "\n## Coverage warnings\n\nThese items have no reference, and no recent version of an evidence record or review read them. They do not fail validation.\n",
+    );
+    if incomplete {
+        output.push_str(
+            "\nCoverage history is incomplete, so only the available history was used.\n",
+        );
+    }
+    if !warned.is_empty() {
+        output.push_str("\n<pre><code>");
+        output.push_str(&escape_html(
+            &warned
+                .iter()
+                .map(|item| with_coverage_loss_review(inspection, &item.error))
                 .collect::<Vec<_>>()
                 .join("\n\n"),
         ));

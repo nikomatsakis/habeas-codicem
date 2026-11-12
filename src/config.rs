@@ -39,7 +39,24 @@ pub struct WorkspaceConfig {
     pub authoring: Option<WorkspaceAuthoringConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub evidence: Option<EvidenceConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coverage: Option<CoverageConfig>,
 }
+
+/// The workspace `[coverage]` table: how many committed versions of each
+/// evidence file count toward recent coverage.
+// {impl}`requirements.references.coverage.history`
+// {impl}`requirements.configuration.workspace_structure`
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CoverageConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reauthorings: Option<u32>,
+}
+
+/// The number of committed versions counted when `[coverage] reauthorings`
+/// is not set.
+pub const DEFAULT_REAUTHORINGS: u32 = 3;
 
 // {impl}`requirements.authoring.configuration_structure`
 // {impl}`requirements.configuration.feature_sections`
@@ -796,6 +813,28 @@ pub fn load_workspace_evidence(root: &Path) -> io::Result<Option<WorkspaceEviden
 // {impl}`requirements.configuration.workspace_location`
 // {impl}`requirements.configuration.loading`
 // {impl}`requirements.configuration.workspace_structure`
+/// The workspace `[coverage] reauthorings` setting, or its default.
+// {impl}`requirements.references.coverage.history`
+pub fn load_coverage_reauthorings(root: &Path) -> io::Result<u32> {
+    let Some((path, table)) = workspace_document(root)? else {
+        return Ok(DEFAULT_REAUTHORINGS);
+    };
+    let coverage: CoverageConfig = table
+        .get("coverage")
+        .map(|value| decode(value.clone(), &path, "coverage"))
+        .transpose()?
+        .unwrap_or_default();
+    match coverage.reauthorings {
+        Some(0) => Err(invalid(
+            &path,
+            "coverage.reauthorings",
+            "expected a positive integer",
+        )),
+        Some(count) => Ok(count),
+        None => Ok(DEFAULT_REAUTHORINGS),
+    }
+}
+
 fn workspace_document(root: &Path) -> io::Result<Option<(PathBuf, toml::Table)>> {
     let root = fs::canonicalize(root)?;
     let start = std::env::current_dir()
@@ -833,10 +872,12 @@ fn validate_workspace_common(table: &toml::Table, path: &Path) -> io::Result<()>
     if table.get("version").and_then(toml::Value::as_integer) != Some(1) {
         return Err(invalid(path, "version", "expected version = 1"));
     }
-    if let Some(key) = table
-        .keys()
-        .find(|key| !matches!(key.as_str(), "version" | "authoring" | "evidence"))
-    {
+    if let Some(key) = table.keys().find(|key| {
+        !matches!(
+            key.as_str(),
+            "version" | "authoring" | "evidence" | "coverage"
+        )
+    }) {
         return Err(invalid(path, key, "unknown workspace configuration field"));
     }
     Ok(())

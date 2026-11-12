@@ -2597,7 +2597,7 @@ fn home_markers(home: &str) -> &'static [&'static str] {
             "A judgment is one of three outcomes",
             "`habeas author --all` assesses every definition whose evidence is missing, stale, or invalid",
             "## Fixing findings",
-            "An item is covered by its own reference or by a current record or review that read it",
+            "An item has recent coverage when it has its own reference, or when a recent version of an existing evidence record or review read it",
             "A FIXME judgment, such as",
             "gets a citation review, which checks that each citation is sensible",
             "A site the requirement does not apply to is judged true",
@@ -3835,7 +3835,7 @@ fn bootstrap_skill_is_bundled_and_directs_complete_inventories() {
             "Record the behavior each test checks; fill in requirement names once they are installed",
             "Every test must end up with a `{test}` reference to a requirement or example",
             // Map every end-user-visible source unit.
-            "every function, method, struct, enum, and union, listed from the source rather than from validation's uncovered items",
+            "every function, method, struct, enum, and union, listed from the source rather than from the coverage warnings",
             "public APIs, commands, handlers, UI actions, configuration, outputs, errors, and distinct observable branches",
             "A tagged entry point doesn't mean every observable branch beneath it has a requirement",
             "Give every inventoried test and each requirement's roots their references",
@@ -4188,7 +4188,7 @@ fn bundled_skills_mark_roots_and_handle_uncovered_items() {
         "uncovered Rust items",
         &section(skill_md("habeas-evidence"), "### Uncovered Rust items"),
         &[
-            "`habeas author` runs a coverage-loss review when a record it replaces read the item and the new one does not",
+            "When re-authoring leaves an item without recent coverage, `habeas author` runs a coverage-loss review",
             "Before acting on a `not needed` finding, check from its rationale and the code whether the earlier read was mistaken",
             "for each item still uncovered after `habeas author --all`",
             "| coverage-loss review says `root` | add `{impl}` of that definition to the item |",
@@ -4543,7 +4543,7 @@ fn replacing_a_record_reviews_items_it_no_longer_covers_and_status_shows_the_res
         .to_string(),
     )
     .unwrap();
-    let uncovered = "src/helper.rs:1: function helper is uncovered";
+    let uncovered = "src/helper.rs:1: function helper has no recent coverage";
     let status = fixture.run(&["status"]);
     let text = String::from_utf8_lossy(&status.stdout).into_owned();
     assert!(!text.contains(uncovered), "{text}");
@@ -4605,7 +4605,7 @@ fn replacing_a_record_reviews_items_it_no_longer_covers_and_status_shows_the_res
     let text = String::from_utf8_lossy(&status.stdout).into_owned();
     assert!(
         text.contains(&format!(
-            "{uncovered}: it has no requirement or example reference, and no evidence record or review read it\n  latest coverage-loss review:\n    {SUBJECT}: root: helper carries out readiness itself."
+            "{uncovered}: it has no requirement or example reference, and no recent evidence record or review read it\n  latest coverage-loss review:\n    {SUBJECT}: root: helper carries out readiness itself."
         )),
         "{text}"
     );

@@ -964,11 +964,13 @@ no_match:
                 "{item}: {errors:?}"
             );
         }
+        let inspection = crate::evidence::inspect_repository(temp.path()).unwrap();
         assert!(
-            errors
-                .iter()
-                .any(|error| error.contains("function check_two is uncovered")),
-            "{errors:?}"
+            inspection.uncovered.iter().any(|item| item
+                .error
+                .contains("function check_two has no recent coverage")),
+            "{:?}",
+            inspection.uncovered
         );
     }
 

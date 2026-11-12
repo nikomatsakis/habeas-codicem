@@ -29,8 +29,9 @@ Run commands from the project root, the directory with `book.toml` and
 - [ ] 3. `habeas author --all` assesses every definition whose evidence is
       missing, stale, or invalid and skips current ones; `-v` prints each false
       judgment's rationale. `habeas author <name>` does one.
-- [ ] 4. `cargo test --workspace`. Handle uncovered items as "Uncovered Rust
-      items" says. While findings remain that you can fix, return to step 2.
+- [ ] 4. `cargo test --workspace`, then handle the coverage warnings of
+      `habeas status` as "Uncovered Rust items" says. While findings remain
+      that you can fix, return to step 2.
 - [ ] 5. Check the "Disagreements" section of `habeas status`. Validation
       accepts a `true` or FIXME whose rationale records a disagreement, so only
       this shows it; see "Disagreeing assessments".
@@ -89,11 +90,24 @@ fail the definitions it implements, tests, or cites, so fix each on its own.
 
 ### Uncovered Rust items
 
-An item is covered by its own reference or by a current record or review that
-read it. `habeas author` runs a coverage-loss review when a record it replaces
-read the item and the new one does not; `habeas status` shows it beside the
-item. Before acting on a `not needed` finding, check from its rationale and the
-code whether the earlier read was mistaken. Then, for each item still uncovered
+Validation fails for only two kinds of uncovered item: a test function, with
+`#[test]` or another attribute ending in `test`, that has no `{test}`
+reference, and a Cargo example that does not `{cite}` a named example of the
+book. Add the reference.
+
+Every other item is a coverage warning in `habeas status` and after
+`habeas author`, and does not fail validation. An item has recent coverage
+when it has its own reference, or when a recent version of an existing
+evidence record or review read it: the version on disk or one of its last
+three commits (`[coverage] reauthorings` in `habeas.toml` changes the number).
+Items inside `mod tests` are never warned about. So an item a record stopped
+reading stays quiet for a few re-authorings, while a new item that nothing has
+read, or one whose only record was deleted, is warned about at once.
+
+When re-authoring leaves an item without recent coverage, `habeas author` runs
+a coverage-loss review, and `habeas status` shows it beside the warning.
+Before acting on a `not needed` finding, check from its rationale and the code
+whether the earlier read was mistaken. Then, for each item still uncovered
 after `habeas author --all`:
 
 | Situation | Action |
@@ -134,7 +148,7 @@ the same kind of finding.
   | renaming a node | stale; reassess |
   | editing code, doc comments, or docstrings | stale |
   | adding, removing, or changing the role of an `{impl}`, `{test}`, or `{fixme}`, or editing its commentary | stale |
-  | editing an item with no reference | every record that read it is stale, and the item is uncovered until they are reassessed |
+  | editing an item with no reference | every record that read it is stale; the item keeps recent coverage while recent versions of those records read it |
 
   Make related edits to shared helpers together before authoring.
 - After a fix the hash does not see, such as one only in an ordinary comment,

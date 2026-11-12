@@ -266,6 +266,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     ));
                 }
                 println!("{summary}");
+                print_coverage_warnings(&root);
                 if !outcome.failures.is_empty() {
                     return Err(io::Error::other(
                         "evidence authoring failed for one or more subjects; see diagnostics above",
@@ -334,6 +335,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             for (label, error) in &outcome.coverage_loss.failures {
                 eprintln!("{label}: {error}");
             }
+            print_coverage_warnings(&root);
             if !outcome.coverage_loss.failures.is_empty() {
                 return Err(io::Error::other(
                     "a coverage-loss review failed; the evidence was written",
@@ -346,5 +348,24 @@ fn main() -> Result<(), Box<dyn Error>> {
         Command::Hook {
             command: HookCommand::SessionStart,
         } => hook::session_start(),
+    }
+}
+
+/// Prints the coverage warnings after an authoring run on stderr, so stdout
+/// keeps only what the command reports there. A failure to compute them is
+/// reported but does not fail the command.
+// {impl}`requirements.references.coverage.report`
+fn print_coverage_warnings(root: &std::path::Path) {
+    match habeas::coverage_warning_lines(root) {
+        Ok(lines) if lines.is_empty() => {}
+        Ok(lines) => {
+            eprintln!(
+                "Coverage warnings (these items have no recent coverage; they do not fail validation):"
+            );
+            for line in lines {
+                eprintln!("- {line}");
+            }
+        }
+        Err(error) => eprintln!("cannot compute coverage warnings: {error}"),
     }
 }
