@@ -181,7 +181,7 @@ same loop iteration, and MUST NOT report one failure twice.
 ::::{sites} error_accumulators
 ```yaml
 language: rust
-paths: [src]
+paths: [src, crates/habeas-sdk/src]
 exclude: [src/authoring/inputs.rs, src/authoring/tools.rs]
 rule:
   kind: function_item
@@ -221,7 +221,7 @@ no_match:
 ::::{violations} early_exits
 ```yaml
 language: rust
-paths: [src]
+paths: [src, crates/habeas-sdk/src]
 within: error_accumulators
 rule:
   any:
