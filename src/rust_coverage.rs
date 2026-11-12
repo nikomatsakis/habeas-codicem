@@ -650,6 +650,7 @@ mod tests {
     fn test_functions_need_a_test_reference() {
         let source = concat!(
             "// {test}`requirements.example`\n#[test]\nfn tested() {}\n\n",
+            "#[test]\nfn tested_in_body() {\n    // {test}`requirements.example`\n}\n\n",
             "#[test]\nfn untested() {}\n\n",
             "// {cite}`requirements.example`\n#[tokio::test]\nasync fn only_cited() {}\n\n",
             "#[tokio::test(flavor = \"multi_thread\")]\nasync fn untested_async() {}\n\n",

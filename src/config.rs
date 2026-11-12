@@ -759,9 +759,12 @@ pub fn load_user_config(path: &Path) -> io::Result<Option<UserConfig>> {
 // {impl}`requirements.configuration.serialization`
 // {impl}`requirements.authoring.configuration_serialization`
 pub fn load_workspace_config(root: &Path) -> io::Result<Option<LoadedWorkspaceConfig>> {
-    let Some((path, table)) = workspace_document(root)? else {
+    let Some((path, mut table)) = workspace_document(root)? else {
         return Ok(None);
     };
+    // Authoring does not use `[coverage]`: only the coverage report decodes
+    // it, through `load_coverage_reauthorings`.
+    table.remove("coverage");
     let config: WorkspaceConfig = decode(toml::Value::Table(table), &path, "")?;
     config.validate(&path)?;
     Ok(Some(LoadedWorkspaceConfig {

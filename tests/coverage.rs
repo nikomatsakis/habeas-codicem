@@ -226,7 +226,7 @@ fn status_shows_coverage_warnings_and_says_when_history_is_incomplete() {
     let status = habeas::status_markdown(root, false).unwrap();
     assert!(status.contains("## Coverage warnings"), "{status}");
     assert!(
-        status.contains("function render has no recent coverage"),
+        status.contains("src/lib.rs:3: function render has no recent coverage"),
         "{status}"
     );
     assert!(
@@ -322,8 +322,71 @@ fn habeas_author_prints_coverage_warnings_on_stderr() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("Coverage warnings"), "{stderr}");
     assert!(
-        stderr.contains("function helper has no recent coverage"),
+        stderr.contains("src/lib.rs:5: function helper has no recent coverage"),
         "{stderr}"
     );
     assert!(!String::from_utf8_lossy(&output.stdout).contains("has no recent coverage"));
+}
+
+// {test}`requirements.references.coverage.history`
+// {test}`requirements.references.coverage.shallow_clone`
+#[test]
+fn incomplete_history_is_noted_even_with_nothing_to_warn_about() {
+    let temp = project();
+    let root = temp.path();
+    record(
+        root,
+        "rules.check",
+        &["fn[parse]", "fn[render]", "fn[helper]"],
+    );
+    commit(root, "first");
+    commit(root, "second");
+    let clone = tempfile::tempdir().unwrap();
+    let target = clone.path().join("shallow");
+    let output = Command::new("git")
+        .args(["clone", "--quiet", "--depth", "1"])
+        .arg(format!("file://{}", root.display()))
+        .arg(&target)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(warned(&target).is_empty());
+    let lines = habeas::coverage_warning_lines(&target).unwrap();
+    assert_eq!(
+        lines,
+        ["coverage history is incomplete, so only the available history was used"]
+    );
+    let status = habeas::status_markdown(&target, false).unwrap();
+    assert!(
+        status.contains("Coverage history is incomplete"),
+        "{status}"
+    );
+    assert!(warned(root).is_empty());
+    assert!(habeas::coverage_warning_lines(root).unwrap().is_empty());
+}
+
+// {test}`requirements.references.coverage.report`
+// {test}`requirements.references.coverage.history`
+#[test]
+fn validation_does_not_read_git_history() {
+    let temp = project();
+    let root = temp.path();
+    record(root, "rules.check", &["fn[parse]"]);
+    commit(root, "first");
+    let before = habeas::validate_repository(root).unwrap().errors;
+    // Without the object database, no committed version can be read.
+    for entry in fs::read_dir(root.join(".git/objects")).unwrap() {
+        let path = entry.unwrap().path();
+        if path.file_name().unwrap().len() == 2 {
+            fs::remove_dir_all(path).unwrap();
+        }
+    }
+    assert_eq!(habeas::validate_repository(root).unwrap().errors, before);
+    let lines = habeas::coverage_warning_lines(root).unwrap();
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains("coverage history is incomplete")),
+        "{lines:#?}"
+    );
 }

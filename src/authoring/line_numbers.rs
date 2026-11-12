@@ -26,9 +26,18 @@ pub(crate) fn cited(rationale: &str) -> Option<&str> {
     LINE_NUMBERS.find(rationale).map(|found| found.as_str())
 }
 
-/// The position a source parse error states, `line N: `.
-static PARSE_POSITION: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\bline \d+: ").expect("parse position pattern"));
+/// The position a source parse error states: `line N: `, or `at line N`
+/// with an optional column, as a TOML or YAML parser reports it.
+static PARSE_POSITION: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\bline \d+: |,? ?\bat line \d+(?:,? column \d+)?").expect("parse position pattern")
+});
+
+/// A source position elsewhere in the text, such as `first declared at
+/// md/rules.md:3`: a file path with an extension, then `:` and a line.
+static PATH_POSITION: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"((?:[\w.-]+/)*[\w-]+\.[A-Za-z][A-Za-z0-9]*):\d+(?::\d+)?\b")
+        .expect("path position pattern")
+});
 
 /// The position a diagnostic gives as `file:N: `, such as a malformed query.
 static FILE_POSITION: LazyLock<Regex> =
@@ -39,7 +48,18 @@ static FILE_POSITION: LazyLock<Regex> =
 // {impl}`requirements.authoring.no_line_numbers`
 pub(crate) fn without_source_lines(error: &str) -> String {
     let error = PARSE_POSITION.replace_all(error, "");
-    FILE_POSITION.replace_all(&error, "$1: ").into_owned()
+    let error = FILE_POSITION.replace_all(&error, "$1: ");
+    // A range the model supplied is repeated as it gave it.
+    PATH_POSITION
+        .replace_all(&error, |captures: &regex::Captures| {
+            let whole = captures.get(0).expect("match");
+            if error[whole.end()..].starts_with(" is not an inclusive range") {
+                whole.as_str().to_owned()
+            } else {
+                captures[1].to_owned()
+            }
+        })
+        .into_owned()
 }
 
 /// The rationale of a submission's arguments.
@@ -156,6 +176,20 @@ mod tests {
         assert_eq!(
             without_source_lines("md/rules.md:12: query checkers is not closed"),
             "md/rules.md: query checkers is not closed"
+        );
+        assert_eq!(
+            without_source_lines("md/b.md:4: duplicate requirement r; first declared at md/a.md:3"),
+            "md/b.md: duplicate requirement r; first declared at md/a.md"
+        );
+        assert_eq!(
+            without_source_lines(
+                "md/rules.md: query q: the yaml block must be a mapping: invalid type at line 2, column 5"
+            ),
+            "md/rules.md: query q: the yaml block must be a mapping: invalid type"
+        );
+        assert_eq!(
+            without_source_lines("habeas.toml: invalid TOML syntax at line 3, column 1"),
+            "habeas.toml: invalid TOML syntax"
         );
     }
 

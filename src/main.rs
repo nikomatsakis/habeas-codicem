@@ -289,6 +289,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 println!(
                     "{subject}: evidence is current; 1 skipped as current (use --force to reassess)"
                 );
+                print_coverage_warnings(&root);
                 return Ok(());
             };
             let mut summary = format!(
@@ -332,13 +333,20 @@ fn main() -> Result<(), Box<dyn Error>> {
 // {impl}`requirements.references.coverage.report`
 fn print_coverage_warnings(root: &std::path::Path) {
     match habeas::coverage_warning_lines(root) {
-        Ok(lines) if lines.is_empty() => {}
         Ok(lines) => {
-            eprintln!(
-                "Coverage warnings (these items have no recent coverage; they do not fail validation):"
-            );
-            for line in lines {
-                eprintln!("- {line}");
+            let (notes, items): (Vec<_>, Vec<_>) = lines
+                .into_iter()
+                .partition(|line| line.starts_with("coverage history is incomplete"));
+            if !items.is_empty() {
+                eprintln!(
+                    "Coverage warnings (these items have no recent coverage; they do not fail validation):"
+                );
+                for line in items {
+                    eprintln!("- {line}");
+                }
+            }
+            for note in notes {
+                eprintln!("Note: {note}");
             }
         }
         Err(error) => eprintln!("cannot compute coverage warnings: {error}"),

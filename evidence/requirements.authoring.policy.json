@@ -1,7 +1,7 @@
 {
   "requirement": "Every `habeas author` form MUST assess its subjects under an assessment policy,\n`confirm` or `once`. The policy MUST come from `--policy <name>` when given,\notherwise from the selected configuration's `policy`, and otherwise MUST be\n`confirm`. Under `confirm`, each subject MUST be assessed as\n{cite}`requirements.authoring.confirmation` specifies. Under `once`, each subject\nMUST receive a single assessment, whose result is recorded; it uses fewer tokens\nand less time, such as with a slow local model. An unknown policy name MUST be\nrejected as invalid configuration or arguments. The completion report MUST name\nthe policy used, and each usage record MUST identify it.",
   "determination": true,
-  "rationale": "I found no gap. Each obligation maps to an `{impl}` item, and a test covers each one.\n\n**Obligations, code and tests**\n\n1. **Every author form assesses under a policy.**\n   - The single-subject form runs `src/authoring/mod.rs#fn[author_evidence_with_options]`, then `configured_assessment`, `configured_record` and `assess_subject`.\n   - The `--all` form runs `src/authoring/batch.rs#fn[author_all_with_options]` and then `run_batch`.\n   - The `sites:` form runs `author_sites_with_options`, which also calls `run_batch`.\n   - `src/main.rs#enum[Command]` defines `--policy` on `Author`, and `fn[main]` passes `policy` into `AuthoringOptions` for all three forms.\n   - The test `tests/authoring_batch.rs#fn[policy_comes_from_the_flag_then_the_configuration_then_defaults_to_confirm]` drives the single-subject and `--all` forms. The `sites:` form shares `run_batch`.\n2. **The policy comes from `--policy`, else the configuration's `policy`, else `confirm`.**\n   - `src/config.rs#impl[ResolvedAuthoringConfig]/fn[effective_policy]` does `explicit.or(self.policy).unwrap_or_default()`, and the enum default is `Confirm`.\n   - `configured_assessment` and `run_batch` both call it.\n   - The policy test runs four flag/config combinations and checks the policy named in the report. `tests/configuration.rs#fn[authoring_policy_defaults_to_confirm_and_round_trips]` checks the precedence directly.\n3. **Under `confirm`, each subject is assessed as `requirements.authoring.confirmation` specifies.**\n   - `assess_subject` applies it: when the policy is not `Once` and the first result is not `false`, it runs a second conversation and then a verification.\n   - The policy test asserts 2 conversations under `confirm` and 1 under `once`.\n   - The confirmation logic itself is a cited requirement and is not reassessed here.\n4. **Under `once`, a single assessment is recorded.** `assess_subject` returns the first result when `policy == AssessmentPolicy::Once`. The test asserts exactly one conversation.\n5. **An unknown policy name is rejected as invalid configuration or arguments.**\n   - For arguments, `AssessmentPolicy`'s `FromStr` impl (`src/config.rs#impl[AssessmentPolicy/std::str::FromStr]/fn[from_str]`) rejects unknown names. The policy test asserts the failure and the message for `--policy twice`.\n   - For configuration, the serde lowercase enum rejects unknown values. The policy test asserts failure for both the single and `--all` forms, with an error naming the config path and \"policy\", and with no model request made. `authoring_policy_defaults_to_confirm_and_round_trips` also checks invalid values `'twice'`, `'Confirm'` and `true`.\n6. **The completion report names the policy.**\n   - `fn[main]` prints \"; policy {policy}\" in both the single-subject and batch summaries. `BatchOutcome.policy` and `AuthoringOutcome.policy` carry the value.\n   - The test asserts the single-subject output and the exact batch summary \"6 authored; 0 skipped as current; 0 failed; policy once\".\n7. **Each usage record identifies the policy.**\n   - `configured_record` sets `usage.record.policy`, and `followup_log` copies it to the second and verification conversations.\n   - The test asserts that every usage record for each run has `policy` equal to the expected value, including both records under `confirm`.\n\n**Other points**\n\n- Coverage-loss review usage records do not set a policy. Those reviews are governed by `requirements.authoring.coverage_loss`; they are not subjects assessed under this policy, so this is not a gap.\n- I found no unspecified behavior in the `{impl}` code.",
+  "rationale": "I found no gaps. Each obligation in `requirements.authoring.policy` has code reachable from the {impl} items, and a test asserts it.\n\n**Every `author` form assesses under a policy (`confirm` or `once`)**\n- `src/main.rs#fn[main]` passes `policy` in `AuthoringOptions` on all three paths: single subject, `--all`, and `sites:<name>`.\n- `author_all_with_options` and `author_sites_with_options` both call `run_batch`. That function resolves the policy with `config.effective_policy(options.policy)` and passes it to `prepare_assessment`.\n- The single-subject path goes `author_evidence_with_options`, then `configured_assessment`, then `configured_record`.\n- `src/config.rs#enum[AssessmentPolicy]` has only the variants `Confirm` and `Once`.\n\n**Source of the policy: `--policy`, then the configuration's `policy`, then `confirm`**\n- The `--policy` flag is a clap argument parsed through `FromStr`.\n- `AuthoringConfig` and `ResolvedAuthoringConfig` carry `policy: Option<AssessmentPolicy>`.\n- `ResolvedAuthoringConfig::effective_policy` is `explicit.or(self.policy).unwrap_or_default()`, and the enum's `#[default]` is `Confirm`.\n\n**`confirm` assesses as `requirements.authoring.confirmation` specifies**\n- `assess_subject` in `src/authoring/mod.rs` runs the second and third conversations unless the policy is `Once` or the first result is `false`. That is the code that applies the cited requirement.\n\n**`once` gives a single assessment whose result is recorded**\n- `assess_subject` returns the first assessment immediately when `policy == AssessmentPolicy::Once`.\n\n**An unknown policy name is rejected as invalid configuration or arguments**\n- `AssessmentPolicy::from_str` returns an error for any name other than `confirm` or `once`, which clap reports as an argument error.\n- The serde lowercase enum rejects an unknown `policy` in the configuration file.\n\n**The completion report names the policy**\n- For `--all` and `sites:`, `BatchOutcome.policy` feeds the summary line `...; policy {policy}` in `main`.\n- For a single subject, `main` prints `{subject}: {backend} / {model}; policy {policy}`.\n- `AuthoringOutcome.policy` is set in `prepare_assessment` and `configured_assessment`.\n- When nothing is assessed, no policy was used, so none is named.\n\n**Each usage record identifies the policy**\n- `configured_record` sets `usage.record.policy`, and `UsageRecord.policy` is serialized.\n- `followup_log` copies the policy into the second and third conversations' records.\n\n**Tests**\n- `tests/authoring_batch.rs#fn[policy_comes_from_the_flag_then_the_configuration_then_defaults_to_confirm]` carries a {test} reference. It checks four cases:\n  - default `confirm`: 2 conversations;\n  - `--policy once`: 1 conversation;\n  - `--policy once` overriding a `confirm` configuration;\n  - a configuration with `once`: 1 conversation.\n- For each case it asserts that stdout contains `; policy <name>` and that every usage record's `policy` equals that name. It also asserts the `--all` summary ends with `policy once`.\n- The same test checks that `--policy twice` and a configuration with `policy = 'twice'` fail before any model request, for both the single-subject and `--all` forms.\n- `tests/configuration.rs#fn[authoring_policy_defaults_to_confirm_and_round_trips]` tests `effective_policy` precedence, TOML round-tripping, parsing, and rejection of invalid values.\n- The `sites:` form shares `run_batch` with `--all`, and no separate test for it is required.",
   "references": "bf55453e7f3835daba2d8a6c957834ed4600c710788af094b298831a88d3aaa0",
   "inputs": [
     {
@@ -53,7 +53,7 @@
     {
       "file": "src/authoring/batch.rs",
       "item": "struct[BatchOutcome]",
-      "hash": "240bf5e070bac2680af0e845c49a48514a2edd647c6a8c605d13eb27bc20663e"
+      "hash": "a2592b96b081eadccd140aa6d436e8b4f7c205047382f0840a9709d5c27c736e"
     },
     {
       "file": "src/authoring/batch.rs",
@@ -63,12 +63,12 @@
     {
       "file": "src/authoring/batch.rs",
       "item": "fn[run_batch]",
-      "hash": "20e4f35b99f63811252bda542d2e93c05e7f3cb8ffdf0b2160da49ace25f2636"
+      "hash": "0b8ea9a87bf1c8632a3e2944b4a24027f4df953902bb0d3f30d0e16d46779a29"
     },
     {
       "file": "src/authoring/mod.rs",
       "item": "struct[AuthoringOutcome]",
-      "hash": "786d92615eac759e21383402ad7e9b48c51c061d6034bbf0944be202408175c7"
+      "hash": "ca3864f602515f1057f3adbb3c98dc24d9ed6249138ae2ec05e8c6dffb8e92d8"
     },
     {
       "file": "src/authoring/mod.rs",
@@ -83,12 +83,12 @@
     {
       "file": "src/authoring/mod.rs",
       "item": "fn[prepare_assessment]",
-      "hash": "a73c4a12583a3f3c00f14bf3e33ee95f270dfe0543fc39dd6a674ed0057e4250"
+      "hash": "e186d250a7d7946631e1f4b942654657f6ebf9d8d270889cb0583065b7e08752"
     },
     {
       "file": "src/authoring/mod.rs",
       "item": "fn[configured_assessment]",
-      "hash": "6dafc32ab2a9aa52d232753ab1fb559697fc4bd8c4219cbc59c581b759cbb86f"
+      "hash": "ca2a3f3c24f0899ba8e1cbc1cff6bd0c36dbc5561a73be25c66f054b04d1f5be"
     },
     {
       "file": "src/authoring/mod.rs",
@@ -153,7 +153,7 @@
     {
       "file": "src/main.rs",
       "item": "fn[main]",
-      "hash": "d7fc6ea46650b3b42bcdb240b5534aac52b4fbafdabc1893003479f1c0465528"
+      "hash": "25386937dc41d508875e068a7ac864ba4842c652b6acf0024c493c8dd9261885"
     },
     {
       "file": "tests/authoring_batch.rs",
@@ -164,104 +164,6 @@
       "file": "tests/configuration.rs",
       "item": "fn[authoring_policy_defaults_to_confirm_and_round_trips]",
       "hash": "2eca52c3ce61a8081a91c5eeb130769273d5c12332337df1cdf6125a61b124bb"
-    },
-    {
-      "requirements": "requirements.authoring.coverage_loss",
-      "matches": [
-        "requirements.authoring.coverage_loss"
-      ],
-      "text": [
-        ":::{req} coverage_loss",
-        "When authoring replaces a record and an item that its previous version",
-        "covered then has no recent coverage under",
-        "{cite}`requirements.references.coverage.history`, the harness MUST assess that",
-        "item in a coverage-loss review: an independent",
-        "conversation with the same source tools, whose mandatory inputs under",
-        "{cite}`requirements.authoring.mandatory_inputs` are the item's outline node and",
-        "the declarations of the requirements and examples whose previous records read",
-        "it, and whose prompt gives each such record's rationale.",
-        "The reviewer MUST submit, for each of those definitions, whether the item is a",
-        "root of its implementation or is not needed for it, with a nonempty rationale:",
-        "a root when the item carries out part of the definition under",
-        "{cite}`requirements.references.procedure`, even when an item marked `{impl}`",
-        "for it reaches the item, and not needed otherwise. The result MUST NOT be",
-        "evidence: authoring MUST report it, and `habeas status` MUST show the latest",
-        "result beside the warning until the item is covered again.",
-        "",
-        "The review MUST use this prompt, the first block as its system prompt and the",
-        "second as its subject message under {cite}`requirements.authoring.prompt_parts`,",
-        "replacing `{{habeas_background}}` and `{{reference_roles}}` under",
-        "{cite}`requirements.authoring.habeas_background`, `{{judgment_rules}}` under",
-        "{cite}`requirements.authoring.judgment_rules`, `{{item_file}}` and",
-        "`{{item_selector}}` (with `<root>` for the root node), `{{definitions}}` with",
-        "the definitions' full names as a JSON array, `{{rationales}}` with a `## <full",
-        "name>` heading and the redacted earlier rationale for each, and",
-        "`{{mandatory_inputs}}`:",
-        "",
-        "```text",
-        "# Task",
-        "",
-        "Review one source item that earlier assessments read but that nothing covers",
-        "any longer. Your finding for each definition should be the one any careful",
-        "reviewer would reach from the same text and sources.",
-        "",
-        "# Background: Habeas terms",
-        "",
-        "{{habeas_background}}",
-        "",
-        "{{reference_roles}}",
-        "",
-        "# Your task",
-        "",
-        "The mandatory inputs at the end contain the item and the declarations of the",
-        "requirements and examples whose earlier assessments read it. Those assessments",
-        "have been replaced, several times or by deletion, by ones that did not read the",
-        "item, and it carries no reference of its own, so Habeas warns that it has lost",
-        "its coverage. For each listed",
-        "definition, decide whether the item is a root of the definition's",
-        "implementation or is not needed for it.",
-        "",
-        "1. Read the earlier rationale given for the definition to see what the",
-        "   assessment relied on the item for.",
-        "2. Decide whether the item carries out part of the definition, as the",
-        "   reference roles describe. Read the items marked {impl} for the definition,",
-        "   found with the references tool, and the code they reach, only as far as",
-        "   needed to decide this.",
-        "3. The item is a root if it carries out part of the definition, even when a",
-        "   marked item reaches it: the earlier read shows a review relied on it, and",
-        "   being reached did not keep it covered. Otherwise it is not needed for the",
-        "   definition.",
-        "4. In each rationale, say what part of the definition the item carries out,",
-        "   or why it carries out none, with source locations.",
-        "",
-        "# How to judge",
-        "",
-        "{{judgment_rules}}",
-        "",
-        "# Submitting",
-        "",
-        "You MUST end by calling submit_coverage_review exactly once with findings: one",
-        "entry for each listed definition, with definition (its full name), finding",
-        "(\"root\" or \"not needed\"), and a nonempty rationale. Findings written in your",
-        "reply text are not accepted.",
-        "```",
-        "",
-        "```text",
-        "# Subject",
-        "",
-        "Item under review: {{item_file}} {{item_selector}}",
-        "Definitions to decide: {{definitions}}",
-        "",
-        "# Earlier rationales",
-        "",
-        "{{rationales}}",
-        "",
-        "# Mandatory inputs",
-        "",
-        "{{mandatory_inputs}}",
-        "```",
-        ":::"
-      ]
     }
   ]
 }

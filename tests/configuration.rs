@@ -5,8 +5,9 @@ use std::path::Path;
 
 use habeas::config::{
     BackendConfig, BackendKind, ConfigPlatform, ProjectConfig, UserConfig, WorkspaceConfig,
-    load_user_config, load_workspace_config, load_workspace_evidence, resolve_authoring_from,
-    resolve_authoring_with_workspace_from, state_root_from, user_config_path_from,
+    load_coverage_reauthorings, load_user_config, load_workspace_config, load_workspace_evidence,
+    resolve_authoring_from, resolve_authoring_with_workspace_from, state_root_from,
+    user_config_path_from,
 };
 
 // {test}`requirements.configuration.user_location`
@@ -1066,11 +1067,6 @@ fn workspace_diagnostics_identify_the_file_and_setting() {
         ),
         ("version = 1\n[evidence]\nunknown = []", "evidence.unknown"),
         ("version = 1\n[evidence]\nallow = ['']", "evidence.allow[0]"),
-        (
-            "version = 1\n[coverage]\nreauthorings = 'many'",
-            "coverage.reauthorings",
-        ),
-        ("version = 1\n[coverage]\nbogus = 1", "coverage.bogus"),
     ] {
         fs::write(&path, source).unwrap();
         let errors = [
@@ -1081,6 +1077,25 @@ fn workspace_diagnostics_identify_the_file_and_setting() {
             let error = error.unwrap_err().to_string();
             assert!(error.starts_with(&format!("{file}: {setting}")), "{error}");
         }
+    }
+    // Only the coverage report decodes `[coverage]`; authoring ignores it.
+    for (source, setting) in [
+        (
+            "version = 1\n[coverage]\nreauthorings = 'many'",
+            "coverage.reauthorings",
+        ),
+        ("version = 1\n[coverage]\nbogus = 1", "coverage.bogus"),
+    ] {
+        fs::write(&path, source).unwrap();
+        let errors = [
+            load_coverage_reauthorings(temp.path()).map(|_| ()),
+            WorkspaceConfig::parse(source, &path).map(|_| ()),
+        ];
+        for error in errors {
+            let error = error.unwrap_err().to_string();
+            assert!(error.starts_with(&format!("{file}: {setting}")), "{error}");
+        }
+        load_workspace_config(temp.path()).unwrap().unwrap();
     }
     // The evidence loader decodes only the `[evidence]` table it uses.
     for (source, setting) in [

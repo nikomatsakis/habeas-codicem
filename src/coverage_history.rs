@@ -60,9 +60,14 @@ impl RecentCoverage {
         let Ok(mut walk) = repository.revwalk() else {
             return false;
         };
-        if walk.push_head().is_err() {
+        match repository.head() {
+            Ok(_) => {}
             // No commits yet: every window is the file on disk alone.
-            return true;
+            Err(error) if error.code() == git2::ErrorCode::UnbornBranch => return true,
+            Err(_) => return false,
+        }
+        if walk.push_head().is_err() {
+            return false;
         }
         let _ = walk.set_sorting(git2::Sort::TOPOLOGICAL | git2::Sort::TIME);
         for oid in walk.flatten() {
@@ -153,9 +158,6 @@ pub(crate) fn warnings(
         .filter(|item| !item.in_tests)
         .cloned()
         .collect();
-    if candidates.is_empty() {
-        return Ok((Vec::new(), false));
-    }
     let depth = crate::config::load_coverage_reauthorings(root)? as usize;
     let evidence = root.join("evidence");
     let mut failures = Vec::new();

@@ -1,7 +1,7 @@
 {
   "requirement": "Habeas MUST resolve its saved configuration before constructing Rig provider\nclients and completion models. The Habeas data structures MUST remain the saved\nformat. Rig model references MAY be reused internally without discarding the\nconnection settings they do not represent.\n\nThe Bedrock adapter MUST pass the chosen AWS profile and region through AWS SDK\nconfiguration, or use explicitly configured credentials. The Ollama adapter MUST use the chosen server, exact model ID,\nand optional authentication; the server MAY be local or remote. Both adapters\nMUST supply the same tools and initial prompt.",
   "determination": true,
-  "rationale": "I found no gaps.\n\n**Obligations and the code that carries them out**\n\n1. **Resolve the saved configuration before constructing Rig clients and models.**\n   - `src/authoring/mod.rs#fn[configured_assessment]` calls `config::resolve_authoring` first.\n   - It then calls `configured_record`, which calls `RigProvider::connect(&config.backend)`.\n   - `RigProvider::connect` builds the Rig models, so resolution happens before construction.\n2. **The Habeas data structures remain the saved format.**\n   - `BackendConfig`, `BedrockConfig` and `OllamaConfig` are used directly. Rig types are built from them in `src/authoring/providers.rs#impl[RigProvider]/fn[connect]`.\n   - Nothing writes configuration back.\n   - Tests: `tests/configuration.rs#fn[explicit_project_and_default_selections_choose_whole_configs]`, the config-unchanged assertions in `tests/authoring_cli.rs#fn[ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free]`, and `tests/authoring_cli.rs#fn[authoring_uses_nearest_workspace_configuration_without_a_user_file]`.\n3. **Bedrock passes the chosen AWS profile and region through AWS SDK configuration, or uses explicitly configured credentials.**\n   - `src/authoring/providers.rs#fn[bedrock_sdk_loader]` applies `profile_name`, `region` and `credentials_provider` to the SDK loader. Omitted values are left to the SDK's standard resolution.\n   - `bedrock_sdk_config` loads that loader, and `connect` builds the client from it.\n   - Tests:\n     - `tests/authoring_cli.rs#fn[bedrock_cli_uses_selected_profile_region_and_converse_tools]` checks the profile's credential and the chosen region in the signed request.\n     - `tests/authoring_cli.rs#fn[both_adapters_send_the_same_prompt_and_tools_with_default_connections]` covers the default chain.\n     - `src/authoring/providers.rs#mod[tests]/fn[explicit_bedrock_credentials_reach_the_sdk_without_the_default_chain]` covers explicit credentials.\n4. **Ollama uses the chosen server, the exact model ID and optional authentication.**\n   - `connect` calls `OllamaConfig::new().with_base_url(config.endpoint())`, `with_api_key` when `api_key()` returns a key, and `native_completion(&config.model)`.\n   - Tests:\n     - `ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free` checks the endpoint, the model, and the bearer authorization header.\n     - `authoring_uses_nearest_workspace_configuration_without_a_user_file` checks the configured model and key.\n     - `both_adapters_send_the_same_prompt_and_tools_with_default_connections` checks that no authorization header is sent when none is configured.\n   - The server may be local or remote. The endpoint is just a configured URL, and the tests use a test server.\n5. **Both adapters supply the same tools and initial prompt.**\n   - Both backends go through the same `RigProvider` and the same `assess_subject` call in `configured_record`, so the prompt and tools are built in one place.\n   - Test: `both_adapters_send_the_same_prompt_and_tools_with_default_connections` runs an Ollama fixture and a Bedrock fixture and asserts that the prompt and tools are equal, with 9 tools.\n\nThe MAY clause about reusing Rig model references imposes nothing to check.\n\n**Reachability.** Every piece of code that carries out an obligation is reached from the `{impl}` item `configured_assessment` through `configured_record`, `connect`, `bedrock_sdk_config` and `bedrock_sdk_loader`, and the `OllamaConfig` accessors. I found no unspecified behavior in this code that the requirement or the other requirements it is marked for fail to cover.",
+  "rationale": "I found no gaps. Each obligation maps to code reachable from the one `{impl}` item, and each has a test that runs it.\n\n**Obligations and code**\n- **Resolve the saved configuration before constructing Rig clients and models.** `src/authoring/mod.rs#fn[configured_assessment]` calls `config::resolve_authoring` first. It then passes the resolved config to `configured_record`, which calls `RigProvider::connect(&config.backend)`. `src/authoring/providers.rs#impl[RigProvider]/fn[connect]` is where the Rig clients and completion models are built.\n- **Habeas data structures remain the saved format.** The adapters read the Habeas `BackendConfig`, `BedrockConfig` and Ollama config values directly. The only Rig types built from them are the transient client and model in `connect`. `tests/authoring_cli.rs#fn[ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free]` and `#fn[authoring_uses_nearest_workspace_configuration_without_a_user_file]` assert that the configuration files are not rewritten.\n- **Bedrock passes the chosen AWS profile and region through SDK configuration, or uses explicit credentials.** `connect` builds the SDK client from `bedrock_sdk_config`, which calls `bedrock_sdk_loader`. The loader applies `profile_name`, `region` and an explicit `credentials_provider` only when each is configured. Otherwise the SDK default chain applies.\n- **Ollama uses the chosen server, exact model ID and optional authentication.** `connect` calls `with_base_url(config.endpoint())`, adds `with_api_key` only when `api_key()` returns a key, and calls `native_completion(&config.model)`. The server can be any configured endpoint, local or remote.\n- **Both adapters supply the same tools and initial prompt.** The prompt and tools are built in the provider-independent assessment path, `assess_subject`, which `configured_record` calls with the provider.\n\n**Tests**\n- **Bedrock profile and region:** `tests/authoring_cli.rs#fn[bedrock_cli_uses_selected_profile_region_and_converse_tools]` asserts the signed credential comes from the chosen profile rather than the default one. It also asserts the `us-west-2` region and the tool and prompt content.\n- **Bedrock explicit credentials:** `src/authoring/providers.rs#mod[tests]/fn[explicit_bedrock_credentials_reach_the_sdk_without_the_default_chain]` asserts the access key, secret, session token and region on the SDK config.\n- **Bedrock default chain:** `tests/authoring_cli.rs#fn[both_adapters_send_the_same_prompt_and_tools_with_default_connections]` covers Bedrock with no profile or region.\n- **Ollama:** `tests/authoring_cli.rs#fn[ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free]` asserts the endpoint, the exact model, and the bearer authorization header. `tests/authoring_cli.rs#fn[both_adapters_send_the_same_prompt_and_tools_with_default_connections]` asserts that no authorization header is sent when none is configured.\n- **Same prompt and tools:** `both_adapters_send_the_same_prompt_and_tools_with_default_connections` compares the Ollama and Bedrock prompt and tool lists for equality and checks there are 9 tools. The Ollama and Bedrock CLI tests also check the tool names.\n- **Resolution and selection:** `tests/configuration.rs#fn[explicit_project_and_default_selections_choose_whole_configs]` tests configuration selection, and `authoring_uses_nearest_workspace_configuration_without_a_user_file` tests workspace configuration.\n\n**Unspecified behavior:** Retries are disabled in the loader, and options handling and cache checkpoints are also present. `bedrock_sdk_config` carries an `{impl}` for `requirements.authoring.provider_backoff`, and the code that applies options and cache checkpoints is also marked for other requirements, so none of this is an unspecified-behavior gap here.",
   "references": "4d15a8bfdf83faf379042b637ee0601fe8f7e0b448d939d2c3d35f7b7cabd0f7",
   "inputs": [
     {
@@ -26,7 +26,7 @@
     {
       "file": "src/authoring/mod.rs",
       "item": "fn[configured_assessment]",
-      "hash": "6dafc32ab2a9aa52d232753ab1fb559697fc4bd8c4219cbc59c581b759cbb86f"
+      "hash": "ca2a3f3c24f0899ba8e1cbc1cff6bd0c36dbc5561a73be25c66f054b04d1f5be"
     },
     {
       "file": "src/authoring/providers.rs",
@@ -80,33 +80,13 @@
     },
     {
       "file": "src/authoring/providers.rs",
-      "item": "impl[RigProvider]",
-      "hash": "458feda64b5c2c88da1bd11936178bf11b5df8ebf1963b26cd1f5c4319c3057a"
+      "item": "impl[RigProvider]/fn[connect]",
+      "hash": "10903ec51d70dcb885695f74ffbf3e327c9156270cae232ec0ba1b3dbbd683c8"
     },
     {
       "file": "src/authoring/providers.rs",
       "item": "fn[bedrock_sdk_config]",
       "hash": "7ab162b0d655b45cb67e7829a19541bbff5e40b7e91f6943a66eb0fc37167a8e"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "fn[bedrock_sdk_loader]",
-      "hash": "00149b3270a8dd337fa000357dd3b4d553b3cc65fc102a921444757205b85be3"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "impl[RigProvider/CompletionProvider]",
-      "hash": "48b04dec980a94d2a61b5afaa85bb9f6d1d6791ed93613db6972977b0e988518"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[OllamaConfig]",
-      "hash": "e52a986ed0fb723f75dc5e72a297378da8361d2eb5a85cdfb697e5bd796780cf"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "mod[tests]/fn[omitted_bedrock_profile_and_region_use_standard_sdk_resolution]",
-      "hash": "05c1c7513ee5965d344dc95c768b6628cb6104927918fe28c889b659d02b820e"
     }
   ]
 }

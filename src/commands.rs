@@ -186,13 +186,21 @@ pub fn status_markdown_with_github(
         ));
         output.push_str("</code></pre>\n");
     }
-    output.push_str(&coverage_warnings(&inspection)?);
+    // An invalid workspace file is already a validation finding; status
+    // still reports everything else.
+    match coverage_warnings(&inspection) {
+        Ok(section) => output.push_str(&section),
+        Err(error) => output.push_str(&format!(
+            "\n## Coverage warnings\n\nCoverage warnings could not be computed: {}\n",
+            escape_html(&error.to_string())
+        )),
+    }
     Ok(output)
 }
 
 /// The coverage warnings `habeas author` prints after it finishes: one line
 /// per item without recent coverage, and a note when coverage history was
-/// incomplete. Empty when there is nothing to warn about.
+/// incomplete, whether or not any item is warned about.
 // {impl}`requirements.references.coverage.report`
 // {impl}`requirements.references.coverage.history`
 pub fn coverage_warning_lines(root: &Path) -> io::Result<Vec<String>> {
@@ -200,7 +208,7 @@ pub fn coverage_warning_lines(root: &Path) -> io::Result<Vec<String>> {
     let (warned, incomplete) =
         crate::coverage_history::warnings(&inspection.root, &inspection.uncovered)?;
     let mut lines: Vec<String> = warned.into_iter().map(|item| item.error).collect();
-    if incomplete && !lines.is_empty() {
+    if incomplete {
         lines.push(
             "coverage history is incomplete, so only the available history was used".to_owned(),
         );

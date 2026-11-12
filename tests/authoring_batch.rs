@@ -1678,6 +1678,7 @@ fn confirm_with_all_runs_a_second_assessment_for_each_batch_subject() {
 // {test}`requirements.authoring.refresh`
 // {test}`requirements.authoring.invocation`
 // {test}`requirements.authoring.batch`
+// {test}`requirements.references.coverage.report`
 #[test]
 fn missing_keeps_current_records_and_force_reassesses_every_selected_subject() {
     let server = Server::start(false, None);
@@ -1694,6 +1695,8 @@ fn missing_keeps_current_records_and_force_reassesses_every_selected_subject() {
     // Without a usable configuration, current records are still kept: no
     // configuration is resolved when nothing needs assessment.
     fs::write(&fixture.config, "not toml [").unwrap();
+    // An item nothing reads is warned about even when nothing is assessed.
+    fs::write(fixture.project.join("src/extra.rs"), "pub fn orphan() {}\n").unwrap();
     for args in [
         &["author", "requirements.alpha"][..],
         &["author", "requirements.alpha", "--missing"],
@@ -1711,6 +1714,11 @@ fn missing_keeps_current_records_and_force_reassesses_every_selected_subject() {
                 "{}: evidence is current; 1 skipped as current (use --force to reassess)",
                 args[1]
             )
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("src/extra.rs:1: function orphan has no recent coverage"),
+            "{args:?}: {stderr}"
         );
     }
     for args in [&["author", "--all"][..], &["author", "--all", "--missing"]] {

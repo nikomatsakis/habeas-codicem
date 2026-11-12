@@ -1,7 +1,7 @@
 {
   "requirement": "Each assessment conversation MUST send its prompt as a system prompt followed by\none user message, the subject message, filled from the first and second text\nblocks of the prompt requirement for the assessment's kind. The kinds are\nrequirement, example, citation review, site review, and a verifier of each of\nthose. A system prompt MUST be the same for every assessment of its kind, so\nevery placeholder whose value depends on the subject MUST be in the subject\nmessage.",
   "determination": true,
-  "rationale": "I found no gap. I split the requirement into four obligations, and each has code and a test.\n\n**Obligations and code**\n\n1. **Prompt sent as a system prompt plus one user message.**\n   - `src/authoring/mod.rs#impl[Prompt]/fn[request]` builds the request with the system text as the preamble and the subject text as the single user message.\n   - `src/authoring/mod.rs#fn[converse]` is marked `{impl}` and calls it as `prompt.request()`. Every conversation, including the verifier, goes through it.\n2. **Prompt filled from the first and second text blocks of the prompt requirement for its kind.**\n   - `Prompt::filled` fills `approved_text(name, 0)` into the system prompt and `approved_text(name, 1)` into the subject message.\n   - `src/authoring/mod.rs#fn[verification_prompt]` is marked `{impl}`. It calls `Prompt::filled(\"verifier_prompt\", …)` and also calls `initial_prompt`.\n   - `initial_prompt` therefore needs no `{impl}` of its own. It selects `initial_prompt`, `citation_prompt` or `site_prompt` by kind, and each of those calls `Prompt::filled`.\n3. **System prompt identical for every assessment of its kind.** These system-block placeholders depend only on the kind:\n   - `initial_prompt` system block (requirement and example): `habeas_background`, `reference_roles`, `judgment_rules`, `subject_kind` and `subject_task`. `subject_task` depends only on the kind.\n   - Citation and site system blocks: `habeas_background`, `reference_roles`, `judgment_rules` and, for sites, `distributed_background`.\n   - Verifier system block: `subject_kind`, `site_step`, `habeas_background`, `reference_roles` and `judgment_rules`. `site_step` is empty or the site line, so it varies only with the site kind.\n4. **Every subject-dependent placeholder in the subject message.** `subject_name`, `distributed_task`, `mandatory_inputs`, `item_file`, `item_selector`, `citations`, `site_file`, `site_selector`, `matches`, `requirement_name`, `determination`, `rationale` and `review_instructions` are all in block 2 of their templates (the subject-message block).\n\n`src/authoring/batch.rs#fn[assessment_kind]` is marked `{impl}`. It names the kind whose system prompt is shared, and I found nothing in it that conflicts with the requirement.\n\n**Tests**\n\n- `src/authoring/mod.rs#mod[tests]/fn[subjects_of_one_kind_share_a_byte_identical_system_prompt]` covers requirement, example, citation review and site review. It builds two subjects of each kind and asserts the system prompts are equal. It asserts the subject message starts with `# Subject` and differs between the two. It asserts the system prompt does not contain the subject name. It does the same for the verifier of each kind, and checks the rationale appears only in the subject message.\n- `tests/authoring_cli.rs#fn[initial_prompt_substitutes_subject_and_mandatory_inputs_into_the_template]` checks the wire request end to end. The system text equals block 1 with only the kind substitutions, and it does not contain the subject name. The subject message equals block 2 with the substitutions.\n  - It does this for a requirement and an example.\n  - Its `opening` helper asserts a system message followed by a user message.\n- `tests/authoring_cli.rs#fn[claude_requests_carry_cache_checkpoints_and_record_cache_usage]` checks the Bedrock request shape: the system blocks come first, then the messages.\n\nAll obligations are tested, and the tests carry `{test}` references to the subject.",
+  "rationale": "I found no gaps against `requirements.authoring.prompt_parts`.\n\n**Obligations**\n1. Each conversation sends a system prompt followed by one user message, filled from the first and second text blocks of the prompt requirement for the assessment's kind.\n2. A system prompt is the same for every assessment of its kind.\n3. Every placeholder whose value depends on the subject is in the subject message.\n\n**Obligation 1: system prompt plus one user message from the two blocks**\n- `src/authoring/mod.rs#struct[Prompt]` holds `system` and `subject`.\n- `Prompt::filled` fills `approved_text(name, 0)` as the system prompt and `approved_text(name, 1)` as the subject message. It is reachable from `initial_prompt` and `verification_prompt`.\n- `Prompt::request` sends the subject as the single user message with the system text as the preamble.\n- `src/authoring/mod.rs#fn[converse]` is marked `{impl}` and calls `prompt.request()`.\n- `initial_prompt` selects the `initial_prompt`, `citation_prompt` or `site_prompt` template by assessment kind. `verification_prompt` uses `verifier_prompt`.\n\n**Obligations 2 and 3: identical system prompt per kind, subject-dependent values in the subject message**\n- The system-prompt values are all constant per kind:\n  - `shared_blocks` gives the background, reference roles and judgment rules.\n  - `subject_task(kind)` depends only on requirement versus example.\n  - `distributed_background()` is constant text.\n  - The verifier's `subject_kind` is a kind noun, `site_step` depends only on whether the subject is a site, and site verifiers get an empty `reference_roles`.\n- The subject-dependent values are all in the subject block:\n  - `subject_name`, `mandatory_inputs`, `distributed_task`, the citation file, selector and citations, the site requirement, file, selector and matches.\n  - For the verifier: `determination`, `rationale` and `review_instructions`.\n- `src/authoring/batch.rs#fn[assessment_kind]` names the kinds that share a system prompt: requirement, example, citation review and site review.\n\n**Tests**\n- `src/authoring/mod.rs#mod[tests]/fn[subjects_of_one_kind_share_a_byte_identical_system_prompt]` covers every kind. It builds two subjects each for requirement, example, citation review and site review. For each pair it asserts:\n  - equal `system` text;\n  - differing `subject` text;\n  - the subject starts with the \"# Subject\" heading;\n  - the system prompt does not contain the subject name.\n  \n  It then does the same for `verification_prompt` on each kind, asserting equal verifier system prompts and that the rationale appears only in the subject message.\n- `tests/authoring_cli.rs#fn[initial_prompt_substitutes_subject_and_mandatory_inputs_into_the_template]` checks the wire request for requirement and example subjects. The system prompt equals the first block with substitutions and does not name the subject. The user message equals the second block with substitutions.\n- `tests/authoring_cli.rs#fn[claude_requests_carry_cache_checkpoints_and_record_cache_usage]` and `fn[prompt_and_tools]` also check the request shape.\n\nNo unspecified behavior and no untested obligations.",
   "references": "642d6fe5c0b606073d2c7c5067ea26e5cf1d83913bb509e9c7d8f55c1fe596c0",
   "inputs": [
     {
@@ -68,18 +68,13 @@
     },
     {
       "file": "src/authoring/mod.rs",
-      "item": "impl[Prompt]/fn[filled]",
-      "hash": "206fa7fa4e239307c5c77808717c22494e936dd2bdef12e8a2a8479a1a852c56"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "impl[Prompt]/fn[request]",
-      "hash": "f9ffe120e04b612858150221d3adda1aaa7b5cf606a62ddabd7a7f0f6a7f66e9"
+      "item": "impl[Prompt]",
+      "hash": "94bd957fe2bcb6231b591826b541c1751cbefcb4f746a3cc56214245f2570ed1"
     },
     {
       "file": "src/authoring/mod.rs",
       "item": "fn[initial_prompt]",
-      "hash": "587ce8609b4b710048cf88c56cc5b38047e867f607c5683331b9695b08187abf"
+      "hash": "e18a20a9ce82743cf96cc070647075882dd29c6192f727077c3b87ff383c8717"
     },
     {
       "file": "src/authoring/mod.rs",
@@ -88,23 +83,8 @@
     },
     {
       "file": "src/authoring/mod.rs",
-      "item": "fn[approved_text]",
-      "hash": "57c939d94f090c967d2a5cb9aa31642d8674934bfff8e5e42d544c8740478806"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "fn[subject_task]",
-      "hash": "209d9cc6c0f3241b6db6ad0e3a1290ededd9c57123d314d4b162b980e77a31c5"
-    },
-    {
-      "file": "src/authoring/mod.rs",
       "item": "fn[review_instructions]",
       "hash": "b634c139e14b044aaa5dcc2fa2f14e0f1cd462c5656448a2a45a629099cfcf20"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "fn[fill]",
-      "hash": "ddb9f7d8b975538facb755c7201d6c9905843f3894eb87415c8e1dda649b1118"
     }
   ]
 }

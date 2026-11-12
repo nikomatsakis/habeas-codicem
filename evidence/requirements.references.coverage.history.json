@@ -1,8 +1,8 @@
 {
   "requirement": "An item has recent coverage when it has a reference that covers it under\n{cite}`requirements.references.rust_item_coverage`, or when its outline node, or\nan outline node containing it, is named by file and selector in the inputs of\nany version of an existing evidence record, citation review, or site review in\nits coverage window. A file's coverage window MUST be its current contents on\ndisk, committed or not, together with its contents in each of the last N\ncommits in its Git history that changed it, read through a Git library rather\nthan by running `git`. A recorded hash MUST NOT matter here: an earlier version\nnames the node, whatever its code was then. N MUST be the workspace\n`[coverage]` setting `reauthorings`, a positive integer, and 3 when it is not\nset. When the history is unavailable, such as outside Git or in a shallow clone\nmissing those commits, the window MUST be the commits that are available, and\nthe commands of {cite}`requirements.references.coverage.report` MUST say that\ncoverage history is incomplete.",
   "determination": false,
-  "rationale": "Most of the requirement is implemented and tested. Two things about the \"say that coverage history is incomplete\" obligation fall short.\n\n**Implemented and tested:**\n- **Recent coverage by file and selector, whatever the hash.** `src/coverage_history.rs#impl[RecentCoverage]#1/fn[add]` and `fn[covers]` record the file and selector of every input, ignoring hashes. `impl[RecentCoverage]#2/fn[covers_selector]` also matches enclosing nodes. `fn[load]` covers every `.json` file under `evidence`, which includes citation reviews and site reviews. `tests/references.rs#fn[items_named_by_recent_evidence_have_recent_coverage_whatever_their_hash]` tests stale hashes and enclosing impl nodes.\n- **Window of current disk contents plus the last N changing commits, read through a Git library.** `fn[load]` reads the current contents of each file from disk. `fn[add_history]` uses `git2` to walk the commits, skips commits that did not change the file, and stops after N versions per file.\n  - Tests: `coverage_lasts_for_three_reauthorings_of_the_record_that_read_an_item` (default of 3), `uncommitted_records_count_as_they_are_on_disk`, and `deleting_the_only_record_that_read_an_item_warns_at_once` (deleted files are not in `evidence_files`, so they have no window).\n- **N from `[coverage] reauthorings`, positive, default 3.** `src/config.rs#fn[load_coverage_reauthorings]` and `struct[CoverageConfig]` implement this, and a value of 0 is rejected. `the_window_follows_the_workspace_setting` tests a value of 1 and the rejection of 0.\n- **Unavailable history uses the available commits.** `add_history` returns false outside Git or in a shallow repository, which sets `incomplete`. `a_shallow_clone_uses_the_history_it_has_and_says_so` covers the shallow case.\n\n**Gaps:**\n1. **The incomplete message is not reachable from the history `{impl}` items.** The obligation is that the commands of `requirements.references.coverage.report` MUST say coverage history is incomplete. The code that prints the message is `src/commands.rs#fn[coverage_warnings]` (the `habeas status` section) and `src/commands.rs#fn[coverage_warning_lines]` (used by `habeas author`). Both are marked `{impl}` only for `requirements.references.coverage.report`, not for `coverage.history`. The history `{impl}` items (`warnings`, `RecentCoverage`) only compute the flag, and they do not reach these printers. I found the printers only by searching, so they need a `coverage.history` reference.\n2. **The `habeas status` output path is untested.**\n   - `coverage_warnings` is a separate output path from `coverage_warning_lines`. It prints \"Coverage history is incomplete…\" itself.\n   - The only test asserting the message is `a_shallow_clone_uses_the_history_it_has_and_says_so`. It calls `coverage_warning_lines` (the author path).\n   - `tests/commands.rs` only checks that a \"## Coverage warnings\" heading exists for `habeas status`.\n   - No test runs the status path with incomplete history. The `shallow_clone` example names `habeas status` specifically.\n3. **The outside-Git case has no test.** The text names it as an example of unavailable history. The `Repository::discover` failure branch in `add_history` is never exercised, because every test project runs `git init`.",
-  "references": "c384d477ab3cff059edfe73ac0978053b80a0cb3d0e81a71522c467442034517",
+  "rationale": "The window logic, the setting and the tests are sound, but the commands do not always say when coverage history is incomplete. That breaks an unconditional MUST, so I judge this a gap.\n\n**Obligations and where they are carried out**\n\n- **Recent coverage by name, not hash.** An item is covered when its node or an enclosing node is named by file and selector in some version of an evidence record, citation review or site review. `src/coverage_history.rs#impl[RecentCoverage]/fn[add]` reads only the `file` and `item` of each input, so a recorded hash does not matter. `fn[covers_selector]` walks up the selector's ancestors, ending at the file root. `warnings` collects every `.json` file under `evidence/` at any depth through `files_with_extension`, so citation and site reviews are included.\n  - Tested by `tests/references.rs#fn[items_named_by_recent_evidence_have_recent_coverage_whatever_their_hash]` and `tests/coverage.rs#fn[status_shows_coverage_warnings_and_says_when_history_is_incomplete]`.\n- **Window = current contents on disk plus the last N commits that changed the file, read through a Git library.** `RecentCoverage::load` reads each file from disk. `add_history` uses `git2`, walks from HEAD, and counts a commit for a path only when its blob differs from the first parent's. It stops at N per file.\n  - Tested by `coverage_lasts_for_three_reauthorings_of_the_record_that_read_an_item` (the reauthored example), `uncommitted_records_count_as_they_are_on_disk` (the uncommitted example) and `deleting_the_only_record_that_read_an_item_warns_at_once` (the deleted-requirement example). Deleted files are never in `evidence_files`, so they have no window.\n- **N is the `[coverage] reauthorings` setting, a positive integer, default 3.** `src/config.rs#struct[CoverageConfig]` holds an `Option<u32>`. `fn[load_coverage_reauthorings]` rejects 0 and defaults to 3.\n  - Tested by `the_window_follows_the_workspace_setting`, which covers a setting of 1 and the error for 0. The default of 3 is exercised by the reauthored test.\n- **Unavailable history uses the available commits.** `add_history` returns false when there is no repository, when the repository is shallow, or when it cannot walk. It returns true in an unborn repository. It sets `incomplete` and keeps the disk and available commits.\n  - Tested by `a_shallow_clone_uses_the_history_it_has_and_says_so` and `outside_git_only_the_files_on_disk_count_and_history_is_incomplete`.\n- **The commands MUST say that coverage history is incomplete. This is the gap.** The requirement is unconditional.\n  - `src/coverage_history.rs#fn[warnings]` returns `(Vec::new(), false)` as soon as there are no non-test uncovered candidates. Incompleteness is then never computed, so `habeas status` says nothing even if the history is unavailable.\n  - `src/commands.rs#fn[coverage_warning_lines]` adds the incomplete note only when `!lines.is_empty()`. `habeas author` therefore stays silent about incomplete history whenever there is nothing to warn about, for example in a shallow clone where the on-disk contents cover everything. Its doc comment says \"Empty when there is nothing to warn about\", which confirms this is deliberate.\n  - `fn[coverage_warnings]` says it when `warned` is empty, but only if `warnings` got past the early return.\n  - No test covers incomplete history with no warnings.\n\nI found no other gaps. The rest of the code and tests are consistent with the subject's text.",
+  "references": "13f83a430919702231a4f5e3be4ec559f2e3b60bf781775c4414dea074b6f354",
   "inputs": [
     {
       "requirements": "requirements.references.coverage.history",
@@ -116,9 +116,14 @@
       ]
     },
     {
-      "file": "src/authoring/coverage_loss.rs",
-      "item": "fn[lost_items]",
-      "hash": "7dd5399a35c6da3eb8cb9bc171f18ddace0086bcc55f6f432eef3e093bd9e5c9"
+      "file": "src/commands.rs",
+      "item": "fn[coverage_warning_lines]",
+      "hash": "3644b75960598fff34290995a4ceb53217423116e001f4b9a0d6374ef68c86a3"
+    },
+    {
+      "file": "src/commands.rs",
+      "item": "fn[coverage_warnings]",
+      "hash": "81333a215d673c1ca522ad36d99765fc88ac8b122fd54621a7b271b646b000fa"
     },
     {
       "file": "src/config.rs",
@@ -137,7 +142,7 @@
     },
     {
       "file": "src/coverage_history.rs",
-      "item": "impl[RecentCoverage]#1/fn[load]",
+      "item": "impl[RecentCoverage]/fn[load]",
       "hash": "1aebab5bc26322e11ed66848cb0f6d74f9cb0aea9fc0beb2648b2f9f5467aa1f"
     },
     {
@@ -171,29 +176,24 @@
       "hash": "ce741c64e8c8c843080b9baff97f587aca3d1a9b468b16f8bddb1163cfa43bc5"
     },
     {
+      "file": "tests/coverage.rs",
+      "item": "fn[status_shows_coverage_warnings_and_says_when_history_is_incomplete]",
+      "hash": "4febe4beabbbed0145e3dd52359e106402e81b22ba09acfd85efb9f5d17e4dda"
+    },
+    {
+      "file": "tests/coverage.rs",
+      "item": "fn[outside_git_only_the_files_on_disk_count_and_history_is_incomplete]",
+      "hash": "d9b3d4ea5b13834b5e9956e89893ae1e21d241ed1ab7ee4053ac2354e76b47ca"
+    },
+    {
       "file": "tests/references.rs",
       "item": "fn[items_named_by_recent_evidence_have_recent_coverage_whatever_their_hash]",
       "hash": "ef9e0267043af70e7b7e4fddaca85a9495927950e2bc1090462a83e0a66c75e6"
     },
     {
       "file": "src/coverage_history.rs",
-      "item": "impl[RecentCoverage]#1",
-      "hash": "ea331c7955cbfeb190209af3f354dab642adca67ccb58e88365fe1504706013f"
-    },
-    {
-      "file": "src/coverage_history.rs",
-      "item": "impl[RecentCoverage]#2",
-      "hash": "c217a1ccf62669b911aa8eeffcb803fcafcabae13940f8422f4ea581b41a0080"
-    },
-    {
-      "file": "src/coverage_history.rs",
-      "item": "fn[in_tests_module]",
-      "hash": "2fcc936f93ccb9d10e794a5ac9c2c93af76834c8246fd388fad7e2e916cafc21"
-    },
-    {
-      "file": "tests/coverage.rs",
       "item": "",
-      "hash": "95904f96ac654b959ef9449f263b90d606bdaa9088c30faca70909df97fad3f4"
+      "hash": "8fe5d1aa50b977349a1f6a001e4ac9e664bf0416a8fd43d64d18d358861a1c33"
     }
   ]
 }
