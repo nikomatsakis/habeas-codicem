@@ -59,16 +59,45 @@ impl RecentCoverage {
         if pending.is_empty() || depth == 0 {
             return true;
         }
-        match repository.head() {
-            Ok(_) => {}
+        let head = match repository.head() {
+            Ok(head) => head,
             // No commits yet: every window is the file on disk alone.
             Err(error) if error.code() == git2::ErrorCode::UnbornBranch => return true,
             Err(_) => return false,
+        };
+        let (Some(head_id), Ok(head_tree)) = (head.target(), head.peel_to_tree()) else {
+            return false;
+        };
+        let mut complete = true;
+        // A file absent from HEAD has never been committed on this branch: no
+        // earlier commit holds it either, so its window is its contents on
+        // disk alone and the walk need not look for it.
+        pending.retain(|(path, _)| blob_id(&head_tree, path, &mut complete).is_some());
+        if pending.is_empty() {
+            return complete;
         }
+        // Every evidence file lies under this directory, so a commit whose
+        // directory matches each parent's changes none of them.
+        let evidence = fs::canonicalize(root.join("evidence"))
+            .ok()
+            .and_then(|dir| Some(dir.strip_prefix(&workdir).ok()?.to_owned()))
+            .filter(|dir| pending.iter().all(|(path, _)| path.starts_with(dir)));
+        // A linked worktree shares the main repository's objects and shallow
+        // boundary, but libgit2 walks its history as if it were complete, so
+        // walk this worktree's HEAD in the main repository instead.
+        drop((head_tree, head));
+        let repository = if repository.is_worktree() {
+            match git2::Repository::open(repository.commondir()) {
+                Ok(main) => main,
+                Err(_) => return false,
+            }
+        } else {
+            repository
+        };
         let Ok(mut walk) = repository.revwalk() else {
             return false;
         };
-        if walk.push_head().is_err()
+        if walk.push(head_id).is_err()
             || walk
                 .set_sorting(git2::Sort::TOPOLOGICAL | git2::Sort::TIME)
                 .is_err()
@@ -77,7 +106,6 @@ impl RecentCoverage {
         }
         // The commits a shallow clone cut off from their parents.
         let boundary = shallow_boundary(&repository);
-        let mut complete = true;
         for oid in walk {
             let Some((commit, tree)) = oid.ok().and_then(|oid| {
                 let commit = repository.find_commit(oid).ok()?;
@@ -99,6 +127,17 @@ impl RecentCoverage {
                 }
                 parents.ok()
             };
+            if let (Some(evidence), Some(parents)) = (&evidence, &parents)
+                && !parents.is_empty()
+                && let Ok(here) = tree.get_path(evidence).map(|entry| entry.id())
+                && parents.iter().all(|parent| {
+                    parent
+                        .get_path(evidence)
+                        .is_ok_and(|entry| entry.id() == here)
+                })
+            {
+                continue;
+            }
             let mut done = Vec::new();
             for (position, (path, count)) in pending.iter_mut().enumerate() {
                 let Some(id) = blob_id(&tree, path, &mut complete) else {
@@ -186,10 +225,11 @@ fn blob_id(tree: &git2::Tree<'_>, path: &Path, complete: &mut bool) -> Option<gi
 }
 
 /// The commits listed in the repository's `shallow` file, whose parents a
-/// shallow clone does not have.
+/// shallow clone does not have. The file lives in the common directory, which
+/// a linked worktree shares with the main one.
 // {cite}`habeas:util`
 fn shallow_boundary(repository: &git2::Repository) -> HashSet<git2::Oid> {
-    fs::read_to_string(repository.path().join("shallow"))
+    fs::read_to_string(repository.commondir().join("shallow"))
         .unwrap_or_default()
         .lines()
         .filter_map(|line| git2::Oid::from_str(line.trim()).ok())
@@ -197,12 +237,16 @@ fn shallow_boundary(repository: &git2::Repository) -> HashSet<git2::Oid> {
 }
 
 /// The items to warn about: those without recent coverage, outside modules
-/// named `tests`, and whether the coverage history was incomplete.
+/// named `tests`, and whether the coverage history was incomplete. The
+/// evidence files are those repository inspection listed; when listing them
+/// failed, some file may lack its window, so the history is incomplete.
 // {impl}`requirements.references.coverage.report`
 // {impl}`requirements.references.coverage.history`
 pub(crate) fn warnings(
     root: &Path,
     uncovered: &[crate::rust_coverage::UncoveredItem],
+    evidence_files: &[PathBuf],
+    evidence_listed: bool,
 ) -> std::io::Result<(Vec<crate::rust_coverage::UncoveredItem>, bool)> {
     let candidates: Vec<_> = uncovered
         .iter()
@@ -210,19 +254,12 @@ pub(crate) fn warnings(
         .cloned()
         .collect();
     let depth = crate::config::load_coverage_reauthorings(root)? as usize;
-    let evidence = root.join("evidence");
-    let mut failures = Vec::new();
-    let files = if evidence.is_dir() {
-        crate::evidence::files_with_extension(root, &evidence, "json", &mut failures)
-    } else {
-        Vec::new()
-    };
-    let recent = RecentCoverage::load(root, &files, depth);
+    let recent = RecentCoverage::load(root, evidence_files, depth);
     let warned = candidates
         .into_iter()
         .filter(|item| !recent.covers(&item.file, &item.selectors))
         .collect();
-    Ok((warned, recent.incomplete))
+    Ok((warned, recent.incomplete || !evidence_listed))
 }
 
 /// The selectors of node `index` and of each node containing it, innermost

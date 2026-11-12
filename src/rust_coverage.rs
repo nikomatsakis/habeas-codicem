@@ -253,18 +253,16 @@ static TEST_ATTRIBUTE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::
 });
 
 /// Test functions of a Rust source without a valid `{test}` reference, as
-/// `(line, name)`.
+/// `(node, line, name)`.
 // {impl}`requirements.references.coverage.tests`
 pub(crate) fn untested_tests(
     source: &str,
     outline: &outline::Outline,
     definitions: &BTreeMap<String, Declaration>,
-) -> Vec<(usize, String)> {
+) -> Vec<(usize, usize, String)> {
+    // The same rule as item coverage, restricted to `{test}`.
     let counts = |kind: crate::ReferenceKind, name: &str| {
-        kind == crate::ReferenceKind::Test
-            && definitions
-                .get(name)
-                .is_some_and(|d| d.kind != crate::DefinitionKind::Term)
+        kind == crate::ReferenceKind::Test && covering_reference(kind, name, definitions)
     };
     let mut tested = vec![false; outline.nodes.len()];
     for comment in &outline.comments {
@@ -297,8 +295,39 @@ pub(crate) fn untested_tests(
                 .get(start..end)
                 .is_some_and(|attached| TEST_ATTRIBUTE.is_match(&attached.join("\n")))
         })
-        .filter_map(|(_, node)| Some((node.declaration_line, node.display_name()?)))
+        .filter_map(|(index, node)| Some((index, node.declaration_line, node.display_name()?)))
         .collect()
+}
+
+/// Whether a reference with role `kind` to `name` covers the item it belongs
+/// to: a requirement, a named example that traces to a requirement, or a
+/// built-in in a role it permits.
+// {impl}`requirements.references.rust_item_coverage`
+// {impl}`requirements.references.coverage.tests`
+// {impl}`requirements.references.util`
+fn covering_reference(
+    kind: crate::ReferenceKind,
+    name: &str,
+    definitions: &BTreeMap<String, Declaration>,
+) -> bool {
+    // A `{fixme}` acknowledges a gap; it does not say why the item exists.
+    if matches!(
+        kind,
+        crate::ReferenceKind::Term | crate::ReferenceKind::Fixme
+    ) {
+        return false;
+    }
+    if let Some(builtin) = crate::builtins::builtin(name) {
+        return builtin.check(kind).is_ok();
+    }
+    definitions.get(name).is_some_and(|d| match d.kind {
+        crate::DefinitionKind::Requirement => true,
+        // An example counts only when it traces to a requirement itself.
+        crate::DefinitionKind::Example => {
+            crate::evidence::example_references_requirement(d, definitions)
+        }
+        crate::DefinitionKind::Term => false,
+    })
 }
 
 /// The functions, methods, structs, enums, and unions of a Rust source with
@@ -316,28 +345,8 @@ pub(crate) fn unreferenced_items(
 ) -> Result<(outline::Outline, Unreferenced), OutlineError> {
     let outline = outline::parse_with(&outline::RUST_PROFILE, source)?;
     let mut cited = vec![false; outline.nodes.len()];
-    // A built-in counts only in a role it permits.
-    let counts = |kind: crate::ReferenceKind, name: &str| {
-        // A `{fixme}` acknowledges a gap; it does not say why the item exists.
-        if matches!(
-            kind,
-            crate::ReferenceKind::Term | crate::ReferenceKind::Fixme
-        ) {
-            return false;
-        }
-        if let Some(builtin) = crate::builtins::builtin(name) {
-            return builtin.check(kind).is_ok();
-        }
-        definitions.get(name).is_some_and(|d| match d.kind {
-            crate::DefinitionKind::Requirement => true,
-            // An example counts only when it traces to a
-            // requirement itself.
-            crate::DefinitionKind::Example => {
-                crate::evidence::example_references_requirement(d, definitions)
-            }
-            crate::DefinitionKind::Term => false,
-        })
-    };
+    let counts =
+        |kind: crate::ReferenceKind, name: &str| covering_reference(kind, name, definitions);
     for comment in &outline.comments {
         if reference_roles(&source[comment.byte_start..comment.byte_end], false)
             .iter()
@@ -503,13 +512,18 @@ pub(crate) fn validate_rust_functions(
                 // Only a test without `{test}` fails validation; other items
                 // without coverage are reported, not errors.
                 // {impl}`requirements.references.coverage.tests`
-                for (line, name) in untested_tests(&source, &outline, definitions) {
+                let untested = untested_tests(&source, &outline, definitions);
+                for (_, line, name) in &untested {
                     errors.push(format!(
                         "{label}:{line}: test function {name} has no {{test}} reference to a requirement or example"
                     ));
                 }
                 for (index, line, kind, name) in missing {
-                    if reads.covers(&label, &outline, index) {
+                    // A test without `{test}` is already a validation error,
+                    // so it is not also a coverage warning.
+                    if reads.covers(&label, &outline, index)
+                        || untested.iter().any(|(node, _, _)| *node == index)
+                    {
                         continue;
                     }
                     uncovered.push(UncoveredItem {
@@ -684,7 +698,7 @@ mod tests {
         let outline = crate::outline::parse_with(&crate::outline::RUST_PROFILE, source).unwrap();
         let names: Vec<String> = super::untested_tests(source, &outline, &definitions())
             .into_iter()
-            .map(|(_, name)| name)
+            .map(|(_, _, name)| name)
             .collect();
         assert_eq!(
             names,
@@ -695,6 +709,64 @@ mod tests {
                 "nested_untested"
             ]
         );
+    }
+
+    // {test}`requirements.references.coverage.tests`
+    // {test}`requirements.references.rust_item_coverage`
+    #[test]
+    fn a_test_reference_to_an_example_counts_only_when_it_references_a_requirement() {
+        let mut definitions = definitions();
+        definitions.insert(
+            "requirements.orphan".to_owned(),
+            Declaration {
+                kind: DefinitionKind::Example,
+                text: "No requirement.".to_owned(),
+                ..definitions["requirements.case"].clone()
+            },
+        );
+        let source = concat!(
+            "// {test}`requirements.case`\n#[test]\nfn traced() {}\n\n",
+            "// {test}`requirements.orphan`\n#[test]\nfn orphan() {}\n",
+        );
+        let outline = crate::outline::parse_with(&crate::outline::RUST_PROFILE, source).unwrap();
+        let names: Vec<String> = super::untested_tests(source, &outline, &definitions)
+            .into_iter()
+            .map(|(_, _, name)| name)
+            .collect();
+        assert_eq!(names, ["orphan"]);
+        let missing = missing_function_references(source, &definitions).unwrap();
+        assert_eq!(missing, [(7, "function", "orphan".to_owned())]);
+    }
+
+    // {test}`requirements.references.coverage.tests`
+    // {test}`requirements.references.coverage.report`
+    #[test]
+    fn a_test_without_a_test_reference_is_an_error_not_a_coverage_warning() {
+        let project = TempDir::new().unwrap();
+        fs::create_dir_all(project.path().join("tests")).unwrap();
+        fs::write(
+            project.path().join("tests/foo.rs"),
+            "#[test]\nfn bare() {}\n\nfn helper() {}\n",
+        )
+        .unwrap();
+        let mut errors = Vec::new();
+        let uncovered = validate_rust_functions(
+            project.path(),
+            &crate::evidence::discovered_files(project.path(), &mut Vec::new()),
+            &definitions(),
+            &super::EvidenceReads::default(),
+            &mut errors,
+            &mut Vec::new(),
+            &mut |_| {},
+        );
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(
+            errors[0].contains("tests/foo.rs:2: test function bare"),
+            "{errors:?}"
+        );
+        let warned: Vec<&str> = uncovered.iter().map(|item| item.error.as_str()).collect();
+        assert_eq!(warned.len(), 1, "{warned:?}");
+        assert!(warned[0].contains("function helper"), "{warned:?}");
     }
 
     // {test}`requirements.references.coverage.examples`

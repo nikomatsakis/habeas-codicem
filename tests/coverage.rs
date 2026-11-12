@@ -565,3 +565,91 @@ fn an_untracked_example_is_not_a_target() {
         ["examples/tracked.rs: Cargo example does not {cite} a named example of the book"]
     );
 }
+
+// {test}`requirements.references.coverage.history`
+// {test}`requirements.references.coverage.shallow_clone`
+#[test]
+fn a_linked_worktree_of_a_shallow_clone_knows_where_history_ends() {
+    let temp = project();
+    let root = temp.path();
+    fs::write(
+        root.join("habeas.toml"),
+        "version = 1\n\n[coverage]\nreauthorings = 1\n",
+    )
+    .unwrap();
+    record(root, "rules.check", &["fn[parse]"]);
+    commit(root, "first");
+    record(root, "rules.check", &["fn[render]"]);
+    commit(root, "second");
+    // The one-commit clone holds the record's whole window of one version;
+    // so does a linked worktree of it, whose `shallow` file is in the common
+    // directory rather than its own.
+    let (clone, target) = shallow_clone(root, 1);
+    assert!(!habeas::coverage_warnings(&target).unwrap().incomplete);
+    let worktree = clone.path().join("linked");
+    git(
+        &target,
+        &[
+            "worktree",
+            "add",
+            "--quiet",
+            "--detach",
+            worktree.to_str().unwrap(),
+        ],
+    );
+    let warnings = habeas::coverage_warnings(&worktree).unwrap();
+    assert!(!warnings.incomplete, "{warnings:?}");
+    assert_eq!(warned(&worktree), ["parse", "helper"]);
+}
+
+// {test}`requirements.references.coverage.history`
+// {test}`requirements.references.coverage.uncommitted`
+#[test]
+fn an_uncommitted_record_does_not_make_a_full_shallow_history_incomplete() {
+    let temp = project();
+    let root = temp.path();
+    fs::write(
+        root.join("habeas.toml"),
+        "version = 1\n\n[coverage]\nreauthorings = 1\n",
+    )
+    .unwrap();
+    record(root, "rules.check", &["fn[parse]"]);
+    commit(root, "first");
+    record(root, "rules.check", &["fn[render]"]);
+    commit(root, "second");
+    // The one-commit clone holds the committed record's whole window.
+    let (_clone, target) = shallow_clone(root, 1);
+    assert!(!habeas::coverage_warnings(&target).unwrap().incomplete);
+    // A new record that was never committed has no history to miss.
+    record(&target, "rules.render", &["fn[helper]"]);
+    let warnings = habeas::coverage_warnings(&target).unwrap();
+    assert!(!warnings.incomplete, "{warnings:?}");
+    assert_eq!(warned(&target), ["parse"]);
+}
+
+// {test}`requirements.references.coverage.history`
+#[cfg(unix)]
+#[test]
+fn an_unlistable_evidence_directory_makes_history_incomplete() {
+    use std::os::unix::fs::PermissionsExt;
+    let temp = project();
+    let root = temp.path();
+    record(
+        root,
+        "rules.check",
+        &["fn[parse]", "fn[render]", "fn[helper]"],
+    );
+    commit(root, "first");
+    assert!(!habeas::coverage_warnings(root).unwrap().incomplete);
+    let hidden = root.join("evidence/hidden");
+    fs::create_dir_all(&hidden).unwrap();
+    fs::set_permissions(&hidden, fs::Permissions::from_mode(0o000)).unwrap();
+    // Permissions do not stop a privileged user, so there is nothing to test.
+    let listable = fs::read_dir(&hidden).is_ok();
+    let warnings = (!listable).then(|| habeas::coverage_warnings(root));
+    fs::set_permissions(&hidden, fs::Permissions::from_mode(0o755)).unwrap();
+    if let Some(warnings) = warnings {
+        let warnings = warnings.unwrap();
+        assert!(warnings.incomplete, "{warnings:?}");
+    }
+}

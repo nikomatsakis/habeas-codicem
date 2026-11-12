@@ -224,8 +224,12 @@ pub fn coverage_warnings(root: &Path) -> io::Result<CoverageWarnings> {
 fn inspected_coverage_warnings(
     inspection: &crate::evidence::RepositoryInspection,
 ) -> io::Result<CoverageWarnings> {
-    let (warned, incomplete) =
-        crate::coverage_history::warnings(&inspection.root, &inspection.uncovered)?;
+    let (warned, incomplete) = crate::coverage_history::warnings(
+        &inspection.root,
+        &inspection.uncovered,
+        &inspection.evidence_files,
+        inspection.evidence_listed,
+    )?;
     Ok(CoverageWarnings {
         items: warned.into_iter().map(|item| item.error).collect(),
         incomplete,

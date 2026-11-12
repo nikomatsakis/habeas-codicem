@@ -1187,6 +1187,11 @@ fn feature_sections_are_scoped_and_absent_sections_use_defaults() {
     let config =
         WorkspaceConfig::parse("version = 1\n[coverage]\nreauthorings = 5\n", &path).unwrap();
     assert_eq!(config.coverage.unwrap().reauthorings, Some(5));
+    // The one positivity rule applies to the whole-file parse too.
+    let error = WorkspaceConfig::parse("version = 1\n[coverage]\nreauthorings = 0\n", &path)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("coverage.reauthorings"), "{error}");
     // Feature settings must stay within their sections.
     for source in [
         "version = 1\nallow = ['generated']\n",

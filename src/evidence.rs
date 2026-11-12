@@ -136,6 +136,10 @@ pub(crate) struct RepositoryInspection {
     pub(crate) sites: crate::sites::Sites,
     /// The Rust items reported uncovered, in report order.
     pub(crate) uncovered: Vec<crate::rust_coverage::UncoveredItem>,
+    /// The evidence files found, for the coverage history to reuse.
+    pub(crate) evidence_files: Vec<PathBuf>,
+    /// Whether every evidence directory could be listed.
+    pub(crate) evidence_listed: bool,
     pub(crate) report: EvidenceReport,
     pub(crate) discovery_errors: Vec<String>,
 }
@@ -208,11 +212,13 @@ pub(crate) fn inspect_repository_with_progress(
         errors.push(error.to_string());
     }
     let evidence_root = root.join("evidence");
+    let listing_errors = errors.len();
     let evidence_files = if evidence_root.is_dir() {
         files_with_extension(&root, &evidence_root, "json", &mut errors)
     } else {
         Vec::new()
     };
+    let evidence_listed = errors.len() == listing_errors;
     let mut present = BTreeSet::new();
     let outlines = OutlineCache::default();
     // Citation reviews are validated against their source items below.
@@ -366,6 +372,8 @@ pub(crate) fn inspect_repository_with_progress(
         references,
         sites,
         uncovered,
+        evidence_files,
+        evidence_listed,
         discovery_errors,
     })
 }

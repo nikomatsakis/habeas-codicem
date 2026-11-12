@@ -387,6 +387,25 @@ impl WorkspaceConfig {
         if let Some(evidence) = &self.evidence {
             evidence.validate(path)?;
         }
+        if let Some(coverage) = &self.coverage {
+            coverage.validate(path)?;
+        }
+        Ok(())
+    }
+}
+
+impl CoverageConfig {
+    /// Checks that `reauthorings`, when set, is a positive integer.
+    // {impl}`requirements.references.coverage.history`
+    // {impl}`requirements.configuration.loading`
+    pub fn validate(&self, path: &Path) -> io::Result<()> {
+        if self.reauthorings == Some(0) {
+            return Err(invalid(
+                path,
+                "coverage.reauthorings",
+                "expected a positive integer",
+            ));
+        }
         Ok(())
     }
 }
@@ -762,8 +781,10 @@ pub fn load_workspace_config(root: &Path) -> io::Result<Option<LoadedWorkspaceCo
     let Some((path, mut table)) = workspace_document(root)? else {
         return Ok(None);
     };
-    // Authoring does not use `[coverage]`: only the coverage report decodes
-    // it, through `load_coverage_reauthorings`.
+    // Authoring does not use `[coverage]`, so it must not fail on an invalid
+    // table (requirements.configuration.loading): the table is dropped
+    // before decoding, and only the coverage report decodes and validates it,
+    // through `load_coverage_reauthorings` and `CoverageConfig::validate`.
     table.remove("coverage");
     let config: WorkspaceConfig = decode(toml::Value::Table(table), &path, "")?;
     config.validate(&path)?;
@@ -813,11 +834,9 @@ pub fn load_workspace_evidence(root: &Path) -> io::Result<Option<WorkspaceEviden
     }))
 }
 
-// {impl}`requirements.configuration.workspace_location`
-// {impl}`requirements.configuration.loading`
-// {impl}`requirements.configuration.workspace_structure`
 /// The workspace `[coverage] reauthorings` setting, or its default.
 // {impl}`requirements.references.coverage.history`
+// {impl}`requirements.configuration.loading`
 pub fn load_coverage_reauthorings(root: &Path) -> io::Result<u32> {
     let Some((path, table)) = workspace_document(root)? else {
         return Ok(DEFAULT_REAUTHORINGS);
@@ -838,7 +857,7 @@ pub(crate) fn coverage_error(root: &Path) -> Option<io::Error> {
     coverage_reauthorings(&path, &table).err()
 }
 
-/// Decodes the `[coverage]` table of a workspace file.
+/// Decodes and validates the `[coverage]` table of a workspace file.
 // {impl}`requirements.references.coverage.history`
 fn coverage_reauthorings(path: &Path, table: &toml::Table) -> io::Result<u32> {
     let coverage: CoverageConfig = table
@@ -846,17 +865,13 @@ fn coverage_reauthorings(path: &Path, table: &toml::Table) -> io::Result<u32> {
         .map(|value| decode(value.clone(), path, "coverage"))
         .transpose()?
         .unwrap_or_default();
-    match coverage.reauthorings {
-        Some(0) => Err(invalid(
-            path,
-            "coverage.reauthorings",
-            "expected a positive integer",
-        )),
-        Some(count) => Ok(count),
-        None => Ok(DEFAULT_REAUTHORINGS),
-    }
+    coverage.validate(path)?;
+    Ok(coverage.reauthorings.unwrap_or(DEFAULT_REAUTHORINGS))
 }
 
+// {impl}`requirements.configuration.workspace_location`
+// {impl}`requirements.configuration.loading`
+// {impl}`requirements.configuration.workspace_structure`
 fn workspace_document(root: &Path) -> io::Result<Option<(PathBuf, toml::Table)>> {
     let root = fs::canonicalize(root)?;
     let start = std::env::current_dir()
