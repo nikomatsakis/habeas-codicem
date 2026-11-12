@@ -528,6 +528,7 @@ fn same_fixmes(recorded: &[SiteFixme], current: &[SiteFixme]) -> bool {
 // {impl}`requirements.ci.outcomes`
 // {impl}`requirements.ci.errors`
 #[allow(clippy::too_many_arguments)]
+// {impl}`requirements.references.site_review`
 pub(crate) fn validate(
     root: &Path,
     definitions: &BTreeMap<String, Declaration>,
@@ -580,6 +581,7 @@ pub(crate) fn validate(
 
 /// Validates one review file against its current site.
 // {impl}`requirements.ci.errors`
+// {impl}`requirements.references.site_review`
 fn validate_review(
     root: &Path,
     label: &str,

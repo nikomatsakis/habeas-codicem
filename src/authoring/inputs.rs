@@ -347,6 +347,7 @@ impl AssessmentSources {
     // {impl}`requirements.authoring.site_prompt`
     // {impl}`requirements.authoring.mandatory_inputs`
     // {impl}`requirements.references.builtin_definitions`
+    // {impl}`requirements.references.site_review`
     pub(crate) fn prepare_site(
         root: &Path,
         requirement: &str,

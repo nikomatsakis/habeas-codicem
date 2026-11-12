@@ -1128,6 +1128,7 @@ fn tool_definitions() -> io::Result<Vec<ToolDefinition>> {
 /// The record a judgment produces: definition evidence, or a citation
 /// review with the item's file, selector, and citations.
 // {impl}`requirements.authoring.persistence`
+// {impl}`requirements.references.site_review`
 fn record(
     sources: &AssessmentSources,
     judgment: &Judgment,
