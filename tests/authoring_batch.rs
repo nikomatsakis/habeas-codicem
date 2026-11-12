@@ -879,6 +879,7 @@ fn verbose_false_rationale_is_readable_above_terminal_progress() {
 // {test}`requirements.authoring.progress`
 // {test}`requirements.authoring.batch`
 // {test}`requirements.references.coverage.report`
+// {test}`requirements.references.coverage.history`
 #[cfg(unix)]
 #[test]
 fn dumb_terminal_keeps_plain_batch_diagnostics() {
@@ -1607,9 +1608,12 @@ fn batch_authors_citation_reviews_and_preserves_current_ones() {
     );
     let printed: Value = serde_json::from_slice(&single.stdout).unwrap();
     assert_eq!(printed["item"], "fn[helper]");
-    // The record is not written, so no coverage warnings are computed.
+    // Coverage warnings still go to stderr; stdout holds only the record.
     let stderr = String::from_utf8_lossy(&single.stderr);
-    assert!(!stderr.contains("coverage history"), "{stderr}");
+    assert!(
+        stderr.contains("coverage history is incomplete"),
+        "{stderr}"
+    );
     assert_eq!(server.subjects().len(), 8);
 }
 

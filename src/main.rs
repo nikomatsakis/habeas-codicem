@@ -321,11 +321,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                     outcome.usage_path.display()
                 );
             }
-            // With `--stdout` the record is not written, so the warnings
-            // would describe the evidence on disk rather than this record.
-            if !stdout {
-                print_coverage_warnings(&root);
-            }
+            // Warnings go to stderr, so `--stdout` keeps only the record.
+            print_coverage_warnings(&root);
             Ok(())
         }
         // {impl}`requirements.integration.symposium_setup_hook`
@@ -339,6 +336,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 /// keeps only what the command reports there. A failure to compute them is
 /// reported but does not fail the command.
 // {impl}`requirements.references.coverage.report`
+// {impl}`requirements.references.coverage.history`
 fn print_coverage_warnings(root: &std::path::Path) {
     match habeas::coverage_warnings(root) {
         Ok(warnings) => {

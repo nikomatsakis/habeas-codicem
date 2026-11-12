@@ -750,6 +750,7 @@ fn reference_selector(
 
 // {impl}`requirements.definitions.selection`
 // {impl}`requirements.authoring.mandatory_inputs`
+// {impl}`requirements.definitions.dependencies`
 fn definition_inputs(
     root: &Path,
     access: &SourceAccess,
