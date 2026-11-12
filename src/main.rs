@@ -257,15 +257,12 @@ fn main() -> Result<(), Box<dyn Error>> {
                 if let Some(policy) = outcome.policy {
                     summary.push_str(&format!("; policy {policy}"));
                 }
-                // Each review was reported as it finished; count them.
-                // {impl}`requirements.authoring.coverage_loss`
-                if !outcome.coverage_loss.reviews.is_empty() {
-                    summary.push_str(&format!(
-                        "; {} coverage-loss reviews",
-                        outcome.coverage_loss.reviews.len()
-                    ));
-                }
                 println!("{summary}");
+                // A cancelled batch stops at once, without inspecting the
+                // repository again.
+                if !outcome.cancelled {
+                    print_coverage_warnings(&root);
+                }
                 if !outcome.failures.is_empty() {
                     return Err(io::Error::other(
                         "evidence authoring failed for one or more subjects; see diagnostics above",
@@ -296,6 +293,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 println!(
                     "{subject}: evidence is current; 1 skipped as current (use --force to reassess)"
                 );
+                print_coverage_warnings(&root);
                 return Ok(());
             };
             let mut summary = format!(
@@ -323,28 +321,39 @@ fn main() -> Result<(), Box<dyn Error>> {
                     outcome.usage_path.display()
                 );
             }
-            // {impl}`requirements.authoring.coverage_loss`
-            for review in &outcome.coverage_loss.reviews {
-                println!(
-                    "{}\nUsage: {}",
-                    review.report(),
-                    review.usage_path.display()
-                );
-            }
-            for (label, error) in &outcome.coverage_loss.failures {
-                eprintln!("{label}: {error}");
-            }
-            if !outcome.coverage_loss.failures.is_empty() {
-                return Err(io::Error::other(
-                    "a coverage-loss review failed; the evidence was written",
-                )
-                .into());
-            }
+            // Warnings go to stderr, so `--stdout` keeps only the record.
+            print_coverage_warnings(&root);
             Ok(())
         }
         // {impl}`requirements.integration.symposium_setup_hook`
         Command::Hook {
             command: HookCommand::SessionStart,
         } => hook::session_start(),
+    }
+}
+
+/// Prints the coverage warnings after an authoring run on stderr, so stdout
+/// keeps only what the command reports there. A failure to compute them is
+/// reported but does not fail the command.
+// {impl}`requirements.references.coverage.report`
+// {impl}`requirements.references.coverage.history`
+fn print_coverage_warnings(root: &std::path::Path) {
+    match habeas::coverage_warnings(root) {
+        Ok(warnings) => {
+            if !warnings.items.is_empty() {
+                eprintln!(
+                    "Coverage warnings (these items have no recent coverage; they do not fail validation):"
+                );
+                for line in warnings.items {
+                    eprintln!("- {line}");
+                }
+            }
+            if warnings.incomplete {
+                eprintln!(
+                    "Note: coverage history is incomplete, so only the available history was used"
+                );
+            }
+        }
+        Err(error) => eprintln!("cannot compute coverage warnings: {error}"),
     }
 }

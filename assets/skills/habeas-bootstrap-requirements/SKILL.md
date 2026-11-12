@@ -1,6 +1,6 @@
 ---
 name: habeas-bootstrap-requirements
-description: Use when adopting Habeas in an existing codebase, when validation reports uncovered items across most of a project's code, or when the user asks for a requirements coverage audit. Inventories tests, Rust items, and user-visible behavior; proposes an initial requirement set for the user's approval; tags every test and each requirement's root items; and drives `habeas author` and validation to full coverage. For a few uncovered items, use habeas-evidence.
+description: Use when adopting Habeas in an existing codebase, when `habeas status` warns about uncovered items across most of a project's code, or when the user asks for a requirements coverage audit. Inventories tests, Rust items, and user-visible behavior; proposes an initial requirement set for the user's approval; tags every test and each requirement's root items; and drives `habeas author` and validation to full coverage. For a few uncovered items, use habeas-evidence.
 ---
 
 # Bootstrap requirements
@@ -73,8 +73,8 @@ references.
   tests and parameterized cases. Record the behavior each test checks; fill in
   requirement names once they are installed.
 - **Items and behavior:** in Rust projects, every function, method, struct,
-  enum, and union, listed from the source rather than from validation's
-  uncovered items, since an assessment's read can cover an item whose
+  enum, and union, listed from the source rather than from the coverage
+  warnings, since an assessment's read can cover an item whose
   behavior no requirement states. Add by hand the observable surface: public
   APIs, commands, handlers, UI actions, configuration, outputs, errors, and
   distinct observable branches. A tagged entry point doesn't mean every observable branch beneath

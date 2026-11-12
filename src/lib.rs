@@ -10,6 +10,7 @@ pub mod authoring;
 mod builtins;
 mod citations;
 pub mod config;
+mod coverage_history;
 mod definition_glob;
 mod evidence;
 mod fenced;
@@ -1635,6 +1636,6 @@ mod tests {
 mod commands;
 mod markdown;
 pub use commands::{
-    info_markdown, status_markdown, status_markdown_filtered, status_markdown_with_github,
-    status_markdown_with_options,
+    CoverageWarnings, coverage_warnings, info_markdown, status_markdown, status_markdown_filtered,
+    status_markdown_with_github, status_markdown_with_options,
 };

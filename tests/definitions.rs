@@ -470,7 +470,9 @@ fn references_to_a_definition_of_another_kind_are_reported() {
         format!("{source}fn uses() {{}}\n"),
     )
     .unwrap();
-    let errors = validate_repository(temp.path()).unwrap().errors;
+    let mut errors = validate_repository(temp.path()).unwrap().errors;
+    // Coverage is warned about, not a validation error.
+    errors.extend(habeas::coverage_warnings(temp.path()).unwrap().items);
     for (line, role) in [(1, "impl"), (2, "cite"), (3, "test")] {
         let expected = format!(
             "src/lib.rs:{line}: {{{role}}}`glossary.a` has no matching requirement or example"
@@ -488,7 +490,7 @@ fn references_to_a_definition_of_another_kind_are_reported() {
     // A reference to a term does not cover the Rust item.
     assert!(
         errors.iter().any(|error| error
-            .contains("src/lib.rs:5: function uses is uncovered: it has no requirement or example reference, and no evidence record or review read it")),
+            .contains("src/lib.rs:5: function uses has no recent coverage: it has no requirement or example reference, and no recent evidence record or review read it")),
         "{errors:#?}"
     );
 }
@@ -848,11 +850,11 @@ fn outline_inputs_capture_terms_without_counting_them_as_citations() {
     // record reading it would still cover it.
     fs::remove_file(&path).unwrap();
     assert!(
-        validate_repository(root)
+        habeas::coverage_warnings(root)
             .unwrap()
-            .errors
+            .items
             .iter()
-            .any(|e| e.contains("run") && e.contains("is uncovered"))
+            .any(|e| e.contains("run") && e.contains("has no recent coverage"))
     );
 }
 

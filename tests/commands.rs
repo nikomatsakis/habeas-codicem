@@ -475,18 +475,15 @@ fn status_preserves_repository_wide_rust_findings_in_every_form() {
             let output = habeas(&nested, &args);
             assert!(output.status.success(), "{args:?}: {output:?}");
             let text = String::from_utf8(output.stdout).unwrap();
-            assert!(
-                text.contains("## Other validation findings"),
-                "{args:?}: {text}"
-            );
+            assert!(text.contains("## Coverage warnings"), "{args:?}: {text}");
             assert!(
                 text.contains(
-                    "src/extra.rs:1: function unread is uncovered: it has no requirement or example reference, and no evidence record or review read it"
+                    "src/extra.rs:1: function unread has no recent coverage: it has no requirement or example reference, and no recent evidence record or review read it"
                 ),
                 "{args:?}: {text}"
             );
             assert!(
-                !text.contains("function main is uncovered"),
+                !text.contains("function main has no recent coverage"),
                 "{args:?}: {text}"
             );
             assert!(!text.contains("attestation"), "{args:?}: {text}");

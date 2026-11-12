@@ -262,28 +262,14 @@ fn serve(
         })
     } else {
         let mut arguments = json!({"determination": determination, "rationale": rationale});
-        let mut tool = "submit_judgment";
         if prompt.contains("Site under review: ") {
             arguments["applies"] = json!(true);
-        }
-        // A coverage-loss review finds the item not needed for each
-        // definition it lists.
-        if let Some(listed) = prompt
-            .lines()
-            .find_map(|line| line.strip_prefix("Definitions to decide: "))
-        {
-            let listed: Vec<String> = serde_json::from_str(listed).unwrap();
-            tool = "submit_coverage_review";
-            arguments = json!({"findings": listed.iter().map(|definition| json!({
-                "definition": definition, "finding": "not needed",
-                "rationale": format!("Fixture review for {subject}."),
-            })).collect::<Vec<_>>()});
         }
         json!({
             "model":"fixture-model", "created_at":"2026-01-01T00:00:00Z",
             "message":{"role":"assistant", "content":"", "tool_calls":[{
                 "id":"judgment", "type":"function", "function":{
-                    "name":tool, "arguments":arguments
+                    "name":"submit_judgment", "arguments":arguments
                 }
             }]},
             "done":true, "done_reason":"stop", "prompt_eval_count":11, "eval_count":7
@@ -892,6 +878,8 @@ fn verbose_false_rationale_is_readable_above_terminal_progress() {
 
 // {test}`requirements.authoring.progress`
 // {test}`requirements.authoring.batch`
+// {test}`requirements.references.coverage.report`
+// {test}`requirements.references.coverage.history`
 #[cfg(unix)]
 #[test]
 fn dumb_terminal_keeps_plain_batch_diagnostics() {
@@ -911,12 +899,19 @@ fn dumb_terminal_keeps_plain_batch_diagnostics() {
         String::from_utf8_lossy(&output.stdout).trim(),
         "6 authored; 0 skipped as current; 0 failed; policy once"
     );
+    // A finished batch reports coverage; outside Git its history is
+    // incomplete.
+    assert!(
+        stderr.contains("coverage history is incomplete"),
+        "{stderr}"
+    );
 }
 
 // {test}`requirements.authoring.progress`
 // {test}`requirements.authoring.usage_storage`
 // {test}`requirements.authoring.batch`
 // {test}`requirements.authoring.concurrency`
+// {test}`requirements.references.coverage.report`
 #[cfg(unix)]
 #[test]
 fn interrupted_terminal_progress_keeps_unstarted_work_incomplete() {
@@ -938,6 +933,8 @@ fn assert_interruption_stops_the_batch(overlap: bool, concurrency: usize) {
     let plain = escape.replace_all(&terminal, "");
     assert!(plain.contains("Stopped"), "{plain}");
     assert!(plain.contains("assessments not started"), "{plain}");
+    // A cancelled batch does not compute coverage warnings.
+    assert!(!plain.contains("coverage history"), "{plain}");
     let stopped = &plain[plain.rfind("Stopped").unwrap()..];
     assert!(!stopped.contains("100%"), "{stopped}");
     assert!(!stopped.contains("6/6 finished"), "{stopped}");
@@ -1531,6 +1528,7 @@ fn empty_batches_and_early_errors_clear_the_terminal_display() {
 // {test}`requirements.references.citation_review`
 // {test}`requirements.authoring.batch`
 // {test}`requirements.authoring.refresh`
+// {test}`requirements.references.coverage.report`
 #[test]
 fn batch_authors_citation_reviews_and_preserves_current_ones() {
     let server = Server::start(false, None);
@@ -1610,6 +1608,12 @@ fn batch_authors_citation_reviews_and_preserves_current_ones() {
     );
     let printed: Value = serde_json::from_slice(&single.stdout).unwrap();
     assert_eq!(printed["item"], "fn[helper]");
+    // Coverage warnings still go to stderr; stdout holds only the record.
+    let stderr = String::from_utf8_lossy(&single.stderr);
+    assert!(
+        stderr.contains("coverage history is incomplete"),
+        "{stderr}"
+    );
     assert_eq!(server.subjects().len(), 8);
 }
 
@@ -1692,6 +1696,7 @@ fn confirm_with_all_runs_a_second_assessment_for_each_batch_subject() {
 // {test}`requirements.authoring.refresh`
 // {test}`requirements.authoring.invocation`
 // {test}`requirements.authoring.batch`
+// {test}`requirements.references.coverage.report`
 #[test]
 fn missing_keeps_current_records_and_force_reassesses_every_selected_subject() {
     let server = Server::start(false, None);
@@ -1708,6 +1713,8 @@ fn missing_keeps_current_records_and_force_reassesses_every_selected_subject() {
     // Without a usable configuration, current records are still kept: no
     // configuration is resolved when nothing needs assessment.
     fs::write(&fixture.config, "not toml [").unwrap();
+    // An item nothing reads is warned about even when nothing is assessed.
+    fs::write(fixture.project.join("src/extra.rs"), "pub fn orphan() {}\n").unwrap();
     for args in [
         &["author", "requirements.alpha"][..],
         &["author", "requirements.alpha", "--missing"],
@@ -1725,6 +1732,11 @@ fn missing_keeps_current_records_and_force_reassesses_every_selected_subject() {
                 "{}: evidence is current; 1 skipped as current (use --force to reassess)",
                 args[1]
             )
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("src/extra.rs:1: function orphan has no recent coverage"),
+            "{args:?}: {stderr}"
         );
     }
     for args in [&["author", "--all"][..], &["author", "--all", "--missing"]] {
@@ -2198,60 +2210,4 @@ fn a_failed_first_request_still_releases_its_kind() {
         .collect::<Vec<_>>();
     assert_eq!(others.len(), 3);
     assert!(others.iter().all(|(_, arrived, _)| *arrived < retry.1));
-}
-
-// {test}`requirements.authoring.coverage_loss`
-#[test]
-fn a_batch_reviews_items_its_replaced_records_no_longer_cover_after_writing_them() {
-    let server = Server::start(false, None);
-    let fixture = Fixture::new(&server.endpoint, None);
-    let output = fixture.run(&["author", "--all"]);
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let authored = server.subjects().len();
-    // A record read an uncited item and is now stale; its replacement does
-    // not read the item.
-    fs::write(fixture.project.join("src/helper.rs"), "fn helper() {}\n").unwrap();
-    let path = fixture.project.join("evidence/requirements.alpha.json");
-    let mut record: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-    record["inputs"]
-        .as_array_mut()
-        .unwrap()
-        .push(habeas::outline_input(&fixture.project, "src/helper.rs", "fn[helper]").unwrap());
-    record["rationale"] = json!("PREVIOUS_ALPHA_RATIONALE");
-    record["determination"] = json!(false);
-    record["requirement"] = json!("Changed so the record is stale.");
-    fs::write(&path, record.to_string()).unwrap();
-    let output = fixture.run(&["author", "--all"]);
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let subjects = server.subjects();
-    // One reassessment, then the review of the item it no longer reads.
-    assert_eq!(
-        subjects[authored..],
-        [
-            "requirement requirements.alpha".to_owned(),
-            "src/helper.rs fn[helper]".to_owned()
-        ],
-        "{subjects:?}"
-    );
-    // Each review is reported as it finishes, with batch diagnostics.
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains(
-            "Coverage-loss review of src/helper.rs fn[helper]: no longer covered\n  requirements.alpha: not needed: Fixture review for src/helper.rs fn[helper]."
-        ),
-        "{stderr}"
-    );
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("1 authored; ") && stdout.contains("; 1 coverage-loss reviews"),
-        "{stdout}"
-    );
 }

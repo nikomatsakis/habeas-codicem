@@ -313,7 +313,7 @@ fn the_user_configuration_file_and_its_aliases_are_configuration_files() {
 
 // {test}`requirements.authoring.redaction`
 #[test]
-fn regions_extend_backward_keep_crlf_and_scan_past_a_mebibyte() {
+fn regions_extend_both_ways_keep_crlf_and_scan_past_a_mebibyte() {
     let token = github_token();
     let source = format!("let pair = \"Xk7pQm2Rv9Ls4Tz8Wn3Yb6Hd {token}\";\n");
     assert_eq!(
@@ -329,6 +329,13 @@ fn regions_extend_backward_keep_crlf_and_scan_past_a_mebibyte() {
     assert_eq!(
         redacted.matches("\r\n").count(),
         crlf.matches("\r\n").count()
+    );
+    // Extension runs forward too, and repeats through each adjacent region.
+    let chained =
+        format!("let pair = \"{token} Xk7pQm2Rv9Ls4Tz8Wn3Yb6Hd Gq4Vx8Nc2Jw6Pf9Ry3Kt7Mb5\";\n");
+    assert_eq!(
+        redact_text(&chained),
+        "let pair = \"[REDACTED:GitHub Token]\n"
     );
     let large = format!("{}\n{token}\n", "x ".repeat(1 << 20));
     assert!(redact_text(&large).ends_with("\n[REDACTED:GitHub Token]\n"));

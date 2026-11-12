@@ -528,6 +528,7 @@ fn same_fixmes(recorded: &[SiteFixme], current: &[SiteFixme]) -> bool {
 // {impl}`requirements.ci.outcomes`
 // {impl}`requirements.ci.errors`
 #[allow(clippy::too_many_arguments)]
+// {impl}`requirements.references.site_review`
 pub(crate) fn validate(
     root: &Path,
     definitions: &BTreeMap<String, Declaration>,
@@ -580,6 +581,7 @@ pub(crate) fn validate(
 
 /// Validates one review file against its current site.
 // {impl}`requirements.ci.errors`
+// {impl}`requirements.references.site_review`
 fn validate_review(
     root: &Path,
     label: &str,
@@ -964,11 +966,13 @@ no_match:
                 "{item}: {errors:?}"
             );
         }
+        let inspection = crate::evidence::inspect_repository(temp.path()).unwrap();
         assert!(
-            errors
-                .iter()
-                .any(|error| error.contains("function check_two is uncovered")),
-            "{errors:?}"
+            inspection.uncovered.iter().any(|item| item
+                .error
+                .contains("function check_two has no recent coverage")),
+            "{:?}",
+            inspection.uncovered
         );
     }
 

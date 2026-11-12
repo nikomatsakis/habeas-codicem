@@ -156,16 +156,8 @@ impl EvidenceReads {
 
     /// Adds the outline inputs of one record.
     pub(crate) fn add_record(&mut self, record: &serde_json::Value) {
-        for input in record
-            .get("inputs")
-            .and_then(serde_json::Value::as_array)
-            .into_iter()
-            .flatten()
-        {
-            let field = |name: &str| input.get(name).and_then(serde_json::Value::as_str);
-            if let (Some(file), Some(item), Some(hash)) =
-                (field("file"), field("item"), field("hash"))
-            {
+        for (file, item, hash) in outline_inputs(record) {
+            if let Some(hash) = hash {
                 self.0
                     .entry(file.to_owned())
                     .or_default()
@@ -174,11 +166,6 @@ impl EvidenceReads {
                     .insert(hash.to_owned());
             }
         }
-    }
-
-    /// Whether any outline input of `file` is recorded.
-    pub(crate) fn has_file(&self, file: &str) -> bool {
-        self.0.contains_key(file)
     }
 
     /// Whether node `index` of `file`'s outline, or a node containing it, is
@@ -203,19 +190,40 @@ impl EvidenceReads {
 }
 
 // {cite}`habeas:util`
-/// An item Rust item coverage reports: its file, outline selector, and the
+/// The outline inputs of an evidence record or review, as `(file, item,
+/// hash)`; an input without a recorded hash has none.
+pub(crate) fn outline_inputs(
+    record: &serde_json::Value,
+) -> impl Iterator<Item = (&str, &str, Option<&str>)> {
+    record
+        .get("inputs")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|input| {
+            let field = |name: &str| input.get(name).and_then(serde_json::Value::as_str);
+            Some((field("file")?, field("item")?, field("hash")))
+        })
+}
+
+// {cite}`habeas:util`
+/// An item Rust item coverage reports: its file, the outline selectors of
+/// its node and of each node containing it, innermost first, and the
 /// validation error naming it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct UncoveredItem {
     pub(crate) file: String,
-    pub(crate) item: String,
+    pub(crate) selectors: Vec<String>,
+    /// How the item is reported.
     pub(crate) error: String,
+    /// Whether it lies inside a module named `tests`, which is not reported.
+    pub(crate) in_tests: bool,
 }
 
 /// The validation error for an uncovered item.
 fn uncovered_error(label: &str, line: usize, kind: &str, name: &str) -> String {
     format!(
-        "{label}:{line}: {kind} {name} is uncovered: it has no requirement or example reference, and no evidence record or review read it"
+        "{label}:{line}: {kind} {name} has no recent coverage: it has no requirement or example reference, and no recent evidence record or review read it"
     )
 }
 
@@ -237,6 +245,91 @@ fn missing_function_references(
 /// Items without a valid reference, as `(node, line, kind, name)`.
 type Unreferenced = Vec<(usize, usize, &'static str, String)>;
 
+/// A test attribute: `#[test]`, or one whose path ends in `test`, such as
+/// `#[tokio::test]`.
+static TEST_ATTRIBUTE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(r"(?m)^\s*#\[\s*(?:[A-Za-z_][A-Za-z0-9_]*\s*::\s*)*test\s*[\](]")
+        .expect("test attribute pattern")
+});
+
+/// Test functions of a Rust source without a valid `{test}` reference, as
+/// `(node, line, name)`.
+// {impl}`requirements.references.coverage.tests`
+pub(crate) fn untested_tests(
+    source: &str,
+    outline: &outline::Outline,
+    definitions: &BTreeMap<String, Declaration>,
+) -> Vec<(usize, usize, String)> {
+    // The same rule as item coverage, restricted to `{test}`.
+    let counts = |kind: crate::ReferenceKind, name: &str| {
+        kind == crate::ReferenceKind::Test && covering_reference(kind, name, definitions)
+    };
+    let mut tested = vec![false; outline.nodes.len()];
+    for comment in &outline.comments {
+        if reference_roles(&source[comment.byte_start..comment.byte_end], false)
+            .iter()
+            .any(|role| counts(role.kind, role.name))
+        {
+            tested[comment.owner] = true;
+        }
+    }
+    for fence in crate::fenced::comment_fences(source, outline) {
+        if let Some(owner) = fence.owner
+            && fence.closed
+            && counts(fence.kind, &fence.name)
+        {
+            tested[owner] = true;
+        }
+    }
+    let lines: Vec<&str> = source.lines().collect();
+    outline
+        .nodes
+        .iter()
+        .enumerate()
+        .filter(|(index, node)| node.kind == "fn" && !tested[*index])
+        .filter(|(_, node)| {
+            // Attributes are attached before the declaration line.
+            let start = node.line_start.saturating_sub(1);
+            let end = node.declaration_line.min(lines.len());
+            lines
+                .get(start..end)
+                .is_some_and(|attached| TEST_ATTRIBUTE.is_match(&attached.join("\n")))
+        })
+        .filter_map(|(index, node)| Some((index, node.declaration_line, node.display_name()?)))
+        .collect()
+}
+
+/// Whether a reference with role `kind` to `name` covers the item it belongs
+/// to: a requirement, a named example that traces to a requirement, or a
+/// built-in in a role it permits.
+// {impl}`requirements.references.rust_item_coverage`
+// {impl}`requirements.references.coverage.tests`
+// {impl}`requirements.references.util`
+fn covering_reference(
+    kind: crate::ReferenceKind,
+    name: &str,
+    definitions: &BTreeMap<String, Declaration>,
+) -> bool {
+    // A `{fixme}` acknowledges a gap; it does not say why the item exists.
+    if matches!(
+        kind,
+        crate::ReferenceKind::Term | crate::ReferenceKind::Fixme
+    ) {
+        return false;
+    }
+    if let Some(builtin) = crate::builtins::builtin(name) {
+        return builtin.check(kind).is_ok();
+    }
+    definitions.get(name).is_some_and(|d| match d.kind {
+        crate::DefinitionKind::Requirement => true,
+        // An example counts only when it traces to a requirement itself.
+        crate::DefinitionKind::Example => {
+            crate::evidence::example_references_requirement(d, definitions)
+        }
+        crate::DefinitionKind::Term => false,
+    })
+}
+
 /// The functions, methods, structs, enums, and unions of a Rust source with
 /// no valid reference in a comment belonging to them, with the source's
 /// outline.
@@ -252,28 +345,8 @@ pub(crate) fn unreferenced_items(
 ) -> Result<(outline::Outline, Unreferenced), OutlineError> {
     let outline = outline::parse_with(&outline::RUST_PROFILE, source)?;
     let mut cited = vec![false; outline.nodes.len()];
-    // A built-in counts only in a role it permits.
-    let counts = |kind: crate::ReferenceKind, name: &str| {
-        // A `{fixme}` acknowledges a gap; it does not say why the item exists.
-        if matches!(
-            kind,
-            crate::ReferenceKind::Term | crate::ReferenceKind::Fixme
-        ) {
-            return false;
-        }
-        if let Some(builtin) = crate::builtins::builtin(name) {
-            return builtin.check(kind).is_ok();
-        }
-        definitions.get(name).is_some_and(|d| match d.kind {
-            crate::DefinitionKind::Requirement => true,
-            // An example counts only when it traces to a
-            // requirement itself.
-            crate::DefinitionKind::Example => {
-                crate::evidence::example_references_requirement(d, definitions)
-            }
-            crate::DefinitionKind::Term => false,
-        })
-    };
+    let counts =
+        |kind: crate::ReferenceKind, name: &str| covering_reference(kind, name, definitions);
     for comment in &outline.comments {
         if reference_roles(&source[comment.byte_start..comment.byte_end], false)
             .iter()
@@ -328,6 +401,77 @@ pub(crate) fn rust_files(root: &Path, sources: &[PathBuf]) -> Vec<PathBuf> {
         .collect()
 }
 
+/// The package's Cargo example targets among `files`, the sources reference
+/// discovery considers: each `.rs` file directly under `examples/`, each
+/// `examples/<name>/main.rs`, and each `[[example]]` path.
+// {impl}`requirements.references.coverage.examples`
+pub(crate) fn cargo_examples(root: &Path, files: &[PathBuf]) -> Vec<PathBuf> {
+    let mut targets = std::collections::BTreeSet::new();
+    let examples = root.join("examples");
+    for file in files {
+        let Ok(relative) = file.strip_prefix(&examples) else {
+            continue;
+        };
+        let parts: Vec<_> = relative.iter().collect();
+        let target = match parts.as_slice() {
+            [name] => Path::new(name)
+                .extension()
+                .is_some_and(|extension| extension == "rs"),
+            [_, main] => *main == "main.rs",
+            _ => false,
+        };
+        if target {
+            targets.insert(file.clone());
+        }
+    }
+    let manifest = fs::read_to_string(root.join("Cargo.toml"))
+        .ok()
+        .and_then(|text| text.parse::<toml::Table>().ok());
+    for example in manifest
+        .as_ref()
+        .and_then(|manifest| manifest.get("example"))
+        .and_then(toml::Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        if let Some(path) = example.get("path").and_then(toml::Value::as_str) {
+            let path = root.join(path);
+            let path = fs::canonicalize(&path).unwrap_or(path);
+            if files.contains(&path) {
+                targets.insert(path);
+            }
+        }
+    }
+    targets.into_iter().collect()
+}
+
+/// Reports each Cargo example target that does not `{cite}` a named example
+/// of the book.
+// {impl}`requirements.references.coverage.examples`
+pub(crate) fn validate_cargo_examples(
+    root: &Path,
+    files: &[PathBuf],
+    definitions: &BTreeMap<String, Declaration>,
+    references: &[crate::evidence::SourceReference],
+    errors: &mut Vec<String>,
+) {
+    for target in cargo_examples(root, files) {
+        let cites_example = references.iter().any(|reference| {
+            reference.file == target
+                && reference.kind == crate::ReferenceKind::Cite
+                && definitions
+                    .get(&reference.name)
+                    .is_some_and(|d| d.kind == crate::DefinitionKind::Example)
+        });
+        if !cites_example {
+            errors.push(format!(
+                "{}: Cargo example does not {{cite}} a named example of the book",
+                display_path(root, &target)
+            ));
+        }
+    }
+}
+
 // {impl}`requirements.ci.errors`
 // {impl}`requirements.references.procedure`
 pub(crate) fn validate_rust_functions(
@@ -365,16 +509,29 @@ pub(crate) fn validate_rust_functions(
         };
         match unreferenced_items(&source, definitions) {
             Ok((outline, missing)) => {
+                // Only a test without `{test}` fails validation; other items
+                // without coverage are reported, not errors.
+                // {impl}`requirements.references.coverage.tests`
+                let untested = untested_tests(&source, &outline, definitions);
+                for (_, line, name) in &untested {
+                    errors.push(format!(
+                        "{label}:{line}: test function {name} has no {{test}} reference to a requirement or example"
+                    ));
+                }
                 for (index, line, kind, name) in missing {
-                    if reads.covers(&label, &outline, index) {
+                    // A test without `{test}` is already a validation error,
+                    // so it is not also a coverage warning.
+                    if reads.covers(&label, &outline, index)
+                        || untested.iter().any(|(node, _, _)| *node == index)
+                    {
                         continue;
                     }
-                    let error = uncovered_error(&label, line, kind, &name);
-                    errors.push(error.clone());
                     uncovered.push(UncoveredItem {
                         file: label.clone(),
-                        item: outline.nodes[index].selector.clone(),
-                        error,
+                        selectors: crate::coverage_history::enclosing_selectors(&outline, index),
+                        error: uncovered_error(&label, line, kind, &name),
+                        in_tests: crate::coverage_history::in_tests_module(&outline, index)
+                            || crate::coverage_history::in_tests_file(Path::new(&label)),
                     });
                 }
             }
@@ -504,6 +661,162 @@ mod tests {
                 },
             ),
         ])
+    }
+
+    // {test}`requirements.references.rust_item_coverage`
+    #[test]
+    fn a_read_covers_an_item_only_with_its_current_hash() {
+        let source = "fn read() {}\n";
+        let outline = crate::outline::parse_with(&crate::outline::RUST_PROFILE, source).unwrap();
+        let index = outline
+            .nodes
+            .iter()
+            .position(|node| node.selector == "fn[read]")
+            .unwrap();
+        let record = |hash: &str| serde_json::json!({"inputs": [{"file": "src/lib.rs", "item": "fn[read]", "hash": hash}]});
+        let mut current = super::EvidenceReads::default();
+        current.add_record(&record(&outline.nodes[index].structural_hash));
+        assert!(current.covers("src/lib.rs", &outline, index));
+        let mut stale = super::EvidenceReads::default();
+        stale.add_record(&record(&"0".repeat(64)));
+        assert!(!stale.covers("src/lib.rs", &outline, index));
+    }
+
+    // {test}`requirements.references.coverage.tests`
+    #[test]
+    fn test_functions_need_a_test_reference() {
+        let source = concat!(
+            "// {test}`requirements.example`\n#[test]\nfn tested() {}\n\n",
+            "#[test]\nfn tested_in_body() {\n    // {test}`requirements.example`\n}\n\n",
+            "#[test]\nfn untested() {}\n\n",
+            "// {cite}`requirements.example`\n#[tokio::test]\nasync fn only_cited() {}\n\n",
+            "#[tokio::test(flavor = \"multi_thread\")]\nasync fn untested_async() {}\n\n",
+            "#[cfg(test)]\nfn not_a_test() {}\n\n",
+            "#[rstest]\nfn other_attribute() {}\n\n",
+            "mod tests {\n    #[test]\n    fn nested_untested() {}\n}\n",
+        );
+        let outline = crate::outline::parse_with(&crate::outline::RUST_PROFILE, source).unwrap();
+        let names: Vec<String> = super::untested_tests(source, &outline, &definitions())
+            .into_iter()
+            .map(|(_, _, name)| name)
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "untested",
+                "only_cited",
+                "untested_async",
+                "nested_untested"
+            ]
+        );
+    }
+
+    // {test}`requirements.references.coverage.tests`
+    // {test}`requirements.references.rust_item_coverage`
+    #[test]
+    fn a_test_reference_to_an_example_counts_only_when_it_references_a_requirement() {
+        let mut definitions = definitions();
+        definitions.insert(
+            "requirements.orphan".to_owned(),
+            Declaration {
+                kind: DefinitionKind::Example,
+                text: "No requirement.".to_owned(),
+                ..definitions["requirements.case"].clone()
+            },
+        );
+        let source = concat!(
+            "// {test}`requirements.case`\n#[test]\nfn traced() {}\n\n",
+            "// {test}`requirements.orphan`\n#[test]\nfn orphan() {}\n",
+        );
+        let outline = crate::outline::parse_with(&crate::outline::RUST_PROFILE, source).unwrap();
+        let names: Vec<String> = super::untested_tests(source, &outline, &definitions)
+            .into_iter()
+            .map(|(_, _, name)| name)
+            .collect();
+        assert_eq!(names, ["orphan"]);
+        let missing = missing_function_references(source, &definitions).unwrap();
+        assert_eq!(missing, [(7, "function", "orphan".to_owned())]);
+    }
+
+    // {test}`requirements.references.coverage.tests`
+    // {test}`requirements.references.coverage.report`
+    #[test]
+    fn a_test_without_a_test_reference_is_an_error_not_a_coverage_warning() {
+        let project = TempDir::new().unwrap();
+        fs::create_dir_all(project.path().join("tests")).unwrap();
+        fs::write(
+            project.path().join("tests/foo.rs"),
+            "#[test]\nfn bare() {}\n\nfn helper() {}\n",
+        )
+        .unwrap();
+        let mut errors = Vec::new();
+        let uncovered = validate_rust_functions(
+            project.path(),
+            &crate::evidence::discovered_files(project.path(), &mut Vec::new()),
+            &definitions(),
+            &super::EvidenceReads::default(),
+            &mut errors,
+            &mut Vec::new(),
+            &mut |_| {},
+        );
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(
+            errors[0].contains("tests/foo.rs:2: test function bare"),
+            "{errors:?}"
+        );
+        let warned: Vec<&str> = uncovered.iter().map(|item| item.error.as_str()).collect();
+        assert_eq!(warned.len(), 1, "{warned:?}");
+        assert!(warned[0].contains("function helper"), "{warned:?}");
+    }
+
+    // {test}`requirements.references.coverage.examples`
+    #[test]
+    fn cargo_examples_must_cite_a_book_example() {
+        let project = TempDir::new().unwrap();
+        let root = project.path();
+        fs::create_dir_all(root.join("examples/demo")).unwrap();
+        fs::create_dir_all(root.join("extra")).unwrap();
+        fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = 'x'\n\n[[example]]\nname = 'listed'\npath = 'extra/listed.rs'\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("examples/cites.rs"),
+            "// {cite}`requirements.case`\nfn main() {}\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("examples/requirement.rs"),
+            "// {cite}`requirements.example`\nfn main() {}\n",
+        )
+        .unwrap();
+        fs::write(root.join("examples/demo/main.rs"), "fn main() {}\n").unwrap();
+        fs::write(root.join("extra/listed.rs"), "fn main() {}\n").unwrap();
+        let root = fs::canonicalize(root).unwrap();
+        let mut definitions = definitions();
+        definitions.insert(
+            "requirements.case".to_owned(),
+            Declaration {
+                kind: DefinitionKind::Example,
+                ..definitions["requirements.example"].clone()
+            },
+        );
+        let mut found = Vec::new();
+        let references = crate::evidence::collect_references(&root, &mut found);
+        let mut errors = Vec::new();
+        let files = crate::evidence::discovered_files(&root, &mut found);
+        super::validate_cargo_examples(&root, &files, &definitions, &references, &mut errors);
+        errors.sort();
+        // A citation of a requirement, rather than an example, is not enough.
+        assert_eq!(
+            errors,
+            [
+                "examples/demo/main.rs: Cargo example does not {cite} a named example of the book",
+                "examples/requirement.rs: Cargo example does not {cite} a named example of the book",
+                "extra/listed.rs: Cargo example does not {cite} a named example of the book",
+            ]
+        );
     }
 
     // {test}`requirements.references.rust_item_coverage`
@@ -725,7 +1038,7 @@ fn outer() {
         }
 
         let mut errors = Vec::new();
-        validate_rust_functions(
+        let uncovered = validate_rust_functions(
             project.path(),
             &crate::evidence::discovered_files(project.path(), &mut Vec::new()),
             &definitions(),
@@ -734,7 +1047,13 @@ fn outer() {
             &mut Vec::new(),
             &mut |_| {},
         );
-        assert_eq!(errors.len(), 5, "{errors:?}");
+        // Uncovered items are reported; only the parse failure is an error.
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert_eq!(uncovered.len(), 4, "{uncovered:?}");
+        let errors: Vec<String> = errors
+            .into_iter()
+            .chain(uncovered.into_iter().map(|item| item.error))
+            .collect();
         for expected in [
             "src/vendor/own.rs:1: function own_vendor",
             "src/book/own.rs:1: function own_book",
@@ -745,11 +1064,11 @@ fn outer() {
             );
         }
         assert!(errors.iter().any(|error| {
-            error.contains("src/lib.rs:1: function uncited is uncovered: it has no requirement or example reference, and no evidence record or review read it")
+            error.contains("src/lib.rs:1: function uncited has no recent coverage: it has no requirement or example reference, and no recent evidence record or review read it")
         }));
         assert!(errors.iter().any(|error| {
             error.contains(
-                "src/evidence/check.rs:1: function nested_source is uncovered: it has no requirement or example reference, and no evidence record or review read it",
+                "src/evidence/check.rs:1: function nested_source has no recent coverage: it has no requirement or example reference, and no recent evidence record or review read it",
             )
         }));
         assert!(

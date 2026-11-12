@@ -39,7 +39,24 @@ pub struct WorkspaceConfig {
     pub authoring: Option<WorkspaceAuthoringConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub evidence: Option<EvidenceConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coverage: Option<CoverageConfig>,
 }
+
+/// The workspace `[coverage]` table: how many committed versions of each
+/// evidence file count toward recent coverage.
+// {impl}`requirements.references.coverage.history`
+// {impl}`requirements.configuration.workspace_structure`
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CoverageConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reauthorings: Option<u32>,
+}
+
+/// The number of committed versions counted when `[coverage] reauthorings`
+/// is not set.
+pub const DEFAULT_REAUTHORINGS: u32 = 3;
 
 // {impl}`requirements.authoring.configuration_structure`
 // {impl}`requirements.configuration.feature_sections`
@@ -369,6 +386,25 @@ impl WorkspaceConfig {
         }
         if let Some(evidence) = &self.evidence {
             evidence.validate(path)?;
+        }
+        if let Some(coverage) = &self.coverage {
+            coverage.validate(path)?;
+        }
+        Ok(())
+    }
+}
+
+impl CoverageConfig {
+    /// Checks that `reauthorings`, when set, is a positive integer.
+    // {impl}`requirements.references.coverage.history`
+    // {impl}`requirements.configuration.loading`
+    pub fn validate(&self, path: &Path) -> io::Result<()> {
+        if self.reauthorings == Some(0) {
+            return Err(invalid(
+                path,
+                "coverage.reauthorings",
+                "expected a positive integer",
+            ));
         }
         Ok(())
     }
@@ -742,9 +778,14 @@ pub fn load_user_config(path: &Path) -> io::Result<Option<UserConfig>> {
 // {impl}`requirements.configuration.serialization`
 // {impl}`requirements.authoring.configuration_serialization`
 pub fn load_workspace_config(root: &Path) -> io::Result<Option<LoadedWorkspaceConfig>> {
-    let Some((path, table)) = workspace_document(root)? else {
+    let Some((path, mut table)) = workspace_document(root)? else {
         return Ok(None);
     };
+    // Authoring does not use `[coverage]`, so it must not fail on an invalid
+    // table (requirements.configuration.loading): the table is dropped
+    // before decoding, and only the coverage report decodes and validates it,
+    // through `load_coverage_reauthorings` and `CoverageConfig::validate`.
+    table.remove("coverage");
     let config: WorkspaceConfig = decode(toml::Value::Table(table), &path, "")?;
     config.validate(&path)?;
     Ok(Some(LoadedWorkspaceConfig {
@@ -793,6 +834,41 @@ pub fn load_workspace_evidence(root: &Path) -> io::Result<Option<WorkspaceEviden
     }))
 }
 
+/// The workspace `[coverage] reauthorings` setting, or its default.
+// {impl}`requirements.references.coverage.history`
+// {impl}`requirements.configuration.loading`
+pub fn load_coverage_reauthorings(root: &Path) -> io::Result<u32> {
+    let Some((path, table)) = workspace_document(root)? else {
+        return Ok(DEFAULT_REAUTHORINGS);
+    };
+    coverage_reauthorings(&path, &table)
+}
+
+/// An invalid workspace `[coverage]` table, for repository validation to
+/// report without reading Git history. A workspace file that cannot be read
+/// or fails the common checks is reported by evidence configuration loading,
+/// so it is not reported again here.
+// {impl}`requirements.configuration.loading`
+// {impl}`requirements.configuration.workspace_structure`
+pub(crate) fn coverage_error(root: &Path) -> Option<io::Error> {
+    let Ok(Some((path, table))) = workspace_document(root) else {
+        return None;
+    };
+    coverage_reauthorings(&path, &table).err()
+}
+
+/// Decodes and validates the `[coverage]` table of a workspace file.
+// {impl}`requirements.references.coverage.history`
+fn coverage_reauthorings(path: &Path, table: &toml::Table) -> io::Result<u32> {
+    let coverage: CoverageConfig = table
+        .get("coverage")
+        .map(|value| decode(value.clone(), path, "coverage"))
+        .transpose()?
+        .unwrap_or_default();
+    coverage.validate(path)?;
+    Ok(coverage.reauthorings.unwrap_or(DEFAULT_REAUTHORINGS))
+}
+
 // {impl}`requirements.configuration.workspace_location`
 // {impl}`requirements.configuration.loading`
 // {impl}`requirements.configuration.workspace_structure`
@@ -833,10 +909,12 @@ fn validate_workspace_common(table: &toml::Table, path: &Path) -> io::Result<()>
     if table.get("version").and_then(toml::Value::as_integer) != Some(1) {
         return Err(invalid(path, "version", "expected version = 1"));
     }
-    if let Some(key) = table
-        .keys()
-        .find(|key| !matches!(key.as_str(), "version" | "authoring" | "evidence"))
-    {
+    if let Some(key) = table.keys().find(|key| {
+        !matches!(
+            key.as_str(),
+            "version" | "authoring" | "evidence" | "coverage"
+        )
+    }) {
         return Err(invalid(path, key, "unknown workspace configuration field"));
     }
     Ok(())

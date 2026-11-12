@@ -176,13 +176,6 @@ containing it with the matching lines and their context, and the model reads wit
 lookups are not recorded as evidence. No tool gives the model line numbers:
 every location it sees is a file and outline selector, which is also how its
 rationale cites code. {cite}`requirements.authoring.no_line_numbers`
-When authoring replaces a record and an item the old record read is no longer
-covered, Habeas runs a coverage-loss review: an independent conversation that
-decides, for each requirement or example whose old record read the item, whether
-the item is a root of its implementation or is not needed for it. The review is
-not evidence. Authoring reports it, and `habeas status` shows the latest result
-beside the uncovered item until the item is covered again.
-{cite}`requirements.authoring.coverage_loss`
 
 Choose a model that supports tool calls, either on Amazon Bedrock or an accessible
 Ollama server. The server can run on another machine; Habeas does not need a GPU.
@@ -232,7 +225,8 @@ settings that apply across projects. A workspace file named `habeas.toml` holds
 settings for the directory containing it and its descendants. Both are UTF-8 TOML.
 Each must start with the schema version `version = 1`; any other version is
 rejected. Apart from `version`, the top level may contain only feature tables:
-`[authoring]` in either file, and `[evidence]` in `habeas.toml`. Unknown keys,
+`[authoring]` in either file, and `[evidence]` and `[coverage]` in
+`habeas.toml`. Unknown keys,
 wrongly typed values, and invalid TOML are reported with the file and setting.
 A file containing only `version = 1` is valid and configures nothing. The
 [common data structures](requirements/configuration.md#common-data-structures)
@@ -270,6 +264,21 @@ default, then user default.
 {cite}`requirements.configuration.workspace_location`
 {cite}`requirements.configuration.evidence_paths`
 {cite}`requirements.authoring.configuration_precedence`
+
+In `habeas.toml`, the optional `[coverage]` table sets how many committed versions of
+each evidence file count toward an item's recent coverage, as described under
+[Rust items](#rust-items). `reauthorings` must be a positive integer; without
+it, the last 3 commits that changed each file count:
+
+```toml
+version = 1
+
+[coverage]
+reauthorings = 5
+```
+
+Delete the `[coverage]` table to return to the default of 3.
+{cite}`requirements.references.coverage.history`
 
 Existing Cargo build-script output directories are automatically allowed when
 discoverable from the current build layout, including external build directories.
@@ -474,21 +483,6 @@ determined or lies inside the project repository, issues are read without a
 cache, so nothing is written there.
 {cite}`requirements.authoring.github_reads`
 
-Coverage-loss review results are kept in the `authoring/coverage-loss` directory
-of the same state root, such as `$XDG_STATE_HOME/habeas/authoring/coverage-loss`.
-Each item's latest result is one JSON file,
-`<project>/<file>/<selector>.json`: `<project>` is the first 16 hexadecimal
-digits of the SHA-256 of the project root's path, `<file>` is the item's
-project-relative path, and `<selector>` is its outline selector with every `/`
-and `%` percent-encoded, or `_root` for the root node. A newer review of the
-item replaces the file. The record holds the format `version` (1), the
-`project_root`, the item's `file` and selector `item`, the outline `hash` of the
-item when it was reviewed (`null` when it could not be read), the Unix time it was `reviewed_ms` in milliseconds,
-and its `findings`, each with the `definition`, its `finding` (`root` or
-`not needed`), and the reviewer's `rationale`. `habeas status` reads these files
-to show the latest result beside an uncovered item. Like usage records, they are
-never written inside the project repository.
-{cite}`requirements.authoring.coverage_loss`
 {impl}`requirements.configuration.state_location`
 
 ### Assessment policy
@@ -690,7 +684,7 @@ The bundled skill MUST explain how to author evidence.
 
 ### Rust items
 
-For Rust, Habeas parses first-party source files, which are the `.rs` files among the sources reference discovery considers, except under the project-root `vendor` directory. It requires every explicit function or method, including trait methods and test helpers, and every struct, enum, and union to be covered: to have a requirement or named example reference in an attached comment or its body, or to have been read by an assessment, meaning its outline node or one containing it is recorded with its current hash as an outline input of an evidence record, a citation review, or a site review. Search results are not evidence inputs, so only what an assessment received or read counts. Each named example references a requirement. A reference on an enclosing `impl` or module, in a string literal, or only in an evidence input does not count as the item's reference. Validation reports each uncovered item with its file, line, kind, and name. A Rust source file that cannot be parsed is reported as an error. For an item that serves other code, including a trait implementation a library calls, cite `habeas:util`, as described under [Built-in definitions](#built-in-definitions). {cite}`requirements.references.rust_item_coverage` {cite}`requirements.cli.internal_detail_guidance`
+For Rust, Habeas parses first-party source files, which are the `.rs` files among the sources reference discovery considers, except under the project-root `vendor` directory. Validation fails for two kinds of item: a test function, marked `#[test]` or another attribute whose path ends in `test`, without a `{test}` reference, and a Cargo example that does not `{cite}` a named example of the book. Every other explicit function or method, and every struct, enum, and union, should be covered: it has a requirement or named example reference in an attached comment or its body, or an assessment read it, meaning its outline node or one containing it is an outline input of an evidence record, a citation review, or a site review. Search results are not evidence inputs, so only what an assessment received or read counts. A reference on an enclosing `impl` or module, in a string literal, or only in an evidence input does not count as the item's reference. An item that is not covered is a warning in `habeas status` and after `habeas author`, not a validation failure, and only when no recent version of an existing evidence file read it: the version on disk or one of the last three commits that changed it (set `[coverage] reauthorings` in `habeas.toml` to change the number). So an item that a re-authored record stopped reading stays quiet for a few re-authorings, while a new item nothing has read, or one whose only record was deleted, is warned about at once. Items inside `mod tests` are never warned about. A Rust source file that cannot be parsed is reported as an error. For an item that serves other code, including a trait implementation a library calls, cite `habeas:util`, as described under [Built-in definitions](#built-in-definitions). {cite}`requirements.references.rust_item_coverage` {cite}`requirements.references.coverage.tests` {cite}`requirements.references.coverage.examples` {cite}`requirements.references.coverage.history` {cite}`requirements.references.coverage.report` {cite}`requirements.cli.internal_detail_guidance`
 
 Rust selectors use syntactic ancestry within one repository-relative file, under the Rust outline profile below. Examples include `mod[local]/fn[run]`, `impl[Thing]/fn[run]`, `impl[Thing/Trait]/fn[run]`, `trait[Trait]/fn[read]`, `extern[C]/fn[puts]`, and `fn[outer]/fn[inner]`. An impl is named by its self type and optional trait as written, so `impl<T> Trait for Wrapper<T>` is `impl[Wrapper<T>/Trait]`. `use` declarations and item-position macro invocations are anonymous, such as `use@3f2a9c01b7de`. Modules are never resolved across files. {cite}`requirements.references.rust_item_selectors`
 

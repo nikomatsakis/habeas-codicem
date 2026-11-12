@@ -11,7 +11,9 @@ use serde_json::Value;
 // {impl}`requirements.authoring.line_numbers.detection`
 static LINE_NUMBERS: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(concat!(
-        r"(?:[\w.-]+/)*[\w-]+\.[A-Za-z0-9]+:\d",
+        // A file path's extension starts with a letter, so a version
+        // such as `0.1:9` is not one.
+        r"(?:[\w.-]+/)*[\w-]+\.[A-Za-z][A-Za-z0-9]*:\d",
         r"|(?i:\blines?)\s+\d",
         r"|\(\s*\d+\s*[-–]\s*\d+\s*\)",
     ))
@@ -24,9 +26,18 @@ pub(crate) fn cited(rationale: &str) -> Option<&str> {
     LINE_NUMBERS.find(rationale).map(|found| found.as_str())
 }
 
-/// The position a source parse error states, `line N: `.
-static PARSE_POSITION: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\bline \d+: ").expect("parse position pattern"));
+/// The position a source parse error states: `line N: `, or `at line N`
+/// with an optional column, as a TOML or YAML parser reports it.
+static PARSE_POSITION: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\bline \d+: |,? ?\bat line \d+(?:,? column \d+)?").expect("parse position pattern")
+});
+
+/// A source position elsewhere in the text, such as `first declared at
+/// md/rules.md:3`: a file path with an extension, then `:` and a line.
+static PATH_POSITION: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"((?:[\w.-]+/)*[\w-]+\.[A-Za-z][A-Za-z0-9]*):\d+(?::\d+)?\b")
+        .expect("path position pattern")
+});
 
 /// The position a diagnostic gives as `file:N: `, such as a malformed query.
 static FILE_POSITION: LazyLock<Regex> =
@@ -37,7 +48,23 @@ static FILE_POSITION: LazyLock<Regex> =
 // {impl}`requirements.authoring.no_line_numbers`
 pub(crate) fn without_source_lines(error: &str) -> String {
     let error = PARSE_POSITION.replace_all(error, "");
-    FILE_POSITION.replace_all(&error, "$1: ").into_owned()
+    let error = FILE_POSITION.replace_all(&error, "$1: ");
+    // A line or range the model supplied, `file:N` or `file:N-M`, is
+    // repeated as it gave it.
+    PATH_POSITION
+        .replace_all(&error, |captures: &regex::Captures| {
+            let whole = captures.get(0).expect("match");
+            let rest = &error[whole.end()..];
+            let rest = rest.strip_prefix('-').map_or(rest, |rest| {
+                rest.trim_start_matches(|c: char| c.is_ascii_digit())
+            });
+            if rest.starts_with(" is not an inclusive range") {
+                whole.as_str().to_owned()
+            } else {
+                captures[1].to_owned()
+            }
+        })
+        .into_owned()
 }
 
 /// The rationale of a submission's arguments.
@@ -131,6 +158,8 @@ mod tests {
             "two lines of output",
             "(see the example)",
             "a ratio of 3:4",
+            "version 0.1:9",
+            "at 12.30:15",
             "(1)",
         ] {
             assert_eq!(cited(text), None, "{text}");
@@ -145,13 +174,30 @@ mod tests {
             without_source_lines("src/a.rs: cannot parse Rust source: line 3: unexpected token"),
             "src/a.rs: cannot parse Rust source: unexpected token"
         );
-        assert_eq!(
-            without_source_lines("src/a.rs:9 is not an inclusive range"),
-            "src/a.rs:9 is not an inclusive range"
-        );
+        // Both forms `read_lines` reports keep the numbers the model gave.
+        for requested in ["9", "3-9"] {
+            let error = format!(
+                "src/lib.rs:{requested} is not an inclusive range within the file; read it by selector instead"
+            );
+            assert_eq!(without_source_lines(&error), error);
+        }
         assert_eq!(
             without_source_lines("md/rules.md:12: query checkers is not closed"),
             "md/rules.md: query checkers is not closed"
+        );
+        assert_eq!(
+            without_source_lines("md/b.md:4: duplicate requirement r; first declared at md/a.md:3"),
+            "md/b.md: duplicate requirement r; first declared at md/a.md"
+        );
+        assert_eq!(
+            without_source_lines(
+                "md/rules.md: query q: the yaml block must be a mapping: invalid type at line 2, column 5"
+            ),
+            "md/rules.md: query q: the yaml block must be a mapping: invalid type"
+        );
+        assert_eq!(
+            without_source_lines("habeas.toml: invalid TOML syntax at line 3, column 1"),
+            "habeas.toml: invalid TOML syntax"
         );
     }
 

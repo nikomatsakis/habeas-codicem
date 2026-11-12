@@ -136,6 +136,10 @@ pub(crate) struct RepositoryInspection {
     pub(crate) sites: crate::sites::Sites,
     /// The Rust items reported uncovered, in report order.
     pub(crate) uncovered: Vec<crate::rust_coverage::UncoveredItem>,
+    /// The evidence files found, for the coverage history to reuse.
+    pub(crate) evidence_files: Vec<PathBuf>,
+    /// Whether every evidence directory could be listed.
+    pub(crate) evidence_listed: bool,
     pub(crate) report: EvidenceReport,
     pub(crate) discovery_errors: Vec<String>,
 }
@@ -202,12 +206,19 @@ pub(crate) fn inspect_repository_with_progress(
     let md_root = book_source_dir(&root, &mut errors);
     let definitions = collect_definitions(&root, &md_root, &mut errors);
     let mut discovery_errors = errors.clone();
+    // Only the coverage report uses `[coverage]`, so an invalid table is a
+    // finding but not a discovery failure, and authoring still proceeds.
+    if let Some(error) = crate::config::coverage_error(&root) {
+        errors.push(error.to_string());
+    }
     let evidence_root = root.join("evidence");
+    let listing_errors = errors.len();
     let evidence_files = if evidence_root.is_dir() {
         files_with_extension(&root, &evidence_root, "json", &mut errors)
     } else {
         Vec::new()
     };
+    let evidence_listed = errors.len() == listing_errors;
     let mut present = BTreeSet::new();
     let outlines = OutlineCache::default();
     // Citation reviews are validated against their source items below.
@@ -321,6 +332,13 @@ pub(crate) fn inspect_repository_with_progress(
         &mut errors,
         &mut progress,
     );
+    crate::rust_coverage::validate_cargo_examples(
+        &root,
+        &files,
+        &definitions,
+        &references,
+        &mut errors,
+    );
     // An item an evidence record or review read is covered.
     // {impl}`requirements.references.rust_item_coverage`
     let reads = crate::rust_coverage::EvidenceReads::load(&evidence_files);
@@ -354,6 +372,8 @@ pub(crate) fn inspect_repository_with_progress(
         references,
         sites,
         uncovered,
+        evidence_files,
+        evidence_listed,
         discovery_errors,
     })
 }
@@ -2226,13 +2246,18 @@ pub(crate) mod tests {
             assert_eq!(inspected.report.examples, 0);
             if invalid {
                 let errors = inspected.report.errors.join("\n");
-                for error in [
-                    "invalid JSON",
-                    "cannot parse Rust source",
-                    "src/lib.rs:1: function retained is uncovered: it has no requirement or example reference, and no evidence record or review read it",
-                ] {
+                for error in ["invalid JSON", "cannot parse Rust source"] {
                     assert!(errors.contains(error), "missing {error:?}: {errors}");
                 }
+                // An uncovered item is reported, not a validation error.
+                assert!(!errors.contains("retained"), "{errors}");
+                assert!(
+                    inspected.uncovered.iter().any(|item| item
+                        .error
+                        .starts_with("src/lib.rs:1: function retained has no recent coverage")),
+                    "{:?}",
+                    inspected.uncovered
+                );
                 let discovery = inspected.discovery_errors.join("\n");
                 assert!(
                     discovery.contains("src/broken.rs")

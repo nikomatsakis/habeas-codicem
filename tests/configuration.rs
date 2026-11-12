@@ -5,8 +5,9 @@ use std::path::Path;
 
 use habeas::config::{
     BackendConfig, BackendKind, ConfigPlatform, ProjectConfig, UserConfig, WorkspaceConfig,
-    load_user_config, load_workspace_config, load_workspace_evidence, resolve_authoring_from,
-    resolve_authoring_with_workspace_from, state_root_from, user_config_path_from,
+    load_coverage_reauthorings, load_user_config, load_workspace_config, load_workspace_evidence,
+    resolve_authoring_from, resolve_authoring_with_workspace_from, state_root_from,
+    user_config_path_from,
 };
 
 // {test}`requirements.configuration.user_location`
@@ -252,6 +253,7 @@ fn authoring_policy_defaults_to_confirm_and_round_trips() {
 // {test}`requirements.authoring.configuration_storage`
 // {test}`requirements.authoring.rig_configuration_mapping`
 // {test}`requirements.authoring.configuration`
+// {test}`requirements.configuration.loading`
 #[test]
 fn explicit_project_and_default_selections_choose_whole_configs() {
     let dir = tempfile::tempdir().unwrap();
@@ -1077,6 +1079,25 @@ fn workspace_diagnostics_identify_the_file_and_setting() {
             assert!(error.starts_with(&format!("{file}: {setting}")), "{error}");
         }
     }
+    // Only the coverage report decodes `[coverage]`; authoring ignores it.
+    for (source, setting) in [
+        (
+            "version = 1\n[coverage]\nreauthorings = 'many'",
+            "coverage.reauthorings",
+        ),
+        ("version = 1\n[coverage]\nbogus = 1", "coverage.bogus"),
+    ] {
+        fs::write(&path, source).unwrap();
+        let errors = [
+            load_coverage_reauthorings(temp.path()).map(|_| ()),
+            WorkspaceConfig::parse(source, &path).map(|_| ()),
+        ];
+        for error in errors {
+            let error = error.unwrap_err().to_string();
+            assert!(error.starts_with(&format!("{file}: {setting}")), "{error}");
+        }
+        load_workspace_config(temp.path()).unwrap().unwrap();
+    }
     // The evidence loader decodes only the `[evidence]` table it uses.
     for (source, setting) in [
         (
@@ -1162,17 +1183,29 @@ fn feature_sections_are_scoped_and_absent_sections_use_defaults() {
         assert!(policy.evidence.allow.is_empty() && policy.evidence.disallow.is_empty());
     }
     let config = WorkspaceConfig::parse("version = 1\n", &path).unwrap();
-    assert!(config.authoring.is_none() && config.evidence.is_none());
+    assert!(config.authoring.is_none() && config.evidence.is_none() && config.coverage.is_none());
+    let config =
+        WorkspaceConfig::parse("version = 1\n[coverage]\nreauthorings = 5\n", &path).unwrap();
+    assert_eq!(config.coverage.unwrap().reauthorings, Some(5));
+    // The one positivity rule applies to the whole-file parse too.
+    let error = WorkspaceConfig::parse("version = 1\n[coverage]\nreauthorings = 0\n", &path)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("coverage.reauthorings"), "{error}");
     // Feature settings must stay within their sections.
     for source in [
         "version = 1\nallow = ['generated']\n",
         "version = 1\ndefault = 'cloud'\n",
         "version = 1\n[authoring]\nallow = ['generated']\n",
         "version = 1\n[evidence]\ndefault = 'cloud'\n",
+        "version = 1\nreauthorings = 3\n",
+        "version = 1\n[coverage]\nallow = ['generated']\n",
     ] {
         assert!(WorkspaceConfig::parse(source, &path).is_err(), "{source}");
     }
     assert!(UserConfig::parse("version = 1\n[evidence]\nallow = []\n", &path).is_err());
+    // `[coverage]` has no user-file counterpart.
+    assert!(UserConfig::parse("version = 1\n[coverage]\nreauthorings = 3\n", &path).is_err());
     // The evidence feature does not reinterpret or validate authoring settings.
     fs::write(
         &path,
@@ -1250,8 +1283,9 @@ fn documented_configuration_examples_are_complete_valid_files() {
         for block in blocks {
             let source = block.split("\n```").next().unwrap();
             let path = Path::new(document);
-            // Workspace files are the only ones with an `[evidence]` table.
-            let parsed = if source.contains("[evidence]") {
+            // Workspace files are the only ones with `[evidence]` or
+            // `[coverage]` tables.
+            let parsed = if source.contains("[evidence]") || source.contains("[coverage]") {
                 WorkspaceConfig::parse(source, path).map(|_| ())
             } else {
                 UserConfig::parse(source, path).map(|_| ())
