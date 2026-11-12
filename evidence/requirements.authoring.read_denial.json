@@ -1,7 +1,7 @@
 {
   "requirement": "When source-access policy denies a path that a model tool call names\nexplicitly, the harness MUST return a tool error naming the path and the reason\nit cannot be read, add no evidence input, and continue the assessment.\nDiscovery and search MUST leave denied candidates out of their entries,\nreporting untracked ones under {cite}`requirements.authoring.not_listed`. Malformed tool\narguments and ordinary read failures MUST also return explanatory tool errors.",
   "determination": true,
-  "rationale": "I found no gap against `requirements.authoring.read_denial`. Its obligations map to code and tests as follows.\n\n**Tool error naming the path and the reason**\n- `src/authoring/access.rs#impl[SourceAccess]/fn[path]` and `impl[PathPolicy]/fn[check_disallow]` build the denial messages. They cover a disallow rule, generated evidence, a path outside the project, build output, and untracked files. Each message names the path and states the reason.\n- The `Display` impls for `PolicyDenial` and `OutsideProject` carry those messages through unchanged.\n- `src/authoring/mod.rs#fn[converse]` turns every `dispatch_paged` error into `call.error_result(...)` for the model. A denial is therefore a tool error, not an abort.\n- Tests:\n  - `tools.rs#mod[tests]/fn[requests_through_symlinks_leaving_the_project_are_denials]`\n  - `tools.rs#mod[tests]/fn[untracked_diagnostics_name_git_add_and_an_allow_rule]`\n  - `tools.rs#mod[tests]/fn[generated_evidence_is_excluded_from_reads_search_and_discovery]`\n  - `access.rs#mod[tests]/fn[disallowed_ancestors_cannot_redirect_reads_into_allowed_targets]`, which asserts the error contains the path.\n  - `mod.rs#mod[tests]/fn[a_read_through_a_symlink_leaving_the_project_returns_an_error_to_the_model]`, which checks the path and reason reach the model.\n\n**No evidence input added**\n- In `converse`, inputs are pushed to `pending` only in the `Ok(delivery)` arm. The error arm records nothing.\n- Tests:\n  - `mod.rs` `a_read_through_a_symlink_leaving_the_project_returns_an_error_to_the_model` asserts the evidence omits the file.\n  - `tests/authoring_batch.rs#fn[a_denied_read_returns_an_error_and_its_assessment_continues]` asserts the denied file is not recorded.\n  - `tests/authoring_cli.rs#fn[explicit_untracked_reads_return_an_untracked_error_and_the_assessment_continues]` asserts the same for untracked files.\n\n**Assessment continues**\n- The `converse` loop continues after the error result.\n- The `mod.rs` and `tests/authoring_*` tests above assert a second request is made and the assessment completes. The batch test also checks the other subjects are unaffected.\n\n**Discovery and search leave denied candidates out**\n- `tools.rs#fn[list_files]` skips entries and extra roots for which `access.path` fails.\n- `tools.rs#fn[walk_sources]` skips files for which `access.file` fails, so denied files are never opened. `ripgrep` and `ast_grep` use it.\n- Tests:\n  - `tools.rs#mod[tests]/fn[generated_evidence_is_excluded_from_reads_search_and_discovery]`\n  - `tools.rs#mod[tests]/fn[allowed_ignored_and_external_sources_are_discoverable_but_disallowed_descendants_are_not]`\n  - `tools.rs#mod[tests]/fn[cargo_output_is_discovered_and_read_without_building_or_allowing_other_target_files]`\n  - `tools.rs#mod[tests]/fn[git_tools_allow_staged_and_dirty_sources_but_hide_untracked_files]`\n  - `tools.rs#mod[tests]/fn[git_symlink_reads_require_both_the_alias_and_target_to_be_tracked]`\n\n**Untracked candidates reported under `not_listed`**\n- This is applied in `dispatch_paged`, which calls `with_not_listed` for `list_files`, `ripgrep` and `ast_grep`. `not_listed` has its own requirement, which is cited here, so I did not reassess its implementation.\n- Tests: `tools.rs#mod[tests]/fn[git_tools_allow_staged_and_dirty_sources_but_hide_untracked_files]` and `fn[git_symlink_reads_require_both_the_alias_and_target_to_be_tracked]` check that `list_files` leaves untracked files out of its entries. The not-listed check itself comes from the cited requirement's own tests.\n\n**Malformed arguments and ordinary read failures return explanatory errors**\n- Malformed arguments: `check_keys`, `string` and `integer`, called from `read`, `list_files` and `search`, and `dispatch_paged` itself.\n- Ordinary read failures: the `cannot list ...` and `ripgrep failed ...` errors, `recoverable_os_denial` and `recoverable_outside_request`. The last two convert OS permission failures and outside-project requests into non-denial errors that still reach the model.\n- Tests:\n  - `mod.rs#mod[tests]/fn[malformed_and_failed_reads_return_to_the_model_and_the_assessment_continues]` covers a wrong type, a missing key, conflicting keys, a missing file, an absent item and an out-of-range line. It checks each error is delivered to the model and the assessment continues.\n  - `tools.rs#mod[tests]/fn[operating_system_permission_failures_are_ordinary_read_failures]`\n  - `tools.rs#mod[tests]/fn[requests_for_book_or_target_output_are_ordinary_read_failures]`\n  - `tools.rs#mod[tests]/fn[unpermitted_requests_outside_the_project_are_recoverable_tool_errors]`\n\n**Reachability and unspecified behavior**\n- The `{impl}` roots are `converse` and the `Display` impls. `converse` reaches `dispatch_paged` and the tools, and `fn[path]` is reached through them.\n- I saw no unspecified observable behavior. Recoverable outside-project and build-output errors fall under \"ordinary read failures\" or are specified by the sibling requirements `read_denial.build_output` and `read_denial.untracked`.",
+  "rationale": "I found no gap in the code or tests for `requirements.authoring.read_denial`.\n\n**Obligations and the code that carries them out**\n\n1. **Explicit denied path returns a tool error naming the path and the reason.**\n   - `src/authoring/access.rs#impl[SourceAccess]/fn[path]` is the single check.\n   - Each denial message names the requested path and the reason: disallowed by a `habeas.toml` rule, generated evidence, outside the project, build output, or untracked with the `git add` / allow-rule remedy. `PathPolicy::check_disallow` produces the disallow message.\n   - The error types are `PolicyDenial` and `OutsideProject`. Their `Display` impls, both marked `{impl}`, pass the message through unchanged.\n   - `src/authoring/tools.rs#fn[dispatch_paged]` returns these errors to the caller. It converts OS-level permission errors and outside-project errors into ordinary read failures.\n\n2. **Add no evidence input.**\n   - In `src/authoring/tools.rs#fn[read]`, `read_lines` and `read_selector` fail before any input is returned.\n   - In `src/authoring/mod.rs#fn[converse]`, the `Err` arm pushes only an error result. It does not extend `pending`. Only `Ok` deliveries add inputs.\n\n3. **Continue the assessment.** The same `Err` arm in `converse` records a tool failure, sends `call.error_result(...)` to the model, and loops on.\n\n4. **Discovery and search leave denied candidates out of their entries.**\n   - `fn[list_files]` skips any entry for which `access.path(...)` fails.\n   - `fn[walk_sources]` skips any file for which `access.file(...)` fails, so denied files are never opened. `ripgrep` and `ast_grep` both use it.\n   - Untracked files are reported under `not_listed` by `fn[with_not_listed]`. That requirement is cited, and I did not reassess it.\n\n5. **Malformed tool arguments return explanatory tool errors.** `check_keys`, `string`, `integer` and `optional_path` in `tools.rs` produce the errors, and `converse` returns them to the model as tool errors.\n\n6. **Ordinary read failures return explanatory tool errors.** These are a missing file, a missing item, a line range beyond end of file, and OS permission errors that did not come from policy. They reach the model the same way.\n\n**Tests**\n\n- **Denial naming path and reason, no evidence input, assessment continues, end to end:**\n  - `src/authoring/mod.rs#mod[tests]/fn[a_read_through_a_symlink_leaving_the_project_returns_an_error_to_the_model]` checks the second request contains the path and \"outside the project\", the file's contents are absent, and the evidence does not mention the file.\n  - `tests/authoring_batch.rs#fn[a_denied_read_returns_an_error_and_its_assessment_continues]` checks a second request is made, the assessment completes, and the denied file is not recorded.\n  - `tests/authoring_cli.rs#fn[explicit_untracked_reads_return_an_untracked_error_and_the_assessment_continues]` covers the `habeas`, `ripgrep`, `ast_grep` and `list_files` tools, and checks the message and that nothing is recorded.\n- **Individual denial reasons (`src/authoring/tools.rs` tests):**\n  - `untracked_diagnostics_name_git_add_and_an_allow_rule` covers the untracked reason.\n  - `requests_through_symlinks_leaving_the_project_are_denials` and `unpermitted_requests_outside_the_project_are_recoverable_tool_errors` cover the outside-project reason.\n  - `generated_evidence_is_excluded_from_reads_search_and_discovery` covers the generated-evidence reason.\n  - The `src/authoring/access.rs` tests cover disallow rules, alias and ancestor redirects, and the message naming the path.\n- **Discovery and search omission:**\n  - `git_tools_allow_staged_and_dirty_sources_but_hide_untracked_files` and `git_symlink_reads_require_both_the_alias_and_target_to_be_tracked` cover untracked files.\n  - `allowed_ignored_and_external_sources_are_discoverable_but_disallowed_descendants_are_not` and `cargo_output_is_discovered_and_read_without_building_or_allowing_other_target_files` cover disallowed files and directories, including search results.\n  - `generated_evidence_is_excluded_from_reads_search_and_discovery` covers generated evidence.\n- **Malformed arguments and ordinary read failures:** `src/authoring/mod.rs#mod[tests]/fn[malformed_and_failed_reads_return_to_the_model_and_the_assessment_continues]` runs six cases:\n  - a wrongly typed argument;\n  - a missing argument;\n  - mixed forms;\n  - a missing file;\n  - an absent item;\n  - a line beyond end of file.\n\n  For each it asserts the error is not a policy denial, reaches the model in the next request, and the assessment completes without recording the file. `operating_system_permission_failures_are_ordinary_read_failures` covers OS permission errors.\n- **Mandatory-input aborts:** the tests in `src/authoring/inputs.rs` cover these, and `requirements.authoring.read_denial.mandatory` carries the behavior.\n\n**Notes**\n\n- The non-object-arguments branch in `dispatch_paged` is untested, but `converse` always passes an object, so it cannot be reached.\n- Tests for malformed arguments to `ripgrep`, `ast_grep` and `list_files` exist but are not tagged. The shared argument helpers are exercised by the tagged `habeas`-tool test, so I do not count this as a gap.",
   "references": "159a86dd9f7337cb33f4bfc5f8012e89a001f195344fd44d029b5c011a0c5c67",
   "inputs": [
     {
@@ -182,7 +182,7 @@
     {
       "file": "src/main.rs",
       "item": "fn[main]",
-      "hash": "888be3d52168dcc2f6444cf4540e0011b45a284eab45ba7f629c65ec79e8d703"
+      "hash": "d7fc6ea46650b3b42bcdb240b5534aac52b4fbafdabc1893003479f1c0465528"
     },
     {
       "file": "tests/authoring_batch.rs",
@@ -195,9 +195,39 @@
       "hash": "76f117cf290b86ac5cc1ee499e79aecb88448198f81e1645da804cf164a94229"
     },
     {
+      "file": "src/authoring/access.rs",
+      "item": "impl[SourceAccess]",
+      "hash": "cabf0052a51f1e9170127b8537c46dde4784f28656b0f9667e841d1362ab0c0d"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "fn[dispatch_paged]",
+      "hash": "46603300d61b11dcdd71d12c530be377b85055e563dde1f2f83d3db30d4f4055"
+    },
+    {
       "file": "src/authoring/tools.rs",
       "item": "fn[dispatch]",
       "hash": "758a46cbd9110b234687139f5031a8101f39dce0eb2be6cf5d7036234ae26dbb"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "fn[recoverable_outside_request]",
+      "hash": "fddd4231f739c424aaf7cf4f661961ed9393506663f6f819a24ea48f6b3fe8e1"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "fn[recoverable_os_denial]",
+      "hash": "fae2c51d8a39059ef6c6eb68c3518216c2e1f83c2982f3b83fc68be89b37db56"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "fn[denied]",
+      "hash": "5bcbb1e7d1663d4d819cc3cb025d40ec923edbf0314b3dd67c7f887671f7e1c7"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "struct[PolicyDenial]",
+      "hash": "d978d7071e3dc1426fb83069c97767038dc86a9d1777183a498fe1051cd34e0e"
     },
     {
       "file": "src/authoring/tools.rs",
@@ -220,29 +250,14 @@
       "hash": "2d40060f6cb1a92048893b214356a1ca169183618d27a040cb596010656d7a44"
     },
     {
-      "file": "src/authoring/access.rs",
-      "item": "impl[SourceAccess]/fn[path]",
-      "hash": "f0e7caec7c72bf2c61e1b012845f8a8825e87d5e7db0afb2a1cdcf65d18466fc"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "fn[dispatch_paged]",
-      "hash": "46603300d61b11dcdd71d12c530be377b85055e563dde1f2f83d3db30d4f4055"
-    },
-    {
       "file": "src/authoring/tools.rs",
       "item": "fn[with_not_listed]",
       "hash": "422482786bed8da49f474da5501d0336ab4489921bb7f40021e93e966424c2cf"
     },
     {
       "file": "src/authoring/access.rs",
-      "item": "fn[recoverable_os_denial]",
-      "hash": "fae2c51d8a39059ef6c6eb68c3518216c2e1f83c2982f3b83fc68be89b37db56"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "fn[recoverable_outside_request]",
-      "hash": "fddd4231f739c424aaf7cf4f661961ed9393506663f6f819a24ea48f6b3fe8e1"
+      "item": "impl[PathPolicy]",
+      "hash": "682d26ee9171ec9d76183444c82d48e36efdb578d3e036f2a3c29c4476301659"
     }
   ]
 }

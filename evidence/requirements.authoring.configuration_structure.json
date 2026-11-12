@@ -1,7 +1,7 @@
 {
   "requirement": "Habeas MUST define its authoring configuration using these data structures:\n\n```text\nUserAuthoringConfig {\n    default: Optional<ConfigName>,\n    configs: Map<ConfigName, AuthoringConfig>,\n    projects: Map<CanonicalProjectRoot, ProjectSelection>,\n}\n\nWorkspaceAuthoringConfig {\n    default: Optional<ConfigName>,\n    configs: Map<ConfigName, AuthoringConfig>,  // omitted means empty\n}\n\nProjectSelection {\n    config: ConfigName,\n}\n\nAuthoringConfig {\n    backend: BackendConfig,                   // tagged union, flattened in TOML\n    concurrency: Optional<PositiveInteger>,   // simultaneous assessments\n    policy: Optional<AssessmentPolicy>,       // default: Confirm\n}\n\nAssessmentPolicy = Confirm | Once             // TOML: \"confirm\" or \"once\"\n\nBackendConfig = Bedrock(BedrockConfig) | Ollama(OllamaConfig)\n\nBedrockConfig {\n    model: ModelId,                           // model ID or inference-profile ID/ARN\n    aws_profile: Optional<String>,\n    region: Optional<String>,\n    credentials: Optional<BedrockCredentials>,\n    options: Map<String, OptionValue>,\n}\n\nBedrockCredentials {\n    access_key_id: SecretString,\n    secret_access_key: SecretString,\n    session_token: Optional<SecretString>,\n}\n\nOllamaConfig {\n    model: ModelId,                           // exact identifier, including tag\n    endpoint: Optional<String>,               // default: http://localhost:11434\n    api_key_env: Optional<EnvironmentVariableName>,\n    api_key: Optional<SecretString>,\n    options: Map<String, OptionValue>,\n}\n\nOptionValue = String | Boolean | Integer | FiniteFloat\n            | Array<OptionValue> | Map<String, OptionValue>\n\nSecretString = String                         // serialized normally; redacted in Debug\n\nModelRef {\n    backend: BackendKind,                     // Bedrock or Ollama\n    model: ModelId,\n}\n```\n\n`ModelRef` MUST be derived from the selected backend configuration and MUST\npreserve the exact model identifier. It MUST identify the model without replacing\nconnection settings such as AWS profile, region, or Ollama endpoint.",
   "determination": true,
-  "rationale": "The data structures in src/config.rs (UserAuthoringConfig, WorkspaceAuthoringConfig, ProjectSelection, AuthoringConfig, AssessmentPolicy, BackendConfig, BedrockConfig/Credentials, OllamaConfig, OptionValue, SecretString, ModelRef) match the specified shapes. The details match: the workspace `configs` is omittable, the user `configs` is required, `backend` is flattened and tagged, `concurrency` is NonZeroUsize, floats must be finite (OptionValue::validate), and SecretString serializes normally but its Debug writes <redacted>. ModelRef is derived by ResolvedAuthoringConfig::model_ref → BackendConfig::model_ref, which clones the exact model string and carries only the backend kind and model, so connection settings are not replaced. The tests exercise the structures, the defaults, round-tripping, finite floats, Debug redaction, and exact-model ModelRef for Bedrock (ARN/profile IDs, with aws_profile and region retained) and Ollama. All are tagged {test} to the subject. No gaps found.",
+  "rationale": "I found no gap against `requirements.authoring.configuration_structure`.\n\n**Data structures** (all in `src/config.rs`)\n- `UserAuthoringConfig` has `default: Option<String>`, a required `configs` map, and `projects: BTreeMap<PathBuf, ProjectSelection>`. The spec gives the user `configs` map no \"omitted means empty\" note, so requiring it matches.\n- `WorkspaceAuthoringConfig` has `default` and a `configs` map that defaults to empty when omitted.\n- `ProjectSelection` has a single `config` field.\n- `AuthoringConfig` has `concurrency: Option<NonZeroUsize>` (the positive integer). It has `policy: Option<AssessmentPolicy>`, and `backend` carries `#[serde(flatten)]`.\n- `BackendConfig` is a tagged enum with `tag = \"backend\"` and lowercase variant names, holding `Bedrock(BedrockConfig)` or `Ollama(OllamaConfig)`.\n- `BedrockConfig`, `BedrockCredentials` and `OllamaConfig` carry exactly the listed fields with the listed optionality. Their `options` maps use `OptionValue`.\n- `OptionValue` is an untagged enum of String, Boolean, Integer, Float, Array and Map. `OptionValue::validate` rejects non-finite floats, including nested ones, which gives the \"FiniteFloat\" constraint.\n- `AssessmentPolicy` is `Confirm | Once`, serialized lowercase, with `Confirm` as the default.\n- `SecretString` is a transparent `String` wrapper, so it serializes normally. Its `Debug` impl (`impl[SecretString/fmt::Debug]/fn[fmt]`) prints `<redacted>`.\n\n**`ModelRef`**\n- `ModelRef { backend: BackendKind, model: String }` is derived from the selected backend by `BackendConfig::model_ref`, which clones the exact model string. `ResolvedAuthoringConfig::model_ref` delegates to it.\n- `ModelRef` holds no profile, region or endpoint, so it cannot replace connection settings. Those stay on the backend config.\n\n**Tests**\n- `user_and_workspace_authoring_tables_round_trip_every_map` covers the user and workspace maps, projects, an empty `configs` map, and the omitted workspace `configs`. It also asserts that `model_ref()` equals the exact Bedrock ARN or ID with the backend kind, and that `aws_profile` and `region` are still present.\n- `backend_configuration_round_trips_without_materializing_defaults` covers the tagged backend, the Ollama `endpoint()` default, and `concurrency` omitted from output. It also covers Ollama `model_ref`, option values of every kind, and round-trip.\n- `authoring_concurrency_defaults_overrides_and_invalid_values` covers `concurrency`, including rejection of invalid values.\n- `authoring_policy_defaults_to_confirm_and_round_trips` covers the policy default, both variants, and rejection of unknown values.\n- `explicit_credentials_round_trip_but_diagnostics_and_debug_redact_them` covers `SecretString`: normal serialization, `Debug` redaction, and the Bedrock credentials shape.\n- `storage_rules_reject_each_invalid_field_with_its_setting` covers non-finite floats (nested too), opaque model IDs with tags, and `api_key_env` validation.\n- `workspace_discovery_uses_nearest_file_without_merging_or_rewriting_it` covers the workspace file loaded with `configs` omitted.\n- `policy_comes_from_the_flag_then_the_configuration_then_defaults_to_confirm` in `tests/authoring_batch.rs` covers the policy field end to end.\n- `ResolvedAuthoringConfig::model_ref` is a pure pass-through, so it needs no separate test.\n\nThe remaining structs and enums are reached from the marked `UserAuthoringConfig` and `WorkspaceAuthoringConfig` through their types, so they need no references of their own. I found no unspecified behavior in the marked code.",
   "references": "e7682dec38f798c2c98325ecff2c3b94423b7b44ce216490e7df5494e703a6cd",
   "inputs": [
     {
@@ -145,8 +145,63 @@
     },
     {
       "file": "src/config.rs",
-      "item": "",
-      "hash": "3b1169d12b28e59c9e61b14dedd009d01702ac9b6aa0710c14c27a396027afb4"
+      "item": "struct[AuthoringConfig]",
+      "hash": "d374f32df0798a6e989353a20db09dd6fbf087ffd4ba829ba3bc3dcf0eb3b133"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "enum[BackendConfig]",
+      "hash": "a1a6173219615fcabb843a401afe0d1a44bb83393aa3ad2b7966494fe9b2b94e"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "struct[BedrockConfig]",
+      "hash": "e123937a7e339468258c2a8a9a0926311f6b446c5430b1aaf5668aa82d758e15"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "struct[OllamaConfig]",
+      "hash": "75a1dacb21ac62202f7a625fbd76627d723870f174a00fed5d8ec05515f76fc9"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "enum[OptionValue]",
+      "hash": "c057e530a7860d09f4e1a5086082044ff94e8f573d0817244d2b5aec50004a74"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "struct[BedrockCredentials]",
+      "hash": "0be8d654e8c7d39c9ed046216190093c2dda93f4862fec2dcb3f88ccf921aee4"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "struct[SecretString]",
+      "hash": "b7e8b5ba10a7ca05849edc46e52d827f134b5b54b9813986246f9a29a7491d9a"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "struct[ProjectSelection]",
+      "hash": "9c20bc057d63c1972e2664967a18366422b22742143a834e81e89927f892ce30"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "enum[AssessmentPolicy]",
+      "hash": "b46e1d8be504d851234504ba16c9bad20f511e757c36ed3d4177b173606e030d"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "struct[ModelRef]",
+      "hash": "812cb7505bb8aa46e898381466b12b251ae680aa9e2b9c67c48cceaa1151a60c"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "impl[BackendConfig]/fn[model_ref]",
+      "hash": "08850ef1baf39ed65e13526a9d8d96e20a2e11a66b6033ffac04b58119c63ee9"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "enum[BackendKind]",
+      "hash": "0e911ecbce26c7263adaf50bc4a818048182381675976d388325ffaf54ee3f79"
     }
   ]
 }
