@@ -176,13 +176,6 @@ containing it with the matching lines and their context, and the model reads wit
 lookups are not recorded as evidence. No tool gives the model line numbers:
 every location it sees is a file and outline selector, which is also how its
 rationale cites code. {cite}`requirements.authoring.no_line_numbers`
-When authoring replaces a record and an item the old record read is no longer
-covered, Habeas runs a coverage-loss review: an independent conversation that
-decides, for each requirement or example whose old record read the item, whether
-the item is a root of its implementation or is not needed for it. The review is
-not evidence. Authoring reports it, and `habeas status` shows the latest result
-beside the uncovered item until the item is covered again.
-{cite}`requirements.authoring.coverage_loss`
 
 Choose a model that supports tool calls, either on Amazon Bedrock or an accessible
 Ollama server. The server can run on another machine; Habeas does not need a GPU.
@@ -490,21 +483,6 @@ determined or lies inside the project repository, issues are read without a
 cache, so nothing is written there.
 {cite}`requirements.authoring.github_reads`
 
-Coverage-loss review results are kept in the `authoring/coverage-loss` directory
-of the same state root, such as `$XDG_STATE_HOME/habeas/authoring/coverage-loss`.
-Each item's latest result is one JSON file,
-`<project>/<file>/<selector>.json`: `<project>` is the first 16 hexadecimal
-digits of the SHA-256 of the project root's path, `<file>` is the item's
-project-relative path, and `<selector>` is its outline selector with every `/`
-and `%` percent-encoded, or `_root` for the root node. A newer review of the
-item replaces the file. The record holds the format `version` (1), the
-`project_root`, the item's `file` and selector `item`, the outline `hash` of the
-item when it was reviewed (`null` when it could not be read), the Unix time it was `reviewed_ms` in milliseconds,
-and its `findings`, each with the `definition`, its `finding` (`root` or
-`not needed`), and the reviewer's `rationale`. `habeas status` reads these files
-to show the latest result beside an uncovered item. Like usage records, they are
-never written inside the project repository.
-{cite}`requirements.authoring.coverage_loss`
 {impl}`requirements.configuration.state_location`
 
 ### Assessment policy
