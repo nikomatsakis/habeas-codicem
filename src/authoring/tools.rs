@@ -180,7 +180,7 @@ fn with_not_listed(
     let requested_path = project_path(sources, optional_path(arguments)?)?;
     let requested = relative_path(&sources.root, &requested_path)?;
     let requested = requested.trim_end_matches('/');
-    let untracked = super::access::DiscoverySources::load(&sources.root)?.untracked()?;
+    let untracked = super::access::load_discovery_sources(&sources.root)?.untracked()?;
     let mut named = BTreeSet::new();
     for file in untracked {
         let Ok(relative) = file.strip_prefix(&sources.root) else {

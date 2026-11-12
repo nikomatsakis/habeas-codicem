@@ -48,11 +48,11 @@ const TYPESCRIPT: Profile = Profile {
     attaches: never,
 };
 
-pub(crate) static PROFILE: Profile = TYPESCRIPT;
+pub static PROFILE: Profile = TYPESCRIPT;
 
 // {impl}`requirements.references.outline_comments`
 // {impl}`requirements.references.structural_hash`
-pub(crate) static TSX_PROFILE: Profile = Profile {
+pub static TSX_PROFILE: Profile = Profile {
     name: "tsx",
     extensions: &["tsx"],
     language: Some(|| tree_sitter_typescript::LANGUAGE_TSX.into()),

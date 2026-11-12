@@ -142,7 +142,7 @@ const KINDS: &[KindRule] = &[
 // {impl}`requirements.references.rust_item_selectors`
 // {impl}`requirements.references.outline_comments`
 // {impl}`requirements.references.structural_hash`
-pub(crate) static PROFILE: Profile = Profile {
+pub static PROFILE: Profile = Profile {
     name: "rust",
     extensions: &["rs"],
     language: Some(|| tree_sitter_rust::LANGUAGE.into()),

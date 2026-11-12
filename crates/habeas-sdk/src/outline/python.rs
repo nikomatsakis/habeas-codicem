@@ -17,7 +17,7 @@ const KINDS: &[KindRule] = &[
 
 // {impl}`requirements.references.outline_comments`
 // {impl}`requirements.references.structural_hash`
-pub(crate) static PROFILE: Profile = Profile {
+pub static PROFILE: Profile = Profile {
     name: "python",
     extensions: &["py", "pyi"],
     language: Some(|| tree_sitter_python::LANGUAGE.into()),

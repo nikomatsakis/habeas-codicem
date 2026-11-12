@@ -10,7 +10,7 @@ const KINDS: &[KindRule] = &[
 
 // {impl}`requirements.references.outline_comments`
 // {impl}`requirements.references.structural_hash`
-pub(crate) static PROFILE: Profile = Profile {
+pub static PROFILE: Profile = Profile {
     name: "yaml",
     extensions: &["yml", "yaml"],
     language: Some(|| tree_sitter_yaml::LANGUAGE.into()),
