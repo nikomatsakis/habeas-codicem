@@ -29,6 +29,7 @@ pub(crate) struct Fence {
     pub(crate) close: Option<usize>,
 }
 
+// {cite}`habeas:util`
 /// A fenced reference with its body, as found in a whole source.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct SourceFence {
@@ -68,6 +69,7 @@ pub(crate) fn opening_fence(line: &str) -> Option<(ReferenceKind, &str, usize)> 
         .then_some((kind, name, length))
 }
 
+// {cite}`habeas:util`
 /// Whether a line closes a fence opened with `length` colons.
 fn closes(line: &str, length: usize) -> bool {
     colon_fence(line).is_some_and(|(suffix, count)| count >= length && suffix.trim().is_empty())
@@ -98,6 +100,7 @@ pub(crate) fn find_fences(lines: &[FenceLine<'_>]) -> Vec<Fence> {
     fences
 }
 
+// {cite}`habeas:util`
 /// The body lines of a fence, joined and trimmed.
 fn body(lines: &[FenceLine<'_>], fence: &Fence) -> String {
     let end = fence.close.unwrap_or(lines.len());
@@ -110,6 +113,7 @@ fn body(lines: &[FenceLine<'_>], fence: &Fence) -> String {
         .to_owned()
 }
 
+// {cite}`habeas:util`
 /// A fenced reference in Markdown, with byte offsets for rendering.
 pub(crate) struct MarkdownFence {
     pub(crate) kind: ReferenceKind,

@@ -32,10 +32,7 @@ fn fixture() -> TempDir {
     for (name, text) in requirements {
         source.push_str(&format!(":::{{req}} {name}\n{text}\n:::\n\n"));
     }
-    source.push_str(
-        &":::{example} case\nGiven ready, it works. CITE`requirements.ready`\n:::\n"
-            .replace("CITE", "{cite}"),
-    );
+    source.push_str(":::{example} case\nGiven ready, it works. {cite}`requirements.ready`\n:::\n");
     let case_line = source
         .lines()
         .position(|line| line.contains("Given ready, it works."))
@@ -46,7 +43,7 @@ fn fixture() -> TempDir {
         temp.path().join("src/main.rs"),
         // No outline node follows the comment, so it belongs to the root and
         // `main` stays uncited.
-        ["fn main() {}\n// {", "impl}`requirements.uncovered`\n"].concat(),
+        "fn main() {}\n// {impl}`requirements.uncovered`\n",
     )
     .unwrap();
     for (name, text, determination) in [
@@ -130,7 +127,7 @@ fn fixme_fixture() -> TempDir {
     )
     .unwrap();
     fs::write(temp.path().join("book.toml"), "[book]\nsrc = 'md'\n").unwrap();
-    let example = "A concrete case. CITE`rules.alpha`.".replace("CITE", "{cite}");
+    let example = "A concrete case. {cite}`rules.alpha`.";
     let declarations = [
         (
             "req",
@@ -153,7 +150,7 @@ fn fixme_fixture() -> TempDir {
                 "An unrelated note",
             ],
         ),
-        ("example", "case", &example, vec!["example/app#45"]),
+        ("example", "case", example, vec!["example/app#45"]),
         (
             "req",
             "unlinked",

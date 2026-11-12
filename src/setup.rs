@@ -82,6 +82,7 @@ pub(crate) fn write_new_or_same(path: &Path, content: &str) -> Result<(), Box<dy
     Ok(())
 }
 
+// {impl}`requirements.cli.mdbook`
 pub(crate) fn run(local_crate: Option<&Path>) -> Result<(), Box<dyn Error>> {
     let root = project_root()?;
     let book_path = root.join("book.toml");

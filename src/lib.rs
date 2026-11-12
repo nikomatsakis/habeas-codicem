@@ -703,6 +703,8 @@ pub(crate) fn definition_blocks(content: &str) -> Vec<DefinitionBlock> {
     blocks
 }
 
+// {impl}`requirements.ci.requirement_text`
+// {impl}`requirements.examples.definition`
 /// Parse an option line of the form `:name: value`.
 pub(crate) fn option_line(line: &str) -> Option<(&str, &str)> {
     let rest = line.trim_start_matches(' ').strip_prefix(':')?;
@@ -861,12 +863,14 @@ fn protected_ranges(content: &str) -> Vec<Range<usize>> {
     ranges
 }
 
+// {cite}`habeas:util`
 fn is_protected(position: usize, ranges: &[Range<usize>]) -> bool {
     ranges
         .iter()
         .any(|range| range.start <= position && position < range.end)
 }
 
+// {cite}`habeas:util`
 fn is_escaped(content: &str, position: usize) -> bool {
     content[..position]
         .bytes()
@@ -929,13 +933,12 @@ mod tests {
             ":::{req} other\nOther.\n:::\n\n",
             ":::{cite} habeas:util\nServes its caller.\n:::\n\n",
             ":::{cite} habeas:none\nRemoved.\n:::\n\n",
-            "Inline CITE`habeas:none` stays literal.\n\n",
-            "Inline CITE`habeas:util` is a badge.\n\n",
+            "Inline {cite}`habeas:none` stays literal.\n\n",
+            "Inline {cite}`habeas:util` is a badge.\n\n",
             ":::{cite} rules.missing\nUnknown.\n:::\n\n",
             "```text\n:::{cite} rules.other\n:::\n```\n",
         ]
-        .concat()
-        .replace("CITE", "{cite}");
+        .concat();
         book.push_item(Chapter::new("Rules", content, "rules.md", Vec::new()));
         let root = book_root();
         preprocess_book(&mut book, root.path()).unwrap();
@@ -978,9 +981,7 @@ mod tests {
             rendered.contains(":::{cite} habeas:none\nRemoved.\n:::"),
             "{rendered}"
         );
-        assert!(
-            rendered.contains(&"Inline CITE`habeas:none` stays literal.".replace("CITE", "{cite}"))
-        );
+        assert!(rendered.contains("Inline {cite}`habeas:none` stays literal."));
         assert!(
             rendered.contains(":::{cite} rules.missing\nUnknown.\n:::"),
             "{rendered}"
@@ -1037,7 +1038,7 @@ mod tests {
         let mut book = Book::new();
         let mut chapter = Chapter::new(
             "Rules",
-            "# Rules\n\n:::{req} zeta\n:impl: notes.txt\nZeta.\n:::\n\n:::{example} alpha\nAlpha case. CITE`rules.zeta`\n:::\n\n:::{req} cli.mdbook\nMdbook.\n:::\n".replace("CITE", "{cite}"),
+            "# Rules\n\n:::{req} zeta\n:impl: notes.txt\nZeta.\n:::\n\n:::{example} alpha\nAlpha case. {cite}`rules.zeta`\n:::\n\n:::{req} cli.mdbook\nMdbook.\n:::\n".to_owned(),
             "rules.md",
             Vec::new(),
         );
@@ -1281,7 +1282,7 @@ mod tests {
         book.push_item(target);
         book.push_item(Chapter::new(
             "Guide",
-            concat!("See {cite}", "`rules.ready`.").to_owned(),
+            "See {cite}`rules.ready`.".to_owned(),
             "guide.md",
             Vec::new(),
         ));
@@ -1437,7 +1438,7 @@ mod tests {
     // {test}`requirements.references.discovery`
     #[test]
     fn markdown_examples_and_escaped_references_stay_literal() {
-        let marker = ["{", "impl}`requirements.ready`"].concat();
+        let marker = "{impl}`requirements.ready`".to_owned();
         let content = format!("`{marker}`\n\n```text\n{marker}\n```\n\n\\{marker}");
         let mut book = Book::new();
         book.push_item(Chapter::new(
@@ -1466,7 +1467,7 @@ mod tests {
     // {test}`requirements.references.markdown_literals`
     #[test]
     fn roles_in_raw_html_stay_literal() {
-        let marker = ["{", "impl}`requirements.ready`"].concat();
+        let marker = "{impl}`requirements.ready`".to_owned();
         let content = format!(
             "<div>\n{marker}\n</div>\n\n<!-- {marker} -->\n\nText <!-- {marker} --> and <span title=\"{marker}\">tag</span>.\n\nBetween <em>{marker}</em> tags.\n"
         );
@@ -1515,8 +1516,8 @@ mod tests {
     // {test}`requirements.references.markdown_literals`
     #[test]
     fn references_in_requirement_bodies_are_scanned_as_markdown() {
-        let known = ["{", "cite}`requirements.ready`"].concat();
-        let example = ["{", "cite}`missing.example`"].concat();
+        let known = "{cite}`requirements.ready`".to_owned();
+        let example = "{cite}`missing.example`".to_owned();
         let content = format!(":::{{req}} ready\nSee {known}.\n\n```text\n{example}\n```\n:::");
         let references = reference_roles(&content, true);
         assert_eq!(references.len(), 1);
@@ -1580,8 +1581,7 @@ mod tests {
     // {test}`requirements.examples.index`
     #[test]
     fn examples_are_distinct_definitions_and_tests_link_to_them() {
-        let source = "::::{req} ready\nReady.\n\n:::{example} something.foo\nGiven ready, it succeeds. CITE`requirements.ready`\n:::\n::::\n\n:::{example} bad name\nInvalid.\n:::\n\n```text\n:::{example} hidden\nLiteral.\n:::\n```"
-            .replace("CITE", "{cite}");
+        let source = "::::{req} ready\nReady.\n\n:::{example} something.foo\nGiven ready, it succeeds. {cite}`requirements.ready`\n:::\n::::\n\n:::{example} bad name\nInvalid.\n:::\n\n```text\n:::{example} hidden\nLiteral.\n:::\n```".to_owned();
         let blocks = definition_blocks(&source);
         assert_eq!(blocks.len(), 2);
         assert_eq!(blocks[0].kind, DefinitionKind::Requirement);
@@ -1596,7 +1596,7 @@ mod tests {
         ));
         book.push_item(Chapter::new(
             "Guide",
-            "TEST`requirements.something.foo`".replace("TEST", "{test}"),
+            "{test}`requirements.something.foo`".to_owned(),
             "guides/deep.md",
             Vec::new(),
         ));

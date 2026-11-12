@@ -1899,7 +1899,7 @@ mod tests {
         // An example's task replaces the requirement task.
         let requirements = project.path().join("md/requirements.md");
         let mut book = fs::read_to_string(&requirements).unwrap();
-        let cite = concat!("{", "cite}`requirements.ready`");
+        let cite = "{cite}`requirements.ready`";
         book.push_str(&format!(
             "\n:::{{example}} case\nA ready case. {cite}\n:::\n"
         ));
@@ -2950,7 +2950,7 @@ mod tests {
     #[test]
     fn verifier_prompts_name_examples_and_citation_reviews() {
         let project = inputs::tests::project();
-        let cite = concat!("{", "cite}`requirements.ready`");
+        let cite = "{cite}`requirements.ready`";
         let requirements = project.path().join("md/requirements.md");
         let mut book = fs::read_to_string(&requirements).unwrap();
         book.push_str(&format!(
@@ -3090,7 +3090,7 @@ mod tests {
     #[tokio::test]
     async fn citation_reviews_use_their_prompt_and_record_the_item_and_citations() {
         let project = inputs::tests::project();
-        let cite = concat!("{", "cite}`requirements.ready`");
+        let cite = "{cite}`requirements.ready`";
         fs::write(
             project.path().join("src/lib.rs"),
             format!(
@@ -3259,7 +3259,7 @@ mod tests {
             crate::sites::tests::project(crate::sites::tests::RULE, crate::sites::tests::SOURCE);
         let requirements = project.path().join("md/requirements.md");
         let mut book = fs::read_to_string(&requirements).unwrap();
-        let cite = concat!("{", "cite}`requirements.rule`");
+        let cite = "{cite}`requirements.rule`";
         book.push_str(&format!(
             "\n:::{{req}} other\nThe project MUST also work.\n:::\n\n:::{{req}} second\nThe project MUST keep working.\n:::\n\n:::{{example}} first_case\nA case. {cite}\n:::\n\n:::{{example}} second_case\nAnother case. {cite}\n:::\n"
         ));
@@ -3315,7 +3315,7 @@ mod tests {
         let root = project.path();
         let requirements = root.join("md/requirements.md");
         let mut book = fs::read_to_string(&requirements).unwrap();
-        let cite = concat!("{", "cite}`requirements.rule`");
+        let cite = "{cite}`requirements.rule`";
         book.push_str(&format!("\n:::{{example}} case\nA case. {cite}\n:::\n"));
         fs::write(&requirements, book).unwrap();
         let source = root.join("src/lib.rs");
@@ -3391,7 +3391,7 @@ no_match:
     /// `habeas:util`, with a root-node site of `requirements.attributes`.
     // {cite}`habeas:util`
     pub(crate) fn citing_site_project() -> tempfile::TempDir {
-        let cites = concat!("{", "cite}`requirements.other` and {", "cite}`habeas:util`");
+        let cites = "{cite}`requirements.other` and {cite}`habeas:util`";
         let rule = crate::sites::tests::RULE.replace(
             "instead of panicking.",
             &format!("instead of panicking, as {cites} describe."),

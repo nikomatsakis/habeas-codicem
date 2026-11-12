@@ -334,6 +334,7 @@ pub(crate) fn recorded_input(input: &Value) -> Value {
     }
 }
 
+// {impl}`requirements.ci.schema`
 /// The recorded form of a file path: an absolute path inside the project at
 /// the canonical `root` becomes relative to the project for portability. Relative paths, and
 /// paths that leave the project, are kept as given.

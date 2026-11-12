@@ -20,10 +20,10 @@ fn fixture() -> TempDir {
     fs::write(temp.path().join("md/SUMMARY.md"), "# Summary\n").unwrap();
     fs::write(
         temp.path().join("md/rules.md"),
-        ":::{req} ready\nUse TERM`glossary.a`.\n:::\n".replace("TERM", "{term}"),
+        ":::{req} ready\nUse {term}`glossary.a`.\n:::\n",
     )
     .unwrap();
-    fs::write(temp.path().join("md/glossary.md"), ":::{definition} a\n:phrase: alpha\n\nSee TERM`glossary.b`.\n:::\n\n:::{definition} b\n:phrase: beta\n\nSee TERM`glossary.a`.\n:::\n".replace("TERM", "{term}")).unwrap();
+    fs::write(temp.path().join("md/glossary.md"), ":::{definition} a\n:phrase: alpha\n\nSee {term}`glossary.b`.\n:::\n\n:::{definition} b\n:phrase: beta\n\nSee {term}`glossary.a`.\n:::\n").unwrap();
     temp
 }
 
@@ -64,6 +64,7 @@ fn requirements(root: &Path, selection: &str, matches: &[&str]) -> Value {
     json!({ "requirements": selection, "matches": matches, "text": text })
 }
 
+// {cite}`habeas:util`
 /// Writes a pending evidence record for the requirement or example `name`
 /// containing exactly `inputs`, and returns its path.
 fn record(root: &Path, name: &str, inputs: Vec<Value>) -> PathBuf {
@@ -185,7 +186,7 @@ fn globs_exclude_terms_but_capture_referenced_terms_outside_the_glob() {
     // matches the glob and shares its prefix but is not referenced.
     fs::write(
         temp.path().join("md/rules.md"),
-        ":::{req} ready\nUse TERM`glossary.a` and TERM`rules.used`.\n:::\n\n:::{definition} used\n:phrase: used\n\nReferenced.\n:::\n\n:::{definition} unrelated\n:phrase: unrelated\n\nNot referenced.\n:::\n".replace("TERM", "{term}"),
+        ":::{req} ready\nUse {term}`glossary.a` and {term}`rules.used`.\n:::\n\n:::{definition} used\n:phrase: used\n\nReferenced.\n:::\n\n:::{definition} unrelated\n:phrase: unrelated\n\nNot referenced.\n:::\n",
     )
     .unwrap();
     let root = temp.path();
@@ -262,11 +263,9 @@ fn selections_match_requirements_and_examples_but_never_named_definitions() {
     let root = temp.path();
     fs::write(
         root.join("md/rules.md"),
-        ":::{req} ready\nUse TERM`glossary.a`.\n:::\n\n\
-         :::{example} case\nA ready case. CITE`rules.ready`\n:::\n\n\
-         :::{definition} used\n:phrase: used\n\nNot referenced by the selection.\n:::\n"
-            .replace("TERM", "{term}")
-            .replace("CITE", "{cite}"),
+        ":::{req} ready\nUse {term}`glossary.a`.\n:::\n\n\
+         :::{example} case\nA ready case. {cite}`rules.ready`\n:::\n\n\
+         :::{definition} used\n:phrase: used\n\nNot referenced by the selection.\n:::\n",
     )
     .unwrap();
     // The glob selects the requirement and the example, not the definition
@@ -363,7 +362,7 @@ fn invalid_declarations_and_reference_targets_are_reported() {
             .iter()
             .any(|e| e.contains("missing a closing colon fence"))
     );
-    fs::write(temp.path().join("md/bad.md"), ":::{req} x\nRequirement.\n:::\n:::{definition} x\n:phrase: x\n\nDefinition.\n:::\nTERM`rules.ready` TERM`missing.name`".replace("TERM", "{term}")).unwrap();
+    fs::write(temp.path().join("md/bad.md"), ":::{req} x\nRequirement.\n:::\n:::{definition} x\n:phrase: x\n\nDefinition.\n:::\n{term}`rules.ready` {term}`missing.name`").unwrap();
     let errors = validate_repository(temp.path()).unwrap().errors;
     assert!(
         errors
@@ -458,13 +457,13 @@ fn references_to_a_definition_of_another_kind_are_reported() {
     let temp = fixture();
     fs::write(
         temp.path().join("md/cases.md"),
-        ":::{example} case\nA ready case. CITE`rules.ready`\n:::\n".replace("CITE", "{cite}"),
+        ":::{example} case\nA ready case. {cite}`rules.ready`\n:::\n",
     )
     .unwrap();
     let source = ["impl", "cite", "test"]
         .iter()
         .map(|role| format!("// {{{role}}}`glossary.a`\n"))
-        .chain(["// TERM`cases.case`\n".replace("TERM", "{term}")])
+        .chain(["// {term}`cases.case`\n".to_owned()])
         .collect::<String>();
     fs::write(
         temp.path().join("src/lib.rs"),
@@ -506,7 +505,7 @@ fn phrases_are_plain_links_and_markdown_literals_are_preserved() {
         "glossary.md",
         Vec::new(),
     ));
-    let source = "Use TERM`glossary.a`.\n\n`TERM`glossary.a``\n\n```text\nTERM`glossary.a`\n```\n\n\\TERM`glossary.a`".replace("TERM", "{term}");
+    let source = "Use {term}`glossary.a`.\n\n`{term}`glossary.a``\n\n```text\n{term}`glossary.a`\n```\n\n\\{term}`glossary.a`".to_owned();
     book.push_item(Chapter::new("Guide", source, "guide/deep.md", Vec::new()));
     habeas::preprocess_book(&mut book, Path::new(".")).unwrap();
     let chapters: Vec<_> = book.chapters().collect();
@@ -543,7 +542,7 @@ fn a_term_reference_renders_only_its_phrase_as_a_plain_link() {
     ));
     book.push_item(Chapter::new(
         "Guide",
-        "Follow the TERM`glossary.first_parent_history`.\n".replace("TERM", "{term}"),
+        "Follow the {term}`glossary.first_parent_history`.\n".to_owned(),
         "guide.md",
         Vec::new(),
     ));
@@ -576,10 +575,7 @@ fn changed_definition_snapshots_show_a_compact_diff_and_text_is_required() {
     let original = fs::read_to_string(&glossary).unwrap();
     fs::write(
         &glossary,
-        original.replace(
-            concat!("See {", "term}`glossary.b`."),
-            concat!("See {", "term}`glossary.b` again."),
-        ),
+        original.replace("See {term}`glossary.b`.", "See {term}`glossary.b` again."),
     )
     .unwrap();
     let errors = validate_repository(root).unwrap().errors;
@@ -592,8 +588,8 @@ fn changed_definition_snapshots_show_a_compact_diff_and_text_is_required() {
     assert_eq!(
         diff,
         [
-            concat!("- See {", "term}`glossary.b`."),
-            concat!("+ See {", "term}`glossary.b` again.")
+            "- See {term}`glossary.b`.",
+            "+ See {term}`glossary.b` again."
         ],
         "{changed}"
     );
@@ -642,15 +638,10 @@ fn markdown_and_plain_text_inputs_contribute_their_term_references() {
     fs::create_dir_all(root.join("docs")).unwrap();
     fs::write(
         root.join("docs/notes.md"),
-        "# Notes\n\nThis uses TERM`more.prose` in prose.\n\n```text\nTERM`more.literal`\n```\n"
-            .replace("TERM", "{term}"),
+        "# Notes\n\nThis uses {term}`more.prose` in prose.\n\n```text\n{term}`more.literal`\n```\n",
     )
     .unwrap();
-    fs::write(
-        root.join("notes.txt"),
-        "plain TERM`more.line` text\n".replace("TERM", "{term}"),
-    )
-    .unwrap();
+    fs::write(root.join("notes.txt"), "plain {term}`more.line` text\n").unwrap();
     // The heading's section covers both the paragraph and the code block.
     let section = outline_input(root, "docs/notes.md", "section[Notes]").unwrap();
     let line = outline_inputs_for_lines(root, "notes.txt", 1, 1).unwrap();
@@ -699,10 +690,11 @@ fn literal_term_roles_in_subject_and_requirements_inputs_need_no_definition() {
     let mut text = fs::read_to_string(&glossary).unwrap();
     text.push_str("\n:::{definition} c\n:phrase: gamma\n\nA third term.\n:::\n");
     fs::write(&glossary, text).unwrap();
-    let literal = "Write `TERM`glossary.c`` as code, \\TERM`glossary.c` escaped, and <span title=\"TERM`glossary.c`\">html</span>.\n\n```text\nTERM`glossary.c`\n```\n";
+    let literal = "Write `{term}`glossary.c`` as code, \\{term}`glossary.c` escaped, and <span title=\"{term}`glossary.c`\">html</span>.\n\n```text\n{term}`glossary.c`\n```\n";
     let chapter = |extra: &str| {
-        format!(":::{{req}} ready\nUse TERM`glossary.a`.\n:::\n\n:::{{req}} literal\n{literal}{extra}:::\n")
-            .replace("TERM", "{term}")
+        format!(
+            ":::{{req}} ready\nUse {{term}}`glossary.a`.\n:::\n\n:::{{req}} literal\n{literal}{extra}:::\n"
+        )
     };
     fs::write(root.join("md/rules.md"), chapter("")).unwrap();
     let glossary_ab = || {
@@ -734,7 +726,7 @@ fn literal_term_roles_in_subject_and_requirements_inputs_need_no_definition() {
     // The same role written as a reference needs the definition in both.
     fs::write(
         root.join("md/rules.md"),
-        chapter(&"\nAnd TERM`glossary.c` itself.\n".replace("TERM", "{term}")),
+        chapter("\nAnd {term}`glossary.c` itself.\n"),
     )
     .unwrap();
     write(root);
@@ -763,9 +755,7 @@ fn a_term_referenced_only_by_a_rust_input_comment_needs_its_definition_input() {
     // string literal is not a comment and needs nothing.
     fs::write(
         root.join("src/lib.rs"),
-        "// IMPL`rules.ready`\n// Uses TERM`glossary.c`.\npub fn run() {}\n\n// IMPL`rules.ready`\npub fn quoted() -> &'static str {\n    \"TERM`glossary.c`\"\n}\n"
-            .replace("IMPL", "{impl}")
-            .replace("TERM", "{term}"),
+        "// {impl}`rules.ready`\n// Uses {term}`glossary.c`.\npub fn run() {}\n\n// {impl}`rules.ready`\npub fn quoted() -> &'static str {\n    \"{term}`glossary.c`\"\n}\n",
     )
     .unwrap();
     let base = |items: &[&str]| {
@@ -814,9 +804,7 @@ fn outline_inputs_capture_terms_without_counting_them_as_citations() {
     let root = temp.path();
     fs::write(
         root.join("src/lib.rs"),
-        "// IMPL`rules.ready`\n// TERM`glossary.a`\npub fn run() {}\n"
-            .replace("IMPL", "{impl}")
-            .replace("TERM", "{term}"),
+        "// {impl}`rules.ready`\n// {term}`glossary.a`\npub fn run() {}\n",
     )
     .unwrap();
     // The function's term reference needs the same glossary cycle as the
@@ -853,7 +841,7 @@ fn outline_inputs_capture_terms_without_counting_them_as_citations() {
     );
     fs::write(
         root.join("src/lib.rs"),
-        "// TERM`glossary.a`\npub fn run() {}\n".replace("TERM", "{term}"),
+        "// {term}`glossary.a`\npub fn run() {}\n",
     )
     .unwrap();
     // Removing a citation comment leaves the node's hash unchanged, so the
@@ -901,9 +889,7 @@ fn definition_schema_deletion_and_literal_references_are_checked() {
 
     let temp = fixture();
     let root = temp.path();
-    let body =
-        "Literal `TERM`missing.name``.\n\n```text\nTERM`missing.name`\n```\n\n\\TERM`missing.name`"
-            .replace("TERM", "{term}");
+    let body = "Literal `{term}`missing.name``.\n\n```text\n{term}`missing.name`\n```\n\n\\{term}`missing.name`";
     fs::write(
         root.join("md/rules.md"),
         format!(":::{{req}} ready\n{body}\n:::\n"),
@@ -927,9 +913,7 @@ fn example_subject_and_definition_display_use_the_same_dependencies() {
     let root = temp.path();
     let path = root.join("md/rules.md");
     let text = fs::read_to_string(&path).unwrap()
-        + &"\n:::{example} case\nCITE`rules.ready` with TERM`glossary.a`.\n:::\n"
-            .replace("CITE", "{cite}")
-            .replace("TERM", "{term}");
+        + "\n:::{example} case\n{cite}`rules.ready` with {term}`glossary.a`.\n:::\n";
     fs::write(path, text).unwrap();
     // The example's own term reference and its selected requirement need the
     // same glossary cycle, recorded once.

@@ -3218,7 +3218,7 @@ mod tests {
                 "lines": [
                     {"text": "fn first() {}", "matched": false},
                     {"text": "", "matched": false},
-                    {"text": concat!("// {", "term}`terms.value`"), "matched": false},
+                    {"text": "// {term}`terms.value`", "matched": false},
                     {"text": "fn needle() {}", "matched": true},
                 ]})
             ]

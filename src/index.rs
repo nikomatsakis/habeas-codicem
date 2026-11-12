@@ -218,6 +218,7 @@ impl LoadedDetailEvidence {
         }
     }
 
+    // {cite}`habeas:util`
     pub(crate) fn state(&self) -> EvidenceState {
         self.state
     }
@@ -227,6 +228,7 @@ impl LoadedDetailEvidence {
         &self.errors
     }
 
+    // {cite}`habeas:util`
     /// The recorded determination's kind, when the record has a valid
     /// determination, and whether its rationale states that its assessments
     /// disagreed under the `confirm` policy.
@@ -1065,6 +1067,7 @@ mod tests {
     // {test}`requirements.cli.shared_status_rendering`
     // {test}`requirements.index.detail_format`
     // {test}`requirements.index.invalid_detail`
+    // {test}`requirements.index.detail_pages`
     #[test]
     fn index_shows_evidence_states_and_links_generated_chapters() {
         let temp = TempDir::new().unwrap();
@@ -1086,7 +1089,7 @@ mod tests {
         fs::write(temp.path().join("md/requirements/core.md"), &source).unwrap();
         fs::write(
             temp.path().join("src/main.rs"),
-            ["// {", "impl}`requirements.core.uncovered`\n"].concat(),
+            "// {impl}`requirements.core.uncovered`\n",
         )
         .unwrap();
         for (name, body, determination) in [
@@ -1712,8 +1715,7 @@ mod tests {
         fs::write(root.join("md/rules.md"), &source).unwrap();
         fs::write(
             root.join("src/lib.rs"),
-            "// IMPL`rules.false_uncovered`\nfn uncovered() {}\n\n// :::{fixme} rules.fixme_clean\n// :github: example/rules#9\n// The gap.\n// :::\nfn gap() {}\n"
-                .replace("IMPL", "{impl}"),
+            "// {impl}`rules.false_uncovered`\nfn uncovered() {}\n\n// :::{fixme} rules.fixme_clean\n// :github: example/rules#9\n// The gap.\n// :::\nfn gap() {}\n",
         )
         .unwrap();
         let gap = crate::inputs::outline_input(root, "src/lib.rs", "fn[gap]").unwrap();
@@ -1803,8 +1805,7 @@ mod tests {
             fs::create_dir_all(root.join(dir)).unwrap();
         }
         fs::write(root.join("book.toml"), "[book]\nsrc = \"md\"\n").unwrap();
-        let body =
-            |name: &str| format!("The {name} case. CITE`rules.ready`").replace("CITE", "{cite}");
+        let body = |name: &str| format!("The {name} case. {{cite}}`rules.ready`");
         let names = ["valid", "pending", "fixme", "changed", "missing"];
         let mut source = ":::{req} ready\nReady.\n:::\n".to_owned();
         for name in names {
@@ -1813,8 +1814,7 @@ mod tests {
         fs::write(root.join("md/rules.md"), &source).unwrap();
         fs::write(
             root.join("src/lib.rs"),
-            "// TEST`rules.valid`\nfn valid_case() {}\n\n// :::{fixme} rules.fixme\n// :github: example/rules#7\n// The case is untested.\n// :::\nfn fixme_case() {}\n"
-                .replace("TEST", "{test}"),
+            "// {test}`rules.valid`\nfn valid_case() {}\n\n// :::{fixme} rules.fixme\n// :github: example/rules#7\n// The case is untested.\n// :::\nfn fixme_case() {}\n",
         )
         .unwrap();
         let test_input =
@@ -1906,13 +1906,12 @@ mod tests {
         fs::create_dir_all(temp.path().join("md")).unwrap();
         fs::create_dir_all(temp.path().join("evidence")).unwrap();
         fs::write(temp.path().join("book.toml"), "[book]\nsrc = \"md\"\n").unwrap();
-        let source = ":::{req} ready\nReady.\n:::\n\n:::{example} pending\nPending case. CITE`rules.ready`\n:::\n\n:::{example} missing\nMissing case. CITE`rules.ready`\n:::\n"
-            .replace("CITE", "{cite}");
-        fs::write(temp.path().join("md/rules.md"), &source).unwrap();
+        let source = ":::{req} ready\nReady.\n:::\n\n:::{example} pending\nPending case. {cite}`rules.ready`\n:::\n\n:::{example} missing\nMissing case. {cite}`rules.ready`\n:::\n";
+        fs::write(temp.path().join("md/rules.md"), source).unwrap();
         fs::write(
             temp.path().join("evidence/rules.pending.json"),
             json!({
-                "example": "Pending case. CITE`rules.ready`".replace("CITE", "{cite}"),
+                "example": "Pending case. {cite}`rules.ready`",
                 "determination": false,
                 "rationale": "The case still needs a test.",
                 "inputs": []
@@ -2004,17 +2003,13 @@ mod tests {
             fs::create_dir_all(root.join(dir)).unwrap();
         }
         fs::write(root.join("book.toml"), "[book]\nsrc = \"md\"\n").unwrap();
-        let source = ":::{req} ready\n:impl: skills/ready.md\nReady relies on CITE`rules.base`.\n:::\n\n:::{req} base\nBase.\n:::\n\n:::{example} case\nA case. TEST`rules.ready`\n:::\n"
-            .replace("CITE", "{cite}")
-            .replace("TEST", "{test}");
+        let source = ":::{req} ready\n:impl: skills/ready.md\nReady relies on {cite}`rules.base`.\n:::\n\n:::{req} base\nBase.\n:::\n\n:::{example} case\nA case. {test}`rules.ready`\n:::\n".to_owned();
         fs::write(root.join("md/rules.md"), &source).unwrap();
         fs::write(root.join("skills/ready.md"), "# Skill\n").unwrap();
         fs::write(root.join("notes.txt"), "Notes.\n").unwrap();
         fs::write(
             root.join("src/lib.rs"),
-            "// IMPL`rules.ready`\nfn run() {}\n\n// TEST`rules.ready`\nfn check() {}\n"
-                .replace("IMPL", "{impl}")
-                .replace("TEST", "{test}"),
+            "// {impl}`rules.ready`\nfn run() {}\n\n// {test}`rules.ready`\nfn check() {}\n",
         )
         .unwrap();
         let outline =
@@ -2031,7 +2026,7 @@ mod tests {
         fs::write(
             root.join("evidence/rules.ready.json"),
             json!({
-                "requirement": "Ready relies on CITE`rules.base`.".replace("CITE", "{cite}"),
+                "requirement": "Ready relies on {cite}`rules.base`.",
                 "determination": true,
                 "rationale": "Checked.",
                 "inputs": inputs,
@@ -2089,6 +2084,7 @@ mod tests {
     // {test}`requirements.index.detail_format`
     // {test}`requirements.definitions.inputs`
     // {test}`requirements.ci.requirements_inputs`
+    // {test}`requirements.index.source_links`
     #[test]
     fn detail_page_shows_recorded_text_locations_and_first_matching_group() {
         let temp = TempDir::new().unwrap();
@@ -2097,14 +2093,11 @@ mod tests {
             fs::create_dir_all(root.join(dir)).unwrap();
         }
         fs::write(root.join("book.toml"), "[book]\nsrc = \"md\"\n").unwrap();
-        let source = ":::{req} ready\nReady uses TERM`rules.term`.\n:::\n\n:::{req} base\nBase.\n:::\n\n:::{definition} term\n:phrase: term\n\nA term.\n:::\n"
-            .replace("TERM", "{term}");
+        let source = ":::{req} ready\nReady uses {term}`rules.term`.\n:::\n\n:::{req} base\nBase.\n:::\n\n:::{definition} term\n:phrase: term\n\nA term.\n:::\n".to_owned();
         fs::write(root.join("md/rules.md"), &source).unwrap();
         fs::write(
             root.join("src/lib.rs"),
-            "// IMPL`rules.ready`\n// TEST`rules.ready`\nfn both() {}\n"
-                .replace("IMPL", "{impl}")
-                .replace("TEST", "{test}"),
+            "// {impl}`rules.ready`\n// {test}`rules.ready`\nfn both() {}\n",
         )
         .unwrap();
         let inputs = json!([
@@ -2116,7 +2109,7 @@ mod tests {
         fs::write(
             root.join("evidence/rules.ready.json"),
             json!({
-                "requirement": "Ready uses TERM`rules.term`.".replace("TERM", "{term}"),
+                "requirement": "Ready uses {term}`rules.term`.",
                 "determination": true,
                 "rationale": "Checked.",
                 "inputs": inputs,

@@ -10,10 +10,7 @@ use serde_json::{Value, json};
 use tempfile::TempDir;
 
 const SUBJECT: &str = "requirements.ready";
-const REQUIREMENT: &str = concat!(
-    "SECRET_REQUIREMENT_TEXT MUST implement {",
-    "term}`terms.readiness`."
-);
+const REQUIREMENT: &str = "SECRET_REQUIREMENT_TEXT MUST implement {term}`terms.readiness`.";
 const MODEL: &str = "fixture:q4_K_M";
 const AUTH: &str = "SECRET_AUTH_VALUE";
 
@@ -174,7 +171,7 @@ impl Fixture {
             ":::{definition} readiness\n:phrase: readiness\n\nSECRET_DEFINITION_TEXT.\n:::\n",
         )
         .unwrap();
-        fs::write(project.join("src/lib.rs"), concat!("// {", "impl}`requirements.ready`\n// :::{fixme} requirements.ready\n// :github: example/app#125\n// One acknowledged gap.\n// :::\npub fn ready() {}\n// {", "test}`requirements.ready`\nfn ready_test() {}\n")).unwrap();
+        fs::write(project.join("src/lib.rs"), "// {impl}`requirements.ready`\n// :::{fixme} requirements.ready\n// :github: example/app#125\n// One acknowledged gap.\n// :::\npub fn ready() {}\n// {test}`requirements.ready`\nfn ready_test() {}\n").unwrap();
         fs::write(
             project.join("extra.txt"),
             (1..=12)
@@ -714,7 +711,7 @@ fn false_is_a_completed_assessment() {
     )])]);
     let fixture = Fixture::new(&server.endpoint);
     fs::write(fixture.project.join("md/requirements.md"), ":::{req} ready\nInserting into a full queue MUST return false without overwriting its entries, including at zero capacity.\n:::\n").unwrap();
-    fs::write(fixture.project.join("src/lib.rs"), concat!("// {", "impl}`requirements.ready`\n// FIXME(#125): zero-capacity insertion panics.\npub fn push(queue: &mut [u8], value: u8) -> bool {\n    queue[0] = value;\n    true\n}\n")).unwrap();
+    fs::write(fixture.project.join("src/lib.rs"), "// {impl}`requirements.ready`\n// FIXME(#125): zero-capacity insertion panics.\npub fn push(queue: &mut [u8], value: u8) -> bool {\n    queue[0] = value;\n    true\n}\n").unwrap();
     let output = fixture.run(&["author-evidence", SUBJECT, "--config", "mock"]);
     assert!(
         output.status.success(),
@@ -4615,10 +4612,7 @@ fn replacing_a_record_reviews_items_it_no_longer_covers_and_status_shows_the_res
     // ...until the item is covered again.
     fs::write(
         fixture.project.join("src/helper.rs"),
-        concat!(
-            "// {",
-            "impl}`requirements.ready`\nfn helper() {}\n\nfn other() {}\n"
-        ),
+        "// {impl}`requirements.ready`\nfn helper() {}\n\nfn other() {}\n",
     )
     .unwrap();
     let status = fixture.run(&["status"]);

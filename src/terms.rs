@@ -92,6 +92,7 @@ fn direct_references(
                 InputSelector::Definition { definition } => {
                     pending.insert(definition);
                 }
+                // {impl}`requirements.references.reference_contexts`
                 InputSelector::Outline { file, .. }
                     if crate::outline::profile_for_path(Path::new(&file)).name == "rust" =>
                 {
@@ -227,8 +228,8 @@ mod tests {
             ":::{definition} unit\n:phrase: unit\nA unit.\n:::\n",
         )
         .unwrap();
-        let used = ["{", "term}`terms.unit`"].concat();
-        let missing = ["{", "term}`terms.missing`"].concat();
+        let used = "{term}`terms.unit`".to_owned();
+        let missing = "{term}`terms.missing`".to_owned();
         let notes = format!(
             "Uses {used}.\n\n`{missing}` and \\{missing}\n\n```text\n{missing}\n```\n\n<span title=\"{missing}\"></span>\n"
         );
@@ -269,17 +270,22 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path();
         fs::create_dir_all(root.join("md")).unwrap();
+        fs::create_dir_all(root.join("src")).unwrap();
         fs::write(root.join("book.toml"), "[book]\nsrc = \"md\"\n").unwrap();
         fs::write(
             root.join("md/terms.md"),
             ":::{definition} unit\n:phrase: unit\nA unit.\n:::\n",
         )
         .unwrap();
-        let used = ["{", "term}`terms.unit`"].concat();
-        let missing = ["{", "term}`terms.missing`"].concat();
+        let used = "{term}`terms.unit`".to_owned();
+        let missing = "{term}`terms.missing`".to_owned();
         let declarations = crate::evidence::load_definitions(root).unwrap();
         let outlines = OutlineCache::default();
         for (file, text) in [
+            (
+                "src/lib.rs",
+                format!("// Uses {used}.\nconst NAME: &str = \"{missing}\";\n"),
+            ),
             ("tool.py", format!("# Uses {used}.\nNAME = \"{missing}\"\n")),
             (
                 "config.toml",

@@ -51,6 +51,7 @@ impl std::fmt::Display for RefactorError {
 
 impl std::error::Error for RefactorError {}
 
+// {impl}`requirements.refactor.mappings`
 /// The suffix of `value` beneath `prefix`: empty when they are equal, and
 /// starting with `separator` when `value` lies beneath it.
 fn beneath<'a>(value: &'a str, prefix: &str, separator: char) -> Option<&'a str> {
@@ -58,6 +59,7 @@ fn beneath<'a>(value: &'a str, prefix: &str, separator: char) -> Option<&'a str>
     (rest.is_empty() || rest.starts_with(separator)).then_some(rest)
 }
 
+// {impl}`requirements.refactor.mappings`
 /// A node selector beneath `prefix`, relative to it: `None` unless `item` is
 /// `prefix` or one of its descendants. Every selector lies beneath the root's
 /// empty selector.
@@ -68,6 +70,7 @@ fn beneath_node<'a>(item: &'a str, prefix: &str) -> Option<&'a str> {
     beneath(item, prefix, '/').map(|rest| rest.trim_start_matches('/'))
 }
 
+// {impl}`requirements.refactor.mappings`
 /// `relative` beneath the selector `prefix`.
 fn join_node(prefix: &str, relative: &str) -> String {
     match (prefix.is_empty(), relative.is_empty()) {
@@ -262,6 +265,7 @@ static CODE_SPAN: LazyLock<Regex> =
 /// Rewrites references and anchors in a source's content: each reference
 /// naming a mapped definition, and in Markdown each anchor option naming a
 /// mapped file or node. Returns the new content and the number of edits.
+// {impl}`requirements.references.reference_contexts`
 // {impl}`requirements.refactor.reference_rewrite`
 fn rewrite_source(mappings: &Mappings, path: &Path, content: &str) -> (String, usize) {
     let markdown = crate::outline::is_markdown_path(path);
@@ -388,6 +392,7 @@ struct States {
 
 impl States {
     /// Computes the post and mapped-back states from the current repository.
+    // {impl}`requirements.refactor.definition_inputs`
     fn compute(root: &Path, mappings: Mappings) -> io::Result<Self> {
         let definitions = crate::evidence::load_definitions(root)?;
         let mut failures = Vec::new();
@@ -821,6 +826,12 @@ fn rewrite_record(states: &States, path: &str, record: &Value) -> io::Result<Out
                             }
                         }
                     }
+                    // :::{impl} requirements.refactor.equivalence
+                    // A citation review validates against the citations its
+                    // item currently carries, so a review whose rewritten
+                    // citations differ from those would validate differently
+                    // after the move; the record is left unchanged instead.
+                    // :::
                     if changed && !same_citations(states, &new_file, &new_item, &value) {
                         failures.push(format!(
                             "the citations of {} differ from the recorded ones",
@@ -882,6 +893,7 @@ fn rewrite_record(states: &States, path: &str, record: &Value) -> io::Result<Out
     })
 }
 
+// {cite}`habeas:util`
 /// Whether a citation review's citations, as rewritten, are the post
 /// state's citations of its item.
 fn same_citations(states: &States, file: &str, item: &str, value: &Value) -> bool {

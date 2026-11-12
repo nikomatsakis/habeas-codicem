@@ -49,8 +49,8 @@ fn mdbook_preprocessor_renders_definitions_between_stdin_and_stdout() {
     fs::write(root.join("Cargo.toml"), "[package]\nname = \"fixture\"\n").unwrap();
     fs::write(root.join("book.toml"), "[book]\nsrc = \"md\"\n").unwrap();
     let content =
-        ":::{req} ready\nReady MUST work.\n:::\n\n:::{req} cites\nSee CITE`rules.ready`.\n:::\n"
-            .replace("CITE", "{cite}");
+        ":::{req} ready\nReady MUST work.\n:::\n\n:::{req} cites\nSee {cite}`rules.ready`.\n:::\n"
+            .to_owned();
     fs::write(root.join("md/rules.md"), &content).unwrap();
     let mut book = Book::new();
     book.push_item(Chapter::new("Rules", content, "rules.md", Vec::new()));

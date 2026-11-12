@@ -687,7 +687,7 @@ mod tests {
             ":::{req} ready\nReady.\n:::\n",
         )
         .unwrap();
-        let cite = ["{", "cite}`requirements.ready`"].concat();
+        let cite = "{cite}`requirements.ready`".to_owned();
         fs::write(
             root.join("src/main.rs"),
             format!("// {cite}\nfn one() {{}}\n// {cite}\nfn two() {{}}\n"),
