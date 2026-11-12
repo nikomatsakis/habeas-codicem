@@ -201,7 +201,96 @@ For every `{impl}` and `{test}` reference in a project source file, including on
 :::
 
 :::{req} rust_item_coverage
-During repository validation, Habeas MUST parse every first-party Rust source file: every `.rs` file among the sources reference discovery considers under {cite}`requirements.references.discovery`, except those under the project-root `vendor` directory. Every explicitly declared function or method, including trait methods and test helpers, and every struct, enum, and union MUST be covered. An item is covered when it has a valid `{impl}`, `{cite}`, or `{test}` reference to a defined requirement or named example, or a valid citation of the built-in `habeas:util` under {cite}`requirements.references.util`, in a Rust comment attached to it or within its body; or when its outline node, or an outline node containing it, is recorded with its current hash as an outline input of an evidence record, a citation review, or a site review. Search results are not evidence inputs under {cite}`requirements.authoring.text_search`, so only sources an assessment received as mandatory inputs or read count. Comments belong to items under {cite}`requirements.references.outline_comments`; a comment before a field, variant, or attribute inside an item belongs to that item. A named example MUST reference a requirement under {cite}`requirements.examples.definition`. A reference in a string literal, on an enclosing module or impl block, or only in an evidence input MUST NOT count for the items it encloses. Habeas MUST report every uncovered item with its file, line, kind, and name, and MUST report a Rust parse failure instead of silently skipping the file.
+During repository validation, Habeas MUST parse every first-party Rust source file: every `.rs` file among the sources reference discovery considers under {cite}`requirements.references.discovery`, except those under the project-root `vendor` directory. Each explicitly declared function or method, including trait methods and test helpers, and each struct, enum, and union is an item that can be covered. An item is covered when it has a valid `{impl}`, `{cite}`, or `{test}` reference to a defined requirement or named example, or a valid citation of the built-in `habeas:util` under {cite}`requirements.references.util`, in a Rust comment attached to it or within its body; or when its outline node, or an outline node containing it, is recorded with its current hash as an outline input of an evidence record, a citation review, or a site review. Search results are not evidence inputs under {cite}`requirements.authoring.text_search`, so only sources an assessment received as mandatory inputs or read count. Comments belong to items under {cite}`requirements.references.outline_comments`; a comment before a field, variant, or attribute inside an item belongs to that item. A named example MUST reference a requirement under {cite}`requirements.examples.definition`. A reference in a string literal, on an enclosing module or impl block, or only in an evidence input MUST NOT count for the items it encloses. Habeas MUST report a Rust parse failure instead of silently skipping the file. Only {cite}`requirements.references.coverage.tests` and {cite}`requirements.references.coverage.examples` make an uncovered item a validation error; other items without recent coverage are warned about under {cite}`requirements.references.coverage.report`.
+:::
+
+:::{req} coverage.tests
+Every Rust function carrying a test attribute, `#[test]` or an attribute whose
+path ends in `test` such as `#[tokio::test]`, including those in Cargo
+integration-test targets, MUST carry a `{test}` reference to a requirement or
+named example under {cite}`requirements.references.roles`, in a comment
+attached to it or within its body. A test function without one MUST be a
+validation error naming its file, line, and name.
+:::
+
+:::{req} coverage.examples
+Every Cargo example target, each `.rs` file directly under the package's
+`examples/` directory, each `examples/<name>/main.rs`, and each `[[example]]`
+`path` in `Cargo.toml`, MUST `{cite}` a named example of the book under
+{cite}`requirements.examples.definition` in a comment in that file. An example
+target without one MUST be a validation error naming the file.
+:::
+
+:::{req} coverage.history
+An item has recent coverage when it has a reference that covers it under
+{cite}`requirements.references.rust_item_coverage`, or when its outline node, or
+an outline node containing it, is named by file and selector in the inputs of
+any version of an existing evidence record, citation review, or site review in
+its coverage window. A file's coverage window MUST be its current contents on
+disk, committed or not, together with its contents in each of the last N
+commits in its Git history that changed it, read through a Git library rather
+than by running `git`. A recorded hash MUST NOT matter here: an earlier version
+names the node, whatever its code was then. N MUST be the workspace
+`[coverage]` setting `reauthorings`, a positive integer, and 3 when it is not
+set. When the history is unavailable, such as outside Git or in a shallow clone
+missing those commits, the window MUST be the commits that are available, and
+the commands of {cite}`requirements.references.coverage.report` MUST say that
+coverage history is incomplete.
+:::
+
+:::{req} coverage.report
+`habeas status`, and `habeas author` after it finishes, MUST warn about every
+item without recent coverage under
+{cite}`requirements.references.coverage.history`, naming its file, line, kind,
+and name, except items inside a module named `tests`. A warning MUST NOT fail
+validation, and repository validation MUST NOT read Git history.
+:::
+
+:::{example} coverage.reauthored
+Function `parse` has no reference, and the evidence of `requirements.cli.check`
+read it. The requirement is re-authored and committed twice, and neither new
+record reads `parse`. With the default window of 3, the record's third most
+recent version still names `parse`, so `habeas status` does not warn. After a
+third such commit, no version in the window names it, and `habeas status` warns
+about `parse`. {test}`requirements.references.coverage.history`
+{test}`requirements.references.coverage.report`
+:::
+
+:::{example} coverage.deleted_requirement
+Function `render` is read only by the evidence of `requirements.cli.render`.
+The requirement is deleted, and `habeas author` removes its evidence file.
+Deleted files have no coverage window, so `habeas status` warns about `render`
+at once, before any further commit.
+{test}`requirements.references.coverage.history`
+:::
+
+:::{example} coverage.new_function
+A new function `helper` has no reference, and no evidence record has ever read
+it. `habeas status` warns about it at once; nothing in any window names it.
+{test}`requirements.references.coverage.report`
+:::
+
+:::{example} coverage.uncommitted
+The evidence of `requirements.cli.check` read `parse`. The requirement is
+re-authored but not yet committed, and the new record does not read `parse`.
+The committed versions in the window still name it, so `habeas status` does not
+warn. If the new record had read `parse`, its contents on disk would cover it
+even before the commit. {test}`requirements.references.coverage.history`
+:::
+
+:::{example} coverage.shallow_clone
+In a shallow clone with no history beyond the last commit, each window holds
+only the files' contents on disk and in that commit. `habeas status` says that
+coverage history is incomplete and warns about items those contents do not
+cover. {test}`requirements.references.coverage.history`
+:::
+
+:::{example} coverage.test_module
+A helper function inside `mod tests` has no reference and is read by no record.
+`habeas status` does not warn about it. A `#[test]` function in the same module
+without a `{test}` reference is still a validation error.
+{test}`requirements.references.coverage.report`
+{test}`requirements.references.coverage.tests`
 :::
 
 :::{req} definition_globs

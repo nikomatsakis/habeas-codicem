@@ -104,8 +104,9 @@ requirements.
 
 :::{req} workspace_structure
 `habeas.toml` MUST serialize WorkspaceConfig as UTF-8 TOML with `version = 1`.
-Its supported feature tables are `[authoring]` and `[evidence]`; either MAY be
-absent. Unknown keys, unsupported versions, and invalid field types MUST produce
+Its supported feature tables are `[authoring]`, `[coverage]`, and
+`[evidence]`; each MAY be absent. `[coverage]` has one optional key,
+`reauthorings`, under {cite}`requirements.references.coverage.history`. Unknown keys, unsupported versions, and invalid field types MUST produce
 a diagnostic identifying the file and setting. Invalid TOML, including content
 that is not UTF-8, MUST produce a diagnostic identifying the file, with the line
 and column of a syntax error.

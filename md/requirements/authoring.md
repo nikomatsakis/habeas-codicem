@@ -954,9 +954,10 @@ NOT become evidence inputs; the model requests the sources it relies on with the
 ### Submit the result: `submit_judgment`
 
 :::{req} coverage_loss
-When authoring replaces a record and an item that its previous inputs covered
-under {cite}`requirements.references.rust_item_coverage` is no longer covered,
-the harness MUST assess that item in a coverage-loss review: an independent
+When authoring replaces a record and an item that its previous version
+covered then has no recent coverage under
+{cite}`requirements.references.coverage.history`, the harness MUST assess that
+item in a coverage-loss review: an independent
 conversation with the same source tools, whose mandatory inputs under
 {cite}`requirements.authoring.mandatory_inputs` are the item's outline node and
 the declarations of the requirements and examples whose previous records read
@@ -967,7 +968,7 @@ a root when the item carries out part of the definition under
 {cite}`requirements.references.procedure`, even when an item marked `{impl}`
 for it reaches the item, and not needed otherwise. The result MUST NOT be
 evidence: authoring MUST report it, and `habeas status` MUST show the latest
-result beside the uncovered item until the item is covered again.
+result beside the warning until the item is covered again.
 
 The review MUST use this prompt, the first block as its system prompt and the
 second as its subject message under {cite}`requirements.authoring.prompt_parts`,
@@ -996,8 +997,9 @@ reviewer would reach from the same text and sources.
 
 The mandatory inputs at the end contain the item and the declarations of the
 requirements and examples whose earlier assessments read it. Those assessments
-have been replaced by ones that did not read the item, and it carries no
-reference of its own, so validation reports it uncovered. For each listed
+have been replaced, several times or by deletion, by ones that did not read the
+item, and it carries no reference of its own, so Habeas warns that it has lost
+its coverage. For each listed
 definition, decide whether the item is a root of the definition's
 implementation or is not needed for it.
 
