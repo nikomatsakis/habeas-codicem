@@ -1,6 +1,6 @@
 ---
 name: habeas-evidence
-description: Use when Habeas evidence needs creating or refreshing, or when `cargo test` or `habeas status` reports Habeas findings such as missing, stale, or false evidence, uncovered `{impl}` or `{test}` lines, uncovered Rust items, coverage-loss reviews, FIXME judgments, citation or site reviews, or disagreeing assessments, even if the user only says "the habeas test is failing". Covers running `habeas author` and fixing what it flags. If evidence went stale because code or requirements moved, use habeas-refactor first.
+description: Use when Habeas evidence needs creating or refreshing, or when `cargo test` or `habeas status` reports Habeas findings such as missing, stale, or false evidence, uncovered `{impl}` or `{test}` lines, uncovered Rust items, FIXME judgments, citation or site reviews, or disagreeing assessments, even if the user only says "the habeas test is failing". Covers running `habeas author` and fixing what it flags. If evidence went stale because code or requirements moved, use habeas-refactor first.
 ---
 
 # Habeas evidence
@@ -104,18 +104,14 @@ Items inside `mod tests` are never warned about. So an item a record stopped
 reading stays quiet for a few re-authorings, while a new item that nothing has
 read, or one whose only record was deleted, is warned about at once.
 
-When re-authoring leaves an item without recent coverage, `habeas author` runs
-a coverage-loss review, and `habeas status` shows it beside the warning.
-Before acting on a `not needed` finding, check from its rationale and the code
-whether the earlier read was mistaken. Then, for each item still uncovered
-after `habeas author --all`:
+For each item still warned about after `habeas author --all`, choose
+references by "Choosing references" in the habeas-requirements skill:
 
 | Situation | Action |
 | --- | --- |
-| coverage-loss review says `root` | add `{impl}` of that definition to the item |
-| coverage-loss review says `not needed`, and nothing reaches the item | report it to the user as dead code; don't delete it unasked |
-| coverage-loss review says `not needed`, and the item serves other code | add `` // {cite}`habeas:util` `` |
-| the earlier read was mistaken, or no coverage-loss review | choose references by "Choosing references" in the habeas-requirements skill |
+| the item is a root of a requirement's implementation | add `{impl}` of that requirement to the item |
+| the item only serves other code | add `` // {cite}`habeas:util` `` |
+| nothing reaches the item | report it to the user as dead code; don't delete it unasked |
 
 ## Disagreeing assessments
 

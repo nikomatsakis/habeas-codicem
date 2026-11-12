@@ -120,24 +120,6 @@ impl RecentCoverage {
         }
     }
 
-    /// Whether node `index` of `file`'s outline, or a node containing it, is
-    /// named by some version in a window.
-    pub(crate) fn covers(&self, file: &str, outline: &outline::Outline, index: usize) -> bool {
-        let Some(items) = self.selectors.get(file) else {
-            return false;
-        };
-        let mut current = Some(index);
-        while let Some(index) = current {
-            if items.contains(&outline.nodes[index].selector) {
-                return true;
-            }
-            current = outline.nodes[index].parent;
-        }
-        false
-    }
-}
-
-impl RecentCoverage {
     /// Whether the node `item` of `file`, or a node containing it, is named
     /// by some version in a window.
     pub(crate) fn covers_selector(&self, file: &str, item: &str) -> bool {

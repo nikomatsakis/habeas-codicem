@@ -209,8 +209,7 @@ pub fn coverage_warning_lines(root: &Path) -> io::Result<Vec<String>> {
 }
 
 /// The "Coverage warnings" section of `habeas status`: items without recent
-/// coverage, each followed by its latest coverage-loss review, if any. These
-/// do not fail validation.
+/// coverage. These do not fail validation.
 // {impl}`requirements.references.coverage.report`
 // {impl}`requirements.references.coverage.history`
 // {impl}`requirements.cli.status`
@@ -234,30 +233,13 @@ fn coverage_warnings(inspection: &crate::evidence::RepositoryInspection) -> io::
         output.push_str(&escape_html(
             &warned
                 .iter()
-                .map(|item| with_coverage_loss_review(inspection, &item.error))
+                .map(|item| item.error.as_str())
                 .collect::<Vec<_>>()
                 .join("\n\n"),
         ));
         output.push_str("</code></pre>\n");
     }
     Ok(output)
-}
-
-/// A finding as `habeas status` shows it: an uncovered item's finding is
-/// followed by the latest coverage-loss review of the item, if any.
-// {impl}`requirements.authoring.coverage_loss`
-fn with_coverage_loss_review(
-    inspection: &crate::evidence::RepositoryInspection,
-    error: &str,
-) -> String {
-    inspection
-        .uncovered
-        .iter()
-        .find(|item| item.error == error)
-        .and_then(|item| {
-            crate::authoring::coverage_loss::status_lines(&inspection.root, &item.file, &item.item)
-        })
-        .map_or_else(|| error.to_owned(), |review| format!("{error}\n{review}"))
 }
 
 /// The "Disagreements" section of `habeas status`: each selected definition,

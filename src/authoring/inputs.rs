@@ -23,8 +23,6 @@ pub(crate) enum AssessmentKind {
     /// A site of a distributed requirement and the `{fixme}` references
     /// naming the requirement inside it.
     Site(SiteItem, Vec<SiteFixme>),
-    /// An item a replaced record covered that is no longer covered.
-    CoverageLoss(super::coverage_loss::LostItem),
 }
 
 impl AssessmentKind {
@@ -34,7 +32,6 @@ impl AssessmentKind {
             Self::Definition(kind, _) => kind.noun(),
             Self::Citation(_) => "citation review",
             Self::Site(..) => "site review",
-            Self::CoverageLoss(_) => "coverage-loss review",
         }
     }
 }
@@ -446,74 +443,6 @@ impl AssessmentSources {
             access,
             subject_name,
             subject_kind: AssessmentKind::Site(site, fixmes),
-            subject_text: String::new(),
-            outlines,
-            reference_set: String::new(),
-            mandatory,
-            issue_states,
-            github,
-            recorded: Vec::new(),
-        })
-    }
-
-    /// Prepares the coverage-loss review of an item. Its mandatory inputs
-    /// are the item's outline node, the declarations of the requirements and
-    /// examples whose replaced records read it, and the terminology they use;
-    /// those records' rationales are supplied in the prompt.
-    // {impl}`requirements.authoring.mandatory_inputs`
-    pub(crate) fn prepare_coverage_loss(
-        root: &Path,
-        lost: super::coverage_loss::LostItem,
-    ) -> io::Result<Self> {
-        let root = fs::canonicalize(root)?;
-        let access = SourceAccess::load(&root)?;
-        let definitions = load_definitions(&root)?;
-        let outlines = OutlineCache::default();
-        let mut selectors = vec![InputSelector::Outline {
-            file: lost.file.clone(),
-            item: lost.item.clone(),
-        }];
-        for reader in &lost.readers {
-            insert_selector(
-                &mut selectors,
-                InputSelector::Requirements {
-                    requirements: reader.definition.clone(),
-                },
-            );
-        }
-        let mut mandatory = Vec::new();
-        for selector in selectors {
-            mandatory.push(source_input(
-                &root,
-                &access,
-                &definitions,
-                &outlines,
-                &selector,
-            )?);
-        }
-        for input in definition_inputs(&root, &access, &definitions, &outlines, &mandatory, None)? {
-            if !mandatory.contains(&input) {
-                mandatory.push(input);
-            }
-        }
-        let mut errors = Vec::new();
-        let references = collect_references(&root, &mut errors);
-        if !errors.is_empty() {
-            return Err(io::Error::other(errors.join("\n")));
-        }
-        let github = GithubIssues::from_env(&root);
-        let issue_states = crate::github::input_issue_states(
-            &root,
-            &github,
-            &references,
-            &definitions,
-            &mandatory,
-        );
-        Ok(Self {
-            root,
-            access,
-            subject_name: lost.label(),
-            subject_kind: AssessmentKind::CoverageLoss(lost),
             subject_text: String::new(),
             outlines,
             reference_set: String::new(),
@@ -1138,80 +1067,6 @@ pub(super) mod tests {
             .unwrap();
         assert_eq!(error.kind(), io::ErrorKind::PermissionDenied, "{error}");
         assert!(error.to_string().contains("md/requirements.md"), "{error}");
-    }
-
-    // {test}`requirements.authoring.mandatory_inputs`
-    // {test}`requirements.authoring.coverage_loss`
-    #[test]
-    fn coverage_loss_inputs_combine_the_item_reader_declarations_and_terms_once() {
-        use crate::authoring::coverage_loss::{LostItem, Reader};
-        let root = project();
-        fs::write(
-            root.path().join("md/terms.md"),
-            ":::{definition} unit\n:phrase: unit\nA unit.\n:::\n",
-        )
-        .unwrap();
-        fs::write(
-            root.path().join("md/requirements.md"),
-            format!(
-                ":::{{req}} ready\nReady uses {}.\n:::\n\n:::{{req}} other\nOther uses {}.\n:::\n",
-                role("term", "terms.unit"),
-                role("term", "terms.unit")
-            ),
-        )
-        .unwrap();
-        fs::write(root.path().join("src/lib.rs"), "fn lost() {}\n").unwrap();
-        let reader = |definition: &str| Reader {
-            definition: definition.to_owned(),
-            rationale: "Read it.".to_owned(),
-        };
-        let lost = |readers: Vec<Reader>| LostItem {
-            file: "src/lib.rs".to_owned(),
-            item: "fn[lost]".to_owned(),
-            readers,
-        };
-        let sources = AssessmentSources::prepare_coverage_loss(
-            root.path(),
-            lost(vec![
-                reader("requirements.ready"),
-                reader("requirements.other"),
-                reader("requirements.ready"),
-            ]),
-        )
-        .unwrap();
-        let inputs = sources.mandatory_inputs();
-        // The item first, each reader's declaration once, and the shared term
-        // once.
-        assert_eq!(inputs[0]["item"], "fn[lost]", "{inputs:#?}");
-        let count =
-            |key: &str, value: &str| inputs.iter().filter(|input| input[key] == value).count();
-        assert_eq!(
-            count("requirements", "requirements.ready"),
-            1,
-            "{inputs:#?}"
-        );
-        assert_eq!(
-            count("requirements", "requirements.other"),
-            1,
-            "{inputs:#?}"
-        );
-        assert_eq!(count("definition", "terms.unit"), 1, "{inputs:#?}");
-        assert_eq!(inputs.len(), 4, "{inputs:#?}");
-
-        // An unresolvable mandatory input aborts preparation.
-        fs::write(
-            root.path().join("habeas.toml"),
-            "version = 1\n[evidence]\ndisallow = ['md/terms.md']\n",
-        )
-        .unwrap();
-        let error = AssessmentSources::prepare_coverage_loss(
-            root.path(),
-            lost(vec![reader("requirements.ready")]),
-        )
-        .err()
-        .unwrap();
-        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied, "{error}");
-        assert!(error.to_string().contains("md/terms.md"), "{error}");
     }
 
     // {test}`requirements.authoring.mandatory_inputs`

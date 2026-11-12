@@ -176,11 +176,6 @@ impl EvidenceReads {
         }
     }
 
-    /// Whether any outline input of `file` is recorded.
-    pub(crate) fn has_file(&self, file: &str) -> bool {
-        self.0.contains_key(file)
-    }
-
     /// Whether node `index` of `file`'s outline, or a node containing it, is
     /// recorded with its current hash.
     pub(crate) fn covers(&self, file: &str, outline: &outline::Outline, index: usize) -> bool {

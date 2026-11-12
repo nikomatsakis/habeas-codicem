@@ -2,7 +2,6 @@
 
 pub(crate) mod access;
 mod batch;
-pub(crate) mod coverage_loss;
 mod inputs;
 mod line_numbers;
 mod pages;
@@ -12,9 +11,6 @@ mod tools;
 mod usage;
 
 pub use batch::{BatchOutcome, author_all, author_all_with_options, author_sites_with_options};
-pub use coverage_loss::{
-    CoverageFinding, CoverageLossOutcome, CoverageLossReview, DefinitionFinding,
-};
 
 use std::fs;
 use std::io::{self, Write};
@@ -49,8 +45,6 @@ pub struct AuthoringOutcome {
     /// The assessment policy the subject was assessed under.
     // {impl}`requirements.authoring.policy`
     pub policy: AssessmentPolicy,
-    /// The coverage-loss reviews replacing the subject's record called for.
-    pub coverage_loss: CoverageLossOutcome,
 }
 
 /// The opening of the note a recorded rationale ends with when its
@@ -402,7 +396,6 @@ pub(crate) async fn prepare_assessment(
                     .expect("validated judgment rationale")
                     .to_owned(),
                 policy,
-                coverage_loss: CoverageLossOutcome::default(),
             };
             Ok(PendingAssessment {
                 subject: subject.clone(),
@@ -454,11 +447,9 @@ async fn configured_assessment(
     let (determination, evidence) =
         configured_record(root, &parsed, &config, policy, usage).await?;
     let json = format!("{}\n", serde_json::to_string_pretty(&evidence)?);
-    let mut replaced = Vec::new();
     let evidence_path = match output {
         EvidenceOutput::File => {
             let path = parsed.evidence_path(root);
-            replaced.extend(coverage_loss::ReplacedRecord::read(root, &parsed));
             fs::create_dir_all(path.parent().expect("evidence parent"))?;
             fs::write(&path, json)?;
             Some(path)
@@ -472,14 +463,6 @@ async fn configured_assessment(
     };
     usage.record.evidence_written = true;
     usage.save()?;
-    // A review's failure is reported with the outcome; the record stays.
-    let coverage_loss = match coverage_loss::review_losses(root, &config, &replaced, |_| {}).await {
-        Ok(outcome) => outcome,
-        Err(error) => CoverageLossOutcome {
-            reviews: Vec::new(),
-            failures: vec![("coverage-loss reviews".into(), error.to_string())],
-        },
-    };
     Ok(AuthoringOutcome {
         subject: subject.into(),
         backend: usage.record.backend.clone().expect("configured backend"),
@@ -492,7 +475,6 @@ async fn configured_assessment(
             .expect("validated judgment rationale")
             .to_owned(),
         policy,
-        coverage_loss,
     })
 }
 
@@ -898,7 +880,6 @@ fn initial_prompt(sources: &AssessmentSources) -> io::Result<Prompt> {
             ]);
             Prompt::filled("site_prompt", &values)
         }
-        AssessmentKind::CoverageLoss(lost) => coverage_loss::prompt(lost, &mandatory)?,
     })
 }
 
@@ -1106,9 +1087,7 @@ fn site_verification(arguments: &Value) -> io::Result<Verification> {
 // {impl}`requirements.authoring.site_prompt`
 fn tool_definitions_with(submit: &str, site: bool) -> io::Result<Vec<ToolDefinition>> {
     let mut definitions = tools::definitions();
-    let mut submission = if submit == "submit_coverage_review" {
-        coverage_loss::tool_definition()
-    } else if submit == "submit_verification" {
+    let mut submission = if submit == "submit_verification" {
         json!({"name": "submit_verification", "description": "Submit your verification exactly once. No other message supplies the result.",
             "parameters": {"type":"object", "additionalProperties": false, "required":["real","acknowledged","acknowledgments","rationale"], "properties": {
                 "real":{"type":"boolean"},
@@ -1168,9 +1147,6 @@ fn record(
         AssessmentKind::Citation(item) => json!({"file": item.file, "item": item.item,
             "citations": item.citations_value(), "determination": judgment.to_value(),
             "rationale": rationale, "inputs": sources.recorded_inputs()}),
-        // A coverage-loss review is never evidence; it has no record.
-        AssessmentKind::CoverageLoss(lost) => json!({"file": lost.file, "item": lost.item,
-            "rationale": rationale}),
     }
 }
 
