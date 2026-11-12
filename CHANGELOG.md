@@ -7,6 +7,344 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0](https://github.com/nikomatsakis/habeas-codicem/compare/v0.2.0...v0.3.0) - 2026-11-12
+
+### Other
+
+- Author evidence after second review fixes
+- Fix coverage-report review findings (round 2)
+- Author evidence for references.site_review
+- Author evidence; mark site-review roots under references.site_review
+- Author evidence after review fixes; warn after author --stdout too; mark the author-side incomplete note and definition inputs
+- Fix coverage-report review findings
+- Author evidence for configuration.loading
+- Author evidence after closing coverage-loss removal gaps; cite the missing-configuration test under configuration.loading
+- Close gaps from re-authoring after dropping coverage-loss reviews
+- Remove coverage-loss reviews
+- Drop coverage-loss reviews; record [coverage]'s scope in workspace_structure
+- Close gaps from authoring history-aware coverage
+- Author evidence for history-aware coverage
+- Warn about items without recent coverage instead of failing validation
+- Make Rust item coverage a history-aware warning, except for tests and examples
+- Reassess source_links
+- Mark the plain-text source location test for source_links
+- Re-author evidence after closing the fixture-cleanup gaps
+- Close gaps from re-authoring the fixture cleanup
+- Re-author evidence after writing fixture roles directly
+- Write fixture roles directly in test strings
+- Author evidence for the reorganized skills and close the gaps it found
+- Reorganize bundled skills around five step-oriented skills
+- Require step-oriented bundled skills and a reviewed requirements workflow
+- Re-author evidence after the reference-context tests
+- Test fenced roles in strings and term contexts; mark items that lost coverage
+- Author evidence for reference contexts
+- Count inline roles only in comments of outlined files
+- Count reference roles only in comments in outlined files
+- Re-author evidence after testing example moves
+- Test moving an example; mark items that lost coverage
+- Re-author evidence after marking roots and helpers
+- Mark the roots and helpers that lost coverage
+- Reassess the remaining false refactor records
+- Mark refactor tests and report code flagged by assessments
+- Escape reference roles in refactor test fixtures
+- Re-author evidence after closing the last assessment gaps
+- Return a result within the page limit whole; close remaining assessment gaps
+- Re-author evidence after the commit-message change
+- Explain requirement changes in commit messages; remove the rewording log
+- Give the reason for a requirement change in its commit message
+- Keep pages within the limit with not_listed; fix the redaction note on book text
+- Re-author evidence after the not_listed change
+- Name untracked files a listing or search would include under not_listed
+- Make tool-description special cases a SHOULD; report untracked files as not_listed
+- Close gaps from the tool-description and retry assessments
+- Re-author evidence after the tool-description and retry changes
+- Stop retrying a request after a minute; record failure codes in usage
+- Limit provider retries to a minute and split skill structure
+- Trim tool descriptions to the common case; return denied reads to the model
+- Keep tool descriptions to the common case; make denied reads recoverable
+- Remind the model once to submit before failing an assessment
+- Require submitting with the tool, and remind the model once
+- Fix refactor anchor and reporting bugs; keep source lines out of tool errors
+- Re-author evidence after closing the refactor gaps
+- Close test and marker gaps from the refactor assessments
+- Re-author evidence for the refactor and selector-only changes
+- Test refactor rewriting doc-comment hashes and citation reviews
+- Test the habeas-refactor skill and link it from the bootstrap skill
+- Add the habeas-refactor skill
+- Add habeas refactor to update evidence after moves
+- Give the mapped-back definition its phrase
+- Rewrite anchors for path mappings, not definition names
+- Reject a rationale citing line numbers once, with a UUID to keep it
+- Give the model selectors instead of line numbers
+- Propose habeas refactor and selector-only model locations
+- Re-author evidence that read the hook smoke test
+- Point the hook smoke test's stub crates at the vendored fork
+- Re-author evidence that read the Cargo.toml dependencies
+- Re-author evidence that read the moved fork
+- Depend on the rig-bedrock fork as habeas-rig, a path dependency
+- Re-author evidence after the state-location test
+- Test that an unwritable state root fails the coverage-loss store
+- Re-author evidence after closing the last gaps
+- Test the GitHub API URL restriction and unknown output limits
+- Re-author evidence after the output-limit and coverage changes
+- Fail instead of continuing when the conversation exceeds the context window
+- Specify the GitHub test endpoint and refine the output-limit continuation
+- Cite habeas:util on helpers left uncovered
+- Test that colon fences inside raw HTML are not references
+- Test that the requirements index identifies requirement entries
+- Test that evidence allow rules override build-output refusal and are literal
+- Test that a successful github read records no evidence inputs
+- Test the coverage-loss prompt's root selector and redacted rationales
+- Mark validate_references as a ci.outcomes root and test the stale-fixme guidance
+- Implement the Bedrock output limit and one continuation after a cut-off response
+- Continue once with a shorter-rationale note after a response hits the output limit
+- Drop the output-limit retry; default to 16K output tokens
+- Draft a default Bedrock output limit with one larger retry
+- Author the three records whose submissions were cut off
+- Remove the orphaned no_requirement evidence
+- Re-author evidence after removing habeas:none
+- Remove the habeas:none built-in
+- Remove habeas:none; habeas:util also covers items code outside the project calls
+- Judge query snippets as tests instead of requiring a near miss per condition
+- Cite habeas:util on uncovered items that serve their callers
+- Address the false evidence records
+- Direct helpers that serve their callers to habeas:util in the skills
+- Implement the habeas:util built-in
+- Add the habeas:util built-in for items that only serve their callers
+- Re-author evidence after pruning to roots
+- Keep {impl} and {test} only on roots
+- Approve the coverage-loss prompt; reachability in review criteria; review every rewording
+- Update the skills for roots, coverage from reads, and coverage-loss reviews
+- Review items a replaced record no longer covers
+- Cover Rust items that an assessment read
+- Treat requests for book or target build output as ordinary read failures
+- Return search matches as locate-only outline nodes
+- Settle roots for callers, types and test helpers; add the coverage-loss review
+- Draft locate-only searches, reachability from roots, coverage from evidence, and build-output reads
+- Re-author evidence after closing the remaining gaps
+- Name the generated paths as placeholders in the evidence-policy examples
+- Test a declared query that uses utils and constraints
+- Test that documented configuration examples identify their placeholders
+- Name the issue-finding collector errors
+- Record the usage subject kind before configuration and sources
+- Mark the requirement-read test and the expected requirement text
+- Test site review progress and the site prompt's subject message
+- Re-author evidence after the anchor rewording
+- Contribute only the anchored node for a selector anchor; re-author evidence
+- Record project-local absolute paths relative to the project
+- Collect validation errors in parse_queries and close_dependencies under errors
+- Keep the GitHub cache out of a state root inside the project
+- Test that a reference inside a terminology declaration contributes that declaration
+- Test ripgrep node scope with a selector anchor
+- Test that current single citation and site reviews are kept under --missing
+- Mark and test the judgment rules, shared status rendering, review criteria, serialization, outline, and distributed-query obligations
+- Re-author evidence after patching rig-bedrock
+- Re-author evidence after the cacheable-prompt changes
+- Place prompt-cache checkpoints after reasoning turns via patched rig-bedrock
+- Page large source-tool results and add the next_page tool
+- Warm each assessment kind's prompt cache before running the rest
+- Place prompt-cache checkpoints in Bedrock requests to caching models
+- Send each prompt as a fixed system prompt and a subject message
+- Draft two-part cacheable prompts, cache checkpoints, warm-up and result pages
+- Author the evidence that failed to submit
+- Re-author evidence after closing the remaining gaps
+- Test site review inputs, staleness and root sites; document the GitHub cache
+- Keep validation checks running after a failed check
+- Close authoring marking and test gaps from the re-authored evidence
+- Author the remaining stale evidence
+- Re-author evidence after implementing the drafted features
+- List disagreeing assessments in habeas status
+- Add assessment policies and --missing/--force refresh modes
+- Author site reviews and their confirmation
+- Validate distributed requirement queries and site reviews
+- Add the ast_grep structural search tool
+- Restrict ripgrep to referencing sources with a referencing scope
+- Test that closing an acknowledged issue makes its FIXME record stale
+- Read GitHub issues through one cache for the github tool, {fixme} inputs, and status
+- Document {fixme} acknowledgments and exact FIXME issue grouping
+- Parse and validate {fixme} references
+- Group FIXME summaries by exact owner/repo#N strings
+- Close small marking and test gaps found by re-authoring
+- Re-author evidence after the requirement split and prompt changes
+- Update skill-wording tests for the reworded skills
+- Assemble prompts from the split templates; adopt the new verifier
+- Point references at the split requirements
+- Split large requirements into focused ones
+- Mention issue states, split the context paragraph, rewrap prompts
+- Ask near misses only for conditions an alternative cannot satisfy
+- Rewrap site_review
+- Require within on violation queries; update distributed opening
+- Add unnamed {fixme} issue ties and simplify the FIXME summary
+- Treat a closed FIXME issue as a changed input
+- Scope {fixme} for sites to their site review; none for citations
+- Check FIXME issues in habeas status, cached, assuming open offline
+- Let assessments read GitHub issues without recording them
+- Refine outcomes after review
+- Refine the reference roles after review
+- Simplify the skills
+- Simplify shared prompt rules
+- Acknowledge gaps with {fixme} references
+- Draft a reference scope for ripgrep and ast_grep
+- Treat consistency checks as citations, not implementations
+- Limit the audit-log rule to agreed requirements
+- Make the audit-log rule cover every precision rewording
+- Use one reading standard for a site review's applies
+- Fix skill gaps the seventh review round found
+- Resolve ambiguity defaults in site and citation reviews
+- Fix skill gaps the sixth review round found
+- Settle impl versus cite for checks serving another requirement
+- Fix issues the fifth review round found
+- Have habeas author --all delete orphaned citation and site reviews
+- Fix skill gaps the fourth review round found
+- Fix prompt issues the fourth review round found
+- Fix skill gaps the third review round found
+- Replace remaining judgment calls in prompts with checks
+- Fix skill gaps the second review round found
+- Make prompt criteria decidable where reviewers could split
+- Shorten prompts and give the verifier the reviewer's task fields
+- Cut skill restatements outside each topic's home
+- Apply in-situ prompt test findings
+- Draft distributed requirements, assessment policy, and shared prompt blocks
+- Remove the obsolete add-input command
+- Record evidence after marking remaining ci.errors skip sites
+- Record reassessments and mark remaining ci.errors skip sites
+- Close gaps from reassessing ci.errors, structural_hash, citation_review
+- Close ci.errors and structural_hash assessment gaps
+- Record evidence after closing credential-redaction gaps
+- Close gaps found by assessing credential redaction
+- Record evidence from authoring with credential redaction
+- Implement credential redaction for model inputs and displayed source
+- Redact credentials instead of excluding configuration files
+- Refresh records after closing source-access reassessment gaps
+- Close gaps found by reassessing source-access discovery
+- Refresh records made stale by source-access reference discovery
+- Implement source-access reference discovery
+- Discover references only in sources authoring may read
+- Refresh records made stale by the test literal fix
+- Keep the double-backslash test from writing a literal reference
+- Refresh records made stale by the references tool fix
+- Reassess reference_index (true)
+- Omit unclosed fenced references from the references tool's sites
+- Refresh records made stale by the second round
+- Reassess records closed in the second round (all true)
+- Close gaps found by the refresh: progress, term scanning, tests
+- Refresh records made stale by marking and rewording changes
+- Reassess flagged records (all true)
+- Cite mandatory_inputs from citation_review and specify badge stylesheet layout
+- Mark and test implementing code flagged by false assessments
+- Author with citation reviews (151 true, 11 false)
+- Accept habeas:none citations in Rust item coverage
+- Test that the reference documentation quotes habeas:none's text
+- Re-mark data types under the reference procedure
+- Document fenced references, habeas:none, citation reviews, and --confirm
+- Implement fenced references, built-in habeas:none, citation reviews, and --confirm
+- State the goal behind flip guidance: consistent determinations
+- Add a reference procedure, built-in definitions, citation reviews, and --confirm
+- Re-author after stability fixes (148 true, 1 false)
+- Test that the queue example's false judgment fails validation; test base directory rules
+- State that HOME, APPDATA, and LOCALAPPDATA must be absolute
+- Re-author stale records (all true)
+- Test FIXME summary ordering where count and reference order disagree
+- Re-author ci.errors, ci.outcomes, ci.schema and references.book_badges (all true)
+- Report invalid habeas.toml as a status/info finding; mark and test ci.errors, ci.outcomes, ci.schema, book_badges
+- Re-author with reference-set digests (145 true, 4 false)
+- Record and validate a reference-set digest in evidence
+- Make evidence stale when a definition's impl and test edges change
+- Place workflow job marks directly before each job
+- Log provider_backoff and ci.coverage rewordings
+- All evidence true; habeas::validate passes
+- Keep fixture term strings out of reference discovery; mark test helper
+- Mark FIXME summary and TSX hashing code; test separate-file selectors
+- Refresh stale records (145 true, 3 false)
+- Re-author the last nine false records (9 true)
+- Keep definition collection unchanged; the example-tracing helper serves Rust item coverage
+- Name the custom outline naming rule type
+- Reword live_bedrock_test configuration selection for precision
+- Select the live Bedrock configuration with workspace precedence and test the selection
+- Count an example reference toward Rust item coverage only when the example references a requirement
+- Test that a term reference renders only its phrase as a plain link
+- Test bundled skill guidance for behavior review, bootstrap, and requirements review
+- Reword add_input_item declaration lines for precision
+- Declare custom-named outline nodes on the line where their name begins
+- Test submission boundaries and ripgrep terminology, description, EOF, hidden allow, and failure cases
+- Re-author after round two (139 true, 9 false)
+- Give YAML comments before a key to that key
+- Re-author usage_requests, ci.orphans, cli, configuration, definitions, index, integration, layout, and structural_hash evidence (16 true)
+- Close definitions, index, integration, layout, and structural_hash evidence gaps
+- Close ci.orphans, cli, and configuration evidence gaps
+- Mark the Bedrock SDK loader and its retry test for usage_requests
+- Re-author authoring concurrency, configuration_precedence, credentials, provider_backoff, read_denial, source_tools (true) and definitions.references (true)
+- Keep OS permission failures recoverable; test read_denial, source_tools, and usage_requests gaps
+- Reword authoring.concurrency: transient provider failures are retried under provider_backoff
+- Retry transient Bedrock codes whatever their status; name the selecting file in configuration errors
+- Re-author merged tree (126 true, 22 false)
+- Reference every Rust type; align Comments reference with outline_comments
+- Carry all review criteria in the initial prompt; mark authoring configuration docs and feature-section refinement
+- Merge branch 'worktree-agent-accbe0ad1358bfde6' into agentic-workflow
+- Merge branch 'worktree-agent-a9126a572be1aa34d' into agentic-workflow
+- Reword outlines: case-insensitive extensions and first syntax error
+- Mark outline line queries and parse errors for the requirements that specify them; test extension case and first-error line
+- Reword outline_comments: profiles define which nodes are comments
+- Mark comment collection and declaration raw lines; test Markdown inline comments; record reassessed evidence
+- Log the read_denial outside-project rewording and its follow-on edits
+- Re-author additional_read, configuration_precedence, reference_index, usage_inputs (true)
+- Keep new authoring tests in their own functions
+- Close remaining authoring gaps found on refresh
+- Reword ci and references requirements for precision
+- Move intro styling out of the badge stylesheet; test authoring definitions and prompt criteria
+- Refresh stale authoring evidence after merged fixes
+- Reassess cli, configuration, integration, layout, and index evidence
+- Reword requirements for precision; log rewordings
+- Implement, mark, and test configuration requirements
+- Mark and test CLI, integration, layout, and index requirements
+- Re-author batch and progress (true)
+- Report every unresolvable term, match the documented text-change format, and test validation obligations
+- Stop batches on interrupts that arrive between assessments; test display clearing
+- Identify requirements-input selections and changed definitions; test coverage gaps
+- Re-author mandatory_inputs, outline_tool, provider_backoff, read_denial, source_tools, file_discovery, text_search (all true)
+- Make outside-project model reads recoverable in read_denial
+- Omit generated-evidence mandatory inputs, make outside-project model reads recoverable, and test backoff reset and disabled SDK retries
+- Re-author invocation, initial_prompt, deterministic_validation, negative_assessment, usage_storage (true)
+- Mark and test outline, selector, identifier, badge, and reference-discovery behaviour
+- Mark user and workspace config structs for authoring serialization; re-author config records
+- Mark and test authoring configuration structure, storage, and adapters
+- Close authoring gaps for batch, progress, prompt, validation and usage
+- Specify batch interruption and read/scan failure handling
+- Re-author failed and stale records (86 true, 62 false)
+- Retry 5xx and timed-out provider requests
+- Retry temporary unavailability and unanswered provider requests
+- Restate ci.coverage as a validation check
+- Regenerate evidence with word-based hashes (85 true, 63 false)
+- Hash every text piece as words and drop fallback outline kinds
+- Hash every text piece as words, bind inner doc comments to containers, and give unmapped source to the root
+- Regenerate evidence as outline inputs (81 true, 67 false)
+- Attach comment runs to the next outline node and hash doc comments by words
+- Record evidence as outline inputs and remove syn
+- State that prose hashes an ordered list of words, never whitespace
+- Hash prose by words, excluding comment delimiters
+- Attach comment runs to the next outline node and specify prose hashing
+- Add tree-sitter outline engine and port Rust selectors and coverage onto it
+- Identify evidence sources by outline selector and structural hash
+- Implement anchors, Rust type coverage, and per-definition evidence pages
+- Cover Rust types, anchor non-code sources, and always render evidence pages
+- Implement requirement-side reference review
+- Stop carrying earlier evidence inputs into reassessment
+- Replace function attestations with requirement-side reference review
+- Improve authoring progress, retries, and failure reporting
+- Add workspace configuration and evidence access policies
+- Group FIXME status by issue and restrict authoring reads
+- Add batch evidence authoring with configurable concurrency
+- Fail live Bedrock tests when configuration is missing
+- Add credential-aware Bedrock tests and recover typed tool calls
+- Fix Bedrock tool schemas and add stdout evidence output
+- Implement configurable evidence authoring and FIXME validation
+- Specify configurable evidence authoring and FIXME judgments
+- Implement named definitions with linked phrases and evidence dependencies
+- Specify named definitions and transitive evidence inputs
+- Merge pull request #8 from nikomatsakis/agentic-workflow
+- Keep requirements and implementation iterations in one PR
+- add agentic workflow
+
 ## [0.2.0](https://github.com/nikomatsakis/habeas-codicem/compare/v0.1.0...v0.2.0) - 2026-10-28
 
 ### Other
