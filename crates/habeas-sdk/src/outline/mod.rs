@@ -9,7 +9,7 @@ mod css;
 mod hash;
 mod markdown;
 mod plain;
-pub(crate) mod profile;
+pub mod profile;
 mod python;
 mod rust;
 mod selector;
@@ -25,78 +25,78 @@ use tree_sitter::{Node, Parser, Tree};
 use crate::redaction::Redaction;
 use hash::Encoder;
 use profile::{NameRule, text};
-pub(crate) use profile::{Profile, is_markdown_path, profile_for_path};
-pub(crate) use rust::PROFILE as RUST_PROFILE;
-pub(crate) use selector::{HASH_DIGITS, Label, Segment, SelectorError, parse_selector};
+pub use profile::{Profile, is_markdown_path, profile_for_path};
+pub use rust::PROFILE as RUST_PROFILE;
+pub use selector::{HASH_DIGITS, Label, Segment, SelectorError, parse_selector};
 
 /// One outline node. Line numbers are one-based and inclusive.
 #[derive(Clone, Debug)]
-pub(crate) struct OutlineNode {
+pub struct OutlineNode {
     /// Short outline kind, such as `fn`; empty for the root.
-    pub(crate) kind: &'static str,
+    pub kind: &'static str,
     /// Name parts; `None` for an anonymous node. Most names have one part;
     /// a Rust trait impl has two, the self type and the trait.
-    pub(crate) name: Option<Vec<String>>,
+    pub name: Option<Vec<String>>,
     /// This node's selector segment; empty for the root.
-    pub(crate) segment: String,
+    pub segment: String,
     /// Full selector from the root; empty for the root.
-    pub(crate) selector: String,
-    pub(crate) parent: Option<usize>,
-    pub(crate) children: Vec<usize>,
+    pub selector: String,
+    pub parent: Option<usize>,
+    pub children: Vec<usize>,
     /// First line, including attached siblings and comments belonging here.
-    pub(crate) line_start: usize,
+    pub line_start: usize,
     /// Last line, including comments belonging here.
-    pub(crate) line_end: usize,
+    pub line_end: usize,
     /// Line containing the name, or the node's first line when anonymous.
-    pub(crate) declaration_line: usize,
+    pub declaration_line: usize,
     /// Byte range of the grammar node itself, without attached siblings; for
     /// a profile with `trailing_comments_outside`, it ends at the node's last
     /// non-comment token.
-    pub(crate) byte_start: usize,
-    pub(crate) byte_end: usize,
+    pub byte_start: usize,
+    pub byte_end: usize,
     /// SHA-256 structural hash, lowercase hex.
-    pub(crate) structural_hash: String,
+    pub structural_hash: String,
     /// SHA-256 identity hash, lowercase hex; excludes outline descendants.
-    pub(crate) identity_hash: String,
+    pub identity_hash: String,
 }
 
 impl OutlineNode {
     /// The name as displayed, with parts joined by `/`.
     // {impl}`requirements.authoring.outline_tool`
-    pub(crate) fn display_name(&self) -> Option<String> {
+    pub fn display_name(&self) -> Option<String> {
         self.name.as_ref().map(|parts| parts.join("/"))
     }
 }
 
 /// One comment and the outline node it belongs to.
 #[derive(Clone, Debug)]
-pub(crate) struct OutlineComment {
-    pub(crate) byte_start: usize,
-    pub(crate) byte_end: usize,
-    pub(crate) line_start: usize,
-    pub(crate) line_end: usize,
+pub struct OutlineComment {
+    pub byte_start: usize,
+    pub byte_end: usize,
+    pub line_start: usize,
+    pub line_end: usize,
     /// Index of the owning node in [`Outline::nodes`].
-    pub(crate) owner: usize,
+    pub owner: usize,
     /// Index of the comment run containing this comment; comments of one run
     /// share it, and runs are numbered in source order.
-    pub(crate) run: usize,
+    pub run: usize,
 }
 
 /// A parsed outline.
 #[derive(Clone, Debug)]
-pub(crate) struct Outline {
-    pub(crate) profile: &'static Profile,
+pub struct Outline {
+    pub profile: &'static Profile,
     /// Nodes in source pre-order; index 0 is the root.
-    pub(crate) nodes: Vec<OutlineNode>,
+    pub nodes: Vec<OutlineNode>,
     /// Comments in source order.
-    pub(crate) comments: Vec<OutlineComment>,
+    pub comments: Vec<OutlineComment>,
 }
 
 /// A source that its grammar cannot parse.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct OutlineError {
-    pub(crate) line: usize,
-    pub(crate) message: String,
+pub struct OutlineError {
+    pub line: usize,
+    pub message: String,
 }
 
 impl fmt::Display for OutlineError {
@@ -109,7 +109,7 @@ impl std::error::Error for OutlineError {}
 
 /// A selector that does not resolve.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum ResolveError {
+pub enum ResolveError {
     Invalid(SelectorError),
     NotFound(String),
 }
@@ -131,8 +131,7 @@ impl std::error::Error for ResolveError {}
 /// original source.
 // {impl}`requirements.references.outlines`
 // {impl}`requirements.authoring.redaction`
-#[cfg(test)]
-pub(crate) fn parse(path: &std::path::Path, source: &str) -> Result<Outline, OutlineError> {
+pub fn parse(path: &std::path::Path, source: &str) -> Result<Outline, OutlineError> {
     parse_redacted(
         profile_for_path(path),
         source,
@@ -143,14 +142,14 @@ pub(crate) fn parse(path: &std::path::Path, source: &str) -> Result<Outline, Out
 /// Parses a source with a given profile, redacting by `secretshape` rules.
 // {impl}`requirements.references.outlines`
 // {impl}`requirements.authoring.redaction`
-pub(crate) fn parse_with(profile: &'static Profile, source: &str) -> Result<Outline, OutlineError> {
+pub fn parse_with(profile: &'static Profile, source: &str) -> Result<Outline, OutlineError> {
     parse_redacted(profile, source, &Redaction::of_text(source))
 }
 
 /// Parses the original source with a given profile, hashing each text piece
 /// that overlaps a redacted region in its redacted form.
 // {impl}`requirements.references.structural_hash`
-pub(crate) fn parse_redacted(
+pub fn parse_redacted(
     profile: &'static Profile,
     source: &str,
     redaction: &Redaction,
@@ -799,7 +798,7 @@ fn run_owner(nodes: &[OutlineNode], bytes: (usize, usize), binds_to_container: b
 impl Outline {
     /// Resolves a selector to a node index; the empty selector is the root.
     /// A `line` segment resolves to the first line with that content.
-    pub(crate) fn resolve(&self, selector: &str) -> Result<usize, ResolveError> {
+    pub fn resolve(&self, selector: &str) -> Result<usize, ResolveError> {
         let segments = parse_selector(selector).map_err(ResolveError::Invalid)?;
         let mut current = 0;
         for segment in segments {
@@ -817,7 +816,7 @@ impl Outline {
     /// The innermost nodes whose line ranges cover a line: covering nodes
     /// none of whose children cover it. Several siblings can share a line.
     // {impl}`requirements.references.outlines`
-    pub(crate) fn innermost_at_line(&self, line: usize) -> Vec<usize> {
+    pub fn innermost_at_line(&self, line: usize) -> Vec<usize> {
         let covers = |index: usize| {
             self.nodes[index].line_start <= line && line <= self.nodes[index].line_end
         };
@@ -843,7 +842,7 @@ impl Outline {
     }
 
     /// The owners of comments touching a line.
-    pub(crate) fn comment_owners_at_line(&self, line: usize) -> Vec<usize> {
+    pub fn comment_owners_at_line(&self, line: usize) -> Vec<usize> {
         let mut owners = self
             .comments
             .iter()
@@ -857,7 +856,7 @@ impl Outline {
     /// The smallest node a line's source belongs to: the owner of a comment
     /// on that line, otherwise the smallest innermost node covering it, and
     /// the root when no other node covers it.
-    pub(crate) fn owner_at_line(&self, line: usize) -> usize {
+    pub fn owner_at_line(&self, line: usize) -> usize {
         if let Some(owner) = self.comment_owners_at_line(line).first() {
             return *owner;
         }
@@ -876,7 +875,7 @@ impl Outline {
     /// The innermost nodes for a set of lines, without nodes whose ancestor
     /// is also selected, in source order. With `comments`, a line in a
     /// comment belongs to the comment's owner.
-    pub(crate) fn nodes_for_lines(
+    pub fn nodes_for_lines(
         &self,
         lines: impl IntoIterator<Item = usize>,
         comments: bool,
@@ -912,7 +911,7 @@ impl Outline {
 
     /// A node's source lines, over its full line range, without line endings.
     // {impl}`requirements.references.outlines`
-    pub(crate) fn node_lines(&self, source: &str, index: usize) -> Vec<String> {
+    pub fn node_lines(&self, source: &str, index: usize) -> Vec<String> {
         let node = &self.nodes[index];
         source
             .lines()

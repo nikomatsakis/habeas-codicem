@@ -3,10 +3,10 @@
 use std::fmt;
 
 /// Number of identity-hash hex digits in an anonymous segment.
-pub(crate) const HASH_DIGITS: usize = 12;
+pub const HASH_DIGITS: usize = 12;
 
 /// Percent-encodes `%`, `[`, `]`, `/`, `#`, `@`, and whitespace as UTF-8 bytes.
-pub(crate) fn encode_name(name: &str) -> String {
+pub fn encode_name(name: &str) -> String {
     let mut encoded = String::with_capacity(name.len());
     for character in name.chars() {
         if matches!(character, '%' | '[' | ']' | '/' | '#' | '@') || character.is_whitespace() {
@@ -24,7 +24,7 @@ pub(crate) fn encode_name(name: &str) -> String {
 // {impl}`requirements.references.outline_selectors`
 /// Reverses [`encode_name`], rejecting malformed escapes and unescaped
 /// delimiters.
-pub(crate) fn decode_name(encoded: &str) -> Result<String, SelectorError> {
+pub fn decode_name(encoded: &str) -> Result<String, SelectorError> {
     let bytes = encoded.as_bytes();
     let mut decoded = Vec::with_capacity(bytes.len());
     let mut position = 0;
@@ -63,22 +63,22 @@ pub(crate) fn decode_name(encoded: &str) -> Result<String, SelectorError> {
 // {impl}`requirements.references.outline_selectors`
 /// A segment's label: a name, made of `/`-joined parts, or an identity hash.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum Label {
+pub enum Label {
     Named(Vec<String>),
     Hash(String),
 }
 
 /// One parsed selector segment.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Segment {
-    pub(crate) kind: String,
-    pub(crate) label: Label,
-    pub(crate) ordinal: Option<usize>,
+pub struct Segment {
+    pub kind: String,
+    pub label: Label,
+    pub ordinal: Option<usize>,
 }
 
 impl Segment {
     /// The segment without its `#N` ordinal.
-    pub(crate) fn base(kind: &str, label: &Label) -> String {
+    pub fn base(kind: &str, label: &Label) -> String {
         match label {
             Label::Named(parts) => format!(
                 "{kind}[{}]",
@@ -106,14 +106,14 @@ impl fmt::Display for Segment {
 // {cite}`habeas:util`
 /// An invalid selector.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct SelectorError {
-    pub(crate) selector: String,
-    pub(crate) message: String,
+pub struct SelectorError {
+    pub selector: String,
+    pub message: String,
 }
 
 impl SelectorError {
     // {cite}`habeas:util`
-    pub(crate) fn new(selector: &str, message: impl Into<String>) -> Self {
+    pub fn new(selector: &str, message: impl Into<String>) -> Self {
         Self {
             selector: selector.to_owned(),
             message: message.into(),
@@ -226,7 +226,7 @@ fn parse_segment(selector: &str, segment: &str) -> Result<Segment, SelectorError
 }
 
 /// Parses a selector; the empty selector has no segments and selects the root.
-pub(crate) fn parse_selector(selector: &str) -> Result<Vec<Segment>, SelectorError> {
+pub fn parse_selector(selector: &str) -> Result<Vec<Segment>, SelectorError> {
     if selector.is_empty() {
         return Ok(Vec::new());
     }

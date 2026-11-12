@@ -92,8 +92,15 @@ def main():
         )
         runner.chmod(0o755)
         manifest = (repo / "Cargo.toml").read_text()
-        # The stub crates below live outside the repository, so the vendored
-        # fork's relative path must point back into it.
+        # The stub is a standalone consumer dependency, not a copy of the
+        # repository workspace. Both local dependencies point back into it.
+        manifest = manifest[manifest.index("[package]") :]
+        sdk_path = 'path = "crates/habeas-sdk"'
+        if manifest.count(sdk_path) != 1:
+            raise AssertionError("Habeas's SDK dependency changed")
+        manifest = manifest.replace(
+            sdk_path, f"path = {json.dumps(str(repo / 'crates' / 'habeas-sdk'))}", 1
+        )
         fork_path = 'path = "vendor/habeas-rig"'
         if manifest.count(fork_path) != 1:
             raise AssertionError("Habeas's habeas-rig dependency changed")

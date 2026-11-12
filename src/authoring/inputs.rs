@@ -74,7 +74,7 @@ impl AssessmentSources {
     // {impl}`requirements.references.site_review`
     pub(crate) fn prepare(root: &Path, subject_name: &str) -> io::Result<Self> {
         let root = fs::canonicalize(root)?;
-        let access = SourceAccess::load(&root)?;
+        let access = super::access::load_source_access(&root)?;
         let definitions = load_definitions(&root)?;
         let subject = definitions
             .get(subject_name)
@@ -257,7 +257,7 @@ impl AssessmentSources {
     // {impl}`requirements.authoring.mandatory_inputs`
     pub(crate) fn prepare_citation(root: &Path, file: &str, item: &str) -> io::Result<Self> {
         let root = fs::canonicalize(root)?;
-        let access = SourceAccess::load(&root)?;
+        let access = super::access::load_source_access(&root)?;
         let definitions = load_definitions(&root)?;
         let outlines = OutlineCache::default();
         let mut errors = Vec::new();
@@ -357,7 +357,7 @@ impl AssessmentSources {
         item: &str,
     ) -> io::Result<Self> {
         let root = fs::canonicalize(root)?;
-        let access = SourceAccess::load(&root)?;
+        let access = super::access::load_source_access(&root)?;
         let definitions = load_definitions(&root)?;
         let subject_name = crate::sites::subject_label(requirement, file, item);
         let declaration = definitions
@@ -466,7 +466,7 @@ impl AssessmentSources {
         lost: super::coverage_loss::LostItem,
     ) -> io::Result<Self> {
         let root = fs::canonicalize(root)?;
-        let access = SourceAccess::load(&root)?;
+        let access = super::access::load_source_access(&root)?;
         let definitions = load_definitions(&root)?;
         let outlines = OutlineCache::default();
         let mut selectors = vec![InputSelector::Outline {
@@ -689,16 +689,6 @@ impl AssessmentSources {
         .filter(|input| !inputs.contains(input) && !self.recorded.contains(input))
         .collect())
     }
-}
-
-// {impl}`requirements.authoring.mandatory_inputs`
-// {impl}`requirements.authoring.file_discovery`
-pub(crate) fn generated_evidence_path(root: &Path, path: &Path) -> bool {
-    let path = root.join(path);
-    let evidence = root.join("evidence");
-    path.starts_with(&evidence)
-        || fs::canonicalize(&path)
-            .is_ok_and(|path| path.starts_with(fs::canonicalize(&evidence).unwrap_or(evidence)))
 }
 
 // {impl}`requirements.authoring.mandatory_inputs`

@@ -301,11 +301,11 @@ fn the_user_configuration_file_and_its_aliases_are_configuration_files() {
         std::os::unix::fs::symlink(&user, &alias).unwrap();
         assert!(is_configuration_file_for(&alias, Some(&user)));
     }
-    // The real user configuration path is recognized by `of_file`.
-    if let Ok(user) = crate::config::user_config_path() {
+    // The supplied user configuration path is recognized by the redactor.
+    {
         let source = "version = 1\n[authoring.configs.local]\napi_key = 'k'\n";
         assert_eq!(
-            Redaction::of_file(&user, source).apply(source),
+            Redaction::of_file_with_config(&user, source, Some(&user)).apply(source),
             "version = 1\n[authoring.configs.local]\napi_key = '[REDACTED:api_key]'\n"
         );
     }

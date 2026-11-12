@@ -90,7 +90,11 @@ impl OutlineCache {
             None => read_project_file(root, file),
         };
         let parsed = Arc::new(read.and_then(|(path, source)| {
-            let redaction = Redaction::of_file(&path, &source);
+            let redaction = Redaction::of_file_with_config(
+                &path,
+                &source,
+                crate::config::user_config_path().ok().as_deref(),
+            );
             let profile = outline::profile_for_path(&path);
             let outline =
                 outline::parse_redacted(profile, &source, &redaction).map_err(|error| {

@@ -18,14 +18,11 @@ mod github;
 mod index;
 mod inputs;
 pub mod judgment;
-#[path = "../crates/habeas-sdk/src/outline/mod.rs"]
-mod outline;
-#[path = "../crates/habeas-sdk/src/redaction/mod.rs"]
+pub(crate) use habeas_sdk::outline;
 mod redaction;
 mod refactor;
 mod rust_coverage;
 mod sites;
-#[path = "../crates/habeas-sdk/src/structural.rs"]
 mod structural;
 mod terms;
 

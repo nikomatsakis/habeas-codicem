@@ -164,7 +164,7 @@ fn with_not_listed(
     }
     let requested = optional_path(arguments)?.trim_end_matches('/');
     let requested = if requested == "." { "" } else { requested };
-    let untracked = super::access::DiscoverySources::load(&sources.root)?.untracked()?;
+    let untracked = super::access::load_discovery_sources(&sources.root)?.untracked()?;
     let mut named = BTreeSet::new();
     for file in untracked {
         let Ok(relative) = file.strip_prefix(&sources.root) else {
@@ -583,35 +583,13 @@ fn search(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Result<
         2
     };
     let regions = referencing(sources, args)?;
-    let matcher = grep_regex::RegexMatcherBuilder::new()
-        .case_insensitive(false)
-        .build(pattern)
-        .map_err(|error| io::Error::other(format!("invalid ripgrep pattern: {error}")))?;
+    let matcher = habeas_sdk::search::RegexSearch::compile(pattern)?;
     let matches = walk_sources(
         sources,
         path,
         &|file, _| regions.as_ref().is_none_or(|regions| regions.has(file)),
         &|_, path| {
-            let mut searcher = grep_searcher::SearcherBuilder::new()
-                .line_number(true)
-                .binary_detection(grep_searcher::BinaryDetection::quit(0))
-                .build();
-            let mut lines = Vec::new();
-            searcher
-                .search_path(
-                    &matcher,
-                    path,
-                    grep_searcher::sinks::Lossy(|number, _| {
-                        lines.push(number as usize);
-                        Ok(true)
-                    }),
-                )
-                .map_err(|error| {
-                    io::Error::new(
-                        error.kind(),
-                        format!("ripgrep failed to search {}: {error}", path.display()),
-                    )
-                })?;
+            let lines = matcher.search_path(path)?;
             Ok((!lines.is_empty()).then_some(lines))
         },
     )?;

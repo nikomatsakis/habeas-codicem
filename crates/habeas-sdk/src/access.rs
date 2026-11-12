@@ -4,41 +4,21 @@ use std::io;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
-use super::inputs::generated_evidence_path;
-
 // {impl}`requirements.configuration.evidence_paths`
 #[derive(Default)]
-pub(crate) struct PathPolicy {
+pub struct PathPolicy {
     allow: Vec<PathBuf>,
     disallow: Vec<PathBuf>,
 }
 
 impl PathPolicy {
     // {impl}`requirements.configuration.evidence_paths`
-    // {impl}`requirements.configuration.workspace_location`
-    // {impl}`requirements.configuration.loading`
-    pub(crate) fn load(root: &Path) -> io::Result<Self> {
-        let Some(config) = crate::config::load_workspace_evidence(root)? else {
-            return Ok(Self::default());
-        };
-        Ok(Self {
-            allow: config
-                .evidence
-                .allow
-                .iter()
-                .map(|path| config.root.join(path))
-                .collect(),
-            disallow: config
-                .evidence
-                .disallow
-                .iter()
-                .map(|path| config.root.join(path))
-                .collect(),
-        })
+    pub fn new(allow: Vec<PathBuf>, disallow: Vec<PathBuf>) -> Self {
+        Self { allow, disallow }
     }
 
     // {impl}`requirements.configuration.evidence_paths`
-    pub(crate) fn allowed(&self, requested: &Path, target: &Path) -> bool {
+    pub fn allowed(&self, requested: &Path, target: &Path) -> bool {
         self.allow
             .iter()
             .any(|rule| matches_rule(rule, requested, target))
@@ -46,7 +26,7 @@ impl PathPolicy {
 
     // {impl}`requirements.configuration.evidence_paths`
     // {impl}`requirements.authoring.tool_descriptions.special_cases`
-    pub(crate) fn check_disallow(&self, requested: &Path, target: &Path) -> io::Result<()> {
+    pub fn check_disallow(&self, requested: &Path, target: &Path) -> io::Result<()> {
         if self.disallow.is_empty() {
             return Ok(());
         }
@@ -73,7 +53,7 @@ impl PathPolicy {
 }
 
 // {impl}`requirements.authoring.generated_inputs`
-pub(crate) struct SourceAccess {
+pub struct SourceAccess {
     tracked: Option<BTreeSet<PathBuf>>,
     policy: PathPolicy,
     generated: Vec<PathBuf>,
@@ -84,10 +64,10 @@ pub(crate) struct SourceAccess {
 impl SourceAccess {
     // {impl}`requirements.configuration.evidence_paths`
     // {impl}`requirements.authoring.generated_inputs`
-    pub(crate) fn load(root: &Path) -> io::Result<Self> {
+    pub fn load(root: &Path, policy: impl FnOnce() -> io::Result<PathPolicy>) -> io::Result<Self> {
         Ok(Self {
             tracked: tracked_sources(root)?,
-            policy: PathPolicy::load(root)?,
+            policy: policy()?,
             generated: generated_roots(root),
             build_output: build_output_dirs(root),
         })
@@ -99,7 +79,7 @@ impl SourceAccess {
     // {impl}`requirements.authoring.read_denial.untracked`
     // {impl}`requirements.authoring.read_denial.build_output`
     // {impl}`requirements.authoring.tool_descriptions.special_cases`
-    pub(crate) fn path(&self, root: &Path, relative: &Path) -> io::Result<PathBuf> {
+    pub fn path(&self, root: &Path, relative: &Path) -> io::Result<PathBuf> {
         let (requested, target) = resolve(root, relative)?;
         self.policy.check_disallow(&root.join(relative), &target)?;
         if self.policy.allowed(&requested, &target) {
@@ -176,7 +156,7 @@ impl SourceAccess {
     }
 
     // {impl}`requirements.authoring.mandatory_inputs`
-    pub(crate) fn file(&self, root: &Path, relative: &Path) -> io::Result<PathBuf> {
+    pub fn file(&self, root: &Path, relative: &Path) -> io::Result<PathBuf> {
         let target = self.path(root, relative)?;
         if !target.is_file() {
             return Err(io::Error::other(format!(
@@ -189,7 +169,7 @@ impl SourceAccess {
 
     // {impl}`requirements.authoring.mandatory_inputs`
     // {impl}`requirements.configuration.evidence_paths`
-    pub(crate) fn omit_generated_evidence(&self, root: &Path, path: &Path) -> bool {
+    pub fn omit_generated_evidence(&self, root: &Path, path: &Path) -> bool {
         let joined = root.join(path);
         let requested = requested_location(&joined).unwrap_or_else(|_| joined.clone());
         let target = fs::canonicalize(&joined).unwrap_or_else(|_| joined.clone());
@@ -219,7 +199,7 @@ impl SourceAccess {
     // {impl}`requirements.authoring.generated_inputs`
     // {impl}`requirements.configuration.evidence_paths`
     // {impl}`requirements.authoring.file_discovery`
-    pub(crate) fn extra_roots(&self) -> impl Iterator<Item = &PathBuf> {
+    pub fn extra_roots(&self) -> impl Iterator<Item = &PathBuf> {
         self.policy.allow.iter().chain(self.generated.iter())
     }
 }
@@ -228,22 +208,20 @@ impl SourceAccess {
 /// sources [`SourceAccess`] would let authoring read by default, found without
 /// authoring configuration or Cargo metadata.
 // {impl}`requirements.authoring.deterministic_validation`
-pub(crate) struct DiscoverySources {
+pub struct DiscoverySources {
     root: PathBuf,
     tracked: Option<BTreeSet<PathBuf>>,
     policy: PathPolicy,
 }
 
 impl DiscoverySources {
-    /// Loads the Git index and the workspace `[evidence]` rules. An invalid
-    /// workspace configuration is reported by inspection itself, so discovery
-    /// then applies no workspace rules rather than failing a second time.
+    /// Loads the Git index, then asks the consumer for discovery rules.
     // {impl}`requirements.authoring.deterministic_validation`
-    pub(crate) fn load(root: &Path) -> io::Result<Self> {
+    pub fn load(root: &Path, policy: impl FnOnce() -> PathPolicy) -> io::Result<Self> {
         Ok(Self {
             root: root.to_owned(),
             tracked: tracked_sources(root)?,
-            policy: PathPolicy::load(root).unwrap_or_default(),
+            policy: policy(),
         })
     }
 
@@ -251,7 +229,7 @@ impl DiscoverySources {
     /// files; outside Git, every file under the project root. Symlinks are not
     /// followed, so no source is counted twice through an alias.
     // {impl}`requirements.ci.errors`
-    pub(crate) fn files(&self, errors: &mut Vec<String>) -> Vec<PathBuf> {
+    pub fn files(&self, errors: &mut Vec<String>) -> Vec<PathBuf> {
         let mut files: Vec<PathBuf> = match &self.tracked {
             Some(tracked) => tracked
                 .iter()
@@ -275,13 +253,13 @@ impl DiscoverySources {
 
     /// The files in the Git index, including staged and deleted ones; `None`
     /// outside Git.
-    pub(crate) fn indexed(&self) -> Option<&BTreeSet<PathBuf>> {
+    pub fn indexed(&self) -> Option<&BTreeSet<PathBuf>> {
         self.tracked.as_ref()
     }
 
     /// Untracked files a Git worktree's ignore rules do not exclude, with the
     /// same exclusions as [`Self::files`]; empty outside Git.
-    pub(crate) fn untracked(&self) -> io::Result<Vec<PathBuf>> {
+    pub fn untracked(&self) -> io::Result<Vec<PathBuf>> {
         if self.tracked.is_none() {
             return Ok(Vec::new());
         }
@@ -421,7 +399,7 @@ fn requested_location(path: &Path) -> io::Result<PathBuf> {
 }
 
 // {impl}`requirements.configuration.evidence_paths`
-pub(crate) fn normalize(path: &Path) -> PathBuf {
+pub fn normalize(path: &Path) -> PathBuf {
     let mut normalized = PathBuf::new();
     for component in path.components() {
         match component {
@@ -440,7 +418,7 @@ pub(crate) fn normalize(path: &Path) -> PathBuf {
 /// build output. Mandatory inputs abort on it; a model's dispatched request
 /// receives it as a recoverable tool error.
 #[derive(Debug)]
-pub(crate) struct OutsideProject(String);
+pub struct OutsideProject(String);
 
 impl std::fmt::Display for OutsideProject {
     // {impl}`requirements.authoring.read_denial`
@@ -455,7 +433,7 @@ impl std::error::Error for OutsideProject {}
 /// leaving every other error unchanged.
 // {impl}`requirements.authoring.file_discovery`
 // {impl}`requirements.authoring.outline_tool`
-pub(crate) fn recoverable_outside_request(error: io::Error) -> io::Error {
+pub fn recoverable_outside_request(error: io::Error) -> io::Error {
     if error
         .get_ref()
         .is_some_and(|inner| inner.is::<OutsideProject>())
@@ -485,7 +463,7 @@ impl std::error::Error for PolicyDenial {}
 /// Turns a permission error that did not come from source-access policy, such
 /// as an operating-system `EACCES`, into an ordinary read failure, leaving
 /// policy denials and every other error unchanged.
-pub(crate) fn recoverable_os_denial(error: io::Error) -> io::Error {
+pub fn recoverable_os_denial(error: io::Error) -> io::Error {
     if error.kind() == io::ErrorKind::PermissionDenied
         && !error
             .get_ref()
@@ -609,7 +587,7 @@ fn build_output_dirs(root: &Path) -> Vec<PathBuf> {
 }
 
 // {impl}`requirements.authoring.generated_inputs`
-pub(crate) fn generated_roots(root: &Path) -> Vec<PathBuf> {
+pub fn generated_roots(root: &Path) -> Vec<PathBuf> {
     let Ok(output) = Command::new("cargo")
         .current_dir(root)
         .args([
@@ -682,10 +660,14 @@ fn discover_generated_roots(build_root: &Path) -> Vec<PathBuf> {
 // {impl}`requirements.configuration.evidence_paths`
 // {impl}`requirements.authoring.generated_inputs`
 // {impl}`requirements.configuration.loading`
-pub(crate) fn resolve_evidence_file(root: &Path, file: &str) -> io::Result<PathBuf> {
+pub fn resolve_evidence_file(
+    root: &Path,
+    file: &str,
+    policy: impl FnOnce() -> io::Result<PathPolicy>,
+) -> io::Result<PathBuf> {
     let root = fs::canonicalize(root)?;
     let (requested, target) = resolve(&root, Path::new(file))?;
-    let policy = PathPolicy::load(&root)?;
+    let policy = policy()?;
     policy.check_disallow(&root.join(file), &target)?;
     if (!requested.starts_with(&root) || !target.starts_with(&root))
         && !policy.allowed(&requested, &target)
@@ -704,311 +686,8 @@ pub(crate) fn resolve_evidence_file(root: &Path, file: &str) -> io::Result<PathB
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+mod tests {
     use super::*;
-
-    // {cite}`habeas:util`
-    pub(crate) fn git(root: &Path, args: &[&str]) {
-        let output = Command::new("git")
-            .current_dir(root)
-            .args(args)
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "git {args:?}: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-
-    // {test}`requirements.authoring.source_tools`
-    #[test]
-    fn nested_project_uses_only_its_part_of_the_git_index() {
-        let parent = tempfile::tempdir().unwrap();
-        let root = parent.path().join("project");
-        fs::create_dir(&root).unwrap();
-        fs::write(root.join("inside.txt"), "inside\n").unwrap();
-        fs::write(parent.path().join("outside.txt"), "outside\n").unwrap();
-        git(parent.path(), &["init", "--quiet"]);
-        git(parent.path(), &["add", "."]);
-        let root = fs::canonicalize(root).unwrap();
-        let access = SourceAccess::load(&root).unwrap();
-        assert!(access.file(&root, Path::new("./inside.txt")).is_ok());
-        assert!(access.file(&root, Path::new("../outside.txt")).is_err());
-        assert!(access.file(&root, Path::new("outside.txt")).is_err());
-    }
-
-    // {test}`requirements.references.discovery`
-    // {test}`requirements.authoring.credentials`
-    #[test]
-    fn discovery_considers_indexed_files_except_exclusions_including_credential_configuration() {
-        let root = tempfile::tempdir().unwrap();
-        let root = fs::canonicalize(root.path()).unwrap();
-        for file in [
-            "src/lib.rs",
-            "src/staged.rs",
-            "src/deleted.rs",
-            "src/untracked.rs",
-            "crates/a/target/out.rs",
-            "evidence/x.json",
-            "docs/book/page.md",
-        ] {
-            let path = root.join(file);
-            fs::create_dir_all(path.parent().unwrap()).unwrap();
-            fs::write(path, "text\n").unwrap();
-        }
-        fs::write(
-            root.join("habeas.toml"),
-            "version = 1\n[authoring.configs.cloud]\nprovider = \"bedrock\"\napi_key = \"secret\"\n",
-        )
-        .unwrap();
-        git(&root, &["init", "--quiet"]);
-        git(&root, &["add", "-f", "."]);
-        git(&root, &["rm", "--cached", "--quiet", "src/untracked.rs"]);
-        fs::remove_file(root.join("src/deleted.rs")).unwrap();
-        let sources = DiscoverySources::load(&root).unwrap();
-        let mut errors = Vec::new();
-        let files: Vec<_> = sources
-            .files(&mut errors)
-            .into_iter()
-            .map(|path| path.strip_prefix(&root).unwrap().to_owned())
-            .collect();
-        assert!(errors.is_empty(), "{errors:?}");
-        assert_eq!(
-            files,
-            [
-                Path::new("docs/book/page.md"),
-                Path::new("habeas.toml"),
-                Path::new("src/lib.rs"),
-                Path::new("src/staged.rs"),
-            ]
-        );
-        assert_eq!(
-            sources.untracked().unwrap(),
-            [root.join("src/untracked.rs")]
-        );
-    }
-
-    // {test}`requirements.authoring.source_tools`
-    #[test]
-    fn unreadable_git_index_does_not_fall_back_to_untracked_access() {
-        let root = tempfile::tempdir().unwrap();
-        fs::write(root.path().join("source.txt"), "source\n").unwrap();
-        git(root.path(), &["init", "--quiet"]);
-        git(root.path(), &["add", "."]);
-        fs::write(root.path().join(".git/index"), "invalid index\n").unwrap();
-        let error = SourceAccess::load(root.path()).err().unwrap();
-        assert!(
-            error.to_string().contains("cannot read Git index"),
-            "{error}"
-        );
-    }
-
-    // {test}`requirements.authoring.source_tools`
-    #[test]
-    fn empty_git_directory_in_an_ancestor_does_not_make_a_project_a_worktree() {
-        let parent = tempfile::tempdir().unwrap();
-        fs::create_dir(parent.path().join(".git")).unwrap();
-        let root = parent.path().join("project");
-        fs::create_dir(&root).unwrap();
-        fs::write(root.join("source.txt"), "source\n").unwrap();
-        let root = fs::canonicalize(root).unwrap();
-        let access = SourceAccess::load(&root).unwrap();
-        assert!(access.tracked.is_none());
-        assert!(access.file(&root, Path::new("source.txt")).is_ok());
-        assert!(access.file(&root, Path::new("../outside.txt")).is_err());
-    }
-
-    // {test}`requirements.authoring.source_tools`
-    #[test]
-    fn invalid_git_configuration_does_not_fall_back_to_untracked_access() {
-        let root = tempfile::tempdir().unwrap();
-        git(root.path(), &["init", "--quiet"]);
-        fs::write(root.path().join(".git/config"), "[invalid config\n").unwrap();
-        let error = SourceAccess::load(root.path()).err().unwrap();
-        assert!(
-            error.to_string().contains("cannot discover Git worktree"),
-            "{error}"
-        );
-    }
-
-    // {test}`requirements.configuration.evidence_paths`
-    // {test}`requirements.authoring.source_tools`
-    // {test}`requirements.authoring.read_denial`
-    // {test}`requirements.ci.input_containment`
-    #[test]
-    fn explicit_allow_overrides_defaults_but_disallow_wins_for_alias_targets() {
-        let root = tempfile::tempdir().unwrap();
-        let external = tempfile::tempdir().unwrap();
-        fs::create_dir_all(root.path().join("generated/private")).unwrap();
-        fs::create_dir(root.path().join("evidence")).unwrap();
-        fs::write(root.path().join("generated/ok.txt"), "generated\n").unwrap();
-        fs::write(root.path().join("generated/private/secret.txt"), "secret\n").unwrap();
-        fs::write(root.path().join("evidence/old.txt"), "old judgment\n").unwrap();
-        fs::write(external.path().join("outside.txt"), "outside\n").unwrap();
-        git(root.path(), &["init", "--quiet"]);
-        let external_toml = toml::Value::String(external.path().display().to_string());
-        fs::write(root.path().join("habeas.toml"), format!(
-            "version = 1\n[evidence]\nallow = ['generated', 'evidence', {external_toml}]\ndisallow = ['generated/private']\n"
-        )).unwrap();
-        let root = fs::canonicalize(root.path()).unwrap();
-        let access = SourceAccess::load(&root).unwrap();
-        for path in [
-            root.join("generated/ok.txt"),
-            root.join("evidence/old.txt"),
-            external.path().join("outside.txt"),
-        ] {
-            assert!(access.file(&root, &path).is_ok(), "{}", path.display());
-            assert!(resolve_evidence_file(&root, path.to_str().unwrap()).is_ok());
-        }
-        let error = access
-            .file(&root, Path::new("generated/private/secret.txt"))
-            .unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
-        assert!(resolve_evidence_file(&root, "generated/private/secret.txt").is_err());
-        #[cfg(unix)]
-        {
-            std::os::unix::fs::symlink(
-                root.join("generated/private/secret.txt"),
-                root.join("generated/alias.txt"),
-            )
-            .unwrap();
-            let error = access
-                .file(&root, Path::new("generated/alias.txt"))
-                .unwrap_err();
-            assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
-        }
-    }
-
-    // {test}`requirements.configuration.evidence_paths`
-    // {test}`requirements.authoring.generated_inputs`
-    // {test}`requirements.authoring.read_denial.build_output`
-    #[test]
-    fn explicit_allow_overrides_the_build_output_refusal() {
-        let root = tempfile::tempdir().unwrap();
-        for directory in ["target/doc", "book"] {
-            fs::create_dir_all(root.path().join(directory)).unwrap();
-            fs::write(root.path().join(directory).join("page.html"), "built\n").unwrap();
-        }
-        let root = fs::canonicalize(root.path()).unwrap();
-        for file in ["target/doc/page.html", "book/page.html"] {
-            let error = SourceAccess::load(&root)
-                .unwrap()
-                .file(&root, Path::new(file))
-                .unwrap_err();
-            assert!(error.to_string().contains("holds build output"), "{error}");
-        }
-        fs::write(
-            root.join("habeas.toml"),
-            "version = 1\n[evidence]\nallow = ['target/doc', 'book/page.html']\n",
-        )
-        .unwrap();
-        let access = SourceAccess::load(&root).unwrap();
-        for file in ["target/doc/page.html", "book/page.html"] {
-            assert!(access.file(&root, Path::new(file)).is_ok(), "{file}");
-        }
-    }
-
-    // {test}`requirements.configuration.evidence_paths`
-    // {test}`requirements.authoring.tool_descriptions.special_cases`
-    #[test]
-    fn evidence_rules_are_literal_paths_not_globs() {
-        let root = tempfile::tempdir().unwrap();
-        fs::create_dir_all(root.path().join("src")).unwrap();
-        fs::write(root.path().join("src/lib.rs"), "pub fn lib() {}\n").unwrap();
-        fs::write(root.path().join("notes.txt"), "notes\n").unwrap();
-        git(root.path(), &["init", "--quiet"]);
-        git(root.path(), &["add", "src/lib.rs"]);
-        fs::write(
-            root.path().join("habeas.toml"),
-            "version = 1\n[evidence]\nallow = ['*.txt', 'note?.txt']\ndisallow = ['src/*', 'src/[a-z]*.rs']\n",
-        )
-        .unwrap();
-        let root = fs::canonicalize(root.path()).unwrap();
-        let access = SourceAccess::load(&root).unwrap();
-        // No pattern matches: the tracked file stays readable and the
-        // untracked one stays refused by the default rules.
-        assert!(access.file(&root, Path::new("src/lib.rs")).is_ok());
-        assert!(access.file(&root, Path::new("notes.txt")).is_err());
-        #[cfg(unix)]
-        {
-            // A rule names exactly the path written, metacharacters included.
-            fs::write(root.join("*.txt"), "literal\n").unwrap();
-            fs::write(root.join("src/*"), "literal\n").unwrap();
-            let access = SourceAccess::load(&root).unwrap();
-            assert!(access.file(&root, Path::new("*.txt")).is_ok());
-            let error = access.file(&root, Path::new("src/*")).unwrap_err();
-            assert!(
-                error.to_string().contains("disallowed by habeas.toml rule"),
-                "{error}"
-            );
-            assert!(access.file(&root, Path::new("src/lib.rs")).is_ok());
-        }
-    }
-
-    // {test}`requirements.authoring.credentials`
-    // {test}`requirements.configuration.evidence_paths`
-    // {test}`requirements.authoring.read_denial`
-    // {test}`requirements.authoring.source_tools`
-    #[test]
-    fn workspace_configuration_with_credentials_is_readable_unless_disallowed() {
-        let root = tempfile::tempdir().unwrap();
-        let config = "version = 1\n[authoring.configs.local]\nbackend = 'ollama'\nmodel = 'fixture'\napi_key = 'TEST_KEY'\n";
-        fs::write(root.path().join("habeas.toml"), config).unwrap();
-        let access = SourceAccess::load(root.path()).unwrap();
-        assert!(access.file(root.path(), Path::new("habeas.toml")).is_ok());
-        fs::write(
-            root.path().join("habeas.toml"),
-            format!("{config}\n[evidence]\ndisallow = ['habeas.toml']\n"),
-        )
-        .unwrap();
-        let error = SourceAccess::load(root.path())
-            .unwrap()
-            .file(root.path(), Path::new("habeas.toml"))
-            .unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
-        assert!(!error.to_string().contains("TEST_KEY"));
-    }
-
-    // {test}`requirements.configuration.evidence_paths`
-    // {test}`requirements.authoring.source_tools`
-    // {test}`requirements.authoring.read_denial`
-    // {test}`requirements.ci.input_containment`
-    #[cfg(unix)]
-    #[test]
-    fn disallowed_ancestors_cannot_redirect_reads_into_allowed_targets() {
-        let root = tempfile::tempdir().unwrap();
-        for directory in ["private", "public", "sub"] {
-            fs::create_dir(root.path().join(directory)).unwrap();
-        }
-        fs::write(root.path().join("public/file.txt"), "public source\n").unwrap();
-        std::os::unix::fs::symlink("../public", root.path().join("private/link")).unwrap();
-        fs::write(
-            root.path().join("habeas.toml"),
-            "version = 1\n[evidence]\nallow = ['public']\ndisallow = ['private']\n",
-        )
-        .unwrap();
-        let access = SourceAccess::load(root.path()).unwrap();
-        assert!(
-            access
-                .file(root.path(), Path::new("public/file.txt"))
-                .is_ok()
-        );
-        for path in [
-            "private/link/file.txt",
-            "sub/../private/link/file.txt",
-            "private/link",
-        ] {
-            let error = access.path(root.path(), Path::new(path)).unwrap_err();
-            assert_eq!(
-                error.kind(),
-                io::ErrorKind::PermissionDenied,
-                "{path}: {error}"
-            );
-            assert!(error.to_string().contains(path), "{error}");
-        }
-    }
-
     // {test}`requirements.authoring.generated_inputs`
     #[test]
     fn generated_discovery_accepts_out_directories_but_not_arbitrary_root_output_targets() {
@@ -1035,127 +714,14 @@ pub(crate) mod tests {
         fs::write(fake.join("root-output"), unrelated.path().to_str().unwrap()).unwrap();
         assert_eq!(discover_generated_roots(root.path()), vec![out, cross]);
     }
+}
 
-    // {test}`requirements.configuration.evidence_paths`
-    // {test}`requirements.authoring.source_tools`
-    // {test}`requirements.authoring.read_denial`
-    // {test}`requirements.ci.input_containment`
-    #[cfg(unix)]
-    #[test]
-    fn policy_resolves_symlinks_before_parent_components_without_allowing_wrong_subtrees() {
-        let root = tempfile::tempdir().unwrap();
-        for directory in ["actual/nested", "actual/private", "private"] {
-            fs::create_dir_all(root.path().join(directory)).unwrap();
-        }
-        fs::write(root.path().join("actual/private/file.txt"), "actual\n").unwrap();
-        fs::write(root.path().join("private/file.txt"), "wrong subtree\n").unwrap();
-        std::os::unix::fs::symlink(root.path().join("actual/nested"), root.path().join("alias"))
-            .unwrap();
-        git(root.path(), &["init", "--quiet"]);
-        fs::write(
-            root.path().join("habeas.toml"),
-            "version = 1\n[evidence]\nallow = ['alias/../private']\n",
-        )
-        .unwrap();
-        let access = SourceAccess::load(root.path()).unwrap();
-        assert!(
-            access
-                .file(root.path(), Path::new("actual/private/file.txt"))
-                .is_ok()
-        );
-        assert!(
-            access
-                .file(root.path(), Path::new("alias/../private/file.txt"))
-                .is_ok()
-        );
-        assert_eq!(
-            access
-                .file(root.path(), Path::new("private/file.txt"))
-                .unwrap_err()
-                .kind(),
-            io::ErrorKind::PermissionDenied
-        );
-        fs::write(
-            root.path().join("habeas.toml"),
-            "version = 1\n[evidence]\nallow = ['.']\ndisallow = ['alias/../private']\n",
-        )
-        .unwrap();
-        let access = SourceAccess::load(root.path()).unwrap();
-        for denied in ["actual/private/file.txt", "alias/../private/file.txt"] {
-            assert_eq!(
-                access
-                    .file(root.path(), Path::new(denied))
-                    .unwrap_err()
-                    .kind(),
-                io::ErrorKind::PermissionDenied
-            );
-            assert!(resolve_evidence_file(root.path(), denied).is_err());
-        }
-        assert!(
-            access
-                .file(root.path(), Path::new("private/file.txt"))
-                .is_ok()
-        );
-        fs::write(
-            root.path().join("habeas.toml"),
-            "version = 1\n[evidence]\nallow = ['actual/private']\n",
-        )
-        .unwrap();
-        let access = SourceAccess::load(root.path()).unwrap();
-        assert_eq!(
-            access
-                .file(
-                    root.path(),
-                    Path::new("actual/private/../../private/file.txt")
-                )
-                .unwrap_err()
-                .kind(),
-            io::ErrorKind::PermissionDenied
-        );
-    }
-
-    // {test}`requirements.authoring.generated_inputs`
-    // {test}`requirements.authoring.source_tools`
-    // {test}`requirements.authoring.read_denial`
-    #[test]
-    fn inherited_out_dir_is_ignored_and_metadata_failure_preserves_ordinary_reads() {
-        if let Some(root) = std::env::var_os("HABEAS_TEST_OUT_DIR_PROBE_ROOT") {
-            let root = PathBuf::from(root);
-            let access = SourceAccess::load(&root).unwrap();
-            assert!(access.generated.is_empty());
-            assert!(access.file(&root, Path::new("tracked.txt")).is_ok());
-            let inherited = PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
-            let error = access
-                .file(&root, &inherited.join("unrelated.txt"))
-                .unwrap_err();
-            assert_eq!(error.kind(), io::ErrorKind::PermissionDenied, "{error}");
-            return;
-        }
-        let root = tempfile::tempdir().unwrap();
-        let unrelated = tempfile::tempdir().unwrap();
-        fs::write(root.path().join("tracked.txt"), "ordinary source\n").unwrap();
-        fs::write(
-            root.path().join("Cargo.toml"),
-            "deliberately invalid TOML [\n",
-        )
-        .unwrap();
-        fs::write(
-            unrelated.path().join("unrelated.txt"),
-            "unrelated generated data\n",
-        )
-        .unwrap();
-        git(root.path(), &["init", "--quiet"]);
-        git(root.path(), &["add", "."]);
-        let output = Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "authoring::access::tests::inherited_out_dir_is_ignored_and_metadata_failure_preserves_ordinary_reads", "--nocapture"])
-            .env("HABEAS_TEST_OUT_DIR_PROBE_ROOT", root.path())
-            .env("OUT_DIR", unrelated.path())
-            .output().unwrap();
-        assert!(
-            output.status.success(),
-            "{}\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
+// {impl}`requirements.authoring.mandatory_inputs`
+// {impl}`requirements.authoring.file_discovery`
+pub fn generated_evidence_path(root: &Path, path: &Path) -> bool {
+    let path = root.join(path);
+    let evidence = root.join("evidence");
+    path.starts_with(&evidence)
+        || fs::canonicalize(&path)
+            .is_ok_and(|path| path.starts_with(fs::canonicalize(&evidence).unwrap_or(evidence)))
 }

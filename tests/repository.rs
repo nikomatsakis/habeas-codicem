@@ -271,3 +271,76 @@ fn symposium_plugin_installs_the_cli_globally_for_its_session_start_hook() {
         toml::Value::Array(vec!["hook".into(), "session-start".into()])
     );
 }
+
+// {test}`requirements.references.outline_comments`
+#[test]
+fn workflow_job_marks_belong_to_the_job_that_follows() {
+    for path in [
+        ".github/workflows/ci.yml",
+        ".github/workflows/release-plz.yml",
+    ] {
+        let file = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(path);
+        let source = std::fs::read_to_string(&file).unwrap();
+        let outline = habeas_sdk::outline::parse(&file, &source).unwrap();
+        for (index, line) in source.lines().enumerate() {
+            let Some(job) = source.lines().nth(index + 1) else {
+                continue;
+            };
+            if line.trim_start().starts_with("# {")
+                && line.starts_with("  #")
+                && job.starts_with("  ")
+                && job.trim_end().ends_with(':')
+            {
+                let owners = outline.comment_owners_at_line(index + 1);
+                let name = job.trim().trim_end_matches(':');
+                assert_eq!(owners.len(), 1, "{path}:{}", index + 1);
+                assert_eq!(
+                    outline.nodes[owners[0]].selector,
+                    format!("pair[jobs]/pair[{name}]"),
+                    "{path}:{}",
+                    index + 1
+                );
+            }
+        }
+    }
+}
+
+// {test}`requirements.layout.project`
+// {test}`requirements.layout.project.workspace`
+#[test]
+fn workspace_contains_frontend_and_sdk_but_not_the_vendor_fork() {
+    let output = std::process::Command::new("cargo")
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .args([
+            "metadata",
+            "--offline",
+            "--locked",
+            "--no-deps",
+            "--format-version=1",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let metadata: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let members = metadata["workspace_members"].as_array().unwrap();
+    let mut names: Vec<_> = metadata["packages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|package| members.contains(&package["id"]))
+        .map(|package| package["name"].as_str().unwrap())
+        .collect();
+    names.sort();
+    assert_eq!(names, ["habeas", "habeas-sdk"]);
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    assert!(root.join("crates/habeas-sdk/src/lib.rs").is_file());
+    let manifest = repository_toml("Cargo.toml");
+    assert_eq!(
+        manifest["dependencies"]["habeas-sdk"]["path"].as_str(),
+        Some("crates/habeas-sdk")
+    );
+}

@@ -1706,7 +1706,7 @@ pub(crate) fn collect_references(root: &Path, errors: &mut Vec<String>) -> Vec<S
 /// policy, reporting a failure to read the Git index as a discovery error.
 // {impl}`requirements.ci.errors`
 pub(crate) fn discovered_files(root: &Path, errors: &mut Vec<String>) -> Vec<PathBuf> {
-    match crate::authoring::access::DiscoverySources::load(root) {
+    match crate::authoring::access::load_discovery_sources(root) {
         Ok(sources) => sources.files(errors),
         Err(error) => {
             errors.push(format!("cannot discover reference sources: {error}"));
@@ -1722,7 +1722,7 @@ pub(crate) fn discovered_files(root: &Path, errors: &mut Vec<String>) -> Vec<Pat
 // {impl}`requirements.authoring.credentials`
 // {impl}`requirements.ci.errors`
 fn validate_committed_credentials(root: &Path, errors: &mut Vec<String>) {
-    let Ok(sources) = crate::authoring::access::DiscoverySources::load(root) else {
+    let Ok(sources) = crate::authoring::access::load_discovery_sources(root) else {
         return;
     };
     for file in sources
@@ -1756,7 +1756,7 @@ fn validate_committed_credentials(root: &Path, errors: &mut Vec<String>) {
 pub(crate) fn untracked_reference_files(root: &Path) -> io::Result<Vec<PathBuf>> {
     let root = fs::canonicalize(root)?;
     let md_root = book_source_dir(&root, &mut Vec::new());
-    let untracked = crate::authoring::access::DiscoverySources::load(&root)?.untracked()?;
+    let untracked = crate::authoring::access::load_discovery_sources(&root)?.untracked()?;
     Ok(untracked
         .into_iter()
         .filter(|file| {
