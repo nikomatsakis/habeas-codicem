@@ -186,10 +186,11 @@ pub fn status_markdown_with_github(
         ));
         output.push_str("</code></pre>\n");
     }
-    // An invalid workspace file is already a validation finding; status
-    // still reports everything else.
-    match coverage_warnings(&inspection) {
-        Ok(section) => output.push_str(&section),
+    // An invalid workspace file, including an invalid `[coverage]` table, is
+    // already a validation finding; status still reports everything else and
+    // says why the warnings could not be computed.
+    match inspected_coverage_warnings(&inspection) {
+        Ok(warnings) => output.push_str(&coverage_section(&warnings)),
         Err(error) => output.push_str(&format!(
             "\n## Coverage warnings\n\nCoverage warnings could not be computed: {}\n",
             escape_html(&error.to_string())
@@ -198,22 +199,37 @@ pub fn status_markdown_with_github(
     Ok(output)
 }
 
-/// The coverage warnings `habeas author` prints after it finishes: one line
-/// per item without recent coverage, and a note when coverage history was
-/// incomplete, whether or not any item is warned about.
+/// The items without recent coverage, outside modules named `tests`, and
+/// whether coverage history was incomplete. These do not fail validation.
 // {impl}`requirements.references.coverage.report`
 // {impl}`requirements.references.coverage.history`
-pub fn coverage_warning_lines(root: &Path) -> io::Result<Vec<String>> {
-    let inspection = crate::evidence::inspect_repository(root)?;
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CoverageWarnings {
+    /// One warning per item, naming its file, line, kind, and name.
+    pub items: Vec<String>,
+    /// Whether some file's coverage window may be missing commits.
+    pub incomplete: bool,
+}
+
+/// The coverage warnings of the project at `root`, as `habeas status` shows
+/// them and `habeas author` prints them after it finishes.
+// {impl}`requirements.references.coverage.report`
+// {impl}`requirements.references.coverage.history`
+pub fn coverage_warnings(root: &Path) -> io::Result<CoverageWarnings> {
+    inspected_coverage_warnings(&crate::evidence::inspect_repository(root)?)
+}
+
+/// The coverage warnings of an inspected repository.
+// {impl}`requirements.references.coverage.report`
+fn inspected_coverage_warnings(
+    inspection: &crate::evidence::RepositoryInspection,
+) -> io::Result<CoverageWarnings> {
     let (warned, incomplete) =
         crate::coverage_history::warnings(&inspection.root, &inspection.uncovered)?;
-    let mut lines: Vec<String> = warned.into_iter().map(|item| item.error).collect();
-    if incomplete {
-        lines.push(
-            "coverage history is incomplete, so only the available history was used".to_owned(),
-        );
-    }
-    Ok(lines)
+    Ok(CoverageWarnings {
+        items: warned.into_iter().map(|item| item.error).collect(),
+        incomplete,
+    })
 }
 
 /// The "Coverage warnings" section of `habeas status`: items without recent
@@ -221,17 +237,19 @@ pub fn coverage_warning_lines(root: &Path) -> io::Result<Vec<String>> {
 // {impl}`requirements.references.coverage.report`
 // {impl}`requirements.references.coverage.history`
 // {impl}`requirements.cli.status`
-fn coverage_warnings(inspection: &crate::evidence::RepositoryInspection) -> io::Result<String> {
-    let (warned, incomplete) =
-        crate::coverage_history::warnings(&inspection.root, &inspection.uncovered)?;
+fn coverage_section(warnings: &CoverageWarnings) -> String {
+    let CoverageWarnings {
+        items: warned,
+        incomplete,
+    } = warnings;
     let mut output = String::new();
     if warned.is_empty() && !incomplete {
-        return Ok(output);
+        return output;
     }
     output.push_str(
         "\n## Coverage warnings\n\nThese items have no reference, and no recent version of an evidence record or review read them. They do not fail validation.\n",
     );
-    if incomplete {
+    if *incomplete {
         output.push_str(
             "\nCoverage history is incomplete, so only the available history was used.\n",
         );
@@ -241,13 +259,13 @@ fn coverage_warnings(inspection: &crate::evidence::RepositoryInspection) -> io::
         output.push_str(&escape_html(
             &warned
                 .iter()
-                .map(|item| item.error.as_str())
+                .map(String::as_str)
                 .collect::<Vec<_>>()
                 .join("\n\n"),
         ));
         output.push_str("</code></pre>\n");
     }
-    Ok(output)
+    output
 }
 
 /// The "Disagreements" section of `habeas status`: each selected definition,

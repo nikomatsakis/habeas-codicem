@@ -33,7 +33,7 @@ fn project() -> TempDir {
 // {cite}`habeas:util`
 fn errors(root: &Path) -> Vec<String> {
     let mut findings = habeas::validate_repository(root).unwrap().errors;
-    findings.extend(habeas::coverage_warning_lines(root).unwrap());
+    findings.extend(habeas::coverage_warnings(root).unwrap().items);
     findings
 }
 

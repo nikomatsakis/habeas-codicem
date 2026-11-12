@@ -202,6 +202,11 @@ pub(crate) fn inspect_repository_with_progress(
     let md_root = book_source_dir(&root, &mut errors);
     let definitions = collect_definitions(&root, &md_root, &mut errors);
     let mut discovery_errors = errors.clone();
+    // Only the coverage report uses `[coverage]`, so an invalid table is a
+    // finding but not a discovery failure, and authoring still proceeds.
+    if let Some(error) = crate::config::coverage_error(&root) {
+        errors.push(error.to_string());
+    }
     let evidence_root = root.join("evidence");
     let evidence_files = if evidence_root.is_dir() {
         files_with_extension(&root, &evidence_root, "json", &mut errors)
@@ -321,7 +326,13 @@ pub(crate) fn inspect_repository_with_progress(
         &mut errors,
         &mut progress,
     );
-    crate::rust_coverage::validate_cargo_examples(&root, &definitions, &references, &mut errors);
+    crate::rust_coverage::validate_cargo_examples(
+        &root,
+        &files,
+        &definitions,
+        &references,
+        &mut errors,
+    );
     // An item an evidence record or review read is covered.
     // {impl}`requirements.references.rust_item_coverage`
     let reads = crate::rust_coverage::EvidenceReads::load(&evidence_files);

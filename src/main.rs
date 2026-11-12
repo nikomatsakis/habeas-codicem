@@ -258,7 +258,11 @@ fn main() -> Result<(), Box<dyn Error>> {
                     summary.push_str(&format!("; policy {policy}"));
                 }
                 println!("{summary}");
-                print_coverage_warnings(&root);
+                // A cancelled batch stops at once, without inspecting the
+                // repository again.
+                if !outcome.cancelled {
+                    print_coverage_warnings(&root);
+                }
                 if !outcome.failures.is_empty() {
                     return Err(io::Error::other(
                         "evidence authoring failed for one or more subjects; see diagnostics above",
@@ -317,7 +321,11 @@ fn main() -> Result<(), Box<dyn Error>> {
                     outcome.usage_path.display()
                 );
             }
-            print_coverage_warnings(&root);
+            // With `--stdout` the record is not written, so the warnings
+            // would describe the evidence on disk rather than this record.
+            if !stdout {
+                print_coverage_warnings(&root);
+            }
             Ok(())
         }
         // {impl}`requirements.integration.symposium_setup_hook`
@@ -332,21 +340,20 @@ fn main() -> Result<(), Box<dyn Error>> {
 /// reported but does not fail the command.
 // {impl}`requirements.references.coverage.report`
 fn print_coverage_warnings(root: &std::path::Path) {
-    match habeas::coverage_warning_lines(root) {
-        Ok(lines) => {
-            let (notes, items): (Vec<_>, Vec<_>) = lines
-                .into_iter()
-                .partition(|line| line.starts_with("coverage history is incomplete"));
-            if !items.is_empty() {
+    match habeas::coverage_warnings(root) {
+        Ok(warnings) => {
+            if !warnings.items.is_empty() {
                 eprintln!(
                     "Coverage warnings (these items have no recent coverage; they do not fail validation):"
                 );
-                for line in items {
+                for line in warnings.items {
                     eprintln!("- {line}");
                 }
             }
-            for note in notes {
-                eprintln!("Note: {note}");
+            if warnings.incomplete {
+                eprintln!(
+                    "Note: coverage history is incomplete, so only the available history was used"
+                );
             }
         }
         Err(error) => eprintln!("cannot compute coverage warnings: {error}"),

@@ -68,8 +68,9 @@ fn commit(root: &Path, message: &str) {
 /// The names of the functions warned about.
 // {cite}`habeas:util`
 fn warned(root: &Path) -> Vec<String> {
-    habeas::coverage_warning_lines(root)
+    habeas::coverage_warnings(root)
         .unwrap()
+        .items
         .into_iter()
         .filter_map(|line| {
             let name = line.split(": function ").nth(1)?;
@@ -170,13 +171,7 @@ fn a_shallow_clone_uses_the_history_it_has_and_says_so() {
         .unwrap();
     assert!(output.status.success(), "{output:?}");
     // Only the last commit is available, and it no longer reads `parse`.
-    let lines = habeas::coverage_warning_lines(&target).unwrap();
-    assert!(
-        lines
-            .iter()
-            .any(|line| line.contains("coverage history is incomplete")),
-        "{lines:#?}"
-    );
+    assert!(habeas::coverage_warnings(&target).unwrap().incomplete);
     assert_eq!(warned(&target), ["parse", "render", "helper"]);
     // The full history still covers it.
     assert_eq!(warned(root), ["render", "helper"]);
@@ -208,9 +203,7 @@ fn the_window_follows_the_workspace_setting() {
         "version = 1\n\n[coverage]\nreauthorings = 0\n",
     )
     .unwrap();
-    let error = habeas::coverage_warning_lines(root)
-        .unwrap_err()
-        .to_string();
+    let error = habeas::coverage_warnings(root).unwrap_err().to_string();
     assert!(error.contains("coverage.reauthorings"), "{error}");
 }
 
@@ -268,13 +261,7 @@ fn outside_git_only_the_files_on_disk_count_and_history_is_incomplete() {
     let root = temp.path();
     fs::remove_dir_all(root.join(".git")).unwrap();
     record(root, "rules.check", &["fn[parse]"]);
-    let lines = habeas::coverage_warning_lines(root).unwrap();
-    assert!(
-        lines
-            .iter()
-            .any(|line| line.contains("coverage history is incomplete")),
-        "{lines:#?}"
-    );
+    assert!(habeas::coverage_warnings(root).unwrap().incomplete);
     assert_eq!(warned(root), ["render", "helper"]);
 }
 
@@ -351,10 +338,12 @@ fn incomplete_history_is_noted_even_with_nothing_to_warn_about() {
         .unwrap();
     assert!(output.status.success(), "{output:?}");
     assert!(warned(&target).is_empty());
-    let lines = habeas::coverage_warning_lines(&target).unwrap();
     assert_eq!(
-        lines,
-        ["coverage history is incomplete, so only the available history was used"]
+        habeas::coverage_warnings(&target).unwrap(),
+        habeas::CoverageWarnings {
+            items: Vec::new(),
+            incomplete: true
+        }
     );
     let status = habeas::status_markdown(&target, false).unwrap();
     assert!(
@@ -362,7 +351,10 @@ fn incomplete_history_is_noted_even_with_nothing_to_warn_about() {
         "{status}"
     );
     assert!(warned(root).is_empty());
-    assert!(habeas::coverage_warning_lines(root).unwrap().is_empty());
+    assert_eq!(
+        habeas::coverage_warnings(root).unwrap(),
+        habeas::CoverageWarnings::default()
+    );
 }
 
 // {test}`requirements.references.coverage.report`
@@ -382,11 +374,194 @@ fn validation_does_not_read_git_history() {
         }
     }
     assert_eq!(habeas::validate_repository(root).unwrap().errors, before);
-    let lines = habeas::coverage_warning_lines(root).unwrap();
-    assert!(
-        lines
-            .iter()
-            .any(|line| line.contains("coverage history is incomplete")),
-        "{lines:#?}"
+    assert!(habeas::coverage_warnings(root).unwrap().incomplete);
+}
+
+/// The output of `git` in `root`.
+// {cite}`habeas:util`
+fn git_output(root: &Path, args: &[&str]) -> String {
+    let output = Command::new("git")
+        .current_dir(root)
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "git {args:?}: {output:?}");
+    String::from_utf8(output.stdout).unwrap().trim().to_owned()
+}
+
+/// A shallow clone of `root` holding its last `depth` commits.
+// {cite}`habeas:util`
+fn shallow_clone(root: &Path, depth: usize) -> (TempDir, std::path::PathBuf) {
+    let clone = tempfile::tempdir().unwrap();
+    let target = clone.path().join("shallow");
+    let output = Command::new("git")
+        .args(["clone", "--quiet", "--depth", &depth.to_string()])
+        .arg(format!("file://{}", root.display()))
+        .arg(&target)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    (clone, target)
+}
+
+// {test}`requirements.references.coverage.history`
+#[test]
+fn a_merge_counts_only_when_it_differs_from_every_parent() {
+    let temp = project();
+    let root = temp.path();
+    fs::write(
+        root.join("habeas.toml"),
+        "version = 1\n\n[coverage]\nreauthorings = 2\n",
+    )
+    .unwrap();
+    record(
+        root,
+        "rules.check",
+        &["fn[parse]", "fn[render]", "fn[helper]"],
+    );
+    commit(root, "first");
+    git(root, &["switch", "--quiet", "-c", "side"]);
+    record(root, "rules.check", &["fn[render]", "fn[helper]"]);
+    commit(root, "side");
+    git(root, &["switch", "--quiet", "-"]);
+    git(
+        root,
+        &["merge", "--quiet", "--no-ff", "-m", "merge", "side"],
+    );
+    // The merge takes the side branch's version unchanged, so the window of
+    // two holds that version and the first, which still reads `parse`.
+    assert!(warned(root).is_empty(), "{:?}", warned(root));
+    assert!(!habeas::coverage_warnings(root).unwrap().incomplete);
+}
+
+// {test}`requirements.references.coverage.history`
+#[test]
+fn an_unreadable_historical_version_makes_history_incomplete() {
+    let temp = project();
+    let root = temp.path();
+    record(root, "rules.check", &["fn[parse]"]);
+    commit(root, "first");
+    record(root, "rules.check", &[]);
+    commit(root, "second");
+    assert_eq!(warned(root), ["render", "helper"]);
+    assert!(!habeas::coverage_warnings(root).unwrap().incomplete);
+    let blob = git_output(root, &["rev-parse", "HEAD~1:evidence/rules.check.json"]);
+    fs::remove_file(root.join(format!(".git/objects/{}/{}", &blob[..2], &blob[2..]))).unwrap();
+    // The version that read `parse` cannot be read, and that is reported.
+    let warnings = habeas::coverage_warnings(root).unwrap();
+    assert!(warnings.incomplete, "{warnings:?}");
+    assert_eq!(warned(root), ["parse", "render", "helper"]);
+}
+
+// {test}`requirements.references.coverage.history`
+// {test}`requirements.references.coverage.shallow_clone`
+#[test]
+fn a_shallow_clone_holding_every_window_is_complete() {
+    let temp = project();
+    let root = temp.path();
+    commit(root, "first");
+    record(
+        root,
+        "rules.check",
+        &["fn[parse]", "fn[render]", "fn[helper]"],
+    );
+    commit(root, "add the record");
+    commit(root, "unrelated");
+    // The clone reaches the commit before the record was added, so the
+    // record's whole history is there.
+    let (_clone, target) = shallow_clone(root, 3);
+    assert_eq!(
+        habeas::coverage_warnings(&target).unwrap(),
+        habeas::CoverageWarnings::default()
+    );
+    let status = habeas::status_markdown(&target, false).unwrap();
+    assert!(!status.contains("history is incomplete"), "{status}");
+    // A clone that stops at the commit adding it cannot tell.
+    let (_clone, target) = shallow_clone(root, 2);
+    assert!(habeas::coverage_warnings(&target).unwrap().incomplete);
+}
+
+// {test}`requirements.references.coverage.report`
+// {test}`requirements.references.coverage.test_module`
+#[test]
+fn items_in_out_of_line_tests_modules_are_not_warned_about() {
+    let temp = project();
+    let root = temp.path();
+    fs::create_dir_all(root.join("src/foo")).unwrap();
+    fs::create_dir_all(root.join("src/bar/tests")).unwrap();
+    fs::write(root.join("src/foo.rs"), "mod tests;\n\nfn in_foo() {}\n").unwrap();
+    fs::write(root.join("src/foo/tests.rs"), "fn foo_fixture() {}\n").unwrap();
+    fs::write(root.join("src/bar.rs"), "mod tests;\n").unwrap();
+    fs::write(root.join("src/bar/tests/mod.rs"), "fn bar_fixture() {}\n").unwrap();
+    commit(root, "first");
+    let mut names = warned(root);
+    names.sort();
+    assert_eq!(names, ["helper", "in_foo", "parse", "render"]);
+}
+
+// {test}`requirements.configuration.workspace_structure`
+// {test}`requirements.configuration.loading`
+// {test}`requirements.references.coverage.history`
+#[test]
+fn an_invalid_coverage_table_is_a_validation_finding_but_authoring_proceeds() {
+    let temp = project();
+    let root = temp.path();
+    fs::write(root.join("md/rules.md"), "# Rules\n").unwrap();
+    commit(root, "first");
+    for (table, setting) in [
+        ("[coverage]\nreauthorings = 0\n", "coverage.reauthorings"),
+        ("[coverage]\nreauthorings = 'x'\n", "coverage.reauthorings"),
+        ("[coverage]\nwindow = 2\n", "coverage.window"),
+    ] {
+        fs::write(root.join("habeas.toml"), format!("version = 1\n\n{table}")).unwrap();
+        let errors = habeas::validate_repository(root).unwrap().errors;
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("habeas.toml") && error.contains(setting)),
+            "{table}: {errors:#?}"
+        );
+        // Authoring does not use `[coverage]`.
+        let output = Command::new(env!("CARGO_BIN_EXE_habeas"))
+            .args(["author", "--all"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{table}: {output:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("cannot compute coverage warnings"),
+            "{stderr}"
+        );
+    }
+}
+
+// {test}`requirements.references.coverage.examples`
+#[test]
+fn an_untracked_example_is_not_a_target() {
+    let temp = project();
+    let root = temp.path();
+    fs::create_dir_all(root.join("examples")).unwrap();
+    fs::write(
+        root.join("md/rules.md"),
+        ":::{req} check\nChecking MUST work.\n:::\n\n:::{example} demo\nA demo. {cite}`rules.check`\n:::\n",
+    )
+    .unwrap();
+    fs::write(root.join("examples/tracked.rs"), "fn main() {}\n").unwrap();
+    commit(root, "first");
+    // Untracked, it is not discovered, so its citation is not found either.
+    fs::write(
+        root.join("examples/untracked.rs"),
+        "// {cite}`rules.demo`\nfn main() {}\n",
+    )
+    .unwrap();
+    let errors = habeas::validate_repository(root).unwrap().errors;
+    let examples: Vec<_> = errors
+        .iter()
+        .filter(|error| error.contains("Cargo example"))
+        .collect();
+    assert_eq!(
+        examples,
+        ["examples/tracked.rs: Cargo example does not {cite} a named example of the book"]
     );
 }

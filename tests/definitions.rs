@@ -472,7 +472,7 @@ fn references_to_a_definition_of_another_kind_are_reported() {
     .unwrap();
     let mut errors = validate_repository(temp.path()).unwrap().errors;
     // Coverage is warned about, not a validation error.
-    errors.extend(habeas::coverage_warning_lines(temp.path()).unwrap());
+    errors.extend(habeas::coverage_warnings(temp.path()).unwrap().items);
     for (line, role) in [(1, "impl"), (2, "cite"), (3, "test")] {
         let expected = format!(
             "src/lib.rs:{line}: {{{role}}}`glossary.a` has no matching requirement or example"
@@ -850,8 +850,9 @@ fn outline_inputs_capture_terms_without_counting_them_as_citations() {
     // record reading it would still cover it.
     fs::remove_file(&path).unwrap();
     assert!(
-        habeas::coverage_warning_lines(root)
+        habeas::coverage_warnings(root)
             .unwrap()
+            .items
             .iter()
             .any(|e| e.contains("run") && e.contains("has no recent coverage"))
     );

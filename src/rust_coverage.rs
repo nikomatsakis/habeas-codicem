@@ -156,16 +156,8 @@ impl EvidenceReads {
 
     /// Adds the outline inputs of one record.
     pub(crate) fn add_record(&mut self, record: &serde_json::Value) {
-        for input in record
-            .get("inputs")
-            .and_then(serde_json::Value::as_array)
-            .into_iter()
-            .flatten()
-        {
-            let field = |name: &str| input.get(name).and_then(serde_json::Value::as_str);
-            if let (Some(file), Some(item), Some(hash)) =
-                (field("file"), field("item"), field("hash"))
-            {
+        for (file, item, hash) in outline_inputs(record) {
+            if let Some(hash) = hash {
                 self.0
                     .entry(file.to_owned())
                     .or_default()
@@ -198,12 +190,30 @@ impl EvidenceReads {
 }
 
 // {cite}`habeas:util`
-/// An item Rust item coverage reports: its file, outline selector, and the
+/// The outline inputs of an evidence record or review, as `(file, item,
+/// hash)`; an input without a recorded hash has none.
+pub(crate) fn outline_inputs(
+    record: &serde_json::Value,
+) -> impl Iterator<Item = (&str, &str, Option<&str>)> {
+    record
+        .get("inputs")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|input| {
+            let field = |name: &str| input.get(name).and_then(serde_json::Value::as_str);
+            Some((field("file")?, field("item")?, field("hash")))
+        })
+}
+
+// {cite}`habeas:util`
+/// An item Rust item coverage reports: its file, the outline selectors of
+/// its node and of each node containing it, innermost first, and the
 /// validation error naming it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct UncoveredItem {
     pub(crate) file: String,
-    pub(crate) item: String,
+    pub(crate) selectors: Vec<String>,
     /// How the item is reported.
     pub(crate) error: String,
     /// Whether it lies inside a module named `tests`, which is not reported.
@@ -382,19 +392,27 @@ pub(crate) fn rust_files(root: &Path, sources: &[PathBuf]) -> Vec<PathBuf> {
         .collect()
 }
 
-/// The package's Cargo example targets: each `.rs` file directly under
-/// `examples/`, each `examples/<name>/main.rs`, and each `[[example]]` path.
+/// The package's Cargo example targets among `files`, the sources reference
+/// discovery considers: each `.rs` file directly under `examples/`, each
+/// `examples/<name>/main.rs`, and each `[[example]]` path.
 // {impl}`requirements.references.coverage.examples`
-pub(crate) fn cargo_examples(root: &Path) -> Vec<PathBuf> {
+pub(crate) fn cargo_examples(root: &Path, files: &[PathBuf]) -> Vec<PathBuf> {
     let mut targets = std::collections::BTreeSet::new();
-    if let Ok(entries) = fs::read_dir(root.join("examples")) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_file() && path.extension().is_some_and(|extension| extension == "rs") {
-                targets.insert(path);
-            } else if path.join("main.rs").is_file() {
-                targets.insert(path.join("main.rs"));
-            }
+    let examples = root.join("examples");
+    for file in files {
+        let Ok(relative) = file.strip_prefix(&examples) else {
+            continue;
+        };
+        let parts: Vec<_> = relative.iter().collect();
+        let target = match parts.as_slice() {
+            [name] => Path::new(name)
+                .extension()
+                .is_some_and(|extension| extension == "rs"),
+            [_, main] => *main == "main.rs",
+            _ => false,
+        };
+        if target {
+            targets.insert(file.clone());
         }
     }
     let manifest = fs::read_to_string(root.join("Cargo.toml"))
@@ -408,10 +426,14 @@ pub(crate) fn cargo_examples(root: &Path) -> Vec<PathBuf> {
         .flatten()
     {
         if let Some(path) = example.get("path").and_then(toml::Value::as_str) {
-            targets.insert(root.join(path));
+            let path = root.join(path);
+            let path = fs::canonicalize(&path).unwrap_or(path);
+            if files.contains(&path) {
+                targets.insert(path);
+            }
         }
     }
-    targets.into_iter().filter(|path| path.is_file()).collect()
+    targets.into_iter().collect()
 }
 
 /// Reports each Cargo example target that does not `{cite}` a named example
@@ -419,12 +441,12 @@ pub(crate) fn cargo_examples(root: &Path) -> Vec<PathBuf> {
 // {impl}`requirements.references.coverage.examples`
 pub(crate) fn validate_cargo_examples(
     root: &Path,
+    files: &[PathBuf],
     definitions: &BTreeMap<String, Declaration>,
     references: &[crate::evidence::SourceReference],
     errors: &mut Vec<String>,
 ) {
-    for target in cargo_examples(root) {
-        let target = fs::canonicalize(&target).unwrap_or(target);
+    for target in cargo_examples(root, files) {
         let cites_example = references.iter().any(|reference| {
             reference.file == target
                 && reference.kind == crate::ReferenceKind::Cite
@@ -492,9 +514,10 @@ pub(crate) fn validate_rust_functions(
                     }
                     uncovered.push(UncoveredItem {
                         file: label.clone(),
-                        item: outline.nodes[index].selector.clone(),
+                        selectors: crate::coverage_history::enclosing_selectors(&outline, index),
                         error: uncovered_error(&label, line, kind, &name),
-                        in_tests: crate::coverage_history::in_tests_module(&outline, index),
+                        in_tests: crate::coverage_history::in_tests_module(&outline, index)
+                            || crate::coverage_history::in_tests_file(Path::new(&label)),
                     });
                 }
             }
@@ -710,7 +733,8 @@ mod tests {
         let mut found = Vec::new();
         let references = crate::evidence::collect_references(&root, &mut found);
         let mut errors = Vec::new();
-        super::validate_cargo_examples(&root, &definitions, &references, &mut errors);
+        let files = crate::evidence::discovered_files(&root, &mut found);
+        super::validate_cargo_examples(&root, &files, &definitions, &references, &mut errors);
         errors.sort();
         // A citation of a requirement, rather than an example, is not enough.
         assert_eq!(

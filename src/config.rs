@@ -822,14 +822,33 @@ pub fn load_coverage_reauthorings(root: &Path) -> io::Result<u32> {
     let Some((path, table)) = workspace_document(root)? else {
         return Ok(DEFAULT_REAUTHORINGS);
     };
+    coverage_reauthorings(&path, &table)
+}
+
+/// An invalid workspace `[coverage]` table, for repository validation to
+/// report without reading Git history. A workspace file that cannot be read
+/// or fails the common checks is reported by evidence configuration loading,
+/// so it is not reported again here.
+// {impl}`requirements.configuration.loading`
+// {impl}`requirements.configuration.workspace_structure`
+pub(crate) fn coverage_error(root: &Path) -> Option<io::Error> {
+    let Ok(Some((path, table))) = workspace_document(root) else {
+        return None;
+    };
+    coverage_reauthorings(&path, &table).err()
+}
+
+/// Decodes the `[coverage]` table of a workspace file.
+// {impl}`requirements.references.coverage.history`
+fn coverage_reauthorings(path: &Path, table: &toml::Table) -> io::Result<u32> {
     let coverage: CoverageConfig = table
         .get("coverage")
-        .map(|value| decode(value.clone(), &path, "coverage"))
+        .map(|value| decode(value.clone(), path, "coverage"))
         .transpose()?
         .unwrap_or_default();
     match coverage.reauthorings {
         Some(0) => Err(invalid(
-            &path,
+            path,
             "coverage.reauthorings",
             "expected a positive integer",
         )),

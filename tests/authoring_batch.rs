@@ -878,6 +878,7 @@ fn verbose_false_rationale_is_readable_above_terminal_progress() {
 
 // {test}`requirements.authoring.progress`
 // {test}`requirements.authoring.batch`
+// {test}`requirements.references.coverage.report`
 #[cfg(unix)]
 #[test]
 fn dumb_terminal_keeps_plain_batch_diagnostics() {
@@ -897,12 +898,19 @@ fn dumb_terminal_keeps_plain_batch_diagnostics() {
         String::from_utf8_lossy(&output.stdout).trim(),
         "6 authored; 0 skipped as current; 0 failed; policy once"
     );
+    // A finished batch reports coverage; outside Git its history is
+    // incomplete.
+    assert!(
+        stderr.contains("coverage history is incomplete"),
+        "{stderr}"
+    );
 }
 
 // {test}`requirements.authoring.progress`
 // {test}`requirements.authoring.usage_storage`
 // {test}`requirements.authoring.batch`
 // {test}`requirements.authoring.concurrency`
+// {test}`requirements.references.coverage.report`
 #[cfg(unix)]
 #[test]
 fn interrupted_terminal_progress_keeps_unstarted_work_incomplete() {
@@ -924,6 +932,8 @@ fn assert_interruption_stops_the_batch(overlap: bool, concurrency: usize) {
     let plain = escape.replace_all(&terminal, "");
     assert!(plain.contains("Stopped"), "{plain}");
     assert!(plain.contains("assessments not started"), "{plain}");
+    // A cancelled batch does not compute coverage warnings.
+    assert!(!plain.contains("coverage history"), "{plain}");
     let stopped = &plain[plain.rfind("Stopped").unwrap()..];
     assert!(!stopped.contains("100%"), "{stopped}");
     assert!(!stopped.contains("6/6 finished"), "{stopped}");
@@ -1517,6 +1527,7 @@ fn empty_batches_and_early_errors_clear_the_terminal_display() {
 // {test}`requirements.references.citation_review`
 // {test}`requirements.authoring.batch`
 // {test}`requirements.authoring.refresh`
+// {test}`requirements.references.coverage.report`
 #[test]
 fn batch_authors_citation_reviews_and_preserves_current_ones() {
     let server = Server::start(false, None);
@@ -1596,6 +1607,9 @@ fn batch_authors_citation_reviews_and_preserves_current_ones() {
     );
     let printed: Value = serde_json::from_slice(&single.stdout).unwrap();
     assert_eq!(printed["item"], "fn[helper]");
+    // The record is not written, so no coverage warnings are computed.
+    let stderr = String::from_utf8_lossy(&single.stderr);
+    assert!(!stderr.contains("coverage history"), "{stderr}");
     assert_eq!(server.subjects().len(), 8);
 }
 

@@ -24,6 +24,8 @@ pub struct BatchOutcome {
     pub deleted: Vec<String>,
     /// The policy assessments ran under, when any ran.
     pub policy: Option<AssessmentPolicy>,
+    /// Whether the batch was cancelled before it finished.
+    pub cancelled: bool,
 }
 
 /// The inspection phase that selects definitions and citation reviews.
@@ -116,6 +118,7 @@ async fn run_batch(
         unchanged,
         deleted,
         policy: None,
+        cancelled: false,
     };
     // With nothing to assess, no configuration or credentials are resolved.
     // {impl}`requirements.authoring.configuration`
@@ -250,7 +253,8 @@ async fn run_batch(
             outcome.failures.push(("batch".into(), message));
         }
     }
-    progress.finish(cancellation.borrow().is_some(), subjects.len());
+    outcome.cancelled = cancellation.borrow().is_some();
+    progress.finish(outcome.cancelled, subjects.len());
     Ok(outcome)
 }
 

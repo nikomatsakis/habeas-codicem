@@ -49,11 +49,16 @@ static FILE_POSITION: LazyLock<Regex> =
 pub(crate) fn without_source_lines(error: &str) -> String {
     let error = PARSE_POSITION.replace_all(error, "");
     let error = FILE_POSITION.replace_all(&error, "$1: ");
-    // A range the model supplied is repeated as it gave it.
+    // A line or range the model supplied, `file:N` or `file:N-M`, is
+    // repeated as it gave it.
     PATH_POSITION
         .replace_all(&error, |captures: &regex::Captures| {
             let whole = captures.get(0).expect("match");
-            if error[whole.end()..].starts_with(" is not an inclusive range") {
+            let rest = &error[whole.end()..];
+            let rest = rest.strip_prefix('-').map_or(rest, |rest| {
+                rest.trim_start_matches(|c: char| c.is_ascii_digit())
+            });
+            if rest.starts_with(" is not an inclusive range") {
                 whole.as_str().to_owned()
             } else {
                 captures[1].to_owned()
@@ -169,10 +174,13 @@ mod tests {
             without_source_lines("src/a.rs: cannot parse Rust source: line 3: unexpected token"),
             "src/a.rs: cannot parse Rust source: unexpected token"
         );
-        assert_eq!(
-            without_source_lines("src/a.rs:9 is not an inclusive range"),
-            "src/a.rs:9 is not an inclusive range"
-        );
+        // Both forms `read_lines` reports keep the numbers the model gave.
+        for requested in ["9", "3-9"] {
+            let error = format!(
+                "src/lib.rs:{requested} is not an inclusive range within the file; read it by selector instead"
+            );
+            assert_eq!(without_source_lines(&error), error);
+        }
         assert_eq!(
             without_source_lines("md/rules.md:12: query checkers is not closed"),
             "md/rules.md: query checkers is not closed"
