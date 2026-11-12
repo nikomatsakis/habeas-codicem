@@ -1,8 +1,8 @@
 {
   "requirement": "Every source text the harness supplies to a model, including mandatory inputs,\n`habeas` reads, and `ripgrep` results, and every source text Habeas displays in\nthe book or `habeas info`, MUST be redacted:\n\n1. In a workspace `habeas.toml` or user configuration file, the value of every\n   explicit credential field defined by {cite}`requirements.authoring.credentials`\n   MUST be replaced. Such a file that is not valid TOML MUST be replaced whole,\n   with `configuration` as the kind, because its fields cannot be located.\n2. In every source, each match of a built-in rule of the `secretshape` crate MUST\n   be replaced. The replaced region MUST be extended through each adjacent region\n   that the crate's entropy heuristic flags and that only whitespace separates\n   from the region, repeating until no flagged region is adjacent. The heuristic\n   MUST NOT cause redaction on its own.\n\nA replacement MUST read `[REDACTED:<kind>]`, where `<kind>` is the credential\nfield or the rule's name, and MUST keep every line break within the replaced\ntext, so line numbers are unchanged. Outlines MUST be built from the original\nsource, and the structural hash MUST hash each text piece that overlaps a\nredacted region in its redacted form, so evidence never depends on a credential's\nvalue and redaction never changes or breaks a file's outline. The `secretshape` version MUST be pinned exactly; upgrading\nit MAY change redaction and hashes and MUST be treated as a deliberate change.",
   "determination": true,
-  "rationale": "I found no gap. Every obligation maps to code that is reachable from an `{impl}` item, and each is covered by a `{test}`.\n\n**Core redaction.** The mechanism is in `crates/habeas-sdk/src/redaction/mod.rs`, which has no `{impl}` reference of its own. It is reachable from the marked items:\n- `crates/habeas-sdk/src/outline/mod.rs#fn[parse_with]` and `fn[parse]` call `Redaction::of_text` and `Redaction::of_file`.\n- `src/evidence.rs#fn[validate_resolved_input]` calls `redact_lines`.\n- `src/github.rs#fn[fetch]` and `src/index.rs#fn[render_detail_sections]` call `redact_text`.\n\n**Obligation 1: configuration files.**\n- `Redaction::of_file` adds `configuration_regions` when `is_configuration_file` is true. That function accepts any file named `habeas.toml`, the user configuration file, and aliases of it.\n- `credential_fields`, `item_fields` and `value_fields` locate every value under `credentials` and each `api_key`, including inline tables and multi-line strings. Each region's kind is the field name, for example `[REDACTED:api_key]`.\n- If the file is not valid TOML, `configuration_regions` redacts the whole file with kind `configuration`.\n- Tests:\n  - `configuration_credential_fields_are_redacted_by_name_whatever_their_values`\n  - `invalid_configuration_files_are_redacted_whole_keeping_lines`\n  - `the_user_configuration_file_and_its_aliases_are_configuration_files`\n\n**Obligation 2: `secretshape` rules.**\n- `secret_regions` scans with a rule-only scanner and creates regions only from rule findings. The kind is the rule name.\n- It extends each region forward and backward through flagged heuristic spans that are overlapping or separated only by whitespace. It repeats until no adjacent flagged span remains.\n- Heuristic findings never start a region.\n- Tests:\n  - `tokens_in_code_are_redacted_without_adjacent_code`\n  - `private_keys_are_redacted_from_header_through_body_keeping_lines` covers forward extension through multiple body lines.\n  - `regions_extend_backward_keep_crlf_and_scan_past_a_mebibyte` covers backward extension.\n  - `heuristic_findings_alone_are_not_redacted` covers the rule that the heuristic alone never redacts.\n\n**Replacement format and line breaks.**\n- `Redaction::slice` emits `[REDACTED:<kind>]` plus every line break in the region, preserving CRLF.\n- Tests: the CRLF and line-count assertions in the tests above, and `slices_concatenate_to_the_redacted_whole`.\n\n**Outlines and hashes.**\n- `parse_redacted` builds the outline from the original source. `Builder::piece` and `plain_text` hash each piece through `redaction.slice`.\n- Tests: `redaction_never_changes_an_outline` and `hashes_do_not_depend_on_credential_values`.\n\n**Pinned version.** `Cargo.toml` pins `secretshape = \"=0.1.0\"`, with a comment that upgrading is a deliberate change.\n\n**Surfaces that show source text.**\n- Mandatory inputs and the initial prompt: `InputSelector::resolve` calls `redact_lines`, and `ParsedSource.redacted` is used for node text.\n- `habeas` reads and `ripgrep` results: `SearchNodes::entries` emits lines from `parsed.redacted`. The `habeas` item and line-range reads take node text from the same `ParsedSource.redacted`.\n- Citation commentary: `CitationItem::model_citations_value` calls `redact_text`.\n- Site violation text: `SiteItem::matches_value` calls `redact_text`.\n- GitHub issue reads: `fetch` redacts title and body.\n- Book and `habeas info` pages: `render_detail_sections` redacts the definition text, validation findings and unreadable record, and `render_input` redacts input text.\n- Tests:\n  - `model_inputs_reads_searches_and_citation_prompts_are_redacted`\n  - `declaration_text_reaches_the_model_redacted`\n  - `ast_grep_returns_innermost_nodes_of_the_language_and_reports_failures`\n  - `the_tool_reads_issues_with_the_token_and_redacts_bodies`\n  - `detail_pages_and_info_display_redacted_source`\n  - `violation_text_reaches_the_model_redacted`\n\nI found no unspecified observable behavior in the `{impl}` code, and nothing carries a `{fixme}` reference.",
-  "references": "f03c993808f439d29901da35b25c3aefb97dd1bac06312c868f1fbee7986088e",
+  "rationale": "I found no gap against `requirements.authoring.redaction`. Each obligation maps to code reachable from an {impl} item and to a test that asserts its outcome.\n\n**Credential fields and invalid TOML (obligation 1)**\n- `crates/habeas-sdk/src/redaction/mod.rs#impl[Redaction]/fn[of_file_with_config]` adds `configuration_regions` when `is_configuration_file_for` is true. That check matches any `habeas.toml` or the supplied user file, including aliases.\n- `credential_fields`, `item_fields` and `value_fields` locate every value under an authoring config's `credentials` and its `api_key`, and redact them inside their quotes.\n- A file that is not valid TOML is replaced whole with kind `configuration`.\n- Tests: `configuration_credential_fields_are_redacted_by_name_whatever_their_values` (including inline tables and a non-config file left unchanged), `invalid_configuration_files_are_redacted_whole_keeping_lines`, and `the_user_configuration_file_and_its_aliases_are_configuration_files`.\n- `src/inputs.rs#impl[OutlineCache]/fn[parse]` passes the user-configuration location through `of_file_with_config`.\n\n**`secretshape` rules, heuristic extension, and heuristic never redacting alone (obligation 2)**\n- `secret_regions` scans with a rules-only scanner. It returns no regions when there are no rule findings, so the heuristic cannot cause redaction on its own.\n- It then scans with the heuristic scanner and keeps only `high-entropy-token` findings.\n- It extends each rule region forward and backward through flagged spans that overlap it or are separated from it only by whitespace. It chains until no adjacent flagged span remains.\n- `merge` joins overlapping regions.\n- Tests:\n  - `heuristic_findings_alone_are_not_redacted` covers the heuristic-alone case.\n  - `tokens_in_code_are_redacted_without_adjacent_code` covers a non-whitespace-adjacent case that is not extended.\n  - `regions_extend_backward_keep_crlf_and_scan_past_a_mebibyte` covers backward extension.\n  - `private_keys_are_redacted_from_header_through_body_keeping_lines` covers rule redaction. Its helper `private_key` builds body lines the heuristic flags, and the test asserts they are gone from the output.\n  - The same test covers a block with several flagged lines, which exercises repeated extension.\n\nI could not confirm that this test reaches forward extension. That depends on how far the `secretshape` rule's own match extends into the key body. My reasoning is that the test asserts the body fragments are absent, so the test would fail if forward extension were broken.\n\n**Replacement format and line breaks**\n- `Redaction::slice` emits `[REDACTED:<kind>]` and `push_line_breaks`, which keeps CRLF pairs. The kind is the field name, the rule name, or `configuration`.\n- Tests assert exact output and line counts in several tests, including the CRLF case in `regions_extend_backward_keep_crlf_and_scan_past_a_mebibyte`.\n- `slices_concatenate_to_the_redacted_whole` checks slice consistency.\n\n**Outlines and structural hash**\n- `crates/habeas-sdk/src/outline/mod.rs#fn[parse]` and `#fn[parse_with]` build the `Redaction` and call `parse_redacted`. The tree is parsed from the original source.\n- `Builder::piece` and `plain_text` hash `redaction.slice(...)` for each text piece.\n- Tests: `redaction_never_changes_an_outline` shows structure is identical for original and redacted, and that parsing redacted YAML text would change it. `hashes_do_not_depend_on_credential_values` shows hashes are independent of credential values and still change for edits outside redacted regions.\n\n**Pinning**\n- `crates/habeas-sdk/Cargo.toml#table[dependencies]/pair[secretshape]` pins `=0.1.0`, and `Cargo.lock` contains `secretshape`.\n\n**Every source text the model sees or Habeas displays**\n- `src/authoring/mod.rs#fn[initial_prompt]` and `src/authoring/tools.rs#impl[SearchNodes]/fn[entries]` use redacted text.\n- `src/evidence.rs#fn[validate_resolved_input]`, `src/github.rs#fn[fetch]` and `src/index.rs#fn[render_detail_sections]` redact with `redact_text` or `redact_lines`.\n- Tests:\n  - `model_inputs_reads_searches_and_citation_prompts_are_redacted` covers mandatory inputs, `habeas` reads, `ripgrep` results and citation prompts.\n  - `declaration_text_reaches_the_model_redacted` covers requirement and definition text.\n  - `ast_grep_returns_innermost_nodes_of_the_language_and_reports_failures` covers `ast_grep` output.\n  - `the_tool_reads_issues_with_the_token_and_redacts_bodies` covers GitHub issue text and the cache.\n  - `detail_pages_and_info_display_redacted_source` covers the book detail pages and `habeas info`.\n  - `violation_text_reaches_the_model_redacted` covers site violation text.\n\nI found no unspecified extra behavior and no {fixme} references.",
+  "references": "93458939011d722606fce77ba56352106ed01f9be4bac4d504166ec9b3b601d4",
   "inputs": [
     {
       "requirements": "requirements.authoring.redaction",
@@ -68,9 +68,74 @@
       ]
     },
     {
-      "file": "Cargo.toml",
+      "file": "crates/habeas-sdk/Cargo.toml",
       "item": "table[dependencies]/pair[secretshape]",
       "hash": "dc554ea6d8374cd22a7e07b2bfd7342ed0b14f77816b11d841943b5d8b3f60c8"
+    },
+    {
+      "file": "crates/habeas-sdk/src/outline/mod.rs",
+      "item": "fn[parse]",
+      "hash": "8004fb1f8a8f315d79c1e8ce3c848b92ab033a6591579924dcd0e618974e2c8a"
+    },
+    {
+      "file": "crates/habeas-sdk/src/outline/mod.rs",
+      "item": "fn[parse_with]",
+      "hash": "0bb75e2360be203635bb7a2a6086770563c688bea4f6e5a450c88fa272a1ef14"
+    },
+    {
+      "file": "crates/habeas-sdk/src/redaction/mod.rs",
+      "item": "impl[Redaction]/fn[of_file_with_config]",
+      "hash": "bede15a832040a4de1aff86f4ea55ad7ed0333007d7ff770829838d564faa127"
+    },
+    {
+      "file": "crates/habeas-sdk/src/redaction/tests.rs",
+      "item": "fn[configuration_credential_fields_are_redacted_by_name_whatever_their_values]",
+      "hash": "412e09d365440e96d3084a37a15e6af17d97a411f07a0601ad9234d420d45481"
+    },
+    {
+      "file": "crates/habeas-sdk/src/redaction/tests.rs",
+      "item": "fn[private_keys_are_redacted_from_header_through_body_keeping_lines]",
+      "hash": "7aaf613cc81bb77caf56c7f30d055754d2509d22091afba8871014a7d112e01d"
+    },
+    {
+      "file": "crates/habeas-sdk/src/redaction/tests.rs",
+      "item": "fn[tokens_in_code_are_redacted_without_adjacent_code]",
+      "hash": "0a4a8d992734de3e8dfc8fc69c05494644e357d4ccf04beb38746656995e462a"
+    },
+    {
+      "file": "crates/habeas-sdk/src/redaction/tests.rs",
+      "item": "fn[heuristic_findings_alone_are_not_redacted]",
+      "hash": "1ef8969cc8112c9811d760474eed789076fd4ac60f829f91c1e8bc7829af1b34"
+    },
+    {
+      "file": "crates/habeas-sdk/src/redaction/tests.rs",
+      "item": "fn[hashes_do_not_depend_on_credential_values]",
+      "hash": "495c27757733832de498936ab966e65023bd9caf2eadd297f66ef59f09624e82"
+    },
+    {
+      "file": "crates/habeas-sdk/src/redaction/tests.rs",
+      "item": "fn[redaction_never_changes_an_outline]",
+      "hash": "dcfe1714ddf0adf050e96e43fc3499b40e0338419024db0680e7681f8e6b80db"
+    },
+    {
+      "file": "crates/habeas-sdk/src/redaction/tests.rs",
+      "item": "fn[slices_concatenate_to_the_redacted_whole]",
+      "hash": "6216d74dae2a048018d64484ebaa0161f57db91c8cbeceda93a76f049ea82fab"
+    },
+    {
+      "file": "crates/habeas-sdk/src/redaction/tests.rs",
+      "item": "fn[invalid_configuration_files_are_redacted_whole_keeping_lines]",
+      "hash": "0e00e4ec3bf1871450cbeb0e7cc772a617e1e9cfce594fdc875336b35b8a2cd5"
+    },
+    {
+      "file": "crates/habeas-sdk/src/redaction/tests.rs",
+      "item": "fn[the_user_configuration_file_and_its_aliases_are_configuration_files]",
+      "hash": "c15d19466ac9fdfd539d52086258f3e91524b0f57c6fa287f341f497c653c8f2"
+    },
+    {
+      "file": "crates/habeas-sdk/src/redaction/tests.rs",
+      "item": "fn[regions_extend_backward_keep_crlf_and_scan_past_a_mebibyte]",
+      "hash": "76aeabb2851db060abf9267aee28ccc079fdf8451d2320c27f9f6aa857e631b5"
     },
     {
       "file": "src/authoring/mod.rs",
@@ -123,66 +188,6 @@
       "hash": "6dda823b8b0e94bd84741c6f881430a4393ccd3cc8d9e87eb9741f1d928eb9bb"
     },
     {
-      "file": "crates/habeas-sdk/src/outline/mod.rs",
-      "item": "fn[parse]",
-      "hash": "294f2bcdba5e8c997ca582af1d87aab7443986c0a30402e9b2eb450e8207dc12"
-    },
-    {
-      "file": "crates/habeas-sdk/src/outline/mod.rs",
-      "item": "fn[parse_with]",
-      "hash": "1bc5d8c2633154923920bddfc56ed57e035cf8357124d989b93794d3bb152687"
-    },
-    {
-      "file": "crates/habeas-sdk/src/redaction/tests.rs",
-      "item": "fn[configuration_credential_fields_are_redacted_by_name_whatever_their_values]",
-      "hash": "412e09d365440e96d3084a37a15e6af17d97a411f07a0601ad9234d420d45481"
-    },
-    {
-      "file": "crates/habeas-sdk/src/redaction/tests.rs",
-      "item": "fn[private_keys_are_redacted_from_header_through_body_keeping_lines]",
-      "hash": "7aaf613cc81bb77caf56c7f30d055754d2509d22091afba8871014a7d112e01d"
-    },
-    {
-      "file": "crates/habeas-sdk/src/redaction/tests.rs",
-      "item": "fn[tokens_in_code_are_redacted_without_adjacent_code]",
-      "hash": "0a4a8d992734de3e8dfc8fc69c05494644e357d4ccf04beb38746656995e462a"
-    },
-    {
-      "file": "crates/habeas-sdk/src/redaction/tests.rs",
-      "item": "fn[heuristic_findings_alone_are_not_redacted]",
-      "hash": "1ef8969cc8112c9811d760474eed789076fd4ac60f829f91c1e8bc7829af1b34"
-    },
-    {
-      "file": "crates/habeas-sdk/src/redaction/tests.rs",
-      "item": "fn[hashes_do_not_depend_on_credential_values]",
-      "hash": "495c27757733832de498936ab966e65023bd9caf2eadd297f66ef59f09624e82"
-    },
-    {
-      "file": "crates/habeas-sdk/src/redaction/tests.rs",
-      "item": "fn[redaction_never_changes_an_outline]",
-      "hash": "dcfe1714ddf0adf050e96e43fc3499b40e0338419024db0680e7681f8e6b80db"
-    },
-    {
-      "file": "crates/habeas-sdk/src/redaction/tests.rs",
-      "item": "fn[slices_concatenate_to_the_redacted_whole]",
-      "hash": "6216d74dae2a048018d64484ebaa0161f57db91c8cbeceda93a76f049ea82fab"
-    },
-    {
-      "file": "crates/habeas-sdk/src/redaction/tests.rs",
-      "item": "fn[invalid_configuration_files_are_redacted_whole_keeping_lines]",
-      "hash": "0e00e4ec3bf1871450cbeb0e7cc772a617e1e9cfce594fdc875336b35b8a2cd5"
-    },
-    {
-      "file": "crates/habeas-sdk/src/redaction/tests.rs",
-      "item": "fn[the_user_configuration_file_and_its_aliases_are_configuration_files]",
-      "hash": "0a885bb37069bbbcee4bf3526b2f793e45b54c102b1d69001f91a7306d95fa6e"
-    },
-    {
-      "file": "crates/habeas-sdk/src/redaction/tests.rs",
-      "item": "fn[regions_extend_backward_keep_crlf_and_scan_past_a_mebibyte]",
-      "hash": "76aeabb2851db060abf9267aee28ccc079fdf8451d2320c27f9f6aa857e631b5"
-    },
-    {
       "file": "src/sites.rs",
       "item": "mod[tests]/fn[violation_text_reaches_the_model_redacted]",
       "hash": "d3c933805898e91f731f1dcb02fb3006c8b2429ad2035a9d957a5695f8aa1623"
@@ -190,7 +195,7 @@
     {
       "file": "crates/habeas-sdk/src/redaction/mod.rs",
       "item": "",
-      "hash": "9d63cf6e5e457e5976049363b829c482a757b5f8f75fe57e229df0cbd6149bed"
+      "hash": "279e94c31ab134b81bb7486798e932303edab339179094d72a43eededc77c18f"
     },
     {
       "file": "crates/habeas-sdk/src/redaction/tests.rs",

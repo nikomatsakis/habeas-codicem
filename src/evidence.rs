@@ -185,6 +185,7 @@ pub(crate) fn inspect_repository(root: &Path) -> io::Result<RepositoryInspection
 // {impl}`requirements.configuration.loading`
 // {impl}`requirements.ci.book_source`
 // {impl}`requirements.definitions.declaration`
+// {impl}`requirements.ci.determination`
 pub(crate) fn inspect_repository_with_progress(
     root: &Path,
     mut progress: impl FnMut(InspectionProgress),
@@ -828,12 +829,13 @@ pub(crate) fn validate_input(
                 }
             }
             // Duplicates among the string entries are a separate failure.
-            if names.iter().collect::<BTreeSet<_>>().len() != names.len() {
+            let distinct = names.iter().collect::<BTreeSet<_>>().len() == names.len();
+            if !distinct {
                 errors.push(format!(
                     "{label}: matches must have distinct definition names"
                 ));
             }
-            (names.len() == values.len()).then_some(names)
+            (distinct && names.len() == values.len()).then_some(names)
         });
         let text = text_field(object, label, errors);
         // Resolving the selection depends only on `requirements`; each
@@ -931,7 +933,7 @@ fn text_field(
             None => errors.push(format!("{label}: text[{index}] must be a string")),
         }
     }
-    (text.len() == values.len()).then_some(text)
+    (!values.is_empty() && text.len() == values.len()).then_some(text)
 }
 
 // {impl}`requirements.authoring.redaction`
@@ -1088,6 +1090,7 @@ pub(crate) fn array_field<'a>(
     }
 }
 
+// {cite}`habeas:util`
 pub(crate) fn display_path(root: &Path, path: &Path) -> String {
     path.strip_prefix(root)
         .unwrap_or(path)
@@ -1095,6 +1098,7 @@ pub(crate) fn display_path(root: &Path, path: &Path) -> String {
         .to_string()
 }
 
+// {cite}`habeas:util`
 #[derive(Clone, Debug)]
 pub(crate) struct SourceReference {
     pub(crate) name: String,
@@ -2913,6 +2917,7 @@ pub(crate) mod tests {
 
     // {test}`requirements.ci.schema`
     #[test]
+    // {test}`requirements.ci.errors`
     fn schema_rejects_each_malformed_field_and_input_form() {
         let temp = fixture();
         fs::write(
@@ -2991,6 +2996,21 @@ pub(crate) mod tests {
         }
         // The well-formed definition input is accepted.
         assert!(!errors.contains("inputs[0]"), "{errors}");
+        // Malformed fields cannot support changed-content comparisons,
+        // while the independent, well-formed stale text is still checked.
+        assert!(
+            !errors.contains("inputs[2]: input text changed"),
+            "{errors}"
+        );
+        assert!(
+            report
+                .errors
+                .iter()
+                .filter(|error| error.contains("inputs[4]:"))
+                .all(|error| !error.contains("matches changed")),
+            "{errors}"
+        );
+        assert!(errors.contains("inputs[4]: input text changed"), "{errors}");
     }
 
     // {test}`requirements.ci.determination`

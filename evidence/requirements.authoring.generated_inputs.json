@@ -1,8 +1,8 @@
 {
   "requirement": "Habeas MUST permit existing Cargo build-script output directories as an exception\nto default Git tracking and containment restrictions. It MUST discover the Cargo\nbuild directory using metadata and inspect existing build-script output records,\nwithout running a build or executing build scripts. It MUST NOT treat its own\ninherited `OUT_DIR` environment variable as the workspace's output directory.\nOnly discovered output directories and their contents MUST receive this default\npermission; unrelated build artifacts MUST remain subject to ordinary rules.\nWorkspace disallow entries MUST override this permission.\n\nDiscovery MUST tolerate missing builds or unavailable metadata; callers MUST be\nable to allow undiscovered outputs explicitly using `habeas.toml`. The model's\nroot directory listing MUST expose available generated-output directories,\nincluding external ones. Generated inputs MUST use outline inputs and receive\nordinary freshness checks. Validation MUST NOT\ninvoke a build to materialize an input.",
   "determination": true,
-  "rationale": "I found no gaps. Every obligation maps to code reachable from the `{impl}` items and is covered by a test that carries a `{test}` reference to the subject.\n\n**Discovery without building (MUST discover via metadata and inspect existing build-script output records, with no build or build-script execution)**\n- `crates/habeas-sdk/src/access.rs#fn[generated_roots]` runs `cargo metadata --offline --locked --no-deps`. It reads `build_directory`, falling back to `target_directory`, then canonicalizes it.\n- `fn[discover_generated_roots]` walks Cargo's profile/triple/`build`/package layout. It accepts a `root-output` record only when its target equals the sibling `out` directory and lies under the build root.\n- `tests/evidence_boundaries.rs#fn[discovered_external_cargo_outputs_validate_freshness_and_obey_disallow]` asserts the external target directory is never created, so no build ran.\n- The test `tools.rs#mod[tests]/fn[cargo_output_is_discovered_and_read_without_building_or_allowing_other_target_files]` asserts `target` does not exist after an unbuilt `prepare`.\n\n**Inherited `OUT_DIR` (MUST NOT treat it as the output directory)**\n- No code reads `OUT_DIR`.\n- `inherited_out_dir_is_ignored_and_metadata_failure_preserves_ordinary_reads` runs a child process with `OUT_DIR` set. It asserts `access.generated` is empty and that a file under that directory is denied.\n\n**Permission as an exception to Git-tracking and containment rules; only discovered directories and their contents**\n- `SourceAccess::path` allows a path only when both the requested and resolved paths start with a discovered directory.\n- Other `target` files fall through to the \"holds build output\" refusal.\n- `generated_discovery_accepts_out_directories_but_not_arbitrary_root_output_targets` shows that arbitrary `root-output` targets (a fake one pointing at an unrelated directory) are not discovered.\n- The `cargo_output_is_discovered…` test asserts that `target/debug/build/fixture-hash/root-output` stays refused as build output.\n- `resolve_evidence_file` applies the same discovered-directory exception to containment for validation.\n\n**Workspace disallow overrides**\n- `PathPolicy::check_disallow` runs first in both `SourceAccess::path` and `resolve_evidence_file`.\n- The `tools.rs` test checks that listing, ripgrep and habeas reads are all denied with \"disallowed\".\n- The `evidence_boundaries` test checks that validation reports \"disallowed\".\n\n**Tolerance of missing builds or unavailable metadata**\n- `generated_roots` returns an empty `Vec` on any failure.\n- The invalid-`Cargo.toml` test asserts ordinary tracked reads still succeed.\n- The unbuilt-project step in the `tools.rs` test also succeeds.\n\n**Explicit `habeas.toml` allow for undiscovered outputs**\n- `SourceAccess::path` calls `policy.allowed` before the build-output refusal.\n- `explicit_allow_overrides_the_build_output_refusal` tests it.\n\n**Root listing exposes generated-output directories, including external ones**\n- `tools.rs#fn[list_files]` adds `extra_roots()` entries (allow rules plus generated roots) when listing the root.\n- The `tools.rs` tests `an_external_build_directory_lists_its_generated_output` and `cargo_output_is_discovered…` check this for external and in-tree output, respectively.\n- `walk_sources` (used by `search` and `structural`) also walks these roots.\n\n**Outline inputs and ordinary freshness**\n- The `evidence_boundaries` test writes an outline input on an external generated file. Validation passes while the file is unchanged. After the file is modified, validation reports \"outline input changed\".\n\n**No build invoked during validation**\n- Validation reaches generated files through `resolve_evidence_file`, which only calls `cargo metadata`.\n- The external target directory is asserted absent at the end of the `evidence_boundaries` test.",
-  "references": "33119e36c6d59c2b78299765b49b16caefe469331c26a36fc8df7327941d297c",
+  "rationale": "I found no gap. Each obligation maps to marked code and, where required, to a test marked `{test}` for this subject.\n\n**Discovery and tolerance**\n- Discovery runs `cargo metadata --offline --locked --no-deps` in `crates/habeas-sdk/src/access.rs#fn[generated_roots]`. It reads `build_directory`, falling back to `target_directory`. It then walks the existing build directory in `fn[discover_generated_roots]`, which reads `root-output` records and accepts one only if it equals the sibling `out` directory under the build root. No build or build script is run.\n- Every failure path (cargo missing, non-zero exit, unparseable JSON, unreadable or missing directory) returns an empty `Vec`. That is the required tolerance of missing builds and unavailable metadata.\n- Nothing in the non-test code reads `OUT_DIR`, so the inherited variable is not treated as the output directory.\n- Tests:\n  - `generated_discovery_accepts_out_directories_but_not_arbitrary_root_output_targets` covers `root-output` records, including a fake record pointing outside the build root.\n  - `inherited_out_dir_is_ignored_and_metadata_failure_preserves_ordinary_reads` runs with a hostile `OUT_DIR` and invalid `Cargo.toml`. It asserts no extra roots, ordinary reads still work, and the inherited directory is denied.\n  - The unbuilt-project step in `cargo_output_is_discovered_and_read_without_building_or_allowing_other_target_files` shows an unbuilt project still reads ordinary sources.\n\n**Exception, scope and disallow**\n- `SourceAccess::path` first calls `policy.check_disallow`, so workspace disallow entries override the permission. It then allows a path only when both the requested and the resolved target lie within a discovered generated root, which skips the Git-tracking and containment checks. Any other path under the build directory is refused with \"holds build output\", so unrelated artifacts stay under the ordinary rules.\n- `resolve_evidence_file` applies the same checks for validation: disallow first, then policy allow or a discovered generated root.\n- Tests:\n  - `cargo_output_is_discovered_and_read_without_building_or_allowing_other_target_files` shows the generated `out` directory is readable and searchable, a sibling `root-output` is refused, and a disallow entry blocks the habeas read, `list_files` and ripgrep.\n  - `discovered_external_cargo_outputs_validate_freshness_and_obey_disallow` shows the disallow entry also blocks validation.\n\n**Explicit allow**\n- `explicit_allow_overrides_the_build_output_refusal` shows that `habeas.toml` allow entries admit `target/doc` and `book/page.html`, which discovery does not find.\n\n**Root listing**\n- `list_files` adds `access.extra_roots()` (allow entries plus generated roots) to the root listing when the listed directory is the root. This includes external roots.\n- `an_external_build_directory_lists_its_generated_output` checks an external `target-dir` appears in the listing and is searchable.\n- `cargo_output_is_discovered...` checks the in-tree case.\n\n**Outline inputs, freshness and no build**\n- Generated files are ordinary file inputs resolved by `resolve_evidence_file`, so the existing outline-input and freshness machinery applies without special handling.\n- `discovered_external_cargo_outputs_validate_freshness_and_obey_disallow` records an outline input on a generated file, validates it cleanly, and edits the file to get \"outline input changed\". It also asserts the external target directory was never created, so validation ran no build.\n\nThe other `{impl}` items (`walk_sources`, `search`, `structural`, `extra_roots`, `has_source_under`, `definitions`) are consistent with the requirement. The discovery depth limit and `build`-layout restriction are the Cargo layout the book text describes, so they are not unspecified behavior.",
+  "references": "043f07f974510851b4d71978d7ce827b5a5bd358124359b1352c9b96188e94b7",
   "inputs": [
     {
       "requirements": "requirements.authoring.generated_inputs",
@@ -32,17 +32,17 @@
     {
       "file": "crates/habeas-sdk/src/access.rs",
       "item": "struct[SourceAccess]",
-      "hash": "5415eda7c44356c91fa32ceb8ae19560446cf11ed6680c3066d19a121815e88d"
+      "hash": "3358b2af7fdc451782756f64292429d950ab1093292c5d61ae8c9b9d4bbd76f4"
     },
     {
       "file": "crates/habeas-sdk/src/access.rs",
       "item": "impl[SourceAccess]/fn[load]",
-      "hash": "fd40781619c78ba82c73edcb6a8e195262359052b788b373f790533af72a4367"
+      "hash": "9e4fe397f8bd06b8237e0ce2f7f64780e6962ed8c759afc8606a1194e6649ec0"
     },
     {
       "file": "crates/habeas-sdk/src/access.rs",
       "item": "impl[SourceAccess]/fn[path]",
-      "hash": "f0e7caec7c72bf2c61e1b012845f8a8825e87d5e7db0afb2a1cdcf65d18466fc"
+      "hash": "1dee30eaaaa5387ddcb6e58edbe818fabc4a18619c0c711122f5ca7944ff7274"
     },
     {
       "file": "crates/habeas-sdk/src/access.rs",
@@ -52,12 +52,12 @@
     {
       "file": "crates/habeas-sdk/src/access.rs",
       "item": "impl[SourceAccess]/fn[extra_roots]",
-      "hash": "dd2943dd0a21f08f25c0a2dfb3540b5d18e0ee1415ae6efdba20e34c62a21ad2"
+      "hash": "1fa8effc34a1c05d6e2339d2bcdc3e0ae3fbf627daee5e710e5b959b640eff2e"
     },
     {
       "file": "crates/habeas-sdk/src/access.rs",
       "item": "fn[generated_roots]",
-      "hash": "9dd7146ab5036c06150dcc167104190647ba9db76fd8be516605664ce825bbf3"
+      "hash": "db7b71ba7c8f8251375f3a091106b93f29f934b969d769d9fdd4684b037a64c5"
     },
     {
       "file": "crates/habeas-sdk/src/access.rs",
@@ -67,12 +67,7 @@
     {
       "file": "crates/habeas-sdk/src/access.rs",
       "item": "fn[resolve_evidence_file]",
-      "hash": "9418006962cb9105a2ab4972bf23159a668c8b08d8994df21d81362cf800473b"
-    },
-    {
-      "file": "crates/habeas-sdk/src/access.rs",
-      "item": "mod[tests]/fn[explicit_allow_overrides_the_build_output_refusal]",
-      "hash": "06535893c97cb048f6779ec739518a9cc8eabe3c6a5dbb6d0ffb7142ab3267fd"
+      "hash": "4ed456b8900e3d362795a7b78a9d1f637593851e712fbfff53b99de026d46c76"
     },
     {
       "file": "crates/habeas-sdk/src/access.rs",
@@ -80,9 +75,14 @@
       "hash": "3e8d50f15120781e88f7843939881d3d7f03976caf704fa4dae534cd5d903e6e"
     },
     {
-      "file": "crates/habeas-sdk/src/access.rs",
+      "file": "src/authoring/access.rs",
+      "item": "mod[tests]/fn[explicit_allow_overrides_the_build_output_refusal]",
+      "hash": "f5a493fd39b56f1ffb3fd09c95871d0e95c746baa251ac418c9c353a164b5a78"
+    },
+    {
+      "file": "src/authoring/access.rs",
       "item": "mod[tests]/fn[inherited_out_dir_is_ignored_and_metadata_failure_preserves_ordinary_reads]",
-      "hash": "15c3ec7055758032c8b893b53c556df962d6f388df5b93ecfccff059e6b712fe"
+      "hash": "2fa4bee63d84ddf5a4d46bae8ede2c885eb4ee8c01358564f14a57fb0ba7ffdb"
     },
     {
       "file": "src/authoring/tools.rs",
@@ -97,7 +97,7 @@
     {
       "file": "src/authoring/tools.rs",
       "item": "fn[search]",
-      "hash": "5f043c14c80c5dac1610f3c0add854edd22e785a20a3ac707fbe24c4fcb424aa"
+      "hash": "dff970c3c05167f5f180bc79066bcb743787d0c211f93201b3635d681e6ba985"
     },
     {
       "file": "src/authoring/tools.rs",

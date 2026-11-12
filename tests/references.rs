@@ -455,6 +455,39 @@ fn review(root: &Path, citations: Value, determination: Value) -> Value {
     })
 }
 
+// {test}`requirements.ci.errors`
+// {test}`requirements.references.citation_review`
+#[test]
+fn malformed_citation_entries_do_not_hide_later_independent_errors() {
+    let temp = project();
+    let root = temp.path();
+    fs::write(
+        root.join("src/lib.rs"),
+        format!("// {}`rules.ready`\nfn helper() {{}}\n", role("cite")),
+    )
+    .unwrap();
+    let mut record = review(
+        root,
+        json!([null, {"role": "unknown", "name": 42, "commentary": false}]),
+        json!(true),
+    );
+    record["rationale"] = json!("");
+    let path = root.join("evidence/citations/src/lib.rs/fn[helper].json");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(path, record.to_string()).unwrap();
+    let errors = errors(root);
+    for expected in [
+        "citations[0]: expected a JSON object",
+        "citations[1]: unknown role \"unknown\"",
+        "citations[1]: name must be a string",
+        "citations[1]: commentary must be a string",
+        "rationale must not be empty",
+    ] {
+        assert!(has(&errors, expected), "{expected}: {errors:#?}");
+    }
+    assert!(!has(&errors, "citations changed"), "{errors:#?}");
+}
+
 // {test}`requirements.references.citation_review`
 // {test}`requirements.ci.outcomes`
 // {test}`requirements.ci.orphans`

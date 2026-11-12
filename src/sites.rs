@@ -264,10 +264,35 @@ pub(crate) fn discover(
         let (queries, problems) = crate::structural::parse_queries(declaration);
         errors.extend(problems);
         let runnable = validate_queries(name, declaration, &queries, errors);
+        // Evaluate dependencies first, even when a violation is declared
+        // before its site query. Report results in declaration order below.
+        let mut site_results = BTreeMap::new();
+        let mut failed_sites = BTreeSet::new();
+        for query in &runnable {
+            if query.kind == QueryKind::Sites {
+                let result =
+                    crate::structural::query_matches(root, files, outlines, &queries, &query.name);
+                if result.is_err() {
+                    failed_sites.insert(query.name.as_str());
+                }
+                site_results.insert(query.name.as_str(), result);
+            }
+        }
         let mut matches = Vec::new();
         for query in runnable {
+            if query
+                .body
+                .within
+                .as_deref()
+                .is_some_and(|within| failed_sites.contains(within))
+            {
+                continue;
+            }
             let location = format!("{}:{}", declaration.file, query.line);
-            match crate::structural::query_matches(root, files, outlines, &queries, &query.name) {
+            let result = site_results.remove(query.name.as_str()).unwrap_or_else(|| {
+                crate::structural::query_matches(root, files, outlines, &queries, &query.name)
+            });
+            match result {
                 Ok(found) => {
                     if query.kind == QueryKind::Sites && found.is_empty() {
                         errors.push(format!(
@@ -332,8 +357,12 @@ fn validate_queries<'a>(
                 "{name} has a violation query, so it must also have a site query"
             ));
         }
-        if let Err(error) = crate::structural::within_query(queries, query) {
-            problems.push(error);
+        // With no site queries, the diagnostic above already explains why
+        // a supplied target cannot resolve. Missing `within` is independent.
+        if !(query.kind == QueryKind::Violations && !has_sites && query.body.within.is_some()) {
+            if let Err(error) = crate::structural::within_query(queries, query) {
+                problems.push(error);
+            }
         }
         if let Err(error) = crate::structural::StructuralRule::compile(
             &query.body.language,
@@ -1204,6 +1233,7 @@ no_match: ["struct S;"]
         }
     }
 
+    // {test}`requirements.ci.errors`
     // {test}`requirements.references.distributed`
     #[test]
     fn a_violation_query_needs_a_site_query() {
@@ -1218,6 +1248,95 @@ no_match: ["struct S;"]
             )),
             "{errors:#?}"
         );
+        let query_errors: Vec<_> = errors
+            .iter()
+            .filter(|error| error.contains("query only of"))
+            .collect();
+        assert_eq!(query_errors.len(), 1, "{query_errors:#?}");
+        for within in ["within: only\n", ""] {
+            let broken = chapter
+                .replace("within: only\n", within)
+                .replace("kind: function_item", "kind: not_a_rust_kind")
+                .replace("match: [\"fn a() {}\"]", "match: []");
+            let temp = project(&broken, "fn run() {}\n");
+            let (errors, _) = inspect(temp.path());
+            assert!(
+                errors
+                    .iter()
+                    .any(|error| error.contains("invalid ast-grep rule")),
+                "{errors:#?}"
+            );
+            assert!(
+                errors
+                    .iter()
+                    .any(|error| error.contains("match must be a nonempty list")),
+                "{errors:#?}"
+            );
+            assert_eq!(
+                errors
+                    .iter()
+                    .any(|error| error.contains("must have within")),
+                within.is_empty(),
+                "{errors:#?}"
+            );
+            assert!(
+                !errors
+                    .iter()
+                    .any(|error| error.contains("within names no site query")),
+                "{errors:#?}"
+            );
+        }
+    }
+
+    // {test}`requirements.ci.errors`
+    // {test}`requirements.authoring.batch`
+    #[test]
+    fn failed_site_queries_do_not_repeat_errors_through_dependent_violations() {
+        let site_start = RULE.find("::::{sites}").unwrap();
+        let violation_start = RULE.find("::::{violations}").unwrap();
+        let end = RULE.rfind("\n:::::\n").unwrap();
+        let failing =
+            RULE[site_start..violation_start].replace("paths: [src]", "paths: [src/missing.rs]");
+        let violation = &RULE[violation_start..end];
+        let independent = failing
+            .replace("checkers", "independent")
+            .replace("src/missing.rs", "src/lib.rs");
+        for forward in [false, true] {
+            let queries = if forward {
+                format!("{violation}\n{failing}")
+            } else {
+                format!("{failing}\n{violation}")
+            };
+            let chapter = format!(
+                "{}{}\n{}\n:::::\n",
+                &RULE[..site_start],
+                queries,
+                independent
+            );
+            let temp = project(&chapter, SOURCE);
+            let root = temp.path();
+            let definitions = crate::evidence::load_definitions(root).unwrap();
+            let files = [root.join("src/missing.rs"), root.join("src/lib.rs")];
+            let mut errors = Vec::new();
+            let mut incomplete = Vec::new();
+            let sites = discover(
+                root,
+                &definitions,
+                &files,
+                &OutlineCache::default(),
+                &mut errors,
+                &mut incomplete,
+            );
+            assert_eq!(errors.len(), 1, "forward={forward}: {errors:#?}");
+            assert!(
+                errors[0].contains("query checkers of requirements.rule cannot run"),
+                "{errors:#?}"
+            );
+            assert_eq!(incomplete, errors);
+            let found = &sites["requirements.rule"];
+            assert_eq!(found.len(), 3, "{found:#?}");
+            assert!(found.iter().all(|site| site.queries() == ["independent"]));
+        }
     }
 
     /// The inputs a current review of a site records: the site's outline

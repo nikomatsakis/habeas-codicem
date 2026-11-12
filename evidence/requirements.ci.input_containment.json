@@ -1,8 +1,8 @@
 {
   "requirement": "Every file named directly by an evidence input or resolved from its selector MUST resolve within the project root unless permitted by workspace path configuration or discovered Cargo generated-output policy. Symlink targets MUST follow the same policy. Validation MUST enforce explicit workspace disallow entries and report missing, unreadable, or excluded files. It MUST check existing generated inputs without running a build. {cite}`requirements.configuration.evidence_paths` {cite}`requirements.authoring.generated_inputs`",
   "determination": true,
-  "rationale": "I found no gaps. Each obligation has code reachable from the `{impl}` items and a test that asserts its outcome.\n\n**Reachability.** `src/evidence.rs#fn[validate_input]` leads to the outline, definition and requirements input validation. Those paths go through `OutlineCache::parse`, `read_project_file` and `check_project_file` in `src/inputs.rs`. They end in `crates/habeas-sdk/src/access.rs#fn[resolve_evidence_file]`. `InputSelector::resolve` calls `check_project_file` for declaring files. `src/authoring/tools.rs#fn[project_path]` applies the same `SourceAccess::path` policy to authoring reads. All the checks below sit in that reachable code, so none needs its own reference.\n\n**Obligations and their code**\n- **Files stay within the project root unless permitted.** `resolve_evidence_file` rejects any path whose requested location or resolved target falls outside the canonical root. It makes an exception only when `policy.allowed` matches or the path lies in a discovered `generated_roots` directory. Otherwise it returns \"resolves outside the repository without an allowed evidence path\".\n- **Symlink targets follow the same policy.** `resolve` canonicalizes the target, and `resolve_evidence_file` tests both the requested path and the target. The disallow check also covers both.\n- **Explicit disallow entries are enforced.** `policy.check_disallow(&root.join(file), &target)` runs first, so disallow wins over allow and over generated outputs.\n- **Missing, unreadable, or excluded files are reported.** `resolve` reports \"cannot open …\". `read_project_file` reports \"cannot read …\". `check_disallow` reports \"disallowed by habeas.toml rule …\". `resolve_evidence_file` also rejects non-files.\n- **Existing generated inputs are checked without running a build.** `generated_roots` runs only `cargo metadata --offline --locked --no-deps` and inspects existing output records.\n\n**Tests**\n- Escape through a symlink to a sibling directory with the same prefix: `tests/evidence_boundaries.rs#fn[symlinks_may_resolve_inside_but_not_to_a_sibling_with_the_same_prefix]`.\n- External path rejected without an allow entry, accepted with one, still checked for freshness, and rejected when disallowed: `configured_external_inputs_validate_and_remain_subject_to_freshness_and_disallow`.\n- Disallowed ancestors reached through symlinks: `evidence_rejects_disallowed_ancestors_even_when_symlinks_target_allowed_sources`. The `crates/habeas-sdk/src/access.rs` tests cover the alias-target and parent-component cases directly.\n- Disallow on declaring files of definition and requirements inputs: `definition_and_requirements_inputs_obey_containment_for_declaring_files`.\n- Disallow reaching the `status` command: `tests/commands.rs#fn[status_applies_workspace_disallow_to_existing_evidence]`.\n- Missing and unreadable files: `unreadable_and_missing_inputs_are_reported`. The unreadable half runs only on unix and only when the file mode is actually unreadable, which is a test-environment condition, not a missing check.\n- Discovered external Cargo output: validated, freshness-checked, overridden by disallow, and `assert!(!target.exists())` shows no build ran: `discovered_external_cargo_outputs_validate_freshness_and_obey_disallow`.",
-  "references": "25255316d5de5f9569f8de5eea2408954a5a0eee3dc6471e272998784026334e",
+  "rationale": "I found no gap against `requirements.ci.input_containment`. Each obligation has code reachable from the {impl} items and a test that exercises it.\n\n**Code path.** `src/evidence.rs#fn[validate_input]` is the entry point. Outline inputs go through `validate_outline_input` and the outline cache. Definition and requirements inputs go through `InputSelector::resolve`, which calls `check_project_file` on each declaring file. Both reach `src/inputs.rs#fn[read_project_file]` or `check_project_file`, then `src/authoring/access.rs#fn[resolve_evidence_file]` (marked {impl}), then `crates/habeas-sdk/src/access.rs#fn[resolve_evidence_file]`.\n\nI did not read `validate_outline_input`, `InputSelector::resolve`, or the cache's `parse`. I took their calls to `check_project_file` and `read_project_file` from search hits on those names.\n\nThe SDK function does the following, in order:\n1. `resolve` canonicalizes the path. A failure gives \"cannot open <file>\", which is the missing-file report.\n2. It resolves both the requested location and the symlink target.\n3. `PathPolicy::check_disallow` checks the requested path, its ancestors and the target against the disallow entries. A match returns a PermissionDenied \"disallowed by habeas.toml\" error. This is the disallow enforcement and covers symlink targets.\n4. If the requested path or the target is outside the root, it requires either `policy.allowed` or membership in a discovered generated-output root. Otherwise it errors with \"resolves outside the repository\". This is the containment rule and the symlink-target rule.\n5. It rejects anything that is not a file.\n6. `read_project_file` then reads the content, and a failure gives \"cannot read <file>\", which is the unreadable-file report.\n\nGenerated roots come from `generated_roots`, which runs `cargo metadata --offline --locked --no-deps` and inspects existing `root-output` records in `discover_generated_roots`. It does not run a build or any build script.\n\n**Tests, per obligation.**\n- **Contained, or outside by permission:**\n  - `symlinks_may_resolve_inside_but_not_to_a_sibling_with_the_same_prefix` shows an inside symlink passes and a sibling-prefix escape gives \"resolves outside the repository\".\n  - `configured_external_inputs_validate_and_remain_subject_to_freshness_and_disallow` shows an external path is rejected without an allow, accepted with one, flagged when stale, and rejected again by a disallow.\n  - `discovered_external_cargo_outputs_validate_freshness_and_obey_disallow` covers the generated-output exception.\n- **Symlink targets follow the same policy:**\n  - `evidence_rejects_disallowed_ancestors_even_when_symlinks_target_allowed_sources`\n  - the three `src/authoring/access.rs` tests\n  - the escape case in the symlink test above\n- **Explicit disallow enforced:**\n  - `tests/commands.rs#fn[status_applies_workspace_disallow_to_existing_evidence]`\n  - `definition_and_requirements_inputs_obey_containment_for_declaring_files` (definition and requirements inputs)\n  - the disallow steps in the external and Cargo tests\n- **Missing and unreadable files reported:** `unreadable_and_missing_inputs_are_reported` asserts both \"cannot open gone.txt\" and \"cannot read locked.txt\". The unreadable assertion runs only when the file is actually unreadable, which skips it for a privileged user. That is an environment limit, not a gap. `collects_missing_orphan_format_false_and_changed_line_errors` also covers a missing outline node and a stale hash.\n- **No build run:** the Cargo test asserts that `target` does not exist after validation. Existing generated inputs are validated and checked for freshness there.\n\nAll the required tests carry a {test} reference to the subject. I saw no unspecified extra behavior. The \"is not a project file\" error for non-files falls within the missing/unreadable reporting.",
+  "references": "2c69a0beb648142f15cad026d5769cbbda43d9f54792cb260d28cff30b83c1ce",
   "inputs": [
     {
       "requirements": "requirements.ci.input_containment",
@@ -74,19 +74,24 @@
       ]
     },
     {
-      "file": "crates/habeas-sdk/src/access.rs",
+      "file": "src/authoring/access.rs",
+      "item": "fn[resolve_evidence_file]",
+      "hash": "bc251fb714f1a1d39e0734c899c8b840940833c3227e603c974d798f06c2dac2"
+    },
+    {
+      "file": "src/authoring/access.rs",
       "item": "mod[tests]/fn[explicit_allow_overrides_defaults_but_disallow_wins_for_alias_targets]",
-      "hash": "761b47712ef2c180dad13743d3211303eae1a9d74565d6d97eb1ac579f372865"
+      "hash": "77e14ef8e61d80d9dfd9016b1227fd7899f71872ddedff642444ed42d3166673"
     },
     {
-      "file": "crates/habeas-sdk/src/access.rs",
+      "file": "src/authoring/access.rs",
       "item": "mod[tests]/fn[disallowed_ancestors_cannot_redirect_reads_into_allowed_targets]",
-      "hash": "2ea3922fded2a225a891313be5037801e371c248314c6a9325f7627d917b67b6"
+      "hash": "0816803d49d109196dc638b3fa2bc48d3dadbc0daa3f9fc65bca2907a106d88c"
     },
     {
-      "file": "crates/habeas-sdk/src/access.rs",
+      "file": "src/authoring/access.rs",
       "item": "mod[tests]/fn[policy_resolves_symlinks_before_parent_components_without_allowing_wrong_subtrees]",
-      "hash": "2f2d8e111030ceb4fe779808eb183f8865ca9106498fbabc52491a9b61890fff"
+      "hash": "2a4f4d7e368972a73de532ddacf34a9701e8e1de0387d23e61bfa1a35a939ecc"
     },
     {
       "file": "src/authoring/tools.rs",
@@ -101,7 +106,7 @@
     {
       "file": "src/evidence.rs",
       "item": "fn[validate_input]",
-      "hash": "33ba22d600c5d951631b03507b63324e9b11d8d358cc20011506777f5b322be7"
+      "hash": "ba071d68ab65d0a7893dd005cc03d35444c368ee68181a7835b3ed2806d2ebf0"
     },
     {
       "file": "src/evidence.rs",
@@ -151,12 +156,12 @@
     {
       "file": "crates/habeas-sdk/src/access.rs",
       "item": "fn[resolve_evidence_file]",
-      "hash": "9418006962cb9105a2ab4972bf23159a668c8b08d8994df21d81362cf800473b"
+      "hash": "4ed456b8900e3d362795a7b78a9d1f637593851e712fbfff53b99de026d46c76"
     },
     {
       "file": "src/inputs.rs",
-      "item": "fn[read_project_file]",
-      "hash": "e41f9a27f04e9f92ef30a0f9364eb43397ec3142bd9947b7c34d0d4ea691ba1d"
+      "item": "fn[check_project_file]",
+      "hash": "d229a2e14bc49aad09e4bca7ab3bdab6d475f05819973da2477323152e7aa4e5"
     },
     {
       "file": "crates/habeas-sdk/src/access.rs",
@@ -165,8 +170,18 @@
     },
     {
       "file": "crates/habeas-sdk/src/access.rs",
+      "item": "fn[discover_generated_roots]",
+      "hash": "c841d9d538fd8ff27cc1a0e979a7c0a85848034f579cd5c58ce0f087c08f9488"
+    },
+    {
+      "file": "crates/habeas-sdk/src/access.rs",
       "item": "fn[generated_roots]",
-      "hash": "9dd7146ab5036c06150dcc167104190647ba9db76fd8be516605664ce825bbf3"
+      "hash": "db7b71ba7c8f8251375f3a091106b93f29f934b969d769d9fdd4684b037a64c5"
+    },
+    {
+      "file": "crates/habeas-sdk/src/access.rs",
+      "item": "impl[PathPolicy]",
+      "hash": "adba730a92090478f3a4d253739f5b1091124c9cfb0f53eae37e3e607a6bd846"
     }
   ]
 }

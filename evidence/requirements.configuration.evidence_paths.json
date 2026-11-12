@@ -1,8 +1,8 @@
 {
   "requirement": "The workspace `[evidence]` table MUST serialize EvidenceConfig. `allow` and\n`disallow` MUST be arrays of nonempty literal paths, each naming a file or a\ndirectory subtree. Relative paths MUST resolve from the selected `habeas.toml`\ndirectory; absolute paths MUST be supported. These paths are not glob patterns.\nAn omitted `allow` or `disallow` MUST mean an empty array, and an absent\n`[evidence]` table MUST mean both are empty, so only the default source-access\nrules apply. No operation requires the section. The table has no user-file\ncounterpart, and these rules have no invocation options. This section refines\n{impl}`requirements.configuration.feature_sections` for the evidence feature.\n\nFor authoring reads, a matching disallow MUST reject the path; otherwise a\nmatching allow MUST permit it; otherwise the default source-access rules MUST\napply. Explicit allow MUST override every default, including Git tracking,\nproject containment, generated-evidence exclusion, and automatic generated-output\nrules. Disallow MUST win even when an allow or generated-output rule also matches.\nBoth the requested path and its resolved symlink target MUST be checked for\ndisallow, so an allowed alias cannot expose a disallowed target.\n\nThe same explicit disallow rules and external-path exceptions MUST apply when\nresolving recorded evidence inputs, including ordinary validation. Validation MUST\nremain independent of Git index membership: it\nchecks the recorded inputs' existence and contents. Loading path policy MUST NOT\nresolve credentials or validate unused authoring settings.",
   "determination": true,
-  "rationale": "I found no gap. Each obligation maps to reachable `{impl}` code and to a test that runs it.\n\n**Schema and loading**\n- **Serialization, nonempty paths, arrays:** `src/config.rs#struct[EvidenceConfig]` has `allow` and `disallow` as defaulted `Vec<PathBuf>` with `deny_unknown_fields`. `EvidenceConfig::validate` rejects empty paths and paths containing NUL. `tests/configuration.rs#fn[evidence_configuration_ignores_unused_authoring_settings_and_detects_credentials]` tests `allow=['']`, `disallow=[42]` and an unknown key.\n- **Omitted or absent means empty:** `load_workspace_evidence` uses `unwrap_or_default()`, and `PathPolicy::load` returns `Self::default()` when there is no file. `tests/configuration.rs#fn[feature_sections_are_scoped_and_absent_sections_use_defaults]` covers both the absent table and the omitted arrays. It also covers the rejection of a user-file `[evidence]` table.\n- **Relative and absolute paths:** `PathPolicy::load` joins every rule onto `config.root`, which is the directory of the selected `habeas.toml`. Joining an absolute path keeps it absolute. External absolute allow paths are tested in `explicit_allow_overrides_defaults_but_disallow_wins_for_alias_targets` and `configured_external_inputs_validate_and_remain_subject_to_freshness_and_disallow`.\n- **No credential resolution or authoring validation:** `load_workspace_evidence` only decodes `[evidence]` and checks whether credentials are present. `evidence_configuration_ignores_unused_authoring_settings_and_detects_credentials` and `validation_checks_workspace_common_config_without_loading_unused_authoring_settings` test this.\n\n**Literal paths, not globs:** `matches_rule` and `requested_location` compare paths with `starts_with` only. `access.rs#fn[evidence_rules_are_literal_paths_not_globs]` tests this.\n\n**Precedence for authoring reads:** `SourceAccess::path` calls `check_disallow` first, then `allowed`, then the default rules.\n- **Allow overrides every default:**\n  - `explicit_allow_overrides_defaults_but_disallow_wins_for_alias_targets` covers untracked files, external paths and generated evidence.\n  - `explicit_allow_overrides_the_build_output_refusal` covers automatic generated-output rules.\n- **Disallow wins over allow and generated-output:**\n  - `explicit_allow_overrides_defaults_but_disallow_wins_for_alias_targets` has an allow that also matches the disallowed path.\n  - `tools.rs#fn[cargo_output_is_discovered_and_read_without_building_or_allowing_other_target_files]` covers the generated-output case.\n- **Requested path and symlink target both checked:** `check_disallow` checks the requested path, the target, and the resolved locations of the requested path's ancestors. Tests are `explicit_allow_overrides_defaults_but_disallow_wins_for_alias_targets`, `disallowed_ancestors_cannot_redirect_reads_into_allowed_targets` and `policy_resolves_symlinks_before_parent_components_without_allowing_wrong_subtrees`.\n- **Tool paths:** list, search, walk and mandatory-input paths (`list_files`, `walk_sources`, `search`, `structural`, `omit_generated_evidence`, `source_input`) go through `SourceAccess`. `tools.rs#fn[allowed_ignored_and_external_sources_are_discoverable_but_disallowed_descendants_are_not]` and `inputs.rs#fn[disallowed_mandatory_inputs_abort_preparation]` test them.\n\n**Recorded evidence inputs and validation:** `resolve_evidence_file` applies `check_disallow`, then the external-path exception through allow or generated roots. It never consults the Git index.\n- The tests are `configured_external_inputs_validate_and_remain_subject_to_freshness_and_disallow`, `evidence_rejects_disallowed_ancestors_even_when_symlinks_target_allowed_sources`, `discovered_external_cargo_outputs_validate_freshness_and_obey_disallow` and `status_applies_workspace_disallow_to_existing_evidence`.\n- Independence from the Git index is tested by `validation_of_recorded_inputs_is_independent_of_the_git_index`.\n- Reference discovery also honors disallow through `DiscoverySources::considers`, tested in `tests/references.rs`.\n\n**Residual notes (not gaps):** `DiscoverySources::load` uses `unwrap_or_default()` on the policy load. The CLI loads and validates the workspace evidence config separately in `main`, so this is not a gap against the text.",
-  "references": "2432b634e9b9313ccd62a0b171fff3d7522d807653c76cc0e6ae5787770a6922",
+  "rationale": "I found no gap against `requirements.configuration.evidence_paths`. Each obligation has code reachable from the `{impl}` items and a test that asserts its outcome.\n\n**Table shape and parsing**\n- `src/config.rs#struct[EvidenceConfig]` serializes the table with `deny_unknown_fields`. Both fields default to empty vectors, so an omitted `allow` or `disallow` means an empty array.\n- `src/config.rs#impl[EvidenceConfig]/fn[validate]` rejects empty or NUL-containing entries. The wrong-type case (`disallow = [42]`) is rejected at deserialization.\n- `src/config.rs#fn[load_workspace_evidence]` returns defaults for an absent `[evidence]` table. It reads credentials only as a boolean flag and never validates unused authoring settings.\n- Tests: `tests/configuration.rs#fn[evidence_configuration_ignores_unused_authoring_settings_and_detects_credentials]` and `tests/configuration.rs#fn[feature_sections_are_scoped_and_absent_sections_use_defaults]` cover empty entries, wrong types, unknown keys, omitted arrays and an absent table. `tests/evidence_boundaries.rs#fn[validation_checks_workspace_common_config_without_loading_unused_authoring_settings]` covers invalid unused authoring settings.\n\n**Path resolution and literal matching**\n- `src/authoring/access.rs#fn[load_policy]` joins each entry onto `config.root`, the directory of the selected `habeas.toml`. A relative entry therefore resolves from that directory, and `join` keeps an absolute entry unchanged.\n- `matches_rule` uses `starts_with` on resolved paths, so there is no glob matching.\n- Tests: `evidence_rules_are_literal_paths_not_globs` shows that glob metacharacters match nothing and that a literal `src/*` file is matched exactly. The external absolute allow appears in `explicit_allow_overrides_defaults_but_disallow_wins_for_alias_targets`. A relative `../external-build` disallow is tested in `discovered_external_cargo_outputs_validate_freshness_and_obey_disallow`.\n\n**Authoring read precedence**\n- `SourceAccess::path` calls `check_disallow` first, then returns on `allowed`. Only after that do the generated-evidence, generated-output, build-output, containment and Git-tracking defaults apply. This gives disallow over allow over defaults, and an explicit allow overrides every default.\n- Tests: the allow-override cases are `explicit_allow_overrides_defaults_but_disallow_wins_for_alias_targets` (untracked, generated-evidence and external paths) and `explicit_allow_overrides_the_build_output_refusal`. Disallow beating a generated-output rule is tested in `cargo_output_is_discovered_and_read_without_building_or_allowing_other_target_files`.\n\n**Requested path and symlink target**\n- `check_disallow` and `matches_rule` test the requested path, each resolved ancestor location and the canonical target against every rule.\n- Tests: the alias case is in `explicit_allow_overrides_defaults_but_disallow_wins_for_alias_targets`. `disallowed_ancestors_cannot_redirect_reads_into_allowed_targets` and `policy_resolves_symlinks_before_parent_components_without_allowing_wrong_subtrees` cover ancestors and `..`.\n\n**Recorded evidence inputs and validation**\n- The SDK function `resolve_evidence_file` applies `check_disallow`, and the allow and generated-root exceptions for paths outside the repository. It never consults the Git index.\n- Tests: `tests/evidence_boundaries.rs` covers external allow, disallow, freshness and disallowed ancestors. `validation_of_recorded_inputs_is_independent_of_the_git_index` covers Git independence, and `tests/commands.rs#fn[status_applies_workspace_disallow_to_existing_evidence]` covers the status path.\n\n**Loading must not resolve credentials or validate unused authoring settings**\n- `load_policy` and `load_workspace_evidence` do neither. The `tests/evidence_boundaries.rs` test above and `workspace_configuration_with_credentials_is_readable_unless_disallowed` check this.\n\n**Minor observation, not a gap**\n- The thin wrapper `src/authoring/access.rs#fn[resolve_evidence_file]` is marked only for `requirements.ci.input_containment`. It only forwards `load_policy` to the SDK function, which carries the `{impl}` reference, so I did not count it as a gap.",
+  "references": "d12d822f4f40a7fdcaf4cb00354e30fe1864b015388b27908e3725ce6f023cf3",
   "inputs": [
     {
       "requirements": "requirements.configuration.evidence_paths",
@@ -40,37 +40,37 @@
     {
       "file": "crates/habeas-sdk/src/access.rs",
       "item": "struct[PathPolicy]",
-      "hash": "9e45b50bd4280a3e83f6a45351d8af7240cc76b6a46a3151611219b5b0d4343a"
+      "hash": "bcc2221397493d396163a7bfb8bba921051b3221a90932ffcb5d04242e9504e0"
     },
     {
       "file": "crates/habeas-sdk/src/access.rs",
-      "item": "impl[PathPolicy]/fn[load]",
-      "hash": "5950faed829db1612f97208c49aeb78c93701c73e400754bf51198366e39fd31"
+      "item": "impl[PathPolicy]/fn[new]",
+      "hash": "49c018b7fe4c173a521959ad9b80fba21b1d30473893a8ae1e375889c24dd9ea"
     },
     {
       "file": "crates/habeas-sdk/src/access.rs",
       "item": "impl[PathPolicy]/fn[allowed]",
-      "hash": "5960d03100435ec0b4494b19a912cfe60ddb53c1f34b28300122bc37ac969d5b"
+      "hash": "52b616a219b20a544e8d252ca4acf3cbda18be7e6b7e4be422ca0754a9b1ccb6"
     },
     {
       "file": "crates/habeas-sdk/src/access.rs",
       "item": "impl[PathPolicy]/fn[check_disallow]",
-      "hash": "cd6d3d914a9da2f58116fbbbce20e2e5f89eb02a3c2a73eed083dba8c9d24589"
+      "hash": "da1bb631b8d6460dd60b60903d9b03defff818bf421a73f0bed57e95be840de5"
     },
     {
       "file": "crates/habeas-sdk/src/access.rs",
       "item": "impl[SourceAccess]/fn[load]",
-      "hash": "fd40781619c78ba82c73edcb6a8e195262359052b788b373f790533af72a4367"
+      "hash": "9e4fe397f8bd06b8237e0ce2f7f64780e6962ed8c759afc8606a1194e6649ec0"
     },
     {
       "file": "crates/habeas-sdk/src/access.rs",
       "item": "impl[SourceAccess]/fn[path]",
-      "hash": "f0e7caec7c72bf2c61e1b012845f8a8825e87d5e7db0afb2a1cdcf65d18466fc"
+      "hash": "1dee30eaaaa5387ddcb6e58edbe818fabc4a18619c0c711122f5ca7944ff7274"
     },
     {
       "file": "crates/habeas-sdk/src/access.rs",
       "item": "impl[SourceAccess]/fn[omit_generated_evidence]",
-      "hash": "fbe332f0aadcbd5a242be70fdf733e8dd91a384206174d6f45941bf4d30464f2"
+      "hash": "fc86a6eded9a1fed2f9a8f78f1a076dd0ded809036d0a0b915f2e11766508597"
     },
     {
       "file": "crates/habeas-sdk/src/access.rs",
@@ -80,7 +80,7 @@
     {
       "file": "crates/habeas-sdk/src/access.rs",
       "item": "impl[SourceAccess]/fn[extra_roots]",
-      "hash": "dd2943dd0a21f08f25c0a2dfb3540b5d18e0ee1415ae6efdba20e34c62a21ad2"
+      "hash": "1fa8effc34a1c05d6e2339d2bcdc3e0ae3fbf627daee5e710e5b959b640eff2e"
     },
     {
       "file": "crates/habeas-sdk/src/access.rs",
@@ -100,7 +100,7 @@
     {
       "file": "crates/habeas-sdk/src/access.rs",
       "item": "fn[normalize]",
-      "hash": "bb1e805afc5749bc709aaf7f081599fc4a7bcd0a200fe95533e597ce3875bf16"
+      "hash": "6e856e23bb15951d86bd17ee7d96d203adefcaf40130564fb444a6bd5f3cb189"
     },
     {
       "file": "crates/habeas-sdk/src/access.rs",
@@ -110,37 +110,47 @@
     {
       "file": "crates/habeas-sdk/src/access.rs",
       "item": "fn[resolve_evidence_file]",
-      "hash": "9418006962cb9105a2ab4972bf23159a668c8b08d8994df21d81362cf800473b"
+      "hash": "4ed456b8900e3d362795a7b78a9d1f637593851e712fbfff53b99de026d46c76"
     },
     {
-      "file": "crates/habeas-sdk/src/access.rs",
+      "file": "src/authoring/access.rs",
+      "item": "fn[load_policy]",
+      "hash": "d51dac7d004ea05de0bae53fb9f5cadd2bf0050eb41710f02b4e4681613262e5"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "fn[load_source_access]",
+      "hash": "d1bf23d4c15475aeb68ec3b495e4dedbe24efb8e9af6ffbd02dc2e7bf3a18ed7"
+    },
+    {
+      "file": "src/authoring/access.rs",
       "item": "mod[tests]/fn[explicit_allow_overrides_defaults_but_disallow_wins_for_alias_targets]",
-      "hash": "761b47712ef2c180dad13743d3211303eae1a9d74565d6d97eb1ac579f372865"
+      "hash": "77e14ef8e61d80d9dfd9016b1227fd7899f71872ddedff642444ed42d3166673"
     },
     {
-      "file": "crates/habeas-sdk/src/access.rs",
+      "file": "src/authoring/access.rs",
       "item": "mod[tests]/fn[explicit_allow_overrides_the_build_output_refusal]",
-      "hash": "06535893c97cb048f6779ec739518a9cc8eabe3c6a5dbb6d0ffb7142ab3267fd"
+      "hash": "f5a493fd39b56f1ffb3fd09c95871d0e95c746baa251ac418c9c353a164b5a78"
     },
     {
-      "file": "crates/habeas-sdk/src/access.rs",
+      "file": "src/authoring/access.rs",
       "item": "mod[tests]/fn[evidence_rules_are_literal_paths_not_globs]",
-      "hash": "074d9affa734038dff6b3ef4b490608b471ccb164a7165c586b6e78ec9b32778"
+      "hash": "2fa9365b38be7c1922fb8b229de111e1aafd5e2a434de19614388d1c354fd8ca"
     },
     {
-      "file": "crates/habeas-sdk/src/access.rs",
+      "file": "src/authoring/access.rs",
       "item": "mod[tests]/fn[workspace_configuration_with_credentials_is_readable_unless_disallowed]",
-      "hash": "3af28e1800a227c7f0da97cd73d5ea446179f3c04577931bf6971b33a6939463"
+      "hash": "4bfc1c3b492f8ada7b50253d4b71d88a7931c4645664178a3ec1d70aae41e4a2"
     },
     {
-      "file": "crates/habeas-sdk/src/access.rs",
+      "file": "src/authoring/access.rs",
       "item": "mod[tests]/fn[disallowed_ancestors_cannot_redirect_reads_into_allowed_targets]",
-      "hash": "2ea3922fded2a225a891313be5037801e371c248314c6a9325f7627d917b67b6"
+      "hash": "0816803d49d109196dc638b3fa2bc48d3dadbc0daa3f9fc65bca2907a106d88c"
     },
     {
-      "file": "crates/habeas-sdk/src/access.rs",
+      "file": "src/authoring/access.rs",
       "item": "mod[tests]/fn[policy_resolves_symlinks_before_parent_components_without_allowing_wrong_subtrees]",
-      "hash": "2f2d8e111030ceb4fe779808eb183f8865ca9106498fbabc52491a9b61890fff"
+      "hash": "2a4f4d7e368972a73de532ddacf34a9701e8e1de0387d23e61bfa1a35a939ecc"
     },
     {
       "file": "src/authoring/inputs.rs",
@@ -170,7 +180,7 @@
     {
       "file": "src/authoring/tools.rs",
       "item": "fn[search]",
-      "hash": "5f043c14c80c5dac1610f3c0add854edd22e785a20a3ac707fbe24c4fcb424aa"
+      "hash": "dff970c3c05167f5f180bc79066bcb743787d0c211f93201b3635d681e6ba985"
     },
     {
       "file": "src/authoring/tools.rs",

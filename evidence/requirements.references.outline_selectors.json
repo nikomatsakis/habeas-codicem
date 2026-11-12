@@ -1,7 +1,7 @@
 {
   "requirement": "An outline selector MUST be a `/`-separated path of segments from the file's\nroot node to an outline node; the empty selector MUST select the root node. A\nnamed node's segment MUST be `kind[name]`. An anonymous node's segment MUST be\n`kind@hash`, where `hash` is the first twelve hexadecimal digits of its identity\nhash under {cite}`requirements.references.structural_hash`. Siblings whose\nsegments would otherwise be identical MUST be disambiguated by `#N`, their\none-based position among those siblings in source order, except `line` nodes:\nidentical lines are interchangeable, so a `line` selector MUST resolve when any\nline with that content exists in the file. In names, `%`, `[`, `]`, `/`, `#`,\n`@`, and whitespace MUST be percent-encoded as UTF-8 bytes, so selectors are\nreversible. Line numbers MUST NOT form part of a selector.",
   "determination": true,
-  "rationale": "I found no gap against `requirements.references.outline_selectors`. I mapped each obligation to code and a test below.\n\n**Path of segments, and the empty selector selects the root**\n- `crates/habeas-sdk/src/outline/selector.rs#fn[parse_selector]` returns no segments for the empty selector.\n- `crates/habeas-sdk/src/outline/selector.rs#fn[split_segments]` splits on `/` outside brackets.\n- `crates/habeas-sdk/src/outline/mod.rs#impl[Outline]/fn[resolve]` walks the segments from the root, so zero segments resolves to the root. `src/inputs.rs#impl[ParsedSource]/fn[resolve]` calls it.\n- Tests:\n  - `parses_named_anonymous_and_ordinal_segments` checks that the empty selector parses to no segments.\n  - `rust_selectors_follow_syntactic_ancestry` asserts `outline.resolve(\"\") == 0` and checks nested paths.\n\n**Named node segment `kind[name]`**\n- `Segment::base` in `crates/habeas-sdk/src/outline/selector.rs` formats `kind[name]`.\n- `Builder::finish` in `crates/habeas-sdk/src/outline/mod.rs` sets the label from the draft's name.\n- Test: `rust_selectors_follow_syntactic_ancestry`.\n\n**Anonymous node segment `kind@hash`, with the first twelve hex digits of the identity hash**\n- `Builder::finish` builds `Label::Hash(identity_hash[..HASH_DIGITS])`, and `HASH_DIGITS` is 12.\n- The hash is lowercase hex from `hash::Encoder::finish`.\n- `parse_segment` requires exactly 12 hex digits after `@`.\n- Test: `anonymous_selectors_use_identity_hashes` checks the `use@` prefix, a length of 12 digits, stability when a sibling is inserted, and change when the node's content changes.\n\n**`#N` disambiguation, one-based and in source order**\n- `crates/habeas-sdk/src/outline/mod.rs#fn[disambiguate]` groups siblings by segment and appends `#ordinal+1`.\n- Tests: `fn[repeated]#1` and `#2` in `rust_selectors_follow_syntactic_ancestry`, and `use ...#1` and `#2` in `anonymous_selectors_use_identity_hashes`.\n- `parse_segment` rejects `#0`, and `parses_named_anonymous_and_ordinal_segments` tests that.\n\n**`line` nodes are exempt, and a `line` selector resolves when any line with that content exists**\n- `disambiguate` skips the ordinal for kind `line`.\n- `plain_text` builds `line@hash` segments, so identical lines share one segment.\n- `Outline::resolve` finds the child by segment equality.\n- Test: `plain_text_lines_are_interchangeable_anonymous_nodes` asserts that `selectors[0] == selectors[2]` and that the selector resolves. It also checks that whitespace-separated words hash differently from joined words.\n\n**Percent-encoding of `%`, `[`, `]`, `/`, `#`, `@` and whitespace as UTF-8 bytes, so selectors are reversible**\n- `encode_name` encodes these characters, and `Segment::base` applies it to each name part.\n- `decode_name` reverses it and rejects malformed escapes and unescaped delimiters.\n- Tests:\n  - `names_round_trip_through_percent_encoding` checks the round trip.\n  - `rust_selectors_follow_syntactic_ancestry` checks `impl[%5Bu8;%204%5D]`.\n\n**Line numbers MUST NOT form part of a selector**\n- Selectors are built only from kind, name or hash, and ordinal. No line number enters `Segment::base` or `disambiguate`.\n- `anonymous_selectors_use_identity_hashes` shows that inserting lines above leaves the old selectors resolving.\n\n**Reachability and other checks**\n- `encode_name`, `Segment::base`, `parse_selector`, `parse_segment` and `disambiguate` carry no `{impl}` reference. All are reachable from the marked `finish`, `plain_text`, `Outline::resolve` and `ParsedSource::resolve`.\n- The `src/authoring/tools.rs#impl[SearchNodes]/fn[entries]` impl reference outputs the selector without line numbers, which is consistent with the requirement.\n- I found no unspecified extra behavior. The error messages in `ParsedSource::resolve` (invalid, ambiguous, not found) are consistent with the requirement's rules.",
+  "rationale": "I found no gaps. Each obligation has code that carries it out, reachable from the {impl} items, and a test that asserts its outcome.\n\n**Obligations, code and tests**\n- **`/`-separated path from the root, with the empty selector selecting the root.**\n  - `selector.rs#fn[split_segments]` splits on `/` outside brackets, and `parse_selector` returns no segments for the empty string.\n  - `Outline::resolve` walks the segments from node 0.\n  - Tests: `parses_named_anonymous_and_ordinal_segments` asserts the empty selector parses to no segments. `rust_selectors_follow_syntactic_ancestry` asserts `outline.resolve(\"\")` is 0.\n- **Named segment `kind[name]`.**\n  - `Segment::base` produces it, reached from `Builder::finish`, which builds `Label::Named`.\n  - Test: `rust_selectors_follow_syntactic_ancestry` checks many named selectors, and resolving each one returns a node whose selector equals it.\n- **Anonymous segment `kind@hash`, with the first twelve hex digits of the identity hash.**\n  - `Builder::finish` uses `identity_hash[..HASH_DIGITS]`, with `HASH_DIGITS` = 12. `plain_text` uses the line hash in the same way.\n  - Tests: `anonymous_selectors_use_identity_hashes` asserts the `use@` prefix, a length of 12 digits, that inserting a sibling leaves the selector resolving, and that editing the node breaks it. `parses_named_anonymous_and_ordinal_segments` asserts that a hash with the wrong number of digits is rejected.\n- **`#N` disambiguation, one-based and in source order.**\n  - `outline/mod.rs#fn[disambiguate]` groups siblings by segment and appends `#ordinal+1`. It builds the full selectors.\n  - `Outline::resolve` rejects an unqualified `fn[repeated]`.\n  - Tests: `rust_selectors_follow_syntactic_ancestry` checks `fn[repeated]#1` and `#2`, and that `fn[repeated]` fails to resolve. `anonymous_selectors_use_identity_hashes` checks `#1` and `#2` on duplicate `use` nodes.\n- **`line` exception.**\n  - `disambiguate` skips `#N` for `line` nodes, and `resolve` returns the first line whose segment matches.\n  - Test: `plain_text_lines_are_interchangeable_anonymous_nodes` asserts that two identical lines share a selector and that it resolves.\n- **Percent-encoding of `%`, `[`, `]`, `/`, `#`, `@` and whitespace as UTF-8 bytes, so selectors are reversible.**\n  - `encode_name` and `decode_name` implement it. `decode_name` rejects raw delimiters, raw whitespace, malformed escapes and non-UTF-8 results.\n  - Tests: `names_round_trip_through_percent_encoding` asserts the exact encoding, the round trip, and the rejection cases. `rust_selectors_follow_syntactic_ancestry` asserts `impl[%5Bu8;%204%5D]`.\n- **No line numbers in selectors.** No selector-building code includes a line number, so there is nothing to implement or test. `plain_text` keeps `line_start` as a separate field and builds the selector only from the hash.\n\n**Unspecified behavior**\n- The `ambiguous`, `invalid` and `no outline node matches` errors from `src/inputs.rs#impl[ParsedSource]/fn[resolve]` are required by the ci.md text \"invalid or ambiguous selector\". `tests/evidence_boundaries.rs` tests them.\n- The `/` separating parts inside `impl[Thing/Trait]` is specified by `requirements.references.rust_item_selectors`.\n- The parser also accepts uppercase hex digits and lowercases them. This is a minor leniency within what the text describes, and a test covers it.",
   "references": "a8be0058a68ed23852668f1ed95214116a0447d55a96b46268b1951400484796",
   "inputs": [
     {
@@ -54,16 +54,6 @@
       ]
     },
     {
-      "file": "src/authoring/tools.rs",
-      "item": "impl[SearchNodes]/fn[entries]",
-      "hash": "63ff5f1f82c05d1212179117b5400399712828f0393d759c7db3fee11924140b"
-    },
-    {
-      "file": "src/inputs.rs",
-      "item": "impl[ParsedSource]/fn[resolve]",
-      "hash": "c106e10387313183962db02ddf86622667c13e1be885bc44eeba1050a542736e"
-    },
-    {
       "file": "crates/habeas-sdk/src/outline/mod.rs",
       "item": "impl[ResolveError/fmt::Display]/fn[fmt]",
       "hash": "4684e0db4d4613667e202a68ab890cf3efb0d9630a25446fa6026150cfced433"
@@ -81,12 +71,12 @@
     {
       "file": "crates/habeas-sdk/src/outline/selector.rs",
       "item": "fn[decode_name]",
-      "hash": "64998f3fae4a860923e8f05b291a5375ff695a049265667b946329a01dff8ed0"
+      "hash": "84699ebec1e5125a86663231a7f1b424014804ea02705cc6d84632fe107484f7"
     },
     {
       "file": "crates/habeas-sdk/src/outline/selector.rs",
       "item": "enum[Label]",
-      "hash": "d341c47ec35ef3124cb0485ed6ede25a67e92447c0c4b962540f349f4d212cf2"
+      "hash": "ceae60fbd712c84d614e4a89f1ac8de3faf7d5bff0e33eadbee0a56b6d993ede"
     },
     {
       "file": "crates/habeas-sdk/src/outline/selector.rs",
@@ -119,6 +109,21 @@
       "hash": "903bba444617c36a46085e4c98caea488135be8d26d47516ab6f808b389a2863"
     },
     {
+      "file": "src/authoring/tools.rs",
+      "item": "impl[SearchNodes]/fn[entries]",
+      "hash": "63ff5f1f82c05d1212179117b5400399712828f0393d759c7db3fee11924140b"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "impl[ParsedSource]/fn[resolve]",
+      "hash": "c106e10387313183962db02ddf86622667c13e1be885bc44eeba1050a542736e"
+    },
+    {
+      "file": "crates/habeas-sdk/src/outline/selector.rs",
+      "item": "",
+      "hash": "f2f26a5753ea38f47c712768ba3796cf453b28a97bad4526b5eb56520190073e"
+    },
+    {
       "file": "crates/habeas-sdk/src/outline/mod.rs",
       "item": "fn[disambiguate]",
       "hash": "4f93539b56502754c40a21623f297d7cc4e1e1b6ae2a7f357346031e9db431fa"
@@ -126,32 +131,7 @@
     {
       "file": "crates/habeas-sdk/src/outline/mod.rs",
       "item": "impl[Outline]/fn[resolve]",
-      "hash": "a182731b8f87b9dc6f7a6294e713ba5bdb618ca0f88019c2422ad30ed5ece785"
-    },
-    {
-      "file": "crates/habeas-sdk/src/outline/selector.rs",
-      "item": "fn[parse_segment]",
-      "hash": "72b5a839544efee8a56d3956beed5a94cf31e89f508edc009a0fb019ad81b938"
-    },
-    {
-      "file": "crates/habeas-sdk/src/outline/selector.rs",
-      "item": "fn[encode_name]",
-      "hash": "0f8b7120dc5c6be2718d2c34576dab2aaa5fef33f2961d9ee13034aa2c02c775"
-    },
-    {
-      "file": "crates/habeas-sdk/src/outline/selector.rs",
-      "item": "impl[Segment]/fn[base]",
-      "hash": "32b54171fe095890f618f11bc5e9ff4e59de87c68e3616b0a9108451043cd8e9"
-    },
-    {
-      "file": "crates/habeas-sdk/src/outline/selector.rs",
-      "item": "fn[parse_selector]",
-      "hash": "647d6b774fe53016157698957d020749b1747a5769bfae70a09b848ca1484dd7"
-    },
-    {
-      "file": "crates/habeas-sdk/src/outline/selector.rs",
-      "item": "impl[Segment/fmt::Display]/fn[fmt]",
-      "hash": "dda86ad18067cb3f9678aadf4e6619fee90a86dbcc8f3356fb20f2731583fc51"
+      "hash": "c94a6eda6ac572c6aa1f61f98d1f8fec4e258a57a62c835d2d8aff52257338ec"
     }
   ]
 }
