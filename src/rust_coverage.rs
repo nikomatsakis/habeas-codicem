@@ -631,6 +631,25 @@ mod tests {
         ])
     }
 
+    // {test}`requirements.references.rust_item_coverage`
+    #[test]
+    fn a_read_covers_an_item_only_with_its_current_hash() {
+        let source = "fn read() {}\n";
+        let outline = crate::outline::parse_with(&crate::outline::RUST_PROFILE, source).unwrap();
+        let index = outline
+            .nodes
+            .iter()
+            .position(|node| node.selector == "fn[read]")
+            .unwrap();
+        let record = |hash: &str| serde_json::json!({"inputs": [{"file": "src/lib.rs", "item": "fn[read]", "hash": hash}]});
+        let mut current = super::EvidenceReads::default();
+        current.add_record(&record(&outline.nodes[index].structural_hash));
+        assert!(current.covers("src/lib.rs", &outline, index));
+        let mut stale = super::EvidenceReads::default();
+        stale.add_record(&record(&"0".repeat(64)));
+        assert!(!stale.covers("src/lib.rs", &outline, index));
+    }
+
     // {test}`requirements.references.coverage.tests`
     #[test]
     fn test_functions_need_a_test_reference() {

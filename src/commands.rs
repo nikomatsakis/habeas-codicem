@@ -194,6 +194,7 @@ pub fn status_markdown_with_github(
 /// per item without recent coverage, and a note when coverage history was
 /// incomplete. Empty when there is nothing to warn about.
 // {impl}`requirements.references.coverage.report`
+// {impl}`requirements.references.coverage.history`
 pub fn coverage_warning_lines(root: &Path) -> io::Result<Vec<String>> {
     let inspection = crate::evidence::inspect_repository(root)?;
     let (warned, incomplete) =
@@ -211,6 +212,7 @@ pub fn coverage_warning_lines(root: &Path) -> io::Result<Vec<String>> {
 /// coverage, each followed by its latest coverage-loss review, if any. These
 /// do not fail validation.
 // {impl}`requirements.references.coverage.report`
+// {impl}`requirements.references.coverage.history`
 // {impl}`requirements.cli.status`
 fn coverage_warnings(inspection: &crate::evidence::RepositoryInspection) -> io::Result<String> {
     let (warned, incomplete) =

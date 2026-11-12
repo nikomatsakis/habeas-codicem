@@ -11,7 +11,9 @@ use serde_json::Value;
 // {impl}`requirements.authoring.line_numbers.detection`
 static LINE_NUMBERS: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(concat!(
-        r"(?:[\w.-]+/)*[\w-]+\.[A-Za-z0-9]+:\d",
+        // A file path's extension starts with a letter, so a version
+        // such as `0.1:9` is not one.
+        r"(?:[\w.-]+/)*[\w-]+\.[A-Za-z][A-Za-z0-9]*:\d",
         r"|(?i:\blines?)\s+\d",
         r"|\(\s*\d+\s*[-–]\s*\d+\s*\)",
     ))
@@ -131,6 +133,8 @@ mod tests {
             "two lines of output",
             "(see the example)",
             "a ratio of 3:4",
+            "version 0.1:9",
+            "at 12.30:15",
             "(1)",
         ] {
             assert_eq!(cited(text), None, "{text}");

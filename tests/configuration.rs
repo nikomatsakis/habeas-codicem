@@ -1066,6 +1066,11 @@ fn workspace_diagnostics_identify_the_file_and_setting() {
         ),
         ("version = 1\n[evidence]\nunknown = []", "evidence.unknown"),
         ("version = 1\n[evidence]\nallow = ['']", "evidence.allow[0]"),
+        (
+            "version = 1\n[coverage]\nreauthorings = 'many'",
+            "coverage.reauthorings",
+        ),
+        ("version = 1\n[coverage]\nbogus = 1", "coverage.bogus"),
     ] {
         fs::write(&path, source).unwrap();
         let errors = [
@@ -1162,17 +1167,24 @@ fn feature_sections_are_scoped_and_absent_sections_use_defaults() {
         assert!(policy.evidence.allow.is_empty() && policy.evidence.disallow.is_empty());
     }
     let config = WorkspaceConfig::parse("version = 1\n", &path).unwrap();
-    assert!(config.authoring.is_none() && config.evidence.is_none());
+    assert!(config.authoring.is_none() && config.evidence.is_none() && config.coverage.is_none());
+    let config =
+        WorkspaceConfig::parse("version = 1\n[coverage]\nreauthorings = 5\n", &path).unwrap();
+    assert_eq!(config.coverage.unwrap().reauthorings, Some(5));
     // Feature settings must stay within their sections.
     for source in [
         "version = 1\nallow = ['generated']\n",
         "version = 1\ndefault = 'cloud'\n",
         "version = 1\n[authoring]\nallow = ['generated']\n",
         "version = 1\n[evidence]\ndefault = 'cloud'\n",
+        "version = 1\nreauthorings = 3\n",
+        "version = 1\n[coverage]\nallow = ['generated']\n",
     ] {
         assert!(WorkspaceConfig::parse(source, &path).is_err(), "{source}");
     }
     assert!(UserConfig::parse("version = 1\n[evidence]\nallow = []\n", &path).is_err());
+    // `[coverage]` has no user-file counterpart.
+    assert!(UserConfig::parse("version = 1\n[coverage]\nreauthorings = 3\n", &path).is_err());
     // The evidence feature does not reinterpret or validate authoring settings.
     fs::write(
         &path,
@@ -1250,8 +1262,9 @@ fn documented_configuration_examples_are_complete_valid_files() {
         for block in blocks {
             let source = block.split("\n```").next().unwrap();
             let path = Path::new(document);
-            // Workspace files are the only ones with an `[evidence]` table.
-            let parsed = if source.contains("[evidence]") {
+            // Workspace files are the only ones with `[evidence]` or
+            // `[coverage]` tables.
+            let parsed = if source.contains("[evidence]") || source.contains("[coverage]") {
                 WorkspaceConfig::parse(source, path).map(|_| ())
             } else {
                 UserConfig::parse(source, path).map(|_| ())

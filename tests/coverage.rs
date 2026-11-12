@@ -183,6 +183,7 @@ fn a_shallow_clone_uses_the_history_it_has_and_says_so() {
 }
 
 // {test}`requirements.references.coverage.history`
+// {test}`requirements.configuration.loading`
 #[test]
 fn the_window_follows_the_workspace_setting() {
     let temp = project();
@@ -211,4 +212,118 @@ fn the_window_follows_the_workspace_setting() {
         .unwrap_err()
         .to_string();
     assert!(error.contains("coverage.reauthorings"), "{error}");
+}
+
+// {test}`requirements.references.coverage.shallow_clone`
+// {test}`requirements.references.coverage.history`
+// {test}`requirements.references.coverage.report`
+#[test]
+fn status_shows_coverage_warnings_and_says_when_history_is_incomplete() {
+    let temp = project();
+    let root = temp.path();
+    record(root, "rules.check", &["fn[parse]"]);
+    commit(root, "first");
+    let status = habeas::status_markdown(root, false).unwrap();
+    assert!(status.contains("## Coverage warnings"), "{status}");
+    assert!(
+        status.contains("function render has no recent coverage"),
+        "{status}"
+    );
+    assert!(
+        !status.contains("function parse has no recent coverage"),
+        "{status}"
+    );
+    assert!(!status.contains("history is incomplete"), "{status}");
+    record(root, "rules.check", &[]);
+    commit(root, "second");
+    let clone = tempfile::tempdir().unwrap();
+    let target = clone.path().join("shallow");
+    let output = Command::new("git")
+        .args([
+            "clone",
+            "--quiet",
+            "--depth",
+            "1",
+            &format!("file://{}", root.display()),
+        ])
+        .arg(&target)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let status = habeas::status_markdown(&target, false).unwrap();
+    assert!(
+        status.contains("Coverage history is incomplete"),
+        "{status}"
+    );
+    assert!(
+        status.contains("function parse has no recent coverage"),
+        "{status}"
+    );
+}
+
+// {test}`requirements.references.coverage.history`
+#[test]
+fn outside_git_only_the_files_on_disk_count_and_history_is_incomplete() {
+    let temp = project();
+    let root = temp.path();
+    fs::remove_dir_all(root.join(".git")).unwrap();
+    record(root, "rules.check", &["fn[parse]"]);
+    let lines = habeas::coverage_warning_lines(root).unwrap();
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains("coverage history is incomplete")),
+        "{lines:#?}"
+    );
+    assert_eq!(warned(root), ["render", "helper"]);
+}
+
+// {test}`requirements.references.coverage.tests`
+// {test}`requirements.references.coverage.test_module`
+// {test}`requirements.references.procedure`
+#[test]
+fn a_test_without_a_test_reference_fails_validation_even_in_mod_tests() {
+    let temp = project();
+    let root = temp.path();
+    fs::write(
+        root.join("src/lib.rs"),
+        "fn parse() {}\n\nmod tests {\n    fn fixture() {}\n\n    #[test]\n    fn checks() {}\n}\n",
+    )
+    .unwrap();
+    commit(root, "first");
+    let errors = habeas::validate_repository(root).unwrap().errors;
+    assert!(
+        errors.iter().any(|error| error
+            == "src/lib.rs:7: test function checks has no {test} reference to a requirement or example"),
+        "{errors:#?}"
+    );
+    // The helper in `mod tests` is neither an error nor a warning.
+    assert!(
+        !errors.iter().any(|error| error.contains("fixture")),
+        "{errors:#?}"
+    );
+    assert_eq!(warned(root), ["parse"]);
+}
+
+// {test}`requirements.references.coverage.report`
+#[test]
+fn habeas_author_prints_coverage_warnings_on_stderr() {
+    let temp = project();
+    let root = temp.path();
+    // No definitions need assessment, so authoring needs no model.
+    fs::write(root.join("md/rules.md"), "# Rules\n").unwrap();
+    commit(root, "first");
+    let output = Command::new(env!("CARGO_BIN_EXE_habeas"))
+        .args(["author", "--all"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Coverage warnings"), "{stderr}");
+    assert!(
+        stderr.contains("function helper has no recent coverage"),
+        "{stderr}"
+    );
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("has no recent coverage"));
 }
