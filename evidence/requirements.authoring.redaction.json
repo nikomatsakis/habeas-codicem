@@ -1,8 +1,8 @@
 {
   "requirement": "Every source text the harness supplies to a model, including mandatory inputs,\n`habeas` reads, and `ripgrep` results, and every source text Habeas displays in\nthe book or `habeas info`, MUST be redacted:\n\n1. In a workspace `habeas.toml` or user configuration file, the value of every\n   explicit credential field defined by {cite}`requirements.authoring.credentials`\n   MUST be replaced. Such a file that is not valid TOML MUST be replaced whole,\n   with `configuration` as the kind, because its fields cannot be located.\n2. In every source, each match of a built-in rule of the `secretshape` crate MUST\n   be replaced. The replaced region MUST be extended through each adjacent region\n   that the crate's entropy heuristic flags and that only whitespace separates\n   from the region, repeating until no flagged region is adjacent. The heuristic\n   MUST NOT cause redaction on its own.\n\nA replacement MUST read `[REDACTED:<kind>]`, where `<kind>` is the credential\nfield or the rule's name, and MUST keep every line break within the replaced\ntext, so line numbers are unchanged. Outlines MUST be built from the original\nsource, and the structural hash MUST hash each text piece that overlaps a\nredacted region in its redacted form, so evidence never depends on a credential's\nvalue and redaction never changes or breaks a file's outline. The `secretshape` version MUST be pinned exactly; upgrading\nit MAY change redaction and hashes and MUST be treated as a deliberate change.",
-  "determination": false,
-  "rationale": "One obligation of `requirements.authoring.redaction` has no test, so the requirement is not satisfied. Everything else I checked is implemented and tested.\n\n**Implementation: no gaps found**\n- **Pinned dependency:** `Cargo.toml#table[dependencies]/pair[secretshape]` pins `=0.1.0`. It is a declaration with no conditional, so it needs no test.\n- **Configuration fields:** `src/redaction.rs#impl[Redaction]/fn[of_file]` adds `configuration_regions` for a `habeas.toml` or the user configuration file. These use `credential_fields`, `item_fields` and `value_fields`, and `is_configuration_file_for` also resolves aliases to the user file. Credential values are replaced by field name. A file that is not valid TOML is replaced whole with kind `configuration`.\n- **Rule matches and entropy heuristic:** `fn[secret_regions]` replaces each `secretshape` rule match. It extends each match through adjacent heuristic-flagged regions that only whitespace separates, forwards and backwards. Heuristic findings alone never start a region, and `fn[scanners]` lifts the input cap.\n- **Replacement format:** `Redaction::slice` writes `[REDACTED:<kind>]` and keeps every line break through `push_line_breaks`.\n- **Outlines and hashes:** `outline::parse_redacted` builds the outline from the original source. `Builder::piece` hashes each piece in its redacted form.\n- **Reachability of display sites:** the harness and display paths reach the redaction code from the marked items:\n  - `initial_prompt` reaches the mandatory inputs, the citation commentary and the site matches.\n  - `SearchNodes::entries` covers ripgrep results.\n  - `validate_resolved_input` reaches `InputSelector::resolve`.\n  - `github::fetch` redacts issue text.\n  - `render_detail_sections` reaches `render_input` for the book and `habeas info`.\n\n**Tests: one gap**\n- Tested: configuration fields, invalid TOML, user-file aliases, private keys, line breaks, CRLF, input past one mebibyte, heuristic findings alone, backward extension, outline unchanged, hash independence from credential values, slice concatenation, and each display path.\n- **Gap:** no test covers extending a rule-matched region forward through an adjacent heuristic-flagged region, or repeating that extension until no flagged region is adjacent.\n  - The only test of extension is `src/redaction/tests.rs#fn[regions_extend_backward_keep_crlf_and_scan_past_a_mebibyte]`, and its flagged text comes before the token.\n  - `fn[tokens_in_code_are_redacted_without_adjacent_code]` only shows that non-whitespace separation stops extension.\n  - The forward loop in `secret_regions` has its own conditional (`span.start < region.span.end || whitespace(..)`) and is never run with a flagged region after a match.\n  - The chained, repeating extension that the text names is never exercised either.",
-  "references": "c2ff83cd5d5c00291224a9e8321a67eaf45afa8a5a9f67524003744fb6c14da3",
+  "determination": true,
+  "rationale": "I found no gap against `requirements.authoring.redaction`. The core code in `src/redaction.rs` has no `{impl}` reference, but the marked items reach it, so it needs none.\n\n**Obligations, code and tests**\n\n1. **Credential fields in `habeas.toml` or the user configuration file.**\n   - Code: `Redaction::of_file` adds `configuration_regions` when `is_configuration_file` holds. That check accepts any file named `habeas.toml`, the user configuration file, and aliases of it.\n   - Code: `credential_fields`, `item_fields` and `value_fields` locate every value under an authoring config's `credentials` and its `api_key`. Inline tables, arrays and multi-line strings are covered. `api_key_env` is not touched.\n   - Tests: `configuration_credential_fields_are_redacted_by_name_whatever_their_values` and `the_user_configuration_file_and_its_aliases_are_configuration_files`.\n\n2. **Invalid TOML is replaced whole with kind `configuration`.**\n   - Code: `configuration_regions` returns `0..len` with kind `configuration` when `credential_fields` returns `None`.\n   - Test: `invalid_configuration_files_are_redacted_whole_keeping_lines`.\n\n3. **Each `secretshape` built-in rule match is replaced.**\n   - Code: `secret_regions` scans with the rule-only scanner.\n   - Tests: `tokens_in_code_are_redacted_without_adjacent_code` and `private_keys_are_redacted_from_header_through_body_keeping_lines`.\n\n4. **Extension through adjacent heuristic regions, repeated, whitespace-separated only.**\n   - Code: `secret_regions` extends each region forward and backward through flagged spans that overlap it or sit across whitespace only. It stops at the first non-whitespace gap.\n   - Test: `regions_extend_both_ways_keep_crlf_and_scan_past_a_mebibyte`, which covers backward, forward and chained extension. `tokens_in_code_are_redacted_without_adjacent_code` shows adjacent code is not swallowed.\n\n5. **The heuristic never redacts on its own.**\n   - Code: `secret_regions` returns early when the rule-only scan finds nothing.\n   - Test: `heuristic_findings_alone_are_not_redacted`.\n\n6. **Replacement format and line breaks.**\n   - Code: `Redaction::slice` and `push_line_breaks` write `[REDACTED:<kind>]`, then every line break, with `\\r\\n` pairs kept.\n   - Tests: the private-key test, the CRLF case, and `slices_concatenate_to_the_redacted_whole`.\n\n7. **Outlines built from the original source; the structural hash uses redacted pieces.**\n   - Code: `outline::parse_redacted` parses the original source. `Builder::piece` and `plain_text` call `redaction.slice` for hashing. `OutlineCache::parse` in `src/inputs.rs` and `outline::parse_with` both use it.\n   - Tests: `hashes_do_not_depend_on_credential_values` and `redaction_never_changes_an_outline`.\n\n8. **Every channel to the model and every display is redacted.**\n   - Model inputs and prompts: `initial_prompt`, `ParsedSource.redacted`, `InputSelector::resolve` (via `redact_lines`), `CitationItem::model_citations_value` and `SiteItem::matches_value`.\n   - Tool results: `SearchNodes::entries` for `ripgrep` and `ast_grep`.\n   - GitHub issues: `fetch` in `src/github.rs`, including the cache.\n   - Book and `habeas info`: `render_detail_sections` and `render_input`.\n   - Evidence validation: `validate_resolved_input`.\n   - Tests:\n     - `model_inputs_reads_searches_and_citation_prompts_are_redacted`\n     - `declaration_text_reaches_the_model_redacted`\n     - `ast_grep_returns_innermost_nodes_of_the_language_and_reports_failures`\n     - `the_tool_reads_issues_with_the_token_and_redacts_bodies`\n     - `detail_pages_and_info_display_redacted_source`\n     - `violation_text_reaches_the_model_redacted`\n\n9. **`secretshape` pinned exactly.**\n   - Code: `Cargo.toml` has `secretshape = \"=0.1.0\"`, with a comment saying an upgrade is deliberate. A version pin has no runtime behavior to test.\n\nI found no unspecified behavior among the `{impl}` items. The recorded FIXME entries come from the model's judgment record rather than from source text, so I did not treat them as unredacted source display.",
+  "references": "6d7487d016b271dcc29a77068c8d3373de91ce615ca9f0c7cc04ae0acff5ad63",
   "inputs": [
     {
       "requirements": "requirements.authoring.redaction",
@@ -179,8 +179,8 @@
     },
     {
       "file": "src/redaction/tests.rs",
-      "item": "fn[regions_extend_backward_keep_crlf_and_scan_past_a_mebibyte]",
-      "hash": "76aeabb2851db060abf9267aee28ccc079fdf8451d2320c27f9f6aa857e631b5"
+      "item": "fn[regions_extend_both_ways_keep_crlf_and_scan_past_a_mebibyte]",
+      "hash": "61a1a26f387bab02b6d275d5ac0fe25fd496ea341a8ef5ae4cd1b2a8057f7890"
     },
     {
       "file": "src/sites.rs",
@@ -189,48 +189,13 @@
     },
     {
       "file": "src/redaction.rs",
-      "item": "impl[Redaction]",
-      "hash": "6568993200f8cb18510299255f1b02d87072b05772b0fee7ff3c0920f57fe2fa"
+      "item": "",
+      "hash": "9d63cf6e5e457e5976049363b829c482a757b5f8f75fe57e229df0cbd6149bed"
     },
     {
-      "file": "src/redaction.rs",
-      "item": "fn[secret_regions]",
-      "hash": "32e323c906372e0de5c320ec6710cfbd513f191a8d383a7ae5b0fef6206c01ed"
-    },
-    {
-      "file": "src/redaction.rs",
-      "item": "fn[configuration_regions]",
-      "hash": "5ac83944c7bd834912a11b29fdd21124c589f8108bed68ebb6aa7496a9323b84"
-    },
-    {
-      "file": "src/redaction.rs",
-      "item": "fn[credential_fields]",
-      "hash": "e1b45f696f356560d6962b98784758c2dc5caa11ab55de13f597fea74b4756df"
-    },
-    {
-      "file": "src/redaction.rs",
-      "item": "fn[scanners]",
-      "hash": "708a7aa88bbc4187f350ebf2ba1999a17c6839aab4440c200ad25b1c400d223c"
-    },
-    {
-      "file": "src/redaction.rs",
-      "item": "fn[is_configuration_file_for]",
-      "hash": "f9c0918a9598b399b3bcaaa1d53c80d208170a5ca66fa769a86e9fbca3bd62c4"
-    },
-    {
-      "file": "src/redaction.rs",
-      "item": "fn[item_fields]",
-      "hash": "8e33a3b916514955383bbbd18b55d31f4ca8f32799ee0bbbc49798a2b74f7bc4"
-    },
-    {
-      "file": "src/redaction.rs",
-      "item": "fn[value_fields]",
-      "hash": "83d379eeebbc73d705c2267124fc5d8fbc291a79c76cfddf5e4754e5c2336eae"
-    },
-    {
-      "file": "src/redaction.rs",
-      "item": "fn[is_configuration_file]",
-      "hash": "ecf5c0195d92e670405c61648cf48a48ac5d890ddbe4392f421391439d5c027b"
+      "file": "src/inputs.rs",
+      "item": "impl[OutlineCache]/fn[parse]",
+      "hash": "1734ee17e8afa6697e5e01b8386737395f3d5d3cc8a0ad44f84b178ac329a08e"
     }
   ]
 }

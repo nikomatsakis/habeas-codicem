@@ -253,6 +253,7 @@ fn authoring_policy_defaults_to_confirm_and_round_trips() {
 // {test}`requirements.authoring.configuration_storage`
 // {test}`requirements.authoring.rig_configuration_mapping`
 // {test}`requirements.authoring.configuration`
+// {test}`requirements.configuration.loading`
 #[test]
 fn explicit_project_and_default_selections_choose_whole_configs() {
     let dir = tempfile::tempdir().unwrap();

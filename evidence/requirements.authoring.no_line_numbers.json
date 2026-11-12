@@ -1,7 +1,7 @@
 {
   "requirement": "No prompt, tool result, or tool error the harness gives the model MUST state a\nline number or line range of a project source, except within source text it\nquotes and where a tool error repeats a line number the model supplied. The\nharness MUST identify a source location by file and outline selector under\n{cite}`requirements.references.outline_selectors` instead.",
-  "determination": false,
-  "rationale": "**Verdict:** The code mostly meets `requirements.authoring.no_line_numbers`, but one tool-error path can still state a source line number. I did not run anything. I did not confirm the exact error text the YAML parser (`serde_saphyr`) produces.\n\n**What meets the requirement**\n- **Tool results.**\n  - Results identify locations by file and outline selector. This covers `src/authoring/tools.rs#fn[outline_entries]`, `#fn[references]`, `#impl[SearchNodes]/fn[entries]`, `src/inputs.rs#impl[InputSelector]/fn[to_model_input]` and `src/sites.rs#impl[SiteItem]/fn[matches_value]`.\n  - `ripgrep`, `ast_grep` and query results give matched text with an elision line and no line numbers.\n  - Tests assert that no `line_start` or `line_end` field appears:\n    - `fn[reading_records_only_delivered_sources_and_their_terms]`\n    - `fn[line_range_reads_record_the_innermost_covering_nodes]`\n    - `fn[search_merges_context_windows_and_respects_ignore_rules]`\n    - `fn[outline_lists_nested_nodes_without_text_or_inputs]`\n    - `fn[references_list_names_and_flattened_sites_without_recording_inputs]`\n- **Prompts.** The mandatory inputs and the site prompt's matches carry selectors only. The site test `fn[site_reviews_use_their_prompt_and_record_applies_and_the_site]` checks the subject message.\n- **The supplied-number exception.** `src/authoring/inputs.rs#impl[AssessmentSources]/fn[read_lines]` repeats only the numbers the model supplied, in `file:{requested} is not an inclusive range`. `tool_errors_give_the_model_no_line_numbers_it_did_not_supply` tests this.\n- **Scrubbing errors.** In `src/authoring/mod.rs#fn[converse]`, every tool error passes through `src/authoring/line_numbers.rs#fn[without_source_lines]`. That function removes `line N: ` parse positions and `file:N: ` diagnostic positions.\n- **Tests for the scrubbing.** `tool_errors_drop_the_source_line_of_a_parse_error` and the `mod.rs` test above cover it.\n\n**Gap: the scrubber only matches two textual patterns**\n- A tool error can still reach the model carrying a project-source line number in another form.\n- `src/structural.rs#fn[parse_queries]` formats a malformed query's YAML failure as `{file}:{line}: query {name}: the yaml block must be a mapping...: {error}`.\n  - The `{file}:{line}:` prefix is scrubbed.\n  - The YAML parser's `{error}` normally carries its own position, such as `at line N, column M`.\n  - That does not match `PARSE_POSITION` (`line \\d+: `) or `FILE_POSITION` (`\\S+?:\\d+: `), so it would pass through.\n- That error reaches the model through `src/authoring/tools.rs#fn[declared_query]`, which calls `declared_queries` and maps its error with `io::Error::other`. The model triggers it with `ast_grep {\"query\": ...}` on a requirement whose query block is malformed.\n- Similarly, `src/evidence.rs#fn[collect_definitions]` produces a duplicate-definition error ending in `first declared at {source}`, where `source` is `label:line`. The text ends there with no `: ` after the number, so `FILE_POSITION` leaves it. `references` and `declared_query` reach it through `load_definitions`.\n- No test covers either form; the tests exercise only the `line N: ` parse form and the `file:N: ` diagnostic form.\n\nBecause the requirement is absolute (\"No ... tool error ... MUST state a line number\"), these unscrubbed forms are unmet and untested, and no `{fixme}` acknowledges them.\n\n**Confirmation:** the assessments disagreed: the first determination was `true` and an independent second assessment's was `false`. A verifier checked the less favorable `false` determination and found an unacknowledged real gap, so `false` is recorded.\n\nVerification:\n\n**Verdict:** The claimed gap is real in a narrower form than stated, and no `{fixme}` acknowledges it. I did not run anything.\n\n**What I checked**\n- `src/authoring/mod.rs#fn[converse]` is the only place that scrubs tool errors. It passes each error through `src/authoring/line_numbers.rs#fn[without_source_lines]`, which applies exactly two regexes:\n  - `PARSE_POSITION` removes `\\bline \\d+: `.\n  - `FILE_POSITION` rewrites `\\S+?:\\d+: ` to `file: `.\n- `tool_errors_drop_the_source_line_of_a_parse_error` and `tool_errors_give_the_model_no_line_numbers_it_did_not_supply` cover only those two forms and the supplied-number form. Nothing else is tested.\n\n**Duplicate-definition error: real**\n- `src/evidence.rs#fn[collect_definitions]` builds `\"{source}: duplicate {kind} {name}; first declared at {previous.source}\"`.\n- `source` is `label:line`, so the text ends with a project-source line number (for example `md/requirements.md:3`).\n- The `{source}: ` at the start of the message is scrubbed.\n- The trailing `first declared at md/x.md:3` has no `: ` after the digits, so neither regex touches it.\n- `src/evidence.rs#fn[load_definitions]` joins all failures with newlines into an `io::Error`. `src/authoring/tools.rs#fn[references]` propagates that error with `?`, and `converse` delivers it to the model.\n- This is a project-source line number the model did not supply, so it breaches the absolute \"No ... tool error ... MUST state a line number\".\n- Reachability caveat: `AssessmentSources::prepare` calls the same `load_definitions`, so a duplicate present at start aborts the run before any prompt. The error reaches the model only if the book changes during a conversation. This makes the gap narrow, but the scrubber still cannot handle the form.\n\n**Malformed-query YAML error: real in principle, unconfirmed**\n- `src/structural.rs#fn[parse_queries]` appends the YAML parser's `{error}` to its message.\n- `declared_queries` returns the first such problem, and `src/authoring/tools.rs#fn[declared_query]` surfaces it through `ast_grep {\"query\": ...}`.\n- I could not confirm the `serde_saphyr` message text. If it carries a position such as `at line N, column M`, neither regex matches it, because the text has no `line N: ` form.\n- That number is relative to the extracted YAML block, not the chapter file. So even if the position appears, whether it counts as \"a line number of a project source\" is arguable, and I treat this part as weaker.\n\n**Tests**\n- No test covers the duplicate-definition form or the YAML-position form, and no `{fixme}` references this requirement.\n\n**Not gaps**\n- The supplied-number error in `read_lines` (`file:{requested} is not an inclusive range`) matches the stated exception.\n- The other listed tool results and prompts give selectors only. Their outputs contain no line numbers, and their tests assert that.",
+  "determination": true,
+  "rationale": "I found no gap against `requirements.authoring.no_line_numbers`. This is a static review of the code and tests.\n\nThe requirement has two parts: no prompt, tool result or tool error states a line number of a project source, and locations are identified by file and outline selector.\n\n**Tool results**\n- Line-range reads (the `habeas` line-range form) go through `src/authoring/inputs.rs#impl[AssessmentSources]/fn[read_lines]`, which returns inputs built by `read_selector`. `src/inputs.rs#impl[InputSelector]/fn[to_model_input]` and `to_input` give only file, item, hash, kind and text, never `line_start` or `line_end`.\n- The `outline` tool's `src/authoring/tools.rs#fn[outline_entries]` returns item, kind, name and children.\n- The `ripgrep`, `ast_grep` and declared-query results share `src/authoring/tools.rs#impl[SearchNodes]/fn[entries]`. It emits file, selector, kind and `{text, matched}` lines, with an elision line between windows and no numbers.\n- `src/authoring/tools.rs#fn[references]` returns name, role, file and item selector. Line numbers are used only to sort the sites.\n\n**Prompts**\n- Mandatory inputs reach the model through `model_mandatory_inputs`, which carries only selectors, hashes and text.\n- Site prompts use `src/sites.rs#impl[SiteItem]/fn[matches_value]`, which gives kind, query, item selector and redacted text only.\n- Citation prompts use `model_citations_value`, which gives role, name and commentary only.\n- The `habeas` tool description says that results never give line numbers. Its `line_start`/`line_end` example is a request-format illustration, not a statement of a project source's location. I read it as outside the requirement.\n\n**Tool errors**\n- `read_lines` repeats only the numbers the model supplied, in `{file}:{requested} is not an inclusive range…`.\n- Every tool error passes through `line_numbers::without_source_lines` in the `Err` arm of `src/authoring/mod.rs#fn[converse]`. It strips `line N: `, `at line N, column M`, `file:N: ` and `path:N` forms. It keeps the supplied range only when the text after it begins with ` is not an inclusive range`.\n- When the model supplies a range such as `99-100`, the regex strips the first number and leaves `src/a.rs-100`. It does not leak an unsupplied line number, so I do not count it as a gap.\n\n**Tests**\n- `src/authoring/tools.rs#mod[tests]/fn[reading_records_only_delivered_sources_and_their_terms]` and `fn[line_range_reads_record_the_innermost_covering_nodes]` assert that read results carry no `line_start` or `line_end`.\n- `fn[search_merges_context_windows_and_respects_ignore_rules]` and `fn[separate_windows_in_one_node_are_divided_by_an_elision_line]` assert that search lines carry no line numbers.\n- `fn[outline_lists_nested_nodes_without_text_or_inputs]` and `fn[references_list_names_and_flattened_sites_without_recording_inputs]` assert exact outline and reference results with no line numbers.\n- `src/authoring/mod.rs#mod[tests]/fn[tool_errors_give_the_model_no_line_numbers_it_did_not_supply]` covers the past-the-end range error repeating the supplied line, and covers a parse error, end to end through `assess`, reaching the model without its line.\n- `src/authoring/line_numbers.rs#mod[tests]/fn[tool_errors_drop_the_source_line_of_a_parse_error]` covers the parse-error, `file:N:`, \"first declared at\", YAML and TOML forms.\n- `src/authoring/mod.rs#mod[tests]/fn[site_reviews_use_their_prompt_and_record_applies_and_the_site]` checks the site subject message's matches (kind, query and item selector).\n- `src/authoring/inputs.rs#mod[tests]/fn[anchored_files_contribute_root_node_inputs]` asserts the exact mandatory-input JSON.\n\nEvery obligation has a test that runs its code and asserts the outcome. The impl-marked code is either reachable from the {impl} items or itself carries the {impl} reference, and I found no unspecified behavior or {fixme} to account for.",
   "references": "a993e10f5afdf64711f02a454a6e52540038a0f19491817a851b283a275228e2",
   "inputs": [
     {
@@ -53,12 +53,12 @@
     {
       "file": "src/authoring/line_numbers.rs",
       "item": "fn[without_source_lines]",
-      "hash": "58e3ee66d9f7f6d603105cfa5ce966963fe55c2367cc57b761686d68a810b57a"
+      "hash": "7e01c458cf291eb2903eec5850eaea17747b6ac3bd48ba566fae2161a59a4d30"
     },
     {
       "file": "src/authoring/line_numbers.rs",
       "item": "mod[tests]/fn[tool_errors_drop_the_source_line_of_a_parse_error]",
-      "hash": "930c65f12457849fc2a3d72c51eb360c2f3906f8f803274c2798de0c1e103dc8"
+      "hash": "81b95a2651b066f62647e1914ee16bbb471e9f31200b1803b31bac4e336b8e79"
     },
     {
       "file": "src/authoring/mod.rs",
@@ -133,22 +133,37 @@
     {
       "file": "src/authoring/line_numbers.rs",
       "item": "",
-      "hash": "67d62830c6809826c3f7f7042fb136159ee1faf2d03d0a48d083790438e30aad"
+      "hash": "1a29f1d8f4b9ad349112c147b330766ecaacb6f5a4cdaf4491206da2b68f09b3"
     },
     {
-      "file": "src/authoring/tools.rs",
-      "item": "fn[dispatch_paged]",
-      "hash": "46603300d61b11dcdd71d12c530be377b85055e563dde1f2f83d3db30d4f4055"
+      "file": "src/authoring/mod.rs",
+      "item": "fn[initial_prompt]",
+      "hash": "e18a20a9ce82743cf96cc070647075882dd29c6192f727077c3b87ff383c8717"
     },
     {
-      "file": "src/authoring/tools.rs",
-      "item": "fn[search]",
-      "hash": "5f043c14c80c5dac1610f3c0add854edd22e785a20a3ac707fbe24c4fcb424aa"
+      "file": "src/authoring/inputs.rs",
+      "item": "impl[AssessmentSources]/fn[model_mandatory_inputs]",
+      "hash": "c64d022bf88a51f9573af169ef2a69b43ca1716b28f579e150b3f9c3b83e3e1b"
     },
     {
-      "file": "src/authoring/tools.rs",
-      "item": "fn[read]",
-      "hash": "b6c181bdb647f5969daad3a4bdccea56aa57026e5b81c88a9a573a8071527038"
+      "file": "src/authoring/inputs.rs",
+      "item": "impl[AssessmentSources]/fn[prepare_site]",
+      "hash": "3f2f152c7b16053bd1bc6d96fae1b55682553b236965df9f34837fabdc8d2f93"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "impl[InputSelector]/fn[to_input]",
+      "hash": "52e389939a712b0c7329c80ee68d123608f1007a7668deff7ab9b97271d6d90c"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "fn[approved_text]",
+      "hash": "57c939d94f090c967d2a5cb9aa31642d8674934bfff8e5e42d544c8740478806"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "fn[location_guidance]",
+      "hash": "b902656b8d648a41d9007473ab770e9e2cb016a284c85a4eca6ce02eceaf5043"
     },
     {
       "file": "src/authoring/tools.rs",
@@ -162,13 +177,18 @@
     },
     {
       "file": "src/authoring/tools.rs",
-      "item": "fn[outline]",
-      "hash": "5eb14d15129383bfca790a02f199d2aa2fe7683a2a4d519f44ae8af387668a37"
+      "item": "fn[search]",
+      "hash": "5f043c14c80c5dac1610f3c0add854edd22e785a20a3ac707fbe24c4fcb424aa"
     },
     {
-      "file": "src/structural.rs",
-      "item": "fn[parse_queries]",
-      "hash": "96f1a821a28e2be27e0416fb500c36ea27fb5f46decab42bb51838046453e190"
+      "file": "src/authoring/tools.rs",
+      "item": "fn[read]",
+      "hash": "b6c181bdb647f5969daad3a4bdccea56aa57026e5b81c88a9a573a8071527038"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "fn[dispatch]",
+      "hash": "758a46cbd9110b234687139f5031a8101f39dce0eb2be6cf5d7036234ae26dbb"
     }
   ]
 }
