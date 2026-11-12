@@ -1,5 +1,6 @@
 //! Model-assisted evidence authoring, invoked explicitly and never by validation.
 
+#[path = "../../crates/habeas-sdk/src/access.rs"]
 pub(crate) mod access;
 mod batch;
 pub(crate) mod coverage_loss;
