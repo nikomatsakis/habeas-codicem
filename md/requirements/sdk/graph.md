@@ -31,6 +31,44 @@ to the consumer.
 :::
 
 
+## Give nodes a stable path
+
+`NodeId` can remain an application-defined enum or other structured type.
+`Graph::node_path` gives the SDK a standard address for storage, links, and
+diagnostics without requiring it to understand that structure. For example,
+a requirement might have the path `["requirements", "auth", "expiration"]`,
+while a function has `["source", "src/auth.rs", "fn[check_token]"]`.
+These are logical segments, not filesystem path components.
+
+:::{req} node_path
+`habeas_sdk::graph` MUST expose the following path type and graph operation:
+
+```rust,ignore
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct NodePath {
+    pub segments: Vec<String>,
+}
+
+pub trait Graph: Send + Sync {
+    // ...
+    fn node_path(&self, node: &Self::NodeId) -> NodePath;
+}
+```
+
+Within a domain, equal node IDs MUST yield equal paths, and distinct node IDs
+MUST yield distinct paths. The mapping MUST remain stable across runs and
+changes to node contents. Path equality MUST compare the ordered sequence of
+segments exactly, preserving empty segments, segment boundaries, and Unicode
+text without normalization. An empty sequence MUST be a valid path.
+The SDK MUST NOT require conversion from `NodePath` back to `NodeId`.
+:::
+
+For example, `["source", "src/auth.rs"]` and `["source", "src", "auth.rs"]`
+are different paths. The [filesystem storage helper](filesystem-storage.md)
+encodes these segments into safe filesystem components. The application still
+supplies serialization for any node IDs stored inside an evidence record.
+
+
 The SDK defines an edge's shape. The application supplies its label, including
 any relationship metadata. Its source is implicit in the outgoing-edge lookup;
 its target identifies another node whose contents are inputs to validation.

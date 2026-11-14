@@ -113,7 +113,7 @@ functionality. The linked chapters describe each one:
 | [Context tools](sdk/graph/context-tools.md) | Source discovery and tracked content reads. |
 | [Structural fingerprints](sdk/graph/fingerprinting.md#fingerprint-the-structure-and-version-the-rules) | Change detection based on source structure. |
 | [Agent calls](sdk/graph/agent-calls.md) | Prompt construction, tracked tools, and typed results. |
-| [Evidence storage helpers](sdk/graph/evidence.md#load-and-store-evidence-through-the-graph) | Filesystem persistence for SDK evidence records. |
+| [Evidence storage helpers](sdk/filesystem-storage.md) | Filesystem persistence for SDK evidence records. |
 | [Graph traversal](sdk/graph/traversal.md) | Validation scheduling across connected nodes, including cycles and parallel work. |
 
 
