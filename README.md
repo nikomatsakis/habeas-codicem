@@ -147,17 +147,22 @@ fork is a dependency, excluded from workspace membership and releases.
 ## Developing and publishing the book
 
 This repository's SDK chapter uses Mermaid diagrams. Before building this book,
-install its preprocessor and generate the local JavaScript assets (CI does the
-same):
+install the pinned tools used by CI:
 
 ```sh
-cargo install mdbook-mermaid --locked --version 0.17.0
-mdbook-mermaid install .
-mdbook build
+cargo install mdbook --locked --version 0.5.4 --no-default-features --features search
+cargo install mdbook-mermaid --locked --version 0.17.1
+mdbook serve
 ```
 
-The generated `mermaid.min.js` and `mermaid-init.js` files are ignored by Git.
-The rendered book serves those assets locally; viewing diagrams needs no CDN.
+The `mermaid.min.js` and `mermaid-init.js` assets are checked into Git, so fresh
+clones and worktrees need no `mdbook-mermaid install` step. The rendered book
+serves those assets locally; viewing diagrams needs no CDN. CI runs `mdbook build`
+without regenerating them, so missing assets fail the build.
+
+When upgrading Mermaid, update the version in both GitHub workflows and these
+instructions, install that version, and run `mdbook-mermaid install .`. Review
+and commit both JavaScript assets along with any configuration changes.
 
 The repository-local `cargo habeas` alias runs `cargo run --release -p habeas --`; only this book invokes its preprocessor with `cargo habeas mdbook`. Consumer books configured by `habeas setup` continue to invoke the installed `habeas mdbook` CLI.
 
