@@ -96,8 +96,8 @@ impl<T: PartialEq> Trace<T> {
 ///     ctx.judge(());
 /// }
 /// ```
-// {impl}`requirements.sdk.graph.model_capability`
-// {impl}`requirements.sdk.graph.deterministic_procedures`
+// {impl}`requirements.sdk.graph.agent-calls.model_capability`
+// {impl}`requirements.sdk.graph.validation.deterministic_procedures`
 pub struct CheckContext<'a, D: Domain> {
     domain: &'a D,
     trace: Trace<Dependency<D::NodeId, D::Query>>,
@@ -115,7 +115,7 @@ impl<'a, D: Domain> CheckContext<'a, D> {
         Ok(self.read_snapshot(node)?.content)
     }
 
-    // {impl}`requirements.sdk.graph.node_inputs`
+    // {impl}`requirements.sdk.graph.evidence.node_inputs`
     pub fn read_snapshot(&mut self, node: &D::NodeId) -> Result<Snapshot<D::Content>, D::Error> {
         let snapshot = self.domain.read(node)?;
         self.observe_read(node.clone(), snapshot.fingerprint.clone());
@@ -143,7 +143,7 @@ impl<'a, D: Domain> CheckContext<'a, D> {
     /// Import a read delivered by a consumer-owned tool adapter. The adapter
     /// must supply the fingerprint of the delivered snapshot, not re-read the
     /// resource here. Imported human attestations should use a separate record.
-    // {impl}`requirements.sdk.graph.node_inputs`
+    // {impl}`requirements.sdk.graph.evidence.node_inputs`
     pub fn observe_read(&mut self, node: D::NodeId, fingerprint: Fingerprint) {
         self.trace.observe(Dependency::Node(node, fingerprint));
     }
@@ -211,7 +211,7 @@ impl<'a, D: Domain> CheckContext<'a, D> {
 
     /// Compare procedure identity and all captured snapshots. A caller should
     /// version its procedure identity when its algorithm or prompts change.
-    // {impl}`requirements.sdk.graph.checking_records`
+    // {impl}`requirements.sdk.graph.evidence.checking_records`
     pub fn record_is_current<V>(
         &mut self,
         procedure: &str,
@@ -289,8 +289,8 @@ mod tests {
         );
     }
 
-    // {test}`requirements.sdk.graph.node_inputs`
-    // {test}`requirements.sdk.graph.checking_records`
+    // {test}`requirements.sdk.graph.evidence.node_inputs`
+    // {test}`requirements.sdk.graph.evidence.checking_records`
     #[test]
     fn missing_reads_do_not_count_as_successful_reads() {
         let domain = Memory::default();
@@ -332,9 +332,9 @@ mod tests {
         assert_eq!(Link::Related(1, 2).endpoints(), (1, 2));
     }
 
-    // {test}`requirements.sdk.graph.procedures`
-    // {test}`requirements.sdk.graph.deterministic_procedures`
-    // {test}`requirements.sdk.graph.checking_records`
+    // {test}`requirements.sdk.graph.agent-calls.procedures`
+    // {test}`requirements.sdk.graph.validation.deterministic_procedures`
+    // {test}`requirements.sdk.graph.evidence.checking_records`
     #[test]
     fn authoring_can_interleave_checks_and_judgments_and_ci_never_calls_the_judge() {
         use crate::procedure::{AuthorContext, AuthorProcedure, Judge};

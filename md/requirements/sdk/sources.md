@@ -284,7 +284,7 @@ flowchart TD
     Result --> Record["Record dependency; supply result"]
 ```
 
-The graph's [input-recording contracts](graph.md#remember-what-a-procedure-actually-reads)
+The graph's [input-recording contracts](graph/evidence.md#remember-what-a-procedure-actually-reads)
 cover node reads and outgoing-edge selections. Source inspection additionally
 tracks search observations under the following contract. Providers execute
 operations; the inspection context records their observations. An override cannot bypass

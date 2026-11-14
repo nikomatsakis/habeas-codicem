@@ -127,3 +127,48 @@ A current negative judgment is still negative. A missing review is still
 missing even if every existing record is current. Checking freshness is SDK
 machinery; deciding which reviews are required and which judgments satisfy the
 project is Habeas policy.
+
+## Nodes can refer to external state
+
+The nodes in the first example came from repository files. A node can also
+identify something outside the repository, such as a GitHub issue. Its identity
+might be `example/auth#42`; its contents are the issue data fetched from GitHub,
+including its description and current state.
+
+For example, an issue-only FIXME connects a source item to its tracking issue:
+
+```rust,ignore
+// :::{fixme}
+// :github: example/auth#42
+// Reject expired tokens when the clock is unavailable.
+// :::
+fn check_without_clock() { /* ... */ }
+```
+
+```mermaid
+flowchart TD
+    F["check_without_clock"] -->|tracks work with| G["GitHub issue example/auth#42"]
+```
+
+The source item is one node; the issue is another. Resolving the source node
+reads code, while resolving the issue node fetches external data. Both supply
+contents that a validation procedure can examine. Neither the node identity nor
+the graph abstraction requires those contents to live in a source file.
+
+The application defines the check that uses this relationship. If the check
+requires the tracking issue to remain open, it can inspect the fetched state
+deterministically. It does not need to ask an agent to determine whether the
+state field says `open`.
+
+External inputs also explain why evidence cannot be tied only to a repository
+revision. The issue can close without any code changing. A judgment that relies
+on the issue being open must account for that state when checking whether its
+inputs are still current.
+
+A named FIXME can contribute both relationships: from a requirement to the
+source that acknowledges its gap, and from that source to a tracking issue.
+The unnamed form above contributes only the issue relationship. The requirement
+relationship selects code for review; the issue relationship brings external
+state into the graph.
+
+<a id="an-edge-carries-an-obligation"></a>

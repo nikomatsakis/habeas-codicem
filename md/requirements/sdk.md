@@ -58,18 +58,67 @@ flowchart TD
     R -->|tested by| T["expired_token_is_rejected"]
 ```
 
-Edges indicate *(root) inputs* to the validation process. So the validation procedure for `requirements.auth.expiration` will be given the `check_token` and `expired_token_is_rejected` nodes as inputs. If a relevant part of an input changes, the saved validation becomes stale. CI reports the stale result; authoring can re-execute the validation. Fingerprints, introduced in the graph chapter, determine which changes count as relevant. Note that these are the *root* inputs: the validation procedure may fetch additional inputs in which case they too are added to the input set.
+Edges indicate *(root) inputs* to the validation process. So the validation procedure for `requirements.auth.expiration` will be given the `check_token` and `expired_token_is_rejected` nodes as inputs. If a relevant part of an input changes, the saved validation becomes stale. CI reports the stale result; authoring can re-execute the validation. Fingerprints, introduced in the Fingerprinting chapter, determine which changes count as relevant. Note that these are the *root* inputs: the validation procedure may fetch additional inputs in which case they too are added to the input set.
 
-## Follow the abstraction into the SDK
+## Defining the application domain
 
-The [graph chapter](sdk/graph.md) explains node identities, application-defined
-validation, tracked inputs, and saved judgments. It treats each node's contents
-as something the application can supply; parsing source code is not needed to
-understand that model.
+The application defines its own domain by implementing `Domain`. This trait
+combines four subtraits that capture different aspects of the domain:
 
-The [sources chapter](sdk/sources.md) then supplies a reusable implementation for
-source inspection. An application provides resources and registers languages;
-the SDK offers parsing, outlines, and searches. Each language has its own page.
+:::{req} domain
+The SDK MUST expose the following composite trait and blanket implementation:
 
-Finally, [putting it together in Habeas](sdk/habeas.md) follows authoring and CI
-through both the SDK machinery and Habeas's application policy.
+```rust,ignore
+pub trait Domain: Graph + Validation + Fingerprinting + EvidenceStorage {}
+
+impl<T: Graph + Validation + Fingerprinting + EvidenceStorage> Domain for T {}
+```
+
+`Graph` MUST own its node, content, edge-label, and error types as specified by
+{cite}`requirements.sdk.graph.domain_types`. `Fingerprinting` and
+`EvidenceStorage` MUST extend `Graph` and use its associated types.
+`Validation` MUST extend `Graph` and `Fingerprinting`; it supplies the
+application callback, not the freshness-checking algorithm.
+`Domain` MUST add no methods or associated types. The node validation runner
+MUST require `Domain`; assessment callbacks MUST be usable without
+`EvidenceStorage`.
+
+The SDK MUST allow concurrent validations to share a domain by reference.
+Asynchronous storage and assessment methods MUST return `Send` futures. Each
+validation MUST retain its own dependency trace. Concurrent operations within
+one validation MUST safely share that trace, while each agent invocation MUST
+retain its own conversation and submission state. Observations MUST NOT leak
+between separate node validations.
+:::
+
+Each subtrait is covered in its own chapter:
+
+| Trait | Purpose |
+| --- | --- |
+| [Graph](sdk/graph.md) | What nodes and edges represent, and how to obtain their contents and relationships. |
+| [Validation](sdk/graph/validation.md) | The decision procedure to validate a node. |
+| [Fingerprinting](sdk/graph/fingerprinting.md) | What parts of a node's contents are significant. |
+| [EvidenceStorage](sdk/graph/evidence.md) | Where and how evidence is saved. |
+
+
+## Building blocks
+
+The SDK also provides building blocks that applications can reuse for common
+functionality. The linked chapters describe each one:
+
+| Chapter | What it provides |
+| --- | --- |
+| [Source providers](sdk/sources.md#the-application-supplies-a-source-provider) | Resource access, including a filesystem provider. |
+| [Parsing and outlining](sdk/sources.md#register-the-languages-that-interpret-those-resources) | Language-aware source structure and selectors for individual items. |
+| [Context tools](sdk/graph/context-tools.md) | Source discovery and tracked content reads. |
+| [Structural fingerprints](sdk/graph/fingerprinting.md#fingerprint-the-structure-and-version-the-rules) | Change detection based on source structure. |
+| [Agent calls](sdk/graph/agent-calls.md) | Prompt construction, tracked tools, and typed results. |
+| [Evidence storage helpers](sdk/graph/evidence.md#load-and-store-evidence-through-the-graph) | Filesystem persistence for SDK evidence records. |
+| [Graph traversal](sdk/graph/traversal.md) | Validation scheduling across connected nodes, including cycles and parallel work. |
+
+
+## Putting it all together
+
+The [Habeas CLI definition](sdk/habeas.md) defines the `habeas` CLI workflow in
+terms of the SDK, providing an example of how to use these traits and building
+blocks together.

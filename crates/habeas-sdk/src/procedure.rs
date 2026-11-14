@@ -20,8 +20,8 @@ pub trait Judge<D: Domain> {
 /// Constructing this context requires an explicit judge. A check context alone
 /// cannot acquire one. Consumers still control arbitrary Rust I/O; this is an
 /// API capability boundary, not a sandbox.
-// {impl}`requirements.sdk.graph.procedures`
-// {impl}`requirements.sdk.graph.model_capability`
+// {impl}`requirements.sdk.graph.agent-calls.procedures`
+// {impl}`requirements.sdk.graph.agent-calls.model_capability`
 pub struct AuthorContext<'a, D: Domain, J: Judge<D>> {
     checks: CheckContext<'a, D>,
     judge: J,
