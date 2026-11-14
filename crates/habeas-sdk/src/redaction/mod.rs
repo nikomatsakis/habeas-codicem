@@ -351,5 +351,5 @@ fn value_fields(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "default-languages"))]
 mod tests;

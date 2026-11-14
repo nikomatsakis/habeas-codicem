@@ -24,6 +24,7 @@ pub(crate) use habeas_sdk::outline;
 mod redaction;
 mod refactor;
 mod rust_coverage;
+mod sdk;
 mod sites;
 mod structural;
 mod terms;

@@ -2,7 +2,7 @@
 
 use tree_sitter::Node;
 
-use super::profile::{KindRule, NameRule, Profile, text};
+use habeas_language::{KindRule, NameRule, Profile, text};
 
 /// Names an impl by its syntactic self type and optional trait path.
 fn impl_name(node: Node<'_>, source: &str) -> Option<(Vec<String>, usize)> {
@@ -144,6 +144,7 @@ const KINDS: &[KindRule] = &[
 // {impl}`requirements.references.structural_hash`
 pub static PROFILE: Profile = Profile {
     name: "rust",
+    expando_char: 'µ',
     extensions: &["rs"],
     language: Some(|| tree_sitter_rust::LANGUAGE.into()),
     kinds: KINDS,
@@ -154,3 +155,15 @@ pub static PROFILE: Profile = Profile {
     trailing_comments_outside: false,
     attaches,
 };
+
+/// Tree-sitter-backed rust provider.
+pub struct Provider;
+
+impl habeas_language::LanguageProvider for Provider {
+    fn profile(&'static self) -> &'static Profile {
+        &PROFILE
+    }
+    fn grammar(&self) -> fn() -> tree_sitter::Language {
+        PROFILE.language.expect("language grammar")
+    }
+}

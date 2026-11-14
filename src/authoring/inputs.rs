@@ -58,7 +58,7 @@ pub(crate) struct AssessmentSources {
     issue_states: Vec<Vec<(String, &'static str)>>,
     /// GitHub reads for the `github` tool and the states above.
     pub(crate) github: GithubIssues,
-    recorded: Vec<Value>,
+    recorded: habeas_sdk::graph::Trace<Value>,
 }
 
 impl AssessmentSources {
@@ -138,14 +138,16 @@ impl AssessmentSources {
         let sites =
             crate::evidence::definition_sites(&root, subject_name, subject, &files, &outlines)?;
         // The same edges determine the reference contributions below.
-        let reference_set = crate::evidence::reference_set_digest(
-            &root,
-            &outlines,
-            subject_name,
-            subject,
-            &references,
-            &sites,
-        );
+        let domain = crate::sdk::HabeasDomain {
+            root: &root,
+            definitions: &definitions,
+            outlines: &outlines,
+        };
+        let mut checks = habeas_sdk::graph::CheckContext::new(&domain);
+        let reference_set = checks
+            .query_snapshot(&crate::sdk::RequirementId(subject_name.to_owned()))?
+            .fingerprint
+            .value;
         // Tests contribute source. Refining declarations contribute their text;
         // implementation references outside declarations only locate code.
         for reference in references.iter().filter(|reference| {
@@ -291,7 +293,7 @@ impl AssessmentSources {
             mandatory,
             issue_states,
             github,
-            recorded: Vec::new(),
+            recorded: habeas_sdk::graph::Trace::default(),
         })
     }
 
@@ -386,7 +388,7 @@ impl AssessmentSources {
             mandatory,
             issue_states,
             github,
-            recorded: Vec::new(),
+            recorded: habeas_sdk::graph::Trace::default(),
         })
     }
 
@@ -503,7 +505,7 @@ impl AssessmentSources {
             mandatory,
             issue_states,
             github,
-            recorded: Vec::new(),
+            recorded: habeas_sdk::graph::Trace::default(),
         })
     }
 
@@ -560,7 +562,7 @@ impl AssessmentSources {
     /// selector, and hash.
     // {impl}`requirements.authoring.delivered_inputs`
     pub(crate) fn recorded_inputs(&self) -> &[Value] {
-        &self.recorded
+        self.recorded.observations()
     }
 
     // {impl}`requirements.authoring.delivered_inputs`
@@ -570,9 +572,7 @@ impl AssessmentSources {
         // evidence input form.
         for input in inputs.iter().filter(|input| input.get("builtin").is_none()) {
             let input = recorded_input(input);
-            if !self.recorded.contains(&input) {
-                self.recorded.push(input);
-            }
+            self.recorded.observe(input);
         }
     }
 
@@ -667,7 +667,9 @@ impl AssessmentSources {
                     None,
                 )?
                 .into_iter()
-                .filter(|definition| definition != input && !self.recorded.contains(definition))
+                .filter(|definition| {
+                    definition != input && !self.recorded.observations().contains(definition)
+                })
                 .collect())
             })
             .collect()
@@ -684,7 +686,7 @@ impl AssessmentSources {
             None,
         )?
         .into_iter()
-        .filter(|input| !inputs.contains(input) && !self.recorded.contains(input))
+        .filter(|input| !inputs.contains(input) && !self.recorded.observations().contains(input))
         .collect())
     }
 }
@@ -733,8 +735,7 @@ fn source_input(
             }
         }
     }
-    let resolved = selector
-        .resolve(root, definitions, outlines)
+    let resolved = crate::sdk::resolve_input(root, definitions, outlines, selector)
         .map_err(io::Error::other)?;
     for range in &resolved.ranges {
         access.file(root, Path::new(&range.file))?;
