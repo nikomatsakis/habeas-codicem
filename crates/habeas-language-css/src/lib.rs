@@ -2,7 +2,7 @@
 
 use tree_sitter::Node;
 
-use super::profile::{KindRule, NameRule, Profile, kind_is_comment, never, normalized, text};
+use habeas_language::{KindRule, NameRule, Profile, kind_is_comment, never, normalized, text};
 
 /// Names an at-rule by its normalised prelude: the text between the at-keyword
 /// and the block.
@@ -56,13 +56,26 @@ const KINDS: &[KindRule] = &[
 // {impl}`requirements.references.structural_hash`
 pub static PROFILE: Profile = Profile {
     name: "css",
+    expando_char: '_',
     extensions: &["css"],
     language: Some(|| tree_sitter_css::LANGUAGE.into()),
     kinds: KINDS,
     is_comment,
     hashes_comment: never,
-    comment_prose: super::profile::whole_comment,
+    comment_prose: habeas_language::whole_comment,
     comment_binds_to_container: never,
     trailing_comments_outside: false,
     attaches: never,
 };
+
+/// Tree-sitter-backed css provider.
+pub struct Provider;
+
+impl habeas_language::LanguageProvider for Provider {
+    fn profile(&'static self) -> &'static Profile {
+        &PROFILE
+    }
+    fn grammar(&self) -> fn() -> tree_sitter::Language {
+        PROFILE.language.expect("language grammar")
+    }
+}

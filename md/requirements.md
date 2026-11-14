@@ -4,6 +4,7 @@ Capitalized requirement terms in this chapter use the meanings defined by BCP 14
 
 The requirements are organized by the behavior they describe:
 
+- [SDK](requirements/sdk.md)
 - [CI and evidence validation](requirements/ci.md)
 - [Configuration](requirements/configuration.md)
 - [Authoring evidence](requirements/authoring.md)

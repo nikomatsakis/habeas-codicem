@@ -1,21 +1,14 @@
 //! Source outlines: per-language trees of selectable nodes with structural
 //! hashes, built from pinned tree-sitter grammars or the plain-text profile.
 //!
-//! [`parse`] selects a profile by file extension and returns an [`Outline`]:
+//! [`parse_provider`] parses a resolved text snapshot and returns an [`Outline`]:
 //! a pre-order list of [`OutlineNode`]s whose first entry is the root, plus
 //! every [`OutlineComment`] with the node it belongs to.
 
-mod css;
 mod hash;
-mod markdown;
-mod plain;
+pub mod plain;
 pub mod profile;
-mod python;
-mod rust;
 mod selector;
-mod toml;
-mod typescript;
-mod yaml;
 
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
@@ -23,10 +16,13 @@ use std::fmt;
 use tree_sitter::{Node, Parser, Tree};
 
 use crate::redaction::Redaction;
+#[cfg(feature = "default-languages")]
+pub use habeas_languages::rust::PROFILE as RUST_PROFILE;
 use hash::Encoder;
+pub use profile::{LanguageProvider, Profile, Registry};
 use profile::{NameRule, text};
-pub use profile::{Profile, is_markdown_path, profile_for_path};
-pub use rust::PROFILE as RUST_PROFILE;
+#[cfg(feature = "default-languages")]
+pub use profile::{is_markdown_path, profile_for_path};
 pub use selector::{HASH_DIGITS, Label, Segment, SelectorError, parse_selector};
 
 /// One outline node. Line numbers are one-based and inclusive.
@@ -131,6 +127,7 @@ impl std::error::Error for ResolveError {}
 /// original source.
 // {impl}`requirements.references.outlines`
 // {impl}`requirements.authoring.redaction`
+#[cfg(feature = "default-languages")]
 pub fn parse(path: &std::path::Path, source: &str) -> Result<Outline, OutlineError> {
     parse_redacted(
         profile_for_path(path),
@@ -154,8 +151,17 @@ pub fn parse_redacted(
     source: &str,
     redaction: &Redaction,
 ) -> Result<Outline, OutlineError> {
+    parse_grammar(profile, profile.language, source, redaction)
+}
+
+fn parse_grammar(
+    profile: &'static Profile,
+    grammar: Option<fn() -> tree_sitter::Language>,
+    source: &str,
+    redaction: &Redaction,
+) -> Result<Outline, OutlineError> {
     let lines = LineIndex::new(source);
-    let Some(language) = profile.language else {
+    let Some(language) = grammar else {
         return Ok(plain_text(profile, source, redaction, &lines));
     };
     let mut parser = Parser::new();
@@ -923,5 +929,19 @@ impl Outline {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "default-languages"))]
 mod tests;
+
+/// Parse a resolved text snapshot using an explicitly selected provider. The
+/// resource may be local, remote, or generated; spans refer to `source`.
+pub fn parse_provider(
+    provider: &'static dyn LanguageProvider,
+    source: &str,
+) -> Result<Outline, OutlineError> {
+    parse_grammar(
+        provider.profile(),
+        Some(provider.grammar()),
+        source,
+        &Redaction::of_text(source),
+    )
+}

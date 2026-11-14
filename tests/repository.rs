@@ -335,7 +335,25 @@ fn workspace_contains_frontend_and_sdk_but_not_the_vendor_fork() {
         .map(|package| package["name"].as_str().unwrap())
         .collect();
     names.sort();
-    assert_eq!(names, ["habeas", "habeas-sdk"]);
+    assert!(names.contains(&"habeas"));
+    assert!(names.contains(&"habeas-sdk"));
+    assert!(!names.contains(&"habeas-rig"));
+    for name in [
+        "habeas-language",
+        "habeas-languages",
+        "habeas-language-rust",
+        "habeas-language-python",
+        "habeas-language-markdown",
+        "habeas-language-typescript",
+        "habeas-language-css",
+        "habeas-language-toml",
+        "habeas-language-yaml",
+    ] {
+        assert!(
+            names.contains(&name),
+            "missing language workspace member {name}"
+        );
+    }
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     assert!(root.join("crates/habeas-sdk/src/lib.rs").is_file());
     let manifest = repository_toml("Cargo.toml");

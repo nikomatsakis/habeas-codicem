@@ -26,6 +26,7 @@ pub struct QueryLanguage {
 impl QueryLanguage {
     // {impl}`requirements.references.distributed`
     /// The language named by an outline profile with a grammar.
+    #[cfg(feature = "default-languages")]
     pub fn named(name: &str) -> Result<Self, String> {
         crate::outline::profile::profiles()
             .into_iter()
@@ -41,6 +42,7 @@ impl QueryLanguage {
 
     // {cite}`habeas:util`
     /// The names of the outline profiles with a grammar.
+    #[cfg(feature = "default-languages")]
     pub fn names() -> Vec<&'static str> {
         crate::outline::profile::profiles()
             .into_iter()
@@ -52,7 +54,11 @@ impl QueryLanguage {
     // {impl}`requirements.references.distributed`
     /// Whether a file is a source of this language.
     pub fn covers(&self, path: &Path) -> bool {
-        std::ptr::eq(crate::outline::profile_for_path(path), self.profile)
+        path.extension().and_then(|e| e.to_str()).is_some_and(|e| {
+            self.profile
+                .extensions
+                .contains(&e.to_ascii_lowercase().as_str())
+        })
     }
 }
 
@@ -73,11 +79,7 @@ impl Language for QueryLanguage {
     /// Grammars where `$` cannot start an identifier parse metavariables
     /// under another character, as ast-grep's own language table does.
     fn expando_char(&self) -> char {
-        match self.profile.name {
-            "rust" | "python" => 'µ',
-            "css" | "toml" => '_',
-            _ => '$',
-        }
+        self.profile.expando_char
     }
 
     // {impl}`requirements.authoring.structural_search`
@@ -129,8 +131,25 @@ pub struct StructuralRule {
 impl StructuralRule {
     /// Compiles a rule core: an object holding `rule` and optional `utils`
     /// and `constraints`, in the syntax of the pinned `ast-grep-config`.
+    #[cfg(feature = "default-languages")]
     pub fn compile(language: &str, rule: &Map<String, Value>) -> Result<Self, String> {
-        let language = QueryLanguage::named(language)?;
+        Self::compile_language(QueryLanguage::named(language)?, rule)
+    }
+
+    /// Compile using the application's provider, without a global language list.
+    pub fn compile_with(
+        provider: &'static dyn crate::outline::LanguageProvider,
+        rule: &Map<String, Value>,
+    ) -> Result<Self, String> {
+        let profile = provider.profile();
+        let grammar = provider.grammar();
+        Self::compile_language(QueryLanguage { profile, grammar }, rule)
+    }
+
+    fn compile_language(
+        language: QueryLanguage,
+        rule: &Map<String, Value>,
+    ) -> Result<Self, String> {
         for key in rule.keys() {
             if !["rule", "utils", "constraints"].contains(&key.as_str()) {
                 return Err(format!(
@@ -218,7 +237,7 @@ pub fn innermost_node(outline: &Outline, source: &str, range: &Range<usize>) -> 
     current
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "default-languages"))]
 mod tests {
     use super::*;
     use serde_json::json;

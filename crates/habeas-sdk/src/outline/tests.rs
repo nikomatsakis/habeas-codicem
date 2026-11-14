@@ -1143,3 +1143,34 @@ fn inner_and_outer_doc_comments_hash_in_separate_groups() {
         module("mod m {\n    //! one two\n    fn f() {}\n}\n")
     );
 }
+
+#[test]
+fn custom_provider_handles_generated_content_and_structural_search() {
+    use crate::language::{LanguageProvider, Profile, Registry};
+    use crate::structural::StructuralRule;
+    static CUSTOM_PROFILE: Profile = Profile {
+        name: "application-rust",
+        extensions: &["app"],
+        ..habeas_languages::rust::PROFILE
+    };
+    struct Custom;
+    impl LanguageProvider for Custom {
+        fn profile(&'static self) -> &'static Profile {
+            &CUSTOM_PROFILE
+        }
+        fn grammar(&self) -> fn() -> tree_sitter::Language {
+            habeas_languages::rust::PROFILE.language.unwrap()
+        }
+    }
+    let registry = Registry::new([&Custom as &dyn LanguageProvider]);
+    let provider = registry.for_path(Path::new("generated.app")).unwrap();
+    assert!(registry.named("rust").is_none());
+    let source = "fn answer() {}";
+    let outline = super::parse_provider(provider, source).unwrap();
+    assert!(outline.resolve("fn[answer]").is_ok());
+    let rule = serde_json::json!({"rule": {"pattern": "fn $NAME() {}"}});
+    let rule = StructuralRule::compile_with(provider, rule.as_object().unwrap()).unwrap();
+    assert_eq!(rule.matches(source), vec![0..source.len()]);
+    assert!(rule.language().covers(Path::new("generated.APP")));
+    assert!(!rule.language().covers(Path::new("other.rs")));
+}

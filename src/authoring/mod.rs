@@ -1180,7 +1180,7 @@ fn record(
 // {impl}`requirements.authoring.mandatory_inputs`
 // {impl}`requirements.ci.reference_set`
 // {impl}`requirements.ci.schema`
-async fn assess(
+async fn assess_conversation(
     provider: &impl CompletionProvider,
     sources: &mut AssessmentSources,
     usage: &mut UsageLog,
@@ -3823,4 +3823,94 @@ no_match:
             assert!(tools.contains(&"submit_verification".to_owned()));
         }
     }
+}
+
+/// The existing Habeas tool conversation implements the SDK judgment boundary.
+struct AssessmentJudge<'a, P> {
+    provider: &'a P,
+    sources: &'a mut AssessmentSources,
+    usage: &'a mut UsageLog,
+}
+
+impl<P: CompletionProvider> habeas_sdk::procedure::Judge<crate::sdk::HabeasDomain<'_>>
+    for AssessmentJudge<'_, P>
+{
+    type Request = ();
+    type Output = (Judgment, Value);
+
+    async fn judge(
+        &mut self,
+        (): (),
+        ctx: &mut habeas_sdk::graph::CheckContext<'_, crate::sdk::HabeasDomain<'_>>,
+    ) -> Result<Self::Output, io::Error> {
+        let result = assess_conversation(self.provider, self.sources, self.usage).await;
+        // Tool pagination records only delivered inputs. Import those exact
+        // snapshots, without resolving them again after the model has read them.
+        for input in self.sources.recorded_inputs() {
+            if let Some(node) = crate::inputs::InputSelector::from_input(input) {
+                ctx.observe_read(
+                    crate::sdk::HabeasNode::from(&node),
+                    crate::sdk::input_fingerprint(input),
+                );
+            }
+        }
+        if matches!(self.sources.subject_kind, AssessmentKind::Definition(..)) {
+            ctx.observe_query(
+                crate::sdk::RequirementId(self.sources.subject_name.clone()),
+                habeas_sdk::graph::Fingerprint {
+                    scheme: "habeas-reference-set-v1".into(),
+                    value: self.sources.reference_set.clone(),
+                },
+            );
+        }
+        result
+    }
+}
+
+struct Review;
+
+impl<P: CompletionProvider>
+    habeas_sdk::procedure::AuthorProcedure<crate::sdk::HabeasDomain<'_>, AssessmentJudge<'_, P>>
+    for Review
+{
+    type Request = ();
+    type Output = (Judgment, Value);
+
+    async fn run(
+        &self,
+        (): &(),
+        ctx: &mut habeas_sdk::procedure::AuthorContext<
+            '_,
+            crate::sdk::HabeasDomain<'_>,
+            AssessmentJudge<'_, P>,
+        >,
+    ) -> Result<Self::Output, io::Error> {
+        ctx.judge(()).await
+    }
+}
+
+async fn assess(
+    provider: &impl CompletionProvider,
+    sources: &mut AssessmentSources,
+    usage: &mut UsageLog,
+) -> io::Result<(Judgment, Value)> {
+    use habeas_sdk::procedure::{AuthorContext, AuthorProcedure};
+    let root = sources.root.clone();
+    let definitions = crate::evidence::load_definitions(&root)?;
+    let outlines = crate::inputs::OutlineCache::default();
+    let domain = crate::sdk::HabeasDomain {
+        root: &root,
+        definitions: &definitions,
+        outlines: &outlines,
+    };
+    let judge = AssessmentJudge {
+        provider,
+        sources,
+        usage,
+    };
+    let mut ctx = AuthorContext::new(&domain, judge);
+    let output = Review.run(&(), &mut ctx).await?;
+    let record = ctx.finish("habeas-review-v1".into(), output);
+    // The existing wire format remains consumer policy during API review.
+    Ok(record.output)
 }

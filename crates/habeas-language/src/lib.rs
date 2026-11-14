@@ -52,6 +52,8 @@ impl KindRule {
 
 /// A language's outline profile.
 pub struct Profile {
+    /// Character used to parse structural-search metavariables.
+    pub expando_char: char,
     /// Profile name, such as `rust` or `plain-text`.
     pub name: &'static str,
     /// File extensions selecting this profile, without the dot.
@@ -115,34 +117,40 @@ pub fn normalized(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// Every profile, in lookup order; the plain-text profile is the fallback.
-pub fn profiles() -> [&'static Profile; 8] {
-    [
-        &super::rust::PROFILE,
-        &super::python::PROFILE,
-        &super::typescript::PROFILE,
-        &super::typescript::TSX_PROFILE,
-        &super::css::PROFILE,
-        &super::markdown::PROFILE,
-        &super::toml::PROFILE,
-        &super::yaml::PROFILE,
-    ]
+/// A language plugin supplies its grammar and outline interpretation. Providers
+/// are process-lifetime registrations; they do not fetch or own source content.
+// ANCHOR: language-provider
+pub trait LanguageProvider: Sync {
+    fn profile(&'static self) -> &'static Profile;
+    fn grammar(&self) -> fn() -> Language;
+}
+// ANCHOR_END: language-provider
+
+/// Select providers independently of parsing. Registration order breaks ties;
+/// an application can override a default by placing its provider first.
+pub struct Registry {
+    providers: Vec<&'static dyn LanguageProvider>,
 }
 
-/// Selects the profile for a path by its extension.
-pub fn profile_for_path(path: &std::path::Path) -> &'static Profile {
-    let Some(extension) = path.extension().and_then(|extension| extension.to_str()) else {
-        return &super::plain::PROFILE;
-    };
-    let extension = extension.to_ascii_lowercase();
-    profiles()
-        .into_iter()
-        .find(|profile| profile.extensions.contains(&extension.as_str()))
-        .unwrap_or(&super::plain::PROFILE)
-}
+impl Registry {
+    pub fn new(providers: impl IntoIterator<Item = &'static dyn LanguageProvider>) -> Self {
+        Self {
+            providers: providers.into_iter().collect(),
+        }
+    }
 
-/// Whether a path is Markdown: it selects the Markdown profile, so inline
-/// roles and fences in it follow the same Markdown literal rules.
-pub fn is_markdown_path(path: &std::path::Path) -> bool {
-    profile_for_path(path).name == "markdown"
+    pub fn named(&self, name: &str) -> Option<&'static dyn LanguageProvider> {
+        self.providers
+            .iter()
+            .copied()
+            .find(|p| p.profile().name == name)
+    }
+
+    pub fn for_path(&self, path: &std::path::Path) -> Option<&'static dyn LanguageProvider> {
+        let extension = path.extension()?.to_str()?.to_ascii_lowercase();
+        self.providers
+            .iter()
+            .copied()
+            .find(|p| p.profile().extensions.contains(&extension.as_str()))
+    }
 }

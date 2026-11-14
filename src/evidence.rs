@@ -896,7 +896,7 @@ fn validate_outline_input(
         file: file.to_owned(),
         item: item.to_owned(),
     };
-    let resolved = match selector.resolve(root, definitions, outlines) {
+    let resolved = match crate::sdk::resolve_input(root, definitions, outlines, &selector) {
         Ok(resolved) => resolved,
         Err(error) => {
             errors.push(format!("{label}: {error}"));
@@ -949,7 +949,7 @@ fn validate_resolved_input(
     label: &str,
     errors: &mut Vec<String>,
 ) -> Option<ResolvedInput> {
-    let resolved = match selector.resolve(root, definitions, outlines) {
+    let resolved = match crate::sdk::resolve_input(root, definitions, outlines, &selector) {
         Ok(resolved) => resolved,
         Err(error) => {
             errors.push(format!("{label}: {error}"));

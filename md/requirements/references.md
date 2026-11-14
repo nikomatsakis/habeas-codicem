@@ -240,9 +240,14 @@ other text file MUST use a plain-text profile in which each line that is not
 blank is an anonymous outline node of kind `line`. Each supported language MUST
 have an outline profile that maps grammar node kinds to short outline kind names
 and, for each mapped kind, states whether a node is named, and by which fields
-or children, or anonymous. Only mapped kinds MUST appear in the outline; other
-nodes MUST be transparent, so their outline descendants appear under the
-nearest outline ancestor. A profile MAY attach grammar siblings to an outline
+or children, or anonymous. Only mapped kinds MUST appear in the outline, except
+that a Markdown profile MAY additionally recognize colon-fenced directive
+containers under {cite}`requirements.sdk.sources.markdown.fence_precedence`
+and expose them as outline nodes under
+{cite}`requirements.sdk.sources.markdown.fenced_blocks`. Such containers MUST
+preserve source ranges and containment, and MUST NOT be recognized within
+literal code or raw HTML. Other nodes MUST be transparent, so their outline
+descendants appear under the nearest outline ancestor. A profile MAY attach grammar siblings to an outline
 node, such as Rust attributes and doc comments preceding an item, so the outline
 tree need not match the grammar tree exactly; attached siblings are part of that
 node for its line range and hash. Every file's outline MUST have a root node
