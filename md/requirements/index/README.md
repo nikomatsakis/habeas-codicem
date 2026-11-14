@@ -5,12 +5,13 @@ An mdBook chapter MAY contain one standalone `{requirements-index}` directive wi
 :::
 
 :::{req} detail_pages
-`habeas mdbook` MUST generate one evidence detail page for every requirement and
-named example defined in a rendered chapter, whether or not the book contains a
-requirements index. Each page MUST be a subchapter nested under the chapter that
-defines it, in definition order, titled by the definition's full name, at a path
-derived from that chapter's path. Books configured by {cite}`requirements.cli.setup`
-fold these subchapters in the sidebar until a reader expands their chapter.
+When a requirements index exists, `habeas mdbook` MUST generate one evidence detail
+page for every requirement and named example defined in a rendered chapter.
+Each page MUST be a subchapter of the index chapter, in definition order,
+titled by the definition's full name, at a path derived from the index chapter's
+path. Without an index, it MUST NOT generate detail pages.
+Books configured by {cite}`requirements.cli.setup` fold these subchapters in the
+sidebar until a reader expands the index chapter.
 :::
 
 :::{req} state
@@ -22,7 +23,7 @@ Each evidence detail page MUST display its state as a Shields.io static badge im
 :::
 
 :::{req} navigation
-Each requirement and example definition badge MUST link to its evidence detail page, and each rendered requirement and example MUST be followed by a "See evidence" link to that page. Each detail page MUST link back to the definition's anchored badge and, when an index exists, to the index. Reference badges MUST continue to link to the definition. These links MUST resolve when a requirement name contains `.md`, as in `requirements.cli.mdbook`.
+Each requirement and example definition badge MUST link to its own anchored definition on the current page. When an index exists, the badge MUST have a separate adjacent link containing an accessible right-arrow icon in an integrated segment matching the badge color linking to its evidence detail page. The badge and arrow MUST remain aligned in one non-wrapping row. Without an index, the icon MUST be absent while the definition permalink remains. Definitions MUST NOT be followed by a separate plaintext evidence link. Each detail page MUST link back to the definition's anchored badge and, when an index exists, to the index. Reference badges MUST continue to link to the definition. These links MUST resolve when a requirement name contains `.md`, as in `requirements.cli.mdbook`.
 :::
 
 :::{req} source_links

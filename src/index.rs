@@ -22,7 +22,7 @@ use crate::{
 pub(crate) struct DetailPlan {
     index_path: Option<PathBuf>,
     detail_paths: BTreeMap<String, PathBuf>,
-    /// Defining chapter paths, each with its definitions in definition order.
+    /// Definitions in book order, attached to the index chapter.
     chapters: Vec<(PathBuf, Vec<String>)>,
 }
 
@@ -305,19 +305,16 @@ impl DetailPlan {
         }
         let mut detail_paths = BTreeMap::new();
         let mut chapters: Vec<(PathBuf, Vec<String>)> = Vec::new();
-        for name in order {
-            let Some(definition) = definitions.get(name) else {
-                continue;
-            };
-            let path = detail_path(&definition.path, name);
-            detail_paths.insert(name.clone(), path);
-            match chapters
-                .iter_mut()
-                .find(|(chapter, _)| *chapter == definition.path)
-            {
-                Some((_, names)) => names.push(name.clone()),
-                None => chapters.push((definition.path.clone(), vec![name.clone()])),
+        if let Some(index) = &index_path {
+            let names = order
+                .iter()
+                .filter(|name| definitions.contains_key(*name))
+                .cloned()
+                .collect::<Vec<_>>();
+            for name in &names {
+                detail_paths.insert(name.clone(), detail_path(index, name));
             }
+            chapters.push((index.clone(), names));
         }
         let existing_paths = book
             .chapters()
@@ -459,7 +456,7 @@ impl DetailPlan {
             return Err(invalid_index("the requirements index chapter disappeared"));
         }
         if chapters_found != self.chapters.len() {
-            return Err(invalid_index("a defining chapter disappeared"));
+            return Err(invalid_index("the requirements index chapter disappeared"));
         }
         Ok(())
     }
@@ -1130,7 +1127,7 @@ mod tests {
 
         let definition = book.chapters().next().unwrap();
         assert!(definition.content.contains(
-            "id=\"habeas-req-requirements.core.ready\" href=\"core/requirements.core.ready.html\""
+            "id=\"habeas-req-requirements.core.ready\" href=\"#habeas-req-requirements.core.ready\""
         ));
         let index = book
             .chapters()
@@ -1145,7 +1142,7 @@ mod tests {
             ("uncovered", "Invalid"),
         ] {
             let link = format!(
-                "| [`requirements.core.{name}`](../requirements/core/requirements.core.{name}.html)"
+                "| [`requirements.core.{name}`](requirements-index/requirements.core.{name}.html)"
             );
             let row = index
                 .content
@@ -1179,9 +1176,9 @@ mod tests {
                 .unwrap();
             assert_eq!(pipes[column + 1] - pipes[column] - 3, widest);
         }
-        assert!(index.sub_items.is_empty());
-        assert_eq!(definition.sub_items.len(), 5);
-        let ready = definition
+        assert!(definition.sub_items.is_empty());
+        assert_eq!(index.sub_items.len(), 5);
+        let ready = index
             .sub_items
             .iter()
             .find_map(|item| match item {
@@ -1197,20 +1194,22 @@ mod tests {
         );
         assert_eq!(
             ready.number.as_deref().map(Vec::as_slice),
-            Some(&[3, 1][..])
+            Some(&[4, 1][..])
         );
         assert_eq!(
             ready.path.as_deref(),
-            Some(Path::new("requirements/core/requirements.core.ready.md"))
+            Some(Path::new(
+                "appendix/requirements-index/requirements.core.ready.md"
+            ))
         );
+        assert!(ready.content.contains(
+            "[View definition](../../requirements/core.html#habeas-req-requirements.core.ready)"
+        ));
         assert!(
             ready
                 .content
-                .contains("[View definition](../core.html#habeas-req-requirements.core.ready)")
+                .contains("[Requirements index](../requirements-index.html) · [View definition]")
         );
-        assert!(ready.content.contains(
-            "[Requirements index](../../appendix/requirements-index.html) · [View definition]"
-        ));
         assert!(
             ready
                 .content
@@ -1218,7 +1217,7 @@ mod tests {
         );
         assert!(ready.content.contains("> Ready MUST work."));
         assert!(!ready.content.contains("## Evidence record"));
-        let changed = definition
+        let changed = index
             .sub_items
             .iter()
             .find_map(|item| match item {
@@ -1229,7 +1228,7 @@ mod tests {
             })
             .unwrap();
         assert!(changed.content.contains("requirement text changed"));
-        let absent = definition
+        let absent = index
             .sub_items
             .iter()
             .find_map(|item| match item {
@@ -1610,7 +1609,7 @@ mod tests {
         book.push_item(Chapter::new(
             "Existing",
             String::new(),
-            "requirements/requirements.ready.md",
+            "requirements-index/requirements.ready.md",
             Vec::new(),
         ));
         let definitions = BTreeMap::from([(
@@ -1760,7 +1759,6 @@ mod tests {
             .chapters()
             .find(|chapter| chapter.name == "Index")
             .unwrap();
-        let rules = book.chapters().next().unwrap();
         for (name, state) in [
             ("false_clean", "Determination false"),
             ("false_stale", "Invalid"),
@@ -1769,14 +1767,14 @@ mod tests {
             ("fixme_clean", "FIXME"),
             ("fixme_stale", "Invalid"),
         ] {
-            let link = format!("| [`rules.{name}`](rules/rules.{name}.html)");
+            let link = format!("| [`rules.{name}`](requirements-index/rules.{name}.html)");
             let row = index
                 .content
                 .lines()
                 .find(|line| line.starts_with(&link))
                 .unwrap_or_else(|| panic!("missing {link} in:\n{}", index.content));
             assert_eq!(row.split('|').nth(2).unwrap().trim(), state, "{row}");
-            let page = rules
+            let page = index
                 .sub_items
                 .iter()
                 .find_map(|item| match item {
@@ -1864,7 +1862,6 @@ mod tests {
             .chapters()
             .find(|chapter| chapter.name == "Index")
             .unwrap();
-        let rules = book.chapters().next().unwrap();
         for (name, state) in [
             ("valid", "Valid"),
             ("pending", "Determination false"),
@@ -1872,14 +1869,15 @@ mod tests {
             ("changed", "Invalid"),
             ("missing", "Missing"),
         ] {
-            let link = format!("| [`rules.{name}`](rules/rules.{name}.html) (example)");
+            let link =
+                format!("| [`rules.{name}`](requirements-index/rules.{name}.html) (example)");
             let row = index
                 .content
                 .lines()
                 .find(|line| line.starts_with(&link))
                 .unwrap_or_else(|| panic!("missing {link} in:\n{}", index.content));
             assert_eq!(row.split('|').nth(2).unwrap().trim(), state, "{row}");
-            let page = rules
+            let page = index
                 .sub_items
                 .iter()
                 .find_map(|item| match item {
@@ -1936,11 +1934,9 @@ mod tests {
         preprocess_book(&mut book, temp.path()).unwrap();
 
         let rules = book.chapters().next().unwrap();
-        assert!(
-            rules
-                .content
-                .contains("id=\"habeas-example-rules.pending\" href=\"rules/rules.pending.html\"")
-        );
+        assert!(rules.content.contains(
+            "id=\"habeas-example-rules.pending\" href=\"#habeas-example-rules.pending\""
+        ));
         let index = book
             .chapters()
             .find(|chapter| chapter.name == "Index")
@@ -1948,22 +1944,22 @@ mod tests {
         assert!(
             index
                 .content
-                .contains("| [`rules.pending`](rules/rules.pending.html) (example)")
+                .contains("| [`rules.pending`](requirements-index/rules.pending.html) (example)")
         );
         assert!(
             index
                 .content
-                .contains("| [`rules.missing`](rules/rules.missing.html) (example)")
+                .contains("| [`rules.missing`](requirements-index/rules.missing.html) (example)")
         );
         // The requirement's row is identified as one too.
         assert!(
             index
                 .content
-                .contains("| [`rules.ready`](rules/rules.ready.html) (requirement)"),
+                .contains("| [`rules.ready`](requirements-index/rules.ready.html) (requirement)"),
             "{}",
             index.content
         );
-        let pending = rules
+        let pending = index
             .sub_items
             .iter()
             .find_map(|item| match item {
@@ -1979,7 +1975,7 @@ mod tests {
         );
         assert!(pending.content.contains("The case still needs a test."));
 
-        let missing = rules
+        let missing = index
             .sub_items
             .iter()
             .find_map(|item| match item {
@@ -2037,6 +2033,12 @@ mod tests {
 
         let mut book = Book::new();
         book.push_item(Chapter::new("Rules", source, "rules.md", Vec::new()));
+        book.push_item(Chapter::new(
+            "Index",
+            ":::{requirements-index}\n:::\n".into(),
+            "requirements-index.md",
+            Vec::new(),
+        ));
         preprocess_book(&mut book, root).unwrap();
         let page = book
             .chapters()
@@ -2078,7 +2080,7 @@ mod tests {
         );
         assert_eq!(content.matches("</details>").count(), 11);
         assert!(content.contains("<code>requirements selection rules.base</code>"));
-        assert!(!content.contains("Requirements index"));
+        assert!(content.contains("[Requirements index](../requirements-index.html)"));
     }
 
     // {test}`requirements.index.detail_format`
@@ -2120,6 +2122,12 @@ mod tests {
 
         let mut book = Book::new();
         book.push_item(Chapter::new("Rules", source, "rules.md", Vec::new()));
+        book.push_item(Chapter::new(
+            "Index",
+            ":::{requirements-index}\n:::\n".into(),
+            "requirements-index.md",
+            Vec::new(),
+        ));
         preprocess_book(&mut book, root).unwrap();
         let page = book
             .chapters()

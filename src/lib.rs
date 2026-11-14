@@ -329,37 +329,27 @@ fn replace_definitions(
             cursor = block.end;
             continue;
         }
-        let badge = shield_badge(
-            block.kind.badge(),
-            &full_name,
-            if block.kind == DefinitionKind::Example {
-                "5b62a8"
-            } else {
-                "006ba8"
-            },
-        );
+        let color = if block.kind == DefinitionKind::Example {
+            "5b62a8"
+        } else {
+            "006ba8"
+        };
+        let badge = shield_badge(block.kind.badge(), &full_name, color);
         let detail_href = current_path
             .zip(plan)
             .and_then(|(current, plan)| plan.detail_path(&full_name).map(|path| (current, path)))
             .map(|(current, path)| escape_html(&chapter_href(current, path, None)));
-        let tag = if detail_href.is_some() { "a" } else { "span" };
-        result.push('<');
-        result.push_str(tag);
-        result.push_str(" class=\"habeas-req-badge\" id=\"habeas-");
-        result.push_str(block.kind.badge());
-        result.push('-');
-        result.push_str(&escaped_name);
-        result.push('"');
+        let anchor = format!("habeas-{}-{escaped_name}", block.kind.badge());
+        let permalink = format!("#{anchor}").replace(".md", "%2Emd");
+        result.push_str(&format!(
+            "<span class=\"habeas-definition-badge\"><a class=\"habeas-req-badge\" id=\"{anchor}\" href=\"{permalink}\" title=\"Link to this definition\">{badge}</a>"
+        ));
         if let Some(href) = &detail_href {
-            result.push_str(" href=\"");
-            result.push_str(href);
-            result.push('"');
+            result.push_str(&format!(
+                "<a class=\"habeas-detail-icon\" href=\"{href}\" style=\"background-color: #{color}\" title=\"View evidence\" aria-label=\"View evidence for {escaped_name}\"><svg width=\"14\" height=\"14\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"#fff\" stroke-width=\"1.5\" aria-hidden=\"true\" focusable=\"false\"><path d=\"M3 8h10M8 3l5 5-5 5\"/></svg></a>"
+            ));
         }
-        result.push('>');
-        result.push_str(&badge);
-        result.push_str("</");
-        result.push_str(tag);
-        result.push_str(">\n\n");
+        result.push_str("</span>\n\n");
         // Option lines such as anchors are metadata, not body text.
         let body = &content[block.text_start..block.body_end];
         let body = if block.kind == DefinitionKind::Requirement {
@@ -368,11 +358,6 @@ fn replace_definitions(
             body.to_owned()
         };
         result.push_str(&replace_definitions(&body, namespace, current_path, plan));
-        if let Some(href) = &detail_href {
-            result.push_str("\n<p class=\"habeas-see-evidence\"><a href=\"");
-            result.push_str(href);
-            result.push_str("\">See evidence</a></p>\n");
-        }
         result.push('\n');
         cursor = block.end;
     }
@@ -960,7 +945,7 @@ mod tests {
             "{rendered}"
         );
         // The outer requirement still contains it and closes at its own fence.
-        assert!(rendered.contains("See evidence"), "{rendered}");
+        assert!(!rendered.contains("See evidence"), "{rendered}");
 
         // A built-in has no link; its hover text is its full text.
         let util = crate::builtins::builtin("habeas:util").unwrap();
@@ -1054,7 +1039,7 @@ mod tests {
     // {test}`requirements.examples.index`
     // {test}`requirements.references.anchors`
     #[test]
-    fn every_definition_gets_a_nested_detail_page_without_an_index() {
+    fn definitions_without_an_index_have_no_detail_pages() {
         let mut book = Book::new();
         let mut chapter = Chapter::new(
             "Rules",
@@ -1082,54 +1067,95 @@ mod tests {
                 _ => None,
             })
             .collect::<Vec<_>>();
-        // Definition order, after existing subchapters, titled by full name.
+        assert_eq!(pages.len(), 1);
+        assert_eq!(pages[0].name, "Child");
+        assert_eq!(book.chapters().count(), 2);
+        assert!(!rules.content.contains("habeas-detail-icon"));
+        assert!(!rules.content.contains("See evidence"));
+        assert!(!rules.content.contains("notes.txt"));
+        for (kind, name) in [("req", "zeta"), ("example", "alpha"), ("req", "cli.mdbook")] {
+            assert!(rules.content.contains(&format!(
+                "id=\"habeas-{kind}-rules.{name}\" href=\"#habeas-{kind}-rules.{}\"",
+                name.replace(".md", "%2Emd")
+            )));
+        }
+    }
+
+    // {test}`requirements.index.detail_pages`
+    // {test}`requirements.index.navigation`
+    #[test]
+    fn index_owns_details_in_book_order_with_badge_icons() {
+        let mut book = Book::new();
+        book.push_item(Chapter::new(
+            "Rules",
+            ":::{req} zeta\nZeta.\n:::\n".into(),
+            "rules.md",
+            vec![],
+        ));
+        book.push_item(Chapter::new(
+            "More",
+            ":::{example} cli.mdbook\nExample.\n:::\n".into(),
+            "more.md",
+            vec![],
+        ));
+        let mut index = Chapter::new(
+            "Index",
+            ":::{requirements-index}\n:::\n".into(),
+            "appendix/index.md",
+            vec![],
+        );
+        index.number = Some(mdbook_preprocessor::book::SectionNumber::new(vec![3]));
+        let mut child = Chapter::new(
+            "Existing",
+            "Existing.".into(),
+            "appendix/existing.md",
+            vec!["Index".into()],
+        );
+        child.number = Some(mdbook_preprocessor::book::SectionNumber::new(vec![3, 1]));
+        index.sub_items.push(BookItem::Chapter(child));
+        book.push_item(index);
+        let root = book_root();
+        preprocess_book(&mut book, root.path()).unwrap();
+        let chapters = book.chapters().collect::<Vec<_>>();
+        for chapter in &chapters[..2] {
+            assert!(chapter.sub_items.is_empty());
+            assert!(
+                chapter
+                    .content
+                    .contains("title=\"View evidence\" aria-label=\"View evidence for ")
+            );
+            assert!(chapter.content.contains("stroke=\"#fff\""));
+            assert!(!chapter.content.contains("See evidence"));
+        }
+        assert!(
+            chapters[1]
+                .content
+                .contains("href=\"appendix/index/more.cli%2Emdbook.html\"")
+        );
+        let pages = chapters[2]
+            .sub_items
+            .iter()
+            .filter_map(|item| match item {
+                BookItem::Chapter(chapter) => Some(chapter),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
         assert_eq!(
             pages
                 .iter()
                 .map(|page| page.name.as_str())
                 .collect::<Vec<_>>(),
-            ["Child", "rules.zeta", "rules.alpha", "rules.cli.mdbook"]
+            ["Existing", "rules.zeta", "more.cli.mdbook"]
         );
-        assert_eq!(
-            pages[1].path.as_deref(),
-            Some(Path::new("rules/rules.zeta.md"))
-        );
-        assert_eq!(pages[1].parent_names, ["Rules"]);
+        assert_eq!(pages[2].parent_names, ["Index"]);
         assert_eq!(
             pages[2].number.as_deref().map(Vec::as_slice),
-            Some(&[2, 2][..])
+            Some(&[3, 3][..])
         );
-        for (kind, name) in [("req", "zeta"), ("example", "alpha"), ("req", "cli.mdbook")] {
-            let href = format!("rules/rules.{name}.html").replace(".md", "%2Emd");
-            assert!(
-                rules.content.contains(&format!(
-                    "id=\"habeas-{kind}-rules.{name}\" href=\"{href}\""
-                )),
-                "{}",
-                rules.content
-            );
-            assert!(
-                rules.content.contains(&format!(
-                    "<p class=\"habeas-see-evidence\"><a href=\"{href}\">See evidence</a></p>"
-                )),
-                "{}",
-                rules.content
-            );
-        }
-        assert_eq!(rules.content.matches("See evidence").count(), 3);
-        assert!(!rules.content.contains("notes.txt"));
-        assert!(pages[1].content.contains("> Zeta.\n"));
-        assert!(!pages[1].content.contains(":impl:"));
         assert!(
-            pages[1]
+            pages[2]
                 .content
-                .contains("[View definition](../rules.html#habeas-req-rules.zeta)")
-        );
-        assert!(!pages[1].content.contains("Requirements index"));
-        assert!(
-            pages[3]
-                .content
-                .contains("[View definition](../rules.html#habeas-req-rules.cli%2Emdbook)")
+                .contains("[View definition](../../more.html#habeas-example-more.cli%2Emdbook)")
         );
     }
 
@@ -1361,6 +1387,11 @@ mod tests {
             declarations("a.habeas-req-badge")
         );
         assert!(declarations("a.habeas-req-badge").contains(&"color: inherit"));
+        assert_eq!(
+            declarations("a.habeas-detail-icon:link"),
+            declarations("a.habeas-detail-icon:visited")
+        );
+        assert!(declarations("a.habeas-detail-icon:link").contains(&"color: white"));
         // Keyboard focus shows an outline.
         let focus = declarations("a.habeas-req-badge:focus-visible");
         assert!(
@@ -1381,6 +1412,14 @@ mod tests {
         let specified = [
             ".habeas-req-badge",
             ".habeas-shield",
+            ".habeas-definition-badge",
+            ".habeas-definition-badge > a",
+            "a.habeas-detail-icon",
+            "a.habeas-detail-icon:link",
+            "a.habeas-detail-icon:visited",
+            "a.habeas-detail-icon:hover",
+            "a.habeas-detail-icon:focus-visible",
+            ".habeas-req-badge img.habeas-shield",
             "a.habeas-req-badge",
             "a.habeas-req-badge:visited",
             "a.habeas-req-badge:hover",
