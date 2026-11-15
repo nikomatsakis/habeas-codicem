@@ -151,3 +151,59 @@ it does not infer billing or free-usage allowance. Only one gap needed Sol, so
 this is not a general estimate of escalation cost. Live known-FIXME cases and
 repeat runs remain to be added; mock tests establish routing behavior, not model
 judgment quality.
+
+## Repeating mini's positive judgments
+
+`results/mini-repeat-2026-11-15.json` records two fresh mini assessments of each
+of the three missed gaps and their paired fixed snapshots, with unchanged
+prompt and options. All twelve completed in 420 seconds, and every judgment
+matched the original run: all six gap assessments returned true, as did all
+six fixed assessments. Each missed gap therefore received three incorrect
+positive judgments across the original run and these repeats.
+
+Requiring two positive mini assessments would still accept all three gaps in
+this experiment. Fresh conversations do not eliminate shared blind spots from
+the same model and prompt. No extra mini-confirmation stage was added to the
+adaptive implementation based on these results. Usage and reviewed rationales
+are retained in the report; this selected six-case sample is not a general
+estimate of repeatability.
+
+## Gap-seeking wording experiment
+
+`results/gap-seeking-pilot-2026-11-15.json` repeats those six cases twice with
+only the initial review wording changed. The exact old/new text and base commit
+are retained in `prompt_change`; replace that text in the named file and rebuild
+to reproduce the variant. The experiment used a separate executable, and the
+production template was restored. No decision-label or routing change was made.
+
+The new opening asks “What gaps can you find, if any” and instructs the model
+to seek concrete counterexamples, inspect actual assertions and example setup,
+and check reference markers separately. All twelve assessments completed in
+433 seconds with the same mini settings.
+
+- Both pagination-gap runs identify the real reserve-band bug. One returns
+  `false`; the other incorrectly uses `FIXME` without any acknowledgment.
+- Both runs still miss each of the other two gaps.
+- Both repaired-pagination runs incorrectly claim note/final-token assertions
+  are absent. The shared `all_pages` helper contains those assertions and is
+  called by the cited tests. Both also misuse `FIXME`.
+- The repaired live-test case is accepted once and challenged once for missing
+  a separate post-credential authoring-failure test. The latter interpretation
+  needs adjudication; the existing provider-failure test exercises the same
+  authoring failure/status path. The raw label mismatch is retained separately
+  from rationale review.
+- Both repaired deletion-example runs pass.
+
+Thus the wording found one gap category consistently but introduced false
+findings; it did not establish a reliable acceptance policy. Simulated two-mini
+acceptance still misses two of three gaps and escalates two of three fixed
+pairs. No Sol follow-up was run for this variant. These are development cases
+used to inform the prompt, not held-out validation.
+
+A next experiment should separate gap detection from acknowledgment using
+explicit model-facing outcomes such as `satisfied`, `unacknowledged_gap`, and
+`acknowledged_gap`, with validated acknowledgment references. The conventional
+meaning of FIXME (“fix this”) may conflict with its current domain meaning
+(“an existing acknowledgment covers this gap”); that is a hypothesis, not a
+proven cause. The harness could translate explicit outcomes to the existing
+stored evidence format. Evaluate that change separately from prompt wording.
