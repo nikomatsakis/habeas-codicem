@@ -152,13 +152,14 @@ fn retry_after(error: &ProviderError, now: SystemTime) -> Option<Duration> {
 }
 
 // :::{impl} requirements.authoring.provider
-// Holds one backend-erased Rig model, so Bedrock and Ollama share this provider
-// type; `bedrock` and `options` are the only backend-specific state.
+// Holds one backend-erased Rig model, so all backends share this provider
+// type; the flags and `options` hold backend-specific behavior.
 // :::
 pub(super) struct RigProvider {
     model: DynModel<Completion>,
     options: serde_json::Value,
     bedrock: bool,
+    openai: bool,
     /// Whether the model takes prompt-cache checkpoints.
     caches: bool,
 }
@@ -173,6 +174,14 @@ impl RigProvider {
                 let sdk = aws_sdk_bedrockruntime::Client::new(&bedrock_sdk_config(config).await);
                 rig_bedrock::client::BedrockRuntime::from(sdk)
                     .completion(&config.model)
+                    .erase()
+            }
+            BackendConfig::Openai(config) => {
+                let key = config.api_key()?;
+                rig_core::providers::openai::OpenAIConfig::new(key)
+                    .with_base_url(config.endpoint())
+                    .client()
+                    .responses(config.model())
                     .erase()
             }
             BackendConfig::Ollama(config) => {
@@ -190,10 +199,11 @@ impl RigProvider {
             model,
             options: config.options_json()?,
             bedrock: matches!(config, BackendConfig::Bedrock(_)),
+            openai: matches!(config, BackendConfig::Openai(_)),
             caches: match config {
                 BackendConfig::Bedrock(config) => bedrock_caches(&config.model),
-                // Ollama has no prompt-cache checkpoints.
-                BackendConfig::Ollama(_) => false,
+                // Ollama has no checkpoints; OpenAI manages prompt caching.
+                BackendConfig::Ollama(_) | BackendConfig::Openai(_) => false,
             },
         })
     }
@@ -263,7 +273,8 @@ impl CompletionProvider for RigProvider {
     }
 
     /// Bedrock's configured `maxTokens` or the default; Ollama's
-    /// `num_predict` when it sets a positive limit.
+    /// `num_predict` when it sets a positive limit; OpenAI's
+    /// `max_output_tokens` when configured.
     // {cite}`habeas:util`
     fn output_limit(&self) -> Option<u64> {
         if self.bedrock {
@@ -273,6 +284,10 @@ impl CompletionProvider for RigProvider {
                     .and_then(Value::as_u64)
                     .unwrap_or(DEFAULT_BEDROCK_MAX_TOKENS),
             )
+        } else if self.openai {
+            self.options
+                .get("max_output_tokens")
+                .and_then(Value::as_u64)
         } else {
             self.options
                 .get("num_predict")
@@ -323,7 +338,7 @@ fn normalize_bedrock_client_calls(response: &mut CompletionResponse) -> io::Resu
 /// budget, so Rig's budget-below-`max_tokens` check is not reached.
 const DEFAULT_BEDROCK_MAX_TOKENS: u64 = 16_384;
 
-// {cite}`habeas:util`
+// {impl}`requirements.authoring.output_limit`
 fn apply_bedrock_options(
     request: &mut CompletionRequest,
     options: &mut Map<String, Value>,

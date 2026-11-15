@@ -17,6 +17,7 @@ for the single-subject command.
 :::
 
 :::{req} batch
+:impl: assets/skills/habeas/SKILL.md
 :impl: assets/skills/habeas-requirements/SKILL.md
 :impl: assets/skills/habeas-evidence/SKILL.md
 :impl: assets/skills/habeas-bootstrap-requirements/SKILL.md
@@ -1256,7 +1257,7 @@ inputs.
 ## Configuration
 
 :::{req} provider
-The authoring harness MUST use Rig and support Bedrock and Ollama. Users MUST be
+The authoring harness MUST use Rig and support Bedrock, Ollama, and OpenAI. Users MUST be
 able to select a backend and model through configuration without changing the
 assessment tools, prompt, or evidence format.
 :::
@@ -1285,6 +1286,7 @@ The shared `UserConfig.authoring` field contains `UserAuthoringConfig`.
 `Optional<T>` means a field may be absent; `Map<K, V>` is a table keyed by `K`.
 
 :::{req} configuration_structure
+{impl}`requirements.configuration.feature_sections`
 Habeas MUST define its authoring configuration using these data structures:
 
 ```text
@@ -1311,7 +1313,7 @@ AuthoringConfig {
 
 AssessmentPolicy = Confirm | Once             // TOML: "confirm" or "once"
 
-BackendConfig = Bedrock(BedrockConfig) | Ollama(OllamaConfig)
+BackendConfig = Bedrock(BedrockConfig) | Ollama(OllamaConfig) | Openai(OpenAiConfig)
 
 BedrockConfig {
     model: ModelId,                           // model ID or inference-profile ID/ARN
@@ -1335,13 +1337,21 @@ OllamaConfig {
     options: Map<String, OptionValue>,
 }
 
+OpenAiConfig {
+    model: Optional<ModelId>,                 // default: gpt-6.1-sol
+    endpoint: Optional<String>,               // default: https://api.openai.com/v1
+    api_key_env: Optional<EnvironmentVariableName>, // default: OPENAI_API_KEY
+    api_key: Optional<SecretString>,
+    options: Map<String, OptionValue>,
+}
+
 OptionValue = String | Boolean | Integer | FiniteFloat
             | Array<OptionValue> | Map<String, OptionValue>
 
 SecretString = String                         // serialized normally; redacted in Debug
 
 ModelRef {
-    backend: BackendKind,                     // Bedrock or Ollama
+    backend: BackendKind,                     // Bedrock, Ollama, or Openai
     model: ModelId,
 }
 ```
@@ -1352,10 +1362,11 @@ connection settings such as AWS profile, region, or Ollama endpoint.
 :::
 
 :::{req} configuration_serialization
+{impl}`requirements.configuration.feature_sections`
 The user `[authoring]` table MUST serialize UserAuthoringConfig, and the workspace
 table MUST serialize WorkspaceAuthoringConfig. Each
 `[authoring.configs.<name>]` table MUST serialize one AuthoringConfig, with
-`backend = "bedrock"` or `backend = "ollama"` and that variant's fields in the same
+`backend = "bedrock"`, `backend = "ollama"`, or `backend = "openai"` and that variant's fields in the same
 table. Backend-specific inference options MUST appear in its `options` subtable.
 Within a present user authoring section, `configs` MUST be present but MAY be empty;
 workspace `configs` MAY be omitted, allowing a workspace default to select a
@@ -1363,6 +1374,18 @@ named user configuration.
 omitted `projects` and `options` tables MUST deserialize as empty maps.
 Serialization MUST follow the common rules in
 {cite}`requirements.configuration.serialization`.
+:::
+
+:::{req} openai_defaults
+{impl}`requirements.configuration.feature_sections`
+An OpenAI configuration MAY omit `model`; the effective model MUST then be
+`gpt-6.1-sol`. When `options.reasoning.effort` is omitted, the request MUST use
+`low` effort, preserving other reasoning options. When `options.max_output_tokens`
+is omitted, the request MUST use an output-token limit of 16,384. These option
+defaults MUST apply even when the model is overridden. An explicit model,
+reasoning effort, or output-token limit MUST override its corresponding default.
+Defaults MUST NOT be written into omitted configuration fields on serialization.
+An explicitly empty model MUST still be rejected.
 :::
 
 :::{req} policy
@@ -1381,8 +1404,8 @@ the policy used, and each usage record MUST identify it.
 Each named authoring configuration MUST accept an optional positive integer
 `concurrency` in its configuration table. When omitted, the maximum number of
 simultaneous assessments MUST default to the number of available logical CPUs
-for Bedrock, falling back to one when that count is unavailable, and to one for
-Ollama. A configured value MUST override the default for either backend; zero
+for Bedrock and OpenAI, falling back to one when that count is unavailable, and to one for
+Ollama. A configured value MUST override the default for each backend; zero
 MUST be rejected as invalid configuration.
 
 Batch authoring MUST use asynchronous tasks on a runtime with a fixed worker
@@ -1395,6 +1418,7 @@ be reported through the ordinary assessment-failure path.
 :::
 
 :::{req} configuration_storage
+{impl}`requirements.configuration.feature_sections`
 Configuration names MUST match `[A-Za-z0-9][A-Za-z0-9_-]*` and be case-sensitive.
 Project-selection keys MUST be canonical absolute project-root paths. Model IDs
 MUST be nonempty opaque strings, preserving tags and ARNs. `api_key_env` MUST
@@ -1408,6 +1432,7 @@ replace the selected model, the assessment prompt, or tool definitions.
 :::
 
 :::{req} configuration_precedence
+{impl}`requirements.configuration.feature_sections`
 `--config <name>` MUST select a configuration for that invocation. Otherwise,
 authoring MUST use the user's selection for the canonical project root, then the
 workspace default, then the user's default. Named workspace configurations MUST
@@ -1421,7 +1446,9 @@ An explicit Bedrock AWS profile or region MUST override the corresponding SDK
 default; omitted values MUST use standard AWS SDK resolution. Ollama MUST use
 its configured endpoint or `http://localhost:11434`. If `api_key_env` is set, its
 named variable MUST supply the credential; a missing or empty value MUST produce
-an error before a model request.
+an error before a model request. OpenAI MUST use its configured endpoint or
+`https://api.openai.com/v1`, and MUST resolve `OPENAI_API_KEY` when neither
+`api_key` nor `api_key_env` is supplied.
 :::
 
 :::{req} redaction
@@ -1451,8 +1478,8 @@ it MAY change redaction and hashes and MUST be treated as a deliberate change.
 :::{req} credentials
 Bedrock configurations MAY supply `credentials` containing nonempty
 `access_key_id`, `secret_access_key`, and optional nonempty `session_token`.
-Ollama configurations MAY supply a nonempty `api_key`. Habeas MUST reject a
-Bedrock record combining explicit credentials with `aws_profile`, and an Ollama
+Ollama and OpenAI configurations MAY supply a nonempty `api_key`. Habeas MUST reject a
+Bedrock record combining explicit credentials with `aws_profile`, and an Ollama or OpenAI
 record combining `api_key` with `api_key_env`.
 
 Explicit credentials MUST be passed directly to the selected provider without
@@ -1532,7 +1559,8 @@ connection settings they do not represent.
 
 The Bedrock adapter MUST pass the chosen AWS profile and region through AWS SDK
 configuration, or use explicitly configured credentials. The Ollama adapter MUST use the chosen server, exact model ID,
-and optional authentication; the server MAY be local or remote. Both adapters
+and optional authentication; the server MAY be local or remote. The OpenAI adapter MUST use the Responses API, selected endpoint, exact model
+ID, and resolved API key. All adapters
 MUST supply the same tools and initial prompt.
 :::
 
@@ -1540,7 +1568,7 @@ MUST supply the same tools and initial prompt.
 
 :::{req} configuration_documentation
 Authoring documentation MUST follow {cite}`requirements.configuration.documentation`
-and include complete TOML examples for Bedrock and Ollama, with all placeholders
+and include complete TOML examples for Bedrock, Ollama, and OpenAI, with all placeholders
 identified. It MUST show how to choose a default, use a remote Ollama server,
 select a configuration for a project or invocation, and edit or remove selections
 by hand. It MUST explain backend-specific options and credential-source references.
@@ -1665,7 +1693,7 @@ concurrency = 4
 ```
 
 Here `MODEL_ID` is your available model identifier and four is an illustrative
-choice, not the default. Bedrock defaults to the available logical CPU count;
+choice, not the default. Bedrock and OpenAI default to the available logical CPU count;
 Ollama defaults to one. Lower concurrency if the provider reports throttling;
 rerunning `habeas author --all` preserves current accepted results and retries
 records that still need attention.
@@ -1675,6 +1703,50 @@ Backend options belong under
 `api_key_env = "OLLAMA_API_KEY"` in its configuration table and set that variable
 outside the file. Omit `aws_profile` or `region` to use AWS SDK defaults; omit an
 Ollama endpoint to use localhost.
+
+For OpenAI, set `OPENAI_API_KEY` to your API key outside the file and use this
+complete user `config.toml` with a credential-source reference. The default
+model is Sol (`gpt-6.1-sol`) with low reasoning effort, also called “Sol-low”,
+and an output-token limit of 16,384.
+This is a model-and-effort combination, not an API model ID.
+
+```toml
+version = 1
+
+[authoring]
+default = "openai"
+
+[authoring.configs.openai]
+backend = "openai"
+api_key_env = "OPENAI_API_KEY"
+```
+
+You may omit `api_key_env` to use `OPENAI_API_KEY` implicitly, or name a different
+environment variable. To keep the key in your user file instead, replace
+`api_key_env` with `api_key = "OPENAI_API_KEY_VALUE"`, substituting your key for
+`OPENAI_API_KEY_VALUE`. OpenAI uses
+the Responses API at `https://api.openai.com/v1`; `endpoint` overrides that base URL.
+
+To override the defaults, add `model = "gpt-6-luna"` to the profile and/or
+`reasoning = { effort = "medium" }` under its `options` table. Set
+`max_output_tokens = 8192` in that same options table to override the output
+limit. The `low` effort and 16,384-token defaults also apply to other OpenAI
+models; override them with values supported by the selected model. Inference
+options are Responses API parameters.
+
+`policy = "once"` runs a single assessment conversation per subject. If omitted,
+`confirm` independently reassesses true or FIXME results and uses a third
+conversation to resolve disagreement. `concurrency = 1` assesses batch subjects
+one at a time; if omitted, OpenAI defaults to the available logical CPU count.
+These settings are optional and independent of model selection.
+
+For a model comparison, create one named configuration per model, keep the
+policy, output limit, and subject set fixed, and run each on a separate copy
+of the same evidence baseline. Existing accepted evidence can otherwise skip
+assessment. Compare correctness against your reviewed determinations and
+rationales, tool failures, completion rate, elapsed time, and tokens in the
+usage records. Start with one concurrent assessment and a small subject set
+before increasing the experiment size. Specify each comparison model explicitly.
 
 Literal credentials are supported but not recommended, especially in a
 workspace file that might be committed. Prefer the profile and environment

@@ -122,6 +122,9 @@ fn serve(
     behavior: Behavior,
     stop: Arc<AtomicBool>,
 ) {
+    // Accepted sockets can inherit the listener's nonblocking mode (macOS).
+    // This worker uses blocking reads; the timeout must govern incomplete requests.
+    stream.set_nonblocking(false).unwrap();
     stream
         .set_read_timeout(Some(Duration::from_secs(10)))
         .unwrap();
@@ -1618,6 +1621,7 @@ fn batch_authors_citation_reviews_and_preserves_current_ones() {
 }
 
 // {test}`requirements.authoring.confirmation`
+// {test}`requirements.authoring.usage_storage`
 #[test]
 fn confirm_runs_a_second_assessment_with_its_own_usage_record() {
     let server = Server::start(false, None);
@@ -2210,4 +2214,32 @@ fn a_failed_first_request_still_releases_its_kind() {
         .collect::<Vec<_>>();
     assert_eq!(others.len(), 3);
     assert!(others.iter().all(|(_, arrived, _)| *arrived < retry.1));
+}
+
+// {cite}`habeas:util`
+#[test]
+fn mock_server_waits_for_remaining_request_headers() {
+    let server = Server::start(false, None);
+    let mut client = TcpStream::connect(server.endpoint.trim_start_matches("http://")).unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_millis(100)))
+        .unwrap();
+    client.write_all(b"POST /api/chat HTTP/1.1\r\n").unwrap();
+    // No response or EOF may arrive while the request is still incomplete.
+    let error = client.read(&mut [0]).unwrap_err();
+    assert!(matches!(
+        error.kind(),
+        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+    ));
+    let body =
+        json!({"messages":[{"role":"user","content":"Subject: requirement requirements.alpha"}]})
+            .to_string();
+    write!(client, "Content-Length: {}\r\n\r\n{body}", body.len()).unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let mut response = String::new();
+    client.read_to_string(&mut response).unwrap();
+    assert!(response.starts_with("HTTP/1.1 200 OK\r\n"), "{response}");
+    assert_eq!(server.subjects(), ["requirement requirements.alpha"]);
 }

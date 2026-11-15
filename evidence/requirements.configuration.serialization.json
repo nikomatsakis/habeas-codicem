@@ -1,8 +1,8 @@
 {
   "requirement": "Saved configuration MUST remain distinct from resolved runtime configuration.\nSerializing and deserializing a valid configuration MUST preserve its semantic\nvalues, including explicit versus omitted settings. Optional fields MAY be\nomitted on serialization; defaults and environment-derived values MUST NOT be\nmaterialized into omitted fields. TOML comments and formatting need not\nround-trip.\n\nLoading configuration or running a configured feature MUST NOT rewrite the user\nor project configuration as a side effect. Resolved credentials and live runtime\nobjects MUST NOT enter the serialized data structures. Explicitly supplied\ncredential values are permitted only in the fields documented by the authoring\nfeature; credentials resolved from a profile or environment MUST NOT be written\nback to configuration.",
-  "determination": true,
-  "rationale": "I found no gap against `requirements.configuration.serialization`.\n\n**Saved vs. resolved configuration.**\n- The saved types are `UserConfig`, `WorkspaceConfig`, `WorkspaceAuthoringConfig`, `EvidenceConfig`, `UserAuthoringConfig`, `AuthoringConfig`, `BackendConfig`, `BedrockConfig`, `OllamaConfig`, `ProjectSelection`, `OptionValue`, `AssessmentPolicy`, `SecretString` and `BedrockCredentials`. All in `src/config.rs`.\n- They are separate from `ResolvedAuthoringConfig`, which derives no `Serialize`. It holds only the saved values plus their source path, project root and name. It has no resolved secrets and no live objects.\n- `resolve_authoring_with_workspace_from` copies saved values into it. `OllamaConfig::api_key_from` returns an environment-derived key to the caller without storing it.\n- `CoverageConfig` and `ProjectConfig` have no `serialization` reference of their own. `CoverageConfig` is reached through `WorkspaceConfig.coverage`, and `ProjectConfig` is an empty struct.\n\n**Round trip preserving explicit vs. omitted settings, and no materialized defaults.**\n- Optional fields use `Option` with `skip_serializing_if = \"Option::is_none\"`. Collections use `is_empty` skips. `UserAuthoringConfig.configs` is always serialized, so an explicit `configs = {}` is preserved.\n- `OllamaConfig::endpoint()` applies its default only in an accessor. The default is never stored in the struct field.\n- `UserConfig::to_toml` and `WorkspaceConfig::to_toml` serialize the saved structs directly. `parse` and `load_*` decode them.\n- Tests: `backend_configuration_round_trips_without_materializing_defaults` asserts no `endpoint` or `concurrency` appears and that the round trip is equal. `authoring_concurrency_defaults_overrides_and_invalid_values` checks that an omitted `concurrency` stays omitted and an explicit one round-trips. `user_and_workspace_authoring_tables_round_trip_every_map` covers empty `configs` and populated tables. `workspace_discovery_uses_nearest_file_without_merging_or_rewriting_it` checks that empty maps are not materialized.\n\n**No rewriting of configuration.**\n- Searching `src` found no writes of configuration files. Loading only reads and decodes.\n- Tests: `absent_and_minimal_configuration_are_distinct_and_read_only` and `workspace_discovery_uses_nearest_file_without_merging_or_rewriting_it` check file bytes after a load. `ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free` checks the user config bytes after running the CLI. `authoring_uses_nearest_workspace_configuration_without_a_user_file` checks that the workspace files are unchanged and that no user config is created.\n\n**Credentials.**\n- Explicit values exist only in `OllamaConfig.api_key` and `BedrockConfig.credentials`, both wrapped in `SecretString` and `BedrockCredentials`. Those are the authoring fields.\n- Credentials resolved from the environment never enter the structs. The test `ollama_authentication_resolves_separately_and_rejects_missing_values` asserts the serialized TOML contains the variable name `MODEL_KEY` but not the resolved value.\n- `explicit_credentials_round_trip_but_diagnostics_and_debug_redact_them` checks that explicit credentials round trip and that invalid credential forms are rejected.\n- No Bedrock-specific test covers profile-resolved credentials. Nothing in the code writes them back, so I do not count this as a gap.\n\nAll obligations have a corresponding implementation reachable from the `{impl}` items and a `{test}` reference to the subject.",
-  "references": "b74d27a39e2d9537d6d1f2699de2506605189119be307e637792026d5ecd2637",
+  "determination": false,
+  "rationale": "## Obligations and implementation\n\n1. **Saved configuration remains distinct from resolved runtime configuration.** `src/config.rs#struct[UserConfig]` and `src/config.rs#struct[WorkspaceConfig]` contain saved data; `src/config.rs#struct[ResolvedAuthoringConfig]` is a separate, non-serializable type. `src/config.rs#fn[resolve_authoring_with_workspace_from]` copies selected values rather than modifying saved configuration. The referenced tests `tests/configuration.rs#fn[authoring_concurrency_defaults_overrides_and_invalid_values]` and `tests/configuration.rs#fn[workspace_defaults_and_configs_combine_with_existing_user_selections]` exercise that separation.\n2. **Serialization/deserialization preserves semantic values**, including separately **explicit settings** and **omitted settings**. The serde implementations on the saved types and `src/config.rs#impl[UserConfig]/fn[to_toml]`, `src/config.rs#impl[WorkspaceConfig]/fn[to_toml]`, and their `parse` counterparts implement round trips. Referenced tests cover populated maps, nested options, explicit credentials, explicit concurrency, minimal configuration, and omitted fields: notably `tests/configuration.rs#fn[user_and_workspace_authoring_tables_round_trip_every_map]`, `tests/configuration.rs#fn[explicit_credentials_round_trip_but_diagnostics_and_debug_redact_them]`, and `tests/configuration.rs#fn[backend_configuration_round_trips_without_materializing_defaults]`.\n3. **Defaults must not populate omitted fields.** Optional saved fields use `Option` and `skip_serializing_if`; endpoint accessors return effective defaults without mutation. The backend round-trip and concurrency tests above assert absence of defaults in serialized output.\n4. **Environment-derived values must not populate omitted fields.** `src/config.rs#impl[OllamaConfig]/fn[api_key_from]` and `src/config.rs#impl[OpenAiConfig]/fn[api_key_from]` return owned credentials without changing saved fields. `tests/configuration.rs#fn[ollama_authentication_resolves_separately_and_rejects_missing_values]` asserts that an environment-resolved secret does not appear in serialization.\n5. **Loading must not rewrite user configuration**, and separately **project configuration**. `src/config.rs#fn[load_user_config]` and `src/config.rs#fn[load_workspace_config]` and their parsing helpers only read configuration. `tests/configuration.rs#fn[absent_and_minimal_configuration_are_distinct_and_read_only]` and `tests/configuration.rs#fn[workspace_discovery_uses_nearest_file_without_merging_or_rewriting_it]` assert unchanged file contents.\n6. **Running a configured feature must not rewrite user configuration**, and separately **project configuration**. The referenced CLI tests `tests/authoring_cli.rs#fn[ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free]` and `tests/authoring_cli.rs#fn[authoring_uses_nearest_workspace_configuration_without_a_user_file]` assert unchanged configuration bytes after executing authoring; the latter also asserts no user configuration is created.\n7. **Resolved credentials must not enter serialized structures**, and separately **live runtime objects must not enter them**. The saved structs contain declarative values, not provider clients; credential lookup returns separate strings. The environment-resolution and CLI tests above verify separation for Ollama.\n8. **Explicit credentials are confined to authoring-documented fields; profile-resolved credentials must not be written back; environment-resolved credentials must not be written back.** Saved backend types provide explicit credential fields separately from profile/environment selectors. Resolution clones saved backend values, and lookup does not mutate them. Explicit-credential round trips and the environment-resolution/read-only tests above cover these aspects of the saved-data boundary.\n\n## Unacknowledged test-traceability gaps\n\nThe subject governs output produced through separate backend serialization/resolution paths. Its referenced tests exercise Bedrock and Ollama round trips, but not OpenAI. The relevant existing test is `tests/configuration.rs#fn[openai_configuration_preserves_model_and_resolves_credentials]`: it runs OpenAI credential resolution, asserts that the resolved key is absent from serialization, and asserts a semantic round trip. It lacks a `{test}` reference to `requirements.configuration.serialization`. Under the task's explicit test-reference rule, finding this test by searching does not provide the required coverage. It should carry that reference.\n\nLikewise, `src/config.rs#struct[AssessmentPolicy]` and the optional policy field in `src/config.rs#struct[AuthoringConfig]` introduce explicit-versus-omitted policy serialization. The existing test `tests/configuration.rs#fn[authoring_policy_defaults_to_confirm_and_round_trips]` checks omitted policy stays omitted and both explicit policy values round-trip, but lacks a `{test}` reference to this subject. It should carry one. The subject-referenced CLI fixture's explicit policy does not assert its serialization outcome.\n\nThese obligations require tests because they explicitly concern preservation and omission; the pass-through exemption does not apply. No supplied or read `{fixme}` acknowledges these gaps.",
+  "references": "cfa208c96502bb58ccf0127002226105e4be67180b8cacaadefb2e963ad68601",
   "inputs": [
     {
       "requirements": "requirements.configuration.serialization",
@@ -75,7 +75,7 @@
     {
       "file": "src/config.rs",
       "item": "enum[BackendConfig]",
-      "hash": "a1a6173219615fcabb843a401afe0d1a44bb83393aa3ad2b7966494fe9b2b94e"
+      "hash": "021d3215d0c12d74640c3ca5707ac7430c183ef7654f3d5c25909d839124e06f"
     },
     {
       "file": "src/config.rs",
@@ -86,6 +86,11 @@
       "file": "src/config.rs",
       "item": "struct[OllamaConfig]",
       "hash": "75a1dacb21ac62202f7a625fbd76627d723870f174a00fed5d8ec05515f76fc9"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "struct[OpenAiConfig]",
+      "hash": "e461a99c1e9e9f37109a845e66b022b00f9aeae0af212d81f0dac2ebb39d0a51"
     },
     {
       "file": "src/config.rs",
@@ -136,6 +141,21 @@
       "file": "src/config.rs",
       "item": "impl[OllamaConfig]/fn[api_key_from]",
       "hash": "5ba74dfd70cff06aeb97d6c95de7432de9eb7024c7882e434fc214c41eb3897b"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "impl[OpenAiConfig]/fn[endpoint]",
+      "hash": "d6873b26e4adb87f66800ef62722cf77dafd333a86e13f3fa8cc1bc2f86250d4"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "impl[OpenAiConfig]/fn[api_key]",
+      "hash": "92eb7f2e4a9cb620e3061c73fc39b7270c2ec4f63ce9ea0b4b8b0457cd35080f"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "impl[OpenAiConfig]/fn[api_key_from]",
+      "hash": "d89d2a4772093d5fddbd1ceac22e524c4983187bfebe71654fda3338adf000a6"
     },
     {
       "file": "src/config.rs",
@@ -206,6 +226,21 @@
       "file": "tests/configuration.rs",
       "item": "fn[user_and_workspace_authoring_tables_round_trip_every_map]",
       "hash": "34fae851fb0afe1cf07314e2d97f3941995a972552b06b666bf52e300391ce8a"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "",
+      "hash": "af6d7a1f8352185bd45887d1b48ab5b65bea43f5d9d57bd7a97da8517ada4b4b"
+    },
+    {
+      "file": "tests/configuration.rs",
+      "item": "fn[openai_configuration_preserves_model_and_resolves_credentials]",
+      "hash": "92e03f85a518e7d44fdb75eaa9e2f7dce58accd54aa767855336348092f4212b"
+    },
+    {
+      "file": "tests/configuration.rs",
+      "item": "fn[authoring_policy_defaults_to_confirm_and_round_trips]",
+      "hash": "2eca52c3ce61a8081a91c5eeb130769273d5c12332337df1cdf6125a61b124bb"
     }
   ]
 }

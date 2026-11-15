@@ -168,6 +168,7 @@ fn credentials_available(config: &BedrockConfig) -> bool {
 // {test}`requirements.authoring.submission`
 // {test}`requirements.authoring.persistence`
 // {test}`requirements.authoring.usage_storage`
+// {impl}`requirements.integration.live_bedrock_test`
 #[test]
 fn live_bedrock_authoring() {
     if std::env::var_os("CI").is_some() {

@@ -1,7 +1,7 @@
 {
   "requirement": "When the backend and model support prompt caching, every provider request MUST\nplace one cache checkpoint after the system prompt of\n{cite}`requirements.authoring.prompt_parts` and another at the end of its last\nmessage, so each request reuses the tool definitions and system prompt that\nearlier assessments of its kind sent, and the conversation its own earlier\nrequests sent. Cache checkpoints MUST NOT change the content of a request.",
   "determination": true,
-  "rationale": "I found no gap against `requirements.authoring.cache_checkpoints`.\n\n**Obligations**\n1. **Checkpoints on every request when backend and model support caching.**\n   - `RigProvider::connect` (`src/authoring/providers.rs:112`) sets `caches`. For Bedrock it calls `bedrock_caches(model)`, which is true for the Claude and Nova families via `rig_bedrock::completion::Family::of`. For Ollama it is false, because Ollama has no prompt-cache checkpoints.\n   - `CompletionProvider::complete` (line 188) runs for every request. When `self.caches` is set it calls `place_cache_checkpoints`.\n   - `place_cache_checkpoints` (line 330) sets `request.options.cache = Some(CacheRetention::Short)`.\n   - Per its doc comment, the vendored `rig-bedrock` then emits `cachePoint` blocks after the system prompt and at the end of the last message. I did not read the vendored implementation. The integration test below checks this on the wire.\n2. **One checkpoint after the system prompt and another at the end of the last message.** The integration test `claude_requests_carry_cache_checkpoints_and_record_cache_usage` (`tests/authoring_cli.rs:1826`) runs a Claude model against a fake Bedrock endpoint and asserts four things on both requests:\n   - `system` has two entries, the text and then a `cachePoint`.\n   - The last content block of the last message is a `cachePoint`.\n   - There are exactly two `cachePoint` occurrences in each body.\n   - The second request, which follows a reasoning turn, still ends in a checkpoint.\n3. **Checkpoints MUST NOT change the content of a request.**\n   - The unit test `cache_checkpoints_are_requested_for_caching_models` (`src/authoring/providers.rs:600`) asserts that only `options.cache` differs after `place_cache_checkpoints`.\n   - The integration test strips `cachePoint` blocks from the cached bodies with `without_cache_points`. It asserts they equal the bodies sent to a non-caching model.\n4. **Only supported models get checkpoints.** The unit test asserts `bedrock_caches` is true for Claude and Nova models and false for Llama and an unknown fixture model. The integration test confirms that a non-caching model's request has no `cachePoint`.\n\nThe requirement cites `prompt_parts` only for what \"the system prompt\" means, so I did not reassess it. I found no unspecified behavior in the `impl` code and no `{fixme}` references.",
+  "rationale": "The requirement is satisfied by the inspected implementation and its marked tests.\n\nThe obligations of `requirements.authoring.cache_checkpoints` are:\n\n1. When checkpoint caching is supported, every request places a checkpoint after the system prompt described by `requirements.authoring.prompt_parts`.\n2. Under the same condition, every request places another checkpoint at the end of its last message. These placements provide the reusable tool/system prefix and prior-conversation prefix described in the requirement.\n3. Adding checkpoints must not change request content.\n\n**Implementation.** `src/authoring/providers.rs#impl[RigProvider]/fn[connect]` selects checkpoint support through `src/authoring/providers.rs#fn[bedrock_caches]`. That helper recognizes Claude and Nova through `vendor/habeas-rig/src/completion.rs#impl[Family]/fn[of]`. The connection code distinguishes OpenAI-managed caching and Ollama's lack of checkpoint support from Bedrock checkpoint caching.\n\n`src/authoring/providers.rs#impl[RigProvider/CompletionProvider]/fn[complete]` applies `src/authoring/providers.rs#fn[place_cache_checkpoints]` before each supported request is sent. The helper sets the short cache-retention option without editing the messages or tools. The reachable Bedrock encoder, `vendor/habeas-rig/src/completion.rs#impl[Converse/Wire]/fn[encode]`, calls the request builder. In `vendor/habeas-rig/src/request.rs#fn[base]`, the builder appends a separate checkpoint block after the leading system prompt and another to the last message's content. Both additions leave the existing content intact; the final checkpoint is also placed following reasoning turns. Thus the cited prompt-parts requirement is applied to the system prompt in this case without needing to reassess prompt construction itself.\n\n**Tests.** `src/authoring/providers.rs#mod[tests]/fn[cache_checkpoints_are_requested_for_caching_models]` checks supported Claude and Nova identifiers, unsupported identifiers, the cache option, and serialized equality apart from that option. It also exercises a request containing reasoning.\n\n`tests/authoring_cli.rs#fn[claude_requests_carry_cache_checkpoints_and_record_cache_usage]` verifies both required placements on each of two actual provider request bodies, asserts exactly two checkpoints, and checks the continuation request containing reasoning. Its reachable helper `tests/authoring_cli.rs#fn[bedrock_run]` drives an assessment through a tool-read turn and submission. The test compares cached request bodies, after removing checkpoints, against uncached request bodies, directly verifying the unchanged-content obligation for both initial and continuation requests. Both tests carry the subject's `{test}` reference.\n\nNo gap was found.",
   "references": "b389a45873a0c66098162732a30d4db790c5211fff7322f97c8990ae01d95a32",
   "inputs": [
     {
@@ -40,7 +40,7 @@
     {
       "file": "src/authoring/providers.rs",
       "item": "impl[RigProvider]/fn[connect]",
-      "hash": "10903ec51d70dcb885695f74ffbf3e327c9156270cae232ec0ba1b3dbbd683c8"
+      "hash": "1a2c0128c6755d08cec22cdca2a433cb68c950d25ab6074438bc1cdada2bd48f"
     },
     {
       "file": "src/authoring/providers.rs",
@@ -59,11 +59,6 @@
     },
     {
       "file": "src/authoring/providers.rs",
-      "item": "fn[apply_bedrock_options]",
-      "hash": "f469a46a9d4ff0bdb10ee9b7acff7bdc793b65f5a1247eaaf9133c7e46e63025"
-    },
-    {
-      "file": "src/authoring/providers.rs",
       "item": "fn[bedrock_caches]",
       "hash": "c316c3bccc7a2cc2f13634677639ec3cd79776825f5a843115d9098a97948485"
     },
@@ -73,9 +68,24 @@
       "hash": "faf094ed40b166db2eaebd7866bb146bf9ea99f97597a3eb116802016cdee96a"
     },
     {
-      "file": "src/authoring/providers.rs",
-      "item": "fn[option_type]",
-      "hash": "0654c240bf76e5d922abbfbd0c44b1b149914a0687d7d718899237175aa89b82"
+      "file": "tests/authoring_cli.rs",
+      "item": "fn[bedrock_run]",
+      "hash": "9ec552e381809690f082f8ea1eab61c18adcad11afb41d94332050ce3e615671"
+    },
+    {
+      "file": "vendor/habeas-rig/src/request.rs",
+      "item": "",
+      "hash": "61f2993b5181d8b134538524063ae84541da76018ce768b8bb266ff04c412780"
+    },
+    {
+      "file": "vendor/habeas-rig/src/completion.rs",
+      "item": "impl[Family]/fn[of]",
+      "hash": "8c5d1d3ecf06c6f11da678420df20962d3ff1cef9de506dd9ffab141f8d2e338"
+    },
+    {
+      "file": "vendor/habeas-rig/src/completion.rs",
+      "item": "impl[Converse/Wire]/fn[encode]",
+      "hash": "194a4c67c6ce74cdcb43e0daa30727738fad752cbed34fb4508056574187b33e"
     }
   ]
 }

@@ -400,6 +400,7 @@ fn symlinked_evidence_json_files_are_checked_like_other_files() {
 // {test}`requirements.configuration.evidence_paths`
 // {test}`requirements.ci.input_containment`
 // {test}`requirements.ci.outline_inputs`
+// {test}`requirements.configuration.loading`
 #[test]
 fn configured_external_inputs_validate_and_remain_subject_to_freshness_and_disallow() {
     let temp = fixture();

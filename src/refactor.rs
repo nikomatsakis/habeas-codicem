@@ -944,12 +944,10 @@ fn parse_mappings(
         if let Some(RecordKind::Definition(name)) = record_kind(path) {
             names.insert(name);
         }
-        for key in ["requirement"] {
-            if let Some(name) = record.get(key).and_then(Value::as_str)
-                && matches!(record_kind(path), Some(RecordKind::Site))
-            {
-                names.insert(name.to_owned());
-            }
+        if let Some(name) = record.get("requirement").and_then(Value::as_str)
+            && matches!(record_kind(path), Some(RecordKind::Site))
+        {
+            names.insert(name.to_owned());
         }
         if let Some(file) = record.get("file").and_then(Value::as_str) {
             files.insert(file.to_owned());
