@@ -1174,7 +1174,9 @@ marking, and unspecified behavior:
    types they use, and the implementations of trait methods they call,
    including by searching for those implementations, and what those reach in
    turn. Reading their callers for context does not make the callers
-   reachable. Code reachable
+   reachable. Look for unreached implementations among the sources that
+   reference the subject and by targeted search for what its obligations
+   produce; do not survey unrelated code. Code reachable
    this way needs no reference of its own; do not report it for lacking one.
    Code you could find only by searching elsewhere, such as for a message an
    obligation produces, is a gap: name the item that should carry an {impl}
@@ -1256,7 +1258,9 @@ For a named example, the task of {cite}`requirements.authoring.initial_prompt`
 MUST be this text:
 
 ```text
-The subject is a named example. Check that tests' setup and assertions cover its
+The subject is a named example. First check that it describes a concrete case
+with expected behavior; a missing concrete case or expected behavior is a gap.
+Check that tests' setup and assertions cover its
 scenario and assert each expected outcome it states, and say how. A true
 judgment needs at least one {test} reference to the example in the mandatory
 inputs.

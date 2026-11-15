@@ -13,7 +13,7 @@ A requirement or example evidence file at `evidence/<full-name>.json` MUST be a 
 :::
 
 :::{req} requirement_text
-The `requirement` string in each evidence file MUST match all Markdown inside its fenced `{req}` directive, excluding leading and trailing whitespace. Habeas MUST report changed requirement text.
+The `requirement` string in each evidence file MUST match all Markdown inside its fenced `{req}` directive, excluding leading and trailing whitespace and the header option lines of {cite}`requirements.references.anchors`. Habeas MUST report changed requirement text.
 :::
 
 :::{req} determination
@@ -280,7 +280,7 @@ evidence/requirements.ci.outline_inputs.json: requirement text changed (md/requi
 :::
 
 :::{req} span
-A `{req}` definition MUST use an opening fence of at least three colons immediately followed by `{req} <name>`. A closing fence MUST have at least as many colons as the opening fence and nothing else on its line except whitespace. As in CommonMark fences, an opening or closing fence MAY be indented by up to three spaces; a line indented by four or more spaces MUST NOT be a fence. The requirement body MUST be all Markdown between those fence lines, including headings, examples, diagrams, and blank lines, and MUST NOT include text after the closing fence. Leading and trailing whitespace MUST be excluded when comparing the body with evidence.
+A `{req}` definition MUST use an opening fence of at least three colons immediately followed by `{req} <name>`. A closing fence MUST have at least as many colons as the opening fence and nothing else on its line except whitespace. As in CommonMark fences, an opening or closing fence MAY be indented by up to three spaces; a line indented by four or more spaces MUST NOT be a fence. The requirement body MUST be all Markdown between those fence lines, including headings, examples, diagrams, and blank lines, except for the header option lines of {cite}`requirements.references.anchors`, and MUST NOT include text after the closing fence. Leading and trailing whitespace MUST be excluded when comparing the body with evidence.
 :::
 
 :::{req} fence_lengths

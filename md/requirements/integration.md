@@ -92,5 +92,5 @@ A dedicated GitHub Actions workflow MUST run release-plz on pushes to `main` to 
 :::
 
 :::{req} report_api
-`habeas::validate_repository(root)` MUST return a report with the number of discovered requirements, the number of evidence files, and all validation errors for the supplied project. Ordinary invalid evidence MUST be reported in that report; an inaccessible project root MUST return an I/O error.
+`habeas::validate_repository(root)` MUST return a report with the number of discovered requirements, the number of discovered examples, the number of evidence files, and all validation errors for the supplied project. Ordinary invalid evidence MUST be reported in that report; an inaccessible project root MUST return an I/O error.
 :::
