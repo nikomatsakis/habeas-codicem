@@ -688,6 +688,7 @@ impl OptionValue {
 
 impl OllamaConfig {
     // {impl}`requirements.configuration.serialization`
+    // {impl}`requirements.authoring.configuration_structure`
     pub fn endpoint(&self) -> &str {
         self.endpoint.as_deref().unwrap_or("http://localhost:11434")
     }
@@ -722,6 +723,7 @@ impl OpenAiConfig {
     }
 
     // {impl}`requirements.configuration.serialization`
+    // {impl}`requirements.authoring.configuration_structure`
     pub fn endpoint(&self) -> &str {
         self.endpoint
             .as_deref()
@@ -734,6 +736,7 @@ impl OpenAiConfig {
     }
 
     // {impl}`requirements.configuration.serialization`
+    // {impl}`requirements.authoring.configuration_structure`
     pub fn api_key_from(&self, lookup: impl Fn(&str) -> Option<OsString>) -> io::Result<String> {
         if let Some(key) = &self.api_key {
             return Ok(key.expose_secret().to_owned());
@@ -756,6 +759,7 @@ impl ResolvedAuthoringConfig {
     /// The policy from `--policy` when given, otherwise from this
     /// configuration, otherwise `once` for OpenAI and `confirm` for other backends.
     // {impl}`requirements.authoring.policy`
+    // {impl}`requirements.authoring.configuration_structure`
     pub fn effective_policy(&self, explicit: Option<AssessmentPolicy>) -> AssessmentPolicy {
         explicit.or(self.policy).unwrap_or({
             if matches!(self.backend, BackendConfig::Openai(_)) {

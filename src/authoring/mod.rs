@@ -267,6 +267,7 @@ pub async fn author_evidence_with_output(
 // {impl}`requirements.configuration.state_location`
 // {impl}`requirements.authoring.policy`
 // {impl}`requirements.authoring.read_denial.mandatory`
+// {impl}`requirements.authoring.provider_backoff`
 pub async fn author_evidence_with_options(
     root: &Path,
     subject: &str,
@@ -351,6 +352,7 @@ fn usage_state_root(root: &Path) -> io::Result<PathBuf> {
 // {impl}`requirements.authoring.usage_storage`
 // {impl}`requirements.configuration.state_location`
 // {impl}`requirements.authoring.policy`
+// {impl}`requirements.authoring.provider_backoff`
 pub(crate) async fn prepare_assessment(
     root: &Path,
     subject: &AuthoringSubject,
@@ -434,6 +436,7 @@ pub(crate) async fn prepare_assessment(
 // {impl}`requirements.configuration.loading`
 // {impl}`requirements.authoring.policy`
 // {impl}`requirements.authoring.configuration`
+// {impl}`requirements.authoring.submission`
 async fn configured_assessment(
     root: &Path,
     subject: &str,
@@ -485,6 +488,7 @@ async fn configured_assessment(
 // {impl}`requirements.authoring.provider`
 // {impl}`requirements.authoring.policy`
 // {impl}`requirements.authoring.read_denial.mandatory`
+// {impl}`requirements.authoring.adaptive`
 async fn configured_record(
     root: &Path,
     subject: &AuthoringSubject,
@@ -871,6 +875,7 @@ impl Prompt {
 // {impl}`requirements.authoring.site_prompt`
 // {impl}`requirements.authoring.habeas_background`
 // {impl}`requirements.authoring.judgment_rules`
+// {impl}`requirements.authoring.credentials`
 fn initial_prompt(sources: &AssessmentSources) -> io::Result<Prompt> {
     let mandatory = serde_json::to_string_pretty(&sources.model_mandatory_inputs())?;
     let mut values = shared_blocks().to_vec();
@@ -1184,6 +1189,8 @@ fn record(
 // {impl}`requirements.authoring.mandatory_inputs`
 // {impl}`requirements.ci.reference_set`
 // {impl}`requirements.ci.schema`
+// {impl}`requirements.authoring.citation_prompt`
+// {impl}`requirements.authoring.site_prompt`
 async fn assess(
     provider: &impl CompletionProvider,
     sources: &mut AssessmentSources,
@@ -1267,6 +1274,7 @@ async fn verify(
 // {impl}`requirements.authoring.submission`
 // {impl}`requirements.authoring.no_line_numbers`
 // {impl}`requirements.authoring.usage_requests.failures`
+// {impl}`requirements.authoring.provider_backoff.limit`
 async fn converse<T>(
     provider: &impl CompletionProvider,
     sources: &mut AssessmentSources,
@@ -1451,6 +1459,7 @@ async fn converse<T>(
                 Ok(delivery) => {
                     usage.tool(call.function.name.as_str(), false);
                     usage.prepared(call.function.name.as_str(), &delivery.inputs);
+                    usage.search_result(&delivery.result);
                     pending.extend(delivery.inputs);
                     results.push(
                         call.result(vec![ToolResultContent::text(delivery.result.to_string())]),
@@ -2785,6 +2794,80 @@ mod tests {
         }
     }
 
+    // {test}`requirements.ci.authoring_inputs`
+    #[tokio::test]
+    async fn reassessment_records_only_freshly_delivered_inputs() {
+        let project = inputs::tests::project();
+        let subject = AuthoringSubject::Definition("requirements.ready".into());
+        let path = subject.evidence_path(project.path());
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, json!({"determination":false,"rationale":"OLD_RATIONALE","inputs":[{"file":"deleted.rs","item":"fn[old]","hash":"0".repeat(64)}]}).to_string()).unwrap();
+        let mut sources = subject.sources(project.path()).unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let mut usage = UsageLog::start(state.path(), project.path(), &subject.label()).unwrap();
+        let provider = RecordingProvider::new(vec![judgment(json!(true), "Fresh assessment.")]);
+        let (_, record) = assess(&provider, &mut sources, &mut usage).await.unwrap();
+        assert!(
+            record["inputs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|input| input["requirements"] == "requirements.ready")
+        );
+        for stale in ["deleted.rs", "fn[old]", "OLD_RATIONALE"] {
+            assert!(!record.to_string().contains(stale));
+            assert!(!provider.prompts()[0].0.contains(stale));
+        }
+        assert_eq!(record["rationale"], "Fresh assessment.");
+    }
+
+    // {test}`requirements.authoring.confirmation`
+    // {test}`requirements.authoring.usage_storage`
+    #[tokio::test]
+    async fn citation_reviews_are_confirmed_with_fresh_targeted_conversations() {
+        let project = inputs::tests::project();
+        fs::write(
+            project.path().join("src/lib.rs"),
+            "// {cite}`requirements.ready`\nfn helper() {}\n",
+        )
+        .unwrap();
+        let subject = AuthoringSubject::parse("citations:src/lib.rs#fn[helper]");
+        let sources = subject.sources(project.path()).unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let mut usage = UsageLog::start(state.path(), project.path(), &subject.label()).unwrap();
+        let provider = RecordingProvider::new(vec![
+            judgment(json!(true), "First citation review."),
+            judgment(json!(true), "Second citation review."),
+        ]);
+        let (_, record) = assess_subject(
+            &provider,
+            project.path(),
+            state.path(),
+            &subject,
+            sources,
+            &mut usage,
+            AssessmentPolicy::Confirm,
+        )
+        .await
+        .unwrap();
+        assert_eq!(record["item"], "fn[helper]");
+        assert_eq!(record["rationale"], "First citation review.");
+        let prompts = provider.prompts();
+        assert_eq!(prompts.len(), 2);
+        assert!(
+            prompts
+                .iter()
+                .all(|(text, _)| text.contains("Item under review: src/lib.rs fn[helper]"))
+        );
+        assert!(!prompts[1].0.contains("First citation review."));
+        let logs: Vec<Value> = fs::read_dir(state.path().join("authoring/usage"))
+            .unwrap()
+            .map(|p| serde_json::from_slice(&fs::read(p.unwrap().path()).unwrap()).unwrap())
+            .collect();
+        assert_eq!(logs.len(), 2);
+        assert_ne!(logs[0]["run_id"], logs[1]["run_id"]);
+    }
+
     // {test}`requirements.authoring.confirmation`
     #[tokio::test]
     async fn agreeing_assessments_record_the_first() {
@@ -3091,6 +3174,7 @@ mod tests {
     // {test}`requirements.authoring.mandatory_inputs`
     // {test}`requirements.authoring.habeas_background`
     // {test}`requirements.authoring.judgment_rules`
+    // {test}`requirements.authoring.adaptive`
     #[tokio::test]
     async fn citation_reviews_use_their_prompt_and_record_the_item_and_citations() {
         let project = inputs::tests::project();
@@ -3110,6 +3194,7 @@ mod tests {
                 .join("evidence/citations/src/lib.rs/fn[helper].json")
         );
         let mut sources = subject.sources(project.path()).unwrap();
+        assert!(!sources.has_applicable_fixme);
         let mandatory = sources.mandatory_inputs().to_vec();
         assert_eq!(mandatory[0]["file"], "src/lib.rs");
         assert_eq!(mandatory[0]["item"], "fn[helper]");
@@ -3127,6 +3212,28 @@ mod tests {
         let provider = RecordingProvider::new(vec![judgment(json!(true), "Both are sensible.")]);
         let (_, record) = assess(&provider, &mut sources, &mut usage).await.unwrap();
         let prompts = provider.prompts();
+        let expected: Vec<_> = tool_definitions_with("submit_judgment", false)
+            .unwrap()
+            .into_iter()
+            .map(|tool| tool.name)
+            .collect();
+        assert_eq!(prompts[0].1, expected);
+        let duplicate = json!({"determination":true,"rationale":"Both are sensible."});
+        let duplicate_provider = ScriptedProvider {
+            turns: vec![vec![
+                ("submit_judgment", duplicate.clone()),
+                ("submit_judgment", duplicate),
+            ]],
+            requests: RefCell::default(),
+        };
+        let mut duplicate_sources = subject.sources(project.path()).unwrap();
+        assert!(
+            assess(&duplicate_provider, &mut duplicate_sources, &mut usage)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("exactly once")
+        );
         let prompt = &prompts[0].0;
         assert!(
             prompt.contains("Review one source item's citations."),
@@ -3672,6 +3779,28 @@ no_match:
         );
         assert!(!text.contains("{{"), "{text}");
         assert!(tools.contains(&"submit_judgment".to_owned()));
+        let expected: Vec<_> = tool_definitions_with("submit_judgment", false)
+            .unwrap()
+            .into_iter()
+            .map(|tool| tool.name)
+            .collect();
+        assert_eq!(*tools, expected);
+        let duplicate = json!({"applies":true,"determination":true,"rationale":"Covered."});
+        let duplicate_provider = ScriptedProvider {
+            turns: vec![vec![
+                ("submit_judgment", duplicate.clone()),
+                ("submit_judgment", duplicate),
+            ]],
+            requests: RefCell::default(),
+        };
+        let mut duplicate_sources = subject.sources(root).unwrap();
+        assert!(
+            assess(&duplicate_provider, &mut duplicate_sources, &mut usage)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("exactly once")
+        );
         let submit = provider.requests.borrow()[0]["tools"]
             .as_array()
             .unwrap()

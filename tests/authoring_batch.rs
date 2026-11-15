@@ -1716,6 +1716,7 @@ fn batch_authors_citation_reviews_and_preserves_current_ones() {
 // {test}`requirements.authoring.confirmation`
 // {test}`requirements.authoring.usage_storage`
 #[test]
+// {test}`requirements.authoring.usage_storage`
 fn confirm_runs_a_second_assessment_with_its_own_usage_record() {
     let server = Server::start(false, None);
     let fixture = Fixture::new(&server.endpoint, None);
@@ -1901,6 +1902,19 @@ fn missing_keeps_current_records_and_force_reassesses_every_selected_subject() {
         "6 authored; 0 skipped as current; 0 failed; policy once"
     );
     assert_eq!(server.subjects().len(), 14);
+    fs::write(
+        fixture.project.join("evidence/requirements.alpha.json"),
+        "{invalid",
+    )
+    .unwrap();
+    let repaired = fixture.run(&["author", "--all", "--missing"]);
+    assert!(repaired.status.success(), "{repaired:?}");
+    assert_eq!(server.subjects().len(), 15);
+    assert_eq!(
+        fixture.evidence("requirements.alpha")["determination"],
+        true
+    );
+
     let report = habeas::validate_repository(&fixture.project).unwrap();
     assert!(report.errors.is_empty(), "{:?}", report.errors);
 }
@@ -1968,6 +1982,17 @@ fn policy_comes_from_the_flag_then_the_configuration_then_defaults_to_confirm() 
             "{args:?}: {usage:?}"
         );
     }
+    let stdout = fixture.run(&[
+        "author",
+        "requirements.alpha",
+        "--stdout",
+        "--policy",
+        "once",
+    ]);
+    assert!(stdout.status.success(), "{stdout:?}");
+    assert!(String::from_utf8_lossy(&stdout.stderr).contains("policy once"));
+    let printed: Value = serde_json::from_slice(&stdout.stdout).unwrap();
+    assert_eq!(printed["determination"], true);
     // The batch summary names the policy too.
     fs::write(&fixture.config, &unconfigured).unwrap();
     let batch = fixture.run(&["author", "--all", "--force", "--policy", "once"]);

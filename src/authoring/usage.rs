@@ -7,11 +7,12 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use rig_core::completion::Usage;
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{Value, json};
 
 static SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Serialize)]
+// {impl}`requirements.authoring.credentials`
 pub(super) struct UsageRecord {
     version: u32,
     run_id: String,
@@ -165,9 +166,28 @@ impl UsageLog {
         next.first_request_finished = self.first_request_finished.take();
     }
 
+    /// Search snippets contribute usage metadata, never evidence inputs.
+    // {impl}`requirements.authoring.usage_inputs`
+    pub(super) fn search_result(&mut self, result: &Value) {
+        for entry in result["matches"].as_array().into_iter().flatten() {
+            let Some(lines) = entry["lines"].as_array() else {
+                continue;
+            };
+            let text: Vec<_> = lines
+                .iter()
+                .filter_map(|line| line["text"].as_str())
+                .collect();
+            let input =
+                json!({"search": true, "file": entry["file"], "item": entry["item"], "text": text});
+            self.prepared("ripgrep", &[input]);
+        }
+    }
+
     pub(super) fn prepared(&mut self, origin: &str, inputs: &[Value]) {
         for input in inputs {
-            let kind = if input.get("item").is_some() {
+            let kind = if input.get("search").is_some() {
+                "search"
+            } else if input.get("item").is_some() {
                 "outline"
             } else if input.get("requirements").is_some() {
                 "requirements"
@@ -451,6 +471,10 @@ mod tests {
         });
         log.prepared("mandatory", &[file.clone(), requirements]);
         log.prepared("habeas", &[file]);
+        let search = json!({"matches":[{"file":"private-source-file.rs","item":"fn[private_item]","lines":[{"text":"λ"},{"text":"DO_NOT_LOG_SOURCE"}]}]});
+        log.search_result(&search);
+        log.search_result(&search);
+
         log.save().unwrap();
         let prepared = persisted(&log);
         assert_eq!(prepared["inputs"][0]["kind"], "outline");
@@ -462,6 +486,12 @@ mod tests {
         assert_eq!(prepared["inputs"][2]["origin"], "habeas");
         assert!(prepared["inputs"][0]["submitted_in_request"].is_null());
         assert!(prepared["inputs"][0]["sent_in_request"].is_null());
+        assert_eq!(prepared["inputs"][3]["kind"], "search");
+        assert_eq!(prepared["inputs"][3]["bytes"], "λ\nDO_NOT_LOG_SOURCE".len());
+        assert_eq!(prepared["inputs"][3]["lines"], 2);
+        assert_eq!(prepared["inputs"][3]["unique"], true);
+        assert_eq!(prepared["inputs"][4]["unique"], false);
+        assert!(prepared["inputs"][3]["sent_in_request"].is_null());
         let index = log.begin_request().unwrap();
         let submitted = persisted(&log);
         assert_eq!(submitted["inputs"][0]["submitted_in_request"], index);
@@ -473,6 +503,7 @@ mod tests {
         log.finish("completed").unwrap();
         let sent = persisted(&log);
         assert_eq!(sent["inputs"][0]["sent_in_request"], index);
+        assert_eq!(sent["inputs"][3]["sent_in_request"], index);
         assert_eq!(sent["requests"][0]["outcome"], "completed");
         assert_eq!(sent["outcome"], "completed");
         assert_eq!(sent["determination"], "FIXME");

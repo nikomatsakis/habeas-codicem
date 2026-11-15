@@ -1241,6 +1241,7 @@ pub(super) mod tests {
     // {test}`requirements.authoring.read_denial`
     // {test}`requirements.authoring.read_denial.mandatory`
     #[test]
+    // {test}`requirements.authoring.mandatory_inputs`
     fn unreadable_or_denied_anchors_fail_before_inference() {
         let root = project();
         fs::write(

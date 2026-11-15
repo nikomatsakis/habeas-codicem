@@ -20,7 +20,7 @@ The requirements are organized by the behavior they describe:
 ## Requirements as authoring inputs
 
 :::{req} authoring_input
-When authoring evidence for a requirement, its complete fenced declaration MUST
+When authoring evidence for a requirement, its fenced declaration, including its complete body but excluding anchor option lines, MUST
 be included in the mandatory input set defined by
 {cite}`requirements.authoring.mandatory_inputs`.
 :::

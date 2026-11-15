@@ -3492,6 +3492,7 @@ mod tests {
 
     // {test}`requirements.authoring.not_listed`
     #[test]
+    // {test}`requirements.authoring.read_denial`
     fn listings_and_searches_name_untracked_files_without_their_contents() {
         let root = project();
         fs::write(root.path().join("src/lib.rs"), "fn tracked() {}\n").unwrap();

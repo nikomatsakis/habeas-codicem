@@ -98,6 +98,7 @@ enum HookCommand {
     SessionStart,
 }
 
+// {impl}`requirements.authoring.read_denial.mandatory`
 fn main() -> Result<(), Box<dyn Error>> {
     // {impl}`requirements.cli.clap`
     let cli = Cli::parse();

@@ -145,6 +145,7 @@ impl ResultPages {
     /// returned page's inputs are delivered.
     // {impl}`requirements.authoring.delivered_inputs`
     // {impl}`requirements.authoring.tool_descriptions.special_cases`
+    // {impl}`requirements.authoring.not_listed`
     pub(crate) fn deliver(
         &mut self,
         sources: &AssessmentSources,

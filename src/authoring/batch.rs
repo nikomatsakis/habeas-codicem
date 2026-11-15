@@ -221,18 +221,22 @@ async fn run_batch(
         };
         // ...and discards a judgment not yet written when it arrived.
         observe_interrupt(interrupt.as_mut(), &mut listening, &cancel).await;
-        let result = result.and_then(|pending| {
-            // Serialize the stop signal with persistence: a write already in
-            // progress finishes before the signal; later completions are discarded.
-            let stop_reason = cancellation.borrow();
-            if let Some(reason) = *stop_reason {
-                return Err(pending.failed(io::Error::new(io::ErrorKind::Interrupted, reason)));
-            }
-            match write_record(&root, &pending) {
-                Ok(path) => pending.persisted(path),
+        let result = match result {
+            Ok(pending) => match stage_record(&root, &pending) {
+                Ok((file, path)) => {
+                    // Preparation may involve slow filesystem writes. Observe
+                    // cancellation again before committing the atomic replacement.
+                    tokio::task::yield_now().await;
+                    observe_interrupt(interrupt.as_mut(), &mut listening, &cancel).await;
+                    match persist_record(file, path, &cancellation) {
+                        Ok(path) => pending.persisted(path),
+                        Err(error) => Err(pending.failed(error)),
+                    }
+                }
                 Err(error) => Err(pending.failed(error)),
-            }
-        });
+            },
+            Err(error) => Err(error),
+        };
         match result {
             Ok(assessment) => {
                 progress.completed(&assessment);
@@ -576,7 +580,10 @@ fn stop(cancel: &watch::Sender<Option<&'static str>>) {
 }
 
 // {impl}`requirements.authoring.persistence`
-fn write_record(root: &Path, pending: &PendingAssessment) -> io::Result<PathBuf> {
+fn stage_record(
+    root: &Path,
+    pending: &PendingAssessment,
+) -> io::Result<(tempfile::NamedTempFile, PathBuf)> {
     let path = pending.subject.evidence_path(root);
     let record = pending.record.clone();
     let parent = path.parent().expect("evidence parent");
@@ -585,6 +592,22 @@ fn write_record(root: &Path, pending: &PendingAssessment) -> io::Result<PathBuf>
     // Replace the complete file so those reads see either complete version.
     let mut file = tempfile::NamedTempFile::new_in(parent)?;
     writeln!(file, "{}", serde_json::to_string_pretty(&record)?)?;
+    Ok((file, path))
+}
+
+// {impl}`requirements.authoring.batch`
+// {impl}`requirements.authoring.persistence`
+fn persist_record(
+    file: tempfile::NamedTempFile,
+    path: PathBuf,
+    cancellation: &watch::Receiver<Option<&'static str>>,
+) -> io::Result<PathBuf> {
+    // The commit is atomic relative to cancellation notification: a commit
+    // already holding this guard may finish, but none starts after cancellation.
+    let reason = cancellation.borrow();
+    if let Some(reason) = *reason {
+        return Err(io::Error::new(io::ErrorKind::Interrupted, reason));
+    }
     file.persist(&path).map_err(|error| error.error)?;
     Ok(path)
 }
@@ -592,6 +615,34 @@ fn write_record(root: &Path, pending: &PendingAssessment) -> io::Result<PathBuf>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // {test}`requirements.authoring.batch`
+    // {test}`requirements.authoring.persistence`
+    #[test]
+    fn cancellation_after_staging_prevents_replacement_but_preserves_committed_evidence() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("record.json");
+        fs::write(&path, "old").unwrap();
+        let staged = || {
+            let mut file = tempfile::NamedTempFile::new_in(root.path()).unwrap();
+            write!(file, "new").unwrap();
+            file
+        };
+        let (cancel, receiver) = watch::channel(None);
+        let file = staged();
+        cancel.send(Some("cancelled")).unwrap();
+        assert_eq!(
+            persist_record(file, path.clone(), &receiver)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::Interrupted
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), "old");
+        cancel.send(None).unwrap();
+        persist_record(staged(), path.clone(), &receiver).unwrap();
+        cancel.send(Some("cancelled")).unwrap();
+        assert_eq!(fs::read_to_string(path).unwrap(), "new");
+    }
 
     // {test}`requirements.authoring.cache_warmup`
     #[test]

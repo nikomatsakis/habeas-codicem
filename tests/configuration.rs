@@ -510,9 +510,9 @@ fn workspace_defaults_and_configs_combine_with_existing_user_selections() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().canonicalize().unwrap();
     let user_path = root.join("user.toml");
-    let mut user = UserConfig::parse("version = 1\n[authoring]\ndefault = 'user'\n[authoring.configs.user]\nbackend = 'bedrock'\nmodel = 'user-model'\naws_profile = 'user-profile'\n[authoring.configs.shared]\nbackend = 'bedrock'\nmodel = 'old-model'\nregion = 'us-west-2'\nconcurrency = 7\n", &user_path).unwrap();
+    let mut user = UserConfig::parse("version = 1\n[authoring]\ndefault = 'user'\n[authoring.configs.user]\nbackend = 'bedrock'\nmodel = 'user-model'\naws_profile = 'user-profile'\n[authoring.configs.shared]\nbackend = 'bedrock'\nmodel = 'old-model'\nregion = 'us-west-2'\nconcurrency = 7\noptions = { temperature = 0.25, top_p = 0.5 }\n", &user_path).unwrap();
     let path = root.join("habeas.toml");
-    fs::write(&path, "version = 1\n[authoring]\ndefault = 'workspace'\n[authoring.configs.workspace]\nbackend = 'ollama'\nmodel = 'workspace-model'\n[authoring.configs.shared]\nbackend = 'ollama'\nmodel = 'replacement'\n").unwrap();
+    fs::write(&path, "version = 1\n[authoring]\ndefault = 'workspace'\n[authoring.configs.workspace]\nbackend = 'ollama'\nmodel = 'workspace-model'\n[authoring.configs.shared]\nbackend = 'ollama'\nmodel = 'replacement'\noptions = { temperature = 0.8 }\n").unwrap();
     let mut workspace = load_workspace_config(&root).unwrap().unwrap();
     let selected = resolve_authoring_with_workspace_from(
         &user_path,
@@ -534,6 +534,10 @@ fn workspace_defaults_and_configs_combine_with_existing_user_selections() {
     .unwrap();
     assert_eq!(replaced.config_path, path);
     assert_eq!(replaced.concurrency, None);
+    assert_eq!(
+        replaced.backend.options_json().unwrap(),
+        serde_json::json!({"temperature":0.8})
+    );
     assert!(
         matches!(&replaced.backend, BackendConfig::Ollama(config) if config.model == "replacement" && config.endpoint.is_none())
     );
@@ -685,7 +689,7 @@ fn unknown_selections_name_the_file_that_made_them() {
 #[test]
 fn explicit_credentials_round_trip_but_diagnostics_and_debug_redact_them() {
     let path = Path::new("habeas.toml");
-    let source = "version = 1\n[authoring.configs.cloud]\nbackend = 'bedrock'\nmodel = 'm'\n[authoring.configs.cloud.credentials]\naccess_key_id = 'PRIVATE_ACCESS_KEY'\nsecret_access_key = 'PRIVATE_SECRET_KEY'\nsession_token = 'PRIVATE_SESSION'\n[authoring.configs.local]\nbackend = 'ollama'\nmodel = 'm'\napi_key = 'PRIVATE_OLLAMA_KEY'\n";
+    let source = "version = 1\n[authoring.configs.cloud]\nbackend = 'bedrock'\nmodel = 'm'\n[authoring.configs.cloud.credentials]\naccess_key_id = 'PRIVATE_ACCESS_KEY'\nsecret_access_key = 'PRIVATE_SECRET_KEY'\nsession_token = 'PRIVATE_SESSION'\n[authoring.configs.local]\nbackend = 'ollama'\nmodel = 'm'\napi_key = 'PRIVATE_OLLAMA_KEY'\n[authoring.configs.openai]\nbackend = 'openai'\napi_key = 'PRIVATE_OPENAI_KEY'\n";
     let config = WorkspaceConfig::parse(source, path).unwrap();
     let debug = format!("{config:?}");
     for secret in [
@@ -693,6 +697,7 @@ fn explicit_credentials_round_trip_but_diagnostics_and_debug_redact_them() {
         "PRIVATE_SECRET_KEY",
         "PRIVATE_SESSION",
         "PRIVATE_OLLAMA_KEY",
+        "PRIVATE_OPENAI_KEY",
     ] {
         assert!(!debug.contains(secret), "{debug}");
     }
@@ -1686,6 +1691,7 @@ fn openai_configuration_preserves_model_and_resolves_credentials() {
 
 // {test}`requirements.authoring.policy`
 // {test}`requirements.authoring.openai_defaults`
+// {test}`requirements.authoring.configuration_structure`
 #[test]
 fn openai_policy_defaults_to_once_without_changing_explicit_policy() {
     use habeas::config::AssessmentPolicy;

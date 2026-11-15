@@ -44,7 +44,9 @@ A denied mandatory input MUST abort only the affected assessment under
 {cite}`requirements.authoring.read_denial.mandatory`. Interruption MUST instead stop the
 whole batch: queued assessments MUST NOT start, running assessments MUST be
 cancelled, and an assessment whose evidence has not been written when the
-interruption arrives MUST NOT write it. Evidence already written MUST be
+interruption is observed MUST NOT begin committing it. After preparing a
+temporary evidence file, the harness MUST check interruption again before its
+atomic replacement; a replacement already in progress MAY finish. Evidence already written MUST be
 retained, and the command MUST report the number of assessments not started as
 a batch failure.
 
@@ -654,7 +656,7 @@ harness with the selected source text, using the existing evidence schema.
 {cite}`requirements.ci.schema`
 Required terminology dependencies MUST be returned alongside it as additional
 definition inputs under {cite}`requirements.definitions.authoring_inputs`.
-The result MUST have this shape:
+For item, requirement, and definition selections, the result MUST have this shape:
 
 ```text
 HabeasResult {
@@ -662,6 +664,10 @@ HabeasResult {
     definitions: Array<DefinitionInput>,
 }
 ```
+
+Line-range selections can contain multiple outline nodes. Their result MUST use
+`inputs: Array<EvidenceInput>` instead of the singular `input` field, including
+when only one node is selected.
 
 `definitions` MUST be empty when no additional terminology is required. The
 harness MUST record inputs supplied to the model in the assessment's evidence.
@@ -1311,7 +1317,7 @@ ProjectSelection {
 AuthoringConfig {
     backend: BackendConfig,                   // tagged union, flattened in TOML
     concurrency: Optional<PositiveInteger>,   // simultaneous assessments
-    policy: Optional<AssessmentPolicy>,       // default: Confirm
+    policy: Optional<AssessmentPolicy>,       // default: Once for OpenAI; Confirm otherwise
 }
 
 AssessmentPolicy = Confirm | Once             // TOML: "confirm" or "once"
