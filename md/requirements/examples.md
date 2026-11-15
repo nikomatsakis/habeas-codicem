@@ -9,7 +9,7 @@ Every defined example MUST have an `evidence/<full-example-name>.json` file whos
 :::
 
 :::{req} index
-When a `{requirements-index}` chapter exists, it MUST list examples as well as requirements, identify each entry's kind, and show each example's evidence state. Example detail pages and their links MUST follow {cite}`requirements.index.detail_pages` and {cite}`requirements.index.navigation`; references to an example MUST link to its definition.
+The requirements index MUST list examples as well as requirements, identify each entry's kind, and show each example's evidence state. Example detail pages and their links MUST follow {cite}`requirements.index.detail_pages` and {cite}`requirements.index.navigation`; references to an example MUST link to its definition.
 :::
 
 ## Examples as authoring inputs

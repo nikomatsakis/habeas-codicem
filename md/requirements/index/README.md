@@ -1,15 +1,19 @@
 # Book rendering
 
 :::{req} chapter
-An mdBook chapter MAY contain one standalone `{requirements-index}` directive with an empty body, opened by at least three colons and closed by at least as many. A book MUST contain no more than one such directive. When present, `habeas mdbook` MUST replace it with a table of all requirements defined in rendered chapters, each linking to its evidence detail page under {cite}`requirements.index.detail_pages`.
+An mdBook chapter MAY contain one standalone `{requirements-index}` directive with an empty body, opened by at least three colons and closed by at least as many. A book MUST contain no more than one such directive. `habeas mdbook` MUST render a requirements index listing all requirements defined in rendered chapters, each linking to its evidence detail page under {cite}`requirements.index.detail_pages`. When a directive is present, it MUST replace the directive with the index table; otherwise, it MUST generate the chapter specified by {cite}`requirements.index.chapter.default`.
+:::
+
+:::{req} chapter.default
+When a book contains no standalone `{requirements-index}` directive, `habeas mdbook` MUST append a new top-level chapter titled "Requirements index" at `requirements-index.md`, containing the index table, even when the book defines no requirements or examples. The generated chapter MUST have no source file or edit target. Its section number MUST be one greater than the largest numbered top-level chapter, or 1 when no top-level chapter is numbered.
 :::
 
 :::{req} detail_pages
-When a requirements index exists, `habeas mdbook` MUST generate one evidence detail
+`habeas mdbook` MUST generate one evidence detail
 page for every requirement and named example defined in a rendered chapter.
 Each page MUST be a subchapter of the index chapter, in definition order,
 titled by the definition's full name, at a path derived from the index chapter's
-path. Without an index, it MUST NOT generate detail pages.
+path.
 Books configured by {cite}`requirements.cli.setup` fold these subchapters in the
 sidebar until a reader expands the index chapter.
 :::
@@ -23,7 +27,7 @@ Each evidence detail page MUST display its state as a Shields.io static badge im
 :::
 
 :::{req} navigation
-Each requirement and example definition badge MUST link to its own anchored definition on the current page. When an index exists, the badge MUST have a separate adjacent link containing an accessible right-arrow icon in an integrated segment matching the badge color linking to its evidence detail page. The badge and arrow MUST remain aligned in one non-wrapping row. Without an index, the icon MUST be absent while the definition permalink remains. Definitions MUST NOT be followed by a separate plaintext evidence link. Each detail page MUST link back to the definition's anchored badge and, when an index exists, to the index. Reference badges MUST continue to link to the definition. These links MUST resolve when a requirement name contains `.md`, as in `requirements.cli.mdbook`.
+Each requirement and example definition badge MUST link to its own anchored definition on the current page. The badge MUST have a separate adjacent link containing an accessible right-arrow icon in an integrated segment matching the badge color linking to its evidence detail page. The badge and arrow MUST remain aligned in one non-wrapping row. Definitions MUST NOT be followed by a separate plaintext evidence link. Each detail page MUST link back to the definition's anchored badge and to the index. Reference badges MUST continue to link to the definition. These links MUST resolve when a requirement name contains `.md`, as in `requirements.cli.mdbook`.
 :::
 
 :::{req} source_links
@@ -31,7 +35,7 @@ When `output.html.git-repository-url` names a GitHub repository and `output.html
 :::
 
 :::{req} path_conflicts
-The mdBook preprocessor MUST report an error when a generated evidence detail page would use the path of an existing book chapter.
+The mdBook preprocessor MUST report an error when a generated requirements index or evidence detail page would use the path of an existing book chapter.
 :::
 
 :::{req} invalid_detail
