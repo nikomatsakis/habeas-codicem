@@ -20,6 +20,10 @@ pub(super) struct UsageRecord {
     pub subject_kind: Option<String>,
     pub backend: Option<String>,
     pub model: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub attempts: Vec<PathBuf>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub routing_reason: Option<&'static str>,
     /// The assessment policy, once a configuration is selected.
     // {impl}`requirements.authoring.policy`
     pub policy: Option<&'static str>,
@@ -127,6 +131,8 @@ impl UsageLog {
                 subject_kind: None,
                 backend: None,
                 model: None,
+                attempts: Vec::new(),
+                routing_reason: None,
                 policy: None,
                 start_time_ms,
                 end_time_ms: None,
@@ -152,6 +158,11 @@ impl UsageLog {
         };
         log.save()?;
         Ok(log)
+    }
+
+    // {impl}`requirements.authoring.adaptive`
+    pub(super) fn handoff_first_request(&mut self, next: &mut Self) {
+        next.first_request_finished = self.first_request_finished.take();
     }
 
     pub(super) fn prepared(&mut self, origin: &str, inputs: &[Value]) {

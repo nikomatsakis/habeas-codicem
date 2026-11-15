@@ -1684,6 +1684,40 @@ fn openai_configuration_preserves_model_and_resolves_credentials() {
     );
 }
 
+// {test}`requirements.authoring.policy`
+// {test}`requirements.authoring.openai_defaults`
+#[test]
+fn openai_policy_defaults_to_once_without_changing_explicit_policy() {
+    use habeas::config::AssessmentPolicy;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    for (extra, expected) in [
+        ("", AssessmentPolicy::Once),
+        ("policy = 'confirm'\n", AssessmentPolicy::Confirm),
+    ] {
+        let config = UserConfig::parse(
+            &format!("version = 1\n[authoring.configs.api]\nbackend = 'openai'\n{extra}"),
+            &path,
+        )
+        .unwrap();
+        let resolved =
+            resolve_authoring_from(&path, Some(&config), dir.path(), Some("api")).unwrap();
+        assert_eq!(resolved.effective_policy(None), expected);
+        assert_eq!(
+            resolved.effective_policy(Some(AssessmentPolicy::Confirm)),
+            AssessmentPolicy::Confirm
+        );
+        assert_eq!(
+            resolved.effective_policy(Some(AssessmentPolicy::Once)),
+            AssessmentPolicy::Once
+        );
+        assert_eq!(
+            config.to_toml().unwrap().contains("policy ="),
+            !extra.is_empty()
+        );
+    }
+}
+
 // {test}`requirements.authoring.openai_defaults`
 // {test}`requirements.authoring.configuration_structure`
 // {test}`requirements.authoring.configuration_serialization`
@@ -1694,15 +1728,15 @@ fn openai_defaults_are_effective_only_and_explicit_values_win() {
     let base =
         "version = 1\n[authoring.configs.api]\nbackend = 'openai'\napi_key = 'fixture-key'\n";
     for (extra, model, effort) in [
-        ("", "gpt-6.1-sol", Some("low")),
+        ("", "adaptive", Some("low")),
         (
             "[authoring.configs.api.options.reasoning]\nsummary = 'auto'\n",
-            "gpt-6.1-sol",
+            "adaptive",
             Some("low"),
         ),
         (
             "[authoring.configs.api.options.reasoning]\neffort = 'medium'\n",
-            "gpt-6.1-sol",
+            "adaptive",
             Some("medium"),
         ),
         ("model = 'gpt-6-luna'\n", "gpt-6-luna", Some("low")),

@@ -718,7 +718,7 @@ impl OllamaConfig {
 impl OpenAiConfig {
     // {impl}`requirements.authoring.openai_defaults`
     pub fn model(&self) -> &str {
-        self.model.as_deref().unwrap_or("gpt-6.1-sol")
+        self.model.as_deref().unwrap_or("adaptive")
     }
 
     // {impl}`requirements.configuration.serialization`
@@ -754,10 +754,16 @@ impl ResolvedAuthoringConfig {
     }
 
     /// The policy from `--policy` when given, otherwise from this
-    /// configuration, otherwise `confirm`.
+    /// configuration, otherwise `once` for OpenAI and `confirm` for other backends.
     // {impl}`requirements.authoring.policy`
     pub fn effective_policy(&self, explicit: Option<AssessmentPolicy>) -> AssessmentPolicy {
-        explicit.or(self.policy).unwrap_or_default()
+        explicit.or(self.policy).unwrap_or({
+            if matches!(self.backend, BackendConfig::Openai(_)) {
+                AssessmentPolicy::Once
+            } else {
+                AssessmentPolicy::Confirm
+            }
+        })
     }
 
     pub fn effective_concurrency(&self) -> usize {

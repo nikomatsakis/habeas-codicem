@@ -65,7 +65,7 @@ enum Command {
         /// Assess every selected subject, including those with current evidence.
         #[arg(long)]
         force: bool,
-        /// The assessment policy: `confirm` (the default) checks each true or
+        /// The assessment policy: `confirm` checks each true or
         /// FIXME result in further independent conversations; `once` records a
         /// single assessment.
         #[arg(long, value_name = "name")]

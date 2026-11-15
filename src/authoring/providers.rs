@@ -81,9 +81,12 @@ impl ProviderBackoff {
                 (None, Some(code)) => code,
                 (None, None) => error.to_string(),
             };
-            return Retry::Stop(io::Error::other(format!(
-                "the provider kept failing for a minute after {attempts} attempts; last failure: {last}"
-            )));
+            return Retry::Stop(io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!(
+                    "the provider kept failing for a minute after {attempts} attempts; last failure: {last}"
+                ),
+            ));
         }
         Retry::Wait(delay)
     }
@@ -576,7 +579,10 @@ mod tests {
                         ),
                     };
                     match backoff.retry(again, start + RETRY_LIMIT * 3) {
-                        Retry::Stop(error) => error.to_string(),
+                        Retry::Stop(error) => {
+                            assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+                            error.to_string()
+                        }
                         Retry::Wait(_) => panic!("retrying passed the limit"),
                     }
                 }

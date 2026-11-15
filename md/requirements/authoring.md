@@ -1338,7 +1338,7 @@ OllamaConfig {
 }
 
 OpenAiConfig {
-    model: Optional<ModelId>,                 // default: gpt-6.1-sol
+    model: Optional<ModelId>,                 // default: adaptive
     endpoint: Optional<String>,               // default: https://api.openai.com/v1
     api_key_env: Optional<EnvironmentVariableName>, // default: OPENAI_API_KEY
     api_key: Optional<SecretString>,
@@ -1379,7 +1379,7 @@ Serialization MUST follow the common rules in
 :::{req} openai_defaults
 {impl}`requirements.configuration.feature_sections`
 An OpenAI configuration MAY omit `model`; the effective model MUST then be
-`gpt-6.1-sol`. When `options.reasoning.effort` is omitted, the request MUST use
+`adaptive` under {cite}`requirements.authoring.adaptive`. When `options.reasoning.effort` is omitted, the request MUST use
 `low` effort, preserving other reasoning options. When `options.max_output_tokens`
 is omitted, the request MUST use an output-token limit of 16,384. These option
 defaults MUST apply even when the model is overridden. An explicit model,
@@ -1388,13 +1388,39 @@ Defaults MUST NOT be written into omitted configuration fields on serialization.
 An explicitly empty model MUST still be rejected.
 :::
 
+:::{req} adaptive
+For the OpenAI backend, `model = "adaptive"` MUST select models locally rather
+than send `adaptive` to the API. An assessment with an applicable existing
+FIXME reference MUST go directly to `gpt-6.1-sol`. Otherwise it MUST begin with
+`gpt-5.4-mini`: a true judgment is accepted, while false, FIXME, or a failed
+conversation/submission MUST trigger one fresh Sol assessment. Sol's result
+MUST be final for that assessment, including a false judgment or failure.
+Provider errors, cancellation, mandatory-input failures, connection failures,
+and usage-storage failures MUST NOT trigger model escalation.
+
+Applicable FIXMEs MUST follow the subject's existing scope rules: requirement
+references outside its own distributed sites, or the reviewed site's own FIXMEs.
+Citation reviews have no applicable acknowledgments. Matching a literal word
+inside unrelated text MUST NOT trigger pre-escalation.
+
+Both tiers MUST inherit the selected credentials, endpoint, and inference
+options. Explicit concrete model IDs MUST bypass adaptive routing. Each actual
+model attempt MUST have a separate usage record with its real model name;
+the adaptive record MUST link its attempts and record any routing reason.
+Escalation MUST NOT persist intermediate mini evidence or pass mini's rationale
+to Sol. Under explicit `confirm`, each independent assessment MUST use adaptive
+routing; disagreements MUST be verified by Sol using the existing confirmation
+selection rules. Adaptive routing MUST NOT perform sampled audits.
+:::
+
 :::{req} policy
 Every `habeas author` form MUST assess its subjects under an assessment policy,
 `confirm` or `once`. The policy MUST come from `--policy <name>` when given,
 otherwise from the selected configuration's `policy`, and otherwise MUST be
-`confirm`. Under `confirm`, each subject MUST be assessed as
+`once` for OpenAI and `confirm` for other backends. Under `confirm`, each subject MUST be assessed as
 {cite}`requirements.authoring.confirmation` specifies. Under `once`, each subject
-MUST receive a single assessment, whose result is recorded; it uses fewer tokens
+MUST receive a single assessment (including model escalation under
+{cite}`requirements.authoring.adaptive`), whose result is recorded; it uses fewer tokens
 and less time, such as with a slow local model. An unknown policy name MUST be
 rejected as invalid configuration or arguments. The completion report MUST name
 the policy used, and each usage record MUST identify it.
@@ -1706,9 +1732,10 @@ Ollama endpoint to use localhost.
 
 For OpenAI, set `OPENAI_API_KEY` to your API key outside the file and use this
 complete user `config.toml` with a credential-source reference. The default
-model is Sol (`gpt-6.1-sol`) with low reasoning effort, also called “Sol-low”,
-and an output-token limit of 16,384.
-This is a model-and-effort combination, not an API model ID.
+model is `adaptive`: GPT-5.4-mini first, escalating to Sol for false/FIXME
+judgments or failed submissions, and going directly to Sol for applicable
+existing FIXMEs. Both tiers use low reasoning effort and an output-token limit
+of 16,384. `adaptive` is a harness model, not an API model ID.
 
 ```toml
 version = 1
@@ -1727,6 +1754,11 @@ environment variable. To keep the key in your user file instead, replace
 `OPENAI_API_KEY_VALUE`. OpenAI uses
 the Responses API at `https://api.openai.com/v1`; `endpoint` overrides that base URL.
 
+Adaptive accepts mini's `true` judgments without a Sol audit. It can therefore
+miss gaps that mini overlooks; the initial calibration run missed a known
+pagination boundary bug. Set `model = "gpt-6.1-sol"` to assess every subject
+with Sol, or explicitly choose `policy = "confirm"` for independent confirmation.
+
 To override the defaults, add `model = "gpt-6-luna"` to the profile and/or
 `reasoning = { effort = "medium" }` under its `options` table. Set
 `max_output_tokens = 8192` in that same options table to override the output
@@ -1734,9 +1766,10 @@ limit. The `low` effort and 16,384-token defaults also apply to other OpenAI
 models; override them with values supported by the selected model. Inference
 options are Responses API parameters.
 
-`policy = "once"` runs a single assessment conversation per subject. If omitted,
-`confirm` independently reassesses true or FIXME results and uses a third
-conversation to resolve disagreement. `concurrency = 1` assesses batch subjects
+OpenAI defaults to `policy = "once"`: one assessment per subject, including
+adaptive escalation if needed. Explicit `policy = "confirm"` independently
+reassesses true or FIXME results and uses a third conversation to resolve
+disagreement. Other backends continue to default to `confirm`. `concurrency = 1` assesses batch subjects
 one at a time; if omitted, OpenAI defaults to the available logical CPU count.
 These settings are optional and independent of model selection.
 

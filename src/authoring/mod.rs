@@ -1,6 +1,7 @@
 //! Model-assisted evidence authoring, invoked explicitly and never by validation.
 
 pub(crate) mod access;
+mod adaptive;
 mod batch;
 mod inputs;
 mod line_numbers;
@@ -499,6 +500,10 @@ async fn configured_record(
     // Mandatory inputs are prepared, and an unreadable one reported, before
     // connecting to the provider.
     let sources = subject.sources(root)?;
+    if matches!(&config.backend, config::BackendConfig::Openai(openai) if openai.model() == "adaptive")
+    {
+        return adaptive::assess(root, subject, config, sources, usage, policy).await;
+    }
     let provider = RigProvider::connect(&config.backend)
         .await
         .map_err(|error| {
@@ -586,6 +591,29 @@ async fn assess_subject(
         Err(error) => Err(error),
     };
     let verification = finish_followup(log, "verification", result)?;
+    let chosen = confirmed_record(
+        less,
+        more,
+        &first_kind,
+        &second_kind,
+        &less_kind,
+        verification,
+    );
+    usage.record.determination = Some(chosen.0.kind().into());
+    usage.save()?;
+    Ok(chosen)
+}
+
+// {cite}`habeas:util`
+fn confirmed_record(
+    less: (Judgment, Value),
+    more: (Judgment, Value),
+    first_kind: &str,
+    second_kind: &str,
+    less_kind: &str,
+    verification: Verification,
+) -> (Judgment, Value) {
+    let applies = |assessment: &(Judgment, Value)| assessment.1["applies"].as_bool();
     let (mut chosen, conclusion) = if !verification.real {
         // A verifier deciding `applies` otherwise than the more favorable
         // assessment establishes `true` on its own rationale.
@@ -628,9 +656,7 @@ async fn assess_subject(
         chosen.1["rationale"].as_str().unwrap_or_default().trim()
     );
     chosen.1["rationale"] = Value::String(rationale);
-    usage.record.determination = Some(chosen.0.kind().into());
-    usage.save()?;
-    Ok(chosen)
+    chosen
 }
 
 /// Orders assessments: `false` is less favorable than FIXME, and FIXME
