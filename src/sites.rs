@@ -912,6 +912,7 @@ no_match:
 
     // {test}`requirements.references.distributed`
     #[test]
+    // {test}`requirements.authoring.no_line_numbers`
     fn sites_are_the_innermost_nodes_of_site_matches_and_violations_within_them() {
         let temp = project(RULE, SOURCE);
         let (errors, sites) = inspect(temp.path());

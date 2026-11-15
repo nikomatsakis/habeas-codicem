@@ -530,6 +530,7 @@ mod tests {
     // {test}`requirements.authoring.tool_descriptions.special_cases`
     // {test}`requirements.authoring.result_pages`
     #[test]
+    // {test}`requirements.authoring.file_discovery`
     fn large_listings_and_outlines_page_whole_entries_in_order() {
         let root = project();
         let names = (0..800)

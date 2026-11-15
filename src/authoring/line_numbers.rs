@@ -43,12 +43,20 @@ static PATH_POSITION: LazyLock<Regex> = LazyLock::new(|| {
 static FILE_POSITION: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(\S+?):\d+: ").expect("file position pattern"));
 
+/// A file-level diagnostic uses the empty outline selector (the root node).
+static FILE_DIAGNOSTIC: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"((?:[\w.-]+/)*[\w-]+\.[A-Za-z][A-Za-z0-9]*): ").expect("file diagnostic pattern")
+});
+
 /// A tool error as the model receives it: without the source lines a parse
-/// error or diagnostic names, which the model did not supply.
+/// error or diagnostic names, which the model did not supply. Such locations
+/// use the empty outline selector, `file#`, because malformed sources may not
+/// have a parseable inner node.
 // {impl}`requirements.authoring.no_line_numbers`
 pub(crate) fn without_source_lines(error: &str) -> String {
     let error = PARSE_POSITION.replace_all(error, "");
-    let error = FILE_POSITION.replace_all(&error, "$1: ");
+    let error = FILE_DIAGNOSTIC.replace_all(&error, "$1#: ");
+    let error = FILE_POSITION.replace_all(&error, "$1#: ");
     // A line or range the model supplied, `file:N` or `file:N-M`, is
     // repeated as it gave it.
     PATH_POSITION
@@ -61,7 +69,7 @@ pub(crate) fn without_source_lines(error: &str) -> String {
             if rest.starts_with(" is not an inclusive range") {
                 whole.as_str().to_owned()
             } else {
-                captures[1].to_owned()
+                format!("{}#", &captures[1])
             }
         })
         .into_owned()
@@ -172,7 +180,7 @@ mod tests {
     fn tool_errors_drop_the_source_line_of_a_parse_error() {
         assert_eq!(
             without_source_lines("src/a.rs: cannot parse Rust source: line 3: unexpected token"),
-            "src/a.rs: cannot parse Rust source: unexpected token"
+            "src/a.rs#: cannot parse Rust source: unexpected token"
         );
         // Both forms `read_lines` reports keep the numbers the model gave.
         for requested in ["9", "3-9"] {
@@ -183,21 +191,21 @@ mod tests {
         }
         assert_eq!(
             without_source_lines("md/rules.md:12: query checkers is not closed"),
-            "md/rules.md: query checkers is not closed"
+            "md/rules.md#: query checkers is not closed"
         );
         assert_eq!(
             without_source_lines("md/b.md:4: duplicate requirement r; first declared at md/a.md:3"),
-            "md/b.md: duplicate requirement r; first declared at md/a.md"
+            "md/b.md#: duplicate requirement r; first declared at md/a.md#"
         );
         assert_eq!(
             without_source_lines(
                 "md/rules.md: query q: the yaml block must be a mapping: invalid type at line 2, column 5"
             ),
-            "md/rules.md: query q: the yaml block must be a mapping: invalid type"
+            "md/rules.md#: query q: the yaml block must be a mapping: invalid type"
         );
         assert_eq!(
             without_source_lines("habeas.toml: invalid TOML syntax at line 3, column 1"),
-            "habeas.toml: invalid TOML syntax"
+            "habeas.toml#: invalid TOML syntax"
         );
     }
 

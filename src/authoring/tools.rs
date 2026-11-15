@@ -2215,6 +2215,14 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(paths.contains(&"generated"));
         assert!(paths.contains(&external.path().to_str().unwrap()));
+        let external_listing =
+            dispatch(&sources, "list_files", &json!({"path":external.path()})).unwrap();
+        assert_eq!(
+            external_listing.result,
+            json!([{"path":external.path().join("outside.txt"),"kind":"file"}])
+        );
+        assert!(external_listing.inputs.is_empty());
+
         let search = dispatch(
             &sources,
             "ripgrep",
@@ -3560,6 +3568,15 @@ mod tests {
         )
         .unwrap();
         assert_eq!(named(&rust.result), ["untracked.rs"]);
+        for delivery in [&listing, &rust] {
+            assert!(delivery.inputs.is_empty());
+            let text = delivery.result.to_string();
+            assert!(
+                !text.contains("fn needle") && !text.contains("a needle here"),
+                "{text}"
+            );
+        }
+
         // Nothing untracked matches: no not_listed.
         let none = dispatch(&sources, "ripgrep", &json!({"pattern": "tracked\\(\\)"})).unwrap();
         assert!(none.result.get("not_listed").is_none(), "{}", none.result);

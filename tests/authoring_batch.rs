@@ -854,6 +854,14 @@ fn terminal_progress_distinguishes_judgments_from_authoring_errors() {
     );
     assert!(plain.contains("100%"), "{plain}");
     assert!(plain.contains("6/6 finished"), "{plain}");
+    let elapsed = regex::Regex::new(r"\[\d{2}:\d{2}:\d{2}\]").unwrap();
+    assert!(
+        plain
+            .split(['\r', '\n'])
+            .any(|line| line.contains("Authoring") && elapsed.is_match(line)),
+        "{plain}"
+    );
+
     assert!(plain.contains("Finished"), "{plain}");
     let final_counts = plain
         .split(['\r', '\n'])
@@ -1758,6 +1766,7 @@ fn confirm_runs_a_second_assessment_with_its_own_usage_record() {
 // {test}`requirements.authoring.confirmation`
 // {test}`requirements.authoring.batch`
 #[test]
+// {test}`requirements.authoring.policy`
 fn confirm_with_all_runs_a_second_assessment_for_each_batch_subject() {
     let server = Server::start(false, None);
     let fixture = Fixture::new(&server.endpoint, None);
@@ -2238,7 +2247,8 @@ fn github_reads_do_not_cache_in_a_state_root_inside_the_project() {
             "{}",
             String::from_utf8_lossy(&status.stderr)
         );
-        assert!(github.requests() > before, "status still reads GitHub");
+        assert_eq!(github.requests(), before, "no uncached fallback");
+        assert!(String::from_utf8_lossy(&status.stderr).contains("cannot locate GitHub cache"));
         assert!(!written.exists(), "{state:?}");
         let author = run(&["author", "--all"]);
         assert!(!author.status.success());

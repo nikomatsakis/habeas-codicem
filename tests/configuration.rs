@@ -256,6 +256,7 @@ fn authoring_policy_defaults_to_confirm_and_round_trips() {
 // {test}`requirements.authoring.configuration`
 // {test}`requirements.configuration.loading`
 #[test]
+// {test}`requirements.authoring.configuration_structure`
 fn explicit_project_and_default_selections_choose_whole_configs() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().canonicalize().unwrap();
@@ -746,6 +747,7 @@ fn explicit_credentials_round_trip_but_diagnostics_and_debug_redact_them() {
             "secret_access_key = 'PRIVATE_SECRET_KEY'",
             "secret_access_key = ''",
         ),
+        source.replace("access_key_id = 'PRIVATE_ACCESS_KEY'", "access_key_id = ''"),
         source.replace("session_token = 'PRIVATE_SESSION'", "session_token = ''"),
         source.replace("api_key = 'PRIVATE_OLLAMA_KEY'", "api_key = ''"),
     ] {

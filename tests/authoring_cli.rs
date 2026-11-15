@@ -5009,6 +5009,7 @@ fn adaptive_routes_fresh_assessments_and_records_each_model() {
 // {test}`requirements.authoring.persistence`
 // {test}`requirements.authoring.policy`
 #[test]
+// {test}`requirements.authoring.confirmation`
 fn adaptive_sol_failure_is_final_and_confirm_uses_sol_verification() {
     let response = |name: &str, arguments: Value| {
         json!({

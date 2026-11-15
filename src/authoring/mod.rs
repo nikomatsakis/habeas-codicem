@@ -1820,7 +1820,9 @@ mod tests {
             // then submitted in a second request.
             let requests = provider.requests.borrow();
             assert_eq!(requests.len(), 2, "{read}");
-            let message = serde_json::to_string(&failure.to_string()).unwrap();
+            let message =
+                serde_json::to_string(&line_numbers::without_source_lines(&failure.to_string()))
+                    .unwrap();
             let message = message.trim_matches('"');
             assert!(!requests[0].to_string().contains(message), "{read}");
             assert!(requests[1].to_string().contains(message), "{read}");
@@ -2465,6 +2467,41 @@ mod tests {
         }
     }
 
+    // {test}`requirements.authoring.line_numbers.rejection`
+    #[tokio::test]
+    async fn verification_line_citations_are_rejected_with_the_correct_retry_tool() {
+        let project = inputs::tests::project();
+        let mut sources = AssessmentSources::prepare(project.path(), "requirements.ready").unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let mut usage =
+            UsageLog::start(state.path(), project.path(), &sources.subject_name).unwrap();
+        let provider = RecordingProvider::new(vec![
+            verdict(true, &[], "src/lib.rs:3 fails."),
+            verdict(true, &[], "`src/lib.rs#fn[ready]` fails."),
+        ]);
+        let result = verify(
+            &provider,
+            &mut sources,
+            &mut usage,
+            &Judgment::False,
+            "A gap.",
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.rationale, "`src/lib.rs#fn[ready]` fails.");
+        let prompts = provider.prompts();
+        assert_eq!(prompts.len(), 2);
+        assert!(prompts[1].0.contains("Call submit_verification once more"));
+        assert!(prompts[1].0.contains("src/lib.rs:3"));
+        assert_eq!(
+            serde_json::to_value(&usage.record).unwrap()["requests"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+
     // A first submission giving no line numbers is accepted at once.
     // {test}`requirements.authoring.line_numbers.rejection`
     #[tokio::test]
@@ -2912,6 +2949,17 @@ mod tests {
                     judgment(json!(true), "Looks complete."),
                     judgment(json!(false), "The empty case is unhandled."),
                     verdict(true, &[], "The empty case panics."),
+                ],
+                Judgment::False,
+                1,
+                "found an unacknowledged real gap",
+            ),
+            // A false assessment ranks below an acknowledged gap.
+            (
+                vec![
+                    judgment(json!({"FIXME": ["#7"]}), "Only the known gap."),
+                    judgment(json!(false), "An additional unacknowledged gap."),
+                    verdict(true, &[], "The additional gap is real."),
                 ],
                 Judgment::False,
                 1,
@@ -3692,6 +3740,17 @@ no_match:
             ),
         );
         let root = project.path();
+        let declaration = crate::sites::tests::RULE.replace("Each checker MUST report problems instead of panicking.", "Each checker MUST report problems instead of panicking. {cite}`requirements.other` {term}`terms.value`");
+        fs::write(
+            root.join("md/requirements.md"),
+            format!("{declaration}\n:::{{req}} other\nOther MUST hold.\n:::\n"),
+        )
+        .unwrap();
+        fs::write(
+            root.join("md/terms.md"),
+            ":::{definition} value\n:phrase: value\nA useful value.\n:::\n",
+        )
+        .unwrap();
         let subject = AuthoringSubject::parse("sites:requirements.rule/src/lib.rs#fn[check_two]");
         assert_eq!(
             subject.evidence_path(root),
@@ -3702,7 +3761,17 @@ no_match:
         assert_eq!(mandatory[0]["file"], "src/lib.rs");
         assert_eq!(mandatory[0]["item"], "fn[check_two]");
         assert_eq!(mandatory[1]["requirements"], "requirements.rule");
-        assert_eq!(mandatory.len(), 2, "{mandatory:#?}");
+        assert_eq!(mandatory.len(), 4, "{mandatory:#?}");
+        assert!(
+            mandatory
+                .iter()
+                .any(|input| input["requirements"] == "requirements.other")
+        );
+        assert!(
+            mandatory
+                .iter()
+                .any(|input| input["definition"] == "terms.value")
+        );
 
         // The subject message names the requirement, the site's file and
         // selector, and each query match with its kind, name and lines.
@@ -3898,6 +3967,7 @@ no_match:
     // {test}`requirements.authoring.verifier_outcome`
     // {test}`requirements.authoring.habeas_background`
     #[tokio::test]
+    // {test}`requirements.authoring.judgment_rules`
     async fn site_assessments_differing_only_in_applies_are_verified() {
         let site = |applies: bool, determination: Value, rationale: &str| {
             (
@@ -3982,6 +4052,10 @@ no_match:
                 text.contains(&escaped(
                     "The reviewer judged site review sites:requirements.rule/src/lib.rs#fn[check_one] as"
                 )),
+                "{text}"
+            );
+            assert!(
+                text.contains(&escaped(approved_text("judgment_rules", 0))),
                 "{text}"
             );
             assert!(text.contains(&escaped(SITE_STEP)), "{text}");
