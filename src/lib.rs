@@ -1308,6 +1308,83 @@ mod tests {
         );
     }
 
+    // {test}`requirements.index.navigation`
+    #[test]
+    fn definition_badge_and_evidence_icon_share_colors() {
+        let mut book = Book::new();
+        book.push_item(Chapter::new(
+            "Rules",
+            ":::{req} ready\nReady.\n:::\n\n:::{example} case\nA case. {cite}`rules.ready`\n:::\n"
+                .into(),
+            "rules.md",
+            vec![],
+        ));
+        let root = book_root();
+        preprocess_book(&mut book, root.path()).unwrap();
+        let content = &book.chapters().next().unwrap().content;
+        for (kind, name) in [("req", "ready"), ("example", "case")] {
+            let segment = content
+                .split(&format!("id=\"habeas-{kind}-rules.{name}\""))
+                .nth(1)
+                .unwrap()
+                .split("</span>")
+                .next()
+                .unwrap();
+            let badge_color = segment
+                .split(&format!("/badge/{kind}-rules.{name}-"))
+                .nth(1)
+                .unwrap()
+                .split('?')
+                .next()
+                .unwrap();
+            let icon_color = segment
+                .split("style=\"background-color: #")
+                .nth(1)
+                .unwrap()
+                .split('"')
+                .next()
+                .unwrap();
+            assert_eq!(icon_color, badge_color, "{segment}");
+        }
+    }
+
+    // {test}`requirements.references.safe_badges`
+    // {test}`requirements.index.navigation`
+    #[test]
+    fn definition_evidence_link_targets_are_escaped() {
+        let mut book = Book::new();
+        book.push_item(Chapter::new(
+            "Rules",
+            ":::{req} ready\nReady.\n:::\n".into(),
+            "rules.md",
+            vec![],
+        ));
+        book.push_item(Chapter::new(
+            "Index",
+            ":::{requirements-index}\n:::\n".into(),
+            "a&b \"q\" <x>.md",
+            vec![],
+        ));
+        let root = book_root();
+        preprocess_book(&mut book, root.path()).unwrap();
+        let content = &book.chapters().next().unwrap().content;
+        let icon = content
+            .split("<a class=\"habeas-detail-icon\"")
+            .nth(1)
+            .unwrap()
+            .split("</a>")
+            .next()
+            .unwrap();
+        assert!(
+            icon.contains("href=\"a&amp;b &quot;q&quot; &lt;x&gt;/rules.ready.html\""),
+            "{icon}"
+        );
+        assert!(icon.contains("aria-label=\"View evidence for rules.ready\""));
+        assert!(!icon.contains("a&b"));
+        assert!(!icon.contains("\"q\""));
+        assert!(!icon.contains("<x>"));
+    }
+
     // {test}`requirements.ci.identifiers`
     #[test]
     fn chapter_path_prefixes_the_requirement_name() {
@@ -1517,6 +1594,39 @@ mod tests {
                 (selectors, declarations)
             })
             .collect()
+    }
+
+    // {test}`requirements.index.navigation`
+    #[test]
+    fn definition_badge_stylesheet_keeps_the_arrow_in_one_row() {
+        let rules = stylesheet_rules();
+        let declarations = |selector: &str| {
+            rules
+                .iter()
+                .filter(|(selectors, _)| selectors.iter().any(|candidate| candidate == selector))
+                .flat_map(|(_, declarations)| declarations.iter().map(String::as_str))
+                .collect::<Vec<_>>()
+        };
+        let wrapper = declarations(".habeas-definition-badge");
+        for declaration in [
+            "display: inline-flex",
+            "align-items: center",
+            "flex-wrap: nowrap",
+            "white-space: nowrap",
+        ] {
+            assert!(wrapper.contains(&declaration), "{wrapper:?}");
+        }
+        let links = declarations(".habeas-definition-badge > a");
+        assert!(links.contains(&"flex-shrink: 0"), "{links:?}");
+        let icon = declarations("a.habeas-detail-icon");
+        for declaration in [
+            "display: inline-flex",
+            "align-items: center",
+            "justify-content: center",
+            "height: 20px",
+        ] {
+            assert!(icon.contains(&declaration), "{icon:?}");
+        }
     }
 
     // {test}`requirements.references.book_badges`
