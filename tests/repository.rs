@@ -41,6 +41,9 @@ fn workflow_job(workflow: &str, name: &str) -> String {
 }
 
 // {test}`requirements.cli.mdbook`
+// {test}`requirements.index.chapter.default`
+// {test}`requirements.index.detail_pages`
+// {test}`requirements.index.navigation`
 #[test]
 fn mdbook_preprocessor_renders_definitions_between_stdin_and_stdout() {
     let temp = TempDir::new().unwrap();
@@ -91,8 +94,31 @@ fn mdbook_preprocessor_renders_definitions_between_stdin_and_stdout() {
         "{}",
         chapter.content
     );
-    assert_eq!(
+    assert!(chapter.sub_items.is_empty());
+    assert!(
+        chapter.content.contains("href=\"#habeas-req-rules.ready\""),
+        "{}",
+        chapter.content
+    );
+    assert!(
         chapter
+            .content
+            .contains("href=\"requirements-index/rules.ready.html\""),
+        "{}",
+        chapter.content
+    );
+    assert_eq!(rendered.items.len(), 2);
+    let BookItem::Chapter(index) = &rendered.items[1] else {
+        panic!("{rendered:?}");
+    };
+    assert_eq!(index.name, "Requirements index");
+    assert_eq!(
+        index.path.as_deref(),
+        Some(Path::new("requirements-index.md"))
+    );
+    assert!(index.source_path.is_none());
+    assert_eq!(
+        index
             .sub_items
             .iter()
             .filter_map(|item| match item {
