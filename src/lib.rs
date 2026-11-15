@@ -970,6 +970,17 @@ mod tests {
             )),
             "{rendered}"
         );
+        let inline = rendered
+            .split("Inline ")
+            .find(|part| part.contains(" is a badge."))
+            .unwrap();
+        let inline = inline.split(" is a badge.").next().unwrap();
+        assert!(inline.starts_with(&format!("<span class=\"habeas-req-badge habeas-req-ref-cite habeas-builtin\" title=\"{}\"><img", super::escape_html(util.text()))), "{inline}");
+        assert!(
+            inline.contains("habeas:util") && inline.ends_with("</span>"),
+            "{inline}"
+        );
+        assert!(!inline.contains("<a "), "{inline}");
         let badge = "<p><span class=\"habeas-req-badge habeas-req-ref-cite habeas-builtin\"";
         let fenced = rendered.find(badge).expect(&rendered);
         assert!(

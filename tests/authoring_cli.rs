@@ -983,16 +983,19 @@ fn author_rejects_unknown_subjects_and_conflicting_targets() {
 // {test}`requirements.authoring.usage_storage`
 #[cfg(unix)]
 #[test]
+// {test}`requirements.configuration.state_location`
 fn usage_record_identifies_its_run_and_unusable_state_is_reported() {
-    let server = Server::start(vec![reply(vec![call(
-        "submit",
-        "submit_judgment",
-        json!({"determination":true,"rationale":"covered"}),
-    )])]);
+    let server = Server::start(vec![
+        reply(vec![call(
+            "submit",
+            "submit_judgment",
+            json!({"determination":true,"rationale":"covered"}),
+        )]);
+        2
+    ]);
     let fixture = Fixture::new(&server.endpoint);
     let output = fixture.run(&["author", SUBJECT]);
     assert!(output.status.success(), "{output:?}");
-    server.finish();
     let directory = fixture.state.join("habeas/authoring/usage");
     let files = fs::read_dir(&directory)
         .unwrap()
@@ -1021,6 +1024,13 @@ fn usage_record_identifies_its_run_and_unusable_state_is_reported() {
     let end = usage["end_time_ms"].as_u64().unwrap();
     assert!(start > 0 && start <= end, "{usage}");
 
+    let first_bytes = fs::read(&files[0]).unwrap();
+    let second = fixture.run(&["author", SUBJECT, "--force"]);
+    assert!(second.status.success(), "{second:?}");
+    assert_eq!(fs::read(&files[0]).unwrap(), first_bytes);
+    assert_eq!(fs::read_dir(&directory).unwrap().count(), 2);
+    server.finish();
+
     // A state location that cannot be determined or created is reported
     // before any model request, and no evidence is written.
     let blocker = fixture.temp.path().join("not-a-directory");
@@ -1043,7 +1053,10 @@ fn usage_record_identifies_its_run_and_unusable_state_is_reported() {
         assert!(output.stdout.is_empty(), "{value:?}: {output:?}");
     }
     let evidence: Value = serde_json::from_slice(&fs::read(&fixture.evidence).unwrap()).unwrap();
-    assert_eq!(evidence["rationale"], "covered", "only the first run wrote");
+    assert_eq!(
+        evidence["rationale"], "covered",
+        "failed runs preserved the evidence"
+    );
 }
 
 // {test}`requirements.authoring.usage_storage`

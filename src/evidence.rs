@@ -189,6 +189,7 @@ pub(crate) fn inspect_repository(root: &Path) -> io::Result<RepositoryInspection
 // {impl}`requirements.configuration.loading`
 // {impl}`requirements.ci.book_source`
 // {impl}`requirements.definitions.declaration`
+// {impl}`requirements.references.builtin_definitions`
 pub(crate) fn inspect_repository_with_progress(
     root: &Path,
     mut progress: impl FnMut(InspectionProgress),
@@ -3624,6 +3625,20 @@ pub(crate) mod tests {
         assert!(
             errors.contains("evidence/requirements.ready.json: inputs[0]: outline input changed: skills/ready.md <root> (now lines 1-2) no longer has the recorded hash"),
             "{errors}"
+        );
+        fs::write(
+            root.join("habeas.toml"),
+            "version = 1\n[evidence]\ndisallow = ['skills/ready.md']\n",
+        )
+        .unwrap();
+        let errors = validate_repository(root).unwrap().errors;
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("anchor skills/ready.md")
+                    && error.contains("requirements.ready")
+                    && error.contains("disallow")),
+            "{errors:?}"
         );
     }
 

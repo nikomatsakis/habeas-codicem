@@ -465,6 +465,7 @@ const REFERENCE_ARRAYS: &[&str] = &["definitions", "sites"];
 // {impl}`requirements.references.definition_globs`
 // {impl}`requirements.references.anchors`
 // {impl}`requirements.authoring.no_line_numbers`
+// {impl}`requirements.references.authoring_inputs`
 fn references(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Result<Listing> {
     check_keys(args, &["selection"])?;
     let selection = if args.contains_key("selection") {
@@ -2380,6 +2381,7 @@ mod tests {
     // {test}`requirements.references.definition_globs`
     // {test}`requirements.authoring.no_line_numbers`
     #[test]
+    // {test}`requirements.references.authoring_inputs`
     fn references_list_names_and_flattened_sites_without_recording_inputs() {
         let root = project();
         fs::write(

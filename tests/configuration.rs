@@ -452,6 +452,10 @@ fn workspace_discovery_uses_nearest_file_without_merging_or_rewriting_it() {
     let error = load_workspace_config(&nested).unwrap_err().to_string();
     assert!(error.contains(path.to_str().unwrap()), "{error}");
     assert!(error.contains("invalid TOML"), "{error}");
+    assert_eq!(
+        fs::read_to_string(&path).unwrap(),
+        "version = 1\n[evidence\n"
+    );
     fs::remove_file(path).unwrap();
     fs::remove_file(outer).unwrap();
     assert!(load_workspace_config(&nested).unwrap().is_none());

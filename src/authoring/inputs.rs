@@ -903,6 +903,18 @@ pub(super) mod tests {
             example.mandatory_inputs()[0]["requirements"],
             "requirements.case"
         );
+        assert_eq!(
+            example.mandatory_inputs()[0]["text"],
+            json!([
+                ":::{example} case",
+                format!(
+                    "Ready example. {} {}",
+                    role("cite", "requirements.ready"),
+                    role("test", "requirements.ready")
+                ),
+                ":::"
+            ])
+        );
     }
 
     // {test}`requirements.authoring.mandatory_inputs`
@@ -1532,6 +1544,19 @@ pub(super) mod tests {
             format!("# Notes\n\n{}\n", role("impl", "requirements.ready")),
         )
         .unwrap();
+        fs::write(
+            root.path().join("src/literal.rs"),
+            format!(
+                "const REFERENCE: &str = {:?};\n",
+                role("impl", "requirements.ready")
+            ),
+        )
+        .unwrap();
+        fs::write(
+            root.path().join("evidence/copy.json"),
+            json!({"rationale":role("impl", "requirements.ready")}).to_string(),
+        )
+        .unwrap();
         let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
         assert!(
             !sources
@@ -1541,5 +1566,13 @@ pub(super) mod tests {
             "{:#?}",
             sources.mandatory_inputs()
         );
+        for excluded in ["src/literal.rs", "evidence/copy.json"] {
+            assert!(
+                !sources
+                    .mandatory_inputs()
+                    .iter()
+                    .any(|input| input["file"] == excluded)
+            );
+        }
     }
 }
