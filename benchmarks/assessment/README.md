@@ -207,3 +207,47 @@ meaning of FIXME (“fix this”) may conflict with its current domain meaning
 (“an existing acknowledgment covers this gap”); that is a hypothesis, not a
 proven cause. The harness could translate explicit outcomes to the existing
 stored evidence format. Evaluate that change separately from prompt wording.
+
+## Sol low: original versus gap-seeking wording
+
+`results/sol-prompt-comparison-2026-11-15.json` records all eight cases under
+both prompts, using Sol low, once, 16,384 output tokens, and one serial run per
+case. The two executables were built from the same revision with only the
+recorded opening instructions replaced. Production prompt/source were restored.
+
+| Measure | Original | Gap-seeking |
+| --- | --- | --- |
+| Completed | 8/8 | 8/8 |
+| Intended gaps detected, rationale reviewed | 4/4 | 4/4 |
+| Nominally fixed cases accepted | 2/4 | 2/4 |
+| API failures / incorrect FIXME labels | 0 / 0 | 0 / 0 |
+| Elapsed seconds | 429.5 | 446.9 |
+| Input / output tokens | 776,712 / 9,791 | 855,100 / 10,362 |
+
+The two rejections of fixed cases in each arm are **not established false
+alarms**. These snapshots repair their named regression but have other gaps:
+
+- Original reports missing search-paging tests in the repaired pagination
+  snapshot, and missing checkout-evidence preservation assertions in the
+  repaired live-test snapshot. Source inspection supports these additional
+  coverage concerns under the current criteria.
+- Gap-seeking finds an additional **runtime defect** in the repaired pagination
+  snapshot: oversized `not_listed` extras exceed the page limit, and an empty
+  main listing panics. A focused temporary test on the unchanged current
+  `pages.rs` reproduced an 84,018-byte page versus the 32,768-byte limit and
+  the `a paged result has a first page` panic. Exact reproduction source and
+  observations are retained in the report. No production fix was made here.
+- Gap-seeking also reports missing assertions of continuing-conversation
+  isolation in the repaired concurrency snapshot; the existing batch tests
+  inspect first-user-message subject identity and counts, not later histories.
+- Both detect the intended deletion-example mismatch. Their extra objection to
+  calling the warning API rather than status is too strong on its own: their
+  repaired-case rationales correctly trace that API to the code used by status.
+
+Both prompts work substantially better than mini on these cases. The new
+wording yielded a useful confirmed defect and concrete counterexamples, but
+one run per case does not establish general superiority. Clean controls need
+recalibration before calculating a false-positive rate. Labels and raw scores
+are preserved alongside rationale review; do not count every fixed-case
+rejection as an invented defect. Prompt wording, production defaults and
+adaptive routing remain unchanged by this comparison.
