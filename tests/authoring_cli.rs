@@ -568,6 +568,42 @@ fn ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free() {
     );
 }
 
+// {test}`requirements.authoring.acknowledged_gap`
+#[test]
+fn acknowledged_empty_input_boundary_is_explained_and_accepted() {
+    let rationale = "`src/lib.rs#fn[ready]` accepts nonempty input but rejects the empty-string boundary. The adjacent acknowledgment tracks that gap as example/app#125.";
+    let server = Server::start(vec![reply(vec![call(
+        "submit",
+        "submit_judgment",
+        json!({"determination":{"FIXME":["example/app#125"]},"rationale":rationale}),
+    )])]);
+    let fixture = Fixture::new(&server.endpoint);
+    fs::write(fixture.project.join("md/requirements.md"), ":::{req} ready\nThe readiness check MUST accept every string, including the empty string.\n:::\n").unwrap();
+    fs::write(fixture.project.join("src/lib.rs"), "// {impl}`requirements.ready`\n// :::{fixme} requirements.ready\n// :github: example/app#125\n// Empty input is incorrectly rejected.\n// :::\npub fn ready(input: &str) -> bool { !input.is_empty() }\n// {test}`requirements.ready`\nfn ready_test() { assert!(ready(\"nonempty\")); }\n").unwrap();
+    let output = fixture.run(&["author", SUBJECT]);
+    assert!(output.status.success(), "{output:?}");
+    let requests = server.finish();
+    assert_eq!(requests.len(), 1);
+    let prompt = prompt_text(&requests[0].body);
+    assert!(prompt.contains("Empty input is incorrectly rejected."));
+    assert!(prompt.contains("!input.is_empty()"));
+    let record: Value = serde_json::from_slice(&fs::read(&fixture.evidence).unwrap()).unwrap();
+    assert_eq!(
+        record["determination"],
+        json!({"FIXME":["example/app#125"]})
+    );
+    assert_eq!(record["rationale"], rationale);
+    assert!(
+        record["inputs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|input| input["file"] == "src/lib.rs" && input["item"] == "fn[ready]")
+    );
+    let report = habeas::validate_repository(&fixture.project).unwrap();
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+}
+
 // {test}`requirements.configuration.workspace_location`
 // {test}`requirements.authoring.configuration`
 // {test}`requirements.configuration.workspace_structure`
@@ -5063,7 +5099,13 @@ fn configure_adaptive_fixture(fixture: &Fixture, endpoint: &str) {
 // {test}`requirements.authoring.adaptive`
 #[test]
 fn adaptive_preflight_and_provider_errors_never_attempt_sol() {
-    for failure in ["credential", "mandatory", "storage", "provider"] {
+    for failure in [
+        "credential",
+        "mandatory",
+        "storage",
+        "provider",
+        "connection",
+    ] {
         let server = (failure == "provider").then(|| Server::start(vec![json!({
             "__http_status":401,"error":{"message":"fixture rejected credential","type":"invalid_request_error","code":"invalid_api_key"}
         })]));
@@ -5073,6 +5115,12 @@ fn adaptive_preflight_and_provider_errors_never_attempt_sol() {
             .as_ref()
             .map(|s| s.endpoint.clone())
             .unwrap_or_else(|| format!("http://{}", listener.local_addr().unwrap()));
+        let listener = if failure == "connection" {
+            drop(listener);
+            None
+        } else {
+            Some(listener)
+        };
         let fixture = Fixture::new(&endpoint);
         configure_adaptive_fixture(&fixture, &endpoint);
         if failure == "mandatory" {
@@ -5102,7 +5150,7 @@ fn adaptive_preflight_and_provider_errors_never_attempt_sol() {
             assert!(
                 String::from_utf8_lossy(&output.stderr).contains("fixture rejected credential")
             );
-        } else {
+        } else if let Some(listener) = listener {
             assert!(matches!(listener.accept(),Err(e) if e.kind()==std::io::ErrorKind::WouldBlock));
         }
         if let Ok(paths) = fs::read_dir(fixture.state.join("habeas/authoring/usage")) {

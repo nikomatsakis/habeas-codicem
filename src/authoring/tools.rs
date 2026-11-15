@@ -1265,8 +1265,18 @@ mod tests {
                 .unwrap();
             assert!(error.to_string().contains(message), "{error}");
         }
+        let directories = dispatch(&sources, "list_files", &json!({})).unwrap();
+        let directory = directories
+            .result
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["path"] == "src")
+            .unwrap();
+        assert_eq!(directory["kind"], "directory");
+        assert!(directories.inputs.is_empty());
         // The listing finds the directory's file and records nothing.
-        let listing = dispatch(&sources, "list_files", &json!({"path":"src"})).unwrap();
+        let listing = dispatch(&sources, "list_files", &json!({"path":directory["path"]})).unwrap();
         assert_eq!(listing.result, json!([{"path":"src/lib.rs","kind":"file"}]));
         assert!(listing.inputs.is_empty());
         // Searching the Rust file returns the innermost item containing the match.
