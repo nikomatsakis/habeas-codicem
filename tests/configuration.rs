@@ -105,6 +105,7 @@ fn absent_and_minimal_configuration_are_distinct_and_read_only() {
 // {test}`requirements.authoring.concurrency`
 // {test}`requirements.configuration.serialization`
 #[test]
+// {test}`requirements.configuration.loading`
 fn backend_configuration_round_trips_without_materializing_defaults() {
     let source = r#"
 version = 1
@@ -411,6 +412,7 @@ fn ollama_authentication_resolves_separately_and_rejects_missing_values() {
 // {test}`requirements.configuration.loading`
 // {test}`requirements.configuration.serialization`
 #[test]
+// {test}`requirements.configuration.evidence_paths`
 fn workspace_discovery_uses_nearest_file_without_merging_or_rewriting_it() {
     let temp = tempfile::tempdir().unwrap();
     let project = temp.path().join("project");

@@ -2426,7 +2426,7 @@ pub(crate) mod tests {
         let temp = fixture();
         fs::write(
             temp.path().join("md/reqs/foo/bar.md"),
-            "# Requirements\n\n:::{req} ready\nThe check MUST pass.\n\n```text\n{req}`example`\n```\n:::\n",
+            "# Requirements\n\n:::{req} ready\n\n  The check MUST pass.\n\n```text\n{req}`example`\n```\n:::\n",
         )
         .unwrap();
         fs::write(
@@ -3021,6 +3021,7 @@ pub(crate) mod tests {
 
     // {test}`requirements.ci.determination`
     #[test]
+    // {test}`requirements.references.evidence_coverage`
     fn a_false_determination_fails_only_its_own_record_with_its_rationale() {
         let temp = fixture();
         let chapter = "# Rules\n\n:::{req} ready\nReady.\n:::\n\n:::{req} refined\nRefines {impl}`rules.ready` and {cite}`rules.ready`.\n:::\n";
@@ -3315,7 +3316,7 @@ pub(crate) mod tests {
     #[test]
     fn cited_example_with_a_test_and_matching_evidence_validates() {
         let temp = fixture();
-        let chapter = "# Rules\n\n:::{req} ready\nReady.\n:::\n\n:::{example} case\nGiven ready, it succeeds. {cite}`rules.ready`\n:::\n";
+        let chapter = "# Rules\n\n:::{req} ready\nReady.\n:::\n\n:::{example} case\nGiven ready, it succeeds. {cite}`rules.ready` {test}`rules.ready`\n:::\n";
         fs::write(temp.path().join("md/rules.md"), chapter).unwrap();
         let test_source = "// {test}`rules.case`\n#[test]\nfn checks_case() { assert!(true); }\n";
         fs::write(temp.path().join("src/main.rs"), test_source).unwrap();
@@ -3335,7 +3336,7 @@ pub(crate) mod tests {
         fs::write(
             &example_path,
             json!({
-                "example": "Given ready, it succeeds. {cite}`rules.ready`",
+                "example": "Given ready, it succeeds. {cite}`rules.ready` {test}`rules.ready`",
                 "determination": true,
                 "rationale": "checks_case sets up ready and asserts the result.",
                 "inputs": [
@@ -3364,6 +3365,21 @@ pub(crate) mod tests {
         assert_eq!(report.examples, 1);
         assert_eq!(report.evidence_files, 2);
         assert!(report.errors.is_empty(), "{:?}", report.errors);
+
+        let ready_path = temp.path().join("evidence/rules.ready.json");
+        let ready = fs::read_to_string(&ready_path).unwrap();
+        let mut missing: Value = serde_json::from_str(&ready).unwrap();
+        missing["inputs"] = json!([]);
+        fs::write(&ready_path, missing.to_string()).unwrap();
+        let errors = validate_repository(temp.path()).unwrap().errors;
+        assert!(
+            errors.iter().any(|error| error.contains("no input covers")
+                && error.contains("{test}")
+                && error.contains("rules.ready")
+                && error.contains("md/rules.md:8")),
+            "{errors:?}"
+        );
+        fs::write(ready_path, ready).unwrap();
 
         let old = fs::read_to_string(&example_path).unwrap();
         let mut uncovered: serde_json::Value = serde_json::from_str(&old).unwrap();

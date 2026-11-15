@@ -721,6 +721,31 @@ pub(crate) mod tests {
         );
     }
 
+    // {test}`requirements.configuration.workspace_location`
+    #[test]
+    fn evidence_rules_are_relative_to_the_selected_workspace_file() {
+        let workspace = tempfile::tempdir().unwrap();
+        let base = workspace.path().canonicalize().unwrap();
+        let root = base.join("project");
+        fs::create_dir(&root).unwrap();
+        fs::write(base.join("allowed.txt"), "outside project").unwrap();
+        fs::write(root.join("denied.txt"), "inside project").unwrap();
+        fs::write(root.join("allowed.txt"), "unrelated local file").unwrap();
+        fs::write(
+            base.join("habeas.toml"),
+            "version = 1\n[evidence]\nallow = ['allowed.txt']\ndisallow = ['project/denied.txt']\n",
+        )
+        .unwrap();
+        let access = SourceAccess::load(&root).unwrap();
+        assert_eq!(
+            access.file(&root, Path::new("../allowed.txt")).unwrap(),
+            base.join("allowed.txt")
+        );
+        let error = access.file(&root, Path::new("denied.txt")).unwrap_err();
+        assert!(error.to_string().contains("disallowed"), "{error}");
+        assert!(access.file(&root, Path::new("allowed.txt")).is_ok());
+    }
+
     // {test}`requirements.authoring.source_tools`
     #[test]
     fn nested_project_uses_only_its_part_of_the_git_index() {

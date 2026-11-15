@@ -100,7 +100,8 @@ fn is_loopback_api_url(url: &str) -> bool {
 #[derive(Debug)]
 struct Client {
     api: String,
-    /// The cache directory, or `None` when no state root is available.
+    /// The cache directory; isolated test clients may omit it. Production
+    /// clients require a state root or disable reads.
     cache: Option<PathBuf>,
     token: Option<String>,
 }

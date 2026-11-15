@@ -33,6 +33,7 @@ pub struct ProjectConfig {}
 // {impl}`requirements.configuration.serialization`
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+// {impl}`requirements.configuration.evidence_paths`
 pub struct WorkspaceConfig {
     pub version: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -375,6 +376,7 @@ impl WorkspaceConfig {
     // {impl}`requirements.configuration.workspace_structure`
     // {impl}`requirements.configuration.serialization`
     // {impl}`requirements.authoring.configuration_serialization`
+    // {impl}`requirements.configuration.evidence_paths`
     pub fn to_toml(&self) -> io::Result<String> {
         self.validate(Path::new("workspace configuration"))?;
         toml::to_string_pretty(self).map_err(|_| {

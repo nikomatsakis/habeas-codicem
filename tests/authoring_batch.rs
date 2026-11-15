@@ -1307,6 +1307,13 @@ fn batch_preserves_current_false_judgments_and_reauthors_stale_ones() {
         fs::read(fixture.project.join("evidence/requirements.alpha.json")).unwrap(),
         alpha
     );
+    let forced = fixture.run(&["author", "requirements.alpha", "--force"]);
+    assert!(forced.status.success(), "{forced:?}");
+    assert_eq!(server.subjects().len(), 8);
+    assert_eq!(
+        fixture.evidence("requirements.alpha")["determination"],
+        true
+    );
 }
 
 /// A new reference inside a node already among a record's inputs changes no

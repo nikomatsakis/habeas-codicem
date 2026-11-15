@@ -162,8 +162,9 @@ fn with_not_listed(
     if arguments.contains_key("referencing") {
         return Ok(listing);
     }
-    let requested = optional_path(arguments)?.trim_end_matches('/');
-    let requested = if requested == "." { "" } else { requested };
+    let requested_path = project_path(sources, optional_path(arguments)?)?;
+    let requested = relative_path(&sources.root, &requested_path)?;
+    let requested = requested.trim_end_matches('/');
     let untracked = super::access::DiscoverySources::load(&sources.root)?.untracked()?;
     let mut named = BTreeSet::new();
     for file in untracked {
@@ -780,9 +781,20 @@ fn walk_sources<T: Send>(
             let found = &found;
             let failure = &failure;
             Box::new(move |entry| {
-                let Ok(entry) = entry else {
-                    return ignore::WalkState::Continue;
+                let entry = match entry {
+                    Ok(entry) => entry,
+                    Err(error) => {
+                        *failure.lock().expect("search failure lock") = Some(io::Error::other(
+                            format!("cannot traverse source files: {error}"),
+                        ));
+                        return ignore::WalkState::Quit;
+                    }
                 };
+                if entry.file_type().is_some_and(|kind| kind.is_dir())
+                    && sources.access.path(&sources.root, entry.path()).is_err()
+                {
+                    return ignore::WalkState::Skip;
+                }
                 if !entry.file_type().is_some_and(|kind| kind.is_file()) {
                     return ignore::WalkState::Continue;
                 }
@@ -1921,6 +1933,8 @@ mod tests {
     // {test}`requirements.authoring.read_denial`
     #[cfg(unix)]
     #[test]
+    // {test}`requirements.authoring.text_search`
+    // {test}`requirements.authoring.structural_search`
     fn operating_system_permission_failures_are_ordinary_read_failures() {
         use std::os::unix::fs::PermissionsExt;
         let root = project();
@@ -1932,6 +1946,16 @@ mod tests {
         }
         let unreadable = fs::read(root.path().join("locked.rs")).is_err();
         let results = [
+            dispatch(
+                &sources,
+                "ripgrep",
+                &json!({"path":"locked","pattern":"anything"}),
+            ),
+            dispatch(
+                &sources,
+                "ast_grep",
+                &json!({"path":"locked","language":"rust","rule":{"rule":{"kind":"function_item"}}}),
+            ),
             dispatch(&sources, "list_files", &json!({"path": "locked"})),
             dispatch(
                 &sources,
@@ -3355,6 +3379,35 @@ mod tests {
     }
 
     // {test}`requirements.authoring.text_search`
+    #[test]
+    fn text_search_selects_example_test_references_and_test_anchors() {
+        let root = referencing_project();
+        let declarations = root.path().join("md/requirements.md");
+        let mut text = fs::read_to_string(&declarations).unwrap();
+        text.push_str("\n:::{example} case\n:test: src/other.rs\nA named case. {cite}`requirements.ready`\n:::\n");
+        fs::write(declarations, text).unwrap();
+        fs::write(
+            root.path().join("src/example_test.rs"),
+            format!(
+                "// {}\nfn example_test() {{ needle(); }}\n",
+                role("test", "requirements.case")
+            ),
+        )
+        .unwrap();
+        let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        let result = dispatch(&sources, "ripgrep", &json!({"pattern":"needle","context":0,"referencing":{"selection":"requirements.case","roles":["test"]}})).unwrap();
+        assert_eq!(
+            found(&result),
+            [
+                "src/example_test.rs#fn[example_test]",
+                "src/other.rs#fn[elsewhere]"
+            ]
+        );
+        let no_impl = dispatch(&sources, "ripgrep", &json!({"pattern":"needle","referencing":{"selection":"requirements.case","roles":["impl"]}})).unwrap();
+        assert!(found(&no_impl).is_empty());
+    }
+
+    // {test}`requirements.authoring.text_search`
     // {test}`requirements.references.definition_globs`
     // {test}`requirements.references.anchors`
     #[test]
@@ -3586,6 +3639,25 @@ mod tests {
             "{}",
             inside.result
         );
+        fs::write(root.path().join("src/draft.rs"), "fn needle() {}\n").unwrap();
+        for path in [
+            "./src".to_owned(),
+            "src/../src".to_owned(),
+            root.path().join("src").to_string_lossy().into_owned(),
+        ] {
+            for (tool, arguments) in [
+                ("list_files", json!({"path":path})),
+                ("ripgrep", json!({"path":path,"pattern":"needle"})),
+                (
+                    "ast_grep",
+                    json!({"path":path,"language":"rust","rule":{"rule":{"pattern":"fn needle() {}"}}}),
+                ),
+            ] {
+                let delivery = dispatch(&sources, tool, &arguments).unwrap();
+                assert_eq!(named(&delivery.result), ["src/draft.rs"], "{tool}: {path}");
+                assert!(delivery.inputs.is_empty());
+            }
+        }
     }
 
     // {test}`requirements.authoring.generated_inputs`

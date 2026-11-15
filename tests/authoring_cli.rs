@@ -1187,6 +1187,19 @@ fn verbose_single_author_reports_only_false_rationale_without_source_inputs() {
             serde_json::from_slice(&fs::read(&fixture.evidence).unwrap()).unwrap();
         assert_eq!(evidence["determination"], determination);
         assert_eq!(evidence["rationale"], rationale);
+        let errors = habeas::validate_repository(&fixture.project)
+            .unwrap()
+            .errors;
+        assert_eq!(
+            errors
+                .iter()
+                .any(|error| error.contains("determination is false")),
+            !determination,
+            "{errors:?}"
+        );
+        if determination {
+            assert!(errors.is_empty(), "{errors:?}");
+        }
     }
 }
 
@@ -1333,7 +1346,8 @@ fn missing_duplicate_and_invalid_submissions_preserve_existing_evidence() {
         )],
     ] {
         for stdout in [false, true] {
-            let server = Server::start(vec![reply(calls.clone())]);
+            let count = if calls.is_empty() { 2 } else { 1 };
+            let server = Server::start(vec![reply(calls.clone()); count]);
             let fixture = Fixture::new(&server.endpoint);
             let mut args = vec!["author-evidence", SUBJECT];
             if stdout {
@@ -1342,7 +1356,10 @@ fn missing_duplicate_and_invalid_submissions_preserve_existing_evidence() {
             let output = fixture.run(&args);
             assert!(!output.status.success());
             assert!(output.stdout.is_empty());
-            server.finish();
+            assert_eq!(server.finish().len(), count);
+            if calls.is_empty() {
+                assert!(String::from_utf8_lossy(&output.stderr).contains("even after a reminder"));
+            }
             assert_eq!(
                 fs::read_to_string(&fixture.evidence).unwrap(),
                 fixture.original

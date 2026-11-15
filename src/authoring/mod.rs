@@ -268,6 +268,7 @@ pub async fn author_evidence_with_output(
 // {impl}`requirements.authoring.policy`
 // {impl}`requirements.authoring.read_denial.mandatory`
 // {impl}`requirements.authoring.provider_backoff`
+// {impl}`requirements.references.citation_review`
 pub async fn author_evidence_with_options(
     root: &Path,
     subject: &str,

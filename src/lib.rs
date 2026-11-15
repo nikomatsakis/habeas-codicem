@@ -173,6 +173,7 @@ pub(crate) struct ReferenceMatch<'a> {
 // {impl}`requirements.index.detail_pages`
 // {impl}`requirements.references.anchors`
 // {impl}`requirements.ci.identifiers`
+// {impl}`requirements.references.builtin_definitions`
 pub fn preprocess_book(book: &mut Book, root: &Path) -> io::Result<()> {
     let mut definitions = BTreeMap::new();
     let mut order = Vec::new();

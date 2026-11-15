@@ -171,6 +171,7 @@ impl RigProvider {
     // {impl}`requirements.authoring.usage_requests`
     // {impl}`requirements.authoring.credentials`
     // {impl}`requirements.authoring.cache_checkpoints`
+    // {impl}`requirements.configuration.serialization`
     pub(super) async fn connect(config: &BackendConfig) -> io::Result<Self> {
         let model = match config {
             BackendConfig::Bedrock(config) => {
@@ -693,6 +694,7 @@ mod tests {
     // {test}`requirements.authoring.configuration_precedence`
     #[tokio::test]
     #[allow(deprecated)] // The non-deprecated profile-file names live in `aws-runtime`.
+    // {test}`requirements.configuration.serialization`
     async fn omitted_bedrock_profile_and_region_use_standard_sdk_resolution() {
         use aws_config::profile::profile_file::{ProfileFileKind, ProfileFiles};
         let dir = tempfile::tempdir().unwrap();
@@ -705,8 +707,8 @@ mod tests {
         .unwrap();
         std::fs::write(
             &credentials_file,
-            "[default]\naws_access_key_id = DEFAULT_KEY\naws_secret_access_key = default\n\
-             [other]\naws_access_key_id = OTHER_KEY\naws_secret_access_key = other\n",
+            "[default]\naws_access_key_id = DEFAULT_KEY\naws_secret_access_key = DEFAULT_SECRET_VALUE\n\
+             [other]\naws_access_key_id = OTHER_KEY\naws_secret_access_key = OTHER_SECRET_VALUE\n",
         )
         .unwrap();
         let files = ProfileFiles::builder()
@@ -718,7 +720,22 @@ mod tests {
         };
         let habeas = |text: &str| {
             let config: BedrockConfig = toml::from_str(text).unwrap();
-            bedrock_sdk_loader(&config, standard()).load()
+            let before = toml::to_string(&config).unwrap();
+            let loading = bedrock_sdk_loader(&config, standard()).load();
+            async move {
+                let sdk = loading.await;
+                let credentials = sdk
+                    .credentials_provider()
+                    .unwrap()
+                    .provide_credentials()
+                    .await
+                    .unwrap();
+                let after = toml::to_string(&config).unwrap();
+                assert_eq!(before, after);
+                assert!(!after.contains(credentials.access_key_id()));
+                assert!(!after.contains(credentials.secret_access_key()));
+                sdk
+            }
         };
         async fn resolved(sdk: aws_config::SdkConfig) -> (Option<String>, String) {
             let key = sdk

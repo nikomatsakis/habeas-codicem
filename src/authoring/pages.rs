@@ -597,6 +597,7 @@ mod tests {
     // {test}`requirements.authoring.delivered_inputs`
     // {test}`requirements.definitions.authoring_inputs`
     #[test]
+    // {test}`requirements.authoring.source_tools`
     fn paged_inputs_carry_their_definitions_and_deliver_only_their_own_inputs() {
         let root = project();
         fs::write(
