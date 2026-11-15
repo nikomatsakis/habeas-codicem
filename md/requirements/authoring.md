@@ -1571,12 +1571,18 @@ message.
 :::
 
 :::{req} cache_checkpoints
-When the backend and model support prompt caching, every provider request MUST
-place one cache checkpoint after the system prompt of
-{cite}`requirements.authoring.prompt_parts` and another at the end of its last
-message, so each request reuses the tool definitions and system prompt that
-earlier assessments of its kind sent, and the conversation its own earlier
-requests sent. Cache checkpoints MUST NOT change the content of a request.
+For backends that accept explicit cache checkpoints, when the backend and model
+support prompt caching, every provider request MUST place one cache checkpoint
+after the system prompt of {cite}`requirements.authoring.prompt_parts` and
+another at the end of its last message, so each request reuses the tool
+definitions and system prompt that earlier assessments of its kind sent, and
+the conversation its own earlier requests sent. Cache checkpoints MUST NOT
+change the content of a request.
+
+For OpenAI, which caches matching prompt prefixes automatically, the harness
+MUST keep the system prompt and tool definitions unchanged across requests in
+one conversation and replay prior conversation content in its original order.
+It MUST NOT insert checkpoint blocks.
 :::
 
 :::{req} cache_warmup
