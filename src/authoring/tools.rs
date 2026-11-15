@@ -1604,6 +1604,7 @@ mod tests {
     }
 
     // {test}`requirements.authoring.redaction`
+    // {test}`requirements.authoring.source_tools`
     #[test]
     fn declaration_text_reaches_the_model_redacted() {
         let root = project();

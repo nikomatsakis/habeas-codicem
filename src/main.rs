@@ -15,6 +15,7 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
+// {impl}`requirements.authoring.reporting`
 enum Command {
     Mdbook {
         #[command(subcommand)]
@@ -298,7 +299,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 return Ok(());
             };
             let mut summary = format!(
-                "{}: {} / {}; policy {}",
+                "{}: {} / {}; policy {}; 0 skipped as current",
                 outcome.subject, outcome.backend, outcome.model, outcome.policy,
             );
             if matches!(outcome.determination, habeas::judgment::Judgment::Fixme(_)) {

@@ -287,6 +287,8 @@ fn reply(calls: Vec<Value>) -> Value {
 // {test}`requirements.authoring.invocation`
 // {test}`requirements.configuration.serialization`
 #[test]
+// {test}`requirements.authoring.persistence`
+// {test}`requirements.authoring.reporting`
 fn ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free() {
     let server = Server::start(vec![
         reply(vec![
@@ -4878,6 +4880,7 @@ fn mock_server_waits_for_remaining_request_headers() {
 // {test}`requirements.authoring.policy`
 #[test]
 // {test}`requirements.authoring.usage_storage`
+// {test}`requirements.authoring.confirmation`
 fn adaptive_routes_fresh_assessments_and_records_each_model() {
     let response = |arguments: Value| {
         json!({
@@ -4926,7 +4929,7 @@ fn adaptive_routes_fresh_assessments_and_records_each_model() {
         ),
         (
             false,
-            json!({"determination":true,"rationale":"Good."}),
+            json!({"determination":true,"rationale":"FIRST_AGREEMENT_RATIONALE"}),
             "policy = 'confirm'\n",
             vec!["gpt-5.4-mini", "gpt-5.4-mini"],
             None,
@@ -4981,10 +4984,18 @@ fn adaptive_routes_fresh_assessments_and_records_each_model() {
         let evidence: Value =
             serde_json::from_slice(&fs::read(&fixture.evidence).unwrap()).unwrap();
         assert_eq!(evidence["determination"], true);
+        if !policy.is_empty() {
+            assert_eq!(evidence["rationale"], "FIRST_AGREEMENT_RATIONALE");
+        }
         let logs: Vec<Value> = fs::read_dir(fixture.state.join("habeas/authoring/usage"))
             .unwrap()
             .map(|entry| serde_json::from_slice(&fs::read(entry.unwrap().path()).unwrap()).unwrap())
             .collect();
+        let expected_policy = if policy.is_empty() { "once" } else { "confirm" };
+        assert!(
+            logs.iter().all(|log| log["policy"] == expected_policy),
+            "{logs:?}"
+        );
         let parent = logs
             .iter()
             .find(|log| log["subject"] == SUBJECT && log["model"] == "adaptive")
@@ -5036,6 +5047,13 @@ fn adaptive_sol_failure_is_final_and_confirm_uses_sol_verification() {
             "usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}
         })
     };
+    let assert_policy = |fixture: &Fixture, expected: &str| {
+        for path in fs::read_dir(fixture.state.join("habeas/authoring/usage")).unwrap() {
+            let log: Value =
+                serde_json::from_slice(&fs::read(path.unwrap().path()).unwrap()).unwrap();
+            assert_eq!(log["policy"], expected);
+        }
+    };
     let good = response(
         "submit_judgment",
         json!({"determination":true,"rationale":"Good."}),
@@ -5073,6 +5091,7 @@ fn adaptive_sol_failure_is_final_and_confirm_uses_sol_verification() {
             fixture.run(&["author", SUBJECT])
         };
         let requests = server.finish();
+        assert_policy(&fixture, if confirm { "confirm" } else { "once" });
         let models: Vec<_> = requests
             .iter()
             .map(|r| r.body["model"].as_str().unwrap())
@@ -5120,6 +5139,7 @@ fn adaptive_sol_failure_is_final_and_confirm_uses_sol_verification() {
         configure_adaptive_fixture(&fixture, &server.endpoint);
         let output = fixture.run(&["author", SUBJECT, "--policy", policy]);
         assert!(output.status.success(), "{output:?}");
+        assert_policy(&fixture, policy);
         let requests = server.finish();
         assert_eq!(
             requests

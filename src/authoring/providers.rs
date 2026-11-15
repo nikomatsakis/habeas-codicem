@@ -695,6 +695,7 @@ mod tests {
     #[tokio::test]
     #[allow(deprecated)] // The non-deprecated profile-file names live in `aws-runtime`.
     // {test}`requirements.configuration.serialization`
+    // {test}`requirements.authoring.credentials`
     async fn omitted_bedrock_profile_and_region_use_standard_sdk_resolution() {
         use aws_config::profile::profile_file::{ProfileFileKind, ProfileFiles};
         let dir = tempfile::tempdir().unwrap();

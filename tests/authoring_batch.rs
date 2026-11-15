@@ -1942,6 +1942,7 @@ fn missing_keeps_current_records_and_force_reassesses_every_selected_subject() {
 // {test}`requirements.authoring.configuration_structure`
 // {test}`requirements.authoring.confirmation`
 #[test]
+// {test}`requirements.authoring.refresh`
 fn policy_comes_from_the_flag_then_the_configuration_then_defaults_to_confirm() {
     let server = Server::start(false, None);
     let fixture = Fixture::new(&server.endpoint, None);
@@ -1985,6 +1986,7 @@ fn policy_comes_from_the_flag_then_the_configuration_then_defaults_to_confirm() 
             "{args:?}: {}",
             String::from_utf8_lossy(&output.stdout)
         );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("0 skipped as current"));
         assert_eq!(server.subjects().len() - before, conversations, "{args:?}");
         // Each conversation's usage record identifies the policy.
         let usage = fixture
@@ -2007,6 +2009,7 @@ fn policy_comes_from_the_flag_then_the_configuration_then_defaults_to_confirm() 
     ]);
     assert!(stdout.status.success(), "{stdout:?}");
     assert!(String::from_utf8_lossy(&stdout.stderr).contains("policy once"));
+    assert!(String::from_utf8_lossy(&stdout.stderr).contains("0 skipped as current"));
     let printed: Value = serde_json::from_slice(&stdout.stdout).unwrap();
     assert_eq!(printed["determination"], true);
     // The batch summary names the policy too.

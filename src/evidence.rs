@@ -879,6 +879,7 @@ pub(crate) fn validate_input(
 
 // {impl}`requirements.configuration.evidence_paths`
 // {impl}`requirements.ci.errors`
+// {impl}`requirements.authoring.generated_inputs`
 fn validate_outline_input(
     root: &Path,
     definitions: &BTreeMap<String, Declaration>,

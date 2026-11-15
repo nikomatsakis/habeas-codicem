@@ -1,8 +1,8 @@
 {
   "requirement": "Habeas MUST search from its invocation directory upward for the nearest enclosing\n`habeas.toml`. It MUST use that file alone, without merging ancestor workspace\nfiles. A library operation given a project root MUST search from that root unless\nits current directory is inside the project, in which case it MUST start there.\nThe directory containing the selected file defines the base for its relative\npaths; it does not replace the Cargo and mdBook project root. A missing file MUST\nmean absent workspace settings. Discovery MUST report unreadable candidate files\nrather than silently selecting an ancestor. Loading MUST NOT create the file.",
   "determination": true,
-  "rationale": "No gaps found for `requirements.configuration.workspace_location`.\n\n**Obligations and code**\n- **Nearest enclosing file searched upward from the invocation directory.** `src/config.rs#fn[workspace_document]` walks `start.ancestors()` and takes the first `habeas.toml`. `src/main.rs` calls `load_workspace_evidence` with the current directory, so the CLI starts at the invocation directory.\n- **That file alone, no merging.** `workspace_document` returns on the first file it finds. `load_workspace_config` and `load_workspace_evidence` decode only that table.\n- **Library operation given a project root.** `workspace_document` canonicalizes the root and starts at the current directory only if it is under that root, otherwise at the root. `inspect_repository` and `PathPolicy::load` reach this code.\n- **Base for relative paths, not the project root.** `LoadedWorkspaceConfig.root` is the selected file's parent. `PathPolicy::load` joins evidence paths onto `config.root`. `inspect_repository_with_progress` keeps its own canonical project root for the book and evidence directories.\n- **Missing file means absent settings.** `workspace_document` returns `Ok(None)` on `NotFound`, and `PathPolicy::load` falls back to `Self::default()`.\n- **Unreadable candidates reported, not skipped.** `fs::symlink_metadata` errors other than `NotFound` return an error naming the path. Read and parse failures also return an error and never fall through to an ancestor.\n- **Loading does not create the file.** Nothing in this path writes.\n\n**Tests**\n- `tests/configuration.rs#fn[workspace_discovery_uses_nearest_file_without_merging_or_rewriting_it]` covers ancestor discovery, nearest-wins with no merging, the file's parent as `root`, the file left unchanged, a malformed nearest file erroring with its path, and `None` when no file exists.\n- `tests/configuration.rs#fn[unreadable_configuration_files_are_reported_instead_of_skipped]` makes `habeas.toml` a directory with a valid ancestor file present. Both loaders return an error naming that path. The test also confirms that loading from an empty directory leaves it unchanged.\n- `tests/commands.rs#fn[status_loads_nearest_workspace_file_without_validating_authoring]` runs the CLI from the project root and from a nested directory. Running from the project root reports the root file's error. Running from the nested directory reports the nested file's path, which covers a current directory inside the project. The project-root evidence is still reported from the nested directory.\n- `tests/authoring_cli.rs#fn[authoring_uses_nearest_workspace_configuration_without_a_user_file]` runs `author` from a nested directory. It uses the nested file rather than the parent's, and rewrites neither file.\n- `tests/evidence_boundaries.rs#fn[validation_checks_workspace_common_config_without_loading_unused_authoring_settings]` also carries a `{test}` reference to the subject.\n\nAll the tests carry `{test}` references to the subject.",
-  "references": "c9333b1bbc4d3910ed01827f1aca10698fbf08b6bee290a7089c3a3940632fde",
+  "rationale": "The requirement is satisfied. The obligations and their coverage are:\n\n- **Search upward from the invocation directory and select the nearest enclosing `habeas.toml`.** `src/main.rs#fn[main]/use@118842506675` supplies the current directory to workspace loading. `src/config.rs#fn[workspace_document]` walks `start.ancestors()` and returns at the first candidate. `tests/authoring_cli.rs#fn[authoring_uses_nearest_workspace_configuration_without_a_user_file]` and `tests/commands.rs#fn[status_loads_nearest_workspace_file_without_validating_authoring]` exercise nested invocation directories and demonstrate selection of the nearer file.\n- **Use only the selected file; do not merge ancestor workspace files.** The immediate return in `src/config.rs#fn[workspace_document]` supplies one document to the loaders. `tests/configuration.rs#fn[workspace_discovery_uses_nearest_file_without_merging_or_rewriting_it]` asserts that ancestor evidence allowances are not inherited. The nested CLI tests also demonstrate that invalid or unusable ancestor settings do not affect the selected configuration.\n- **For library operations, start at the supplied project root when the current directory is outside it, and at the current directory when inside it.** `src/config.rs#fn[workspace_document]` canonicalizes both locations and selects the current directory only when it starts with the project root. The configuration discovery test exercises supplied temporary roots outside the test process's directory. The nested CLI tests exercise the inside-project path through library loading, notably repository inspection for `status`.\n- **Resolve relative configuration paths against the selected file's directory.** `src/config.rs#fn[load_workspace_config]` and `src/config.rs#fn[load_workspace_evidence]` retain that directory as the configuration root; `src/authoring/access.rs#impl[PathPolicy]/fn[load]` joins evidence rules to it. `src/authoring/access.rs#mod[tests]/fn[evidence_rules_are_relative_to_the_selected_workspace_file]` verifies both allow and disallow rules against an ancestor workspace file, and the configuration discovery test asserts the selected root explicitly.\n- **Do not replace the Cargo or mdBook project root.** `src/setup.rs#fn[project_root]` and `src/setup.rs#fn[find_project_root]`, reached from the marked main item, discover the project using `Cargo.toml` and `book.toml`, independently of workspace selection. `src/evidence.rs#fn[inspect_repository_with_progress]` retains its supplied project root, and its `book_source_dir` call reads project-relative book configuration. The marked nested authoring and status tests successfully operate on the enclosing project despite selecting configuration in a nested directory; the evidence-rule test also retains project-relative source addressing despite an ancestor configuration base.\n- **Treat a missing file as absent workspace settings.** `src/config.rs#fn[workspace_document]` returns `None` after exhausting ancestors, and both loaders propagate absence. Both marked configuration discovery tests assert absent settings.\n- **Report unreadable candidates rather than selecting an ancestor.** Metadata and read errors propagate with the candidate path from `src/config.rs#fn[workspace_document]`. `tests/configuration.rs#fn[unreadable_configuration_files_are_reported_instead_of_skipped]` places an unreadable candidate over a valid ancestor and asserts errors from both loaders.\n- **Loading must not create the file.** Discovery uses metadata and reads only. `tests/configuration.rs#fn[unreadable_configuration_files_are_reported_instead_of_skipped]` asserts that absent-file loading leaves the directory empty. The discovery and authoring tests additionally assert preservation of existing configuration contents.\n\nAll tests identified above carry a `requirements.configuration.workspace_location` test reference. No unacknowledged gap was found.",
+  "references": "b29be59ee097b834e9e8c682100133d5f5c70d3068d23ff7ca7a7dd26f7bbcb3",
   "inputs": [
     {
       "requirements": "requirements.configuration.workspace_location",
@@ -26,6 +26,11 @@
       "file": "src/authoring/access.rs",
       "item": "impl[PathPolicy]/fn[load]",
       "hash": "5950faed829db1612f97208c49aeb78c93701c73e400754bf51198366e39fd31"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "mod[tests]/fn[evidence_rules_are_relative_to_the_selected_workspace_file]",
+      "hash": "6c6f2f4ea3de427c893d8019e3f2d0e348628eb613ef45d1c47ae21aba23ff7c"
     },
     {
       "file": "src/config.rs",
@@ -75,7 +80,7 @@
     {
       "file": "tests/configuration.rs",
       "item": "fn[workspace_discovery_uses_nearest_file_without_merging_or_rewriting_it]",
-      "hash": "4a1e5484da50abc6d54cccb531029d25ed1996e173f5eb014ecdfa9e69dcc20f"
+      "hash": "06855a151f60a8e45251fe6367c705453ace2142bd09f869e86c3bd12e4c49d0"
     },
     {
       "file": "tests/configuration.rs",
@@ -86,6 +91,21 @@
       "file": "tests/evidence_boundaries.rs",
       "item": "fn[validation_checks_workspace_common_config_without_loading_unused_authoring_settings]",
       "hash": "ef6d907936f39ecf4c5d86b96a84c9519988f9370c0b695ec10d690c785f4a98"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[book_source_dir]",
+      "hash": "33a30a969160c640c89ec3b77e79f820241805f4eb9813279a89ebb9a8b7f4a8"
+    },
+    {
+      "file": "src/setup.rs",
+      "item": "fn[project_root]",
+      "hash": "c0707987d208670061b30eb531a4c5a6640c2f948a3a1ea81dceca0fecc42807"
+    },
+    {
+      "file": "src/setup.rs",
+      "item": "fn[find_project_root]",
+      "hash": "13f022193c6fccd79ab17c8dd4c4fee89afe90e87d5d001c3d7754846c609301"
     }
   ]
 }

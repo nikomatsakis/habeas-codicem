@@ -1276,6 +1276,7 @@ async fn verify(
 // {impl}`requirements.authoring.no_line_numbers`
 // {impl}`requirements.authoring.usage_requests.failures`
 // {impl}`requirements.authoring.provider_backoff.limit`
+// {impl}`requirements.authoring.tool_descriptions.special_cases`
 async fn converse<T>(
     provider: &impl CompletionProvider,
     sources: &mut AssessmentSources,
@@ -1789,6 +1790,7 @@ mod tests {
     }
 
     // {test}`requirements.authoring.read_denial`
+    // {test}`requirements.authoring.tool_descriptions.special_cases`
     #[tokio::test]
     async fn malformed_and_failed_reads_return_to_the_model_and_the_assessment_continues() {
         for read in [
@@ -3902,6 +3904,25 @@ no_match:
             !errors.iter().any(|error| error.starts_with(&prefix)),
             "{errors:#?}"
         );
+    }
+
+    // {test}`requirements.authoring.credentials`
+    // {test}`requirements.authoring.redaction`
+    #[test]
+    fn site_prompts_exclude_credentials_from_source_and_configuration() {
+        let token = crate::redaction::tests::github_token();
+        let source = crate::sites::tests::SOURCE.replace(
+            "fn check_two() {}",
+            &format!("fn check_two() {{ let credential = \"{token}\"; }}"),
+        );
+        let project = crate::sites::tests::project(crate::sites::tests::RULE, &source);
+        fs::write(project.path().join("habeas.toml"), "version = 1\n[authoring.configs.local]\nbackend = 'openai'\napi_key = 'SITE_CONFIG_SECRET'\n").unwrap();
+        let subject = AuthoringSubject::parse("sites:requirements.rule/src/lib.rs#fn[check_two]");
+        let sources = subject.sources(project.path()).unwrap();
+        let prompt = initial_prompt(&sources).unwrap().joined();
+        assert!(prompt.contains("[REDACTED:GitHub Token]"));
+        assert!(!prompt.contains(&token));
+        assert!(!prompt.contains("SITE_CONFIG_SECRET"));
     }
 
     // {test}`requirements.authoring.site_prompt`

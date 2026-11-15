@@ -72,8 +72,8 @@ Obligations that decide which places are sites, such as a naming rule, MUST be
 checked by the reviewer's search of the sources. Violation queries direct site
 reviews to likely problems; the reviewer SHOULD note constructs they miss, but
 their incompleteness MUST NOT by itself make the determination false. Any other
-gap in the queries or snippets MUST make the determination false, even when the
-code is correct. The reviewer SHOULD run each site query once, scan its matches,
+gap in the queries or snippets MUST be treated as a gap under
+{cite}`requirements.ci.outcomes`, even when the code is correct. The reviewer SHOULD run each site query once, scan its matches,
 and search briefly for the construct the text describes, and MUST NOT review each
 site or treat a site without an `{impl}` reference as a gap.
 

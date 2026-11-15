@@ -1,8 +1,8 @@
 {
   "requirement": "When a provider reports a transient failure, the harness MUST wait and retry\nthe same completion request. Transient failures are throttling, reported\nthrough HTTP 429 or a Bedrock `ThrottlingException`; temporary unavailability,\nreported through HTTP 500, 502, 503, or 504 or a Bedrock\n`ServiceUnavailableException`, `InternalServerException`, or\n`ModelNotReadyException`; and a request with no response after ten minutes,\nwhich the harness MUST abandon. The retry MUST retain its prompt, history,\ntools, and pending inputs. It MUST NOT\nrestart the assessment or repeat already completed tool calls. A permanent\ninput/context-length error, authentication failure, or invalid request MUST\nremain an error; mentioning tokens in an error message alone MUST NOT trigger\nretries.\n\nThe backoff window MUST start at one second and double after each consecutive\ntransient failure, up to sixty seconds. Each delay MUST be randomly selected\nbetween half and all of that window to spread parallel retries. An available\nprovider `Retry-After` value, in seconds or HTTP-date form, MUST be honored as a\nminimum delay even when longer than the window. A successful response MUST reset\nbackoff for the next completion request, and interruption MUST cancel both the\nwait and further retries.\n\nEach attempt MUST be recorded under {cite}`requirements.authoring.usage_requests`.\nHidden SDK retries MUST remain disabled so the harness can account for attempts.\nTransient retries MUST NOT be reported as finished judgments or terminal\nassessment errors while recovery is still in progress. Pending inputs MUST be\nrecorded as evidence only after the request succeeds.\n{cite}`requirements.authoring.provider` {cite}`requirements.authoring.delivered_inputs`",
   "determination": true,
-  "rationale": "The implementation and referenced tests satisfy `requirements.authoring.provider_backoff`.\n\n### Obligations and coverage\n\n- **Wait on transient failure; retry the same completion:** `src/authoring/mod.rs#fn[converse]` invokes `ProviderBackoff::retry`, sleeps, and continues the request loop. `src/authoring/providers.rs#impl[ProviderBackoff]/fn[next_delay]` recognizes HTTP 429, 500, 502, 503, and 504, and each of the four named Bedrock exceptions. Coverage: `src/authoring/providers.rs#mod[tests]/fn[retries_throttling_unavailability_and_timeouts_but_not_permanent_errors]`, `src/authoring/providers.rs#mod[tests]/fn[transient_bedrock_codes_retry_whatever_their_http_status]`, and `src/authoring/mod.rs#mod[tests]/fn[throttled_requests_retry_unchanged_and_record_every_attempt]`.\n- **Abandon an unanswered request after ten minutes:** `src/authoring/mod.rs#const[REQUEST_TIMEOUT]` sets 600 seconds; `converse` wraps each completion in a timeout and treats expiration as transient. `src/authoring/mod.rs#mod[tests]/fn[unanswered_requests_are_abandoned_and_retried]` exercises a pending completion followed by successful recovery.\n- **Retain prompt; retain history; retain tools; retain pending inputs; do not restart the assessment; do not repeat completed tools:** `converse` retries a clone of the existing request before changing conversation state or dispatching tools. Pending evidence is retained across failures. The unchanged-request assertions in `throttled_requests_retry_unchanged_and_record_every_attempt` and `src/authoring/mod.rs#mod[tests]/fn[success_resets_backoff_and_retries_keep_history_without_repeating_tools]` cover the initial request and a request containing completed tool results; the latter also asserts one read-tool invocation and preserved evidence.\n- **Keep permanent input/context-length errors as errors; keep authentication failures as errors; keep invalid requests as errors; do not retry merely because a message mentions tokens:** `next_delay` uses structured status/code information, not message matching, and returns no delay for permanent failures. `retries_throttling_unavailability_and_timeouts_but_not_permanent_errors` covers validation, access denial, and token-message rejection. `src/authoring/mod.rs#mod[tests]/fn[permanent_provider_failure_returns_without_waiting_or_retrying]` verifies propagation without delay or a second request.\n- **Start the window at one second; double on consecutive transient failures; cap it at sixty seconds; randomly choose each delay between half and all of the window:** `src/authoring/providers.rs#impl[ProviderBackoff/Default]` and `next_delay` implement these properties, using `fastrand` for equal jitter. `src/authoring/providers.rs#mod[tests]/fn[jittered_backoff_grows_to_a_ceiling]` checks the successive bounds through the ceiling.\n- **Honor seconds-form Retry-After; honor HTTP-date Retry-After; use it as a minimum even beyond the window:** `src/authoring/providers.rs#fn[retry_after]` parses both forms and `next_delay` takes the maximum. `src/authoring/providers.rs#mod[tests]/fn[retry_after_accepts_seconds_and_dates_without_shortening_provider_delay]` checks both formats and a ninety-second minimum. The retry-stop behavior in `src/authoring/providers.rs#impl[ProviderBackoff]/fn[retry]` is separately specified by the requirement it marks, `requirements.authoring.provider_backoff.limit`, explicitly including Retry-After delays beyond the retry horizon; it is not unspecified behavior here.\n- **Reset backoff after success:** `converse` replaces the backoff with its default after a successful response. `success_resets_backoff_and_retries_keep_history_without_repeating_tools` verifies that failures on either side of a successful tool turn both use the initial window.\n- **Interruption cancels the wait; interruption cancels further retries:** the awaited sleep and completion remain inside the conversation future, with no detached retry task. `src/authoring/mod.rs#mod[tests]/fn[cancelling_during_backoff_prevents_another_request]` cancels that future during backoff, advances the clock, and verifies no additional request or recorded evidence.\n- **Record every attempt under `requirements.authoring.usage_requests`:** `converse` begins and ends a usage request for every iteration and marks retries. `throttled_requests_retry_unchanged_and_record_every_attempt` checks all six attempts, failed/completed outcomes, failure metadata, and unavailable failed-request measurements; `unanswered_requests_are_abandoned_and_retried` covers timeout attempts. This assesses application of the cited usage requirement, not its independent implementation.\n- **Disable hidden SDK retries:** `src/authoring/providers.rs#fn[bedrock_sdk_config]` reaches `src/authoring/providers.rs#fn[bedrock_sdk_loader]`, which explicitly disables AWS retries. `src/authoring/providers.rs#mod[tests]/fn[bedrock_sdk_retries_are_disabled]` checks one maximum attempt. The other backend construction uses Rig's direct HTTP transport rather than introducing a harness retry layer.\n- **Do not report transient recovery as a finished judgment; do not report it as a terminal assessment error:** the transient branch in `converse` continues before submission processing or error return. The successful multi-failure assessment test verifies eventual completion with one submission; the cancellation test verifies recovery can remain unfinished without another request.\n- **Record pending inputs as evidence only after success:** `converse` calls `record_inputs` and clears pending inputs only after obtaining a successful response. The throttled-request test verifies their successful-request index, the tool-turn test verifies retained additional evidence, and the cancellation test verifies no evidence is recorded while recovery has not succeeded.\n\nThe retry machinery is reachable through the marked `converse` implementation and the marked Bedrock configuration root. All tests cited above carry the subject's test reference. No acknowledged or unacknowledged gap was found.",
-  "references": "8088a2dd48bb067cd2d33ab7f88958a346090216b92f8e02e6137fc91ef0a8b6",
+  "rationale": "The implementation and subject-marked tests satisfy `requirements.authoring.provider_backoff`.\n\n### Obligations and coverage\n\n- **Wait and retry the same request for HTTP 429, 500, 502, 503, and 504 and each named Bedrock exception.** `src/authoring/providers.rs#impl[ProviderBackoff]/fn[next_delay]` classifies these structured signals; `src/authoring/mod.rs#fn[converse]` sleeps and retries. Coverage: `src/authoring/providers.rs#mod[tests]/fn[retries_throttling_unavailability_and_timeouts_but_not_permanent_errors]`, `src/authoring/providers.rs#mod[tests]/fn[transient_bedrock_codes_retry_whatever_their_http_status]`, and `src/authoring/mod.rs#mod[tests]/fn[throttled_requests_retry_unchanged_and_record_every_attempt]`. `rig_failures_keep_their_provider_report_for_backoff` in the providers test module also verifies preservation of the structured failure signals.\n- **Abandon a request unanswered for ten minutes and retry it.** `src/authoring/mod.rs#const[REQUEST_TIMEOUT]` supplies 600 seconds to the timeout in `converse`. `src/authoring/mod.rs#mod[tests]/fn[unanswered_requests_are_abandoned_and_retried]` exercises this path and checks the two recorded outcomes.\n- **Retain prompt, history, tools, and pending inputs; do not restart the assessment or repeat completed tool calls.** `converse` clones the existing request and continues its retry loop before changing conversation state or dispatching tools. The unchanged-request test above checks complete serialized request equality. `src/authoring/mod.rs#mod[tests]/fn[success_resets_backoff_and_retries_keep_history_without_repeating_tools]` additionally checks equality after a tool turn, retained tool results, a single read-tool execution, and resulting evidence inputs.\n- **Keep permanent input/context-length, authentication, and invalid-request failures as errors; do not retry merely because a message mentions tokens.** `next_delay` uses status/code metadata rather than message text and returns no delay for permanent failures. The classification test covers validation and access-denial errors and an unstructured token message. `src/authoring/mod.rs#mod[tests]/fn[permanent_provider_failure_returns_without_waiting_or_retrying]` verifies immediate error propagation, one attempt, and a non-retried failure record.\n- **Start the window at one second, double it after consecutive transient failures, cap it at sixty seconds, and randomly choose each delay between half and all of the window.** `src/authoring/providers.rs#impl[ProviderBackoff/Default]/fn[default]` initializes the window; `next_delay` doubles/caps it and samples with `fastrand`. `src/authoring/providers.rs#mod[tests]/fn[jittered_backoff_grows_to_a_ceiling]` checks the successive bounds through 100 failures.\n- **Honor Retry-After seconds and HTTP dates as minimum delays, including values beyond the window.** `src/authoring/providers.rs#fn[retry_after]` parses both forms, and `next_delay` takes the maximum of that minimum and jitter. `src/authoring/providers.rs#mod[tests]/fn[retry_after_accepts_seconds_and_dates_without_shortening_provider_delay]` checks both forms and a ninety-second minimum. The retry deadline in `src/authoring/providers.rs#impl[ProviderBackoff]/fn[retry]` is separately specified by `requirements.authoring.provider_backoff.limit`, which that code and `converse` also mark: it explicitly requires stopping when Retry-After would pass the one-minute retry deadline. Thus this stopping behavior is specified, not an extra behavior.\n- **Reset backoff after success.** `converse` replaces backoff with its default after a successful completion. `success_resets_backoff_and_retries_keep_history_without_repeating_tools` verifies that both retry sequences use the initial window.\n- **Interruption cancels waiting and further retries.** `src/authoring/mod.rs#fn[author_evidence_with_options]` and `src/authoring/mod.rs#fn[prepare_assessment]` select cancellation against assessment execution, dropping the outstanding wait/request future. `src/authoring/mod.rs#mod[tests]/fn[cancelling_during_backoff_prevents_another_request]` drops execution during backoff, advances time, and verifies no additional attempt. Testing actual Ctrl-C delivery would require process-wide signal state; the direct cancellation test exercises the dropped-future behavior without it.\n- **Record every attempt under the usage requirement.** `converse` brackets every attempt, including timeout and retry attempts, with `UsageLog::begin_request` and `UsageLog::end_request`, then marks retries with `UsageLog::retried` (`src/authoring/usage.rs`). The unchanged-request and unanswered-request tests assert attempt counts and outcomes; the former also checks structured failures and unavailable usage on failures. This verifies application of `requirements.authoring.usage_requests` without reassessing that requirement independently.\n- **Disable hidden SDK retries.** `src/authoring/providers.rs#fn[bedrock_sdk_config]` reaches `bedrock_sdk_loader`, which explicitly configures disabled AWS retries. `src/authoring/providers.rs#mod[tests]/fn[bedrock_sdk_retries_are_disabled]` checks one maximum attempt. The OpenAI/Ollama connection paths use Rig's direct transport without adding a retry layer.\n- **Do not report transient recovery as a finished judgment or terminal assessment error.** `converse` continues after recording and waiting on a recoverable failure; it reaches submission handling only after success. The throttled-request test verifies eventual success and exactly one submission after five failed attempts; the timeout test verifies successful recovery as well.\n- **Record pending evidence inputs only after success.** `converse` calls `sources.record_inputs` and clears pending inputs only after the successful-response branch. The unchanged-request test checks delivery on the successful attempt, the tool-history test checks retained additional-read evidence, and the cancellation test checks that no evidence inputs were recorded when recovery was interrupted.\n\nThe implementation helpers are reachable from the subject's marked roots, and the tests cited above carry subject test references. No acknowledged or unacknowledged gap was found.",
+  "references": "d55346805fa9ba13d2cbfd4998ac6ade0496ba08f9d4b530786d72b4e79246fa",
   "inputs": [
     {
       "requirements": "requirements.authoring.provider_backoff",
@@ -94,8 +94,18 @@
     },
     {
       "file": "src/authoring/mod.rs",
+      "item": "fn[author_evidence_with_options]",
+      "hash": "1b5c50fbac4e4ba0543db0104db58a6e37c690cf2ad9fa0caf58f098e02eb656"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "fn[prepare_assessment]",
+      "hash": "e186d250a7d7946631e1f4b942654657f6ebf9d8d270889cb0583065b7e08752"
+    },
+    {
+      "file": "src/authoring/mod.rs",
       "item": "fn[converse]",
-      "hash": "aca1babb5cde30dc5c4370e99e43d4e99b711ca04bf74da60edb1ecc99a46d25"
+      "hash": "8ff7fab0e18a2edc82384c148a31ce61194c3c1d4898e7518e1585898f91373e"
     },
     {
       "file": "src/authoring/mod.rs",
@@ -159,103 +169,8 @@
     },
     {
       "file": "src/authoring/providers.rs",
-      "item": "use@95d18074761c",
-      "hash": "95d18074761c14b8220fb84209e9962ff3574d980745386a08bdf70bbe55d61e"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "use@f6f9b05fe39b",
-      "hash": "f6f9b05fe39b2844ca35ed86d9b826f867e0d6b15bc2e01f012bbe709aa7e3d5"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "use@0c41d25d6b96",
-      "hash": "0c41d25d6b96c99ac8844c0075397e44740bd051c56980f6d400fc1353dd540a"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "use@36004768e609",
-      "hash": "36004768e609c764cdec317e08fe2e411f75a96c197839308024bff4d7c951a8"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "use@fafb3a0aec25",
-      "hash": "fafb3a0aec25cddf8ec4d346f92f03126df2fce1b33c779de5ad2aa5866794b4"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "use@bd1b5107617c",
-      "hash": "bd1b5107617c0609840c71d2ae9c53a0c9e99ea8d688d0bc0518063a8cf292a2"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "use@4e5e9454aa1a",
-      "hash": "4e5e9454aa1ab83d750fcb27213aa0a8f5555a297df34a370a7745fa8e0c17d4"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "use@4b4262645144",
-      "hash": "4b426264514446318af5d7118fad8cce9bdae44294b7d3e84d4ce1d90aab12af"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "trait[CompletionProvider]",
-      "hash": "7740e093d70282a0cba399b7aa8ca8144cecc7e867facefee60e9bb244275d77"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "struct[ProviderBackoff]",
-      "hash": "f18b4eabcb6ca61550cd9b62510a935933080a34fb8eb0f6fba1807e01e4c937"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "impl[ProviderBackoff/Default]",
-      "hash": "9c91d94096792daf572e0b170532abefcf6b30e10c40b041a337bbd3fd37341f"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "const[RETRY_LIMIT]",
-      "hash": "99488d8a0d4855e7eb1077929df1bd81fb25f7edc350318f485689f11bad5fa4"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "enum[Retry]",
-      "hash": "f157113704ebb4919b3dc904efe7cb87d5417b24109ccb6e0d017d07ede894b7"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "fn[failure_codes]",
-      "hash": "a38ad0707032c481b80b9fdcedcd699e5028860dcd89985e5b32ee59c56162a0"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "impl[ProviderBackoff]",
-      "hash": "3c19a6b3de8240e874e7149e758c04357269f63a96e94b0e7fbd71e20a9c8dc3"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "fn[provider_failure]",
-      "hash": "12241b3ea13d123e305af8735f2329f9e2e99d71dbce5f9bf5676122404cd80f"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "fn[retry_after]",
-      "hash": "65cac42aaa714c9b0d37c9fe0590faaa9fd4a72e02d874103276288c4f942958"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "struct[RigProvider]",
-      "hash": "d34604ddbfcebdee436b78424398c10b42f7ab04b31f27074c06a3ef176b1f90"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "impl[RigProvider]",
-      "hash": "04890bed810be1e2b3837e2abf085bc7b757d9b3884b2c13274b3fdc18607e6f"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "fn[bedrock_sdk_loader]",
-      "hash": "00149b3270a8dd337fa000357dd3b4d553b3cc65fc102a921444757205b85be3"
+      "item": "",
+      "hash": "3f7a3ec98d48adbcc60b8ee728e6e72e51751e9680d157578292a2822fd6905e"
     },
     {
       "requirements": "requirements.authoring.provider_backoff.limit",
@@ -274,24 +189,24 @@
       ]
     },
     {
-      "file": "src/authoring/providers.rs",
-      "item": "impl[RigProvider/CompletionProvider]",
-      "hash": "4e5f5537cda5fae67501fbd8a871ee4db51114013516d841fbd7f15f27a9c6ad"
+      "file": "src/authoring/usage.rs",
+      "item": "impl[UsageLog]/fn[begin_request]",
+      "hash": "10fe2c955edf38792263f8bed36cb3c8b0b5994cb2a1a09c4aac923bd25120b0"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "impl[UsageLog]/fn[end_request]",
+      "hash": "c8c24e43409f1c7aff6305ff0e4cc8d368450501a4ea70eddca4d5181d330780"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "impl[UsageLog]/fn[retried]",
+      "hash": "520036a4fb188d9b8b7b941ca181e29da0cf76e5e1da54f597cb7df3869f65e5"
     },
     {
       "file": "src/authoring/mod.rs",
-      "item": "mod[tests]/impl[ThrottledToolProvider/CompletionProvider]",
-      "hash": "339d36725d9357b6845cc2c685c102cf5163b77a288559940d643e161e3d1662"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "mod[tests]/impl[HangingProvider/CompletionProvider]",
-      "hash": "ce3bab49ef2a1d3b2e43aa9a4a6b13167c3bf583fce6818ee415277480da62fd"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "mod[tests]/impl[ThrottledProvider/CompletionProvider]",
-      "hash": "04043e25feb9635df0fe5fbadfcfecc9b84c292bab8c977f7c8be9769cca86b8"
+      "item": "fn[assess]",
+      "hash": "c216d8ae617afd028b13919a0143231867d37eddee5ce4b93a4093f6902fe469"
     }
   ]
 }

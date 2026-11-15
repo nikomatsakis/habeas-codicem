@@ -1,7 +1,7 @@
 {
   "requirement": "When a Bedrock configuration sets no `maxTokens` option, each provider request\nMUST ask for at most 16,384 output tokens. A configured `maxTokens` MUST be used\nas given.\n\nWhen a response stops because it reached a known output limit, the harness MUST\ncontinue the same conversation once, adding a user message with an error result\nfor each tool call in the cut-off response, followed by this text with `<limit>`\nreplaced by the limit:\n\n```text\nYour previous response reached the <limit>-token output limit and was cut off,\nso its tool call was incomplete. Keep within the limit: make your rationale\nshorter, then call the tool again.\n```\n\nA second response that reaches the limit, or a response that stops at an\noutput limit that is not known, MUST fail the assessment as an incomplete\nresponse. Where the provider reports whether a response stopped at the output\nlimit or because the conversation exceeded the model's context window, the\nharness SHOULD continue only the former and fail the assessment on the latter;\nwhere it does not, the stop MUST be treated as reaching the output limit.",
-  "determination": false,
-  "rationale": "## Obligation mapping\n\n- **Without configured Bedrock `maxTokens`, every request asks for at most 16,384 tokens.** `src/authoring/providers.rs#fn[apply_bedrock_options]` sets `DEFAULT_BEDROCK_MAX_TOKENS` (16,384); `src/authoring/providers.rs#impl[RigProvider/CompletionProvider]` applies it on each completion. Covered by `tests/authoring_cli.rs#fn[bedrock_requests_without_max_tokens_ask_for_at_most_16k_output_tokens]` and `src/authoring/providers.rs#mod[tests]/fn[bedrock_native_option_types_are_checked_and_only_max_tokens_is_defaulted]`.\n- **Configured `maxTokens` is used unchanged.** The same adapter assigns the configured integer directly. `tests/authoring_cli.rs#fn[bedrock_cli_uses_selected_profile_region_and_converse_tools]` asserts 321 on both requests.\n- **A known output-limit stop continues once, in the same conversation.** `src/authoring/mod.rs#fn[converse]` tracks `continued` and extends existing history with `cut_off_continuation`. `tests/authoring_cli.rs#fn[a_response_cut_off_at_the_output_limit_is_continued_once]` checks successful continuation and preserved history.\n- **The continuation adds a user message containing an error result for each cut-off tool call, followed by the prescribed text with the limit substituted.** `src/authoring/mod.rs#fn[cut_off_continuation]` iterates calls, uses `error_result`, and appends the note obtained through `src/authoring/mod.rs#fn[approved_text]`, replacing `<limit>`. The continuation test checks user role, call identity, result text, ordering, and the exact note defined in `tests/authoring_cli.rs#const[LIMIT_NOTE]`. However, the error-result property lacks an assertion, as detailed below.\n- **A second limit stop fails as incomplete.** The `continued` guard in `converse` returns an incomplete-response error. Covered by `tests/authoring_cli.rs#fn[a_second_response_at_the_output_limit_fails_the_assessment]`.\n- **An unknown output-limit stop fails as incomplete.** `converse` rejects `None` from `output_limit`. Covered by `tests/authoring_cli.rs#fn[a_stop_at_an_output_limit_that_is_not_known_fails_the_assessment]`.\n- **When distinguishable, continue only output-limit stops and fail context-window overflow.** `converse` rejects raw `model_context_window_exceeded` before continuation. The explicit `max_tokens` fixture exercises output-limit continuation; `tests/authoring_cli.rs#fn[a_context_window_overflow_fails_without_a_continuation]` verifies overflow failure without retry.\n- **When not distinguishable, treat the stop as an output-limit stop.** Generic `FinishReason::Length` follows the output-limit handling absent the explicit context-overflow marker. The Ollama `length` fixture in `tests/authoring_cli.rs#fn[ollama_cut_off_reply]` exercises both unknown-limit failure and known-limit continuation through `tests/authoring_cli.rs#fn[a_configured_ollama_num_predict_is_the_known_output_limit]`.\n\n## Unacknowledged testing gap\n\n`tests/authoring_cli.rs#fn[a_response_cut_off_at_the_output_limit_is_continued_once]` asserts that the returned tool result contains “not run”, but never asserts that it is an **error** result (rather than an ordinary successful result carrying that text). None of the other supplied subject-tagged tests asserts this property either. Consequently, replacing `call.error_result(...)` with `call.result(...)` in `src/authoring/mod.rs#fn[cut_off_continuation]` would leave those assertions satisfied while violating an explicit obligation of `requirements.authoring.output_limit`. This transformation requires an outcome assertion under the testing rules; no exemption or acknowledging `{fixme}` applies.",
+  "determination": true,
+  "rationale": "The requirement is satisfied.\n\n- **Absent Bedrock `maxTokens`, every request asks for at most 16,384 tokens.** `src/authoring/providers.rs#fn[apply_bedrock_options]` assigns `DEFAULT_BEDROCK_MAX_TOKENS`, defined as 16,384 in `src/authoring/providers.rs#const[DEFAULT_BEDROCK_MAX_TOKENS]`. `src/authoring/providers.rs#impl[RigProvider/CompletionProvider]` applies these options on each completion. Tests: `src/authoring/providers.rs#mod[tests]/fn[bedrock_native_option_types_are_checked_and_only_max_tokens_is_defaulted]` and `tests/authoring_cli.rs#fn[bedrock_requests_without_max_tokens_ask_for_at_most_16k_output_tokens]`, the latter checking both requests for cached and uncached models.\n- **Configured `maxTokens` is used unchanged.** `apply_bedrock_options` assigns the configured integer directly. `tests/authoring_cli.rs#fn[bedrock_cli_uses_selected_profile_region_and_converse_tools]` asserts 321 on both outgoing requests.\n- **A known-limit cutoff continues the same conversation once.** `src/authoring/mod.rs#fn[converse]` recognizes `FinishReason::Length`, obtains the known limit, tracks whether continuation has been used, and extends existing history. `tests/authoring_cli.rs#fn[a_response_cut_off_at_the_output_limit_is_continued_once]` checks successful continuation and preservation of prior history.\n- **The continuation adds a user message, an error result for each cut-off tool call, and then the prescribed text with the limit substituted.** `src/authoring/mod.rs#fn[cut_off_continuation]` iterates over the calls, creates error results, and appends the note. `src/authoring/mod.rs#fn[approved_text]` extracts the requirement's text block; the helper substitutes the limit. The preceding continuation test asserts message role, error-result identity/status, ordering, and exact note. `tests/authoring_cli.rs#fn[a_configured_ollama_num_predict_is_the_known_output_limit]` additionally verifies substitution of a configured 512-token limit.\n- **A second cutoff fails as incomplete.** `converse` returns an incomplete-response error when its continuation flag is already set. `tests/authoring_cli.rs#fn[a_second_response_at_the_output_limit_fails_the_assessment]` asserts failure, incomplete-response diagnostics, and exactly two requests.\n- **An unknown output limit fails as incomplete.** `converse` errors when `output_limit()` returns `None`. `tests/authoring_cli.rs#fn[a_stop_at_an_output_limit_that_is_not_known_fails_the_assessment]` checks this failure without another request.\n- **When distinguishable, only output-limit stops continue; context-window overflow fails.** `converse` rejects Bedrock's `model_context_window_exceeded` before continuation. `tests/authoring_cli.rs#fn[a_context_window_overflow_fails_without_a_continuation]` asserts failure and one request; the successful Bedrock continuation test covers the output-limit case.\n- **An indistinguishable length stop is treated as an output-limit stop.** The general length branch in `converse` does this without requiring a provider-specific output-stop marker. The configured and unconfigured Ollama tests above exercise continuation and unknown-limit failure respectively.\n\nThe helper and provider trait implementation are reachable from the marked implementation roots. The other inference-option handling is covered by `requirements.authoring.configuration_storage`, marked on the provider completion implementation; it is not an unexplained additional output-limit behavior. No acknowledged gaps were supplied or found.",
   "references": "7ef22ec89c7e3311acb5352b9c4642ead94c2686614d6c91c2740d08217d036d",
   "inputs": [
     {
@@ -38,7 +38,7 @@
     {
       "file": "src/authoring/mod.rs",
       "item": "fn[converse]",
-      "hash": "aca1babb5cde30dc5c4370e99e43d4e99b711ca04bf74da60edb1ecc99a46d25"
+      "hash": "8ff7fab0e18a2edc82384c148a31ce61194c3c1d4898e7518e1585898f91373e"
     },
     {
       "file": "src/authoring/providers.rs",
@@ -63,7 +63,7 @@
     {
       "file": "tests/authoring_cli.rs",
       "item": "fn[a_response_cut_off_at_the_output_limit_is_continued_once]",
-      "hash": "baf43d913a7bb1c5c09d1894dd67656b6aca503a7524bfba2053d822c56d124a"
+      "hash": "1876949000c1dfb5abbe2368a72bcac55807a0bad0142f619f63622eb11c731b"
     },
     {
       "file": "tests/authoring_cli.rs",
@@ -116,12 +116,18 @@
       ]
     },
     {
+      "file": "src/authoring/providers.rs",
+      "item": "const[DEFAULT_BEDROCK_MAX_TOKENS]",
+      "hash": "7771b138f2adc95a6e477f96b27f6f9947828a1183504d7b2bd1bf72329aa7cc"
+    },
+    {
       "requirements": "requirements.authoring.configuration_storage",
       "matches": [
         "requirements.authoring.configuration_storage"
       ],
       "text": [
         ":::{req} configuration_storage",
+        "{impl}`requirements.configuration.feature_sections`",
         "Configuration names MUST match `[A-Za-z0-9][A-Za-z0-9_-]*` and be case-sensitive.",
         "Project-selection keys MUST be canonical absolute project-root paths. Model IDs",
         "MUST be nonempty opaque strings, preserving tags and ARNs. `api_key_env` MUST",
@@ -134,26 +140,6 @@
         "replace the selected model, the assessment prompt, or tool definitions.",
         ":::"
       ]
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "item": "fn[ollama_cut_off_reply]",
-      "hash": "c9552a0b6f1880df2c71bff4763dfb8547def590c39a0a17dd42fa6e4a7c93da"
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "item": "fn[cut_off_submission]",
-      "hash": "1c69b964305ba86d3699467494a859fd728925dab5ee1fb009f8a08fd5b3ba6a"
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "item": "const[LIMIT_NOTE]",
-      "hash": "d191df3ae77e2211d3d6fbd88218cb521453ffaa5263b66a7c932e3ab093d699"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "const[DEFAULT_BEDROCK_MAX_TOKENS]",
-      "hash": "7771b138f2adc95a6e477f96b27f6f9947828a1183504d7b2bd1bf72329aa7cc"
     },
     {
       "file": "src/authoring/mod.rs",

@@ -1,8 +1,8 @@
 {
   "requirement": "When source-access policy denies a mandatory input, the assessment MUST abort\nbefore any model request and report the denied path and reason to its caller;\nfor an untracked file, the report MUST say what {cite}`requirements.authoring.read_denial.untracked`\nsays. The aborted assessment MUST NOT write evidence or emit evidence JSON, and\nits usage record MUST identify the failure. In a batch, other assessments MUST\ncontinue, including queued assessments, and their successful writes MUST be\nretained; the command MUST return a nonzero exit status after the batch\nfinishes.",
   "determination": true,
-  "rationale": "I found no gaps. Each obligation in `requirements.authoring.read_denial.mandatory` has code that carries it out and a test that exercises it.\n\n**Abort before any model request, and report the denied path and reason**\n- `configured_record` in `src/authoring/mod.rs` calls `subject.sources(root)?` before `RigProvider::connect` and before `assess_subject`. A denied mandatory input therefore returns an `io::Error` carrying the path and reason before any request is made.\n- That error propagates through `configured_assessment` and `author_evidence_with_options` (single run), or through `prepare_assessment` and `run_batch` (batch), to the caller.\n- `src/authoring/inputs.rs#mod[tests]/fn[unreadable_or_denied_anchors_fail_before_inference]` asserts `PermissionDenied` and that the message names `private/skill.md`.\n- `tests/authoring_batch.rs#fn[a_denied_mandatory_input_aborts_only_its_assessment]` asserts the CLI diagnostic names `private.txt` and that the mock server saw no request for `requirements.alpha`.\n\n**Untracked file report**\n- The message comes from `SourceAccess::path` in `src/authoring/access.rs`, which carries the `read_denial.untracked` {impl} reference. It says the file is untracked, that the caller can stage it with `git add`, and that it can be permitted with a workspace `habeas.toml` allow rule. Nothing stages or permits the file itself.\n- `tests/authoring_batch.rs#fn[an_untracked_mandatory_input_is_reported_with_how_to_stage_it]` asserts the CLI diagnostic contains \"notes.txt\", \"untracked\", \"git add\" and \"allow rule\". It also asserts no model request was made.\n\n**No evidence written and no evidence JSON emitted**\n- `configured_assessment` writes the evidence file or stdout only after `configured_record` succeeds. The batch `write_record` only runs on an `Ok` pending assessment.\n- The batch test asserts `evidence/requirements.alpha.json` does not exist. It also runs `author requirements.alpha --stdout` and asserts a nonzero exit and empty stdout.\n\n**Usage record identifies the failure**\n- Both `prepare_assessment` and `author_evidence_with_options` call `usage.finish(\"failed\")` for a non-interrupt error.\n- The batch test asserts the aborted run's record has `outcome == \"failed\"`, `request_count == 0` and `evidence_written == false`.\n\n**Batch behavior**\n- In `run_batch`, only an `Interrupted` error triggers `cancel_on_error`. A denial error is pushed to `outcome.failures` and the loop keeps launching queued subjects.\n- The batch test uses concurrency 1, so later assessments were queued. It asserts `alpha_case`, `beta` and `gamma` still produce evidence with `determination == true`.\n- Successful writes are retained because `write_record` has already run for each of them.\n- `src/main.rs#fn[main]` returns an error, and so a nonzero exit, when `outcome.failures` is non-empty. That happens after the batch loop has finished and the summary has printed. The batch test asserts `!output.status.success()`.\n\nNo unspecified behavior turned up in the {impl} items. Every obligation has a test carrying a `{test}` reference to the subject.",
-  "references": "3f0772760e41b3a2bfb39a02611e0d4079bc3958b2f09912af38caaf898d54d7",
+  "rationale": "The requirement is satisfied.\n\n| Obligation | Implementation and verification |\n|---|---|\n| Abort a denied assessment before any model request. | `src/authoring/mod.rs#fn[configured_record]` calls `AuthoringSubject::sources` with `?` before connecting to either provider path. `src/authoring/inputs.rs#impl[AssessmentSources]/fn[prepare]` propagates access failures, including anchor failures. `tests/authoring_batch.rs#fn[a_denied_mandatory_input_aborts_only_its_assessment]` asserts no request for the denied subject and a zero request count; `src/authoring/inputs.rs#mod[tests]/fn[unreadable_or_denied_anchors_fail_before_inference]` also checks preparation failure. |\n| Report the denied path to the caller. | Preparation preserves access errors and adds anchor context; `src/authoring/mod.rs#fn[author_evidence_with_options]` and `src/authoring/mod.rs#fn[prepare_assessment]` propagate them. Both integration tests assert the denied path in diagnostics. |\n| Report the denial reason to the caller. | `src/authoring/access.rs#impl[SourceAccess]/fn[path]`, reached through `SourceAccess::file`, returns descriptive denial errors; those errors survive propagation. `tests/authoring_batch.rs#fn[an_untracked_mandatory_input_is_reported_with_how_to_stage_it]` asserts the untracked reason in the caller's diagnostic. |\n| For untracked inputs, apply `requirements.authoring.read_denial.untracked`'s reporting rule. | The same `SourceAccess::path` error identifies the file as untracked and explains `git add` and a workspace allow rule. The untracked integration test exercises mandatory-input preparation and asserts all these diagnostic components. This checks application of the cited requirement, not its independent implementation. |\n| Do not write evidence for the aborted assessment. | `src/authoring/mod.rs#fn[configured_assessment]` writes only after successful `configured_record`; batch staging likewise occurs only for successful preparation in `src/authoring/batch.rs#fn[run_batch]`. The denied-input integration test asserts no evidence file. |\n| Do not emit evidence JSON for the aborted assessment. | `configured_assessment` reaches stdout serialization only after successful preparation. The denied-input integration test separately invokes `--stdout` and asserts empty stdout. |\n| Identify failure in the usage record. | Both `author_evidence_with_options` and `prepare_assessment` finish denial errors as `failed`; `src/authoring/usage.rs#impl[UsageLog]/fn[finish]` records and saves that outcome. The denied-input integration test asserts `failed`, zero requests, and `evidence_written: false`. |\n| Continue other batch assessments. | `run_batch` records individual failures and continues its loop. `src/authoring/batch.rs#fn[cancel_on_error]` cancels only on interruption, not access denial. The denied-input integration test verifies successful evidence from the other subjects. |\n| Continue queued assessments. | The same loop continues launching work after denial. The integration test uses concurrency one specifically so subsequent successful assessments were queued. |\n| Retain successful writes. | Successful results proceed through `src/authoring/batch.rs#fn[stage_record]` and `src/authoring/batch.rs#fn[persist_record]`; a denial neither cancels these commits nor rolls them back. The integration test reads and verifies the other subjects' retained evidence. |\n| Return a nonzero command status after the batch finishes. | `src/main.rs#fn[main]` awaits the batch, then returns an error if its collected failures are nonempty. The integration test asserts unsuccessful command status while also verifying the completed queued assessments' evidence. |\n\nThe implementation is reachable from the subject's marked roots, and the cited integration tests carry the subject's `{test}` reference. No unacknowledged gap was found.",
+  "references": "c9ba168083b931d99204ced73c13d28b95d4ebe7e89ae6d6165d327cacb5aaef",
   "inputs": [
     {
       "requirements": "requirements.authoring.read_denial.mandatory",
@@ -39,7 +39,7 @@
     {
       "file": "src/authoring/batch.rs",
       "item": "fn[run_batch]",
-      "hash": "b03db13bb56c6b6d963a5b52671ac7d68bcbc32f30f48809a4ca699bd432c8b2"
+      "hash": "39041d22881fc01b1275e5411005225c70e1ccc4dadd0ba8dc59c0fd448a16fe"
     },
     {
       "file": "src/authoring/inputs.rs",
@@ -54,7 +54,12 @@
     {
       "file": "src/authoring/mod.rs",
       "item": "fn[configured_record]",
-      "hash": "53f7e17d3dc1d00bf7fceeb70c1003f4b51381ee4be2d97466da338d42d99f58"
+      "hash": "add8153b5c92c9322a5ec2ec989ceae49f1726eb80c3273601628b77e93bc182"
+    },
+    {
+      "file": "src/main.rs",
+      "item": "fn[main]",
+      "hash": "42ef4a96b3415d8d33c51f238537e73ae6df30846bfd269a71cb72a6540736b0"
     },
     {
       "file": "tests/authoring_batch.rs",
@@ -68,8 +73,18 @@
     },
     {
       "file": "src/authoring/mod.rs",
+      "item": "fn[configured_assessment]",
+      "hash": "ca2a3f3c24f0899ba8e1cbc1cff6bd0c36dbc5561a73be25c66f054b04d1f5be"
+    },
+    {
+      "file": "src/authoring/mod.rs",
       "item": "fn[prepare_assessment]",
       "hash": "e186d250a7d7946631e1f4b942654657f6ebf9d8d270889cb0583065b7e08752"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "impl[AuthoringSubject]/fn[sources]",
+      "hash": "36f857322afb0f2890837f728ec3cf8c1f095ffeecdd015378188269063a4fa4"
     },
     {
       "file": "src/authoring/batch.rs",
@@ -77,14 +92,34 @@
       "hash": "724b85616cad80ea4228094ada80d8e3eb6ece526ae6ac2c8d48cf876f87d782"
     },
     {
-      "file": "src/authoring/mod.rs",
-      "item": "fn[configured_assessment]",
-      "hash": "ca2a3f3c24f0899ba8e1cbc1cff6bd0c36dbc5561a73be25c66f054b04d1f5be"
+      "file": "src/authoring/inputs.rs",
+      "item": "impl[AssessmentSources]/fn[prepare]",
+      "hash": "a2e105c58b8d10db1d4cf5d05b025518db1e18f63d477a4f8cdf449067a361f8"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "impl[SourceAccess]/fn[file]",
+      "hash": "d657c7657a2da7dbabe6bbe2388ea5f93672f99948fbc74d2b7072658d5703ca"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "impl[SourceAccess]/fn[path]",
+      "hash": "f0e7caec7c72bf2c61e1b012845f8a8825e87d5e7db0afb2a1cdcf65d18466fc"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "impl[UsageLog]/fn[finish]",
+      "hash": "3e6cbcdde4e58eb9825dadcd3d6e6a186a9fa3df4b1e88d542691db4663f70f0"
     },
     {
       "file": "src/authoring/batch.rs",
-      "item": "fn[author_all]",
-      "hash": "04085915b6e2a6c34a2f30d39b22a3bb7286cc3beae8edbf5062489ae157f017"
+      "item": "fn[persist_record]",
+      "hash": "68b0c7c2dfe1c54e8959c115c1975cf87a7392aad5dfd11288e47ffb8ba0691a"
+    },
+    {
+      "file": "src/authoring/batch.rs",
+      "item": "fn[stage_record]",
+      "hash": "a4c2f1d37d5860531463cc25fd45e8dacb4bca31d06076b6b6ee4d8150f4a1c4"
     }
   ]
 }

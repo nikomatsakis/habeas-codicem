@@ -1,8 +1,8 @@
 {
   "requirement": "Each named authoring configuration MUST accept an optional positive integer\n`concurrency` in its configuration table. When omitted, the maximum number of\nsimultaneous assessments MUST default to the number of available logical CPUs\nfor Bedrock and OpenAI, falling back to one when that count is unavailable, and to one for\nOllama. A configured value MUST override the default for each backend; zero\nMUST be rejected as invalid configuration.\n\nBatch authoring MUST use asynchronous tasks on a runtime with a fixed worker\nthread pool. The number of assessments running at once MUST NOT exceed the\nselected concurrency. Each assessment MUST retain its own model conversation and\nusage record. Transient provider failures, including throttling, MUST be\nretried within the affected assessment under\n{cite}`requirements.authoring.provider_backoff`; every other provider error MUST\nbe reported through the ordinary assessment-failure path.",
-  "determination": false,
-  "rationale": "## Obligations and implementation\n\n- Accept optional positive-integer `concurrency` for each named configuration; reject zero. `src/config.rs#struct[AuthoringConfig]` uses `Option<NonZeroUsize>`, reached through workspace parsing and configuration resolution. `tests/configuration.rs#fn[authoring_concurrency_defaults_overrides_and_invalid_values]` and `tests/configuration.rs#fn[workspace_configurations_accept_validate_and_override_concurrency]` exercise omission, positive values, and zero (also negative, fractional, and string values).\n- Default Bedrock to available logical CPUs, default OpenAI likewise, fall back to one when unavailable, and default Ollama to one. `src/config.rs#impl[ResolvedAuthoringConfig]/fn[effective_concurrency]` implements these separate backend cases. The configuration tests above check Bedrock and Ollama; `tests/authoring_batch.rs#fn[ollama_batches_are_serial_by_default]` also verifies Ollama's effective limit in a batch. The unavailable-CPU fallback requires system conditions not set up by these tests.\n- Let a configured value override each backend's default. `src/config.rs#fn[resolve_authoring_with_workspace_from]` preserves the selected configuration's concurrency, and `effective_concurrency` prefers it. The configuration tests verify overrides for Bedrock and Ollama.\n- Use asynchronous tasks and a fixed-worker runtime. `src/main.rs#fn[main]` constructs a Tokio runtime, and `src/authoring/batch.rs#fn[run_batch]`, reachable from the marked `author_all`, spawns assessments in a `JoinSet`. The batch integration tests run this CLI path.\n- Never exceed selected concurrency. `run_batch` launches only while `tasks.len() < concurrency`. `tests/authoring_batch.rs#fn[batch_fills_evidence_preserves_current_records_and_reauthors_only_changed_inputs]` asserts both overlap and peak two; the serial-default test asserts peak one.\n- Retain each assessment's own conversation and its own usage record. `src/authoring/mod.rs#fn[prepare_assessment]` creates a separate usage log, and its `configured_record` → `assess_subject` → `assess` → `converse` chain creates assessment-local request history. The batch completion test checks six usage records; `tests/authoring_batch.rs#fn[throttled_assessment_retries_within_itself_while_others_proceed]` checks that only the affected assessment acquires an extra request and that the others complete independently.\n- Retry transient failures, including throttling, within the affected assessment under `requirements.authoring.provider_backoff`; report other provider errors through ordinary assessment failure. `src/authoring/mod.rs#fn[converse]` invokes provider backoff inside its local conversation loop and returns non-retried errors through `prepare_assessment` to `run_batch`'s failure handling. The throttling test verifies local recovery; `tests/authoring_batch.rs#fn[failed_assessment_keeps_other_results_and_reports_failure]` verifies terminal failure reporting without losing other assessments.\n\n## Unacknowledged testing gap\n\nThe subject explicitly names **OpenAI** as a default case and requires configured overrides for **each backend**. Neither concurrency configuration test includes OpenAI: both iterate only over Bedrock and Ollama. Consequently there is no subject-marked test asserting OpenAI's CPU-based default or its configured override (nor its acceptance/rejection cases). These are testable locally, without provider access. The OpenAI-specific test inspected at `tests/configuration.rs#fn[openai_defaults_are_effective_only_and_explicit_values_win]` tests model/reasoning defaults, not concurrency, and is not marked as testing this subject. Add OpenAI coverage to the concurrency tests. No supplied acknowledgment covers this gap.",
-  "references": "30361320b77473f8e959cb7df50c735c9245914bafc25abbbf1a42af18ff93e5",
+  "determination": true,
+  "rationale": "## Obligations and coverage\n\n- **Accept optional positive-integer `concurrency` for every named configuration; reject zero.** `src/config.rs#struct[AuthoringConfig]` represents the field as `Option<NonZeroUsize>`, so omission is accepted and zero cannot deserialize. This type is reachable through the configuration parsing and resolution roots. `tests/configuration.rs#fn[authoring_concurrency_defaults_overrides_and_invalid_values]` checks omission, positive values, zero, negative values, fractional values, and strings for all three backends. `tests/configuration.rs#fn[workspace_configurations_accept_validate_and_override_concurrency]` also covers workspace configurations and invalid workspace values.\n- **Default Bedrock and OpenAI to available logical CPU concurrency; fall back to one if unavailable; default Ollama to one.** `src/config.rs#impl[ResolvedAuthoringConfig]/fn[effective_concurrency]` implements these separate defaults. The two configuration tests above assert the effective default for each backend. `tests/authoring_batch.rs#fn[ollama_batches_are_serial_by_default]` additionally verifies serial execution. Forcing the platform's CPU-availability query to fail would require platform/process-state setup; the reviewed tests do not provide such setup. That failure-path test is exempt under the process-state exception, rather than requiring an artificial failure injection.\n- **Configured values override each backend's default.** `src/config.rs#fn[resolve_authoring_with_workspace_from]` preserves the selected configuration's value, and `src/config.rs#impl[ResolvedAuthoringConfig]/fn[effective_concurrency]` chooses it before consulting defaults. Both configuration tests exercise overrides across all three backends.\n- **Batch authoring uses asynchronous tasks; its runtime has a fixed worker pool.** `src/authoring/batch.rs#fn[author_all]` reaches `author_all_with_options` and `run_batch`; `src/authoring/batch.rs#fn[run_batch]` launches async assessments with `JoinSet::spawn`. `src/main.rs#fn[main]` constructs Tokio's multithread runtime and runs batch authoring on it. Runtime construction itself has no conditional or transformation requiring a separate test. `tests/authoring_batch.rs#fn[batch_fills_evidence_preserves_current_records_and_reauthors_only_changed_inputs]` exercises the CLI path and asserts overlapping assessments.\n- **Running assessments never exceed selected concurrency.** `src/authoring/batch.rs#fn[run_batch]` launches only while `tasks.len() < concurrency`, keeping each assessment in its task until preparation finishes. The batch test above asserts peak concurrency of two, and the serial-default test asserts one. The throttling test also asserts the bound during retries.\n- **Each assessment retains its own conversation; each retains its own usage record.** `src/authoring/mod.rs#fn[prepare_assessment]` creates an assessment-local `UsageLog` and passes it through `configured_record` and `assess_subject`. `src/authoring/mod.rs#fn[converse]` owns the continuing request and conversation state. `tests/authoring_batch.rs#fn[concurrent_assessments_keep_their_own_continuing_histories]` checks subject-specific continuing histories. The batch and throttling tests assert separate usage records and per-subject request counts.\n- **Transient provider failures, including throttling, retry within the affected assessment under `requirements.authoring.provider_backoff`.** `src/authoring/mod.rs#fn[converse]` applies `ProviderBackoff` inside its request loop, waits, and retries the same assessment-local request. `tests/authoring_batch.rs#fn[throttled_assessment_retries_within_itself_while_others_proceed]` exercises HTTP 429 and checks recovery, bounded concurrency, one usage record for the affected assessment, two attempts for that subject, and no restarted requests for other subjects. This verifies the subject's application of the cited backoff requirement without reassessing that requirement's internals.\n- **Other provider errors follow the ordinary assessment-failure path.** `converse` returns non-retry errors; `src/authoring/mod.rs#fn[prepare_assessment]` records failure and returns the error; `src/authoring/batch.rs#fn[run_batch]` reports and collects it while preserving other results. `tests/authoring_batch.rs#fn[failed_assessment_keeps_other_results_and_reports_failure]`, using the HTTP 400 response in its reachable helper `tests/authoring_batch.rs#fn[serve]`, asserts failed status, diagnostics, one failed usage record, and successful results for the other assessments.\n\nThe implementation paths are reachable from the subject's marked implementation roots, and the required tests carry subject references. No unacknowledged gap was found.",
+  "references": "da5efc360b3776f92b4eab5192cf38f0094d0c29ab6901b00f51eaf11682000e",
   "inputs": [
     {
       "requirements": "requirements.authoring.concurrency",
@@ -102,6 +102,11 @@
     },
     {
       "file": "tests/authoring_batch.rs",
+      "item": "fn[concurrent_assessments_keep_their_own_continuing_histories]",
+      "hash": "2e8be206ea40712be5d55f803dd59cbe4789fcbffc43a70fc98802a795d6ed89"
+    },
+    {
+      "file": "tests/authoring_batch.rs",
       "item": "fn[throttled_assessment_retries_within_itself_while_others_proceed]",
       "hash": "a15355a3a0c3fa38fa412c66f51269f8d78ab362cc825da3470093f13049b046"
     },
@@ -128,17 +133,17 @@
     {
       "file": "tests/configuration.rs",
       "item": "fn[authoring_concurrency_defaults_overrides_and_invalid_values]",
-      "hash": "74416240e60e811474a85bfd6fa78d9c9c5b9b5f44854f8ca70b75116f9e2fb1"
+      "hash": "63eabea03cd37b19d8e7119a6b382cde0bfd165e4807445eeec5fcee30f6ae2e"
     },
     {
       "file": "tests/configuration.rs",
       "item": "fn[workspace_configurations_accept_validate_and_override_concurrency]",
-      "hash": "245d1744c57288d53e1403dffdeda6915e3430c48dffb52737365f2170bc8c9d"
+      "hash": "8f26077cf1963093fb58bb543ac945427f6513efcaa412ef009d1dcedd6bb34c"
     },
     {
       "file": "src/authoring/batch.rs",
       "item": "fn[run_batch]",
-      "hash": "b03db13bb56c6b6d963a5b52671ac7d68bcbc32f30f48809a4ca699bd432c8b2"
+      "hash": "39041d22881fc01b1275e5411005225c70e1ccc4dadd0ba8dc59c0fd448a16fe"
     },
     {
       "file": "src/authoring/batch.rs",
@@ -168,32 +173,37 @@
     {
       "file": "src/authoring/mod.rs",
       "item": "fn[converse]",
-      "hash": "aca1babb5cde30dc5c4370e99e43d4e99b711ca04bf74da60edb1ecc99a46d25"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "fn[configured_assessment]",
-      "hash": "ca2a3f3c24f0899ba8e1cbc1cff6bd0c36dbc5561a73be25c66f054b04d1f5be"
-    },
-    {
-      "file": "tests/configuration.rs",
-      "item": "fn[openai_defaults_are_effective_only_and_explicit_values_win]",
-      "hash": "52cd4052fc40dd008990020305f8ee01fbf0dcdeffa2e6bb35bb3851320f4a67"
+      "hash": "8ff7fab0e18a2edc82384c148a31ce61194c3c1d4898e7518e1585898f91373e"
     },
     {
       "file": "src/authoring/mod.rs",
       "item": "fn[configured_record]",
-      "hash": "53f7e17d3dc1d00bf7fceeb70c1003f4b51381ee4be2d97466da338d42d99f58"
+      "hash": "add8153b5c92c9322a5ec2ec989ceae49f1726eb80c3273601628b77e93bc182"
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "item": "impl[ProviderBackoff]/fn[retry]",
+      "hash": "6df8c0fd0b4fe495beb2999906e3bc9744d391108c4be5d339bfd8b1789f7ce3"
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "item": "impl[Server]/fn[start_with]",
+      "hash": "1b354fd94cb0193f19cb5a86ceadc69d382a437dc6847142cb4aa91e7ad2cefb"
     },
     {
       "file": "src/authoring/mod.rs",
       "item": "fn[assess_subject]",
-      "hash": "492f0e1bbfd42b850d1dfc6299792338a4bab939bb80656754f1c44da2c86f2e"
+      "hash": "f8aefe861610523d00fcc975bb1037125848c5e75b757e4f062c019f50a38db6"
     },
     {
-      "file": "src/authoring/mod.rs",
-      "item": "fn[assess]",
-      "hash": "c216d8ae617afd028b13919a0143231867d37eddee5ce4b93a4093f6902fe469"
+      "file": "src/config.rs",
+      "item": "struct[WorkspaceConfig]",
+      "hash": "190c8f00867914cb067b19979dab2c5fa282468f7807567f7a98380e6ab36524"
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "item": "fn[serve]",
+      "hash": "924ce28518d34200dc59d0577b8ad2cac59d5b98a84535a768f6273006ddeef3"
     }
   ]
 }
