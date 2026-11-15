@@ -1570,5 +1570,27 @@ no_match: ["struct S;"]
         ] {
             assert!(info.contains(text), "{text}\n{info}");
         }
+        write_review(root, "fn[check_two]", json!({"applies":"yes"}));
+        let invalid = crate::status_markdown(root, false).unwrap();
+        assert!(
+            invalid.contains("| `requirements.rule` | `src/lib.rs` | `fn[check_two]` | Invalid |"),
+            "{invalid}"
+        );
+        assert!(invalid.contains("applies must be a Boolean"), "{invalid}");
+        write_review(root, "fn[check_two]", json!({}));
+        fs::write(
+            root.join("src/lib.rs"),
+            SOURCE.replace("fn check_two() {}", "fn check_two() { let changed = 1; }"),
+        )
+        .unwrap();
+        let stale = crate::status_markdown(root, false).unwrap();
+        assert!(
+            stale.contains("| `requirements.rule` | `src/lib.rs` | `fn[check_two]` | Invalid |"),
+            "{stale}"
+        );
+        assert!(
+            stale.contains("outline input changed: src/lib.rs fn[check_two]"),
+            "{stale}"
+        );
     }
 }
