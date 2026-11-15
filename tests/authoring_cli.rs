@@ -4720,9 +4720,9 @@ fn openai_responses_replays_tool_calls_and_records_usage() {
 
 // {test}`requirements.authoring.openai_defaults`
 #[test]
-fn openai_concrete_profiles_accept_model_and_option_overrides() {
+fn openai_key_only_profile_defaults_to_sol_and_accepts_overrides() {
     for (extra, model, effort, max_tokens) in [
-        ("model = 'gpt-6.1-sol'\n", "gpt-6.1-sol", "low", 16_384),
+        ("", "gpt-6.1-sol", "low", 16_384),
         ("model = 'gpt-6-luna'\n", "gpt-6-luna", "low", 16_384),
         (
             "model = 'gpt-6-luna'\n[authoring.configs.api.options]\nmax_output_tokens = 8192\n[authoring.configs.api.options.reasoning]\neffort = 'medium'\n",
@@ -4859,7 +4859,7 @@ fn adaptive_routes_fresh_assessments_and_records_each_model() {
             fs::write(fixture.project.join("src/lib.rs"), "// {impl}`requirements.ready`\npub fn ready() {}\n// {test}`requirements.ready`\nfn ready_test() {}\n").unwrap();
         }
         fs::write(fixture.config.join("habeas/config.toml"), format!(
-            "version = 1\n[authoring]\ndefault = 'api'\n[authoring.configs.api]\nbackend = 'openai'\n{policy}endpoint = '{}'\napi_key_env = 'HABEAS_TEST_MODEL_KEY'\n", server.endpoint)).unwrap();
+            "version = 1\n[authoring]\ndefault = 'api'\n[authoring.configs.api]\nbackend = 'openai'\nmodel = 'adaptive'\n{policy}endpoint = '{}'\napi_key_env = 'HABEAS_TEST_MODEL_KEY'\n", server.endpoint)).unwrap();
         let output = fixture.run(&["author", SUBJECT]);
         assert!(
             output.status.success(),
@@ -4948,7 +4948,7 @@ fn adaptive_sol_failure_is_final_and_confirm_uses_sol_verification() {
         let fixture = Fixture::new(&server.endpoint);
         fs::write(fixture.project.join("src/lib.rs"), "// {impl}`requirements.ready`\npub fn ready() {}\n// {test}`requirements.ready`\nfn ready_test() {}\n").unwrap();
         fs::write(fixture.config.join("habeas/config.toml"), format!(
-            "version = 1\n[authoring]\ndefault = 'api'\n[authoring.configs.api]\nbackend = 'openai'\nendpoint = '{}'\napi_key_env = 'HABEAS_TEST_MODEL_KEY'\n", server.endpoint)).unwrap();
+            "version = 1\n[authoring]\ndefault = 'api'\n[authoring.configs.api]\nbackend = 'openai'\nmodel = 'adaptive'\nendpoint = '{}'\napi_key_env = 'HABEAS_TEST_MODEL_KEY'\n", server.endpoint)).unwrap();
         let output = if confirm {
             fixture.run(&["author", SUBJECT, "--policy", "confirm"])
         } else {

@@ -718,7 +718,7 @@ impl OllamaConfig {
 impl OpenAiConfig {
     // {impl}`requirements.authoring.openai_defaults`
     pub fn model(&self) -> &str {
-        self.model.as_deref().unwrap_or("adaptive")
+        self.model.as_deref().unwrap_or("gpt-6.1-sol")
     }
 
     // {impl}`requirements.configuration.serialization`

@@ -1728,19 +1728,19 @@ fn openai_defaults_are_effective_only_and_explicit_values_win() {
     let base =
         "version = 1\n[authoring.configs.api]\nbackend = 'openai'\napi_key = 'fixture-key'\n";
     for (extra, model, effort) in [
-        ("", "adaptive", Some("low")),
+        ("", "gpt-6.1-sol", Some("low")),
         (
             "[authoring.configs.api.options.reasoning]\nsummary = 'auto'\n",
-            "adaptive",
+            "gpt-6.1-sol",
             Some("low"),
         ),
         (
             "[authoring.configs.api.options.reasoning]\neffort = 'medium'\n",
-            "adaptive",
+            "gpt-6.1-sol",
             Some("medium"),
         ),
         ("model = 'gpt-6-luna'\n", "gpt-6-luna", Some("low")),
-        ("model = 'gpt-6.1-sol'\n", "gpt-6.1-sol", Some("low")),
+        ("model = 'adaptive'\n", "adaptive", Some("low")),
         (
             "model = 'gpt-6-luna'\n[authoring.configs.api.options.reasoning]\neffort = 'high'\n",
             "gpt-6-luna",

@@ -1338,7 +1338,7 @@ OllamaConfig {
 }
 
 OpenAiConfig {
-    model: Optional<ModelId>,                 // default: adaptive
+    model: Optional<ModelId>,                 // default: gpt-6.1-sol
     endpoint: Optional<String>,               // default: https://api.openai.com/v1
     api_key_env: Optional<EnvironmentVariableName>, // default: OPENAI_API_KEY
     api_key: Optional<SecretString>,
@@ -1379,7 +1379,7 @@ Serialization MUST follow the common rules in
 :::{req} openai_defaults
 {impl}`requirements.configuration.feature_sections`
 An OpenAI configuration MAY omit `model`; the effective model MUST then be
-`adaptive` under {cite}`requirements.authoring.adaptive`. When `options.reasoning.effort` is omitted, the request MUST use
+`gpt-6.1-sol`. When `options.reasoning.effort` is omitted, the request MUST use
 `low` effort, preserving other reasoning options. When `options.max_output_tokens`
 is omitted, the request MUST use an output-token limit of 16,384. These option
 defaults MUST apply even when the model is overridden. An explicit model,
@@ -1389,7 +1389,8 @@ An explicitly empty model MUST still be rejected.
 :::
 
 :::{req} adaptive
-For the OpenAI backend, `model = "adaptive"` MUST select models locally rather
+Adaptive is experimental and requires explicit opt-in. For the OpenAI backend,
+`model = "adaptive"` MUST select models locally rather
 than send `adaptive` to the API. An assessment with an applicable existing
 FIXME reference MUST go directly to `gpt-6.1-sol`. Otherwise it MUST begin with
 `gpt-5.4-mini`: a true judgment is accepted, while false, FIXME, or a failed
@@ -1732,10 +1733,8 @@ Ollama endpoint to use localhost.
 
 For OpenAI, set `OPENAI_API_KEY` to your API key outside the file and use this
 complete user `config.toml` with a credential-source reference. The default
-model is `adaptive`: GPT-5.4-mini first, escalating to Sol for false/FIXME
-judgments or failed submissions, and going directly to Sol for applicable
-existing FIXMEs. Both tiers use low reasoning effort and an output-token limit
-of 16,384. `adaptive` is a harness model, not an API model ID.
+model is `gpt-6.1-sol`, with low reasoning effort and an output-token limit
+of 16,384. Model and inference settings remain overridable.
 
 ```toml
 version = 1
@@ -1754,10 +1753,12 @@ environment variable. To keep the key in your user file instead, replace
 `OPENAI_API_KEY_VALUE`. OpenAI uses
 the Responses API at `https://api.openai.com/v1`; `endpoint` overrides that base URL.
 
-Adaptive accepts mini's `true` judgments without a Sol audit. It can therefore
-miss gaps that mini overlooks; the initial calibration run missed a known
-pagination boundary bug. Set `model = "gpt-6.1-sol"` to assess every subject
-with Sol, or explicitly choose `policy = "confirm"` for independent confirmation.
+To opt into experimental adaptive routing, set `model = "adaptive"`. It starts
+with GPT-5.4-mini and escalates false/FIXME judgments or failed submissions to
+Sol; applicable existing FIXMEs go directly to Sol. It accepts mini's `true`
+judgments without a Sol audit and missed known gaps in calibration. Adaptive
+is a harness model, not an API model ID. Its prompt and routing need further
+evaluation before use as a default.
 
 To override the defaults, add `model = "gpt-6-luna"` to the profile and/or
 `reasoning = { effort = "medium" }` under its `options` table. Set
