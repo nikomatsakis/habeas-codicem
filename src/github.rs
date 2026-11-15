@@ -1006,6 +1006,12 @@ mod tests {
             ("/repos/o/r/issues/2", 200, issue("open", "")),
         ]);
         let temp = project();
+        let chapter = temp.path().join("md/rules.md");
+        let mut text = fs::read_to_string(&chapter).unwrap();
+        text.push_str(
+            "\n::::{example} unfinished\nGiven ready, it succeeds. {cite}`rules.ready`\n\n:::{fixme}\n:github: o/r#3\nThe example is untested.\n:::\n::::\n",
+        );
+        fs::write(&chapter, text).unwrap();
         let mut inspection = crate::evidence::inspect_repository(temp.path()).unwrap();
         let before = inspection.report.errors.clone();
         assert_eq!(github.count(), 0, "inspection reads no issues");
@@ -1024,7 +1030,14 @@ mod tests {
                 "{expected}\n{added:#?}"
             );
         }
-        assert_eq!(added.len(), 5, "{added:#?}");
+        assert!(
+            added.iter().any(
+                |error| error.contains("example rules.unfinished fails: its {fixme}")
+                    && error.contains("o/r#3, which does not exist")
+            ),
+            "{added:#?}"
+        );
+        assert_eq!(added.len(), 7, "{added:#?}");
         assert!(!added.iter().any(|error| error.contains("o/r#2")));
 
         let missing = FakeGithub::start(&[]);

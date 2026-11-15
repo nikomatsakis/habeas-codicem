@@ -1,7 +1,7 @@
 {
   "requirement": "Usage MUST record each provider request's outcome and available input/output\ntoken counts, including retries, with cached or reasoning-token counts when\nprovided, and for a failed request the failure under\n{cite}`requirements.authoring.usage_requests.failures`. Missing measurements MUST be recorded as unavailable, not zero.\nRun totals MUST include request and tool-call counts by tool, elapsed time, and\navailable token usage, identifying incomplete totals without double counting\nprovider counters that overlap.",
   "determination": true,
-  "rationale": "The implementation and referenced tests satisfy `requirements.authoring.usage_requests`.\n\n### Obligations and coverage\n\n1. **Record each request's outcome.** `src/authoring/mod.rs#fn[converse]` brackets every provider attempt with `begin_request` and `end_request`. `src/authoring/usage.rs#impl[UsageLog]/fn[end_request]` records completed or failed outcomes; `src/authoring/usage.rs#impl[UsageLog]/fn[finish]` also handles cancellation. Coverage: `src/authoring/mod.rs#mod[tests]/fn[throttled_requests_retry_unchanged_and_record_every_attempt]`, `src/authoring/mod.rs#mod[tests]/fn[unanswered_requests_are_abandoned_and_retried]`, and `src/authoring/usage.rs#mod[tests]/fn[cancelled_request_persists_elapsed_time_and_incomplete_totals]`.\n2. **Record available input token counts.**\n3. **Record available output token counts.** `src/authoring/usage.rs#impl[TokenCounts]/fn[from_usage]` preserves both provider measurements in each request. `src/authoring/usage.rs#mod[tests]/fn[token_totals_keep_subsets_separate_and_missing_counters_unknown]` checks persisted request input usage and aggregated input/output usage. Provider integration is exercised by `tests/authoring_cli.rs#fn[ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free]`, `tests/authoring_cli.rs#fn[bedrock_cli_uses_selected_profile_region_and_converse_tools]`, and `tests/authoring_cli.rs#fn[openai_responses_replays_tool_calls_and_records_usage]`. The individual counter assignments themselves are unchanged pass-throughs.\n4. **Include retries.** Every retry re-enters the logging loop in `src/authoring/mod.rs#fn[converse]`. `src/authoring/providers.rs#impl[RigProvider]/fn[connect]` reaches `bedrock_sdk_config` and `bedrock_sdk_loader`, which disable hidden SDK retries. Coverage: `src/authoring/mod.rs#mod[tests]/fn[throttled_requests_retry_unchanged_and_record_every_attempt]` and `src/authoring/providers.rs#mod[tests]/fn[bedrock_sdk_retries_are_disabled]`.\n5. **Record cached-token counts when supplied.**\n6. **Record reasoning-token counts when supplied.** `src/authoring/usage.rs#impl[TokenCounts]/fn[from_usage]` passes these measurements through separately. `tests/authoring_cli.rs#fn[claude_requests_carry_cache_checkpoints_and_record_cache_usage]` checks per-request cache reads/writes and totals; `tests/authoring_cli.rs#fn[openai_responses_replays_tool_calls_and_records_usage]` checks cached and reasoning usage. The direct per-request assignments have no transformation or conditional of their own.\n7. **Apply `requirements.authoring.usage_requests.failures` to failed requests.** `src/authoring/mod.rs#fn[converse]` extracts failure codes, passes them to `end_request`, and marks retries through `retried`. Its subject reference covers that decision to apply the cited requirement. `src/authoring/mod.rs#mod[tests]/fn[throttled_requests_retry_unchanged_and_record_every_attempt]` verifies the resulting failure records. The cited requirement's implementation is not independently reassessed here.\n8. **Represent missing measurements as unavailable, not zero.** Optional fields in `src/authoring/usage.rs#struct[TokenCounts]`, `from_usage`, and `sum_counter` preserve absence as JSON null while retaining actual measured zeroes. Coverage: `src/authoring/usage.rs#mod[tests]/fn[partial_failure_retains_available_totals_and_optional_measurements]` and `src/authoring/usage.rs#mod[tests]/fn[token_totals_keep_subsets_separate_and_missing_counters_unknown]`.\n9. **Include request counts in run totals.** `src/authoring/usage.rs#impl[UsageLog]/fn[begin_request]` counts recorded attempts. The throttling test above asserts six requests, including five failures.\n10. **Include tool-call counts by tool.** `src/authoring/usage.rs#impl[UsageLog]/fn[tool]` and `src/authoring/usage.rs#impl[UsageLog]/fn[skipped_tool]`, reached from `converse`, maintain total and per-tool counts. Coverage: `src/authoring/usage.rs#mod[tests]/fn[tool_outcomes_are_distinct_and_unknown_names_do_not_leak_model_text]` and the Ollama CLI test above.\n11. **Include elapsed time in run totals.** `begin_request`, `end_request`, and `finish` update run elapsed time. `src/authoring/usage.rs#mod[tests]/fn[completed_requests_and_the_run_record_elapsed_time]` asserts elapsed time both during and after the run.\n12. **Include available token usage in run totals.**\n13. **Identify incomplete totals.**\n14. **Avoid double counting overlapping provider counters.** `src/authoring/usage.rs#impl[TokenCounts]/fn[sum]` and `src/authoring/usage.rs#impl[TokenCounts]/fn[sum_counter]` retain measured subtotals, compute completeness, and sum cache/reasoning counters separately rather than adding them to input/output totals. Coverage: `src/authoring/usage.rs#mod[tests]/fn[token_totals_keep_subsets_separate_and_missing_counters_unknown]` and `src/authoring/usage.rs#mod[tests]/fn[partial_failure_retains_available_totals_and_optional_measurements]`.\n\nAll implementation helpers above are reachable from the subject's marked roots. All tests relied on carry a subject test reference. No unmet obligation or acknowledged gap was found.",
+  "rationale": "I found no gap for `requirements.authoring.usage_requests` or its cited `requirements.authoring.usage_requests.failures`.\n\n**Obligations and code**\n- **Outcome and tokens per request, including retries.**\n  - `src/authoring/mod.rs#fn[converse]` calls `usage.begin_request()` before every attempt, retries included. It then calls `usage.end_request(...)` with the elapsed time, the response usage and the failure codes.\n  - `src/authoring/usage.rs#impl[UsageLog]/fn[end_request]` records `completed` or `failed`. It stores the input and output counts plus the cached, cache-creation and reasoning counts through `TokenCounts::from_usage`, which carries the provider-reported counters through as optional values.\n- **Missing measurements recorded as unavailable, not zero.** The `TokenCounts` fields are `Option<u64>` and serialize to null. `TokenCounts::default()` is used when there is no usage.\n- **Run totals.**\n  - Request counts: `begin_request` sets `request_count`.\n  - Tool-call counts by tool: `UsageLog::tool` and `skipped_tool` update the `tool_calls` map by tool name. `converse` calls them.\n  - Elapsed time: `end_request` and `finish` set the run `elapsed_ms`. `converse` measures each request's time.\n  - Token totals and incomplete totals: `TokenCounts::sum` and `sum_counter` keep measured subtotals. They set `complete` to false when any request lacks a measurement.\n- **No double counting of overlapping counters.** `sum` adds only input and output into the totals. The cached, cache-creation and reasoning counters are summed separately as subsets.\n- **Failures** (`usage_requests.failures`).\n  - HTTP status and provider code: `providers::failure_codes` extracts them from `ProviderError::report()`. `converse` passes them to `end_request`.\n  - Retried flag: `RequestFailure` carries `retried`. `UsageLog::retried`, called from `converse` on `Retry::Wait`, sets it.\n  - No message text: `RequestFailure` has no message field.\n\n**Tests**\n- `src/authoring/mod.rs#mod[tests]/fn[throttled_requests_retry_unchanged_and_record_every_attempt]` asserts each failed attempt records exactly `{http_status: 429, error_code: ThrottlingException, retried: true}`. That exact-JSON match also shows no message is recorded. It also checks the request count and the final completed request.\n- `src/authoring/mod.rs#mod[tests]/fn[unanswered_requests_are_abandoned_and_retried]` covers a failed request followed by a completed one.\n- `src/authoring/usage.rs#mod[tests]/fn[failed_submission_can_be_confirmed_on_a_later_attempt]` covers the initial `retried: false`, the flip to true, and the null token fields of a failed request.\n- Token totals are covered by `usage.rs#mod[tests]/fn[token_totals_keep_subsets_separate_and_missing_counters_unknown]` and `fn[partial_failure_retains_available_totals_and_optional_measurements]`. Together they cover subsets kept separate, missing counters left as null, and incomplete totals.\n- Elapsed time is covered by `usage.rs#mod[tests]/fn[completed_requests_and_the_run_record_elapsed_time]` and `fn[cancelled_request_persists_elapsed_time_and_incomplete_totals]`.\n- Tool counts by tool are covered by `usage.rs#mod[tests]/fn[tool_outcomes_are_distinct_and_unknown_names_do_not_leak_model_text]`.\n- `src/authoring/providers.rs#mod[tests]/fn[failure_codes_are_the_status_and_code_a_provider_reports]` tests the extraction.\n- The end-to-end tests in `tests/authoring_cli.rs` check usage totals across providers. For OpenAI they check input 22, cached 6 and reasoning 4, and for Bedrock the cache-read and cache-creation counts.\n\nAll `{impl}` and `{test}` references are in place, and the code that carries out each obligation is reachable from the `converse` and `UsageLog` implementations. I found no unspecified behavior and no `{fixme}` references.",
   "references": "2705692c8f0aaf7f9158b40f33235b1d90c38f2fd7f0e0e414ce813705d0f5e8",
   "inputs": [
     {
@@ -127,32 +127,97 @@
     {
       "file": "tests/authoring_cli.rs",
       "item": "fn[openai_responses_replays_tool_calls_and_records_usage]",
-      "hash": "88ae1f4059d95a88b4be8ab2017892516dea2572ccd63365a38c010e90f97154"
+      "hash": "c3a7bdf97a5928b9eccb287d0c17b5dab6e1ff0cf554c6a4ccbccc631fa9e3f5"
     },
     {
       "file": "src/authoring/usage.rs",
-      "item": "",
-      "hash": "5093a6620fba418ec2795258d751b0eeb82bb957c50e036be50181b048734601"
+      "item": "use@41232e72e1f3",
+      "hash": "41232e72e1f385e38ae4ad5b99da6e14207f3391487fad42ed8aa7ddd14d6cf3"
     },
     {
-      "file": "src/authoring/providers.rs",
-      "item": "impl[RigProvider/CompletionProvider]/fn[complete]",
-      "hash": "5ef22d9aeefb3a96a508f39f4a00cbc4d49201508ab909e7079551bcffac0476"
+      "file": "src/authoring/usage.rs",
+      "item": "use@7d19e0e4275b",
+      "hash": "7d19e0e4275bf5a3d248c8be4f91efe98e7afd386e5fdff696761ed1a31240d7"
     },
     {
-      "file": "src/authoring/providers.rs",
-      "item": "fn[bedrock_sdk_config]",
-      "hash": "7ab162b0d655b45cb67e7829a19541bbff5e40b7e91f6943a66eb0fc37167a8e"
+      "file": "src/authoring/usage.rs",
+      "item": "use@b9ad51f029df",
+      "hash": "b9ad51f029df0e9b3352de6ee80b9fc5085d69b914654d0181d2570afbfc446f"
     },
     {
-      "file": "src/authoring/providers.rs",
-      "item": "fn[bedrock_sdk_loader]",
-      "hash": "00149b3270a8dd337fa000357dd3b4d553b3cc65fc102a921444757205b85be3"
+      "file": "src/authoring/usage.rs",
+      "item": "use@3970e6901143",
+      "hash": "3970e6901143920563d8805f9c3cc3a00f3047d12ba98064de8508cf8fd075f2"
     },
     {
-      "file": "src/authoring/providers.rs",
-      "item": "fn[failure_codes]",
-      "hash": "a38ad0707032c481b80b9fdcedcd699e5028860dcd89985e5b32ee59c56162a0"
+      "file": "src/authoring/usage.rs",
+      "item": "use@dd6bef0c8b3f",
+      "hash": "dd6bef0c8b3ff74d7a9e16476a39b756c85c442097c5383c4b6c84ea87170497"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "use@b254c9726a6b",
+      "hash": "b254c9726a6bf20073ea1825ce8f93c5326b97722758d0c11b573ac41ace0b4a"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "use@1fee5dfeb258",
+      "hash": "1fee5dfeb258363dba1e6d791b567f5a1ef8dc1badfa794de0de110f71dab537"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "use@ee79f9c70b9d",
+      "hash": "ee79f9c70b9d06fb940d5fb18008024f03e7f4046f00a24ae3c5ed7f3622411f"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "use@6e42e0801700",
+      "hash": "6e42e08017009abb18f33fa65d11a99391be1f47814478d1337e25ea5a0189ec"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "static[SEQUENCE]",
+      "hash": "27ea496a941ba87256ee176fa57728b8cf3ab68279cbf4c2e5bb4188efb7f136"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "struct[UsageRecord]",
+      "hash": "db31a6d252be400419f7f46d6aefe26a90d08bc4de122f946051efd3b5d45385"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "struct[InputUsage]",
+      "hash": "0700e5ace38d9149dd28c6dce787c33e372e6108ad2b928509e78e502c848814"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "struct[RequestUsage]",
+      "hash": "52340f6e37d349f0820652c5bcf1a00ce22a98049067f6df80236003ebba3502"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "struct[RequestFailure]",
+      "hash": "44b92cf8c7b702a6476a215e96909e68dad3d59b49f558ad684997ee2d3aa545"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "struct[TokenCounts]",
+      "hash": "4b5cbb91ce295d288e0a77be2fa693d7f9f932ae8d91307d787a07b9dc4cd610"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "struct[UsageLog]",
+      "hash": "97e4b7533e5d5763af9043a66f7efb3b1ee2926e342c076d3e5d20d14d4e7500"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "impl[UsageLog]",
+      "hash": "3b596da1747f3b7e7867b455fba846e74f9e79c898596449ef2f7d44eedd51e1"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "impl[TokenCounts]",
+      "hash": "28ad3197404ef55ddad58da22007328feb6b47ffd483b15a7018a00fd34e37d8"
     }
   ]
 }

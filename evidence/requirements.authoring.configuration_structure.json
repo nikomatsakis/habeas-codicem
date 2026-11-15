@@ -1,8 +1,8 @@
 {
   "requirement": "{impl}`requirements.configuration.feature_sections`\nHabeas MUST define its authoring configuration using these data structures:\n\n```text\nUserAuthoringConfig {\n    default: Optional<ConfigName>,\n    configs: Map<ConfigName, AuthoringConfig>,\n    projects: Map<CanonicalProjectRoot, ProjectSelection>,\n}\n\nWorkspaceAuthoringConfig {\n    default: Optional<ConfigName>,\n    configs: Map<ConfigName, AuthoringConfig>,  // omitted means empty\n}\n\nProjectSelection {\n    config: ConfigName,\n}\n\nAuthoringConfig {\n    backend: BackendConfig,                   // tagged union, flattened in TOML\n    concurrency: Optional<PositiveInteger>,   // simultaneous assessments\n    policy: Optional<AssessmentPolicy>,       // default: Once for OpenAI; Confirm otherwise\n}\n\nAssessmentPolicy = Confirm | Once             // TOML: \"confirm\" or \"once\"\n\nBackendConfig = Bedrock(BedrockConfig) | Ollama(OllamaConfig) | Openai(OpenAiConfig)\n\nBedrockConfig {\n    model: ModelId,                           // model ID or inference-profile ID/ARN\n    aws_profile: Optional<String>,\n    region: Optional<String>,\n    credentials: Optional<BedrockCredentials>,\n    options: Map<String, OptionValue>,\n}\n\nBedrockCredentials {\n    access_key_id: SecretString,\n    secret_access_key: SecretString,\n    session_token: Optional<SecretString>,\n}\n\nOllamaConfig {\n    model: ModelId,                           // exact identifier, including tag\n    endpoint: Optional<String>,               // default: http://localhost:11434\n    api_key_env: Optional<EnvironmentVariableName>,\n    api_key: Optional<SecretString>,\n    options: Map<String, OptionValue>,\n}\n\nOpenAiConfig {\n    model: Optional<ModelId>,                 // default: gpt-6.1-sol\n    endpoint: Optional<String>,               // default: https://api.openai.com/v1\n    api_key_env: Optional<EnvironmentVariableName>, // default: OPENAI_API_KEY\n    api_key: Optional<SecretString>,\n    options: Map<String, OptionValue>,\n}\n\nOptionValue = String | Boolean | Integer | FiniteFloat\n            | Array<OptionValue> | Map<String, OptionValue>\n\nSecretString = String                         // serialized normally; redacted in Debug\n\nModelRef {\n    backend: BackendKind,                     // Bedrock, Ollama, or Openai\n    model: ModelId,\n}\n```\n\n`ModelRef` MUST be derived from the selected backend configuration and MUST\npreserve the exact model identifier. It MUST identify the model without replacing\nconnection settings such as AWS profile, region, or Ollama endpoint.",
-  "determination": false,
-  "rationale": "The structures and most behavior match, but there is a reachability gap for the canonical-project-root constraint.\n\n### Obligations and coverage\n\n- Define `UserAuthoringConfig` with an optional default, a configuration map, and a project-selection map; define `WorkspaceAuthoringConfig` with an optional default and a configuration map that defaults to empty. These are represented by `src/config.rs#struct[UserAuthoringConfig]` and `src/config.rs#struct[WorkspaceAuthoringConfig]`. Tests in `tests/configuration.rs#fn[user_and_workspace_authoring_tables_round_trip_every_map]` cover both maps and project selections; `tests/configuration.rs#fn[workspace_discovery_uses_nearest_file_without_merging_or_rewriting_it]` checks omitted workspace configs.\n- Define `ProjectSelection.config`; define `AuthoringConfig.backend`, optional positive concurrency, and optional policy. The reachable types `src/config.rs#struct[ProjectSelection]` and `src/config.rs#struct[AuthoringConfig]` do this, including flattened backend serialization and `NonZeroUsize`. The map-round-trip test above, `tests/configuration.rs#fn[authoring_concurrency_defaults_overrides_and_invalid_values]`, and `tests/configuration.rs#fn[authoring_policy_defaults_to_confirm_and_round_trips]` exercise these properties, including invalid concurrency and policy values.\n- Provide both policy variants and their lowercase TOML names; default to Once for OpenAI and Confirm otherwise. `src/config.rs#enum[AssessmentPolicy]` and `src/config.rs#impl[ResolvedAuthoringConfig]/fn[effective_policy]` implement these. The policy-round-trip test and `tests/configuration.rs#fn[openai_policy_defaults_to_once_without_changing_explicit_policy]` verify the defaults and explicit values. The Bedrock/other-backend distinction needs no additional branch-specific test beyond the tested non-OpenAI path.\n- Provide the three backend variants and each listed field: Bedrock model, profile, region, credentials and options; credential access key, secret key and optional session token; Ollama model, endpoint, environment-key name, explicit key and options; OpenAI optional model, endpoint, environment-key name, explicit key and options. These are present in the reachable `BackendConfig`, `BedrockConfig`, `BedrockCredentials`, `OllamaConfig`, and `OpenAiConfig` declarations in `src/config.rs`. `tests/configuration.rs#fn[backend_configuration_round_trips_without_materializing_defaults]`, `tests/configuration.rs#fn[explicit_credentials_round_trip_but_diagnostics_and_debug_redact_them]`, and `tests/configuration.rs#fn[openai_configuration_preserves_model_and_resolves_credentials]` exercise their serialized values. Pure field declarations impose no additional transformed behavior requiring separate tests.\n- Supply the Ollama endpoint, OpenAI endpoint, OpenAI environment-variable name, and OpenAI model defaults. These are implemented respectively by `src/config.rs#impl[OllamaConfig]/fn[endpoint]`, `src/config.rs#impl[OpenAiConfig]/fn[endpoint]`, `src/config.rs#impl[OpenAiConfig]/fn[api_key_from]`, and the reachable `src/config.rs#impl[OpenAiConfig]/fn[model]`. The backend-round-trip and OpenAI-configuration tests above, plus `tests/configuration.rs#fn[openai_defaults_are_effective_only_and_explicit_values_win]`, assert them.\n- Support string, Boolean, integer, finite float, recursive array, and recursive map option values. `src/config.rs#enum[OptionValue]` supplies the variants and `src/config.rs#impl[OptionValue]/fn[validate]` rejects nonfinite values recursively. The backend-round-trip test covers valid values; `tests/configuration.rs#fn[storage_rules_reject_each_invalid_field_with_its_setting]` covers nonfinite scalar, array, and map values.\n- Serialize secrets normally and redact Debug output. `src/config.rs#struct[SecretString]` uses transparent serialization; `src/config.rs#impl[SecretString/fmt::Debug]/fn[fmt]` redacts. The explicit-credentials test above verifies round-trip preservation and absence of secrets from Debug.\n- Define `ModelRef` with backend and model; derive it from the selected backend; preserve the exact identifier; do not replace connection settings. `src/config.rs#impl[ResolvedAuthoringConfig]/fn[model_ref]` reaches `src/config.rs#impl[BackendConfig]/fn[model_ref]` and `src/config.rs#struct[ModelRef]`. The map-round-trip test checks exact Bedrock identifiers and retention of profile, region, and Ollama endpoint; the backend-round-trip and OpenAI-configuration tests check Ollama and OpenAI identifiers and kinds.\n\n### Gap\n\nThe required `Map<CanonicalProjectRoot, ProjectSelection>` is represented as unrestricted `BTreeMap<PathBuf, ProjectSelection>` in `src/config.rs#struct[UserAuthoringConfig]`. Canonical-key enforcement exists in `src/config.rs#impl[UserAuthoringConfig]/fn[validate]`, and `tests/configuration.rs#fn[storage_rules_reject_each_invalid_field_with_its_setting]` tests relative and noncanonical keys. However, that validation method carries only an implementation reference to `requirements.configuration.loading`. It is not called by any subject-marked implementation root: the struct's derived deserializer does not invoke it. Reading `src/config.rs#impl[UserConfig]` confirms that `parse` invokes validation, but a caller does not become reachable from the marked struct. `src/config.rs#impl[UserAuthoringConfig]/fn[validate]` therefore needs an `{impl}` reference to `requirements.authoring.configuration_structure` (or equivalent reachable enforcement).\n\nNo supplied `{fixme}` acknowledges this gap.",
-  "references": "f750508f8693249e2f06fa3e3dd98cbfa4cf01009e2ba21658a1d61292a32aba",
+  "determination": true,
+  "rationale": "The code defines every structure the requirement lists, and tests cover each obligation. I found no gaps.\n\n**Structures.** Each one matches the spec's shape, defaults and serialized form:\n- **User and workspace configs.** `src/config.rs#struct[UserAuthoringConfig]` has `default`, a required `configs` map and a `projects` map keyed by `PathBuf`. `src/config.rs#struct[WorkspaceAuthoringConfig]` has `default` and a `configs` map that is omitted when empty, so omitted means empty. `src/config.rs#struct[ProjectSelection]` holds `config`.\n- **Authoring config.** `src/config.rs#struct[AuthoringConfig]` has `concurrency: Option<NonZeroUsize>` and `policy: Option<AssessmentPolicy>`. Its backend is flattened and tagged by `backend` through `src/config.rs#enum[BackendConfig]`, whose variants are `Bedrock`, `Ollama` and `Openai`.\n- **Backend configs.** `BedrockConfig`, `BedrockCredentials`, `OllamaConfig` and `OpenAiConfig` have the listed fields. `OpenAiConfig.model` is optional.\n- **Policy and option values.** `AssessmentPolicy` is lowercase `confirm` or `once`. `OptionValue` is an untagged enum of string, boolean, integer, float, array and map.\n- **Secrets.** `SecretString` is a transparent `String`, so it serializes normally. `src/config.rs#impl[SecretString/fmt::Debug]/fn[fmt]` redacts it in Debug output.\n- **Defaults.** `OllamaConfig::endpoint` defaults to `http://localhost:11434`. `OpenAiConfig` defaults the endpoint to `https://api.openai.com/v1`, the model to `gpt-6.1-sol` and the key variable to `OPENAI_API_KEY`. `ResolvedAuthoringConfig::effective_policy` defaults to `Once` for OpenAI and `Confirm` otherwise.\n- **Validation.**\n  - `src/config.rs#impl[UserAuthoringConfig]/fn[validate]` checks configuration names and canonical absolute project roots.\n  - `src/config.rs#impl[BackendConfig]/fn[validate]` checks non-empty model IDs and environment-variable names.\n  - `src/config.rs#impl[OptionValue]/fn[validate]` enforces `FiniteFloat`, including inside nested arrays and maps.\n\n**`ModelRef`.**\n- `src/config.rs#impl[BackendConfig]/fn[model_ref]` builds it from the selected backend. It carries only the backend kind and the exact model string, so AWS profile, region and endpoint are untouched.\n- `ResolvedAuthoringConfig::model_ref` only passes that value through unchanged, so it needs no test of its own.\n\n**Tests.**\n- `tests/configuration.rs#fn[backend_configuration_round_trips_without_materializing_defaults]` checks the Ollama endpoint default, the `ModelRef` for Ollama, nested options and the round trip.\n- `tests/configuration.rs#fn[user_and_workspace_authoring_tables_round_trip_every_map]` checks the `projects` map, empty `configs`, and workspace configs with options. It also checks `ModelRef` for Bedrock IDs and ARNs with `aws_profile` and `region` kept, and for Ollama with `endpoint` kept.\n- `tests/configuration.rs#fn[storage_rules_reject_each_invalid_field_with_its_setting]` checks names, project keys, model IDs, `api_key_env` and non-finite floats, including nested ones.\n- `tests/configuration.rs#fn[authoring_concurrency_defaults_overrides_and_invalid_values]` checks the optional and positive `concurrency` field.\n- `tests/configuration.rs#fn[authoring_policy_defaults_to_confirm_and_round_trips]`, `tests/configuration.rs#fn[openai_policy_defaults_to_once_without_changing_explicit_policy]` and `tests/authoring_batch.rs#fn[policy_comes_from_the_flag_then_the_configuration_then_defaults_to_confirm]` check the policy field and its backend-dependent default.\n- `tests/configuration.rs#fn[openai_configuration_preserves_model_and_resolves_credentials]` and `tests/configuration.rs#fn[openai_defaults_are_effective_only_and_explicit_values_win]` check the OpenAI model, endpoint and `api_key_env` defaults, and the `OpenAiConfig` fields.\n- `tests/configuration.rs#fn[explicit_credentials_round_trip_but_diagnostics_and_debug_redact_them]` checks `SecretString` round-tripping, Debug redaction and credentials.\n- `tests/configuration.rs#fn[explicit_project_and_default_selections_choose_whole_configs]` checks `default` and `ProjectSelection`.\n- `tests/configuration.rs#fn[workspace_discovery_uses_nearest_file_without_merging_or_rewriting_it]` checks that a workspace file with no `configs` loads with an empty map.\n\nAll of these tests carry `{test}` references to the subject.\n\nThe extra validation rules in the backend `validate` function (options may not replace the model, prompt or tools; credentials and `aws_profile` are mutually exclusive) belong to the sibling requirements the same code marks with `{impl}`: `requirements.authoring.configuration_storage` and `requirements.authoring.credentials`. They are not unspecified behavior.",
+  "references": "6b15313bcbf9ee38c946597bdc55a9865def49cccb73689dacdda77c9877e0d4",
   "inputs": [
     {
       "requirements": "requirements.authoring.configuration_structure",
@@ -104,6 +104,16 @@
     },
     {
       "file": "src/config.rs",
+      "item": "impl[UserAuthoringConfig]/fn[validate]",
+      "hash": "5473444689500a71c33a09d29291b3be423c46afe6c6a23813c12524b46107fc"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "impl[BackendConfig]/fn[validate]",
+      "hash": "7db57db8dea4e31b26daf43c7b090deb233f224706d914e07668423f8d4cf28f"
+    },
+    {
+      "file": "src/config.rs",
       "item": "impl[OptionValue]/fn[validate]",
       "hash": "c4d8657a0632ecf6e2514f5b2de4dd916d1dffe4c12beafd956c415fc4a7305e"
     },
@@ -135,7 +145,7 @@
     {
       "file": "tests/authoring_batch.rs",
       "item": "fn[policy_comes_from_the_flag_then_the_configuration_then_defaults_to_confirm]",
-      "hash": "028f127f85f36b98331421209f3c7b3522675dbc186b38afef0e95e51a0ab68d"
+      "hash": "4f22daa7e42e5fe9583eaa3cee2932f05cd0c82c1664ebe84c3c0b70a3ae00db"
     },
     {
       "file": "tests/configuration.rs",
@@ -194,6 +204,21 @@
     },
     {
       "file": "src/config.rs",
+      "item": "",
+      "hash": "aa0aa95fb581ca1ed3e272a0eebaee01426812675fb01556cf789e14e4b04526"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "struct[SecretString]",
+      "hash": "b7e8b5ba10a7ca05849edc46e52d827f134b5b54b9813986246f9a29a7491d9a"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "struct[BedrockCredentials]",
+      "hash": "0be8d654e8c7d39c9ed046216190093c2dda93f4862fec2dcb3f88ccf921aee4"
+    },
+    {
+      "file": "src/config.rs",
       "item": "struct[ProjectSelection]",
       "hash": "9c20bc057d63c1972e2664967a18366422b22742143a834e81e89927f892ce30"
     },
@@ -234,21 +259,6 @@
     },
     {
       "file": "src/config.rs",
-      "item": "impl[AssessmentPolicy]",
-      "hash": "ed5873bec0d0df00bfca5d60e5887b3b17f4a33523b6c63a4f2d57bed88195ba"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[AssessmentPolicy/std::str::FromStr]",
-      "hash": "b27edc498208c4b4e60dea0908436e7a71374033ce59420a83545183fd1b410c"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[AssessmentPolicy/fmt::Display]",
-      "hash": "aa28e4adfc752192e2d2cefd3294904b163ea2b4f08a4f1efe80f918e6423128"
-    },
-    {
-      "file": "src/config.rs",
       "item": "enum[BackendKind]",
       "hash": "95df6fe040bf4139b65ed0eabe4eb18e54bf76a76be6bbff286956efc65ebdf7"
     },
@@ -259,96 +269,8 @@
     },
     {
       "file": "src/config.rs",
-      "item": "struct[ResolvedAuthoringConfig]",
-      "hash": "61c4dae82e448772a52c1b5a312140ba9d078252ee0e329d46e88433462997e6"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "enum[ConfigPlatform]",
-      "hash": "a5de749a21f55c086f8e53b4112ba7f24db76ce29c826cf05dddd6e59c5ba7d5"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[ConfigPlatform]",
-      "hash": "816fa731bb902965f928c77a8204fb9d14c729f3e24c44320d7ff47e12dc84e7"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[UserConfig]",
-      "hash": "1c8c4f12d0c8aa68141f51f0b5f6210995d702934c62b76e640b7611db3a0c90"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[WorkspaceConfig]",
-      "hash": "8002a777732a437641c733f68f4d7da8403da875a3d5434e2c502b7ddf3ea1cf"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[BackendConfig]",
-      "hash": "89f9609ad7fd98c1f422467495d9329d8db47300ad32edeeaea77fb4adfa95c1"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "struct[SecretString]",
-      "hash": "b7e8b5ba10a7ca05849edc46e52d827f134b5b54b9813986246f9a29a7491d9a"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "struct[BedrockCredentials]",
-      "hash": "0be8d654e8c7d39c9ed046216190093c2dda93f4862fec2dcb3f88ccf921aee4"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[OpenAiConfig]/fn[model]",
-      "hash": "bb2a918ac25f44a81c1b36b7dea982ea364704b0ed8b528505a86840a1319d6d"
-    },
-    {
-      "requirements": "requirements.configuration.serialization",
-      "matches": [
-        "requirements.configuration.serialization"
-      ],
-      "text": [
-        ":::{req} serialization",
-        "Saved configuration MUST remain distinct from resolved runtime configuration.",
-        "Serializing and deserializing a valid configuration MUST preserve its semantic",
-        "values, including explicit versus omitted settings. Optional fields MAY be",
-        "omitted on serialization; defaults and environment-derived values MUST NOT be",
-        "materialized into omitted fields. TOML comments and formatting need not",
-        "round-trip.",
-        "",
-        "Loading configuration or running a configured feature MUST NOT rewrite the user",
-        "or project configuration as a side effect. Resolved credentials and live runtime",
-        "objects MUST NOT enter the serialized data structures. Explicitly supplied",
-        "credential values are permitted only in the fields documented by the authoring",
-        "feature; credentials resolved from a profile or environment MUST NOT be written",
-        "back to configuration.",
-        ":::"
-      ]
-    },
-    {
-      "requirements": "requirements.authoring.policy",
-      "matches": [
-        "requirements.authoring.policy"
-      ],
-      "text": [
-        ":::{req} policy",
-        "Every `habeas author` form MUST assess its subjects under an assessment policy,",
-        "`confirm` or `once`. The policy MUST come from `--policy <name>` when given,",
-        "otherwise from the selected configuration's `policy`, and otherwise MUST be",
-        "`once` for OpenAI and `confirm` for other backends. Under `confirm`, each subject MUST be assessed as",
-        "{cite}`requirements.authoring.confirmation` specifies. Under `once`, each subject",
-        "MUST receive a single assessment (including model escalation under",
-        "{cite}`requirements.authoring.adaptive`), whose result is recorded; it uses fewer tokens",
-        "and less time, such as with a slow local model. An unknown policy name MUST be",
-        "rejected as invalid configuration or arguments. The completion report MUST name",
-        "the policy used, and each usage record MUST identify it.",
-        ":::"
-      ]
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[UserAuthoringConfig]/fn[validate]",
-      "hash": "5473444689500a71c33a09d29291b3be423c46afe6c6a23813c12524b46107fc"
+      "item": "impl[BackendConfig]/fn[model_ref]",
+      "hash": "6b39ba6a6ed8ed6eb5457c03cc48916a94fdaebe74e2be6058cad2dbdf3343a4"
     }
   ]
 }

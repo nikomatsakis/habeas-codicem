@@ -1,8 +1,8 @@
 {
-  "requirement": "When the backend and model support prompt caching, every provider request MUST\nplace one cache checkpoint after the system prompt of\n{cite}`requirements.authoring.prompt_parts` and another at the end of its last\nmessage, so each request reuses the tool definitions and system prompt that\nearlier assessments of its kind sent, and the conversation its own earlier\nrequests sent. Cache checkpoints MUST NOT change the content of a request.",
+  "requirement": "For backends that accept explicit cache checkpoints, when the backend and model\nsupport prompt caching, every provider request MUST place one cache checkpoint\nafter the system prompt of {cite}`requirements.authoring.prompt_parts` and\nanother at the end of its last message, so each request reuses the tool\ndefinitions and system prompt that earlier assessments of its kind sent, and\nthe conversation its own earlier requests sent. Cache checkpoints MUST NOT\nchange the content of a request.\n\nFor OpenAI, which caches matching prompt prefixes automatically, the harness\nMUST keep the system prompt and tool definitions unchanged across requests in\none conversation and replay prior conversation content in its original order.\nIt MUST NOT insert checkpoint blocks.",
   "determination": true,
-  "rationale": "The requirement is satisfied by the inspected implementation and its marked tests.\n\nThe obligations of `requirements.authoring.cache_checkpoints` are:\n\n1. When checkpoint caching is supported, every request places a checkpoint after the system prompt described by `requirements.authoring.prompt_parts`.\n2. Under the same condition, every request places another checkpoint at the end of its last message. These placements provide the reusable tool/system prefix and prior-conversation prefix described in the requirement.\n3. Adding checkpoints must not change request content.\n\n**Implementation.** `src/authoring/providers.rs#impl[RigProvider]/fn[connect]` selects checkpoint support through `src/authoring/providers.rs#fn[bedrock_caches]`. That helper recognizes Claude and Nova through `vendor/habeas-rig/src/completion.rs#impl[Family]/fn[of]`. The connection code distinguishes OpenAI-managed caching and Ollama's lack of checkpoint support from Bedrock checkpoint caching.\n\n`src/authoring/providers.rs#impl[RigProvider/CompletionProvider]/fn[complete]` applies `src/authoring/providers.rs#fn[place_cache_checkpoints]` before each supported request is sent. The helper sets the short cache-retention option without editing the messages or tools. The reachable Bedrock encoder, `vendor/habeas-rig/src/completion.rs#impl[Converse/Wire]/fn[encode]`, calls the request builder. In `vendor/habeas-rig/src/request.rs#fn[base]`, the builder appends a separate checkpoint block after the leading system prompt and another to the last message's content. Both additions leave the existing content intact; the final checkpoint is also placed following reasoning turns. Thus the cited prompt-parts requirement is applied to the system prompt in this case without needing to reassess prompt construction itself.\n\n**Tests.** `src/authoring/providers.rs#mod[tests]/fn[cache_checkpoints_are_requested_for_caching_models]` checks supported Claude and Nova identifiers, unsupported identifiers, the cache option, and serialized equality apart from that option. It also exercises a request containing reasoning.\n\n`tests/authoring_cli.rs#fn[claude_requests_carry_cache_checkpoints_and_record_cache_usage]` verifies both required placements on each of two actual provider request bodies, asserts exactly two checkpoints, and checks the continuation request containing reasoning. Its reachable helper `tests/authoring_cli.rs#fn[bedrock_run]` drives an assessment through a tool-read turn and submission. The test compares cached request bodies, after removing checkpoints, against uncached request bodies, directly verifying the unchanged-content obligation for both initial and continuation requests. Both tests carry the subject's `{test}` reference.\n\nNo gap was found.",
-  "references": "b389a45873a0c66098162732a30d4db790c5211fff7322f97c8990ae01d95a32",
+  "rationale": "I found no gaps. Each obligation has code that carries it out and a test that asserts its outcome.\n\n**Bedrock, explicit checkpoints**\n- **Backend and model support.** `src/authoring/providers.rs#impl[RigProvider]/fn[connect]` sets `caches` from `bedrock_caches`, which is true only for the Claude and Nova families. It is false for Ollama and OpenAI. The unit test `cache_checkpoints_are_requested_for_caching_models` covers this: Claude and Nova are accepted, Llama and a fixture model are rejected.\n- **Every request gets checkpoints.** `src/authoring/providers.rs#impl[RigProvider/CompletionProvider]/fn[complete]` calls `place_cache_checkpoints` on every request when `caches` is set. That sets `request.options.cache = Some(CacheRetention::Short)`. The vendored `rig-bedrock` turns this into a checkpoint after the system prompt and one at the end of the last message. `fn[converse]` in `src/authoring/mod.rs` sends all requests through `complete`.\n- **Two checkpoints, in the right places.** `tests/authoring_cli.rs#fn[claude_requests_carry_cache_checkpoints_and_record_cache_usage]` asserts these points on each request body:\n  - A `cachePoint` follows the system text.\n  - A `cachePoint` ends the last message.\n  - There are exactly two `cachePoint` occurrences.\n  - This also holds on a request that follows a reasoning turn.\n- **Reuse of tools, system prompt and conversation.** `fn[converse]` sets the tools once and keeps the system prompt fixed through `prompt.request()`. It only appends to the chat history, so earlier content is a stable prefix. The system prompt comes from `prompt_parts`, which is cited and not reassessed here.\n- **Checkpoints must not change content.** The unit test shows the request serializes identically to the original apart from the cache option. The integration test strips the checkpoints from the cached request bodies and finds them equal to the bodies sent to an uncached model.\n\n**OpenAI**\n- `connect` sets `caches` to false for OpenAI, so no checkpoint is requested.\n- `fn[converse]` keeps the tools and system prompt fixed and appends to the history in order.\n- `tests/authoring_cli.rs#fn[openai_responses_replays_tool_calls_and_records_usage]` asserts:\n  - `instructions` and `tools` are identical across the two requests.\n  - The second request's input starts with the first request's input unchanged, followed by the function call and its output in order.\n  - No checkpoint keys or block types (`cachePoint`, `cache_control`, `cache_point`, `cache_checkpoint`) appear in any request body.\n\nI found no unspecified behavior in the `{impl}` code, and no `{fixme}` references apply.",
+  "references": "9802d82ec0fcaf4791b0f4a551fdb985dcc9e468616e5da6d7197d9b6b2f7821",
   "inputs": [
     {
       "requirements": "requirements.authoring.cache_checkpoints",
@@ -11,12 +11,18 @@
       ],
       "text": [
         ":::{req} cache_checkpoints",
-        "When the backend and model support prompt caching, every provider request MUST",
-        "place one cache checkpoint after the system prompt of",
-        "{cite}`requirements.authoring.prompt_parts` and another at the end of its last",
-        "message, so each request reuses the tool definitions and system prompt that",
-        "earlier assessments of its kind sent, and the conversation its own earlier",
-        "requests sent. Cache checkpoints MUST NOT change the content of a request.",
+        "For backends that accept explicit cache checkpoints, when the backend and model",
+        "support prompt caching, every provider request MUST place one cache checkpoint",
+        "after the system prompt of {cite}`requirements.authoring.prompt_parts` and",
+        "another at the end of its last message, so each request reuses the tool",
+        "definitions and system prompt that earlier assessments of its kind sent, and",
+        "the conversation its own earlier requests sent. Cache checkpoints MUST NOT",
+        "change the content of a request.",
+        "",
+        "For OpenAI, which caches matching prompt prefixes automatically, the harness",
+        "MUST keep the system prompt and tool definitions unchanged across requests in",
+        "one conversation and replay prior conversation content in its original order.",
+        "It MUST NOT insert checkpoint blocks.",
         ":::"
       ]
     },
@@ -36,6 +42,11 @@
         "message.",
         ":::"
       ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "fn[converse]",
+      "hash": "8ff7fab0e18a2edc82384c148a31ce61194c3c1d4898e7518e1585898f91373e"
     },
     {
       "file": "src/authoring/providers.rs",
@@ -58,6 +69,11 @@
       "hash": "fcc040320986b468979b19528211cffdd8c894ce64fe1d5fc122210a0400aa57"
     },
     {
+      "file": "tests/authoring_cli.rs",
+      "item": "fn[openai_responses_replays_tool_calls_and_records_usage]",
+      "hash": "c3a7bdf97a5928b9eccb287d0c17b5dab6e1ff0cf554c6a4ccbccc631fa9e3f5"
+    },
+    {
       "file": "src/authoring/providers.rs",
       "item": "fn[bedrock_caches]",
       "hash": "c316c3bccc7a2cc2f13634677639ec3cd79776825f5a843115d9098a97948485"
@@ -66,26 +82,6 @@
       "file": "src/authoring/providers.rs",
       "item": "fn[place_cache_checkpoints]",
       "hash": "faf094ed40b166db2eaebd7866bb146bf9ea99f97597a3eb116802016cdee96a"
-    },
-    {
-      "file": "tests/authoring_cli.rs",
-      "item": "fn[bedrock_run]",
-      "hash": "9ec552e381809690f082f8ea1eab61c18adcad11afb41d94332050ce3e615671"
-    },
-    {
-      "file": "vendor/habeas-rig/src/request.rs",
-      "item": "",
-      "hash": "61f2993b5181d8b134538524063ae84541da76018ce768b8bb266ff04c412780"
-    },
-    {
-      "file": "vendor/habeas-rig/src/completion.rs",
-      "item": "impl[Family]/fn[of]",
-      "hash": "8c5d1d3ecf06c6f11da678420df20962d3ff1cef9de506dd9ffab141f8d2e338"
-    },
-    {
-      "file": "vendor/habeas-rig/src/completion.rs",
-      "item": "impl[Converse/Wire]/fn[encode]",
-      "hash": "194a4c67c6ce74cdcb43e0daa30727738fad752cbed34fb4508056574187b33e"
     }
   ]
 }

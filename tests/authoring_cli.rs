@@ -4348,6 +4348,8 @@ fn bundled_skills_mark_roots_and_handle_uncovered_items() {
         &section(skill_md("habeas-evidence"), "### Uncovered Rust items"),
         &[
             "For each item still warned about after `habeas author --all`, choose references by \"Choosing references\" in the habeas-requirements skill",
+            "Before changing an uncovered item, determine whether it is a requirement root, an entry point, an item that serves other code, or dead code",
+            "Report dead code to the user without editing it",
             "| the item is a root of a requirement's implementation | add `{impl}` of that requirement to the item |",
             "| the item only serves other code | add `` // {cite}`habeas:util` `` |",
             "| nothing reaches the item | report it to the user as dead code; don't delete it unasked |",
@@ -4732,9 +4734,36 @@ fn replacing_a_record_that_stops_reading_an_item_warns_until_it_is_covered() {
 // {test}`requirements.authoring.configuration_storage`
 // {test}`requirements.authoring.usage_storage`
 // {test}`requirements.authoring.configuration_precedence`
+// {test}`requirements.authoring.cache_checkpoints`
 #[test]
 // {test}`requirements.authoring.usage_storage`
 fn openai_responses_replays_tool_calls_and_records_usage() {
+    fn assert_no_checkpoints(value: &Value) {
+        match value {
+            Value::Object(fields) => {
+                for (key, value) in fields {
+                    assert!(
+                        !matches!(key.as_str(), "cachePoint" | "cache_control"),
+                        "explicit cache checkpoint: {key}"
+                    );
+                    if key == "type" {
+                        assert!(
+                            !matches!(value.as_str(), Some("cache_point" | "cache_checkpoint")),
+                            "explicit cache checkpoint block: {value}"
+                        );
+                    }
+                    assert_no_checkpoints(value);
+                }
+            }
+            Value::Array(values) => {
+                for value in values {
+                    assert_no_checkpoints(value);
+                }
+            }
+            _ => {}
+        }
+    }
+
     let response = |id: &str, name: &str, arguments: Value| {
         json!({
             "id": format!("resp_{id}"), "object":"response", "status":"completed",
@@ -4777,18 +4806,30 @@ fn openai_responses_replays_tool_calls_and_records_usage() {
         assert_eq!(request.body["max_output_tokens"], 1024);
         assert_eq!(request.body["reasoning"]["effort"], "low");
         assert_eq!(request.body["tools"].as_array().unwrap().len(), 9);
+        assert_no_checkpoints(&request.body);
     }
+    assert!(
+        !requests[0].body["instructions"]
+            .as_str()
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        requests[0].body["instructions"],
+        requests[1].body["instructions"]
+    );
+    assert_eq!(requests[0].body["tools"], requests[1].body["tools"]);
+    let initial_input = requests[0].body["input"].as_array().unwrap();
     let history = requests[1].body["input"].as_array().unwrap();
-    assert!(
-        history
-            .iter()
-            .any(|item| item["type"] == "function_call" && item["call_id"] == "read")
+    assert_eq!(history.len(), initial_input.len() + 2);
+    assert_eq!(&history[..initial_input.len()], initial_input.as_slice());
+    assert_eq!(history[initial_input.len()]["type"], "function_call");
+    assert_eq!(history[initial_input.len()]["call_id"], "read");
+    assert_eq!(
+        history[initial_input.len() + 1]["type"],
+        "function_call_output"
     );
-    assert!(
-        history
-            .iter()
-            .any(|item| item["type"] == "function_call_output" && item["call_id"] == "read")
-    );
+    assert_eq!(history[initial_input.len() + 1]["call_id"], "read");
     let usage = fixture.usage();
     assert_eq!(usage["backend"], "openai");
     assert_eq!(usage["outcome"], "completed");

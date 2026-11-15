@@ -468,6 +468,7 @@ impl ProjectConfig {
 
 impl UserAuthoringConfig {
     // {impl}`requirements.configuration.loading`
+    // {impl}`requirements.authoring.configuration_structure`
     pub fn validate(&self, path: &Path) -> io::Result<()> {
         if let Some(name) = &self.default {
             validate_name(path, "authoring.default", name)?;

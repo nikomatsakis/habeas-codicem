@@ -1,7 +1,7 @@
 {
   "requirement": "So that concurrent assessments find their system prompt cached under\n{cite}`requirements.authoring.cache_checkpoints`, a batch MUST start one\nassessment of each kind it contains before any other of that kind, and start the\nothers only once that assessment's first provider request has finished, whether\nor not it succeeded.",
   "determination": true,
-  "rationale": "## Obligations and coverage\n\nThe MUST in `requirements.authoring.cache_warmup` imposes three obligations:\n\n1. **Start one assessment of each contained kind before other assessments of that kind.** `src/authoring/batch.rs#fn[run_batch]` groups queued subjects using `assessment_kind`, then obtains every launch through `CacheWarmup::next`. `src/authoring/batch.rs#impl[CacheWarmup]` blocks a kind while its first assessment is warming, without blocking other kinds. `src/authoring/batch.rs#fn[assessment_kind]` distinguishes requirements, examples, citation reviews, and site reviews.\n2. **Start the remaining assessments of a kind only after its first provider request finishes.** `run_batch` supplies the warming assessment with a callback and processes its notification before releasing the kind. The reachable chain is `prepare_assessment` → `configured_record` → `assess_subject` → `assess` → `converse` in `src/authoring/mod.rs`. `prepare_assessment` registers the callback through `src/authoring/usage.rs#impl[UsageLog]/fn[on_first_request]`. `converse` awaits the provider request before calling `src/authoring/usage.rs#impl[UsageLog]/fn[end_request]`, which consumes and invokes that callback once.\n3. **Release the kind whether the first request succeeds or fails.** `converse` calls `end_request` before branching on success versus failure, including before retry backoff. `end_request` invokes the callback for either outcome.\n\n## Tests\n\n- `src/authoring/batch.rs#mod[tests]/fn[each_kind_starts_one_assessment_until_its_first_request_finishes]` directly verifies independent per-kind gating, withholding subsequent assessments, and releasing them after notification.\n- `tests/authoring_batch.rs#fn[a_batch_warms_each_kind_with_one_assessment_before_starting_the_others]` exercises a batch with multiple kinds and checks first-request ordering through `tests/authoring_batch.rs#fn[assert_warmed_first]`; it also asserts subsequent concurrency.\n- `tests/authoring_batch.rs#fn[a_failed_first_request_still_releases_its_kind]` checks the failure boundary: other requirements start after the failed first request, before its retry.\n- `src/authoring/usage.rs#mod[tests]/fn[the_first_finished_request_is_reported_once_whatever_its_outcome]` verifies no notification at request start, notification on failed completion, and no second notification.\n\nAll these tests carry the subject's test reference. The implementation carrying out the obligations is reachable from the subject's marked `run_batch`. The cited `requirements.authoring.cache_checkpoints` supplies the motivation; this subject does not impose an additional checkpoint-format obligation. No gap was found.",
+  "rationale": "I found no gaps. The two obligations are implemented and tested.\n\n**Obligations**\n1. Start one assessment of each kind before any other of that kind.\n2. Start the others of a kind only once that assessment's first provider request has finished, whether or not it succeeded.\n\n**Implementation**\n- `src/authoring/batch.rs#fn[run_batch]` carries the `{impl}`. It tags each subject with its kind through `assessment_kind`. It then picks the next subject to launch with `CacheWarmup::next`.\n- `src/authoring/batch.rs#impl[CacheWarmup]/fn[next]` returns the first queued subject whose kind is not currently warming. If its kind has not yet warmed, that subject becomes the kind's warming assessment and its kind is marked as warming. Every other subject of that kind is skipped until the kind is released. This covers obligation 1.\n- A warming assessment gets a `first_request_finished` callback. `prepare_assessment` in `src/authoring/mod.rs` registers it on the usage log with `on_first_request`.\n- `src/authoring/usage.rs#impl[UsageLog]/fn[end_request]` fires the callback once. It does so on both the completed and failed branches, because the call does not depend on `usage` or `failure`. This covers \"whether or not it succeeded\".\n- `src/authoring/adaptive.rs#fn[attempt]` calls `handoff_first_request`, so the callback survives follow-up logs.\n- `run_batch` receives the callback's message on a channel. It calls `warmup.warmed(kind)`, which releases the kind. It also drains the channel after a task joins. If an assessment finishes without making a request, `warmup.finished(kind)` frees the slot so another of that kind warms instead.\n\n**Tests**\n- `src/authoring/batch.rs#mod[tests]/fn[each_kind_starts_one_assessment_until_its_first_request_finishes]` tests the scheduler directly. It checks that one of each kind starts, the rest wait, a finish without a request lets the next one warm, and `warmed` releases the others.\n- `src/authoring/usage.rs#mod[tests]/fn[the_first_finished_request_is_reported_once_whatever_its_outcome]` checks the callback fires once after the first request ends, including when the request failed.\n- `tests/authoring_batch.rs#fn[a_batch_warms_each_kind_with_one_assessment_before_starting_the_others]` is an end-to-end test against a mock server. `assert_warmed_first` checks that no other request of a kind arrives before the first request has been answered. The test also checks that the other assessments of a kind then run concurrently.\n- `tests/authoring_batch.rs#fn[a_failed_first_request_still_releases_its_kind]` throttles the first request. It checks that the others start without waiting for the retry.\n\nI found no unspecified behavior in the implementation.",
   "references": "c1af38fa7ae4b574cbeef4110acf39b1d06918cf14514ad4eb816ee140d6630d",
   "inputs": [
     {
@@ -26,12 +26,18 @@
       ],
       "text": [
         ":::{req} cache_checkpoints",
-        "When the backend and model support prompt caching, every provider request MUST",
-        "place one cache checkpoint after the system prompt of",
-        "{cite}`requirements.authoring.prompt_parts` and another at the end of its last",
-        "message, so each request reuses the tool definitions and system prompt that",
-        "earlier assessments of its kind sent, and the conversation its own earlier",
-        "requests sent. Cache checkpoints MUST NOT change the content of a request.",
+        "For backends that accept explicit cache checkpoints, when the backend and model",
+        "support prompt caching, every provider request MUST place one cache checkpoint",
+        "after the system prompt of {cite}`requirements.authoring.prompt_parts` and",
+        "another at the end of its last message, so each request reuses the tool",
+        "definitions and system prompt that earlier assessments of its kind sent, and",
+        "the conversation its own earlier requests sent. Cache checkpoints MUST NOT",
+        "change the content of a request.",
+        "",
+        "For OpenAI, which caches matching prompt prefixes automatically, the harness",
+        "MUST keep the system prompt and tool definitions unchanged across requests in",
+        "one conversation and replay prior conversation content in its original order.",
+        "It MUST NOT insert checkpoint blocks.",
         ":::"
       ]
     },
@@ -67,48 +73,13 @@
     },
     {
       "file": "src/authoring/batch.rs",
-      "item": "fn[assessment_kind]",
-      "hash": "149693597f72e4db4b630bc8e5596156abf8c183f290ce996e3dfc30b6f9435b"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "fn[prepare_assessment]",
-      "hash": "e186d250a7d7946631e1f4b942654657f6ebf9d8d270889cb0583065b7e08752"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "fn[converse]",
-      "hash": "8ff7fab0e18a2edc82384c148a31ce61194c3c1d4898e7518e1585898f91373e"
+      "item": "struct[CacheWarmup]",
+      "hash": "91a8598ac70e393429a82c759fbeb434eee59ec9f1be57961525b3b3760cc88d"
     },
     {
       "file": "src/authoring/usage.rs",
       "item": "impl[UsageLog]/fn[end_request]",
       "hash": "c8c24e43409f1c7aff6305ff0e4cc8d368450501a4ea70eddca4d5181d330780"
-    },
-    {
-      "file": "tests/authoring_batch.rs",
-      "item": "fn[assert_warmed_first]",
-      "hash": "5b45b2cf8cf81e3b72927f64bcfbfa9e31100fdd89739661c566a3add963cc6d"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "fn[configured_record]",
-      "hash": "add8153b5c92c9322a5ec2ec989ceae49f1726eb80c3273601628b77e93bc182"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "fn[assess_subject]",
-      "hash": "f8aefe861610523d00fcc975bb1037125848c5e75b757e4f062c019f50a38db6"
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "item": "impl[UsageLog]/fn[on_first_request]",
-      "hash": "9a6c42377d9367e1aa82b7e8f97ef62a56253c1fb4d179454402276e37aef40f"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "fn[assess]",
-      "hash": "c216d8ae617afd028b13919a0143231867d37eddee5ce4b93a4093f6902fe469"
     }
   ]
 }

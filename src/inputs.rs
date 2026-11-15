@@ -281,7 +281,8 @@ impl InputSelector {
                 })
             }
             Self::Requirements { requirements } => {
-                definition_glob::validate(requirements)?;
+                definition_glob::validate(requirements)
+                    .map_err(|error| format!("requirements glob {requirements:?}: {error}"))?;
                 let mut ranges = Vec::new();
                 let mut text = Vec::new();
                 let mut matches = Vec::new();

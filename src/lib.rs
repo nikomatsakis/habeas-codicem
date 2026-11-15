@@ -1007,6 +1007,8 @@ mod tests {
 
     // {test}`requirements.references.anchors`
     #[test]
+    // {test}`requirements.ci.span`
+    // {test}`requirements.examples.definition`
     fn anchor_options_are_metadata_not_body_text() {
         let source = "::::{req} ready\n:impl: skills/ready.md\n:test: tests/ready.sh\nReady.\n\n:::{example} case\n:test: tests/case.sh\nA case.\n:::\n::::\n\n:::{req} plain\nText :impl: inline.\n\n:test: later.md\n:::\n";
         let blocks = definition_blocks(source);
@@ -1032,6 +1034,11 @@ mod tests {
             super::without_options(source, blocks[0].body_start..blocks[0].body_end, &blocks)
                 .trim(),
             "Ready.\n\n:::{example} case\nA case.\n:::"
+        );
+        assert_eq!(
+            super::without_options(source, blocks[1].body_start..blocks[1].body_end, &blocks)
+                .trim(),
+            "A case."
         );
 
         let rendered = replace_definitions(source, "requirements", None, None);

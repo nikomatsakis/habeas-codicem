@@ -2204,6 +2204,7 @@ mod tests {
     // {test}`requirements.authoring.file_discovery`
     // {test}`requirements.authoring.text_search`
     // {test}`requirements.authoring.read_denial`
+    // {test}`requirements.authoring.structural_search`
     #[test]
     fn allowed_ignored_and_external_sources_are_discoverable_but_disallowed_descendants_are_not() {
         let root = project();
@@ -2220,12 +2221,24 @@ mod tests {
         )
         .unwrap();
         fs::write(external.path().join("outside.txt"), "needle external\n").unwrap();
+        fs::write(external.path().join("outside.rs"), "fn external() {}\n").unwrap();
+        fs::write(
+            root.path().join("generated/visible.rs"),
+            "fn visible() {}\n",
+        )
+        .unwrap();
+        fs::write(
+            root.path().join("generated/private/denied.rs"),
+            "fn denied() {}\n",
+        )
+        .unwrap();
+        fs::write(root.path().join(".hidden.rs"), "fn hidden() {}\n").unwrap();
         fs::write(root.path().join(".gitignore"), "generated/\n").unwrap();
         git(root.path(), &["init", "--quiet"]);
         git(root.path(), &["add", "."]);
         let external_toml = toml::Value::String(external.path().display().to_string());
         fs::write(root.path().join("habeas.toml"), format!(
-            "version = 1\n[evidence]\nallow = ['generated', {external_toml}]\ndisallow = ['generated/private']\n"
+            "version = 1\n[evidence]\nallow = ['generated', '.hidden.rs', {external_toml}]\ndisallow = ['generated/private']\n"
         )).unwrap();
         let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
         let listing = dispatch(&sources, "list_files", &json!({})).unwrap();
@@ -2244,9 +2257,32 @@ mod tests {
             dispatch(&sources, "list_files", &json!({"path":external.path()})).unwrap();
         assert_eq!(
             external_listing.result,
-            json!([{"path":external.path().join("outside.txt"),"kind":"file"}])
+            json!([
+                {"path":external.path().join("outside.rs"),"kind":"file"},
+                {"path":external.path().join("outside.txt"),"kind":"file"}
+            ])
         );
         assert!(external_listing.inputs.is_empty());
+
+        let structural = dispatch(
+            &sources,
+            "ast_grep",
+            &json!({"language":"rust","rule":{"rule":{"kind":"function_item"}}}),
+        )
+        .unwrap();
+        let structural_files = matched(&structural)
+            .iter()
+            .map(|entry| entry["file"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        for expected in [
+            ".hidden.rs",
+            "generated/visible.rs",
+            external.path().join("outside.rs").to_str().unwrap(),
+        ] {
+            assert!(structural_files.contains(&expected), "{structural_files:?}");
+        }
+        assert!(!structural_files.contains(&"generated/private/denied.rs"));
+        assert!(structural.inputs.is_empty());
 
         let search = dispatch(
             &sources,
@@ -2278,6 +2314,10 @@ mod tests {
                 "ripgrep",
                 json!({"path":"generated/private", "pattern":"needle"}),
             ),
+            (
+                "ast_grep",
+                json!({"path":"generated/private","language":"rust","rule":{"rule":{"kind":"function_item"}}}),
+            ),
         ] {
             assert_eq!(
                 dispatch(&sources, name, &args).err().unwrap().kind(),
@@ -2293,6 +2333,7 @@ mod tests {
     // {test}`requirements.configuration.evidence_paths`
     // {test}`requirements.authoring.read_denial`
     // {test}`requirements.authoring.read_denial.build_output`
+    // {test}`requirements.authoring.structural_search`
     #[test]
     fn cargo_output_is_discovered_and_read_without_building_or_allowing_other_target_files() {
         let root = project();
@@ -2337,6 +2378,14 @@ mod tests {
         );
         let search = dispatch(&sources, "ripgrep", &json!({"pattern":"generated_needle"})).unwrap();
         assert_eq!(matched(&search).len(), 1);
+        let structural_arguments =
+            json!({"language":"rust","rule":{"rule":{"pattern":"pub fn generated_needle() {}"}}});
+        let structural = dispatch(&sources, "ast_grep", &structural_arguments).unwrap();
+        assert_eq!(
+            found(&structural),
+            ["target/debug/build/fixture-hash/out/generated.rs#fn[generated_needle]"]
+        );
+        assert!(structural.inputs.is_empty());
         let read = dispatch(&sources, "habeas", &json!({"file":"target/debug/build/fixture-hash/out/generated.rs", "item":"fn[generated_needle]"})).unwrap();
         assert_eq!(
             read.result["input"]["text"],
@@ -2373,6 +2422,7 @@ mod tests {
             matched(&dispatch(&denied, "ripgrep", &json!({"pattern":"generated_needle"})).unwrap())
                 .is_empty()
         );
+        assert!(matched(&dispatch(&denied, "ast_grep", &structural_arguments).unwrap()).is_empty());
         for (name, arguments) in [
             (
                 "habeas",
@@ -2385,6 +2435,10 @@ mod tests {
             (
                 "ripgrep",
                 json!({"path":"target/debug/build/fixture-hash/out", "pattern":"generated_needle"}),
+            ),
+            (
+                "ast_grep",
+                json!({"path":"target/debug/build/fixture-hash/out","language":"rust","rule":{"rule":{"kind":"function_item"}}}),
             ),
         ] {
             let error = dispatch(&denied, name, &arguments).err().unwrap();
@@ -4141,6 +4195,16 @@ mod tests {
             error.to_string().contains("unknown referencing scope"),
             "{error}"
         );
+        for (referencing, message) in [
+            (json!({"scope":"node"}), "selection must be a string"),
+            (
+                json!({"selection":"requirements.ready","roles":["bogus"]}),
+                "unknown referencing role",
+            ),
+        ] {
+            let error = search(referencing).err().unwrap();
+            assert!(error.to_string().contains(message), "{error}");
+        }
     }
 
     // {test}`requirements.authoring.structural_search`

@@ -190,6 +190,7 @@ pub(crate) fn inspect_repository(root: &Path) -> io::Result<RepositoryInspection
 // {impl}`requirements.ci.book_source`
 // {impl}`requirements.definitions.declaration`
 // {impl}`requirements.references.builtin_definitions`
+// {impl}`requirements.ci.determination`
 pub(crate) fn inspect_repository_with_progress(
     root: &Path,
     mut progress: impl FnMut(InspectionProgress),
@@ -1367,6 +1368,7 @@ struct InputRange {
 // {impl}`requirements.references.anchors`
 // {impl}`requirements.references.util`
 // {impl}`requirements.ci.outcomes`
+// {impl}`requirements.ci.determination`
 fn validate_references(
     root: &Path,
     definitions: &BTreeMap<String, Declaration>,
@@ -1982,6 +1984,7 @@ fn evidence_input_ranges(
 #[cfg(test)]
 pub(crate) mod tests {
     // {test}`requirements.references.reference_contexts`
+    // {test}`requirements.references.discovery`
     #[test]
     fn roles_count_only_in_comments_of_outlined_files() {
         // The role's brace is built at run time, so this source holds none.
@@ -2850,7 +2853,10 @@ pub(crate) mod tests {
             fs::write(temp.path().join("evidence/foo.other.json"), record(glob)).unwrap();
             let found = errors();
             assert!(
-                found.len() == 1 && found[0].contains("inputs[0]") && found[0].contains(problem),
+                found.len() == 1
+                    && found[0].contains("inputs[0]")
+                    && found[0].contains(&format!("requirements glob {glob:?}"))
+                    && found[0].contains(problem),
                 "{glob:?}: {found:?}"
             );
         }
@@ -3025,7 +3031,7 @@ pub(crate) mod tests {
     // {test}`requirements.references.evidence_coverage`
     fn a_false_determination_fails_only_its_own_record_with_its_rationale() {
         let temp = fixture();
-        let chapter = "# Rules\n\n:::{req} ready\nReady.\n:::\n\n:::{req} refined\nRefines {impl}`rules.ready` and {cite}`rules.ready`.\n:::\n";
+        let chapter = "# Rules\n\n:::{req} ready\nReady.\n:::\n\n:::{req} refined\nRefines {impl}`rules.ready`, {test}`rules.ready`, and {cite}`rules.ready`.\n:::\n";
         fs::write(temp.path().join("md/rules.md"), chapter).unwrap();
         fs::write(
             temp.path().join("evidence/rules.ready.json"),
@@ -3056,7 +3062,7 @@ pub(crate) mod tests {
             [
                 "evidence/rules.refined.json: determination is false: Work remains: the refinement is untested."
             ],
-            "the implemented and cited requirement is unaffected"
+            "the implemented, tested, and cited requirement is unaffected"
         );
     }
 
@@ -3210,6 +3216,7 @@ pub(crate) mod tests {
 
     // {test}`requirements.ci.span`
     // {test}`requirements.ci.fence_lengths`
+    // {test}`requirements.ci.span`
     #[test]
     fn colon_requirement_span_includes_markdown_and_excludes_following_text() {
         let temp = fixture();
@@ -3310,7 +3317,30 @@ pub(crate) mod tests {
     }
 
     // {test}`requirements.examples.definition`
+    // {test}`requirements.ci.fence_lengths`
+    #[test]
+    fn example_bodies_keep_nested_markdown_and_trim_outer_whitespace() {
+        let temp = fixture();
+        let body = "# Concrete case\n\nGiven ready, it succeeds. {cite}`rules.ready`\n\n:::{note}\nNested explanation.\n:::\n\n```text\n:::{example} literal\n```\n\nThe expected result is success.";
+        for (opening, closing) in [("::::", ":::::"), ("::::::", ":::::::")] {
+            fs::write(
+                temp.path().join("md/rules.md"),
+                format!(
+                    ":::{{req}} ready\nReady.\n:::\n\n{opening}{{example}} case\n\n  {body}  \n\n{closing}\nText after the example.\n"
+                ),
+            )
+            .unwrap();
+            let definitions = super::load_definitions(temp.path()).unwrap();
+            let example = &definitions["rules.case"];
+            assert_eq!(example.kind, crate::DefinitionKind::Example);
+            assert_eq!(example.text, body);
+            assert!(!definitions.contains_key("rules.literal"));
+        }
+    }
+
+    // {test}`requirements.examples.definition`
     // {test}`requirements.examples.evidence`
+    // {test}`requirements.integration.report_api`
     // {test}`requirements.ci.schema`
     // {test}`requirements.references.evidence_coverage`
     // {test}`requirements.ci.requirements_inputs`
@@ -3571,6 +3601,8 @@ pub(crate) mod tests {
     // {test}`requirements.references.anchors`
     // {test}`requirements.ci.requirement_text`
     // {test}`requirements.references.evidence_coverage`
+    // {test}`requirements.ci.span`
+    // {test}`requirements.examples.definition`
     #[test]
     fn anchored_files_must_be_completely_covered_and_resolvable() {
         let temp = fixture();

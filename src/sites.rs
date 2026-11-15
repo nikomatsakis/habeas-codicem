@@ -163,6 +163,7 @@ pub(crate) fn subject_label(requirement: &str, file: &str, item: &str) -> String
     format!("sites:{requirement}/{file}#{item}")
 }
 
+// {cite}`habeas:util`
 /// Whether a path lies in the site review directory.
 pub(crate) fn is_review_path(evidence_root: &Path, path: &Path) -> bool {
     path.strip_prefix(evidence_root)

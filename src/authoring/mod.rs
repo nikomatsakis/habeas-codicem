@@ -869,6 +869,7 @@ impl Prompt {
 // {impl}`requirements.ci.review_criteria`
 // {impl}`requirements.ci.outcomes`
 // {impl}`requirements.examples.evidence`
+// {impl}`requirements.examples.definition`
 // {impl}`requirements.authoring.mandatory_inputs`
 // {impl}`requirements.authoring.citation_prompt`
 // {impl}`requirements.authoring.redaction`
@@ -1277,6 +1278,7 @@ async fn verify(
 // {impl}`requirements.authoring.usage_requests.failures`
 // {impl}`requirements.authoring.provider_backoff.limit`
 // {impl}`requirements.authoring.tool_descriptions.special_cases`
+// {impl}`requirements.authoring.cache_checkpoints`
 async fn converse<T>(
     provider: &impl CompletionProvider,
     sources: &mut AssessmentSources,
@@ -1882,6 +1884,7 @@ mod tests {
     // {test}`requirements.authoring.judgment_rules`
     // {test}`requirements.authoring.habeas_background`
     // {test}`requirements.examples.evidence`
+    // {test}`requirements.examples.definition`
     #[test]
     fn initial_prompt_carries_the_review_criteria() {
         let project = inputs::tests::project();
@@ -1895,6 +1898,9 @@ mod tests {
             approved_text("requirement_task", 0),
             approved_text("testing_bar", 0),
             "List each MUST, MUST NOT, and SHOULD clause as an obligation.",
+            "Look for unreached implementations among the sources that",
+            "reference the subject and by targeted search for what its obligations",
+            "produce; do not survey unrelated code.",
             "5. Testing:",
             "The project MUST be ready.",
         ] {
@@ -1930,6 +1936,10 @@ mod tests {
         );
         assert!(
             prompt.contains(approved_text("example_task", 0)),
+            "{prompt}"
+        );
+        assert!(
+            prompt.contains("First check that it describes a concrete case\nwith expected behavior; a missing concrete case or expected behavior is a gap."),
             "{prompt}"
         );
         assert!(!prompt.contains("5. Testing:"), "{prompt}");

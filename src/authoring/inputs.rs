@@ -63,6 +63,7 @@ impl AssessmentSources {
     // {impl}`requirements.authoring.mandatory_inputs`
     // {impl}`requirements.authoring_input`
     // {impl}`requirements.examples.authoring_inputs`
+    // {impl}`requirements.examples.definition`
     // {impl}`requirements.references.authoring_inputs`
     // {impl}`requirements.definitions.authoring_inputs`
     // {impl}`requirements.authoring.source_tools`
@@ -1157,6 +1158,7 @@ pub(super) mod tests {
     // {test}`requirements.references.authoring_inputs`
     // {test}`requirements.references.roles`
     // {test}`requirements.authoring.mandatory_inputs`
+    // {test}`requirements.examples.definition`
     #[test]
     fn only_edges_leaving_the_subject_contribute_inputs() {
         let root = project();
@@ -1192,6 +1194,16 @@ pub(super) mod tests {
         assert!(!has_item("fn[helper]"), "{inputs:#?}");
         assert!(!has_requirements("requirements.citer"), "{inputs:#?}");
         assert!(!has_requirements("requirements.parent"), "{inputs:#?}");
+
+        let example = AssessmentSources::prepare(root.path(), "requirements.citer").unwrap();
+        assert!(
+            example
+                .mandatory_inputs()
+                .iter()
+                .any(|input| input["requirements"] == "requirements.ready"),
+            "{:#?}",
+            example.mandatory_inputs()
+        );
 
         let parent = AssessmentSources::prepare(root.path(), "requirements.parent").unwrap();
         let inputs = parent.mandatory_inputs();

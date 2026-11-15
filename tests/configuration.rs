@@ -256,6 +256,7 @@ fn authoring_policy_defaults_to_confirm_and_round_trips() {
 // {test}`requirements.authoring.rig_configuration_mapping`
 // {test}`requirements.authoring.configuration`
 // {test}`requirements.configuration.loading`
+// {test}`requirements.configuration.structure`
 #[test]
 // {test}`requirements.authoring.configuration_structure`
 fn explicit_project_and_default_selections_choose_whole_configs() {

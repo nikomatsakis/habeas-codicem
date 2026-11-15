@@ -74,7 +74,7 @@ fn outline_inputs_survive_moves_and_unhashed_comments_but_not_edits() {
         write_inputs(&root, inputs);
         without_citation_reviews(validate_repository(&root).unwrap().errors).join("\n")
     };
-    let rust = "// {cite}`rules.ready`\nfn alpha() { work(1); }\n\n/// Docs.\n// {cite}`rules.ready`\nfn beta() {}\n";
+    let rust = "// {cite}`rules.ready`\nfn alpha() { work(1); }\n\n/// Docs.\n// {cite}`rules.ready`\n#[allow(dead_code)]\nfn beta() {}\n";
     fs::write(root.join("src/lib.rs"), rust).unwrap();
     let inputs = vec![
         outline(&root, "src/lib.rs", "fn[alpha]"),
@@ -95,6 +95,10 @@ fn outline_inputs_survive_moves_and_unhashed_comments_but_not_edits() {
     fs::write(root.join("data.txt"), "zero\nfirst\nsecond\n").unwrap();
     assert_eq!(errors(inputs.clone()), "");
 
+    // Editing another node must not invalidate beta's recorded input.
+    fs::write(root.join("src/lib.rs"), rust.replace("work(1)", "work(2)")).unwrap();
+    assert_eq!(errors(vec![inputs[1].clone()]), "");
+
     // Editing a node's code or its doc comment makes the input stale, naming the
     // file, selector, and current line range.
     fs::write(
@@ -106,7 +110,7 @@ fn outline_inputs_survive_moves_and_unhashed_comments_but_not_edits() {
     let found = errors(inputs.clone());
     for expected in [
         "inputs[0]: outline input changed: src/lib.rs fn[alpha] (now lines 1-2) no longer has the recorded hash",
-        "inputs[1]: outline input changed: src/lib.rs fn[beta] (now lines 4-6) no longer has the recorded hash",
+        "inputs[1]: outline input changed: src/lib.rs fn[beta] (now lines 4-7) no longer has the recorded hash",
     ] {
         assert!(found.contains(expected), "missing {expected:?}: {found}");
     }
@@ -176,6 +180,7 @@ fn outline_inputs_survive_moves_and_unhashed_comments_but_not_edits() {
 
 // {test}`requirements.ci.input_containment`
 // {test}`requirements.ci.outline_inputs`
+// {test}`requirements.ci.schema`
 #[cfg(unix)]
 #[test]
 fn symlinks_may_resolve_inside_but_not_to_a_sibling_with_the_same_prefix() {
@@ -203,6 +208,7 @@ fn symlinks_may_resolve_inside_but_not_to_a_sibling_with_the_same_prefix() {
 }
 
 // {test}`requirements.ci.input_containment`
+// {test}`requirements.ci.schema`
 #[test]
 fn definition_and_requirements_inputs_obey_containment_for_declaring_files() {
     let temp = fixture();
@@ -256,6 +262,7 @@ fn definition_and_requirements_inputs_obey_containment_for_declaring_files() {
 }
 
 // {test}`requirements.ci.input_containment`
+// {test}`requirements.configuration.evidence_paths`
 #[cfg(unix)]
 #[test]
 fn unreadable_and_missing_inputs_are_reported() {
