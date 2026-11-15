@@ -51,7 +51,7 @@ habeas info 'requirements.cli.*'
 
 The bundled agent skills describe `habeas info` as a way to look up requirements while working.
 
-For a requirements index, add a chapter to `SUMMARY.md` containing `:::{requirements-index}` on one line and `:::` on the next. The preprocessor lists evidence states there and adds a detail subchapter for each requirement and example.
+The preprocessor appends a Requirements index chapter listing evidence states, with a detail subchapter for each requirement and example. To choose its placement, add a chapter to `SUMMARY.md` containing `:::{requirements-index}` on one line and `:::` on the next.
 
 A requirement states general behavior. An example uses its own directive to show a concrete case and references the requirement it illustrates with `{cite}` or `{test}`. In `md/requirements.md`:
 

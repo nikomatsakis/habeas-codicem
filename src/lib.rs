@@ -1035,11 +1035,13 @@ mod tests {
     }
 
     // {test}`requirements.index.detail_pages`
+    // {test}`requirements.index.chapter`
+    // {test}`requirements.index.chapter.default`
     // {test}`requirements.index.navigation`
     // {test}`requirements.examples.index`
     // {test}`requirements.references.anchors`
     #[test]
-    fn definitions_without_an_index_have_no_detail_pages() {
+    fn definitions_without_a_marker_get_a_default_index_and_detail_pages() {
         let mut book = Book::new();
         let mut chapter = Chapter::new(
             "Rules",
@@ -1050,7 +1052,7 @@ mod tests {
         chapter.number = Some(mdbook_preprocessor::book::SectionNumber::new(vec![2]));
         chapter.sub_items.push(BookItem::Chapter(Chapter::new(
             "Child",
-            "Child.".to_owned(),
+            ":::{req} nested\nNested.\n:::\n".to_owned(),
             "rules/child.md",
             vec!["Rules".to_owned()],
         )));
@@ -1069,8 +1071,9 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(pages.len(), 1);
         assert_eq!(pages[0].name, "Child");
-        assert_eq!(book.chapters().count(), 2);
-        assert!(!rules.content.contains("habeas-detail-icon"));
+        assert_eq!(book.items.len(), 2);
+        assert_eq!(book.chapters().count(), 7);
+        assert!(rules.content.contains("habeas-detail-icon"));
         assert!(!rules.content.contains("See evidence"));
         assert!(!rules.content.contains("notes.txt"));
         for (kind, name) in [("req", "zeta"), ("example", "alpha"), ("req", "cli.mdbook")] {
@@ -1079,8 +1082,149 @@ mod tests {
                 name.replace(".md", "%2Emd")
             )));
         }
+        assert!(
+            rules
+                .content
+                .contains("href=\"requirements-index/rules.cli%2Emdbook.html\"")
+        );
+        assert!(
+            pages[0]
+                .content
+                .contains("href=\"../requirements-index/rules.child.nested.html\"")
+        );
+        let BookItem::Chapter(index) = book.items.last().unwrap() else {
+            panic!("the default index must be a top-level chapter");
+        };
+        assert_eq!(index.name, "Requirements index");
+        assert_eq!(
+            index.path.as_deref(),
+            Some(Path::new("requirements-index.md"))
+        );
+        assert!(index.source_path.is_none());
+        assert!(index.parent_names.is_empty());
+        assert_eq!(index.number.as_deref().map(Vec::as_slice), Some(&[3][..]));
+        assert!(!index.content.contains("{requirements-index}"));
+        assert!(index.content.contains("(requirement)"));
+        assert!(index.content.contains("(example)"));
+        assert!(index.content.contains("Missing"));
+        let details = index
+            .sub_items
+            .iter()
+            .filter_map(|item| match item {
+                BookItem::Chapter(chapter) => Some(chapter),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            details
+                .iter()
+                .map(|page| page.name.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "rules.zeta",
+                "rules.alpha",
+                "rules.cli.mdbook",
+                "rules.child.nested"
+            ]
+        );
+        for (offset, page) in details.iter().enumerate() {
+            assert_eq!(page.parent_names, ["Requirements index"]);
+            assert_eq!(
+                page.number.as_deref().map(Vec::as_slice),
+                Some(&[3, offset as u32 + 1][..])
+            );
+            assert!(
+                page.content
+                    .contains("[Requirements index](../requirements-index.html)")
+            );
+        }
+        assert!(
+            details[2]
+                .content
+                .contains("[View definition](../rules.html#habeas-req-rules.cli%2Emdbook)")
+        );
+        assert!(
+            details[3]
+                .content
+                .contains("[View definition](../rules/child.html#habeas-req-rules.child.nested)")
+        );
+        assert!(!root.path().join("md/requirements-index.md").exists());
     }
 
+    // {test}`requirements.index.chapter`
+    // {test}`requirements.index.chapter.default`
+    // {test}`requirements.index.detail_pages`
+    #[test]
+    fn default_index_exists_even_without_definitions_or_numbered_chapters() {
+        for with_prose in [false, true] {
+            let mut book = Book::new();
+            let prose = "An index marker in a code block is literal.\n\n```text\n:::{requirements-index}\n:::\n```\n";
+            if with_prose {
+                book.push_item(Chapter::new(
+                    "Introduction",
+                    prose.into(),
+                    "intro.md",
+                    vec![],
+                ));
+            }
+            let root = book_root();
+            preprocess_book(&mut book, root.path()).unwrap();
+            assert_eq!(book.items.len(), usize::from(with_prose) + 1);
+            if with_prose {
+                let BookItem::Chapter(intro) = &book.items[0] else {
+                    panic!("the original introduction must remain a chapter");
+                };
+                assert_eq!(intro.content, prose);
+                assert!(intro.number.is_none());
+            }
+            let BookItem::Chapter(index) = book.items.last().unwrap() else {
+                panic!("the default index must be appended");
+            };
+            assert_eq!(index.name, "Requirements index");
+            assert_eq!(
+                index.path.as_deref(),
+                Some(Path::new("requirements-index.md"))
+            );
+            assert_eq!(index.number.as_deref().map(Vec::as_slice), Some(&[1][..]));
+            assert!(index.source_path.is_none());
+            assert!(index.sub_items.is_empty());
+            assert!(index.parent_names.is_empty());
+            assert!(index.content.starts_with("# Requirements index\n\n"));
+            assert!(index.content.contains("| Definition | Evidence |"));
+            assert!(!index.content.contains("{requirements-index}"));
+            assert!(!root.path().join("md/requirements-index.md").exists());
+        }
+    }
+
+    // {test}`requirements.index.chapter.default`
+    #[test]
+    fn default_index_number_follows_top_level_chapters_across_parts_and_unnumbered_chapters() {
+        let mut book = Book::new();
+        book.push_item(BookItem::PartTitle("Part".into()));
+        let mut chapter = Chapter::new("Chapter", "Text.".into(), "chapter.md", vec![]);
+        chapter.number = Some(mdbook_preprocessor::book::SectionNumber::new(vec![4]));
+        let mut child = Chapter::new("Child", "Child.".into(), "child.md", vec!["Chapter".into()]);
+        child.number = Some(mdbook_preprocessor::book::SectionNumber::new(vec![4, 10]));
+        chapter.sub_items.push(BookItem::Chapter(child));
+        book.push_item(chapter);
+        book.push_item(BookItem::Separator);
+        book.push_item(Chapter::new(
+            "Appendix",
+            "Appendix.".into(),
+            "appendix.md",
+            vec![],
+        ));
+        let root = book_root();
+        preprocess_book(&mut book, root.path()).unwrap();
+        assert_eq!(book.items.len(), 5);
+        let BookItem::Chapter(index) = book.items.last().unwrap() else {
+            panic!("the default index must follow the appendix");
+        };
+        assert_eq!(index.number.as_deref().map(Vec::as_slice), Some(&[5][..]));
+        assert!(index.sub_items.is_empty());
+    }
+
+    // {test}`requirements.index.chapter`
     // {test}`requirements.index.detail_pages`
     // {test}`requirements.index.navigation`
     #[test]
@@ -1116,6 +1260,11 @@ mod tests {
         book.push_item(index);
         let root = book_root();
         preprocess_book(&mut book, root.path()).unwrap();
+        assert_eq!(
+            book.items.len(),
+            3,
+            "the explicit index keeps its placement"
+        );
         let chapters = book.chapters().collect::<Vec<_>>();
         for chapter in &chapters[..2] {
             assert!(chapter.sub_items.is_empty());
@@ -1287,7 +1436,7 @@ mod tests {
         let root = book_root();
         preprocess_book(&mut book, root.path()).unwrap();
         let chapters = book.chapters().collect::<Vec<_>>();
-        assert_eq!(chapters.len(), 2, "no detail page is generated");
+        assert_eq!(chapters.len(), 3, "only an empty index is generated");
         assert_eq!(chapters[0].content, ":::{req} good\nGood.\n:::");
         assert!(!chapters[0].content.contains("habeas-req-badge"));
         assert_eq!(chapters[1].content, "See {impl}`bad dir.rules.good`.");

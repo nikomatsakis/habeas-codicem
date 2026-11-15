@@ -16,11 +16,12 @@ use crate::{
     definition_blocks, escape_html, overlaps_protected, protected_ranges, shield_badge,
 };
 
-/// Where generated evidence detail pages and the optional index go.
+/// Where the requirements index and its generated evidence detail pages go.
 // {impl}`requirements.index.detail_pages`
 // {impl}`requirements.index.chapter`
 pub(crate) struct DetailPlan {
-    index_path: Option<PathBuf>,
+    index_path: PathBuf,
+    generated_index: bool,
     detail_paths: BTreeMap<String, PathBuf>,
     /// Definitions in book order, attached to the index chapter.
     chapters: Vec<(PathBuf, Vec<String>)>,
@@ -284,6 +285,7 @@ impl EvidenceState {
 
 impl DetailPlan {
     // {impl}`requirements.index.chapter`
+    // {impl}`requirements.index.chapter.default`
     // {impl}`requirements.examples.index`
     // {impl}`requirements.index.detail_pages`
     // {impl}`requirements.index.path_conflicts`
@@ -303,24 +305,29 @@ impl DetailPlan {
                 index_path = chapter.path.clone();
             }
         }
+        let generated_index = index_path.is_none();
+        let index_path = index_path.unwrap_or_else(|| PathBuf::from("requirements-index.md"));
+        let names = order
+            .iter()
+            .filter(|name| definitions.contains_key(*name))
+            .cloned()
+            .collect::<Vec<_>>();
         let mut detail_paths = BTreeMap::new();
-        let mut chapters: Vec<(PathBuf, Vec<String>)> = Vec::new();
-        if let Some(index) = &index_path {
-            let names = order
-                .iter()
-                .filter(|name| definitions.contains_key(*name))
-                .cloned()
-                .collect::<Vec<_>>();
-            for name in &names {
-                detail_paths.insert(name.clone(), detail_path(index, name));
-            }
-            chapters.push((index.clone(), names));
+        for name in &names {
+            detail_paths.insert(name.clone(), detail_path(&index_path, name));
         }
+        let chapters = vec![(index_path.clone(), names)];
         let existing_paths = book
             .chapters()
             .filter_map(|chapter| chapter.path.as_ref())
             .collect::<BTreeSet<_>>();
         // {impl}`requirements.index.path_conflicts`
+        if generated_index && existing_paths.contains(&index_path) {
+            return Err(invalid_index(&format!(
+                "generated requirements index {} conflicts with a book chapter",
+                index_path.display()
+            )));
+        }
         let mut generated = BTreeSet::new();
         for path in detail_paths.values() {
             if existing_paths.contains(path) || !generated.insert(path) {
@@ -332,6 +339,7 @@ impl DetailPlan {
         }
         Ok(Self {
             index_path,
+            generated_index,
             detail_paths,
             chapters,
         })
@@ -349,6 +357,7 @@ impl DetailPlan {
     // {impl}`requirements.index.state`
     // {impl}`requirements.examples.index`
     // {impl}`requirements.index.chapter`
+    // {impl}`requirements.index.chapter.default`
     // {impl}`requirements.index.detail_pages`
     pub(crate) fn populate(
         &self,
@@ -356,9 +365,6 @@ impl DetailPlan {
         root: &Path,
         definitions: &BTreeMap<String, Definition>,
     ) -> io::Result<()> {
-        if self.detail_paths.is_empty() && self.index_path.is_none() {
-            return Ok(());
-        }
         let config = Config::from_disk(root.join("book.toml")).map_err(io::Error::other)?;
         let source_links = SourceLinks::from_config(&config)?;
         let inspection = inspect_repository(root)?;
@@ -379,17 +385,15 @@ impl DetailPlan {
             let definition = definitions
                 .get(name)
                 .expect("every detail page has a definition");
-            if let Some(index_path) = &self.index_path {
-                let detail_href = chapter_href(index_path, detail_path, None);
-                rows.push((
-                    format!("[`{name}`]({detail_href}) ({})", definition.kind.noun()),
-                    evidence.state().label(),
-                ));
-            }
+            let detail_href = chapter_href(&self.index_path, detail_path, None);
+            rows.push((
+                format!("[`{name}`]({detail_href}) ({})", definition.kind.noun()),
+                evidence.state().label(),
+            ));
             let content = render_detail_page(
                 name,
                 detail_path,
-                self.index_path.as_deref(),
+                Some(&self.index_path),
                 definition,
                 evidence.borrowed(),
                 &sources,
@@ -406,14 +410,36 @@ impl DetailPlan {
         // {impl}`requirements.cli.shared_status_rendering`
         let rows = render_evidence_table(&rows);
 
+        if self.generated_index {
+            let number = book
+                .items
+                .iter()
+                .filter_map(|item| match item {
+                    BookItem::Chapter(chapter) => chapter.number.as_ref()?.first().copied(),
+                    _ => None,
+                })
+                .max()
+                .unwrap_or(0)
+                + 1;
+            let mut chapter = Chapter::new(
+                "Requirements index",
+                "# Requirements index\n\n:::{requirements-index}\n:::\n".to_owned(),
+                &self.index_path,
+                Vec::new(),
+            );
+            chapter.source_path = None;
+            chapter.number = Some(SectionNumber::new(vec![number]));
+            book.push_item(chapter);
+        }
+
         // {impl}`requirements.index.navigation`
-        let mut index_found = self.index_path.is_none();
+        let mut index_found = false;
         let mut chapters_found = 0;
         book.for_each_chapter_mut(|chapter| {
             let Some(path) = chapter.path.clone() else {
                 return;
             };
-            if self.index_path.as_deref() == Some(path.as_path()) {
+            if self.index_path == path {
                 index_found = true;
                 let ranges = marker_ranges(&chapter.content)
                     .expect("the index directive was checked before the book was changed");
@@ -1599,33 +1625,55 @@ mod tests {
     // {test}`requirements.index.path_conflicts`
     #[test]
     fn generated_detail_path_cannot_replace_a_chapter() {
+        for with_marker in [false, true] {
+            let mut book = Book::new();
+            if with_marker {
+                book.push_item(Chapter::new(
+                    "Index",
+                    ":::{requirements-index}\n:::\n".to_owned(),
+                    "requirements-index.md",
+                    Vec::new(),
+                ));
+            }
+            book.push_item(Chapter::new(
+                "Existing",
+                String::new(),
+                "requirements-index/requirements.ready.md",
+                Vec::new(),
+            ));
+            let definitions = BTreeMap::from([(
+                "requirements.ready".to_owned(),
+                Definition {
+                    path: Path::new("requirements.md").to_path_buf(),
+                    text: "Ready MUST work.".to_owned(),
+                    kind: DefinitionKind::Requirement,
+                },
+            )]);
+            let error =
+                match DetailPlan::find(&book, &definitions, &["requirements.ready".to_owned()]) {
+                    Err(error) => error,
+                    Ok(_) => panic!("a generated detail page replaced a chapter"),
+                };
+            assert!(error.to_string().contains("conflicts with a book chapter"));
+        }
+    }
+
+    // {test}`requirements.index.path_conflicts`
+    #[test]
+    fn default_index_path_cannot_replace_an_existing_chapter() {
         let mut book = Book::new();
         book.push_item(Chapter::new(
-            "Index",
-            ":::{requirements-index}\n:::\n".to_owned(),
-            "requirements-index.md",
-            Vec::new(),
-        ));
-        book.push_item(Chapter::new(
             "Existing",
-            String::new(),
-            "requirements-index/requirements.ready.md",
-            Vec::new(),
+            "Existing content.".into(),
+            "requirements-index.md",
+            vec![],
         ));
-        let definitions = BTreeMap::from([(
-            "requirements.ready".to_owned(),
-            Definition {
-                path: Path::new("requirements.md").to_path_buf(),
-                text: "Ready MUST work.".to_owned(),
-                kind: DefinitionKind::Requirement,
-            },
-        )]);
-        let error = match DetailPlan::find(&book, &definitions, &["requirements.ready".to_owned()])
-        {
-            Err(error) => error,
-            Ok(_) => panic!("a generated detail page replaced a chapter"),
-        };
-        assert!(error.to_string().contains("conflicts with a book chapter"));
+        let error = preprocess_book(&mut book, Path::new(".")).unwrap_err();
+        assert!(error.to_string().contains(
+            "generated requirements index requirements-index.md conflicts with a book chapter"
+        ));
+        assert_eq!(book.items.len(), 1);
+        assert_eq!(book.chapters().next().unwrap().content, "Existing content.");
     }
 
     // {test}`requirements.index.invalid_detail`
