@@ -22,15 +22,12 @@ const TOKEN_LENGTH: usize = 16;
 pub(crate) struct Listing {
     /// The keys of the result's entry arrays, in order; none for a result
     /// that is a bare array, whose pages hold it under `entries`.
-    arrays: &'static [&'static str],
+    arrays: Vec<&'static str>,
     /// Each entry with the index of its array, in the result's order.
     entries: Vec<(usize, Value)>,
     /// Whether the entries are evidence inputs, accompanied under
     /// `definitions` by the additional definitions they need.
     evidence: bool,
-    /// Keys added to the whole result, or to its first page, such as
-    /// `not_listed`; they count toward the page size.
-    extra: Map<String, Value>,
 }
 
 impl Listing {
@@ -38,10 +35,9 @@ impl Listing {
     /// outline.
     pub(crate) fn array(entries: Vec<Value>) -> Self {
         Self {
-            arrays: &[],
+            arrays: Vec::new(),
             entries: entries.into_iter().map(|entry| (0, entry)).collect(),
             evidence: false,
-            extra: Map::new(),
         }
     }
 
@@ -49,24 +45,22 @@ impl Listing {
     // {impl}`requirements.authoring.delivered_inputs`
     pub(crate) fn inputs(inputs: Vec<Value>) -> Self {
         Self {
-            arrays: &["inputs"],
+            arrays: vec!["inputs"],
             entries: inputs.into_iter().map(|input| (0, input)).collect(),
             evidence: true,
-            extra: Map::new(),
         }
     }
 
     /// A result holding one array per key, in the order of `arrays`.
     pub(crate) fn object(arrays: &'static [&'static str], values: Vec<Vec<Value>>) -> Self {
         Self {
-            arrays,
+            arrays: arrays.to_vec(),
             entries: values
                 .into_iter()
                 .enumerate()
                 .flat_map(|(index, values)| values.into_iter().map(move |value| (index, value)))
                 .collect(),
             evidence: false,
-            extra: Map::new(),
         }
     }
 
@@ -75,10 +69,20 @@ impl Listing {
         self.entries.iter().map(|(_, value)| value)
     }
 
-    /// The listing with `key` set to `value` on the whole result, or on its
-    /// first page.
-    pub(crate) fn with_extra(mut self, key: &str, value: Value) -> Self {
-        self.extra.insert(key.to_owned(), value);
+    /// Untracked paths are entries too: place them first so they start on the
+    /// first page and can continue without becoming unbounded page overhead.
+    // {impl}`requirements.authoring.not_listed`
+    pub(crate) fn with_not_listed(mut self, paths: Vec<Value>) -> Self {
+        if paths.is_empty() {
+            return self;
+        }
+        if self.arrays.is_empty() {
+            self.arrays.push("entries");
+        }
+        let index = self.arrays.len();
+        self.arrays.push("not_listed");
+        self.entries
+            .splice(0..0, paths.into_iter().map(|path| (index, path)));
         self
     }
 
@@ -89,21 +93,14 @@ impl Listing {
         indexes: &[usize],
         definitions: &[Value],
         page: Option<Value>,
-        first: bool,
     ) -> Value {
-        let extra = if first {
-            self.extra.clone()
-        } else {
-            Map::new()
-        };
         if self.arrays.is_empty() {
             let entries = Value::Array(entries.iter().map(|entry| (*entry).clone()).collect());
-            if page.is_none() && extra.is_empty() {
+            if page.is_none() {
                 return entries;
             }
             let mut object = Map::new();
             object.insert("entries".into(), entries);
-            object.extend(extra);
             if let Some(page) = page {
                 object.insert("page".into(), page);
             }
@@ -111,18 +108,19 @@ impl Listing {
         }
         let mut object = Map::new();
         for (index, key) in self.arrays.iter().enumerate() {
-            let values = entries
+            let values: Vec<Value> = entries
                 .iter()
                 .zip(indexes)
                 .filter(|(_, array)| **array == index)
                 .map(|(entry, _)| (*entry).clone())
                 .collect();
-            object.insert((*key).to_owned(), Value::Array(values));
+            if *key != "not_listed" || !values.is_empty() {
+                object.insert((*key).to_owned(), Value::Array(values));
+            }
         }
         if self.evidence {
             object.insert("definitions".into(), Value::Array(definitions.to_vec()));
         }
-        object.extend(extra);
         if let Some(page) = page {
             object.insert("page".into(), page);
         }
@@ -147,6 +145,7 @@ impl ResultPages {
     /// returned page's inputs are delivered.
     // {impl}`requirements.authoring.delivered_inputs`
     // {impl}`requirements.authoring.tool_descriptions.special_cases`
+    // {impl}`requirements.authoring.not_listed`
     pub(crate) fn deliver(
         &mut self,
         sources: &AssessmentSources,
@@ -160,7 +159,7 @@ impl ResultPages {
         } else {
             Vec::new()
         };
-        let whole = listing.render(&values, &indexes, &definitions, None, true);
+        let whole = listing.render(&values, &indexes, &definitions, None);
         // Room for the redaction note only when it will be added.
         let reserve = if super::tools::needs_redaction_note(sources, &whole) {
             NOTE_RESERVE
@@ -193,8 +192,7 @@ impl ResultPages {
             if tokens.get(number).is_some() {
                 page["note"] = json!(PAGE_NOTE);
             }
-            let result =
-                listing.render(entries, page_indexes, &definitions, Some(page), number == 0);
+            let result = listing.render(entries, page_indexes, &definitions, Some(page));
             let inputs = delivered(
                 &listing,
                 entries.iter().map(|entry| (*entry).clone()).collect(),
@@ -284,11 +282,11 @@ fn paginate(
         "next": "0".repeat(TOKEN_LENGTH),
         "note": PAGE_NOTE,
     });
-    let overhead = listing
-        .render(&[], &[], &[], Some(longest), true)
-        .to_string()
-        .len()
-        + reserve;
+    let mut empty = listing.render(&[], &[], &[], Some(longest));
+    if listing.arrays.contains(&"not_listed") {
+        empty["not_listed"] = json!([]);
+    }
+    let overhead = empty.to_string().len() + reserve;
     let mut pages = Vec::new();
     let mut start = 0;
     let mut size = overhead;
@@ -435,9 +433,104 @@ mod tests {
         }
     }
 
+    // {test}`requirements.authoring.result_pages`
+    // {test}`requirements.authoring.not_listed`
+    #[test]
+    fn untracked_entries_page_without_tracked_entries_or_oversized_overhead() {
+        let root = project();
+        let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        let untracked: Vec<Value> = (0..1000)
+            .map(|i| json!({"path":format!("src/{i:04}_{}.rs", "x".repeat(70)), "reason":"untracked"}))
+            .collect();
+        for count in [0, 1, 500] {
+            let tracked: Vec<Value> = (0..count)
+                .map(|i| json!({"path":format!("src/tracked_{i:04}.rs"),"kind":"file"}))
+                .collect();
+            let mut pages = ResultPages::default();
+            let first = pages
+                .deliver(
+                    &sources,
+                    Listing::array(tracked.clone()).with_not_listed(untracked.clone()),
+                )
+                .unwrap();
+            assert!(
+                first.result["not_listed"]
+                    .as_array()
+                    .is_some_and(|v| !v.is_empty())
+            );
+            let delivered = all_pages(&pages, first);
+            let mut actual_tracked = Vec::new();
+            let mut actual_untracked = Vec::new();
+            for page in delivered {
+                assert!(page.result.to_string().len() <= PAGE_LIMIT);
+                assert!(page.inputs.is_empty(), "untracked paths are never evidence");
+                let entries = page.result["entries"].as_array().unwrap();
+                let omitted = page
+                    .result
+                    .get("not_listed")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                assert_eq!(
+                    page.result["page"]["total_entries"],
+                    count + untracked.len()
+                );
+                assert_eq!(
+                    page.result["page"]["returned_entries"],
+                    entries.len() + omitted.len()
+                );
+                actual_tracked.extend(entries.iter().cloned());
+                actual_untracked.extend(omitted);
+            }
+            assert_eq!(actual_tracked, tracked);
+            assert_eq!(actual_untracked, untracked);
+        }
+    }
+
+    // {test}`requirements.authoring.result_pages`
+    #[test]
+    fn text_and_structural_search_results_page_whole_ordered_matches() {
+        let root = project();
+        let source: String = (0..600)
+            .map(|i| format!("fn needle_{i:04}() {{ let marker = 1; }}\n"))
+            .collect();
+        fs::write(root.path().join("src/lib.rs"), source).unwrap();
+        let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        for (tool, arguments) in [
+            ("ripgrep", json!({"pattern":"marker", "path":"src/lib.rs"})),
+            (
+                "ast_grep",
+                json!({"language":"rust","rule":{"rule":{"pattern":"let marker = 1;"}},"path":"src/lib.rs"}),
+            ),
+        ] {
+            let mut pages = ResultPages::default();
+            let first = dispatch_paged(&sources, &mut pages, tool, &arguments).unwrap();
+            let mut items = Vec::new();
+            for page in all_pages(&pages, first) {
+                assert!(page.result.to_string().len() <= PAGE_LIMIT, "{tool}");
+                let matches = page.result["matches"].as_array().unwrap();
+                assert_eq!(page.result["page"]["total_entries"], 600);
+                assert_eq!(page.result["page"]["returned_entries"], matches.len());
+                items.extend(
+                    matches
+                        .iter()
+                        .map(|m| m["item"].as_str().unwrap().to_owned()),
+                );
+            }
+            assert_eq!(
+                items,
+                (0..600)
+                    .map(|i| format!("fn[needle_{i:04}]"))
+                    .collect::<Vec<_>>(),
+                "{tool}"
+            );
+        }
+    }
+
     // {test}`requirements.authoring.tool_descriptions.special_cases`
     // {test}`requirements.authoring.result_pages`
     #[test]
+    // {test}`requirements.authoring.file_discovery`
     fn large_listings_and_outlines_page_whole_entries_in_order() {
         let root = project();
         let names = (0..800)
@@ -504,6 +597,7 @@ mod tests {
     // {test}`requirements.authoring.delivered_inputs`
     // {test}`requirements.definitions.authoring_inputs`
     #[test]
+    // {test}`requirements.authoring.source_tools`
     fn paged_inputs_carry_their_definitions_and_deliver_only_their_own_inputs() {
         let root = project();
         fs::write(

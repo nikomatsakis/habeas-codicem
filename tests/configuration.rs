@@ -105,6 +105,7 @@ fn absent_and_minimal_configuration_are_distinct_and_read_only() {
 // {test}`requirements.authoring.concurrency`
 // {test}`requirements.configuration.serialization`
 #[test]
+// {test}`requirements.configuration.loading`
 fn backend_configuration_round_trips_without_materializing_defaults() {
     let source = r#"
 version = 1
@@ -160,14 +161,14 @@ model = "tiny:latest"
 fn authoring_concurrency_defaults_overrides_and_invalid_values() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.toml");
-    for backend in ["bedrock", "ollama"] {
+    for backend in ["bedrock", "ollama", "openai"] {
         let base =
             format!("version = 1\n[authoring.configs.model]\nbackend = '{backend}'\nmodel = 'm'\n");
         let defaults = UserConfig::parse(&base, &path).unwrap();
         let resolved =
             resolve_authoring_from(&path, Some(&defaults), dir.path(), Some("model")).unwrap();
         assert_eq!(resolved.concurrency, None);
-        let expected = if backend == "bedrock" {
+        let expected = if backend != "ollama" {
             std::thread::available_parallelism()
                 .map(|n| n.get())
                 .unwrap_or(1)
@@ -199,6 +200,7 @@ fn authoring_concurrency_defaults_overrides_and_invalid_values() {
 
 // {test}`requirements.authoring.policy`
 // {test}`requirements.authoring.configuration_structure`
+// {test}`requirements.configuration.serialization`
 #[test]
 fn authoring_policy_defaults_to_confirm_and_round_trips() {
     use habeas::config::AssessmentPolicy;
@@ -254,7 +256,9 @@ fn authoring_policy_defaults_to_confirm_and_round_trips() {
 // {test}`requirements.authoring.rig_configuration_mapping`
 // {test}`requirements.authoring.configuration`
 // {test}`requirements.configuration.loading`
+// {test}`requirements.configuration.structure`
 #[test]
+// {test}`requirements.authoring.configuration_structure`
 fn explicit_project_and_default_selections_choose_whole_configs() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().canonicalize().unwrap();
@@ -348,6 +352,7 @@ fn configurations_without_any_selection_report_how_to_choose_one() {
 // {test}`requirements.configuration.loading`
 // {test}`requirements.authoring.configuration_serialization`
 // {test}`requirements.authoring.configuration_storage`
+// {test}`requirements.configuration.feature_sections`
 #[test]
 fn invalid_schema_and_feature_values_report_the_configuration_path() {
     let path = Path::new("/settings/habeas/config.toml");
@@ -408,6 +413,7 @@ fn ollama_authentication_resolves_separately_and_rejects_missing_values() {
 // {test}`requirements.configuration.loading`
 // {test}`requirements.configuration.serialization`
 #[test]
+// {test}`requirements.configuration.evidence_paths`
 fn workspace_discovery_uses_nearest_file_without_merging_or_rewriting_it() {
     let temp = tempfile::tempdir().unwrap();
     let project = temp.path().join("project");
@@ -450,6 +456,10 @@ fn workspace_discovery_uses_nearest_file_without_merging_or_rewriting_it() {
     let error = load_workspace_config(&nested).unwrap_err().to_string();
     assert!(error.contains(path.to_str().unwrap()), "{error}");
     assert!(error.contains("invalid TOML"), "{error}");
+    assert_eq!(
+        fs::read_to_string(&path).unwrap(),
+        "version = 1\n[evidence\n"
+    );
     fs::remove_file(path).unwrap();
     fs::remove_file(outer).unwrap();
     assert!(load_workspace_config(&nested).unwrap().is_none());
@@ -508,9 +518,9 @@ fn workspace_defaults_and_configs_combine_with_existing_user_selections() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().canonicalize().unwrap();
     let user_path = root.join("user.toml");
-    let mut user = UserConfig::parse("version = 1\n[authoring]\ndefault = 'user'\n[authoring.configs.user]\nbackend = 'bedrock'\nmodel = 'user-model'\naws_profile = 'user-profile'\n[authoring.configs.shared]\nbackend = 'bedrock'\nmodel = 'old-model'\nregion = 'us-west-2'\nconcurrency = 7\n", &user_path).unwrap();
+    let mut user = UserConfig::parse("version = 1\n[authoring]\ndefault = 'user'\n[authoring.configs.user]\nbackend = 'bedrock'\nmodel = 'user-model'\naws_profile = 'user-profile'\n[authoring.configs.shared]\nbackend = 'bedrock'\nmodel = 'old-model'\nregion = 'us-west-2'\nconcurrency = 7\noptions = { temperature = 0.25, top_p = 0.5 }\n", &user_path).unwrap();
     let path = root.join("habeas.toml");
-    fs::write(&path, "version = 1\n[authoring]\ndefault = 'workspace'\n[authoring.configs.workspace]\nbackend = 'ollama'\nmodel = 'workspace-model'\n[authoring.configs.shared]\nbackend = 'ollama'\nmodel = 'replacement'\n").unwrap();
+    fs::write(&path, "version = 1\n[authoring]\ndefault = 'workspace'\n[authoring.configs.workspace]\nbackend = 'ollama'\nmodel = 'workspace-model'\n[authoring.configs.shared]\nbackend = 'ollama'\nmodel = 'replacement'\noptions = { temperature = 0.8 }\n").unwrap();
     let mut workspace = load_workspace_config(&root).unwrap().unwrap();
     let selected = resolve_authoring_with_workspace_from(
         &user_path,
@@ -532,6 +542,10 @@ fn workspace_defaults_and_configs_combine_with_existing_user_selections() {
     .unwrap();
     assert_eq!(replaced.config_path, path);
     assert_eq!(replaced.concurrency, None);
+    assert_eq!(
+        replaced.backend.options_json().unwrap(),
+        serde_json::json!({"temperature":0.8})
+    );
     assert!(
         matches!(&replaced.backend, BackendConfig::Ollama(config) if config.model == "replacement" && config.endpoint.is_none())
     );
@@ -683,7 +697,7 @@ fn unknown_selections_name_the_file_that_made_them() {
 #[test]
 fn explicit_credentials_round_trip_but_diagnostics_and_debug_redact_them() {
     let path = Path::new("habeas.toml");
-    let source = "version = 1\n[authoring.configs.cloud]\nbackend = 'bedrock'\nmodel = 'm'\n[authoring.configs.cloud.credentials]\naccess_key_id = 'PRIVATE_ACCESS_KEY'\nsecret_access_key = 'PRIVATE_SECRET_KEY'\nsession_token = 'PRIVATE_SESSION'\n[authoring.configs.local]\nbackend = 'ollama'\nmodel = 'm'\napi_key = 'PRIVATE_OLLAMA_KEY'\n";
+    let source = "version = 1\n[authoring.configs.cloud]\nbackend = 'bedrock'\nmodel = 'm'\n[authoring.configs.cloud.credentials]\naccess_key_id = 'PRIVATE_ACCESS_KEY'\nsecret_access_key = 'PRIVATE_SECRET_KEY'\nsession_token = 'PRIVATE_SESSION'\n[authoring.configs.local]\nbackend = 'ollama'\nmodel = 'm'\napi_key = 'PRIVATE_OLLAMA_KEY'\n[authoring.configs.openai]\nbackend = 'openai'\napi_key = 'PRIVATE_OPENAI_KEY'\n";
     let config = WorkspaceConfig::parse(source, path).unwrap();
     let debug = format!("{config:?}");
     for secret in [
@@ -691,6 +705,7 @@ fn explicit_credentials_round_trip_but_diagnostics_and_debug_redact_them() {
         "PRIVATE_SECRET_KEY",
         "PRIVATE_SESSION",
         "PRIVATE_OLLAMA_KEY",
+        "PRIVATE_OPENAI_KEY",
     ] {
         assert!(!debug.contains(secret), "{debug}");
     }
@@ -735,6 +750,7 @@ fn explicit_credentials_round_trip_but_diagnostics_and_debug_redact_them() {
             "secret_access_key = 'PRIVATE_SECRET_KEY'",
             "secret_access_key = ''",
         ),
+        source.replace("access_key_id = 'PRIVATE_ACCESS_KEY'", "access_key_id = ''"),
         source.replace("session_token = 'PRIVATE_SESSION'", "session_token = ''"),
         source.replace("api_key = 'PRIVATE_OLLAMA_KEY'", "api_key = ''"),
     ] {
@@ -745,6 +761,7 @@ fn explicit_credentials_round_trip_but_diagnostics_and_debug_redact_them() {
 // {test}`requirements.authoring.configuration_serialization`
 // {test}`requirements.authoring.configuration_structure`
 // {test}`requirements.configuration.serialization`
+// {test}`requirements.authoring.configuration_storage`
 #[test]
 fn user_and_workspace_authoring_tables_round_trip_every_map() {
     let temp = tempfile::tempdir().unwrap();
@@ -820,6 +837,13 @@ fn user_and_workspace_authoring_tables_round_trip_every_map() {
         assert_eq!(bedrock.aws_profile.as_deref(), Some("p"));
         assert_eq!(bedrock.region.as_deref(), Some(region));
     }
+    let configured = UserConfig::parse("version = 1\n[authoring.configs.local]\nbackend = 'ollama'\nmodel = 'local:tag'\nendpoint = 'http://server:11434'\n", &path).unwrap();
+    let backend = &configured.authoring.as_ref().unwrap().configs["local"].backend;
+    assert_eq!(backend.model_ref().model, "local:tag");
+    let BackendConfig::Ollama(local) = backend else {
+        panic!("wrong backend")
+    };
+    assert_eq!(local.endpoint.as_deref(), Some("http://server:11434"));
 }
 
 // {test}`requirements.authoring.configuration_storage`
@@ -993,7 +1017,7 @@ fn workspace_configurations_accept_validate_and_override_concurrency() {
     .unwrap();
     let path = root.join("habeas.toml");
     for (workspace, expected) in [("concurrency = 3\n", Some(3)), ("", None)] {
-        for backend in ["bedrock", "ollama"] {
+        for backend in ["bedrock", "ollama", "openai"] {
             fs::write(
                 &path,
                 format!("version = 1\n[authoring.configs.shared]\nbackend = '{backend}'\nmodel = 'local'\n{workspace}"),
@@ -1012,7 +1036,7 @@ fn workspace_configurations_accept_validate_and_override_concurrency() {
             // including its concurrency.
             assert_eq!(resolved.config_path, path);
             assert_eq!(resolved.concurrency.map(|value| value.get()), expected);
-            let default = if backend == "bedrock" {
+            let default = if backend != "ollama" {
                 std::thread::available_parallelism()
                     .map(|n| n.get())
                     .unwrap_or(1)
@@ -1226,6 +1250,16 @@ fn feature_sections_are_scoped_and_absent_sections_use_defaults() {
     // An absent authoring section configures nothing.
     let user = UserConfig::parse("version = 1\n", &path).unwrap();
     assert!(user.authoring.is_none());
+    for feature in [
+        "[authoring]\nconfigs = {}",
+        "[evidence]\nallow = []",
+        "[coverage]\nreauthorings = 3",
+    ] {
+        let error = WorkspaceConfig::parse(&format!("version = 2\n{feature}\n"), &path)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("version"), "{error}");
+    }
 }
 
 // {test}`requirements.configuration.documentation`
@@ -1292,8 +1326,8 @@ fn documented_configuration_examples_are_complete_valid_files() {
             };
             parsed.unwrap_or_else(|error| panic!("{document}: {error}\n{source}"));
             assert_eq!(source.lines().next(), Some("version = 1"), "{document}");
-            // Primary examples name credential sources. The one literal-credential
-            // example, in the authoring chapter, uses only uppercase placeholders.
+            // Literal-credential examples in the authoring chapter use only
+            // uppercase placeholders.
             let secrets: Vec<_> = source
                 .lines()
                 .filter(|line| {
@@ -1603,4 +1637,151 @@ fn base_directories_must_be_absolute_and_nonempty() {
         state_root_from(ConfigPlatform::Unix, lookup).unwrap(),
         std::path::PathBuf::from("/home/user/.local/state/habeas")
     );
+}
+
+// {test}`requirements.authoring.configuration_serialization`
+// {test}`requirements.authoring.credentials`
+// {test}`requirements.authoring.configuration_storage`
+// {test}`requirements.authoring.configuration_structure`
+// {test}`requirements.authoring.configuration_precedence`
+// {test}`requirements.configuration.serialization`
+#[test]
+fn openai_configuration_preserves_model_and_resolves_credentials() {
+    let source =
+        "version = 1\n[authoring.configs.api]\nbackend = 'openai'\nmodel = 'account-model-id'\n";
+    let path = Path::new("settings.toml");
+    let config = UserConfig::parse(source, path).unwrap();
+    let backend = &config.authoring.as_ref().unwrap().configs["api"].backend;
+    assert_eq!(backend.model_ref().backend, BackendKind::Openai);
+    assert_eq!(backend.model_ref().model, "account-model-id");
+    let BackendConfig::Openai(openai) = backend else {
+        panic!("wrong backend")
+    };
+    assert_eq!(openai.endpoint(), "https://api.openai.com/v1");
+    assert!(openai.api_key_from(|_| None).is_err());
+    assert_eq!(
+        openai
+            .api_key_from(|name| {
+                assert_eq!(name, "OPENAI_API_KEY");
+                Some("test-key".into())
+            })
+            .unwrap()
+            .as_str(),
+        "test-key"
+    );
+    let serialized = config.to_toml().unwrap();
+    assert!(!serialized.contains("api_key"));
+    assert_eq!(UserConfig::parse(&serialized, path).unwrap(), config);
+    for extra in [
+        "api_key = 'secret'\napi_key_env = 'KEY'",
+        "api_key_env = ''",
+        "api_key = ''",
+        "[authoring.configs.api.options]\ninput = 'override'",
+        "[authoring.configs.api.options]\ninstructions = 'override'",
+    ] {
+        assert!(UserConfig::parse(&format!("{source}{extra}\n"), path).is_err());
+    }
+    let mut custom = openai.clone();
+    custom.endpoint = Some("https://example.invalid/v1".into());
+    custom.api_key_env = Some("CUSTOM_OPENAI_KEY".into());
+    assert_eq!(custom.endpoint(), "https://example.invalid/v1");
+    assert!(custom.api_key_from(|_| None).is_err());
+    assert!(custom.api_key_from(|_| Some("".into())).is_err());
+    assert_eq!(
+        custom
+            .api_key_from(|name| {
+                assert_eq!(name, "CUSTOM_OPENAI_KEY");
+                Some("custom-key".into())
+            })
+            .unwrap(),
+        "custom-key"
+    );
+}
+
+// {test}`requirements.authoring.policy`
+// {test}`requirements.authoring.openai_defaults`
+// {test}`requirements.authoring.configuration_structure`
+#[test]
+fn openai_policy_defaults_to_once_without_changing_explicit_policy() {
+    use habeas::config::AssessmentPolicy;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    for (extra, expected) in [
+        ("", AssessmentPolicy::Once),
+        ("policy = 'confirm'\n", AssessmentPolicy::Confirm),
+    ] {
+        let config = UserConfig::parse(
+            &format!("version = 1\n[authoring.configs.api]\nbackend = 'openai'\n{extra}"),
+            &path,
+        )
+        .unwrap();
+        let resolved =
+            resolve_authoring_from(&path, Some(&config), dir.path(), Some("api")).unwrap();
+        assert_eq!(resolved.effective_policy(None), expected);
+        assert_eq!(
+            resolved.effective_policy(Some(AssessmentPolicy::Confirm)),
+            AssessmentPolicy::Confirm
+        );
+        assert_eq!(
+            resolved.effective_policy(Some(AssessmentPolicy::Once)),
+            AssessmentPolicy::Once
+        );
+        assert_eq!(
+            config.to_toml().unwrap().contains("policy ="),
+            !extra.is_empty()
+        );
+    }
+}
+
+// {test}`requirements.authoring.openai_defaults`
+// {test}`requirements.authoring.configuration_structure`
+// {test}`requirements.authoring.configuration_serialization`
+// {test}`requirements.configuration.serialization`
+#[test]
+fn openai_defaults_are_effective_only_and_explicit_values_win() {
+    let path = Path::new("settings.toml");
+    let base =
+        "version = 1\n[authoring.configs.api]\nbackend = 'openai'\napi_key = 'fixture-key'\n";
+    for (extra, model, effort) in [
+        ("", "gpt-6.1-sol", Some("low")),
+        (
+            "[authoring.configs.api.options.reasoning]\nsummary = 'auto'\n",
+            "gpt-6.1-sol",
+            Some("low"),
+        ),
+        (
+            "[authoring.configs.api.options.reasoning]\neffort = 'medium'\n",
+            "gpt-6.1-sol",
+            Some("medium"),
+        ),
+        ("model = 'gpt-6-luna'\n", "gpt-6-luna", Some("low")),
+        ("model = 'adaptive'\n", "adaptive", Some("low")),
+        (
+            "model = 'gpt-6-luna'\n[authoring.configs.api.options.reasoning]\neffort = 'high'\n",
+            "gpt-6-luna",
+            Some("high"),
+        ),
+    ] {
+        let config = UserConfig::parse(&format!("{base}{extra}"), path).unwrap();
+        let backend = &config.authoring.as_ref().unwrap().configs["api"].backend;
+        assert_eq!(backend.model_ref().model, model);
+        let options = backend.options_json().unwrap();
+        assert_eq!(options["reasoning"]["effort"].as_str(), effort);
+        assert_eq!(options["max_output_tokens"], 16_384);
+        if extra.contains("summary") {
+            assert_eq!(options["reasoning"]["summary"], "auto");
+        }
+        let serialized = config.to_toml().unwrap();
+        assert!(!serialized.contains("max_output_tokens"));
+        assert_eq!(serialized.contains("model ="), extra.contains("model ="));
+        assert_eq!(serialized.contains("effort ="), extra.contains("effort ="));
+        if extra.contains("options.reasoning") {
+            assert!(
+                serialized.contains("[authoring.configs.api.options.reasoning]"),
+                "{serialized}"
+            );
+        }
+        assert_eq!(UserConfig::parse(&serialized, path).unwrap(), config);
+    }
+    assert!(UserConfig::parse(&format!("{base}model = ''\n"), path).is_err());
 }

@@ -5,16 +5,6 @@ description: Use when Habeas evidence needs creating or refreshing, or when `car
 
 # Habeas evidence
 
-`habeas author` records, for each requirement and example, a model's judgment
-of whether the code and tests satisfy it; `cargo test --workspace` validates
-those records without calling a model. A judgment is one of three outcomes:
-
-- `true`: the code and tests satisfy the definition, with no gap.
-- `false`: there is a gap that no `{fixme}` reference acknowledges; the
-  rationale names it.
-- FIXME: `{fixme}` references acknowledge every remaining gap; validation
-  accepts it while each named issue is open.
-
 ## Workflow
 
 Run commands from the project root, the directory with `book.toml` and
@@ -46,6 +36,18 @@ Run commands from the project root, the directory with `book.toml` and
       validates only committed evidence.
 - [ ] 8. Next: for findings that need code or tests, or requirement text that
       must change, return to the habeas-requirements skill.
+
+## Judgments
+
+`habeas author` records, for each requirement and example, a model's judgment
+of whether the code and tests satisfy it; `cargo test --workspace` validates
+those records without calling a model. A judgment is one of three outcomes:
+
+- `true`: the code and tests satisfy the definition, with no gap.
+- `false`: there is a gap that no `{fixme}` reference acknowledges; the
+  rationale names it.
+- FIXME: `{fixme}` references acknowledge every remaining gap; validation
+  accepts it while each named issue is open.
 
 ## Rules
 
@@ -106,6 +108,10 @@ read, or one whose only record was deleted, is warned about at once.
 
 For each item still warned about after `habeas author --all`, choose
 references by "Choosing references" in the habeas-requirements skill:
+
+Before changing an uncovered item, determine whether it is a requirement root,
+an entry point, an item that serves other code, or dead code. Report dead code
+to the user without editing it.
 
 | Situation | Action |
 | --- | --- |

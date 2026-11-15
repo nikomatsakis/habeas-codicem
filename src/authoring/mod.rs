@@ -1,6 +1,7 @@
 //! Model-assisted evidence authoring, invoked explicitly and never by validation.
 
 pub(crate) mod access;
+mod adaptive;
 mod batch;
 mod inputs;
 mod line_numbers;
@@ -266,6 +267,8 @@ pub async fn author_evidence_with_output(
 // {impl}`requirements.configuration.state_location`
 // {impl}`requirements.authoring.policy`
 // {impl}`requirements.authoring.read_denial.mandatory`
+// {impl}`requirements.authoring.provider_backoff`
+// {impl}`requirements.references.citation_review`
 pub async fn author_evidence_with_options(
     root: &Path,
     subject: &str,
@@ -350,6 +353,7 @@ fn usage_state_root(root: &Path) -> io::Result<PathBuf> {
 // {impl}`requirements.authoring.usage_storage`
 // {impl}`requirements.configuration.state_location`
 // {impl}`requirements.authoring.policy`
+// {impl}`requirements.authoring.provider_backoff`
 pub(crate) async fn prepare_assessment(
     root: &Path,
     subject: &AuthoringSubject,
@@ -433,6 +437,7 @@ pub(crate) async fn prepare_assessment(
 // {impl}`requirements.configuration.loading`
 // {impl}`requirements.authoring.policy`
 // {impl}`requirements.authoring.configuration`
+// {impl}`requirements.authoring.submission`
 async fn configured_assessment(
     root: &Path,
     subject: &str,
@@ -484,6 +489,7 @@ async fn configured_assessment(
 // {impl}`requirements.authoring.provider`
 // {impl}`requirements.authoring.policy`
 // {impl}`requirements.authoring.read_denial.mandatory`
+// {impl}`requirements.authoring.adaptive`
 async fn configured_record(
     root: &Path,
     subject: &AuthoringSubject,
@@ -499,6 +505,10 @@ async fn configured_record(
     // Mandatory inputs are prepared, and an unreadable one reported, before
     // connecting to the provider.
     let sources = subject.sources(root)?;
+    if matches!(&config.backend, config::BackendConfig::Openai(openai) if openai.model() == "adaptive")
+    {
+        return adaptive::assess(root, subject, config, sources, usage, policy).await;
+    }
     let provider = RigProvider::connect(&config.backend)
         .await
         .map_err(|error| {
@@ -518,6 +528,7 @@ fn backend_name(model: &config::ModelRef) -> &'static str {
     match model.backend {
         BackendKind::Bedrock => "bedrock",
         BackendKind::Ollama => "ollama",
+        BackendKind::Openai => "openai",
     }
 }
 
@@ -585,6 +596,29 @@ async fn assess_subject(
         Err(error) => Err(error),
     };
     let verification = finish_followup(log, "verification", result)?;
+    let chosen = confirmed_record(
+        less,
+        more,
+        &first_kind,
+        &second_kind,
+        &less_kind,
+        verification,
+    );
+    usage.record.determination = Some(chosen.0.kind().into());
+    usage.save()?;
+    Ok(chosen)
+}
+
+// {cite}`habeas:util`
+fn confirmed_record(
+    less: (Judgment, Value),
+    more: (Judgment, Value),
+    first_kind: &str,
+    second_kind: &str,
+    less_kind: &str,
+    verification: Verification,
+) -> (Judgment, Value) {
+    let applies = |assessment: &(Judgment, Value)| assessment.1["applies"].as_bool();
     let (mut chosen, conclusion) = if !verification.real {
         // A verifier deciding `applies` otherwise than the more favorable
         // assessment establishes `true` on its own rationale.
@@ -627,9 +661,7 @@ async fn assess_subject(
         chosen.1["rationale"].as_str().unwrap_or_default().trim()
     );
     chosen.1["rationale"] = Value::String(rationale);
-    usage.record.determination = Some(chosen.0.kind().into());
-    usage.save()?;
-    Ok(chosen)
+    chosen
 }
 
 /// Orders assessments: `false` is less favorable than FIXME, and FIXME
@@ -837,6 +869,7 @@ impl Prompt {
 // {impl}`requirements.ci.review_criteria`
 // {impl}`requirements.ci.outcomes`
 // {impl}`requirements.examples.evidence`
+// {impl}`requirements.examples.definition`
 // {impl}`requirements.authoring.mandatory_inputs`
 // {impl}`requirements.authoring.citation_prompt`
 // {impl}`requirements.authoring.redaction`
@@ -844,6 +877,7 @@ impl Prompt {
 // {impl}`requirements.authoring.site_prompt`
 // {impl}`requirements.authoring.habeas_background`
 // {impl}`requirements.authoring.judgment_rules`
+// {impl}`requirements.authoring.credentials`
 fn initial_prompt(sources: &AssessmentSources) -> io::Result<Prompt> {
     let mandatory = serde_json::to_string_pretty(&sources.model_mandatory_inputs())?;
     let mut values = shared_blocks().to_vec();
@@ -1157,6 +1191,8 @@ fn record(
 // {impl}`requirements.authoring.mandatory_inputs`
 // {impl}`requirements.ci.reference_set`
 // {impl}`requirements.ci.schema`
+// {impl}`requirements.authoring.citation_prompt`
+// {impl}`requirements.authoring.site_prompt`
 async fn assess(
     provider: &impl CompletionProvider,
     sources: &mut AssessmentSources,
@@ -1240,6 +1276,9 @@ async fn verify(
 // {impl}`requirements.authoring.submission`
 // {impl}`requirements.authoring.no_line_numbers`
 // {impl}`requirements.authoring.usage_requests.failures`
+// {impl}`requirements.authoring.provider_backoff.limit`
+// {impl}`requirements.authoring.tool_descriptions.special_cases`
+// {impl}`requirements.authoring.cache_checkpoints`
 async fn converse<T>(
     provider: &impl CompletionProvider,
     sources: &mut AssessmentSources,
@@ -1424,6 +1463,7 @@ async fn converse<T>(
                 Ok(delivery) => {
                     usage.tool(call.function.name.as_str(), false);
                     usage.prepared(call.function.name.as_str(), &delivery.inputs);
+                    usage.search_result(&delivery.result);
                     pending.extend(delivery.inputs);
                     results.push(
                         call.result(vec![ToolResultContent::text(delivery.result.to_string())]),
@@ -1752,6 +1792,7 @@ mod tests {
     }
 
     // {test}`requirements.authoring.read_denial`
+    // {test}`requirements.authoring.tool_descriptions.special_cases`
     #[tokio::test]
     async fn malformed_and_failed_reads_return_to_the_model_and_the_assessment_continues() {
         for read in [
@@ -1784,7 +1825,9 @@ mod tests {
             // then submitted in a second request.
             let requests = provider.requests.borrow();
             assert_eq!(requests.len(), 2, "{read}");
-            let message = serde_json::to_string(&failure.to_string()).unwrap();
+            let message =
+                serde_json::to_string(&line_numbers::without_source_lines(&failure.to_string()))
+                    .unwrap();
             let message = message.trim_matches('"');
             assert!(!requests[0].to_string().contains(message), "{read}");
             assert!(requests[1].to_string().contains(message), "{read}");
@@ -1841,6 +1884,7 @@ mod tests {
     // {test}`requirements.authoring.judgment_rules`
     // {test}`requirements.authoring.habeas_background`
     // {test}`requirements.examples.evidence`
+    // {test}`requirements.examples.definition`
     #[test]
     fn initial_prompt_carries_the_review_criteria() {
         let project = inputs::tests::project();
@@ -1854,6 +1898,9 @@ mod tests {
             approved_text("requirement_task", 0),
             approved_text("testing_bar", 0),
             "List each MUST, MUST NOT, and SHOULD clause as an obligation.",
+            "Look for unreached implementations among the sources that",
+            "reference the subject and by targeted search for what its obligations",
+            "produce; do not survey unrelated code.",
             "5. Testing:",
             "The project MUST be ready.",
         ] {
@@ -1889,6 +1936,10 @@ mod tests {
         );
         assert!(
             prompt.contains(approved_text("example_task", 0)),
+            "{prompt}"
+        );
+        assert!(
+            prompt.contains("First check that it describes a concrete case\nwith expected behavior; a missing concrete case or expected behavior is a gap."),
             "{prompt}"
         );
         assert!(!prompt.contains("5. Testing:"), "{prompt}");
@@ -2429,6 +2480,41 @@ mod tests {
         }
     }
 
+    // {test}`requirements.authoring.line_numbers.rejection`
+    #[tokio::test]
+    async fn verification_line_citations_are_rejected_with_the_correct_retry_tool() {
+        let project = inputs::tests::project();
+        let mut sources = AssessmentSources::prepare(project.path(), "requirements.ready").unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let mut usage =
+            UsageLog::start(state.path(), project.path(), &sources.subject_name).unwrap();
+        let provider = RecordingProvider::new(vec![
+            verdict(true, &[], "src/lib.rs:3 fails."),
+            verdict(true, &[], "`src/lib.rs#fn[ready]` fails."),
+        ]);
+        let result = verify(
+            &provider,
+            &mut sources,
+            &mut usage,
+            &Judgment::False,
+            "A gap.",
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.rationale, "`src/lib.rs#fn[ready]` fails.");
+        let prompts = provider.prompts();
+        assert_eq!(prompts.len(), 2);
+        assert!(prompts[1].0.contains("Call submit_verification once more"));
+        assert!(prompts[1].0.contains("src/lib.rs:3"));
+        assert_eq!(
+            serde_json::to_value(&usage.record).unwrap()["requests"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+
     // A first submission giving no line numbers is accepted at once.
     // {test}`requirements.authoring.line_numbers.rejection`
     #[tokio::test]
@@ -2758,6 +2844,80 @@ mod tests {
         }
     }
 
+    // {test}`requirements.ci.authoring_inputs`
+    #[tokio::test]
+    async fn reassessment_records_only_freshly_delivered_inputs() {
+        let project = inputs::tests::project();
+        let subject = AuthoringSubject::Definition("requirements.ready".into());
+        let path = subject.evidence_path(project.path());
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, json!({"determination":false,"rationale":"OLD_RATIONALE","inputs":[{"file":"deleted.rs","item":"fn[old]","hash":"0".repeat(64)}]}).to_string()).unwrap();
+        let mut sources = subject.sources(project.path()).unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let mut usage = UsageLog::start(state.path(), project.path(), &subject.label()).unwrap();
+        let provider = RecordingProvider::new(vec![judgment(json!(true), "Fresh assessment.")]);
+        let (_, record) = assess(&provider, &mut sources, &mut usage).await.unwrap();
+        assert!(
+            record["inputs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|input| input["requirements"] == "requirements.ready")
+        );
+        for stale in ["deleted.rs", "fn[old]", "OLD_RATIONALE"] {
+            assert!(!record.to_string().contains(stale));
+            assert!(!provider.prompts()[0].0.contains(stale));
+        }
+        assert_eq!(record["rationale"], "Fresh assessment.");
+    }
+
+    // {test}`requirements.authoring.confirmation`
+    // {test}`requirements.authoring.usage_storage`
+    #[tokio::test]
+    async fn citation_reviews_are_confirmed_with_fresh_targeted_conversations() {
+        let project = inputs::tests::project();
+        fs::write(
+            project.path().join("src/lib.rs"),
+            "// {cite}`requirements.ready`\nfn helper() {}\n",
+        )
+        .unwrap();
+        let subject = AuthoringSubject::parse("citations:src/lib.rs#fn[helper]");
+        let sources = subject.sources(project.path()).unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let mut usage = UsageLog::start(state.path(), project.path(), &subject.label()).unwrap();
+        let provider = RecordingProvider::new(vec![
+            judgment(json!(true), "First citation review."),
+            judgment(json!(true), "Second citation review."),
+        ]);
+        let (_, record) = assess_subject(
+            &provider,
+            project.path(),
+            state.path(),
+            &subject,
+            sources,
+            &mut usage,
+            AssessmentPolicy::Confirm,
+        )
+        .await
+        .unwrap();
+        assert_eq!(record["item"], "fn[helper]");
+        assert_eq!(record["rationale"], "First citation review.");
+        let prompts = provider.prompts();
+        assert_eq!(prompts.len(), 2);
+        assert!(
+            prompts
+                .iter()
+                .all(|(text, _)| text.contains("Item under review: src/lib.rs fn[helper]"))
+        );
+        assert!(!prompts[1].0.contains("First citation review."));
+        let logs: Vec<Value> = fs::read_dir(state.path().join("authoring/usage"))
+            .unwrap()
+            .map(|p| serde_json::from_slice(&fs::read(p.unwrap().path()).unwrap()).unwrap())
+            .collect();
+        assert_eq!(logs.len(), 2);
+        assert_ne!(logs[0]["run_id"], logs[1]["run_id"]);
+    }
+
     // {test}`requirements.authoring.confirmation`
     #[tokio::test]
     async fn agreeing_assessments_record_the_first() {
@@ -2802,6 +2962,17 @@ mod tests {
                     judgment(json!(true), "Looks complete."),
                     judgment(json!(false), "The empty case is unhandled."),
                     verdict(true, &[], "The empty case panics."),
+                ],
+                Judgment::False,
+                1,
+                "found an unacknowledged real gap",
+            ),
+            // A false assessment ranks below an acknowledged gap.
+            (
+                vec![
+                    judgment(json!({"FIXME": ["#7"]}), "Only the known gap."),
+                    judgment(json!(false), "An additional unacknowledged gap."),
+                    verdict(true, &[], "The additional gap is real."),
                 ],
                 Judgment::False,
                 1,
@@ -3064,6 +3235,7 @@ mod tests {
     // {test}`requirements.authoring.mandatory_inputs`
     // {test}`requirements.authoring.habeas_background`
     // {test}`requirements.authoring.judgment_rules`
+    // {test}`requirements.authoring.adaptive`
     #[tokio::test]
     async fn citation_reviews_use_their_prompt_and_record_the_item_and_citations() {
         let project = inputs::tests::project();
@@ -3083,6 +3255,7 @@ mod tests {
                 .join("evidence/citations/src/lib.rs/fn[helper].json")
         );
         let mut sources = subject.sources(project.path()).unwrap();
+        assert!(!sources.has_applicable_fixme);
         let mandatory = sources.mandatory_inputs().to_vec();
         assert_eq!(mandatory[0]["file"], "src/lib.rs");
         assert_eq!(mandatory[0]["item"], "fn[helper]");
@@ -3100,6 +3273,28 @@ mod tests {
         let provider = RecordingProvider::new(vec![judgment(json!(true), "Both are sensible.")]);
         let (_, record) = assess(&provider, &mut sources, &mut usage).await.unwrap();
         let prompts = provider.prompts();
+        let expected: Vec<_> = tool_definitions_with("submit_judgment", false)
+            .unwrap()
+            .into_iter()
+            .map(|tool| tool.name)
+            .collect();
+        assert_eq!(prompts[0].1, expected);
+        let duplicate = json!({"determination":true,"rationale":"Both are sensible."});
+        let duplicate_provider = ScriptedProvider {
+            turns: vec![vec![
+                ("submit_judgment", duplicate.clone()),
+                ("submit_judgment", duplicate),
+            ]],
+            requests: RefCell::default(),
+        };
+        let mut duplicate_sources = subject.sources(project.path()).unwrap();
+        assert!(
+            assess(&duplicate_provider, &mut duplicate_sources, &mut usage)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("exactly once")
+        );
         let prompt = &prompts[0].0;
         assert!(
             prompt.contains("Review one source item's citations."),
@@ -3232,6 +3427,40 @@ mod tests {
     // {test}`requirements.authoring.verifier_prompt`
     #[test]
     fn subjects_of_one_kind_share_a_byte_identical_system_prompt() {
+        // Check every literal segment of the selected approved blocks, allowing
+        // only declared placeholders to expand, then check the opening message roles.
+        fn assert_opening(prompt: &Prompt, template: &str) {
+            let placeholders = regex::Regex::new(r"\{\{[^}]+\}\}").unwrap();
+            for (index, actual) in [&prompt.system, &prompt.subject].into_iter().enumerate() {
+                let expected = approved_text(template, index);
+                let mut pattern = String::from(r"\A");
+                let mut end = 0;
+                for placeholder in placeholders.find_iter(expected) {
+                    pattern.push_str(&regex::escape(&expected[end..placeholder.start()]));
+                    pattern.push_str("(?s:.*?)");
+                    end = placeholder.end();
+                }
+                pattern.push_str(&regex::escape(&expected[end..]));
+                pattern.push_str(r"\z");
+                assert!(
+                    regex::Regex::new(&pattern).unwrap().is_match(actual),
+                    "{template} block {index}: {actual}"
+                );
+                assert!(!actual.contains("{{"), "{actual}");
+            }
+            let request = Prompt {
+                system: prompt.system.clone(),
+                subject: prompt.subject.clone(),
+            }
+            .request();
+            assert_eq!(
+                request.chat_history,
+                vec![
+                    Message::system(prompt.system.clone()),
+                    Message::user(prompt.subject.clone())
+                ]
+            );
+        }
         let project =
             crate::sites::tests::project(crate::sites::tests::RULE, crate::sites::tests::SOURCE);
         let requirements = project.path().join("md/requirements.md");
@@ -3247,16 +3476,26 @@ mod tests {
             "\n// {cite}\nfn cites_one() {{}}\n\n// {cite}\n// :::{{cite}} habeas:util\n// Formats output.\n// :::\nfn cites_two() {{}}\n"
         ));
         fs::write(&source, text).unwrap();
-        for (first, second) in [
-            ("requirements.other", "requirements.second"),
-            ("requirements.first_case", "requirements.second_case"),
+        for (first, second, template) in [
+            (
+                "requirements.other",
+                "requirements.second",
+                "initial_prompt",
+            ),
+            (
+                "requirements.first_case",
+                "requirements.second_case",
+                "initial_prompt",
+            ),
             (
                 "citations:src/lib.rs#fn[cites_one]",
                 "citations:src/lib.rs#fn[cites_two]",
+                "citation_prompt",
             ),
             (
                 "sites:requirements.rule/src/lib.rs#fn[check_one]",
                 "sites:requirements.rule/src/lib.rs#fn[check_two]",
+                "site_prompt",
             ),
         ] {
             let sources = |subject: &str| {
@@ -3269,6 +3508,8 @@ mod tests {
                 initial_prompt(&first).unwrap(),
                 initial_prompt(&second).unwrap(),
             );
+            assert_opening(&one, template);
+            assert_opening(&two, template);
             assert_eq!(one.system, two.system, "{}", first.subject_name);
             assert_ne!(one.subject, two.subject);
             assert!(one.subject.starts_with("# Subject\n\n"), "{}", one.subject);
@@ -3278,6 +3519,8 @@ mod tests {
                 verification_prompt(&second, &Judgment::Fixme(vec!["#2".into()]), "Two gaps.")
                     .unwrap(),
             );
+            assert_opening(&one, "verifier_prompt");
+            assert_opening(&two, "verifier_prompt");
             assert_eq!(one.system, two.system, "verifier of {}", first.subject_name);
             assert!(one.subject.contains("One gap."));
             assert!(!one.system.contains("One gap."));
@@ -3510,6 +3753,17 @@ no_match:
             ),
         );
         let root = project.path();
+        let declaration = crate::sites::tests::RULE.replace("Each checker MUST report problems instead of panicking.", "Each checker MUST report problems instead of panicking. {cite}`requirements.other` {term}`terms.value`");
+        fs::write(
+            root.join("md/requirements.md"),
+            format!("{declaration}\n:::{{req}} other\nOther MUST hold.\n:::\n"),
+        )
+        .unwrap();
+        fs::write(
+            root.join("md/terms.md"),
+            ":::{definition} value\n:phrase: value\nA useful value.\n:::\n",
+        )
+        .unwrap();
         let subject = AuthoringSubject::parse("sites:requirements.rule/src/lib.rs#fn[check_two]");
         assert_eq!(
             subject.evidence_path(root),
@@ -3520,7 +3774,17 @@ no_match:
         assert_eq!(mandatory[0]["file"], "src/lib.rs");
         assert_eq!(mandatory[0]["item"], "fn[check_two]");
         assert_eq!(mandatory[1]["requirements"], "requirements.rule");
-        assert_eq!(mandatory.len(), 2, "{mandatory:#?}");
+        assert_eq!(mandatory.len(), 4, "{mandatory:#?}");
+        assert!(
+            mandatory
+                .iter()
+                .any(|input| input["requirements"] == "requirements.other")
+        );
+        assert!(
+            mandatory
+                .iter()
+                .any(|input| input["definition"] == "terms.value")
+        );
 
         // The subject message names the requirement, the site's file and
         // selector, and each query match with its kind, name and lines.
@@ -3597,6 +3861,28 @@ no_match:
         );
         assert!(!text.contains("{{"), "{text}");
         assert!(tools.contains(&"submit_judgment".to_owned()));
+        let expected: Vec<_> = tool_definitions_with("submit_judgment", false)
+            .unwrap()
+            .into_iter()
+            .map(|tool| tool.name)
+            .collect();
+        assert_eq!(*tools, expected);
+        let duplicate = json!({"applies":true,"determination":true,"rationale":"Covered."});
+        let duplicate_provider = ScriptedProvider {
+            turns: vec![vec![
+                ("submit_judgment", duplicate.clone()),
+                ("submit_judgment", duplicate),
+            ]],
+            requests: RefCell::default(),
+        };
+        let mut duplicate_sources = subject.sources(root).unwrap();
+        assert!(
+            assess(&duplicate_provider, &mut duplicate_sources, &mut usage)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("exactly once")
+        );
         let submit = provider.requests.borrow()[0]["tools"]
             .as_array()
             .unwrap()
@@ -3628,6 +3914,25 @@ no_match:
             !errors.iter().any(|error| error.starts_with(&prefix)),
             "{errors:#?}"
         );
+    }
+
+    // {test}`requirements.authoring.credentials`
+    // {test}`requirements.authoring.redaction`
+    #[test]
+    fn site_prompts_exclude_credentials_from_source_and_configuration() {
+        let token = crate::redaction::tests::github_token();
+        let source = crate::sites::tests::SOURCE.replace(
+            "fn check_two() {}",
+            &format!("fn check_two() {{ let credential = \"{token}\"; }}"),
+        );
+        let project = crate::sites::tests::project(crate::sites::tests::RULE, &source);
+        fs::write(project.path().join("habeas.toml"), "version = 1\n[authoring.configs.local]\nbackend = 'openai'\napi_key = 'SITE_CONFIG_SECRET'\n").unwrap();
+        let subject = AuthoringSubject::parse("sites:requirements.rule/src/lib.rs#fn[check_two]");
+        let sources = subject.sources(project.path()).unwrap();
+        let prompt = initial_prompt(&sources).unwrap().joined();
+        assert!(prompt.contains("[REDACTED:GitHub Token]"));
+        assert!(!prompt.contains(&token));
+        assert!(!prompt.contains("SITE_CONFIG_SECRET"));
     }
 
     // {test}`requirements.authoring.site_prompt`
@@ -3694,6 +3999,7 @@ no_match:
     // {test}`requirements.authoring.verifier_outcome`
     // {test}`requirements.authoring.habeas_background`
     #[tokio::test]
+    // {test}`requirements.authoring.judgment_rules`
     async fn site_assessments_differing_only_in_applies_are_verified() {
         let site = |applies: bool, determination: Value, rationale: &str| {
             (
@@ -3778,6 +4084,10 @@ no_match:
                 text.contains(&escaped(
                     "The reviewer judged site review sites:requirements.rule/src/lib.rs#fn[check_one] as"
                 )),
+                "{text}"
+            );
+            assert!(
+                text.contains(&escaped(approved_text("judgment_rules", 0))),
                 "{text}"
             );
             assert!(text.contains(&escaped(SITE_STEP)), "{text}");

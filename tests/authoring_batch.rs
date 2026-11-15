@@ -15,6 +15,7 @@ use tempfile::TempDir;
 #[derive(Default)]
 struct Requests {
     subjects: Vec<String>,
+    conversations: Vec<(String, Value)>,
     active: usize,
     peak: usize,
     first_pair_overlapped: bool,
@@ -37,9 +38,14 @@ enum Behavior {
     #[cfg_attr(not(unix), allow(dead_code))]
     WaitAfterFirst,
     /// The subject's first request is throttled with HTTP 429.
-    ThrottledOnce { subject: &'static str },
+    ThrottledOnce {
+        subject: &'static str,
+    },
     /// A judgment is false when the prompt shows a closed issue.
     ClosedIssueIsFalse,
+    /// Hold the three post-warmup requirement requests until all arrive.
+    WarmupBarrier,
+    ReadEachSubject,
 }
 
 // {cite}`habeas:util`
@@ -122,6 +128,9 @@ fn serve(
     behavior: Behavior,
     stop: Arc<AtomicBool>,
 ) {
+    // Accepted sockets can inherit the listener's nonblocking mode (macOS).
+    // This worker uses blocking reads; the timeout must govern incomplete requests.
+    stream.set_nonblocking(false).unwrap();
     stream
         .set_read_timeout(Some(Duration::from_secs(10)))
         .unwrap();
@@ -176,6 +185,9 @@ fn serve(
     let mut state = lock.lock().unwrap();
     let first_for_subject = !state.subjects.contains(&subject);
     state.subjects.push(subject.clone());
+    if matches!(behavior, Behavior::ReadEachSubject) {
+        state.conversations.push((subject.clone(), request.clone()));
+    }
     let position = state.timeline.len();
     state.timeline.push((subject.clone(), Instant::now(), None));
     let first_request = state.subjects.len() == 1;
@@ -190,6 +202,31 @@ fn serve(
             .unwrap();
         state = next;
         state.first_pair_overlapped = state.subjects.len() >= 2;
+    }
+    if matches!(behavior, Behavior::WarmupBarrier)
+        && subject.starts_with("requirement ")
+        && state
+            .subjects
+            .iter()
+            .filter(|s| s.starts_with("requirement "))
+            .count()
+            > 1
+    {
+        let (next, timeout) = arrived
+            .wait_timeout_while(state, Duration::from_secs(10), |state| {
+                state
+                    .subjects
+                    .iter()
+                    .filter(|s| s.starts_with("requirement "))
+                    .count()
+                    < 4
+            })
+            .unwrap();
+        state = next;
+        assert!(
+            !timeout.timed_out(),
+            "post-warmup requests did not run concurrently"
+        );
     }
     drop(state);
     // The denied subject's first request reads a denied file; once the
@@ -250,6 +287,17 @@ fn serve(
         json!({"error": "fixture provider is throttling"})
     } else if failed {
         json!({"error": "fixture model rejected this subject"})
+    } else if first_for_subject && matches!(behavior, Behavior::ReadEachSubject) {
+        let name = subject.rsplit('.').next().unwrap();
+        json!({
+            "model":"fixture-model", "created_at":"2026-01-01T00:00:00Z",
+            "message":{"role":"assistant", "content":"", "tool_calls":[{
+                "id":format!("read-{name}"), "type":"function", "function":{
+                    "name":"habeas", "arguments":{"file":"src/lib.rs", "item":format!("fn[{name}]")}
+                }
+            }]},
+            "done":true, "done_reason":"stop", "prompt_eval_count":11, "eval_count":7
+        })
     } else if denied {
         json!({
             "model":"fixture-model", "created_at":"2026-01-01T00:00:00Z",
@@ -618,6 +666,54 @@ fn ollama_batches_are_serial_by_default() {
 
 // {test}`requirements.authoring.concurrency`
 #[test]
+fn concurrent_assessments_keep_their_own_continuing_histories() {
+    let server = Server::start_with(false, Behavior::ReadEachSubject);
+    let fixture = Fixture::new(&server.endpoint, Some(4));
+    let output = fixture.run(&["author", "--all"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let state = server.requests.0.lock().unwrap();
+    assert_eq!(state.conversations.len(), 12);
+    for subject in state
+        .subjects
+        .iter()
+        .collect::<std::collections::BTreeSet<_>>()
+    {
+        let requests: Vec<_> = state
+            .conversations
+            .iter()
+            .filter(|(s, _)| s == subject)
+            .map(|(_, r)| &r["messages"])
+            .collect();
+        assert_eq!(requests.len(), 2);
+        let first = requests[0].as_array().unwrap();
+        let second = requests[1].as_array().unwrap();
+        assert_eq!(&second[..first.len()], first);
+        let continuation = &second[first.len()..];
+        assert_eq!(continuation.len(), 2);
+        assert_eq!(continuation[0]["role"], "assistant");
+        let calls = continuation[0]["tool_calls"].as_array().unwrap();
+        assert_eq!(calls.len(), 1);
+        let name = subject.rsplit('.').next().unwrap();
+        assert_eq!(
+            calls[0]["function"]["arguments"]["item"],
+            format!("fn[{name}]")
+        );
+        assert_eq!(continuation[1]["role"], "tool");
+        assert!(
+            continuation[1]["content"]
+                .as_str()
+                .unwrap()
+                .contains(&format!("fn[{name}]"))
+        );
+    }
+}
+
+// {test}`requirements.authoring.concurrency`
+#[test]
 fn throttled_assessment_retries_within_itself_while_others_proceed() {
     let server = Server::start_with(
         false,
@@ -758,6 +854,14 @@ fn terminal_progress_distinguishes_judgments_from_authoring_errors() {
     );
     assert!(plain.contains("100%"), "{plain}");
     assert!(plain.contains("6/6 finished"), "{plain}");
+    let elapsed = regex::Regex::new(r"\[\d{2}:\d{2}:\d{2}\]").unwrap();
+    assert!(
+        plain
+            .split(['\r', '\n'])
+            .any(|line| line.contains("Authoring") && elapsed.is_match(line)),
+        "{plain}"
+    );
+
     assert!(plain.contains("Finished"), "{plain}");
     let final_counts = plain
         .split(['\r', '\n'])
@@ -1203,6 +1307,13 @@ fn batch_preserves_current_false_judgments_and_reauthors_stale_ones() {
         fs::read(fixture.project.join("evidence/requirements.alpha.json")).unwrap(),
         alpha
     );
+    let forced = fixture.run(&["author", "requirements.alpha", "--force"]);
+    assert!(forced.status.success(), "{forced:?}");
+    assert_eq!(server.subjects().len(), 8);
+    assert_eq!(
+        fixture.evidence("requirements.alpha")["determination"],
+        true
+    );
 }
 
 /// A new reference inside a node already among a record's inputs changes no
@@ -1618,7 +1729,9 @@ fn batch_authors_citation_reviews_and_preserves_current_ones() {
 }
 
 // {test}`requirements.authoring.confirmation`
+// {test}`requirements.authoring.usage_storage`
 #[test]
+// {test}`requirements.authoring.usage_storage`
 fn confirm_runs_a_second_assessment_with_its_own_usage_record() {
     let server = Server::start(false, None);
     let fixture = Fixture::new(&server.endpoint, None);
@@ -1660,6 +1773,7 @@ fn confirm_runs_a_second_assessment_with_its_own_usage_record() {
 // {test}`requirements.authoring.confirmation`
 // {test}`requirements.authoring.batch`
 #[test]
+// {test}`requirements.authoring.policy`
 fn confirm_with_all_runs_a_second_assessment_for_each_batch_subject() {
     let server = Server::start(false, None);
     let fixture = Fixture::new(&server.endpoint, None);
@@ -1804,6 +1918,19 @@ fn missing_keeps_current_records_and_force_reassesses_every_selected_subject() {
         "6 authored; 0 skipped as current; 0 failed; policy once"
     );
     assert_eq!(server.subjects().len(), 14);
+    fs::write(
+        fixture.project.join("evidence/requirements.alpha.json"),
+        "{invalid",
+    )
+    .unwrap();
+    let repaired = fixture.run(&["author", "--all", "--missing"]);
+    assert!(repaired.status.success(), "{repaired:?}");
+    assert_eq!(server.subjects().len(), 15);
+    assert_eq!(
+        fixture.evidence("requirements.alpha")["determination"],
+        true
+    );
+
     let report = habeas::validate_repository(&fixture.project).unwrap();
     assert!(report.errors.is_empty(), "{:?}", report.errors);
 }
@@ -1815,6 +1942,7 @@ fn missing_keeps_current_records_and_force_reassesses_every_selected_subject() {
 // {test}`requirements.authoring.configuration_structure`
 // {test}`requirements.authoring.confirmation`
 #[test]
+// {test}`requirements.authoring.refresh`
 fn policy_comes_from_the_flag_then_the_configuration_then_defaults_to_confirm() {
     let server = Server::start(false, None);
     let fixture = Fixture::new(&server.endpoint, None);
@@ -1858,6 +1986,7 @@ fn policy_comes_from_the_flag_then_the_configuration_then_defaults_to_confirm() 
             "{args:?}: {}",
             String::from_utf8_lossy(&output.stdout)
         );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("0 skipped as current"));
         assert_eq!(server.subjects().len() - before, conversations, "{args:?}");
         // Each conversation's usage record identifies the policy.
         let usage = fixture
@@ -1871,6 +2000,18 @@ fn policy_comes_from_the_flag_then_the_configuration_then_defaults_to_confirm() 
             "{args:?}: {usage:?}"
         );
     }
+    let stdout = fixture.run(&[
+        "author",
+        "requirements.alpha",
+        "--stdout",
+        "--policy",
+        "once",
+    ]);
+    assert!(stdout.status.success(), "{stdout:?}");
+    assert!(String::from_utf8_lossy(&stdout.stderr).contains("policy once"));
+    assert!(String::from_utf8_lossy(&stdout.stderr).contains("0 skipped as current"));
+    let printed: Value = serde_json::from_slice(&stdout.stdout).unwrap();
+    assert_eq!(printed["determination"], true);
     // The batch summary names the policy too.
     fs::write(&fixture.config, &unconfigured).unwrap();
     let batch = fixture.run(&["author", "--all", "--force", "--policy", "once"]);
@@ -2116,7 +2257,8 @@ fn github_reads_do_not_cache_in_a_state_root_inside_the_project() {
             "{}",
             String::from_utf8_lossy(&status.stderr)
         );
-        assert!(github.requests() > before, "status still reads GitHub");
+        assert_eq!(github.requests(), before, "no uncached fallback");
+        assert!(String::from_utf8_lossy(&status.stderr).contains("cannot locate GitHub cache"));
         assert!(!written.exists(), "{state:?}");
         let author = run(&["author", "--all"]);
         assert!(!author.status.success());
@@ -2163,7 +2305,8 @@ fn assert_warmed_first(server: &Server) -> Vec<Vec<(String, Instant, Option<Inst
 // {test}`requirements.authoring.cache_warmup`
 #[test]
 fn a_batch_warms_each_kind_with_one_assessment_before_starting_the_others() {
-    let server = Server::start(false, None);
+    mock_server_waits_for_remaining_request_headers();
+    let server = Server::start_with(false, Behavior::WarmupBarrier);
     let fixture = Fixture::new(&server.endpoint, Some(8));
     let output = fixture.run(&["author", "--all"]);
     assert!(
@@ -2210,4 +2353,31 @@ fn a_failed_first_request_still_releases_its_kind() {
         .collect::<Vec<_>>();
     assert_eq!(others.len(), 3);
     assert!(others.iter().all(|(_, arrived, _)| *arrived < retry.1));
+}
+
+// {cite}`habeas:util`
+fn mock_server_waits_for_remaining_request_headers() {
+    let server = Server::start(false, None);
+    let mut client = TcpStream::connect(server.endpoint.trim_start_matches("http://")).unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_millis(100)))
+        .unwrap();
+    client.write_all(b"POST /api/chat HTTP/1.1\r\n").unwrap();
+    // No response or EOF may arrive while the request is still incomplete.
+    let error = client.read(&mut [0]).unwrap_err();
+    assert!(matches!(
+        error.kind(),
+        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+    ));
+    let body =
+        json!({"messages":[{"role":"user","content":"Subject: requirement requirements.alpha"}]})
+            .to_string();
+    write!(client, "Content-Length: {}\r\n\r\n{body}", body.len()).unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let mut response = String::new();
+    client.read_to_string(&mut response).unwrap();
+    assert!(response.starts_with("HTTP/1.1 200 OK\r\n"), "{response}");
+    assert_eq!(server.subjects(), ["requirement requirements.alpha"]);
 }

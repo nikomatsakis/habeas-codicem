@@ -44,6 +44,7 @@ pub(crate) struct AssessmentSources {
     pub(crate) subject_name: String,
     pub(crate) subject_kind: AssessmentKind,
     pub(crate) subject_text: String,
+    pub(crate) has_applicable_fixme: bool,
     /// Parsed outlines, cached for this assessment.
     pub(crate) outlines: OutlineCache,
     /// Digest of the subject's reference set, recorded with the judgment.
@@ -62,6 +63,7 @@ impl AssessmentSources {
     // {impl}`requirements.authoring.mandatory_inputs`
     // {impl}`requirements.authoring_input`
     // {impl}`requirements.examples.authoring_inputs`
+    // {impl}`requirements.examples.definition`
     // {impl}`requirements.references.authoring_inputs`
     // {impl}`requirements.definitions.authoring_inputs`
     // {impl}`requirements.authoring.source_tools`
@@ -145,6 +147,7 @@ impl AssessmentSources {
         // sources; `{cite}` sites point into the subject and are discoverable
         // with `references`. A `{fixme}` inside one of the subject's sites
         // belongs to that site's review instead.
+        let mut has_applicable_fixme = false;
         for reference in references.iter().filter(|reference| {
             reference.name == subject_name
                 && !crate::sites::in_own_site(&root, &sites, reference)
@@ -160,6 +163,7 @@ impl AssessmentSources {
                 continue;
             }
             access.file(&root, &reference.file)?;
+            has_applicable_fixme |= reference.kind == ReferenceKind::Fixme;
             insert_selector(
                 &mut selectors,
                 reference_selector(&root, &definitions, &outlines, reference)?,
@@ -232,6 +236,7 @@ impl AssessmentSources {
             root,
             access,
             subject_name: subject_name.to_owned(),
+            has_applicable_fixme,
             subject_kind: AssessmentKind::Definition(
                 subject.kind,
                 crate::structural::has_query_directive(subject),
@@ -329,6 +334,7 @@ impl AssessmentSources {
             access,
             subject_name,
             subject_kind: AssessmentKind::Citation(citation),
+            has_applicable_fixme: false,
             subject_text: String::new(),
             outlines,
             reference_set: String::new(),
@@ -443,6 +449,7 @@ impl AssessmentSources {
             root,
             access,
             subject_name,
+            has_applicable_fixme: !fixmes.is_empty(),
             subject_kind: AssessmentKind::Site(site, fixmes),
             subject_text: String::new(),
             outlines,
@@ -897,6 +904,18 @@ pub(super) mod tests {
             example.mandatory_inputs()[0]["requirements"],
             "requirements.case"
         );
+        assert_eq!(
+            example.mandatory_inputs()[0]["text"],
+            json!([
+                ":::{example} case",
+                format!(
+                    "Ready example. {} {}",
+                    role("cite", "requirements.ready"),
+                    role("test", "requirements.ready")
+                ),
+                ":::"
+            ])
+        );
     }
 
     // {test}`requirements.authoring.mandatory_inputs`
@@ -1139,6 +1158,7 @@ pub(super) mod tests {
     // {test}`requirements.references.authoring_inputs`
     // {test}`requirements.references.roles`
     // {test}`requirements.authoring.mandatory_inputs`
+    // {test}`requirements.examples.definition`
     #[test]
     fn only_edges_leaving_the_subject_contribute_inputs() {
         let root = project();
@@ -1174,6 +1194,16 @@ pub(super) mod tests {
         assert!(!has_item("fn[helper]"), "{inputs:#?}");
         assert!(!has_requirements("requirements.citer"), "{inputs:#?}");
         assert!(!has_requirements("requirements.parent"), "{inputs:#?}");
+
+        let example = AssessmentSources::prepare(root.path(), "requirements.citer").unwrap();
+        assert!(
+            example
+                .mandatory_inputs()
+                .iter()
+                .any(|input| input["requirements"] == "requirements.ready"),
+            "{:#?}",
+            example.mandatory_inputs()
+        );
 
         let parent = AssessmentSources::prepare(root.path(), "requirements.parent").unwrap();
         let inputs = parent.mandatory_inputs();
@@ -1235,6 +1265,7 @@ pub(super) mod tests {
     // {test}`requirements.authoring.read_denial`
     // {test}`requirements.authoring.read_denial.mandatory`
     #[test]
+    // {test}`requirements.authoring.mandatory_inputs`
     fn unreadable_or_denied_anchors_fail_before_inference() {
         let root = project();
         fs::write(
@@ -1291,6 +1322,7 @@ pub(super) mod tests {
     // {test}`requirements.references.authoring_inputs`
     // {test}`requirements.references.builtin_definitions`
     // {test}`requirements.references.site_review`
+    // {test}`requirements.authoring.adaptive`
     #[test]
     fn cited_built_ins_contribute_their_text_and_fixmes_in_own_sites_do_not() {
         let project = crate::authoring::tests::citing_site_project();
@@ -1309,8 +1341,25 @@ pub(super) mod tests {
                 "fn other() { panic!(\"y\"); }",
                 &format!("fn other() {{\n{}}}", fixme("2")),
             );
-        fs::write(root.join("src/lib.rs"), source).unwrap();
+        fs::write(root.join("src/lib.rs"), &source).unwrap();
         let sources = AssessmentSources::prepare(root, "requirements.rule").unwrap();
+        assert!(sources.has_applicable_fixme);
+        let own_site = AssessmentSources::prepare_site(
+            root,
+            "requirements.rule",
+            "src/lib.rs",
+            "fn[check_two]",
+        )
+        .unwrap();
+        assert!(own_site.has_applicable_fixme);
+        let only_site = source.replace(&fixme("2"), "");
+        fs::write(root.join("src/lib.rs"), only_site).unwrap();
+        assert!(
+            !AssessmentSources::prepare(root, "requirements.rule")
+                .unwrap()
+                .has_applicable_fixme
+        );
+        fs::write(root.join("src/lib.rs"), &source).unwrap();
         let mandatory = sources.mandatory_inputs();
         let items = mandatory
             .iter()
@@ -1507,6 +1556,19 @@ pub(super) mod tests {
             format!("# Notes\n\n{}\n", role("impl", "requirements.ready")),
         )
         .unwrap();
+        fs::write(
+            root.path().join("src/literal.rs"),
+            format!(
+                "const REFERENCE: &str = {:?};\n",
+                role("impl", "requirements.ready")
+            ),
+        )
+        .unwrap();
+        fs::write(
+            root.path().join("evidence/copy.json"),
+            json!({"rationale":role("impl", "requirements.ready")}).to_string(),
+        )
+        .unwrap();
         let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
         assert!(
             !sources
@@ -1516,5 +1578,13 @@ pub(super) mod tests {
             "{:#?}",
             sources.mandatory_inputs()
         );
+        for excluded in ["src/literal.rs", "evidence/copy.json"] {
+            assert!(
+                !sources
+                    .mandatory_inputs()
+                    .iter()
+                    .any(|input| input["file"] == excluded)
+            );
+        }
     }
 }

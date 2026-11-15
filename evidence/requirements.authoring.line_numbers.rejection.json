@@ -1,8 +1,8 @@
 {
   "requirement": "When the only submission in a response under\n{cite}`requirements.authoring.submission`, or a `submit_verification` call under\n{cite}`requirements.authoring.verifier_prompt`, is otherwise valid but its\nrationale cites line numbers under\n{cite}`requirements.authoring.line_numbers.detection`, and it is the\nassessment's first such submission, the harness MUST reject it instead of\naccepting it and continue the conversation. The tool result MUST quote the\nmatched text, repeat the location guidance of\n{cite}`requirements.authoring.judgment_rules`, and give a fresh random UUID,\nsaying the model may submit once more, either without line numbers or with\n`rationale` set to exactly that UUID to keep the rejected submission as it was.\nA rejection MUST be counted in usage like any other turn.",
   "determination": true,
-  "rationale": "I found no gap against `requirements.authoring.line_numbers.rejection`.\n\n**Obligations and the code that carries them out**\n- **Reject a first, otherwise valid submission that cites line numbers, and continue the conversation.**\n  - In `src/authoring/mod.rs#fn[converse]`, a response with exactly one submission is parsed first, so only an otherwise valid submission reaches `rejection.decide`.\n  - `src/authoring/line_numbers.rs#impl[Rejection]/fn[decide]` uses `cited`, the detection regex, on the rationale. `Outcome::Reject` is returned only when nothing has been rejected yet.\n  - On `Outcome::Reject`, `converse` pushes the model's message and a tool result, then `continue`s the loop.\n  - A response with several submissions errors out before this point. A second rationale that cites line numbers gets `Outcome::Fail`, which the resubmission requirement specifies.\n  - The submission tool name is a parameter, so the same code serves `submit_judgment` and `submit_verification`.\n- **The tool result quotes the matched text.** `decide` formats the regex match into the message.\n- **The tool result repeats the location guidance.**\n  - `decide` includes the `guidance` argument.\n  - `converse` passes `src/authoring/mod.rs#fn[location_guidance]`, which extracts the \"Give a source location…\" bullet from the approved `judgment_rules` text.\n- **The tool result gives a fresh random UUID and says the model may submit once more.** `decide` generates a new random v4 UUID and stores it with the rejected arguments. The message tells the model to call the submit tool once more, either with no line numbers or with `rationale` set to exactly that UUID to keep the submission as it was.\n- **The rejection is counted in usage like any other turn.** `converse` calls `usage.begin_request` and `usage.end_request` for every request, including the one that returned the rejected submission. It also calls `usage.tool(submit, true)` and `usage.save()` on rejection.\n- **Other tool calls in the same response.** Each gets an error result, \"not run: the response also made a submission\". This is a protocol necessity and consistent with the text.\n\n**Tests**\n- `src/authoring/line_numbers.rs#mod[tests]/fn[a_rejection_gives_a_uuid_that_keeps_the_rejected_submission]` asserts:\n  - a clean submission is accepted;\n  - a cited submission is rejected with the quoted match and the guidance in the message;\n  - a UUID is present, the exact UUID restores the rejected submission, and the UUID plus a trailing space does not;\n  - a clean resubmission is accepted and a cited one fails;\n  - each rejection gets a fresh UUID.\n- `src/authoring/mod.rs#mod[tests]/fn[a_rationale_citing_line_numbers_is_rejected_once]` runs the full `assess` flow through `converse` and asserts:\n  - the second request quotes the matched citation and contains \"Give a source location\";\n  - two requests are recorded in usage;\n  - the exact-UUID, clean, and cited-again resubmission cases each end as expected.\n- `src/authoring/mod.rs#mod[tests]/fn[a_rationale_without_line_numbers_is_accepted_at_once]` covers the non-rejection path with a single request.\n\nAll these tests carry `{test}` references to the subject.\n\nThere are no `{fixme}` references and no acknowledged gaps.",
-  "references": "da65d162329356d916dfef5950fd78a682c13ec83f9cfa16840d7cc8e962d413",
+  "rationale": "The implementation and referenced tests satisfy `requirements.authoring.line_numbers.rejection`.\n\n| Obligation | Implementation and verification |\n|---|---|\n| Reject, rather than accept, the first otherwise-valid single submission whose rationale cites line numbers. | `src/authoring/mod.rs#fn[converse]` checks the submission count and parses the arguments before calling `Rejection::decide`. `src/authoring/line_numbers.rs#impl[Rejection]/fn[decide]` applies `cited` and returns `Outcome::Reject` on the first citation. `src/authoring/mod.rs#mod[tests]/fn[a_rationale_citing_line_numbers_is_rejected_once]` exercises this through assessment; `src/authoring/mod.rs#mod[tests]/fn[verification_line_citations_are_rejected_with_the_correct_retry_tool]` exercises verification. |\n| Continue the conversation after rejection. | The rejection branch in `src/authoring/mod.rs#fn[converse]` appends the assistant response and error tool result, then continues the request loop. Both integration tests above assert two requests and the resulting resubmission outcome. |\n| Quote the matched text in the tool result. | `src/authoring/line_numbers.rs#impl[Rejection]/fn[decide]` formats the detected match with debug quoting. `src/authoring/line_numbers.rs#mod[tests]/fn[a_rejection_gives_a_uuid_that_keeps_the_rejected_submission]` asserts the quoted match; both integration tests also check its delivery. |\n| Repeat the judgment rules' location guidance. | `src/authoring/mod.rs#fn[location_guidance]` extracts the location-guidance bullet from the approved judgment rules, obtained through `src/authoring/mod.rs#fn[approved_text]`. `converse` passes it to `Rejection::decide`, which includes it unchanged. The unit test asserts guidance inclusion, and the assessment integration test asserts that location guidance reaches the next request. |\n| Give a fresh random UUID. | `src/authoring/line_numbers.rs#impl[Rejection]/fn[decide]` calls `uuid::Uuid::new_v4()` for each rejection. The referenced unit test parses the UUID from the message and checks that a separate rejection produces a different one. |\n| Say the model may submit once more, without line numbers or with `rationale` exactly equal to the UUID to retain the rejected submission. | `src/authoring/line_numbers.rs#impl[Rejection]/fn[decide]` states both alternatives and names the supplied submission tool. The unit test verifies exact-UUID retention and clean replacement; the assessment integration test verifies both alternatives through the conversation. The verification integration test explicitly checks the instruction to call `submit_verification` once more. |\n| Count a rejection in usage like any other turn. | `src/authoring/mod.rs#fn[converse]` performs normal `UsageLog::begin_request`/`end_request` accounting before deciding rejection, records the rejected tool call, and saves usage before continuing. These helpers are in `src/authoring/usage.rs#impl[UsageLog]`. Both integration tests assert that usage contains both requests. |\n\nThe clean first-submission boundary is additionally tested by `src/authoring/mod.rs#mod[tests]/fn[a_rationale_without_line_numbers_is_accepted_at_once]`. The subsequent-citation failure and exact-UUID preservation behavior are specified by the co-marked `requirements.authoring.line_numbers.resubmission`, rather than being unspecified additions. No missing implementation reference, required test, or acknowledged gap was found.",
+  "references": "55ca141730d544a15ef0fe209de460da4aa6fdb22f151494c0eb043b9de48e3f",
   "inputs": [
     {
       "requirements": "requirements.authoring.line_numbers.rejection",
@@ -246,12 +246,17 @@
     {
       "file": "src/authoring/mod.rs",
       "item": "fn[converse]",
-      "hash": "aca1babb5cde30dc5c4370e99e43d4e99b711ca04bf74da60edb1ecc99a46d25"
+      "hash": "8ff7fab0e18a2edc82384c148a31ce61194c3c1d4898e7518e1585898f91373e"
     },
     {
       "file": "src/authoring/mod.rs",
       "item": "mod[tests]/fn[a_rationale_citing_line_numbers_is_rejected_once]",
       "hash": "70f9327865f2a6b06dd0c762a20a41b6c5e5584fc7d71f082943cf1c91c9f9d6"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "mod[tests]/fn[verification_line_citations_are_rejected_with_the_correct_retry_tool]",
+      "hash": "c2e3985d307d06c6dc74c83c3c8a87493b8052965ae381cddf39a7697ab29547"
     },
     {
       "file": "src/authoring/mod.rs",
@@ -261,7 +266,48 @@
     {
       "file": "src/authoring/line_numbers.rs",
       "item": "",
-      "hash": "d0b5132cdcfd8955c85efc3e97715d788c54e5d4c704f3a5a073ce4a8cb13c83"
+      "hash": "6516ff601d822cb0f5cce2ea23353fa038d97c6d6ee3c42f2fd5f3f18164946d"
+    },
+    {
+      "requirements": "requirements.authoring.line_numbers.resubmission",
+      "matches": [
+        "requirements.authoring.line_numbers.resubmission"
+      ],
+      "text": [
+        ":::{req} line_numbers.resubmission",
+        "After a rejection under {cite}`requirements.authoring.line_numbers.rejection`,",
+        "a submission whose `rationale` is exactly the UUID that rejection gave MUST",
+        "accept the rejected submission unchanged, ignoring the new submission's other",
+        "fields. Any other rationale that cites line numbers MUST fail the assessment, so",
+        "an assessment rejects at most one submission. The UUID MUST NOT be recorded in",
+        "evidence.",
+        ":::"
+      ]
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "fn[approved_text]",
+      "hash": "57c939d94f090c967d2a5cb9aa31642d8674934bfff8e5e42d544c8740478806"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "impl[UsageLog]/fn[begin_request]",
+      "hash": "10fe2c955edf38792263f8bed36cb3c8b0b5994cb2a1a09c4aac923bd25120b0"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "impl[UsageLog]/fn[end_request]",
+      "hash": "c8c24e43409f1c7aff6305ff0e4cc8d368450501a4ea70eddca4d5181d330780"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "impl[UsageLog]/fn[tool]",
+      "hash": "6aa1c92817d5a63f06bc5877e1dbe06da33874a0cd09e3f509a447c61a1359c0"
+    },
+    {
+      "file": "src/authoring/usage.rs",
+      "item": "impl[UsageLog]/fn[save]",
+      "hash": "f00786722bf0d63b6d266cb3f4ce87e53bd9699565315e5733d9de8d21fccbff"
     }
   ]
 }

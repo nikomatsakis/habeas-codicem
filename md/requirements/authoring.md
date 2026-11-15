@@ -17,6 +17,7 @@ for the single-subject command.
 :::
 
 :::{req} batch
+:impl: assets/skills/habeas/SKILL.md
 :impl: assets/skills/habeas-requirements/SKILL.md
 :impl: assets/skills/habeas-evidence/SKILL.md
 :impl: assets/skills/habeas-bootstrap-requirements/SKILL.md
@@ -43,7 +44,9 @@ A denied mandatory input MUST abort only the affected assessment under
 {cite}`requirements.authoring.read_denial.mandatory`. Interruption MUST instead stop the
 whole batch: queued assessments MUST NOT start, running assessments MUST be
 cancelled, and an assessment whose evidence has not been written when the
-interruption arrives MUST NOT write it. Evidence already written MUST be
+interruption is observed MUST NOT begin committing it. After preparing a
+temporary evidence file, the harness MUST check interruption again before its
+atomic replacement; a replacement already in progress MAY finish. Evidence already written MUST be
 retained, and the command MUST report the number of assessments not started as
 a batch failure.
 
@@ -583,7 +586,10 @@ array of `{path, reason}` with reason `untracked`, naming each untracked file
 inside the project that the listing would otherwise include or that contains a
 match, so the model can tell that sources exist which it cannot read. It MUST
 be omitted when there are none, and for a paged result it MUST appear on the
-first page. It MUST NOT give those files' contents, and they MUST NOT become
+first page, continuing across subsequent pages when needed to obey the page
+size limit. Page counts MUST include these entries as well as the ordinary
+result entries, and each array MUST retain its order. It MUST NOT give those
+files' contents, and they MUST NOT become
 evidence inputs. Files excluded for another reason, such as a workspace disallow
 rule or generated `evidence/` output, MUST NOT be read to find matches and MUST
 NOT be listed.
@@ -650,7 +656,7 @@ harness with the selected source text, using the existing evidence schema.
 {cite}`requirements.ci.schema`
 Required terminology dependencies MUST be returned alongside it as additional
 definition inputs under {cite}`requirements.definitions.authoring_inputs`.
-The result MUST have this shape:
+For item, requirement, and definition selections, the result MUST have this shape:
 
 ```text
 HabeasResult {
@@ -658,6 +664,10 @@ HabeasResult {
     definitions: Array<DefinitionInput>,
 }
 ```
+
+Line-range selections can contain multiple outline nodes. Their result MUST use
+`inputs: Array<EvidenceInput>` instead of the singular `input` field, including
+when only one node is selected.
 
 `definitions` MUST be empty when no additional terminology is required. The
 harness MUST record inputs supplied to the model in the assessment's evidence.
@@ -1164,7 +1174,9 @@ marking, and unspecified behavior:
    types they use, and the implementations of trait methods they call,
    including by searching for those implementations, and what those reach in
    turn. Reading their callers for context does not make the callers
-   reachable. Code reachable
+   reachable. Look for unreached implementations among the sources that
+   reference the subject and by targeted search for what its obligations
+   produce; do not survey unrelated code. Code reachable
    this way needs no reference of its own; do not report it for lacking one.
    Code you could find only by searching elsewhere, such as for a message an
    obligation produces, is a gap: name the item that should carry an {impl}
@@ -1246,7 +1258,9 @@ For a named example, the task of {cite}`requirements.authoring.initial_prompt`
 MUST be this text:
 
 ```text
-The subject is a named example. Check that tests' setup and assertions cover its
+The subject is a named example. First check that it describes a concrete case
+with expected behavior; a missing concrete case or expected behavior is a gap.
+Check that tests' setup and assertions cover its
 scenario and assert each expected outcome it states, and say how. A true
 judgment needs at least one {test} reference to the example in the mandatory
 inputs.
@@ -1256,7 +1270,7 @@ inputs.
 ## Configuration
 
 :::{req} provider
-The authoring harness MUST use Rig and support Bedrock and Ollama. Users MUST be
+The authoring harness MUST use Rig and support Bedrock, Ollama, and OpenAI. Users MUST be
 able to select a backend and model through configuration without changing the
 assessment tools, prompt, or evidence format.
 :::
@@ -1285,6 +1299,7 @@ The shared `UserConfig.authoring` field contains `UserAuthoringConfig`.
 `Optional<T>` means a field may be absent; `Map<K, V>` is a table keyed by `K`.
 
 :::{req} configuration_structure
+{impl}`requirements.configuration.feature_sections`
 Habeas MUST define its authoring configuration using these data structures:
 
 ```text
@@ -1306,12 +1321,12 @@ ProjectSelection {
 AuthoringConfig {
     backend: BackendConfig,                   // tagged union, flattened in TOML
     concurrency: Optional<PositiveInteger>,   // simultaneous assessments
-    policy: Optional<AssessmentPolicy>,       // default: Confirm
+    policy: Optional<AssessmentPolicy>,       // default: Once for OpenAI; Confirm otherwise
 }
 
 AssessmentPolicy = Confirm | Once             // TOML: "confirm" or "once"
 
-BackendConfig = Bedrock(BedrockConfig) | Ollama(OllamaConfig)
+BackendConfig = Bedrock(BedrockConfig) | Ollama(OllamaConfig) | Openai(OpenAiConfig)
 
 BedrockConfig {
     model: ModelId,                           // model ID or inference-profile ID/ARN
@@ -1335,13 +1350,21 @@ OllamaConfig {
     options: Map<String, OptionValue>,
 }
 
+OpenAiConfig {
+    model: Optional<ModelId>,                 // default: gpt-6.1-sol
+    endpoint: Optional<String>,               // default: https://api.openai.com/v1
+    api_key_env: Optional<EnvironmentVariableName>, // default: OPENAI_API_KEY
+    api_key: Optional<SecretString>,
+    options: Map<String, OptionValue>,
+}
+
 OptionValue = String | Boolean | Integer | FiniteFloat
             | Array<OptionValue> | Map<String, OptionValue>
 
 SecretString = String                         // serialized normally; redacted in Debug
 
 ModelRef {
-    backend: BackendKind,                     // Bedrock or Ollama
+    backend: BackendKind,                     // Bedrock, Ollama, or Openai
     model: ModelId,
 }
 ```
@@ -1352,10 +1375,11 @@ connection settings such as AWS profile, region, or Ollama endpoint.
 :::
 
 :::{req} configuration_serialization
+{impl}`requirements.configuration.feature_sections`
 The user `[authoring]` table MUST serialize UserAuthoringConfig, and the workspace
 table MUST serialize WorkspaceAuthoringConfig. Each
 `[authoring.configs.<name>]` table MUST serialize one AuthoringConfig, with
-`backend = "bedrock"` or `backend = "ollama"` and that variant's fields in the same
+`backend = "bedrock"`, `backend = "ollama"`, or `backend = "openai"` and that variant's fields in the same
 table. Backend-specific inference options MUST appear in its `options` subtable.
 Within a present user authoring section, `configs` MUST be present but MAY be empty;
 workspace `configs` MAY be omitted, allowing a workspace default to select a
@@ -1365,13 +1389,52 @@ Serialization MUST follow the common rules in
 {cite}`requirements.configuration.serialization`.
 :::
 
+:::{req} openai_defaults
+{impl}`requirements.configuration.feature_sections`
+An OpenAI configuration MAY omit `model`; the effective model MUST then be
+`gpt-6.1-sol`. When `options.reasoning.effort` is omitted, the request MUST use
+`low` effort, preserving other reasoning options. When `options.max_output_tokens`
+is omitted, the request MUST use an output-token limit of 16,384. These option
+defaults MUST apply even when the model is overridden. An explicit model,
+reasoning effort, or output-token limit MUST override its corresponding default.
+Defaults MUST NOT be written into omitted configuration fields on serialization.
+An explicitly empty model MUST still be rejected.
+:::
+
+:::{req} adaptive
+Adaptive is experimental and requires explicit opt-in. For the OpenAI backend,
+`model = "adaptive"` MUST select models locally rather
+than send `adaptive` to the API. An assessment with an applicable existing
+FIXME reference MUST go directly to `gpt-6.1-sol`. Otherwise it MUST begin with
+`gpt-5.4-mini`: a true judgment is accepted, while false, FIXME, or a failed
+conversation/submission MUST trigger one fresh Sol assessment. Sol's result
+MUST be final for that assessment, including a false judgment or failure.
+Provider errors, cancellation, mandatory-input failures, connection failures,
+and usage-storage failures MUST NOT trigger model escalation.
+
+Applicable FIXMEs MUST follow the subject's existing scope rules: requirement
+references outside its own distributed sites, or the reviewed site's own FIXMEs.
+Citation reviews have no applicable acknowledgments. Matching a literal word
+inside unrelated text MUST NOT trigger pre-escalation.
+
+Both tiers MUST inherit the selected credentials, endpoint, and inference
+options. Explicit concrete model IDs MUST bypass adaptive routing. Each actual
+model attempt MUST have a separate usage record with its real model name;
+the adaptive record MUST link its attempts and record any routing reason.
+Escalation MUST NOT persist intermediate mini evidence or pass mini's rationale
+to Sol. Under explicit `confirm`, each independent assessment MUST use adaptive
+routing; disagreements MUST be verified by Sol using the existing confirmation
+selection rules. Adaptive routing MUST NOT perform sampled audits.
+:::
+
 :::{req} policy
 Every `habeas author` form MUST assess its subjects under an assessment policy,
 `confirm` or `once`. The policy MUST come from `--policy <name>` when given,
 otherwise from the selected configuration's `policy`, and otherwise MUST be
-`confirm`. Under `confirm`, each subject MUST be assessed as
+`once` for OpenAI and `confirm` for other backends. Under `confirm`, each subject MUST be assessed as
 {cite}`requirements.authoring.confirmation` specifies. Under `once`, each subject
-MUST receive a single assessment, whose result is recorded; it uses fewer tokens
+MUST receive a single assessment (including model escalation under
+{cite}`requirements.authoring.adaptive`), whose result is recorded; it uses fewer tokens
 and less time, such as with a slow local model. An unknown policy name MUST be
 rejected as invalid configuration or arguments. The completion report MUST name
 the policy used, and each usage record MUST identify it.
@@ -1381,8 +1444,8 @@ the policy used, and each usage record MUST identify it.
 Each named authoring configuration MUST accept an optional positive integer
 `concurrency` in its configuration table. When omitted, the maximum number of
 simultaneous assessments MUST default to the number of available logical CPUs
-for Bedrock, falling back to one when that count is unavailable, and to one for
-Ollama. A configured value MUST override the default for either backend; zero
+for Bedrock and OpenAI, falling back to one when that count is unavailable, and to one for
+Ollama. A configured value MUST override the default for each backend; zero
 MUST be rejected as invalid configuration.
 
 Batch authoring MUST use asynchronous tasks on a runtime with a fixed worker
@@ -1395,6 +1458,7 @@ be reported through the ordinary assessment-failure path.
 :::
 
 :::{req} configuration_storage
+{impl}`requirements.configuration.feature_sections`
 Configuration names MUST match `[A-Za-z0-9][A-Za-z0-9_-]*` and be case-sensitive.
 Project-selection keys MUST be canonical absolute project-root paths. Model IDs
 MUST be nonempty opaque strings, preserving tags and ARNs. `api_key_env` MUST
@@ -1408,6 +1472,7 @@ replace the selected model, the assessment prompt, or tool definitions.
 :::
 
 :::{req} configuration_precedence
+{impl}`requirements.configuration.feature_sections`
 `--config <name>` MUST select a configuration for that invocation. Otherwise,
 authoring MUST use the user's selection for the canonical project root, then the
 workspace default, then the user's default. Named workspace configurations MUST
@@ -1421,7 +1486,9 @@ An explicit Bedrock AWS profile or region MUST override the corresponding SDK
 default; omitted values MUST use standard AWS SDK resolution. Ollama MUST use
 its configured endpoint or `http://localhost:11434`. If `api_key_env` is set, its
 named variable MUST supply the credential; a missing or empty value MUST produce
-an error before a model request.
+an error before a model request. OpenAI MUST use its configured endpoint or
+`https://api.openai.com/v1`, and MUST resolve `OPENAI_API_KEY` when neither
+`api_key` nor `api_key_env` is supplied.
 :::
 
 :::{req} redaction
@@ -1451,8 +1518,8 @@ it MAY change redaction and hashes and MUST be treated as a deliberate change.
 :::{req} credentials
 Bedrock configurations MAY supply `credentials` containing nonempty
 `access_key_id`, `secret_access_key`, and optional nonempty `session_token`.
-Ollama configurations MAY supply a nonempty `api_key`. Habeas MUST reject a
-Bedrock record combining explicit credentials with `aws_profile`, and an Ollama
+Ollama and OpenAI configurations MAY supply a nonempty `api_key`. Habeas MUST reject a
+Bedrock record combining explicit credentials with `aws_profile`, and an Ollama or OpenAI
 record combining `api_key` with `api_key_env`.
 
 Explicit credentials MUST be passed directly to the selected provider without
@@ -1508,12 +1575,18 @@ message.
 :::
 
 :::{req} cache_checkpoints
-When the backend and model support prompt caching, every provider request MUST
-place one cache checkpoint after the system prompt of
-{cite}`requirements.authoring.prompt_parts` and another at the end of its last
-message, so each request reuses the tool definitions and system prompt that
-earlier assessments of its kind sent, and the conversation its own earlier
-requests sent. Cache checkpoints MUST NOT change the content of a request.
+For backends that accept explicit cache checkpoints, when the backend and model
+support prompt caching, every provider request MUST place one cache checkpoint
+after the system prompt of {cite}`requirements.authoring.prompt_parts` and
+another at the end of its last message, so each request reuses the tool
+definitions and system prompt that earlier assessments of its kind sent, and
+the conversation its own earlier requests sent. Cache checkpoints MUST NOT
+change the content of a request.
+
+For OpenAI, which caches matching prompt prefixes automatically, the harness
+MUST keep the system prompt and tool definitions unchanged across requests in
+one conversation and replay prior conversation content in its original order.
+It MUST NOT insert checkpoint blocks.
 :::
 
 :::{req} cache_warmup
@@ -1532,7 +1605,8 @@ connection settings they do not represent.
 
 The Bedrock adapter MUST pass the chosen AWS profile and region through AWS SDK
 configuration, or use explicitly configured credentials. The Ollama adapter MUST use the chosen server, exact model ID,
-and optional authentication; the server MAY be local or remote. Both adapters
+and optional authentication; the server MAY be local or remote. The OpenAI adapter MUST use the Responses API, selected endpoint, exact model
+ID, and resolved API key. All adapters
 MUST supply the same tools and initial prompt.
 :::
 
@@ -1540,7 +1614,7 @@ MUST supply the same tools and initial prompt.
 
 :::{req} configuration_documentation
 Authoring documentation MUST follow {cite}`requirements.configuration.documentation`
-and include complete TOML examples for Bedrock and Ollama, with all placeholders
+and include complete TOML examples for Bedrock, Ollama, and OpenAI, with all placeholders
 identified. It MUST show how to choose a default, use a remote Ollama server,
 select a configuration for a project or invocation, and edit or remove selections
 by hand. It MUST explain backend-specific options and credential-source references.
@@ -1665,7 +1739,7 @@ concurrency = 4
 ```
 
 Here `MODEL_ID` is your available model identifier and four is an illustrative
-choice, not the default. Bedrock defaults to the available logical CPU count;
+choice, not the default. Bedrock and OpenAI default to the available logical CPU count;
 Ollama defaults to one. Lower concurrency if the provider reports throttling;
 rerunning `habeas author --all` preserves current accepted results and retries
 records that still need attention.
@@ -1675,6 +1749,57 @@ Backend options belong under
 `api_key_env = "OLLAMA_API_KEY"` in its configuration table and set that variable
 outside the file. Omit `aws_profile` or `region` to use AWS SDK defaults; omit an
 Ollama endpoint to use localhost.
+
+For OpenAI, set `OPENAI_API_KEY` to your API key outside the file and use this
+complete user `config.toml` with a credential-source reference. The default
+model is `gpt-6.1-sol`, with low reasoning effort and an output-token limit
+of 16,384. Model and inference settings remain overridable.
+
+```toml
+version = 1
+
+[authoring]
+default = "openai"
+
+[authoring.configs.openai]
+backend = "openai"
+api_key_env = "OPENAI_API_KEY"
+```
+
+You may omit `api_key_env` to use `OPENAI_API_KEY` implicitly, or name a different
+environment variable. To keep the key in your user file instead, replace
+`api_key_env` with `api_key = "OPENAI_API_KEY_VALUE"`, substituting your key for
+`OPENAI_API_KEY_VALUE`. OpenAI uses
+the Responses API at `https://api.openai.com/v1`; `endpoint` overrides that base URL.
+
+To opt into experimental adaptive routing, set `model = "adaptive"`. It starts
+with GPT-5.4-mini and escalates false/FIXME judgments or failed submissions to
+Sol; applicable existing FIXMEs go directly to Sol. It accepts mini's `true`
+judgments without a Sol audit and missed known gaps in calibration. Adaptive
+is a harness model, not an API model ID. Its prompt and routing need further
+evaluation before use as a default.
+
+To override the defaults, add `model = "gpt-6-luna"` to the profile and/or
+`reasoning = { effort = "medium" }` under its `options` table. Set
+`max_output_tokens = 8192` in that same options table to override the output
+limit. The `low` effort and 16,384-token defaults also apply to other OpenAI
+models; override them with values supported by the selected model. Inference
+options are Responses API parameters.
+
+OpenAI defaults to `policy = "once"`: one assessment per subject, including
+adaptive escalation if needed. Explicit `policy = "confirm"` independently
+reassesses true or FIXME results and uses a third conversation to resolve
+disagreement. Other backends continue to default to `confirm`. `concurrency = 1` assesses batch subjects
+one at a time; if omitted, OpenAI defaults to the available logical CPU count.
+These settings are optional and independent of model selection.
+
+For a model comparison, create one named configuration per model, keep the
+policy, output limit, and subject set fixed, and run each on a separate copy
+of the same evidence baseline. Existing accepted evidence can otherwise skip
+assessment. Compare correctness against your reviewed determinations and
+rationales, tool failures, completion rate, elapsed time, and tokens in the
+usage records. Start with one concurrent assessment and a small subject set
+before increasing the experiment size. Specify each comparison model explicitly.
 
 Literal credentials are supported but not recommended, especially in a
 workspace file that might be committed. Prefer the profile and environment

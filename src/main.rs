@@ -15,6 +15,7 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
+// {impl}`requirements.authoring.reporting`
 enum Command {
     Mdbook {
         #[command(subcommand)]
@@ -65,7 +66,7 @@ enum Command {
         /// Assess every selected subject, including those with current evidence.
         #[arg(long)]
         force: bool,
-        /// The assessment policy: `confirm` (the default) checks each true or
+        /// The assessment policy: `confirm` checks each true or
         /// FIXME result in further independent conversations; `once` records a
         /// single assessment.
         #[arg(long, value_name = "name")]
@@ -98,6 +99,7 @@ enum HookCommand {
     SessionStart,
 }
 
+// {impl}`requirements.authoring.read_denial.mandatory`
 fn main() -> Result<(), Box<dyn Error>> {
     // {impl}`requirements.cli.clap`
     let cli = Cli::parse();
@@ -297,7 +299,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 return Ok(());
             };
             let mut summary = format!(
-                "{}: {} / {}; policy {}",
+                "{}: {} / {}; policy {}; 0 skipped as current",
                 outcome.subject, outcome.backend, outcome.model, outcome.policy,
             );
             if matches!(outcome.determination, habeas::judgment::Judgment::Fixme(_)) {

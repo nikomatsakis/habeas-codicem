@@ -1,8 +1,8 @@
 {
   "requirement": "Usage MUST record mandatory input counts and sizes by evidence kind, in UTF-8\nbytes and lines, and the same information for additional inputs requested through\n`habeas` or `ripgrep`. A requirements input MUST also record its number of matched declarations.\nUsage MUST distinguish unique inputs from repeated reads, successful from\nfailed reads, and prepared inputs from those actually sent to the model.\nFile-discovery calls MUST count as tool calls without recording directory\nlistings as evidence or source inputs.",
   "determination": true,
-  "rationale": "I found no gap. Every obligation maps to reachable code and has a test that carries a `{test}` reference to the subject.\n\n**Reachability.** `src/authoring/mod.rs#fn[configured_record]` is the `{impl}` root. It calls `assess_subject`, which calls `usage.prepared(\"mandatory\", sources.mandatory_inputs())` and then `assess`. `assess` leads to `converse`, which calls `usage.tool`, `usage.skipped_tool`, and `usage.prepared(<tool name>, &delivery.inputs)`. `UsageLog::begin_request` and `UsageLog::end_request` run in the same conversation. All of this is reached by following code from the root, so none of it needs its own reference.\n\n**Obligations, code and tests**\n\n- **Mandatory input counts and sizes by evidence kind, in UTF-8 bytes and lines.**\n  - Code: `UsageLog::prepared` in `src/authoring/usage.rs` records, for each input, `kind` (`outline`, `requirements`, `definition` or `builtin`), `bytes` (the UTF-8 length of the text plus separators) and `lines` (the number of text entries).\n  - Test: `input_metadata_counts_components_and_reads_without_persisting_source` asserts the kind, the byte count for the multi-byte `λ\\nDO_NOT_LOG_SOURCE` and the line count. The CLI test asserts `kind == \"definition\"` with `bytes > 0`.\n- **Same information for additional inputs requested through `habeas` or `ripgrep`.**\n  - Code: `converse` calls `usage.prepared(call.function.name, &delivery.inputs)`, so `habeas` reads are recorded with origin `habeas`.\n  - `ripgrep` delivers no inputs, because a search listing is not evidence, so there is nothing to record for it. The CLI test asserts that no input has origin `ripgrep`, so this vacuous case is covered.\n  - Tests: the unit test above records origin `habeas`. The CLI test checks `habeas` inputs are present and `ripgrep` inputs are absent.\n- **A requirements input records its number of matched declarations.**\n  - Code: `components` is the length of `matches`, or 1 when there is none.\n  - Test: the unit test asserts `components == 2` for a requirements input with two matches.\n- **Distinguish unique inputs from repeated reads.**\n  - Code: `unique` comes from `seen.insert` on the input's JSON.\n  - Tests: the unit test asserts `unique == true` for the first read and `false` for the repeat. The CLI test asserts `habeas && unique == false` for the repeated `habeas` read.\n- **Distinguish successful from failed reads.**\n  - Code: `converse` calls `usage.tool(name, false)` on success and `usage.tool(name, true)` on error, and `UsageLog::tool` keeps separate `tool_calls` and `tool_failures` counts.\n  - Tests: `tool_outcomes_are_distinct_and_unknown_names_do_not_leak_model_text` and the CLI test, which asserts `tool_failures.habeas == 1` for the missing file.\n- **Distinguish prepared inputs from those actually sent to the model.**\n  - Code: `prepared` creates the input. `begin_request` sets `submitted_in_request`. `end_request` sets `sent_in_request` only when the request completed with usage.\n  - Tests: the unit test checks the prepared, submitted and sent stages. `failed_submission_can_be_confirmed_on_a_later_attempt` checks that a failed request does not mark inputs as sent. `throttled_requests_retry_unchanged_and_record_every_attempt` checks `submitted_in_request == 0` and `sent_in_request == 5` after retries. The CLI test checks `sent_in_request == 1` for a repeated read.\n- **File-discovery calls count as tool calls without recording listings as evidence or source inputs.**\n  - Code: `list_files` is dispatched through `deliver`, which produces no inputs. `converse` still calls `usage.tool`, so the call is counted.\n  - Tests: the CLI test asserts `tool_calls.list_files == 1` and that no input has origin `list_files`. The `tools.rs` tests assert that `listing.inputs` is empty.\n\n**Unspecified behavior.** The `builtin` kind, the unknown-tool bucket, and the content-free storage are within the usage-recording scope. None of them adds an unspecified observable behavior beyond what the text allows.",
-  "references": "3293201470f0a495844ee51c868342042be1d70cde1ada5dd186412b131c1992",
+  "rationale": "The implementation satisfies `requirements.authoring.usage_inputs`.\n\n### Obligations and coverage\n\n1. **Record mandatory-input counts by evidence kind, UTF-8 byte sizes, and line sizes.** `src/authoring/mod.rs#fn[configured_record]` reaches `src/authoring/mod.rs#fn[assess_subject]`, which records the mandatory bundle through `UsageLog::prepared`. `src/authoring/usage.rs#impl[UsageLog]/fn[prepared]` appends one record per input, classifies its kind, sums UTF-8 string lengths with intervening newlines, and records the text-array line count. Thus records supply counts by kind as well as individual sizes. `src/authoring/usage.rs#mod[tests]/fn[input_metadata_counts_components_and_reads_without_persisting_source]` checks classification, multibyte UTF-8 sizing, and line counts. `tests/authoring_cli.rs#fn[ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free]` verifies actual mandatory definition metadata in persisted usage.\n2. **Record those same counts and sizes for additional `habeas` inputs.** The reachable `src/authoring/mod.rs#fn[converse]` records delivered inputs with their tool origin using the same `prepared` implementation. The metadata unit test checks the `habeas` origin and repeated record; the CLI test exercises actual successful additional reads and checks their usage records.\n3. **Record those same counts and sizes for `ripgrep` inputs.** `src/authoring/usage.rs#impl[UsageLog]/fn[search_result]` converts each returned match's snippet lines into a search usage record through `prepared`. The metadata unit test asserts search kind, UTF-8 bytes, lines, and repeated-read metadata. The CLI test also verifies nonempty search usage from a real tool dispatch.\n4. **Record the number of matched declarations for a requirements input.** `prepared` records the length of `matches` as `components`. The metadata unit test supplies two matched declarations and asserts `components == 2`.\n5. **Distinguish unique inputs from repeated reads.** `prepared` uses the `seen` set to record `unique` for each read without dropping repeated usage records. The metadata unit test checks both unique and repeated evidence and search inputs; the CLI test checks repeated additional delivery.\n6. **Distinguish successful reads from failed reads.** `converse` records each dispatch's outcome through `UsageLog::tool`, whose call and failure counters distinguish them. `src/authoring/usage.rs#mod[tests]/fn[tool_outcomes_are_distinct_and_unknown_names_do_not_leak_model_text]` tests the counters. The CLI test performs two successful `habeas` reads and one missing-file read and asserts three calls and one failure.\n7. **Distinguish prepared inputs from inputs actually sent to the model.** `prepared` initializes submission and delivery markers to null; `src/authoring/usage.rs#impl[UsageLog]/fn[begin_request]` marks submission, and `src/authoring/usage.rs#impl[UsageLog]/fn[end_request]` confirms delivery after a successful provider response. The metadata unit test asserts these stages. `src/authoring/usage.rs#mod[tests]/fn[failed_submission_can_be_confirmed_on_a_later_attempt]` and `src/authoring/mod.rs#mod[tests]/fn[throttled_requests_retry_unchanged_and_record_every_attempt]` verify that failed attempts do not prematurely confirm delivery and a later successful attempt does.\n8. **Count file-discovery calls as tool calls.** `converse` records successful discovery dispatches through `tool`. Both the tool-outcome unit test and the CLI test assert `list_files` call counts.\n9. **Do not record directory listings as evidence inputs.** The reachable `src/authoring/tools.rs#fn[dispatch_paged]` routes listings through non-evidence paging; `src/authoring/pages.rs#fn[delivered]` returns no evidence inputs for these listings. The CLI test checks that directory listings do not enter evidence.\n10. **Do not record directory listings as source usage inputs.** Because listing deliveries have no inputs and no search matches, neither usage recording path adds them. The CLI test explicitly asserts that usage contains no `list_files`-origin input, while still counting the call.\n\nAll cited tests carry a `{test}` reference to the subject. The implementing paths above are reachable from its marked implementation roots. No unacknowledged gap was found.",
+  "references": "f3c6df64571bb1fb4a09f00f53001fba69388a1ad5682d0c6ba6fd2bce741d6b",
   "inputs": [
     {
       "requirements": "requirements.authoring.usage_inputs",
@@ -24,7 +24,7 @@
     {
       "file": "src/authoring/mod.rs",
       "item": "fn[configured_record]",
-      "hash": "53f7e17d3dc1d00bf7fceeb70c1003f4b51381ee4be2d97466da338d42d99f58"
+      "hash": "add8153b5c92c9322a5ec2ec989ceae49f1726eb80c3273601628b77e93bc182"
     },
     {
       "file": "src/authoring/mod.rs",
@@ -33,8 +33,13 @@
     },
     {
       "file": "src/authoring/usage.rs",
+      "item": "impl[UsageLog]/fn[search_result]",
+      "hash": "a49da1601be32ea6fe408b84ed659cf149aab7e7806f170ef9709433f93bd688"
+    },
+    {
+      "file": "src/authoring/usage.rs",
       "item": "mod[tests]/fn[input_metadata_counts_components_and_reads_without_persisting_source]",
-      "hash": "663c582435cf959986f79e3d875489be522ea97398a72335a886a148baffe71d"
+      "hash": "5f737cec27371b13191d1ec398374dcbae3cb4ec99eb83f25796aca0ac78eac8"
     },
     {
       "file": "src/authoring/usage.rs",
@@ -49,22 +54,37 @@
     {
       "file": "tests/authoring_cli.rs",
       "item": "fn[ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free]",
-      "hash": "0700e9d95d0762134b96650ee67b0d844c2f8faa85e5848934458b4685ec87eb"
+      "hash": "68956f83c216f2569265071cefcf0b1af95d822e4f70a8e6d7ca285e1027484d"
     },
     {
       "file": "src/authoring/usage.rs",
-      "item": "impl[UsageLog]",
-      "hash": "289da940329636ba88f4b054e457d4d9c2525c0fcb8823228b5c88a95b53d276"
+      "item": "",
+      "hash": "5093a6620fba418ec2795258d751b0eeb82bb957c50e036be50181b048734601"
     },
     {
-      "file": "src/authoring/usage.rs",
-      "item": "struct[InputUsage]",
-      "hash": "0700e5ace38d9149dd28c6dce787c33e372e6108ad2b928509e78e502c848814"
+      "file": "src/authoring/mod.rs",
+      "item": "fn[assess_subject]",
+      "hash": "f8aefe861610523d00fcc975bb1037125848c5e75b757e4f062c019f50a38db6"
     },
     {
-      "file": "src/authoring/usage.rs",
-      "item": "fn[tool_name]",
-      "hash": "3fbf5ec78958a5659c52aaf45460f4924677cb1862706f585ce438f679aaa971"
+      "file": "src/authoring/mod.rs",
+      "item": "fn[converse]",
+      "hash": "8ff7fab0e18a2edc82384c148a31ce61194c3c1d4898e7518e1585898f91373e"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "fn[assess]",
+      "hash": "c216d8ae617afd028b13919a0143231867d37eddee5ce4b93a4093f6902fe469"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "fn[dispatch_paged]",
+      "hash": "46603300d61b11dcdd71d12c530be377b85055e563dde1f2f83d3db30d4f4055"
+    },
+    {
+      "file": "src/authoring/pages.rs",
+      "item": "",
+      "hash": "8a6e04f88ca7beb65acb0832fae5419bc2a7dfa062d0d8b5ec5764ee42cfc38d"
     }
   ]
 }

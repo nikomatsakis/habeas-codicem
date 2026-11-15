@@ -108,6 +108,7 @@ requirements.
 :::
 
 :::{req} workspace_structure
+{impl}`requirements.configuration.feature_sections`
 `habeas.toml` MUST serialize WorkspaceConfig as UTF-8 TOML with `version = 1`.
 Its supported feature tables are `[authoring]`, `[coverage]`, and
 `[evidence]`; each MAY be absent. `[coverage]` has one optional key,

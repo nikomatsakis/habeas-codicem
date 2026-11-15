@@ -189,6 +189,8 @@ pub(crate) fn inspect_repository(root: &Path) -> io::Result<RepositoryInspection
 // {impl}`requirements.configuration.loading`
 // {impl}`requirements.ci.book_source`
 // {impl}`requirements.definitions.declaration`
+// {impl}`requirements.references.builtin_definitions`
+// {impl}`requirements.ci.determination`
 pub(crate) fn inspect_repository_with_progress(
     root: &Path,
     mut progress: impl FnMut(InspectionProgress),
@@ -878,6 +880,7 @@ pub(crate) fn validate_input(
 
 // {impl}`requirements.configuration.evidence_paths`
 // {impl}`requirements.ci.errors`
+// {impl}`requirements.authoring.generated_inputs`
 fn validate_outline_input(
     root: &Path,
     definitions: &BTreeMap<String, Declaration>,
@@ -1365,6 +1368,7 @@ struct InputRange {
 // {impl}`requirements.references.anchors`
 // {impl}`requirements.references.util`
 // {impl}`requirements.ci.outcomes`
+// {impl}`requirements.ci.determination`
 fn validate_references(
     root: &Path,
     definitions: &BTreeMap<String, Declaration>,
@@ -1980,6 +1984,7 @@ fn evidence_input_ranges(
 #[cfg(test)]
 pub(crate) mod tests {
     // {test}`requirements.references.reference_contexts`
+    // {test}`requirements.references.discovery`
     #[test]
     fn roles_count_only_in_comments_of_outlined_files() {
         // The role's brace is built at run time, so this source holds none.
@@ -2425,7 +2430,7 @@ pub(crate) mod tests {
         let temp = fixture();
         fs::write(
             temp.path().join("md/reqs/foo/bar.md"),
-            "# Requirements\n\n:::{req} ready\nThe check MUST pass.\n\n```text\n{req}`example`\n```\n:::\n",
+            "# Requirements\n\n:::{req} ready\n\n  The check MUST pass.\n\n```text\n{req}`example`\n```\n:::\n",
         )
         .unwrap();
         fs::write(
@@ -2848,7 +2853,10 @@ pub(crate) mod tests {
             fs::write(temp.path().join("evidence/foo.other.json"), record(glob)).unwrap();
             let found = errors();
             assert!(
-                found.len() == 1 && found[0].contains("inputs[0]") && found[0].contains(problem),
+                found.len() == 1
+                    && found[0].contains("inputs[0]")
+                    && found[0].contains(&format!("requirements glob {glob:?}"))
+                    && found[0].contains(problem),
                 "{glob:?}: {found:?}"
             );
         }
@@ -3020,9 +3028,10 @@ pub(crate) mod tests {
 
     // {test}`requirements.ci.determination`
     #[test]
+    // {test}`requirements.references.evidence_coverage`
     fn a_false_determination_fails_only_its_own_record_with_its_rationale() {
         let temp = fixture();
-        let chapter = "# Rules\n\n:::{req} ready\nReady.\n:::\n\n:::{req} refined\nRefines {impl}`rules.ready` and {cite}`rules.ready`.\n:::\n";
+        let chapter = "# Rules\n\n:::{req} ready\nReady.\n:::\n\n:::{req} refined\nRefines {impl}`rules.ready`, {test}`rules.ready`, and {cite}`rules.ready`.\n:::\n";
         fs::write(temp.path().join("md/rules.md"), chapter).unwrap();
         fs::write(
             temp.path().join("evidence/rules.ready.json"),
@@ -3053,7 +3062,7 @@ pub(crate) mod tests {
             [
                 "evidence/rules.refined.json: determination is false: Work remains: the refinement is untested."
             ],
-            "the implemented and cited requirement is unaffected"
+            "the implemented, tested, and cited requirement is unaffected"
         );
     }
 
@@ -3207,6 +3216,7 @@ pub(crate) mod tests {
 
     // {test}`requirements.ci.span`
     // {test}`requirements.ci.fence_lengths`
+    // {test}`requirements.ci.span`
     #[test]
     fn colon_requirement_span_includes_markdown_and_excludes_following_text() {
         let temp = fixture();
@@ -3307,14 +3317,37 @@ pub(crate) mod tests {
     }
 
     // {test}`requirements.examples.definition`
+    // {test}`requirements.ci.fence_lengths`
+    #[test]
+    fn example_bodies_keep_nested_markdown_and_trim_outer_whitespace() {
+        let temp = fixture();
+        let body = "# Concrete case\n\nGiven ready, it succeeds. {cite}`rules.ready`\n\n:::{note}\nNested explanation.\n:::\n\n```text\n:::{example} literal\n```\n\nThe expected result is success.";
+        for (opening, closing) in [("::::", ":::::"), ("::::::", ":::::::")] {
+            fs::write(
+                temp.path().join("md/rules.md"),
+                format!(
+                    ":::{{req}} ready\nReady.\n:::\n\n{opening}{{example}} case\n\n  {body}  \n\n{closing}\nText after the example.\n"
+                ),
+            )
+            .unwrap();
+            let definitions = super::load_definitions(temp.path()).unwrap();
+            let example = &definitions["rules.case"];
+            assert_eq!(example.kind, crate::DefinitionKind::Example);
+            assert_eq!(example.text, body);
+            assert!(!definitions.contains_key("rules.literal"));
+        }
+    }
+
+    // {test}`requirements.examples.definition`
     // {test}`requirements.examples.evidence`
+    // {test}`requirements.integration.report_api`
     // {test}`requirements.ci.schema`
     // {test}`requirements.references.evidence_coverage`
     // {test}`requirements.ci.requirements_inputs`
     #[test]
     fn cited_example_with_a_test_and_matching_evidence_validates() {
         let temp = fixture();
-        let chapter = "# Rules\n\n:::{req} ready\nReady.\n:::\n\n:::{example} case\nGiven ready, it succeeds. {cite}`rules.ready`\n:::\n";
+        let chapter = "# Rules\n\n:::{req} ready\nReady.\n:::\n\n:::{example} case\nGiven ready, it succeeds. {cite}`rules.ready` {test}`rules.ready`\n:::\n";
         fs::write(temp.path().join("md/rules.md"), chapter).unwrap();
         let test_source = "// {test}`rules.case`\n#[test]\nfn checks_case() { assert!(true); }\n";
         fs::write(temp.path().join("src/main.rs"), test_source).unwrap();
@@ -3334,7 +3367,7 @@ pub(crate) mod tests {
         fs::write(
             &example_path,
             json!({
-                "example": "Given ready, it succeeds. {cite}`rules.ready`",
+                "example": "Given ready, it succeeds. {cite}`rules.ready` {test}`rules.ready`",
                 "determination": true,
                 "rationale": "checks_case sets up ready and asserts the result.",
                 "inputs": [
@@ -3363,6 +3396,21 @@ pub(crate) mod tests {
         assert_eq!(report.examples, 1);
         assert_eq!(report.evidence_files, 2);
         assert!(report.errors.is_empty(), "{:?}", report.errors);
+
+        let ready_path = temp.path().join("evidence/rules.ready.json");
+        let ready = fs::read_to_string(&ready_path).unwrap();
+        let mut missing: Value = serde_json::from_str(&ready).unwrap();
+        missing["inputs"] = json!([]);
+        fs::write(&ready_path, missing.to_string()).unwrap();
+        let errors = validate_repository(temp.path()).unwrap().errors;
+        assert!(
+            errors.iter().any(|error| error.contains("no input covers")
+                && error.contains("{test}")
+                && error.contains("rules.ready")
+                && error.contains("md/rules.md:8")),
+            "{errors:?}"
+        );
+        fs::write(ready_path, ready).unwrap();
 
         let old = fs::read_to_string(&example_path).unwrap();
         let mut uncovered: serde_json::Value = serde_json::from_str(&old).unwrap();
@@ -3553,6 +3601,8 @@ pub(crate) mod tests {
     // {test}`requirements.references.anchors`
     // {test}`requirements.ci.requirement_text`
     // {test}`requirements.references.evidence_coverage`
+    // {test}`requirements.ci.span`
+    // {test}`requirements.examples.definition`
     #[test]
     fn anchored_files_must_be_completely_covered_and_resolvable() {
         let temp = fixture();
@@ -3624,6 +3674,20 @@ pub(crate) mod tests {
         assert!(
             errors.contains("evidence/requirements.ready.json: inputs[0]: outline input changed: skills/ready.md <root> (now lines 1-2) no longer has the recorded hash"),
             "{errors}"
+        );
+        fs::write(
+            root.join("habeas.toml"),
+            "version = 1\n[evidence]\ndisallow = ['skills/ready.md']\n",
+        )
+        .unwrap();
+        let errors = validate_repository(root).unwrap().errors;
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("anchor skills/ready.md")
+                    && error.contains("requirements.ready")
+                    && error.contains("disallow")),
+            "{errors:?}"
         );
     }
 

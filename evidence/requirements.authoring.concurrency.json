@@ -1,8 +1,8 @@
 {
-  "requirement": "Each named authoring configuration MUST accept an optional positive integer\n`concurrency` in its configuration table. When omitted, the maximum number of\nsimultaneous assessments MUST default to the number of available logical CPUs\nfor Bedrock, falling back to one when that count is unavailable, and to one for\nOllama. A configured value MUST override the default for either backend; zero\nMUST be rejected as invalid configuration.\n\nBatch authoring MUST use asynchronous tasks on a runtime with a fixed worker\nthread pool. The number of assessments running at once MUST NOT exceed the\nselected concurrency. Each assessment MUST retain its own model conversation and\nusage record. Transient provider failures, including throttling, MUST be\nretried within the affected assessment under\n{cite}`requirements.authoring.provider_backoff`; every other provider error MUST\nbe reported through the ordinary assessment-failure path.",
+  "requirement": "Each named authoring configuration MUST accept an optional positive integer\n`concurrency` in its configuration table. When omitted, the maximum number of\nsimultaneous assessments MUST default to the number of available logical CPUs\nfor Bedrock and OpenAI, falling back to one when that count is unavailable, and to one for\nOllama. A configured value MUST override the default for each backend; zero\nMUST be rejected as invalid configuration.\n\nBatch authoring MUST use asynchronous tasks on a runtime with a fixed worker\nthread pool. The number of assessments running at once MUST NOT exceed the\nselected concurrency. Each assessment MUST retain its own model conversation and\nusage record. Transient provider failures, including throttling, MUST be\nretried within the affected assessment under\n{cite}`requirements.authoring.provider_backoff`; every other provider error MUST\nbe reported through the ordinary assessment-failure path.",
   "determination": true,
-  "rationale": "I found no gap against `requirements.authoring.concurrency`. Every obligation has code reachable from an `{impl}` item and a test that asserts its outcome. I did not read the retry code itself, because retry behaviour is the cited `requirements.authoring.provider_backoff`, which is context here.\n\n**Obligations, code and tests**\n\n- **Optional positive integer `concurrency` in each named configuration.**\n  - Code: `src/config.rs#struct[AuthoringConfig]` declares `concurrency: Option<NonZeroUsize>`. It is omitted when serialized and optional when parsed.\n  - Code: `src/config.rs#impl[WorkspaceConfig]/fn[parse]` reaches that type, and so does the user-config parse. `src/config.rs#fn[resolve_authoring_from]` carries the value into `ResolvedAuthoringConfig`.\n  - Tests: `tests/configuration.rs#fn[authoring_concurrency_defaults_overrides_and_invalid_values]` and `#fn[workspace_configurations_accept_validate_and_override_concurrency]`.\n- **Default is the available logical CPUs for Bedrock, falling back to one, and one for Ollama.**\n  - Code: `src/config.rs#impl[ResolvedAuthoringConfig]/fn[effective_concurrency]`.\n  - Tests: both configuration tests above assert the default for each backend. `tests/authoring_batch.rs#fn[ollama_batches_are_serial_by_default]` asserts a peak of 1 end to end.\n- **A configured value overrides the default for either backend.**\n  - Code: the `.map(NonZeroUsize::get)` branch of `effective_concurrency`.\n  - Tests: the two configuration tests above, for both backends, including the workspace configuration replacing the user one.\n- **Zero is rejected as invalid configuration.**\n  - Code: the `NonZeroUsize` type rejects it when parsing.\n  - Tests: the two configuration tests assert errors naming `concurrency` for `0`, `-1`, `1.5` and `'2'`.\n- **Batch authoring uses asynchronous tasks on a fixed worker thread pool.**\n  - Code: `src/main.rs#fn[main]` builds `tokio::runtime::Runtime::new()`, a multi-thread runtime with a fixed worker pool. `src/authoring/batch.rs#fn[run_batch]`, reached from `author_all`, spawns each assessment on a `JoinSet`.\n  - Tests: none assert the pool type. The construction has no conditional and no transformation of its own, so the missing test is not a gap.\n- **Running assessments never exceed the selected concurrency.**\n  - Code: in `run_batch`, the launch loop is `while ... tasks.len() < concurrency`. `concurrency` comes from `config.effective_concurrency()`.\n  - Tests: `tests/authoring_batch.rs#fn[batch_fills_evidence_preserves_current_records_and_reauthors_only_changed_inputs]` asserts a peak of 2 and that two assessments overlapped. `#fn[ollama_batches_are_serial_by_default]` asserts a peak of 1. `#fn[throttled_assessment_retries_within_itself_while_others_proceed]` asserts a peak of at most 2.\n- **Each assessment keeps its own conversation and usage record.**\n  - Code: each task runs its own `prepare_assessment` call.\n  - Tests: `#fn[throttled_assessment_retries_within_itself_while_others_proceed]` asserts six usage records, with `request_count` 2 for the throttled subject and 1 for each of the others. `#fn[failed_assessment_keeps_other_results_and_reports_failure]` asserts six usage records.\n- **Transient failures, including throttling, are retried within the affected assessment.**\n  - Test: `#fn[throttled_assessment_retries_within_itself_while_others_proceed]` returns HTTP 429 once for one subject. That subject's request sequence is failed then completed, evidence is written, and the others are unaffected.\n- **Every other provider error goes through the ordinary assessment-failure path.**\n  - Code: in `run_batch`, an `Err` result is recorded in `outcome.failures` and reported through `progress.failed`.\n  - Test: `#fn[failed_assessment_keeps_other_results_and_reports_failure]` returns HTTP 400. It asserts that run is marked failed, no evidence is written for that subject, the other five complete, the exit status is failure, and the diagnostics include the message.\n\nI found no unspecified extra behaviour. The progress line that prints the concurrency is part of the batch progress reporting.",
-  "references": "30361320b77473f8e959cb7df50c735c9245914bafc25abbbf1a42af18ff93e5",
+  "rationale": "I found no gaps. Each obligation has code that carries it out and a test that exercises it.\n\n**Obligations and their code**\n- **Optional positive integer `concurrency` in each named configuration table; zero rejected.**\n  - `src/config.rs#struct[AuthoringConfig]` declares `concurrency: Option<NonZeroUsize>`. The field is optional and skipped when serializing if absent. Deserializing `NonZeroUsize` rejects 0, negative, fractional and string values.\n  - `WorkspaceConfig::parse` (marked {impl}) decodes and validates workspace tables the same way.\n  - `resolve_authoring_from` and `resolve_authoring_with_workspace_from` carry the value into `ResolvedAuthoringConfig`.\n- **Defaults: logical CPUs for Bedrock and OpenAI, falling back to 1; 1 for Ollama; a configured value overrides.** `src/config.rs#impl[ResolvedAuthoringConfig]/fn[effective_concurrency]` returns the configured value if present. Otherwise it returns `available_parallelism()` with `unwrap_or(1)` for `Bedrock` and `Openai`, and 1 for `Ollama`.\n- **Asynchronous tasks on a fixed worker-thread pool.** `src/main.rs#fn[main]` builds `tokio::runtime::Runtime::new()`, a multi-thread runtime with a fixed worker pool. It runs `author_all_with_options` or `author_sites_with_options` through `block_on`. `src/authoring/batch.rs#fn[run_batch]` spawns each assessment on a `JoinSet`.\n- **Running assessments never exceed the selected concurrency.** `run_batch` computes `config.effective_concurrency()` and launches new tasks only while `tasks.len() < concurrency`.\n- **Each assessment keeps its own conversation and usage record.** Each spawned task calls `prepare_assessment` with its own subject, and the batch records one usage record per assessment.\n- **Transient failures retried inside the affected assessment, other errors through the ordinary failure path.**\n  - The retry logic is in `src/authoring/providers.rs#impl[ProviderBackoff]` and is called from `converse` in `src/authoring/mod.rs`. Both are reached from `prepare_assessment`. Its behavior is governed by `provider_backoff`, which is cited context and not reassessed here.\n  - Other errors come back as `Err` from the task. `run_batch` records them as failures and continues with the other assessments.\n\n**Tests**\n- `tests/configuration.rs#fn[authoring_concurrency_defaults_overrides_and_invalid_values]` covers all three backends. It checks the default (CPU count, or 1 for Ollama), a configured override of 7, round-trip serialization, and rejection of `0`, `-1`, `1.5` and `'2'`.\n- `tests/configuration.rs#fn[workspace_configurations_accept_validate_and_override_concurrency]` covers the workspace override and workspace-level rejection of invalid values.\n- `tests/authoring_batch.rs#fn[batch_fills_evidence_preserves_current_records_and_reauthors_only_changed_inputs]` runs with concurrency 2. It asserts that peak in-flight requests is 2 and that a second assessment starts before the first response.\n- `tests/authoring_batch.rs#fn[ollama_batches_are_serial_by_default]` asserts a peak of 1 for Ollama with no configured value.\n- `tests/authoring_batch.rs#fn[concurrent_assessments_keep_their_own_continuing_histories]` runs at concurrency 4. It checks that each subject's second request continues its own first request's messages.\n- `tests/authoring_batch.rs#fn[throttled_assessment_retries_within_itself_while_others_proceed]` checks several things:\n  - One throttled request is retried within its own assessment.\n  - That assessment's usage shows `request_count` 2, with a failed attempt followed by a completed one.\n  - The other assessments have `request_count` 1, and the peak stays at or below 2.\n- `tests/authoring_batch.rs#fn[failed_assessment_keeps_other_results_and_reports_failure]` checks that a non-transient provider error is reported as a failure while the other assessments complete.\n\n**Gaps found:** none. The Bedrock and OpenAI CPU-count defaults are tested through `effective_concurrency` and the config tests, not by a full batch run. That matches the obligation, which only states the default value.",
+  "references": "da5efc360b3776f92b4eab5192cf38f0094d0c29ab6901b00f51eaf11682000e",
   "inputs": [
     {
       "requirements": "requirements.authoring.concurrency",
@@ -14,8 +14,8 @@
         "Each named authoring configuration MUST accept an optional positive integer",
         "`concurrency` in its configuration table. When omitted, the maximum number of",
         "simultaneous assessments MUST default to the number of available logical CPUs",
-        "for Bedrock, falling back to one when that count is unavailable, and to one for",
-        "Ollama. A configured value MUST override the default for either backend; zero",
+        "for Bedrock and OpenAI, falling back to one when that count is unavailable, and to one for",
+        "Ollama. A configured value MUST override the default for each backend; zero",
         "MUST be rejected as invalid configuration.",
         "",
         "Batch authoring MUST use asynchronous tasks on a runtime with a fixed worker",
@@ -83,7 +83,7 @@
     {
       "file": "src/main.rs",
       "item": "fn[main]",
-      "hash": "42ef4a96b3415d8d33c51f238537e73ae6df30846bfd269a71cb72a6540736b0"
+      "hash": "45893b6502189459e48ee669e8e1b7c4d69f889c0c213417573af01914278208"
     },
     {
       "file": "tests/authoring_batch.rs",
@@ -99,6 +99,11 @@
       "file": "tests/authoring_batch.rs",
       "item": "fn[ollama_batches_are_serial_by_default]",
       "hash": "a5101e530004e2e082992ebac366ba931366d77b57a2e7b030e7043b947dc141"
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "item": "fn[concurrent_assessments_keep_their_own_continuing_histories]",
+      "hash": "2e8be206ea40712be5d55f803dd59cbe4789fcbffc43a70fc98802a795d6ed89"
     },
     {
       "file": "tests/authoring_batch.rs",
@@ -128,22 +133,22 @@
     {
       "file": "tests/configuration.rs",
       "item": "fn[authoring_concurrency_defaults_overrides_and_invalid_values]",
-      "hash": "74416240e60e811474a85bfd6fa78d9c9c5b9b5f44854f8ca70b75116f9e2fb1"
+      "hash": "63eabea03cd37b19d8e7119a6b382cde0bfd165e4807445eeec5fcee30f6ae2e"
     },
     {
       "file": "tests/configuration.rs",
       "item": "fn[workspace_configurations_accept_validate_and_override_concurrency]",
-      "hash": "245d1744c57288d53e1403dffdeda6915e3430c48dffb52737365f2170bc8c9d"
+      "hash": "8f26077cf1963093fb58bb543ac945427f6513efcaa412ef009d1dcedd6bb34c"
     },
     {
       "file": "src/config.rs",
       "item": "impl[ResolvedAuthoringConfig]/fn[effective_concurrency]",
-      "hash": "8379185dedc15d5caec74e7062d97dd212b9e463425f44c3e770169f17dffd2c"
+      "hash": "d35e71f241a60ccf9263c1850d13d303b209ec1a1bf42ae496c3257c32ecf316"
     },
     {
       "file": "src/authoring/batch.rs",
       "item": "fn[run_batch]",
-      "hash": "b03db13bb56c6b6d963a5b52671ac7d68bcbc32f30f48809a4ca699bd432c8b2"
+      "hash": "39041d22881fc01b1275e5411005225c70e1ccc4dadd0ba8dc59c0fd448a16fe"
     },
     {
       "file": "src/config.rs",

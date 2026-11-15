@@ -50,6 +50,7 @@ impl Redaction {
     /// Redaction of a file: `secretshape` rules everywhere, plus the explicit
     /// credential fields when the file is a workspace `habeas.toml` or the
     /// user configuration file.
+    // {impl}`requirements.authoring.credentials`
     pub(crate) fn of_file(path: &Path, source: &str) -> Self {
         let mut regions = secret_regions(source);
         if is_configuration_file(path) {

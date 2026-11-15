@@ -81,9 +81,12 @@ impl ProviderBackoff {
                 (None, Some(code)) => code,
                 (None, None) => error.to_string(),
             };
-            return Retry::Stop(io::Error::other(format!(
-                "the provider kept failing for a minute after {attempts} attempts; last failure: {last}"
-            )));
+            return Retry::Stop(io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!(
+                    "the provider kept failing for a minute after {attempts} attempts; last failure: {last}"
+                ),
+            ));
         }
         Retry::Wait(delay)
     }
@@ -152,13 +155,14 @@ fn retry_after(error: &ProviderError, now: SystemTime) -> Option<Duration> {
 }
 
 // :::{impl} requirements.authoring.provider
-// Holds one backend-erased Rig model, so Bedrock and Ollama share this provider
-// type; `bedrock` and `options` are the only backend-specific state.
+// Holds one backend-erased Rig model, so all backends share this provider
+// type; the flags and `options` hold backend-specific behavior.
 // :::
 pub(super) struct RigProvider {
     model: DynModel<Completion>,
     options: serde_json::Value,
     bedrock: bool,
+    openai: bool,
     /// Whether the model takes prompt-cache checkpoints.
     caches: bool,
 }
@@ -167,12 +171,21 @@ impl RigProvider {
     // {impl}`requirements.authoring.usage_requests`
     // {impl}`requirements.authoring.credentials`
     // {impl}`requirements.authoring.cache_checkpoints`
+    // {impl}`requirements.configuration.serialization`
     pub(super) async fn connect(config: &BackendConfig) -> io::Result<Self> {
         let model = match config {
             BackendConfig::Bedrock(config) => {
                 let sdk = aws_sdk_bedrockruntime::Client::new(&bedrock_sdk_config(config).await);
                 rig_bedrock::client::BedrockRuntime::from(sdk)
                     .completion(&config.model)
+                    .erase()
+            }
+            BackendConfig::Openai(config) => {
+                let key = config.api_key()?;
+                rig_core::providers::openai::OpenAIConfig::new(key)
+                    .with_base_url(config.endpoint())
+                    .client()
+                    .responses(config.model())
                     .erase()
             }
             BackendConfig::Ollama(config) => {
@@ -190,10 +203,11 @@ impl RigProvider {
             model,
             options: config.options_json()?,
             bedrock: matches!(config, BackendConfig::Bedrock(_)),
+            openai: matches!(config, BackendConfig::Openai(_)),
             caches: match config {
                 BackendConfig::Bedrock(config) => bedrock_caches(&config.model),
-                // Ollama has no prompt-cache checkpoints.
-                BackendConfig::Ollama(_) => false,
+                // Ollama has no checkpoints; OpenAI manages prompt caching.
+                BackendConfig::Ollama(_) | BackendConfig::Openai(_) => false,
             },
         })
     }
@@ -263,7 +277,8 @@ impl CompletionProvider for RigProvider {
     }
 
     /// Bedrock's configured `maxTokens` or the default; Ollama's
-    /// `num_predict` when it sets a positive limit.
+    /// `num_predict` when it sets a positive limit; OpenAI's
+    /// `max_output_tokens` when configured.
     // {cite}`habeas:util`
     fn output_limit(&self) -> Option<u64> {
         if self.bedrock {
@@ -273,6 +288,10 @@ impl CompletionProvider for RigProvider {
                     .and_then(Value::as_u64)
                     .unwrap_or(DEFAULT_BEDROCK_MAX_TOKENS),
             )
+        } else if self.openai {
+            self.options
+                .get("max_output_tokens")
+                .and_then(Value::as_u64)
         } else {
             self.options
                 .get("num_predict")
@@ -323,7 +342,7 @@ fn normalize_bedrock_client_calls(response: &mut CompletionResponse) -> io::Resu
 /// budget, so Rig's budget-below-`max_tokens` check is not reached.
 const DEFAULT_BEDROCK_MAX_TOKENS: u64 = 16_384;
 
-// {cite}`habeas:util`
+// {impl}`requirements.authoring.output_limit`
 fn apply_bedrock_options(
     request: &mut CompletionRequest,
     options: &mut Map<String, Value>,
@@ -561,7 +580,10 @@ mod tests {
                         ),
                     };
                     match backoff.retry(again, start + RETRY_LIMIT * 3) {
-                        Retry::Stop(error) => error.to_string(),
+                        Retry::Stop(error) => {
+                            assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+                            error.to_string()
+                        }
                         Retry::Wait(_) => panic!("retrying passed the limit"),
                     }
                 }
@@ -672,6 +694,8 @@ mod tests {
     // {test}`requirements.authoring.configuration_precedence`
     #[tokio::test]
     #[allow(deprecated)] // The non-deprecated profile-file names live in `aws-runtime`.
+    // {test}`requirements.configuration.serialization`
+    // {test}`requirements.authoring.credentials`
     async fn omitted_bedrock_profile_and_region_use_standard_sdk_resolution() {
         use aws_config::profile::profile_file::{ProfileFileKind, ProfileFiles};
         let dir = tempfile::tempdir().unwrap();
@@ -684,8 +708,8 @@ mod tests {
         .unwrap();
         std::fs::write(
             &credentials_file,
-            "[default]\naws_access_key_id = DEFAULT_KEY\naws_secret_access_key = default\n\
-             [other]\naws_access_key_id = OTHER_KEY\naws_secret_access_key = other\n",
+            "[default]\naws_access_key_id = DEFAULT_KEY\naws_secret_access_key = DEFAULT_SECRET_VALUE\n\
+             [other]\naws_access_key_id = OTHER_KEY\naws_secret_access_key = OTHER_SECRET_VALUE\n",
         )
         .unwrap();
         let files = ProfileFiles::builder()
@@ -697,7 +721,22 @@ mod tests {
         };
         let habeas = |text: &str| {
             let config: BedrockConfig = toml::from_str(text).unwrap();
-            bedrock_sdk_loader(&config, standard()).load()
+            let before = toml::to_string(&config).unwrap();
+            let loading = bedrock_sdk_loader(&config, standard()).load();
+            async move {
+                let sdk = loading.await;
+                let credentials = sdk
+                    .credentials_provider()
+                    .unwrap()
+                    .provide_credentials()
+                    .await
+                    .unwrap();
+                let after = toml::to_string(&config).unwrap();
+                assert_eq!(before, after);
+                assert!(!after.contains(credentials.access_key_id()));
+                assert!(!after.contains(credentials.secret_access_key()));
+                sdk
+            }
         };
         async fn resolved(sdk: aws_config::SdkConfig) -> (Option<String>, String) {
             let key = sdk

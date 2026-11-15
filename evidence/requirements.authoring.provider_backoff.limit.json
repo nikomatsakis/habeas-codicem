@@ -1,8 +1,8 @@
 {
   "requirement": "The harness MUST stop retrying a completion request under\n{cite}`requirements.authoring.provider_backoff` when the next attempt would\nstart more than one minute after the first of its consecutive transient\nfailures, including when a provider `Retry-After` delay would pass that point.\nIt MUST then fail the assessment with an error naming the number of attempts\nand the last failure's HTTP status and provider error code, when available.",
   "determination": true,
-  "rationale": "I found no gap against `requirements.authoring.provider_backoff.limit`.\n\n**Obligations**\n1. **Stop retrying when the next attempt would start more than one minute after the first consecutive transient failure, including when `Retry-After` would pass that point.**\n   - `src/authoring/providers.rs#impl[ProviderBackoff]/fn[retry]` carries this out.\n   - It records the time of the first consecutive failure in `failing`.\n   - It stops when `now + delay > first + RETRY_LIMIT`. `RETRY_LIMIT` (`src/authoring/providers.rs#const[RETRY_LIMIT]`) is 60 seconds.\n   - `delay` comes from `next_delay`, which returns the larger of the jittered delay and the `Retry-After` minimum. A `Retry-After` past the limit therefore stops retrying.\n   - A non-transient error makes `next_delay` return `None`, so `retry` stops with that error unchanged.\n   - `src/authoring/mod.rs#fn[converse]` calls `backoff.retry` on each failure and returns the error on `Retry::Stop`. It resets the backoff only after a success.\n2. **Fail the assessment with an error naming the number of attempts.**\n   - `retry` builds \"the provider kept failing for a minute after {attempts} attempts; …\".\n   - `converse` returns that error, which fails the assessment.\n3. **Name the last failure's HTTP status and provider error code, when available.**\n   - `retry` uses `failure_codes` and formats `HTTP {status} {code}`, `HTTP {status}`, or the bare code.\n   - If neither is available, it falls back to the error text, for example for the ten-minute timeout.\n\n**Tests**\n- `src/authoring/providers.rs#mod[tests]/fn[retrying_stops_once_a_request_has_failed_for_a_minute]` carries a `{test}` reference and covers the following:\n  - It checks that no attempt starts after the minute and that more than three attempts are made.\n  - It checks the attempt count in the message and the \"HTTP 429 ThrottlingException\" text.\n  - It checks that a `Retry-After` of 90 seconds stops at once.\n  - It covers the status-only, code-only and timeout variants of the last-failure text.\n  - It checks that a permanent failure stops with its own error.\n- `src/authoring/mod.rs#mod[tests]/fn[a_request_failing_for_a_minute_fails_the_assessment]` carries a `{test}` reference and runs end to end through `assess` and `converse` with a paused clock:\n  - It asserts that the elapsed time is at most `RETRY_LIMIT` and that more than three attempts were made.\n  - It asserts the error text \"after {attempts} attempts; last failure: HTTP 503 ServiceUnavailableException\".\n  - It asserts that the final logged request is marked as not retried.\n\n**Unspecified behavior**\n- The fallback to the error text is within \"when available\".\n- I found no other unspecified observable behavior in the `{impl}` code.",
-  "references": "078c54a7358711cdd9e414c5bffa941f6d69608e0edea8db086cee90da6f91d7",
+  "rationale": "The implementation and referenced tests satisfy `requirements.authoring.provider_backoff.limit`.\n\nObligations and coverage:\n\n1. **Stop retrying when the next attempt would start more than one minute after the first consecutive transient failure.** `src/authoring/providers.rs#impl[ProviderBackoff]/fn[retry]` initializes the first-failure timestamp once, counts attempts, and stops when `now + delay > first + RETRY_LIMIT`. `src/authoring/providers.rs#const[RETRY_LIMIT]` sets that limit to sixty seconds. `src/authoring/mod.rs#fn[converse]` applies this decision to completion failures, returns the stop error, and resets backoff after success. `src/authoring/providers.rs#mod[tests]/fn[retrying_stops_once_a_request_has_failed_for_a_minute]` checks that allowed retry starts remain within the minute and that retries terminate; `src/authoring/mod.rs#mod[tests]/fn[a_request_failing_for_a_minute_fails_the_assessment]` exercises assessment failure with a paused clock and asserts termination within the limit.\n2. **Apply the limit even when a provider `Retry-After` delay would cross it.** The reachable `src/authoring/providers.rs#impl[ProviderBackoff]/fn[next_delay]` takes the maximum of jitter and the provider minimum parsed by `src/authoring/providers.rs#fn[retry_after]`; `retry` checks that resulting delay against the deadline. The referenced provider test supplies a ninety-second `Retry-After` and asserts immediate stopping.\n3. **Then fail the assessment with an error.** `retry` returns `Retry::Stop` with an error, and `converse` returns that error rather than continuing. The referenced assessment test asserts an assessment error and verifies that the final failed request was not marked retried.\n4. **Name the number of attempts in that error.** `retry` increments the count for every consecutive failed attempt and embeds it in the terminal error. Both referenced tests assert the count against the attempts actually made.\n5. **Name the last failure's HTTP status when available.** `retry` obtains the latest failure's fields through `src/authoring/providers.rs#fn[failure_codes]` and includes the status. The referenced tests assert combined status/code output and status-only output.\n6. **Name the last failure's provider error code when available.** The same error construction includes the code independently of status availability. The referenced provider test asserts combined output, code-only output, and the fallback when neither field is available.\n\nThe subject's decision applies the cited backoff behavior to completion requests without requiring a reassessment of that parent requirement. All required tests carry references to the subject, and no gap was found.",
+  "references": "5fb063cc5fc4c2174bbbc1440a121146cf3db9c0479a84ad171f91d000c94aac",
   "inputs": [
     {
       "requirements": "requirements.authoring.provider_backoff.limit",
@@ -59,6 +59,11 @@
     },
     {
       "file": "src/authoring/mod.rs",
+      "item": "fn[converse]",
+      "hash": "8ff7fab0e18a2edc82384c148a31ce61194c3c1d4898e7518e1585898f91373e"
+    },
+    {
+      "file": "src/authoring/mod.rs",
       "item": "mod[tests]/fn[a_request_failing_for_a_minute_fails_the_assessment]",
       "hash": "ab43bc4505e0a92b69ae48a3bb74a71f23c4e6e8d0c4f15a96a0505ad482438e"
     },
@@ -70,27 +75,42 @@
     {
       "file": "src/authoring/providers.rs",
       "item": "impl[ProviderBackoff]/fn[retry]",
-      "hash": "958021aa3691e784ae5198c34f147bba0e613c8d462f0d16b8342dc16012da4e"
+      "hash": "6df8c0fd0b4fe495beb2999906e3bc9744d391108c4be5d339bfd8b1789f7ce3"
     },
     {
       "file": "src/authoring/providers.rs",
       "item": "mod[tests]/fn[retrying_stops_once_a_request_has_failed_for_a_minute]",
-      "hash": "b5b2f9be2096470801355f5dbda9c910d6516b6cf8875b35720db02583e18955"
+      "hash": "0718538c7cf7b85a5eaeb78828df5c469dc4dfc75ac7ecdb76b06158a4ea228c"
     },
     {
       "file": "src/authoring/providers.rs",
-      "item": "impl[ProviderBackoff]/fn[next_delay]",
-      "hash": "dfd32d47edcc5840404c89085f12bdee688c1f34ee4b5b3a13563d837c590a29"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "fn[converse]",
-      "hash": "aca1babb5cde30dc5c4370e99e43d4e99b711ca04bf74da60edb1ecc99a46d25"
+      "item": "impl[ProviderBackoff]",
+      "hash": "f347d85732c20ce882fad32bf925296bece6c0ce169c2a7523e5479a05e557dc"
     },
     {
       "file": "src/authoring/providers.rs",
-      "item": "struct[ProviderBackoff]",
-      "hash": "f18b4eabcb6ca61550cd9b62510a935933080a34fb8eb0f6fba1807e01e4c937"
+      "item": "fn[failure_codes]",
+      "hash": "a38ad0707032c481b80b9fdcedcd699e5028860dcd89985e5b32ee59c56162a0"
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "item": "fn[retry_after]",
+      "hash": "65cac42aaa714c9b0d37c9fe0590faaa9fd4a72e02d874103276288c4f942958"
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "item": "impl[ProviderBackoff/Default]",
+      "hash": "9c91d94096792daf572e0b170532abefcf6b30e10c40b041a337bbd3fd37341f"
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "item": "mod[tests]/fn[with_retry_after]",
+      "hash": "73d4f9618ef5754c6c1b02c3f472ed1b96a5faa2cd165303208a9a7321530e89"
+    },
+    {
+      "file": "src/authoring/providers.rs",
+      "item": "mod[tests]/fn[provider_error]",
+      "hash": "5812b2ded5c7b180e9974560720627437293926f691301a20b110779730751da"
     }
   ]
 }

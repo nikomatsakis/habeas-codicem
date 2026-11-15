@@ -1,8 +1,8 @@
 {
-  "requirement": "A `list_files`, `ripgrep`, or `ast_grep` result MUST include `not_listed`, an\narray of `{path, reason}` with reason `untracked`, naming each untracked file\ninside the project that the listing would otherwise include or that contains a\nmatch, so the model can tell that sources exist which it cannot read. It MUST\nbe omitted when there are none, and for a paged result it MUST appear on the\nfirst page. It MUST NOT give those files' contents, and they MUST NOT become\nevidence inputs. Files excluded for another reason, such as a workspace disallow\nrule or generated `evidence/` output, MUST NOT be read to find matches and MUST\nNOT be listed.",
+  "requirement": "A `list_files`, `ripgrep`, or `ast_grep` result MUST include `not_listed`, an\narray of `{path, reason}` with reason `untracked`, naming each untracked file\ninside the project that the listing would otherwise include or that contains a\nmatch, so the model can tell that sources exist which it cannot read. It MUST\nbe omitted when there are none, and for a paged result it MUST appear on the\nfirst page, continuing across subsequent pages when needed to obey the page\nsize limit. Page counts MUST include these entries as well as the ordinary\nresult entries, and each array MUST retain its order. It MUST NOT give those\nfiles' contents, and they MUST NOT become\nevidence inputs. Files excluded for another reason, such as a workspace disallow\nrule or generated `evidence/` output, MUST NOT be read to find matches and MUST\nNOT be listed.",
   "determination": true,
-  "rationale": "I found no gap against `requirements.authoring.not_listed`. The code reaches every obligation from the single `{impl}` item. Tests cover each branch the text distinguishes.\n\n**Implementation.** `src/authoring/tools.rs#fn[with_not_listed]` carries the `{impl}`. `dispatch_paged` calls it for `list_files`, `ripgrep` and `ast_grep`.\n\n- **Untracked files and `reason`.** `with_not_listed` takes the files from `DiscoverySources::untracked`, which runs `git ls-files --others --exclude-standard`. It keeps only regular files that pass `considers`. Each result is `{path, reason: \"untracked\"}` with a project-relative path.\n- **Scope of naming.**\n  - For `list_files`, a path is the untracked child of the requested directory. It is dropped if the directory listing already shows that child.\n  - For `ripgrep`, it is an untracked file under the requested path with a line matching the pattern.\n  - For `ast_grep`, it is an untracked file covered by the rule's language and matched by the rule.\n- **Omission.** If the resulting vector is empty, the function returns the listing unchanged, so `not_listed` is absent.\n- **First page.** The function attaches the array with `listing.with_extra(\"not_listed\", ...)` before paging, and the comment says it is counted toward the first page's size. Later pages come from `next_page`, which does not add it.\n- **No contents.** Only paths and the reason go into the result. File text is read only to decide whether there is a match, and it is never emitted.\n- **Not evidence inputs.** The function returns a `Listing` with no inputs added. The untracked file is never parsed through `sources.parse_file`.\n- **Other exclusions.** `untracked()` filters through `considers`, which applies `excluded_from_discovery` (including `evidence/`) and the workspace disallow policy. Those files are dropped before any read, so they are neither read for matches nor listed.\n- **Scoped searches.** With `referencing`, `with_not_listed` returns early with no `not_listed`. The comment says such searches only consider files that reference discovery reads, which excludes untracked ones.\n- **Declared-query form.** In the `ast_grep` query form there is no rule, so nothing is added.\n\n**Tests.**\n- `src/authoring/tools.rs#mod[tests]/fn[listings_and_searches_name_untracked_files_without_their_contents]`:\n  - `list_files` names `drafts` and `untracked.rs`.\n  - `ripgrep` names `drafts/plan.txt` and `untracked.rs`, and its output contains no file contents.\n  - `search.inputs` is empty.\n  - `ast_grep` names `untracked.rs`.\n  - `not_listed` is absent when no untracked file matches and when `list_files` runs on `src`.\n  - The disallowed `secret.rs` and `evidence/note.txt` are never listed.\n- `src/authoring/pages.rs#mod[tests]/fn[not_listed_comes_on_the_first_page_within_the_page_limit]`: `not_listed` has 40 entries on the first page, is absent on later pages, and every page stays within `PAGE_LIMIT`.\n\n**Interpretation.** For `list_files`, which is not recursive, the code names the untracked child (for example a directory) that the listing would show. It does not name a file nested inside a directory that is already listed. I read that as within \"that the listing would otherwise include\", so I did not count it as a gap.",
-  "references": "c8e0a91a815bcd5dd04a3c718ce8a6ca2ac7fafd3df8b2087fcf5af497dd1f53",
+  "rationale": "## Obligations and coverage\n\n`requirements.authoring.not_listed` is satisfied by the marked implementation and tests.\n\n| Obligation | Implementation and verification |\n|---|---|\n| Include `not_listed` for qualifying untracked files in `list_files` results. | `src/authoring/tools.rs#fn[with_not_listed]` selects immediate listing children and constructs the array. `src/authoring/tools.rs#mod[tests]/fn[listings_and_searches_name_untracked_files_without_their_contents]` asserts the resulting paths. |\n| Include it for untracked files containing a `ripgrep` match. | The same implementation's `NotListed::Text` branch reads candidate text and checks the pattern; the same test asserts both matching untracked paths. |\n| Include it for untracked files containing an `ast_grep` match. | Its `NotListed::Rule` branch checks language coverage and structural matches; the same test asserts the Rust match and exercises all three tools with normalized requested paths. |\n| Represent entries as `{path, reason}` with reason `untracked`. | `src/authoring/tools.rs#fn[with_not_listed]` constructs exactly these fields. The tool test checks paths and every entry's reason. |\n| Omit `not_listed` when there are no qualifying entries. | The helper returns the unchanged listing for an empty set; `src/authoring/pages.rs#impl[Listing]/fn[render]` also omits empty page arrays. The tool test checks no-match and empty-directory cases; the first-page test below checks omission on later pages. |\n| Start `not_listed` on the first page. | `src/authoring/pages.rs#impl[Listing]/fn[with_not_listed]` prepends its entries. `src/authoring/pages.rs#mod[tests]/fn[not_listed_comes_on_the_first_page_within_the_page_limit]` verifies first-page placement and page sizes. |\n| Continue it across pages when required by the size limit. | `src/authoring/pages.rs#impl[ResultPages]/fn[deliver]` uses `paginate` on the combined entries. `src/authoring/pages.rs#mod[tests]/fn[untracked_entries_page_without_tracked_entries_or_oversized_overhead]` exercises 1,000 untracked entries with zero, one, and 500 ordinary entries and checks every page's size and complete reconstruction. |\n| Include untracked entries in total page counts. | `deliver` counts the combined vector; the 1,000-entry test asserts `total_entries`. |\n| Include them in returned page counts. | `deliver` counts each combined page slice; that test asserts `returned_entries` equals the sum of both arrays' lengths. |\n| Preserve ordinary-array order. | Prepending and consecutive pagination preserve relative order; the 1,000-entry test compares reconstructed ordinary entries with the original vector. |\n| Preserve `not_listed` order. | The same operations preserve its order; that test also compares reconstructed untracked entries with the original vector. |\n| Do not disclose untracked contents. | The tool helper emits only path/reason objects, not the text used for matching. The tool test asserts that the distinctive untracked contents do not appear in any of the three results. |\n| Do not make these files evidence inputs. | Listing constructors use `evidence: false`, and `src/authoring/pages.rs#fn[delivered]` returns no inputs for these listings. Both the tool test and the 1,000-entry paging test assert empty evidence inputs. |\n| Do not read files excluded for another reason to find matches. | The helper obtains candidates through `src/authoring/access.rs#impl[DiscoverySources]/fn[untracked]`, which filters through `considers` before the helper reads contents. `considers` applies discovery exclusions and workspace disallow rules. The tool test supplies matching disallowed and generated-evidence files and verifies the permitted results only. |\n| Do not list those otherwise-excluded files. | The same candidate filtering excludes them before path construction; the tool test's exact expected arrays exclude both `secret.rs` and `evidence/note.txt`. |\n\nThe exclusion helpers are reachable from the marked `with_not_listed` implementation, and rendering, pagination, and evidence delivery are reachable from the marked paging implementations. `src/authoring/tools.rs#fn[dispatch_paged]` confirms that all three tools invoke the helper and deliver its result through this paging machinery.\n\nThe paging notes and evidence-delivery behavior are covered by the co-marked `requirements.authoring.tool_descriptions.special_cases` and `requirements.authoring.delivered_inputs`; they are not unexplained extra behavior. No acknowledged gaps were supplied or found.",
+  "references": "c8937dd4888a095f50d6eaa4772adadab4c8bcc22f95459953ebac7d2ba3752f",
   "inputs": [
     {
       "requirements": "requirements.authoring.not_listed",
@@ -16,7 +16,10 @@
         "inside the project that the listing would otherwise include or that contains a",
         "match, so the model can tell that sources exist which it cannot read. It MUST",
         "be omitted when there are none, and for a paged result it MUST appear on the",
-        "first page. It MUST NOT give those files' contents, and they MUST NOT become",
+        "first page, continuing across subsequent pages when needed to obey the page",
+        "size limit. Page counts MUST include these entries as well as the ordinary",
+        "result entries, and each array MUST retain its order. It MUST NOT give those",
+        "files' contents, and they MUST NOT become",
         "evidence inputs. Files excluded for another reason, such as a workspace disallow",
         "rule or generated `evidence/` output, MUST NOT be read to find matches and MUST",
         "NOT be listed.",
@@ -25,18 +28,43 @@
     },
     {
       "file": "src/authoring/pages.rs",
+      "item": "impl[Listing]/fn[with_not_listed]",
+      "hash": "74d47d6d53495156435385abc26fd0a3e2d7fa4f3dd2699a32d455c8bb78fc1b"
+    },
+    {
+      "file": "src/authoring/pages.rs",
+      "item": "impl[ResultPages]/fn[deliver]",
+      "hash": "be56214a56f57947fae9768064429fa20c2dd585ec719180a6d09f33dbad3de9"
+    },
+    {
+      "file": "src/authoring/pages.rs",
       "item": "mod[tests]/fn[not_listed_comes_on_the_first_page_within_the_page_limit]",
       "hash": "70cb7f91d3f09082e9956554875328fb59e7c2f4cf68b587a6a3b20128c06042"
     },
     {
+      "file": "src/authoring/pages.rs",
+      "item": "mod[tests]/fn[untracked_entries_page_without_tracked_entries_or_oversized_overhead]",
+      "hash": "077d38937301e3ba7834dbb6e0f1735c1bf080c5a34fa316d8f6b8f69dcc4123"
+    },
+    {
       "file": "src/authoring/tools.rs",
       "item": "fn[with_not_listed]",
-      "hash": "422482786bed8da49f474da5501d0336ab4489921bb7f40021e93e966424c2cf"
+      "hash": "d8ba62b3d1c4a61fa206391d6006b721d3c9ea4510118f7f7dc79cb5ce8761bc"
     },
     {
       "file": "src/authoring/tools.rs",
       "item": "mod[tests]/fn[listings_and_searches_name_untracked_files_without_their_contents]",
-      "hash": "254ee29d606762de534ac2201a197ed92559120882adb701e5c2cc2dc735839b"
+      "hash": "c68bdfd98e6e269383eaadadee181e7e59d24510d51d175577b899485e39c24b"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "",
+      "hash": "939c6fc6c7bd7d102a09f3db92cb0e405b273f16b973b6532e24a5af74f1820b"
+    },
+    {
+      "file": "src/authoring/pages.rs",
+      "item": "",
+      "hash": "8a6e04f88ca7beb65acb0832fae5419bc2a7dfa062d0d8b5ec5764ee42cfc38d"
     },
     {
       "file": "src/authoring/tools.rs",
@@ -44,24 +72,38 @@
       "hash": "46603300d61b11dcdd71d12c530be377b85055e563dde1f2f83d3db30d4f4055"
     },
     {
-      "file": "src/authoring/access.rs",
-      "item": "impl[DiscoverySources]",
-      "hash": "29c2b4760a0ed897cf9ea002a5b63d416b7f3dfed6c68f03eaccbf72a156942c"
+      "requirements": "requirements.authoring.delivered_inputs",
+      "matches": [
+        "requirements.authoring.delivered_inputs"
+      ],
+      "text": [
+        ":::{req} delivered_inputs",
+        "The harness MUST record the sources it supplies to the model, including",
+        "mandatory inputs and additional reads, using the evidence input formats",
+        "defined by {cite}`requirements.ci.outline_inputs`,",
+        "{cite}`requirements.ci.requirements_inputs`, and",
+        "{cite}`requirements.definitions.inputs`. The harness MUST create these records",
+        "itself so ordinary evidence validation can check them later.",
+        ":::"
+      ]
     },
     {
-      "file": "src/authoring/tools.rs",
-      "item": "fn[list_files]",
-      "hash": "4b24c90e6646cb91dda9bbc5934ca0365845a792428bdfbfa2cbfaabefafdf9a"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "fn[search]",
-      "hash": "5f043c14c80c5dac1610f3c0add854edd22e785a20a3ac707fbe24c4fcb424aa"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "fn[structural]",
-      "hash": "214d7b008a2acb1fb7e786adc516921edd6253ab2f6ee4e7894fd58a79495600"
+      "requirements": "requirements.authoring.tool_descriptions.special_cases",
+      "matches": [
+        "requirements.authoring.tool_descriptions.special_cases"
+      ],
+      "text": [
+        ":::{req} tool_descriptions.special_cases",
+        "Model tool descriptions SHOULD NOT explain cases the model meets only",
+        "occasionally, such as access policy, excluded or build-output paths, redaction,",
+        "paging, and failures, and the harness SHOULD explain each of these where it",
+        "occurs: in the tool error, or in a note in the result it affects. The model reads",
+        "every description on every assessment, so explaining rare cases there costs",
+        "attention on every review for a case most never meet, and access-policy wording",
+        "in particular can steer its reasoning away from the review. A tool whose purpose",
+        "is one of these cases, such as `next_page`, explains it in its description.",
+        ":::"
+      ]
     }
   ]
 }

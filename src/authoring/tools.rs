@@ -162,8 +162,9 @@ fn with_not_listed(
     if arguments.contains_key("referencing") {
         return Ok(listing);
     }
-    let requested = optional_path(arguments)?.trim_end_matches('/');
-    let requested = if requested == "." { "" } else { requested };
+    let requested_path = project_path(sources, optional_path(arguments)?)?;
+    let requested = relative_path(&sources.root, &requested_path)?;
+    let requested = requested.trim_end_matches('/');
     let untracked = super::access::DiscoverySources::load(&sources.root)?.untracked()?;
     let mut named = BTreeSet::new();
     for file in untracked {
@@ -233,8 +234,8 @@ fn with_not_listed(
     if not_listed.is_empty() {
         return Ok(listing);
     }
-    // On the first page, counted toward its size.
-    Ok(listing.with_extra("not_listed", Value::Array(not_listed)))
+    // Start on the first page; large arrays continue through ordinary paging.
+    Ok(listing.with_not_listed(not_listed))
 }
 
 /// What a result containing redacted text tells the model, since tool
@@ -465,6 +466,7 @@ const REFERENCE_ARRAYS: &[&str] = &["definitions", "sites"];
 // {impl}`requirements.references.definition_globs`
 // {impl}`requirements.references.anchors`
 // {impl}`requirements.authoring.no_line_numbers`
+// {impl}`requirements.references.authoring_inputs`
 fn references(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Result<Listing> {
     check_keys(args, &["selection"])?;
     let selection = if args.contains_key("selection") {
@@ -779,9 +781,20 @@ fn walk_sources<T: Send>(
             let found = &found;
             let failure = &failure;
             Box::new(move |entry| {
-                let Ok(entry) = entry else {
-                    return ignore::WalkState::Continue;
+                let entry = match entry {
+                    Ok(entry) => entry,
+                    Err(error) => {
+                        *failure.lock().expect("search failure lock") = Some(io::Error::other(
+                            format!("cannot traverse source files: {error}"),
+                        ));
+                        return ignore::WalkState::Quit;
+                    }
                 };
+                if entry.file_type().is_some_and(|kind| kind.is_dir())
+                    && sources.access.path(&sources.root, entry.path()).is_err()
+                {
+                    return ignore::WalkState::Skip;
+                }
                 if !entry.file_type().is_some_and(|kind| kind.is_file()) {
                     return ignore::WalkState::Continue;
                 }
@@ -1264,8 +1277,18 @@ mod tests {
                 .unwrap();
             assert!(error.to_string().contains(message), "{error}");
         }
+        let directories = dispatch(&sources, "list_files", &json!({})).unwrap();
+        let directory = directories
+            .result
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["path"] == "src")
+            .unwrap();
+        assert_eq!(directory["kind"], "directory");
+        assert!(directories.inputs.is_empty());
         // The listing finds the directory's file and records nothing.
-        let listing = dispatch(&sources, "list_files", &json!({"path":"src"})).unwrap();
+        let listing = dispatch(&sources, "list_files", &json!({"path":directory["path"]})).unwrap();
         assert_eq!(listing.result, json!([{"path":"src/lib.rs","kind":"file"}]));
         assert!(listing.inputs.is_empty());
         // Searching the Rust file returns the innermost item containing the match.
@@ -1581,6 +1604,7 @@ mod tests {
     }
 
     // {test}`requirements.authoring.redaction`
+    // {test}`requirements.authoring.source_tools`
     #[test]
     fn declaration_text_reaches_the_model_redacted() {
         let root = project();
@@ -1910,6 +1934,8 @@ mod tests {
     // {test}`requirements.authoring.read_denial`
     #[cfg(unix)]
     #[test]
+    // {test}`requirements.authoring.text_search`
+    // {test}`requirements.authoring.structural_search`
     fn operating_system_permission_failures_are_ordinary_read_failures() {
         use std::os::unix::fs::PermissionsExt;
         let root = project();
@@ -1921,6 +1947,16 @@ mod tests {
         }
         let unreadable = fs::read(root.path().join("locked.rs")).is_err();
         let results = [
+            dispatch(
+                &sources,
+                "ripgrep",
+                &json!({"path":"locked","pattern":"anything"}),
+            ),
+            dispatch(
+                &sources,
+                "ast_grep",
+                &json!({"path":"locked","language":"rust","rule":{"rule":{"kind":"function_item"}}}),
+            ),
             dispatch(&sources, "list_files", &json!({"path": "locked"})),
             dispatch(
                 &sources,
@@ -2168,6 +2204,7 @@ mod tests {
     // {test}`requirements.authoring.file_discovery`
     // {test}`requirements.authoring.text_search`
     // {test}`requirements.authoring.read_denial`
+    // {test}`requirements.authoring.structural_search`
     #[test]
     fn allowed_ignored_and_external_sources_are_discoverable_but_disallowed_descendants_are_not() {
         let root = project();
@@ -2184,12 +2221,24 @@ mod tests {
         )
         .unwrap();
         fs::write(external.path().join("outside.txt"), "needle external\n").unwrap();
+        fs::write(external.path().join("outside.rs"), "fn external() {}\n").unwrap();
+        fs::write(
+            root.path().join("generated/visible.rs"),
+            "fn visible() {}\n",
+        )
+        .unwrap();
+        fs::write(
+            root.path().join("generated/private/denied.rs"),
+            "fn denied() {}\n",
+        )
+        .unwrap();
+        fs::write(root.path().join(".hidden.rs"), "fn hidden() {}\n").unwrap();
         fs::write(root.path().join(".gitignore"), "generated/\n").unwrap();
         git(root.path(), &["init", "--quiet"]);
         git(root.path(), &["add", "."]);
         let external_toml = toml::Value::String(external.path().display().to_string());
         fs::write(root.path().join("habeas.toml"), format!(
-            "version = 1\n[evidence]\nallow = ['generated', {external_toml}]\ndisallow = ['generated/private']\n"
+            "version = 1\n[evidence]\nallow = ['generated', '.hidden.rs', {external_toml}]\ndisallow = ['generated/private']\n"
         )).unwrap();
         let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
         let listing = dispatch(&sources, "list_files", &json!({})).unwrap();
@@ -2204,6 +2253,37 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(paths.contains(&"generated"));
         assert!(paths.contains(&external.path().to_str().unwrap()));
+        let external_listing =
+            dispatch(&sources, "list_files", &json!({"path":external.path()})).unwrap();
+        assert_eq!(
+            external_listing.result,
+            json!([
+                {"path":external.path().join("outside.rs"),"kind":"file"},
+                {"path":external.path().join("outside.txt"),"kind":"file"}
+            ])
+        );
+        assert!(external_listing.inputs.is_empty());
+
+        let structural = dispatch(
+            &sources,
+            "ast_grep",
+            &json!({"language":"rust","rule":{"rule":{"kind":"function_item"}}}),
+        )
+        .unwrap();
+        let structural_files = matched(&structural)
+            .iter()
+            .map(|entry| entry["file"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        for expected in [
+            ".hidden.rs",
+            "generated/visible.rs",
+            external.path().join("outside.rs").to_str().unwrap(),
+        ] {
+            assert!(structural_files.contains(&expected), "{structural_files:?}");
+        }
+        assert!(!structural_files.contains(&"generated/private/denied.rs"));
+        assert!(structural.inputs.is_empty());
+
         let search = dispatch(
             &sources,
             "ripgrep",
@@ -2234,6 +2314,10 @@ mod tests {
                 "ripgrep",
                 json!({"path":"generated/private", "pattern":"needle"}),
             ),
+            (
+                "ast_grep",
+                json!({"path":"generated/private","language":"rust","rule":{"rule":{"kind":"function_item"}}}),
+            ),
         ] {
             assert_eq!(
                 dispatch(&sources, name, &args).err().unwrap().kind(),
@@ -2249,6 +2333,7 @@ mod tests {
     // {test}`requirements.configuration.evidence_paths`
     // {test}`requirements.authoring.read_denial`
     // {test}`requirements.authoring.read_denial.build_output`
+    // {test}`requirements.authoring.structural_search`
     #[test]
     fn cargo_output_is_discovered_and_read_without_building_or_allowing_other_target_files() {
         let root = project();
@@ -2293,6 +2378,14 @@ mod tests {
         );
         let search = dispatch(&sources, "ripgrep", &json!({"pattern":"generated_needle"})).unwrap();
         assert_eq!(matched(&search).len(), 1);
+        let structural_arguments =
+            json!({"language":"rust","rule":{"rule":{"pattern":"pub fn generated_needle() {}"}}});
+        let structural = dispatch(&sources, "ast_grep", &structural_arguments).unwrap();
+        assert_eq!(
+            found(&structural),
+            ["target/debug/build/fixture-hash/out/generated.rs#fn[generated_needle]"]
+        );
+        assert!(structural.inputs.is_empty());
         let read = dispatch(&sources, "habeas", &json!({"file":"target/debug/build/fixture-hash/out/generated.rs", "item":"fn[generated_needle]"})).unwrap();
         assert_eq!(
             read.result["input"]["text"],
@@ -2329,6 +2422,7 @@ mod tests {
             matched(&dispatch(&denied, "ripgrep", &json!({"pattern":"generated_needle"})).unwrap())
                 .is_empty()
         );
+        assert!(matched(&dispatch(&denied, "ast_grep", &structural_arguments).unwrap()).is_empty());
         for (name, arguments) in [
             (
                 "habeas",
@@ -2341,6 +2435,10 @@ mod tests {
             (
                 "ripgrep",
                 json!({"path":"target/debug/build/fixture-hash/out", "pattern":"generated_needle"}),
+            ),
+            (
+                "ast_grep",
+                json!({"path":"target/debug/build/fixture-hash/out","language":"rust","rule":{"rule":{"kind":"function_item"}}}),
             ),
         ] {
             let error = dispatch(&denied, name, &arguments).err().unwrap();
@@ -2380,6 +2478,7 @@ mod tests {
     // {test}`requirements.references.definition_globs`
     // {test}`requirements.authoring.no_line_numbers`
     #[test]
+    // {test}`requirements.references.authoring_inputs`
     fn references_list_names_and_flattened_sites_without_recording_inputs() {
         let root = project();
         fs::write(
@@ -3335,6 +3434,35 @@ mod tests {
     }
 
     // {test}`requirements.authoring.text_search`
+    #[test]
+    fn text_search_selects_example_test_references_and_test_anchors() {
+        let root = referencing_project();
+        let declarations = root.path().join("md/requirements.md");
+        let mut text = fs::read_to_string(&declarations).unwrap();
+        text.push_str("\n:::{example} case\n:test: src/other.rs\nA named case. {cite}`requirements.ready`\n:::\n");
+        fs::write(declarations, text).unwrap();
+        fs::write(
+            root.path().join("src/example_test.rs"),
+            format!(
+                "// {}\nfn example_test() {{ needle(); }}\n",
+                role("test", "requirements.case")
+            ),
+        )
+        .unwrap();
+        let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        let result = dispatch(&sources, "ripgrep", &json!({"pattern":"needle","context":0,"referencing":{"selection":"requirements.case","roles":["test"]}})).unwrap();
+        assert_eq!(
+            found(&result),
+            [
+                "src/example_test.rs#fn[example_test]",
+                "src/other.rs#fn[elsewhere]"
+            ]
+        );
+        let no_impl = dispatch(&sources, "ripgrep", &json!({"pattern":"needle","referencing":{"selection":"requirements.case","roles":["impl"]}})).unwrap();
+        assert!(found(&no_impl).is_empty());
+    }
+
+    // {test}`requirements.authoring.text_search`
     // {test}`requirements.references.definition_globs`
     // {test}`requirements.references.anchors`
     #[test]
@@ -3492,6 +3620,7 @@ mod tests {
 
     // {test}`requirements.authoring.not_listed`
     #[test]
+    // {test}`requirements.authoring.read_denial`
     fn listings_and_searches_name_untracked_files_without_their_contents() {
         let root = project();
         fs::write(root.path().join("src/lib.rs"), "fn tracked() {}\n").unwrap();
@@ -3547,6 +3676,15 @@ mod tests {
         )
         .unwrap();
         assert_eq!(named(&rust.result), ["untracked.rs"]);
+        for delivery in [&listing, &rust] {
+            assert!(delivery.inputs.is_empty());
+            let text = delivery.result.to_string();
+            assert!(
+                !text.contains("fn needle") && !text.contains("a needle here"),
+                "{text}"
+            );
+        }
+
         // Nothing untracked matches: no not_listed.
         let none = dispatch(&sources, "ripgrep", &json!({"pattern": "tracked\\(\\)"})).unwrap();
         assert!(none.result.get("not_listed").is_none(), "{}", none.result);
@@ -3556,6 +3694,25 @@ mod tests {
             "{}",
             inside.result
         );
+        fs::write(root.path().join("src/draft.rs"), "fn needle() {}\n").unwrap();
+        for path in [
+            "./src".to_owned(),
+            "src/../src".to_owned(),
+            root.path().join("src").to_string_lossy().into_owned(),
+        ] {
+            for (tool, arguments) in [
+                ("list_files", json!({"path":path})),
+                ("ripgrep", json!({"path":path,"pattern":"needle"})),
+                (
+                    "ast_grep",
+                    json!({"path":path,"language":"rust","rule":{"rule":{"pattern":"fn needle() {}"}}}),
+                ),
+            ] {
+                let delivery = dispatch(&sources, tool, &arguments).unwrap();
+                assert_eq!(named(&delivery.result), ["src/draft.rs"], "{tool}: {path}");
+                assert!(delivery.inputs.is_empty());
+            }
+        }
     }
 
     // {test}`requirements.authoring.generated_inputs`
@@ -4038,6 +4195,16 @@ mod tests {
             error.to_string().contains("unknown referencing scope"),
             "{error}"
         );
+        for (referencing, message) in [
+            (json!({"scope":"node"}), "selection must be a string"),
+            (
+                json!({"selection":"requirements.ready","roles":["bogus"]}),
+                "unknown referencing role",
+            ),
+        ] {
+            let error = search(referencing).err().unwrap();
+            assert!(error.to_string().contains(message), "{error}");
+        }
     }
 
     // {test}`requirements.authoring.structural_search`

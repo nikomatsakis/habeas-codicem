@@ -222,6 +222,7 @@ target without one MUST be a validation error naming the file.
 :::
 
 :::{req} coverage.history
+{impl}`requirements.configuration.feature_sections`
 An item has recent coverage when it has a reference that covers it under
 {cite}`requirements.references.rust_item_coverage`, or when its outline node, or
 an outline node containing it, is named by file and selector in the inputs of
@@ -258,7 +259,7 @@ about `parse`. {test}`requirements.references.coverage.history`
 
 :::{example} coverage.deleted_requirement
 Function `render` is read only by the evidence of `requirements.cli.render`.
-The requirement is deleted, and `habeas author` removes its evidence file.
+The requirement and its evidence file are deleted.
 Deleted files have no coverage window, so `habeas status` warns about `render`
 at once, before any further commit.
 {test}`requirements.references.coverage.history`

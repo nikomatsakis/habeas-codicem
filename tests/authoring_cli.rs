@@ -21,8 +21,8 @@ struct Request {
 }
 
 /// A request's system prompt and subject message, as Ollama's leading
-/// `system` and `user` messages or Bedrock's `system` blocks and first
-/// message.
+/// `system` and `user` messages, Bedrock's `system` blocks and first
+/// message, or OpenAI's instructions and input message.
 // {cite}`habeas:util`
 fn opening(body: &Value) -> (String, String) {
     let text = |value: &Value| value.as_str().unwrap().to_owned();
@@ -30,6 +30,12 @@ fn opening(body: &Value) -> (String, String) {
         (
             text(&body["system"][0]["text"]),
             text(&body["messages"][0]["content"][0]["text"]),
+        )
+    } else if body.get("input").is_some() {
+        assert_eq!(body["input"][0]["role"], "user");
+        (
+            text(&body["instructions"]),
+            text(&body["input"][0]["content"][0]["text"]),
         )
     } else {
         assert_eq!(body["messages"][0]["role"], "system");
@@ -83,6 +89,9 @@ impl Server {
                         Err(error) => panic!("cannot accept mock request: {error}"),
                     }
                 };
+                // Accepted sockets can inherit the listener's nonblocking mode
+                // (macOS). Wait for request bytes using the read timeout below.
+                stream.set_nonblocking(false).unwrap();
                 stream
                     .set_read_timeout(Some(Duration::from_secs(10)))
                     .unwrap();
@@ -111,8 +120,14 @@ impl Server {
                     body: serde_json::from_slice(&bytes).unwrap(),
                 });
                 before_reply();
+                let mut response = response;
+                let status = response
+                    .as_object_mut()
+                    .and_then(|object| object.remove("__http_status"))
+                    .and_then(|value| value.as_u64())
+                    .unwrap_or(200);
                 let body = response.to_string();
-                write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+                write!(stream, "HTTP/1.1 {status} Mock Response\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
             }
             requests
         });
@@ -272,6 +287,8 @@ fn reply(calls: Vec<Value>) -> Value {
 // {test}`requirements.authoring.invocation`
 // {test}`requirements.configuration.serialization`
 #[test]
+// {test}`requirements.authoring.persistence`
+// {test}`requirements.authoring.reporting`
 fn ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free() {
     let server = Server::start(vec![
         reply(vec![
@@ -482,11 +499,12 @@ fn ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free() {
             .any(|input| input["origin"] == "list_files"),
         "{usage_inputs:?}"
     );
-    // Search results are not inputs either.
+    // Search snippets count toward usage, without becoming evidence inputs.
     assert!(
-        !usage_inputs
-            .iter()
-            .any(|input| input["origin"] == "ripgrep"),
+        usage_inputs.iter().any(|input| input["origin"] == "ripgrep"
+            && input["kind"] == "search"
+            && input["bytes"].as_u64().unwrap() > 0
+            && input["lines"].as_u64().unwrap() > 0),
         "{usage_inputs:?}"
     );
     assert!(
@@ -550,6 +568,42 @@ fn ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free() {
         fs::canonicalize(evidence).unwrap(),
         fs::canonicalize(fixture.project.join(format!("evidence/{SUBJECT}.json"))).unwrap()
     );
+}
+
+// {test}`requirements.authoring.acknowledged_gap`
+#[test]
+fn acknowledged_empty_input_boundary_is_explained_and_accepted() {
+    let rationale = "`src/lib.rs#fn[ready]` accepts nonempty input but rejects the empty-string boundary. The adjacent acknowledgment tracks that gap as example/app#125.";
+    let server = Server::start(vec![reply(vec![call(
+        "submit",
+        "submit_judgment",
+        json!({"determination":{"FIXME":["example/app#125"]},"rationale":rationale}),
+    )])]);
+    let fixture = Fixture::new(&server.endpoint);
+    fs::write(fixture.project.join("md/requirements.md"), ":::{req} ready\nThe readiness check MUST accept every string, including the empty string.\n:::\n").unwrap();
+    fs::write(fixture.project.join("src/lib.rs"), "// {impl}`requirements.ready`\n// :::{fixme} requirements.ready\n// :github: example/app#125\n// Empty input is incorrectly rejected.\n// :::\npub fn ready(input: &str) -> bool { !input.is_empty() }\n// {test}`requirements.ready`\nfn ready_test() { assert!(ready(\"nonempty\")); }\n").unwrap();
+    let output = fixture.run(&["author", SUBJECT]);
+    assert!(output.status.success(), "{output:?}");
+    let requests = server.finish();
+    assert_eq!(requests.len(), 1);
+    let prompt = prompt_text(&requests[0].body);
+    assert!(prompt.contains("Empty input is incorrectly rejected."));
+    assert!(prompt.contains("!input.is_empty()"));
+    let record: Value = serde_json::from_slice(&fs::read(&fixture.evidence).unwrap()).unwrap();
+    assert_eq!(
+        record["determination"],
+        json!({"FIXME":["example/app#125"]})
+    );
+    assert_eq!(record["rationale"], rationale);
+    assert!(
+        record["inputs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|input| input["file"] == "src/lib.rs" && input["item"] == "fn[ready]")
+    );
+    let report = habeas::validate_repository(&fixture.project).unwrap();
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
 }
 
 // {test}`requirements.configuration.workspace_location`
@@ -967,16 +1021,19 @@ fn author_rejects_unknown_subjects_and_conflicting_targets() {
 // {test}`requirements.authoring.usage_storage`
 #[cfg(unix)]
 #[test]
+// {test}`requirements.configuration.state_location`
 fn usage_record_identifies_its_run_and_unusable_state_is_reported() {
-    let server = Server::start(vec![reply(vec![call(
-        "submit",
-        "submit_judgment",
-        json!({"determination":true,"rationale":"covered"}),
-    )])]);
+    let server = Server::start(vec![
+        reply(vec![call(
+            "submit",
+            "submit_judgment",
+            json!({"determination":true,"rationale":"covered"}),
+        )]);
+        2
+    ]);
     let fixture = Fixture::new(&server.endpoint);
     let output = fixture.run(&["author", SUBJECT]);
     assert!(output.status.success(), "{output:?}");
-    server.finish();
     let directory = fixture.state.join("habeas/authoring/usage");
     let files = fs::read_dir(&directory)
         .unwrap()
@@ -1005,6 +1062,13 @@ fn usage_record_identifies_its_run_and_unusable_state_is_reported() {
     let end = usage["end_time_ms"].as_u64().unwrap();
     assert!(start > 0 && start <= end, "{usage}");
 
+    let first_bytes = fs::read(&files[0]).unwrap();
+    let second = fixture.run(&["author", SUBJECT, "--force"]);
+    assert!(second.status.success(), "{second:?}");
+    assert_eq!(fs::read(&files[0]).unwrap(), first_bytes);
+    assert_eq!(fs::read_dir(&directory).unwrap().count(), 2);
+    server.finish();
+
     // A state location that cannot be determined or created is reported
     // before any model request, and no evidence is written.
     let blocker = fixture.temp.path().join("not-a-directory");
@@ -1027,7 +1091,10 @@ fn usage_record_identifies_its_run_and_unusable_state_is_reported() {
         assert!(output.stdout.is_empty(), "{value:?}: {output:?}");
     }
     let evidence: Value = serde_json::from_slice(&fs::read(&fixture.evidence).unwrap()).unwrap();
-    assert_eq!(evidence["rationale"], "covered", "only the first run wrote");
+    assert_eq!(
+        evidence["rationale"], "covered",
+        "failed runs preserved the evidence"
+    );
 }
 
 // {test}`requirements.authoring.usage_storage`
@@ -1122,6 +1189,19 @@ fn verbose_single_author_reports_only_false_rationale_without_source_inputs() {
             serde_json::from_slice(&fs::read(&fixture.evidence).unwrap()).unwrap();
         assert_eq!(evidence["determination"], determination);
         assert_eq!(evidence["rationale"], rationale);
+        let errors = habeas::validate_repository(&fixture.project)
+            .unwrap()
+            .errors;
+        assert_eq!(
+            errors
+                .iter()
+                .any(|error| error.contains("determination is false")),
+            !determination,
+            "{errors:?}"
+        );
+        if determination {
+            assert!(errors.is_empty(), "{errors:?}");
+        }
     }
 }
 
@@ -1268,7 +1348,8 @@ fn missing_duplicate_and_invalid_submissions_preserve_existing_evidence() {
         )],
     ] {
         for stdout in [false, true] {
-            let server = Server::start(vec![reply(calls.clone())]);
+            let count = if calls.is_empty() { 2 } else { 1 };
+            let server = Server::start(vec![reply(calls.clone()); count]);
             let fixture = Fixture::new(&server.endpoint);
             let mut args = vec!["author-evidence", SUBJECT];
             if stdout {
@@ -1277,7 +1358,10 @@ fn missing_duplicate_and_invalid_submissions_preserve_existing_evidence() {
             let output = fixture.run(&args);
             assert!(!output.status.success());
             assert!(output.stdout.is_empty());
-            server.finish();
+            assert_eq!(server.finish().len(), count);
+            if calls.is_empty() {
+                assert!(String::from_utf8_lossy(&output.stderr).contains("even after a reminder"));
+            }
             assert_eq!(
                 fs::read_to_string(&fixture.evidence).unwrap(),
                 fixture.original
@@ -1321,67 +1405,73 @@ fn ordinary_status_ignores_invalid_user_authoring_configuration() {
 }
 
 // {test}`requirements.authoring.deterministic_validation`
+// {test}`requirements.authoring.configuration`
 #[test]
 fn missing_or_stale_evidence_fails_validation_without_contacting_the_provider() {
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
     listener.set_nonblocking(true).unwrap();
     let fixture = Fixture::new(&format!("http://{}", listener.local_addr().unwrap()));
     let changed = format!(":::{{req}} ready\n{REQUIREMENT} Changed.\n:::\n");
-    for (case, expected) in [("missing", "missing for requirement"), ("stale", "changed")] {
-        if case == "missing" {
-            fs::remove_file(&fixture.evidence).unwrap();
-        } else {
-            fs::write(&fixture.evidence, &fixture.original).unwrap();
-            fs::write(fixture.project.join("md/requirements.md"), &changed).unwrap();
-        }
-        let report = habeas::validate_repository(&fixture.project).unwrap();
-        assert!(
-            report
-                .errors
-                .iter()
-                .any(|error| error.contains(SUBJECT) && error.contains(expected)),
-            "{case}: {:?}",
-            report.errors
-        );
-        // Status and book rendering need no authoring credentials.
-        let status = fixture
-            .command()
-            .env_remove("HABEAS_TEST_MODEL_KEY")
-            .args(["status", "--all"])
-            .output()
-            .unwrap();
-        assert!(status.status.success(), "{case}: {status:?}");
-        assert!(
-            String::from_utf8_lossy(&status.stdout).contains(SUBJECT),
-            "{case}: {status:?}"
-        );
+    let config_path = fixture.config.join("habeas/config.toml");
+    let configured = fs::read_to_string(&config_path).unwrap();
+    for config in [&configured[..], "version = 1\n"] {
+        fs::write(&config_path, config).unwrap();
+        for (case, expected) in [("missing", "missing for requirement"), ("stale", "changed")] {
+            if case == "missing" {
+                fs::remove_file(&fixture.evidence).unwrap();
+            } else {
+                fs::write(&fixture.evidence, &fixture.original).unwrap();
+                fs::write(fixture.project.join("md/requirements.md"), &changed).unwrap();
+            }
+            let report = habeas::validate_repository(&fixture.project).unwrap();
+            assert!(
+                report
+                    .errors
+                    .iter()
+                    .any(|error| error.contains(SUBJECT) && error.contains(expected)),
+                "{case}: {:?}",
+                report.errors
+            );
+            // Status and book rendering need no authoring credentials.
+            let status = fixture
+                .command()
+                .env_remove("HABEAS_TEST_MODEL_KEY")
+                .args(["status", "--all"])
+                .output()
+                .unwrap();
+            assert!(status.status.success(), "{case}: {status:?}");
+            assert!(
+                String::from_utf8_lossy(&status.stdout).contains(SUBJECT),
+                "{case}: {status:?}"
+            );
 
-        let mut book = mdbook_preprocessor::book::Book::new();
-        book.push_item(mdbook_preprocessor::book::Chapter::new(
-            "Requirements",
-            fs::read_to_string(fixture.project.join("md/requirements.md")).unwrap(),
-            "requirements.md",
-            Vec::new(),
-        ));
-        let context = mdbook_preprocessor::PreprocessorContext::new(
-            fixture.project.clone(),
-            mdbook_preprocessor::config::Config::default(),
-            "html".to_owned(),
-        );
-        let mut render = fixture
-            .command()
-            .env_remove("HABEAS_TEST_MODEL_KEY")
-            .arg("mdbook")
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .unwrap();
-        serde_json::to_writer(render.stdin.take().unwrap(), &(&context, &book)).unwrap();
-        let rendered = render.wait_with_output().unwrap();
-        assert!(rendered.status.success(), "{case}: {rendered:?}");
-        let rendered: Value = serde_json::from_slice(&rendered.stdout).unwrap();
-        assert!(rendered.to_string().contains(SUBJECT), "{case}");
+            let mut book = mdbook_preprocessor::book::Book::new();
+            book.push_item(mdbook_preprocessor::book::Chapter::new(
+                "Requirements",
+                fs::read_to_string(fixture.project.join("md/requirements.md")).unwrap(),
+                "requirements.md",
+                Vec::new(),
+            ));
+            let context = mdbook_preprocessor::PreprocessorContext::new(
+                fixture.project.clone(),
+                mdbook_preprocessor::config::Config::default(),
+                "html".to_owned(),
+            );
+            let mut render = fixture
+                .command()
+                .env_remove("HABEAS_TEST_MODEL_KEY")
+                .arg("mdbook")
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .unwrap();
+            serde_json::to_writer(render.stdin.take().unwrap(), &(&context, &book)).unwrap();
+            let rendered = render.wait_with_output().unwrap();
+            assert!(rendered.status.success(), "{case}: {rendered:?}");
+            let rendered: Value = serde_json::from_slice(&rendered.stdout).unwrap();
+            assert!(rendered.to_string().contains(SUBJECT), "{case}");
+        }
     }
     assert!(
         matches!(listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock),
@@ -1775,7 +1865,7 @@ const LIMIT_NOTE: &str = "Your previous response reached the 16384-token output 
 #[test]
 fn a_response_cut_off_at_the_output_limit_is_continued_once() {
     let (output, bodies, usage) = bedrock_exchange(
-        "fixture-uncached-model",
+        "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
         vec![
             cut_off_submission("cut"),
             json!({
@@ -1793,6 +1883,7 @@ fn a_response_cut_off_at_the_output_limit_is_continued_once() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
+    let bodies: Vec<_> = bodies.iter().map(without_cache_points).collect();
     assert_eq!(bodies.len(), 2);
     // The same conversation continues: the cut-off turn as sent, then one
     // user message answering its incomplete call and carrying the note.
@@ -1808,6 +1899,7 @@ fn a_response_cut_off_at_the_output_limit_is_continued_once() {
     let content = note["content"].as_array().unwrap();
     assert_eq!(content.len(), 2, "{note}");
     assert_eq!(content[0]["toolResult"]["toolUseId"], "cut");
+    assert_eq!(content[0]["toolResult"]["status"], "error");
     assert!(
         content[0]["toolResult"].to_string().contains("not run"),
         "{note}"
@@ -2051,33 +2143,41 @@ fn provider_rejection_of_inference_options_is_reported() {
     );
 }
 
-/// Returns the first request's prompt and its sorted tool names and descriptions.
+/// Returns the first request's prompt and sorted tool definitions, removing
+/// only the provider-specific envelopes around each definition.
 // {test}`requirements.authoring.prompt_parts`
-fn prompt_and_tools(body: &Value, bedrock: bool) -> (String, Vec<(String, String)>) {
-    let (tools, spec) = if bedrock {
-        (&body["toolConfig"]["tools"], "toolSpec")
-    } else {
-        (&body["tools"], "function")
-    };
+fn prompt_and_tools(body: &Value) -> (String, Vec<(String, String, Value)>) {
+    let tools = body
+        .get("toolConfig")
+        .map_or(&body["tools"], |config| &config["tools"]);
     let mut tools = tools
         .as_array()
         .unwrap()
         .iter()
         .map(|tool| {
+            let spec = tool
+                .get("toolSpec")
+                .or_else(|| tool.get("function"))
+                .unwrap_or(tool);
+            let parameters = spec
+                .get("inputSchema")
+                .map_or(&spec["parameters"], |schema| &schema["json"]);
             (
-                tool[spec]["name"].as_str().unwrap().to_owned(),
-                tool[spec]["description"].as_str().unwrap().to_owned(),
+                spec["name"].as_str().unwrap().to_owned(),
+                spec["description"].as_str().unwrap().to_owned(),
+                parameters.clone(),
             )
         })
         .collect::<Vec<_>>();
-    tools.sort();
+    tools.sort_by(|left, right| left.0.cmp(&right.0));
     (prompt_text(body), tools)
 }
 
 // {test}`requirements.authoring.rig_configuration_mapping`
 // {test}`requirements.authoring.provider`
+// {test}`requirements.authoring.configuration_precedence`
 #[test]
-fn both_adapters_send_the_same_prompt_and_tools_with_default_connections() {
+fn all_adapters_preserve_prompt_tools_and_evidence_with_default_connections() {
     let submit =
         json!({"determination":true,"rationale":"The supplied sources support the subject."});
 
@@ -2111,12 +2211,14 @@ fn both_adapters_send_the_same_prompt_and_tools_with_default_connections() {
             .contains("authorization:")
     );
     assert_eq!(requests[0].body["model"], MODEL);
-    let ollama = prompt_and_tools(&requests[0].body, false);
+    let ollama = prompt_and_tools(&requests[0].body);
+    let ollama_evidence: Value =
+        serde_json::from_slice(&fs::read(&fixture.evidence).unwrap()).unwrap();
 
     // Bedrock without a profile or region uses the SDK default chain.
     let server = Server::start(vec![json!({
         "output":{"message":{"role":"assistant","content":[{"toolUse":
-            {"toolUseId":"submit","name":"submit_judgment","input":submit}}]}},
+            {"toolUseId":"submit","name":"submit_judgment","input":submit.clone()}}]}},
         "stopReason":"tool_use",
         "usage":{"inputTokens":1,"outputTokens":1,"totalTokens":2},
         "metrics":{"latencyMs":1}
@@ -2165,11 +2267,59 @@ fn both_adapters_send_the_same_prompt_and_tools_with_default_connections() {
     assert!(headers.starts_with("POST /model/default-chain-model/converse HTTP/1.1\r\n"));
     assert!(headers.contains("Credential=DEFAULT_CHAIN_ACCESS_KEY/"));
     assert!(headers.contains("/ap-south-1/bedrock/aws4_request"));
-    let bedrock = prompt_and_tools(&requests[0].body, true);
+    let bedrock = prompt_and_tools(&requests[0].body);
 
-    // Both fixtures are identical projects, so the requests must match.
+    let bedrock_evidence: Value =
+        serde_json::from_slice(&fs::read(&fixture.evidence).unwrap()).unwrap();
+
+    // OpenAI uses its default credential environment variable.
+    let server = Server::start(vec![json!({
+        "id":"resp_submit", "object":"response", "status":"completed",
+        "model":"fixture-openai", "output":[{
+            "type":"function_call", "id":"fc_submit", "call_id":"submit",
+            "name":"submit_judgment", "arguments":submit.to_string(), "status":"completed"
+        }],
+        "usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}
+    })]);
+    let fixture = Fixture::new(&server.endpoint);
+    fs::write(
+        fixture.config.join("habeas/config.toml"),
+        format!("version = 1\n[authoring]\ndefault = 'api'\n[authoring.configs.api]\npolicy = 'once'\nbackend = 'openai'\nmodel = 'fixture-openai'\nendpoint = '{}'\n", server.endpoint),
+    ).unwrap();
+    let output = fixture
+        .command()
+        .env("OPENAI_API_KEY", AUTH)
+        .args(["author", SUBJECT])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let requests = server.finish();
+    assert_eq!(requests.len(), 1);
+    assert!(
+        requests[0]
+            .headers
+            .starts_with("POST /responses HTTP/1.1\r\n")
+    );
+    assert!(requests[0].headers.contains(&format!("Bearer {AUTH}")));
+    assert_eq!(requests[0].body["model"], "fixture-openai");
+    let openai = prompt_and_tools(&requests[0].body);
+    let openai_evidence: Value =
+        serde_json::from_slice(&fs::read(&fixture.evidence).unwrap()).unwrap();
+
+    // Identical projects and submissions must preserve both request semantics
+    // and the entire evidence document, including inputs and reference hashes.
     assert_eq!(ollama, bedrock);
+    assert_eq!(ollama, openai);
     assert_eq!(ollama.1.len(), 9);
+    assert_eq!(ollama_evidence["requirement"], REQUIREMENT);
+    assert_eq!(ollama_evidence["determination"], true);
+    assert_eq!(ollama_evidence["rationale"], submit["rationale"]);
+    assert_eq!(ollama_evidence, bedrock_evidence);
+    assert_eq!(ollama_evidence, openai_evidence);
 }
 
 /// Asserts that authoring failed before or while recording usage history and
@@ -2300,27 +2450,36 @@ fn missing_or_empty_api_key_env_fails_before_any_model_request() {
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
     listener.set_nonblocking(true).unwrap();
     let fixture = Fixture::new(&format!("http://{}", listener.local_addr().unwrap()));
-    for value in [None, Some("")] {
-        let mut command = fixture.command();
-        match value {
-            None => command.env_remove("HABEAS_TEST_MODEL_KEY"),
-            Some(value) => command.env("HABEAS_TEST_MODEL_KEY", value),
-        };
-        let output = command.args(["author", SUBJECT]).output().unwrap();
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(!output.status.success(), "{value:?}: {stderr}");
-        assert!(
-            stderr.contains("HABEAS_TEST_MODEL_KEY"),
-            "{value:?}: {stderr}"
-        );
-        assert!(
-            matches!(listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock),
-            "{value:?}: the model endpoint was contacted"
-        );
-        assert_eq!(
-            fs::read_to_string(&fixture.evidence).unwrap(),
-            fixture.original
-        );
+    let config_path = fixture.config.join("habeas/config.toml");
+    let original_config = fs::read_to_string(&config_path).unwrap();
+    for backend in ["ollama", "openai"] {
+        fs::write(
+            &config_path,
+            original_config.replace("backend = 'ollama'", &format!("backend = '{backend}'")),
+        )
+        .unwrap();
+        for value in [None, Some("")] {
+            let mut command = fixture.command();
+            match value {
+                None => command.env_remove("HABEAS_TEST_MODEL_KEY"),
+                Some(value) => command.env("HABEAS_TEST_MODEL_KEY", value),
+            };
+            let output = command.args(["author", SUBJECT]).output().unwrap();
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(!output.status.success(), "{value:?}: {stderr}");
+            assert!(
+                stderr.contains("HABEAS_TEST_MODEL_KEY"),
+                "{value:?}: {stderr}"
+            );
+            assert!(
+                matches!(listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock),
+                "{value:?}: the model endpoint was contacted"
+            );
+            assert_eq!(
+                fs::read_to_string(&fixture.evidence).unwrap(),
+                fixture.original
+            );
+        }
     }
 }
 
@@ -4189,6 +4348,8 @@ fn bundled_skills_mark_roots_and_handle_uncovered_items() {
         &section(skill_md("habeas-evidence"), "### Uncovered Rust items"),
         &[
             "For each item still warned about after `habeas author --all`, choose references by \"Choosing references\" in the habeas-requirements skill",
+            "Before changing an uncovered item, determine whether it is a requirement root, an entry point, an item that serves other code, or dead code",
+            "Report dead code to the user without editing it",
             "| the item is a root of a requirement's implementation | add `{impl}` of that requirement to the item |",
             "| the item only serves other code | add `` // {cite}`habeas:util` `` |",
             "| nothing reaches the item | report it to the user as dead code; don't delete it unasked |",
@@ -4565,4 +4726,617 @@ fn replacing_a_record_that_stops_reading_an_item_warns_until_it_is_covered() {
     let status = fixture.run(&["status"]);
     let text = String::from_utf8_lossy(&status.stdout).into_owned();
     assert!(!text.contains(uncovered), "{text}");
+}
+
+// {test}`requirements.authoring.provider`
+// {test}`requirements.authoring.rig_configuration_mapping`
+// {test}`requirements.authoring.usage_requests`
+// {test}`requirements.authoring.configuration_storage`
+// {test}`requirements.authoring.usage_storage`
+// {test}`requirements.authoring.configuration_precedence`
+// {test}`requirements.authoring.cache_checkpoints`
+#[test]
+// {test}`requirements.authoring.usage_storage`
+fn openai_responses_replays_tool_calls_and_records_usage() {
+    fn assert_no_checkpoints(value: &Value) {
+        match value {
+            Value::Object(fields) => {
+                for (key, value) in fields {
+                    assert!(
+                        !matches!(key.as_str(), "cachePoint" | "cache_control"),
+                        "explicit cache checkpoint: {key}"
+                    );
+                    if key == "type" {
+                        assert!(
+                            !matches!(value.as_str(), Some("cache_point" | "cache_checkpoint")),
+                            "explicit cache checkpoint block: {value}"
+                        );
+                    }
+                    assert_no_checkpoints(value);
+                }
+            }
+            Value::Array(values) => {
+                for value in values {
+                    assert_no_checkpoints(value);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let response = |id: &str, name: &str, arguments: Value| {
+        json!({
+            "id": format!("resp_{id}"), "object":"response", "status":"completed",
+            "model":"fixture-openai", "output":[{
+                "type":"function_call", "id":format!("fc_{id}"), "call_id":id,
+                "name":name, "arguments":arguments.to_string(), "status":"completed"
+            }],
+            "usage":{"input_tokens":11,"output_tokens":7,"total_tokens":18,
+                "input_tokens_details":{"cached_tokens":3},
+                "output_tokens_details":{"reasoning_tokens":2}}
+        })
+    };
+    let server = Server::start(vec![
+        response(
+            "read",
+            "habeas",
+            json!({"file":"extra.txt","line_start":10}),
+        ),
+        response(
+            "submit",
+            "submit_judgment",
+            json!({"determination":false,"rationale":"Missing implementation."}),
+        ),
+    ]);
+    let fixture = Fixture::new(&server.endpoint);
+    fs::write(fixture.config.join("habeas/config.toml"), format!(
+        "version = 1\n[authoring]\ndefault = 'mock'\n[authoring.configs.mock]\nbackend = 'openai'\nmodel = 'fixture-openai'\npolicy = 'once'\nendpoint = '{}'\napi_key_env = 'HABEAS_TEST_MODEL_KEY'\n[authoring.configs.mock.options]\nmax_output_tokens = 1024\nreasoning = {{ effort = 'low' }}\n", server.endpoint)).unwrap();
+    let output = fixture.run(&["author-evidence", SUBJECT]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let requests = server.finish();
+    assert_eq!(requests.len(), 2);
+    for request in &requests {
+        assert!(request.headers.starts_with("POST /responses HTTP/1.1\r\n"));
+        assert!(request.headers.contains(&format!("Bearer {AUTH}")));
+        assert_eq!(request.body["model"], "fixture-openai");
+        assert_eq!(request.body["max_output_tokens"], 1024);
+        assert_eq!(request.body["reasoning"]["effort"], "low");
+        assert_eq!(request.body["tools"].as_array().unwrap().len(), 9);
+        assert_no_checkpoints(&request.body);
+    }
+    assert!(
+        !requests[0].body["instructions"]
+            .as_str()
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        requests[0].body["instructions"],
+        requests[1].body["instructions"]
+    );
+    assert_eq!(requests[0].body["tools"], requests[1].body["tools"]);
+    let initial_input = requests[0].body["input"].as_array().unwrap();
+    let history = requests[1].body["input"].as_array().unwrap();
+    assert_eq!(history.len(), initial_input.len() + 2);
+    assert_eq!(&history[..initial_input.len()], initial_input.as_slice());
+    assert_eq!(history[initial_input.len()]["type"], "function_call");
+    assert_eq!(history[initial_input.len()]["call_id"], "read");
+    assert_eq!(
+        history[initial_input.len() + 1]["type"],
+        "function_call_output"
+    );
+    assert_eq!(history[initial_input.len() + 1]["call_id"], "read");
+    let usage = fixture.usage();
+    assert_eq!(usage["backend"], "openai");
+    assert_eq!(usage["outcome"], "completed");
+    assert_eq!(usage["request_count"], 2);
+    assert_eq!(usage["tokens"]["input"], 22);
+    assert_eq!(usage["tokens"]["output"], 14);
+    assert_eq!(usage["tokens"]["cached_input"], 6);
+    assert_eq!(usage["tokens"]["reasoning"], 4);
+    assert!(!usage.to_string().contains(AUTH));
+}
+
+// {test}`requirements.authoring.openai_defaults`
+// {test}`requirements.authoring.credentials`
+// {test}`requirements.authoring.adaptive`
+#[test]
+fn openai_key_only_profile_defaults_to_sol_and_accepts_overrides() {
+    mock_server_waits_for_remaining_request_headers();
+    for (extra, model, effort, max_tokens) in [
+        ("", "gpt-6.1-sol", "low", 16_384),
+        ("model = 'gpt-6-luna'\n", "gpt-6-luna", "low", 16_384),
+        (
+            "model = 'gpt-6-luna'\n[authoring.configs.api.options]\nmax_output_tokens = 8192\n[authoring.configs.api.options.reasoning]\neffort = 'medium'\n",
+            "gpt-6-luna",
+            "medium",
+            8192,
+        ),
+    ] {
+        let submit = json!({"determination":false,"rationale":"Fixture assessment."});
+        let server = Server::start(vec![json!({
+            "id":"resp_submit", "object":"response", "status":"completed",
+            "model":model, "output":[{
+                "type":"function_call", "id":"fc_submit", "call_id":"submit",
+                "name":"submit_judgment", "arguments":submit.to_string(), "status":"completed"
+            }],
+            "usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}
+        })]);
+        let fixture = Fixture::new(&server.endpoint);
+        // Only the endpoint is fixture-specific; policy/concurrency/model are optional.
+        fs::write(fixture.config.join("habeas/config.toml"), format!(
+            "version = 1\n[authoring]\ndefault = 'api'\n[authoring.configs.api]\nbackend = 'openai'\napi_key = '{AUTH}'\nendpoint = '{}'\n{extra}", server.endpoint)).unwrap();
+        let output = fixture.run(&["author", SUBJECT]);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let requests = server.finish();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].body["model"], model);
+        assert_eq!(requests[0].body["reasoning"]["effort"], effort);
+        assert_eq!(requests[0].body["max_output_tokens"], max_tokens);
+        assert!(requests[0].headers.contains(&format!("Bearer {AUTH}")));
+        let usage = fixture.usage();
+        assert_eq!(usage["model"], model);
+        assert_eq!(usage["policy"], "once");
+        assert!(!usage.to_string().contains(AUTH));
+    }
+}
+
+// {cite}`habeas:util`
+fn mock_server_waits_for_remaining_request_headers() {
+    let server = Server::start(vec![json!({"ok":true})]);
+    let mut client =
+        std::net::TcpStream::connect(server.endpoint.trim_start_matches("http://")).unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_millis(100)))
+        .unwrap();
+    client.write_all(b"POST /api/chat HTTP/1.1\r\n").unwrap();
+    // No response or EOF may arrive while the request is still incomplete.
+    let error = client.read(&mut [0]).unwrap_err();
+    assert!(matches!(
+        error.kind(),
+        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+    ));
+    client.write_all(b"Content-Length: 2\r\n\r\n{}").unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let mut response = String::new();
+    client.read_to_string(&mut response).unwrap();
+    assert!(response.starts_with("HTTP/1.1 200 "), "{response}");
+    let requests = server.finish();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].body, json!({}));
+}
+
+// {test}`requirements.authoring.adaptive`
+// {test}`requirements.authoring.openai_defaults`
+// {test}`requirements.authoring.policy`
+#[test]
+// {test}`requirements.authoring.usage_storage`
+// {test}`requirements.authoring.confirmation`
+fn adaptive_routes_fresh_assessments_and_records_each_model() {
+    let response = |arguments: Value| {
+        json!({
+            "id":"resp_submit", "object":"response", "status":"completed",
+            "model":"mock", "output":[{
+                "type":"function_call", "id":"fc_submit", "call_id":"submit",
+                "name":"submit_judgment", "arguments":arguments.to_string(), "status":"completed"
+            }], "usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}
+        })
+    };
+    for (existing_fixme, first, policy, expected_models, reason) in [
+        (
+            false,
+            json!({"determination":true,"rationale":"Good."}),
+            "",
+            vec!["gpt-5.4-mini"],
+            None,
+        ),
+        (
+            false,
+            json!({"determination":false,"rationale":"MINI_ONLY_RATIONALE_SENTINEL"}),
+            "",
+            vec!["gpt-5.4-mini", "gpt-6.1-sol"],
+            Some("mini_false"),
+        ),
+        (
+            false,
+            json!({"determination":{"FIXME":["Gap"]},"rationale":"MINI_ONLY_RATIONALE_SENTINEL"}),
+            "",
+            vec!["gpt-5.4-mini", "gpt-6.1-sol"],
+            Some("mini_fixme"),
+        ),
+        (
+            false,
+            json!({"bad":"submission"}),
+            "",
+            vec!["gpt-5.4-mini", "gpt-6.1-sol"],
+            Some("mini_assessment_failed"),
+        ),
+        (
+            true,
+            json!({"determination":true,"rationale":"Good."}),
+            "",
+            vec!["gpt-6.1-sol"],
+            Some("existing_fixme"),
+        ),
+        (
+            false,
+            json!({"determination":true,"rationale":"FIRST_AGREEMENT_RATIONALE"}),
+            "policy = 'confirm'\n",
+            vec!["gpt-5.4-mini", "gpt-5.4-mini"],
+            None,
+        ),
+    ] {
+        let mut replies = vec![response(first)];
+        if expected_models.len() == 2 {
+            replies.push(response(json!({"determination":true,"rationale":"Good."})));
+        }
+        let server = Server::start(replies);
+        let fixture = Fixture::new(&server.endpoint);
+        if !existing_fixme {
+            fs::write(fixture.project.join("src/lib.rs"), "// {impl}`requirements.ready`\npub fn ready() {}\n// {test}`requirements.ready`\nfn ready_test() {}\n// A plain FIXME is not an acknowledgment.\n").unwrap();
+        }
+        fs::write(fixture.config.join("habeas/config.toml"), format!(
+            "version = 1\n[authoring]\ndefault = 'api'\n[authoring.configs.api]\nbackend = 'openai'\nmodel = 'adaptive'\n{policy}endpoint = '{}'\napi_key_env = 'HABEAS_TEST_MODEL_KEY'\n[authoring.configs.api.options]\nmax_output_tokens = 8192\nreasoning = {{ effort = 'medium' }}\n", server.endpoint)).unwrap();
+        let output = fixture.run(&["author", SUBJECT]);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let requests = server.finish();
+        assert_eq!(
+            requests
+                .iter()
+                .map(|r| r.body["model"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            expected_models
+        );
+        for request in &requests {
+            assert!(
+                request
+                    .headers
+                    .to_lowercase()
+                    .contains(&format!("authorization: bearer {}", AUTH.to_lowercase()))
+            );
+            assert!(
+                !request
+                    .body
+                    .to_string()
+                    .contains("MINI_ONLY_RATIONALE_SENTINEL")
+            );
+            assert_eq!(
+                request.body["input"].as_array().unwrap().len(),
+                1,
+                "fresh conversation"
+            );
+            assert_eq!(request.body["reasoning"]["effort"], "medium");
+            assert_eq!(request.body["max_output_tokens"], 8192);
+        }
+        let evidence: Value =
+            serde_json::from_slice(&fs::read(&fixture.evidence).unwrap()).unwrap();
+        assert_eq!(evidence["determination"], true);
+        if !policy.is_empty() {
+            assert_eq!(evidence["rationale"], "FIRST_AGREEMENT_RATIONALE");
+        }
+        let logs: Vec<Value> = fs::read_dir(fixture.state.join("habeas/authoring/usage"))
+            .unwrap()
+            .map(|entry| serde_json::from_slice(&fs::read(entry.unwrap().path()).unwrap()).unwrap())
+            .collect();
+        let expected_policy = if policy.is_empty() { "once" } else { "confirm" };
+        assert!(
+            logs.iter().all(|log| log["policy"] == expected_policy),
+            "{logs:?}"
+        );
+        let parent = logs
+            .iter()
+            .find(|log| log["subject"] == SUBJECT && log["model"] == "adaptive")
+            .unwrap();
+        assert_eq!(parent["routing_reason"].as_str(), reason);
+        assert!(!parent["attempts"].as_array().unwrap().is_empty());
+        let actual: Vec<_> = logs
+            .iter()
+            .filter(|log| log["model"] != "adaptive")
+            .collect();
+        assert_eq!(actual.len(), expected_models.len());
+        let ids: std::collections::BTreeSet<_> = actual
+            .iter()
+            .map(|log| log["run_id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids.len(), actual.len());
+        let links: Vec<_> = logs
+            .iter()
+            .flat_map(|log| log["attempts"].as_array().into_iter().flatten())
+            .filter_map(Value::as_str)
+            .collect();
+        for id in ids {
+            assert!(
+                links
+                    .iter()
+                    .any(|path| path.ends_with(&format!("{id}.json")))
+            );
+        }
+        for model in expected_models {
+            assert!(
+                logs.iter()
+                    .any(|log| log["model"] == model && log["request_count"] == 1)
+            );
+        }
+    }
+}
+
+// {test}`requirements.authoring.adaptive`
+// {test}`requirements.authoring.persistence`
+// {test}`requirements.authoring.policy`
+#[test]
+// {test}`requirements.authoring.confirmation`
+fn adaptive_sol_failure_is_final_and_confirm_uses_sol_verification() {
+    let response = |name: &str, arguments: Value| {
+        json!({
+            "id":"resp", "object":"response", "status":"completed", "model":"mock",
+            "output":[{"type":"function_call", "id":"fc", "call_id":"call", "name":name,
+                "arguments":arguments.to_string(), "status":"completed"}],
+            "usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}
+        })
+    };
+    let assert_policy = |fixture: &Fixture, expected: &str| {
+        for path in fs::read_dir(fixture.state.join("habeas/authoring/usage")).unwrap() {
+            let log: Value =
+                serde_json::from_slice(&fs::read(path.unwrap().path()).unwrap()).unwrap();
+            assert_eq!(log["policy"], expected);
+        }
+    };
+    let good = response(
+        "submit_judgment",
+        json!({"determination":true,"rationale":"Good."}),
+    );
+    let bad = response(
+        "submit_judgment",
+        json!({"determination":false,"rationale":"Gap."}),
+    );
+    for confirm in [false, true] {
+        let replies = if confirm {
+            vec![
+                good.clone(),
+                bad.clone(),
+                bad.clone(),
+                response(
+                    "submit_verification",
+                    json!({
+                "real":false,"acknowledged":false,"acknowledgments":[],"rationale":"No real gap."}),
+                ),
+            ]
+        } else {
+            vec![
+                bad.clone(),
+                response("submit_judgment", json!({"invalid":true})),
+            ]
+        };
+        let server = Server::start(replies);
+        let fixture = Fixture::new(&server.endpoint);
+        fs::write(fixture.project.join("src/lib.rs"), "// {impl}`requirements.ready`\npub fn ready() {}\n// {test}`requirements.ready`\nfn ready_test() {}\n").unwrap();
+        fs::write(fixture.config.join("habeas/config.toml"), format!(
+            "version = 1\n[authoring]\ndefault = 'api'\n[authoring.configs.api]\nbackend = 'openai'\nmodel = 'adaptive'\nendpoint = '{}'\napi_key_env = 'HABEAS_TEST_MODEL_KEY'\n", server.endpoint)).unwrap();
+        let output = if confirm {
+            fixture.run(&["author", SUBJECT, "--policy", "confirm"])
+        } else {
+            fixture.run(&["author", SUBJECT])
+        };
+        let requests = server.finish();
+        assert_policy(&fixture, if confirm { "confirm" } else { "once" });
+        let models: Vec<_> = requests
+            .iter()
+            .map(|r| r.body["model"].as_str().unwrap())
+            .collect();
+        if confirm {
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(
+                models,
+                ["gpt-5.4-mini", "gpt-5.4-mini", "gpt-6.1-sol", "gpt-6.1-sol"]
+            );
+            let evidence: Value =
+                serde_json::from_slice(&fs::read(&fixture.evidence).unwrap()).unwrap();
+            assert_eq!(evidence["determination"], true);
+            assert!(
+                evidence["rationale"]
+                    .as_str()
+                    .unwrap()
+                    .contains("assessments disagreed")
+            );
+        } else {
+            assert!(!output.status.success());
+            assert_eq!(models, ["gpt-5.4-mini", "gpt-6.1-sol"]);
+            assert_eq!(
+                fs::read_to_string(&fixture.evidence).unwrap(),
+                fixture.original
+            );
+        }
+    }
+    for policy in ["once", "confirm"] {
+        let server = Server::start(vec![
+            response(
+                "submit_judgment",
+                json!({"determination":false,"rationale":"Mini found a gap."}),
+            ),
+            response(
+                "submit_judgment",
+                json!({"determination":false,"rationale":"Sol confirms the gap."}),
+            ),
+        ]);
+        let fixture = Fixture::new(&server.endpoint);
+        configure_adaptive_fixture(&fixture, &server.endpoint);
+        let output = fixture.run(&["author", SUBJECT, "--policy", policy]);
+        assert!(output.status.success(), "{output:?}");
+        assert_policy(&fixture, policy);
+        let requests = server.finish();
+        assert_eq!(
+            requests
+                .iter()
+                .map(|request| request.body["model"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["gpt-5.4-mini", "gpt-6.1-sol"]
+        );
+        let evidence: Value =
+            serde_json::from_slice(&fs::read(&fixture.evidence).unwrap()).unwrap();
+        assert_eq!(evidence["determination"], false);
+        assert_eq!(evidence["rationale"], "Sol confirms the gap.");
+    }
+}
+
+// {cite}`habeas:util`
+fn configure_adaptive_fixture(fixture: &Fixture, endpoint: &str) {
+    fs::write(fixture.project.join("src/lib.rs"), "// {impl}`requirements.ready`\npub fn ready() {}\n// {test}`requirements.ready`\nfn ready_test() {}\n").unwrap();
+    fs::write(fixture.config.join("habeas/config.toml"), format!(
+        "version = 1\n[authoring]\ndefault = 'api'\n[authoring.configs.api]\nbackend = 'openai'\nmodel = 'adaptive'\nendpoint = '{endpoint}'\napi_key_env = 'HABEAS_TEST_MODEL_KEY'\n")).unwrap();
+}
+
+// {test}`requirements.authoring.adaptive`
+#[test]
+fn adaptive_preflight_and_provider_errors_never_attempt_sol() {
+    for failure in [
+        "credential",
+        "mandatory",
+        "storage",
+        "provider",
+        "connection",
+    ] {
+        let server = (failure == "provider").then(|| Server::start(vec![json!({
+            "__http_status":401,"error":{"message":"fixture rejected credential","type":"invalid_request_error","code":"invalid_api_key"}
+        })]));
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let endpoint = server
+            .as_ref()
+            .map(|s| s.endpoint.clone())
+            .unwrap_or_else(|| format!("http://{}", listener.local_addr().unwrap()));
+        let listener = if failure == "connection" {
+            drop(listener);
+            None
+        } else {
+            Some(listener)
+        };
+        let fixture = Fixture::new(&endpoint);
+        configure_adaptive_fixture(&fixture, &endpoint);
+        if failure == "mandatory" {
+            fs::write(
+                fixture.project.join("habeas.toml"),
+                "version = 1\n[evidence]\ndisallow = ['md/requirements.md']\n",
+            )
+            .unwrap();
+        }
+        if failure == "storage" {
+            fs::write(&fixture.state, "not a directory").unwrap();
+        }
+        let mut command = fixture.command();
+        if failure == "credential" {
+            command.env_remove("HABEAS_TEST_MODEL_KEY");
+        }
+        let output = command.args(["author", SUBJECT]).output().unwrap();
+        assert!(!output.status.success(), "{failure}");
+        assert_eq!(
+            fs::read_to_string(&fixture.evidence).unwrap(),
+            fixture.original
+        );
+        if let Some(server) = server {
+            let requests = server.finish();
+            assert_eq!(requests.len(), 1);
+            assert_eq!(requests[0].body["model"], "gpt-5.4-mini");
+            assert!(
+                String::from_utf8_lossy(&output.stderr).contains("fixture rejected credential")
+            );
+        } else if let Some(listener) = listener {
+            assert!(matches!(listener.accept(),Err(e) if e.kind()==std::io::ErrorKind::WouldBlock));
+        }
+        if let Ok(paths) = fs::read_dir(fixture.state.join("habeas/authoring/usage")) {
+            for path in paths {
+                let log: Value =
+                    serde_json::from_slice(&fs::read(path.unwrap().path()).unwrap()).unwrap();
+                assert_ne!(log["model"], "gpt-6.1-sol", "{failure}: {log}");
+            }
+        }
+    }
+}
+
+// {test}`requirements.authoring.adaptive`
+#[cfg(unix)]
+#[test]
+fn adaptive_cancellation_does_not_escalate_or_replace_evidence() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    let fixture = Fixture::new(&endpoint);
+    configure_adaptive_fixture(&fixture, &endpoint);
+    let child = fixture
+        .command()
+        .args(["author", SUBJECT])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let _connection = loop {
+        if let Ok((stream, _)) = listener.accept() {
+            break stream;
+        }
+        assert!(Instant::now() < deadline, "no initial mini request");
+        thread::sleep(Duration::from_millis(5));
+    };
+    assert!(
+        Command::new("kill")
+            .args(["-INT", &child.id().to_string()])
+            .status()
+            .unwrap()
+            .success()
+    );
+    let output = child.wait_with_output().unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("cancel"));
+    assert_eq!(
+        fs::read_to_string(&fixture.evidence).unwrap(),
+        fixture.original
+    );
+    assert!(matches!(listener.accept(),Err(e) if e.kind()==std::io::ErrorKind::WouldBlock));
+    for entry in fs::read_dir(fixture.state.join("habeas/authoring/usage")).unwrap() {
+        let log: Value = serde_json::from_slice(&fs::read(entry.unwrap().path()).unwrap()).unwrap();
+        assert_ne!(log["model"], "gpt-6.1-sol");
+    }
+}
+
+// {test}`requirements.authoring.adaptive`
+#[test]
+fn adaptive_unsubmitted_conversation_escalates_once_with_fresh_input() {
+    let empty = json!({"id":"resp","object":"response","status":"completed","model":"mock","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}});
+    let good = json!({"id":"resp","object":"response","status":"completed","model":"mock","output":[{"type":"function_call","id":"fc","call_id":"call","name":"submit_judgment","arguments":json!({"determination":true,"rationale":"Good."}).to_string(),"status":"completed"}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}});
+    let server = Server::start(vec![empty.clone(), empty, good]);
+    let fixture = Fixture::new(&server.endpoint);
+    configure_adaptive_fixture(&fixture, &server.endpoint);
+    let output = fixture.run(&["author", SUBJECT]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let requests = server.finish();
+    assert_eq!(
+        requests
+            .iter()
+            .map(|r| r.body["model"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["gpt-5.4-mini", "gpt-5.4-mini", "gpt-6.1-sol"]
+    );
+    assert_eq!(requests[2].body["input"].as_array().unwrap().len(), 1);
+    assert!(!requests[2].body.to_string().contains("Reminder:"));
 }

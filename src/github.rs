@@ -79,6 +79,7 @@ impl IssueRead {
 #[derive(Clone, Debug)]
 pub struct GithubIssues {
     client: Option<Arc<Client>>,
+    cache_failure: Option<String>,
 }
 
 /// Whether a `HABEAS_GITHUB_API_URL` value has the only accepted form,
@@ -99,7 +100,8 @@ fn is_loopback_api_url(url: &str) -> bool {
 #[derive(Debug)]
 struct Client {
     api: String,
-    /// The cache directory, or `None` when no state root is available.
+    /// The cache directory; isolated test clients may omit it. Production
+    /// clients require a state root or disable reads.
     cache: Option<PathBuf>,
     token: Option<String>,
 }
@@ -108,13 +110,16 @@ impl GithubIssues {
     /// Reads nothing: every issue counts as unreachable and so as open.
     // {cite}`habeas:util`
     pub fn offline() -> Self {
-        Self { client: None }
+        Self {
+            client: None,
+            cache_failure: None,
+        }
     }
 
     /// Reads GitHub, authenticating with `GITHUB_TOKEN` when it is set and
     /// caching under the state root, for the project at `root`. A state root
-    /// inside that project, or one that cannot be determined, leaves reads
-    /// uncached. Unit tests never contact GitHub.
+    /// inside that project, or one that cannot be determined, prevents reads
+    /// and is reported when an issue is requested. Unit tests never contact GitHub.
     // {impl}`requirements.authoring.github_reads`
     // {impl}`requirements.configuration.state_location`
     pub fn from_env(root: &Path) -> Self {
@@ -128,14 +133,24 @@ impl GithubIssues {
         let token = std::env::var("GITHUB_TOKEN")
             .ok()
             .filter(|token| !token.trim().is_empty());
-        let cache = crate::config::state_root()
-            .ok()
-            .filter(|state| {
-                fs::canonicalize(root)
-                    .and_then(|root| crate::config::state_in_project(state, &root))
-                    .is_ok_and(|inside| !inside)
-            })
-            .map(|state| state.join("github"));
+        let cache = crate::config::state_root().and_then(|state| {
+            let root = fs::canonicalize(root)?;
+            if crate::config::state_in_project(&state, &root)? {
+                return Err(std::io::Error::other(
+                    "GitHub cache state must be outside the project repository",
+                ));
+            }
+            Ok(state.join("github"))
+        });
+        let cache = match cache {
+            Ok(cache) => Some(cache),
+            Err(error) => {
+                return Self {
+                    client: None,
+                    cache_failure: Some(format!("cannot locate GitHub cache: {error}")),
+                };
+            }
+        };
         Self::with_api(api, cache, token)
     }
 
@@ -147,6 +162,7 @@ impl GithubIssues {
                 cache,
                 token,
             })),
+            cache_failure: None,
         }
     }
 
@@ -168,9 +184,23 @@ impl GithubIssues {
     ) -> BTreeMap<String, IssueRead> {
         let issues = issues.into_iter().collect::<BTreeSet<_>>();
         let Some(client) = &self.client else {
+            if !issues.is_empty()
+                && let Some(error) = &self.cache_failure
+            {
+                eprintln!("warning: {error}");
+            }
             return issues
                 .into_iter()
-                .map(|issue| (issue, IssueRead::Failed("GitHub reads are disabled".into())))
+                .map(|issue| {
+                    (
+                        issue,
+                        IssueRead::Failed(
+                            self.cache_failure
+                                .clone()
+                                .unwrap_or_else(|| "GitHub reads are disabled".into()),
+                        ),
+                    )
+                })
                 .collect();
         };
         let now = SystemTime::now()
@@ -193,9 +223,13 @@ impl GithubIssues {
         let fetched = std::thread::spawn(move || worker.fetch_all(pending))
             .join()
             .unwrap_or_default();
-        for (issue, read) in fetched {
-            if !matches!(read, IssueRead::Failed(_)) {
-                client.store(&issue, now, &read);
+        for (issue, mut read) in fetched {
+            if !matches!(read, IssueRead::Failed(_))
+                && let Err(error) = client.store(&issue, now, &read)
+            {
+                let message = format!("cannot record GitHub cache for {issue}: {error}");
+                eprintln!("warning: {message}");
+                read = IssueRead::Failed(message);
             }
             results.insert(issue, read);
         }
@@ -247,13 +281,12 @@ impl Client {
         })
     }
 
-    /// Records a definitive result. A failed cache write only means the
-    /// next read contacts GitHub again.
+    /// Records a definitive result, reporting storage failures to the caller.
     // {impl}`requirements.authoring.github_reads`
     // {impl}`requirements.configuration.state_location`
-    fn store(&self, issue: &str, now: u64, read: &IssueRead) {
+    fn store(&self, issue: &str, now: u64, read: &IssueRead) -> std::io::Result<()> {
         let Some(path) = self.cache_path(issue) else {
-            return;
+            return Ok(());
         };
         let mut entry = json!({"issue": issue, "api": self.api, "fetched": now});
         match read {
@@ -263,16 +296,16 @@ impl Client {
                 entry["body"] = json!(found.body);
             }
             IssueRead::Missing => entry["state"] = json!("missing"),
-            IssueRead::Failed(_) => return,
+            IssueRead::Failed(_) => return Ok(()),
         }
         let Some(directory) = path.parent() else {
-            return;
+            return Ok(());
         };
-        let _ = fs::create_dir_all(directory).and_then(|()| {
+        fs::create_dir_all(directory).and_then(|()| {
             let mut file = tempfile::NamedTempFile::new_in(directory)?;
             file.write_all(entry.to_string().as_bytes())?;
             file.persist(&path).map(|_| ()).map_err(|error| error.error)
-        });
+        })
     }
 
     /// Fetches issues concurrently on a runtime of this thread's own.
@@ -973,6 +1006,12 @@ mod tests {
             ("/repos/o/r/issues/2", 200, issue("open", "")),
         ]);
         let temp = project();
+        let chapter = temp.path().join("md/rules.md");
+        let mut text = fs::read_to_string(&chapter).unwrap();
+        text.push_str(
+            "\n::::{example} unfinished\nGiven ready, it succeeds. {cite}`rules.ready`\n\n:::{fixme}\n:github: o/r#3\nThe example is untested.\n:::\n::::\n",
+        );
+        fs::write(&chapter, text).unwrap();
         let mut inspection = crate::evidence::inspect_repository(temp.path()).unwrap();
         let before = inspection.report.errors.clone();
         assert_eq!(github.count(), 0, "inspection reads no issues");
@@ -991,8 +1030,29 @@ mod tests {
                 "{expected}\n{added:#?}"
             );
         }
-        assert_eq!(added.len(), 5, "{added:#?}");
+        assert!(
+            added.iter().any(
+                |error| error.contains("example rules.unfinished fails: its {fixme}")
+                    && error.contains("o/r#3, which does not exist")
+            ),
+            "{added:#?}"
+        );
+        assert_eq!(added.len(), 7, "{added:#?}");
         assert!(!added.iter().any(|error| error.contains("o/r#2")));
+
+        let missing = FakeGithub::start(&[]);
+        let mut missing_inspection = crate::evidence::inspect_repository(temp.path()).unwrap();
+        add_issue_findings(
+            &mut missing_inspection,
+            &GithubIssues::with_api(missing.endpoint.clone(), None, None),
+        );
+        assert!(
+            missing_inspection.report.errors.iter().any(|error| error
+                .contains("evidence/rules.ready.json: stale: issue o/r#1")
+                && error.contains("does not exist")),
+            "{:?}",
+            missing_inspection.report.errors
+        );
 
         // Unreachable issues count as open, and nothing is added.
         let mut inspection = crate::evidence::inspect_repository(temp.path()).unwrap();
@@ -1002,6 +1062,24 @@ mod tests {
         let unreachable = GithubIssues::with_api("http://127.0.0.1:9".to_owned(), None, None);
         add_issue_findings(&mut inspection, &unreachable);
         assert_eq!(inspection.report.errors, before);
+    }
+
+    // {test}`requirements.authoring.github_reads`
+    // {test}`requirements.configuration.state_location`
+    #[test]
+    fn cache_write_failures_are_reported_instead_of_returning_uncached_success() {
+        let github = FakeGithub::start(&[("/repos/o/r/issues/1", 200, issue("open", ""))]);
+        let state = tempfile::tempdir().unwrap();
+        let blocked = state.path().join("github");
+        fs::write(&blocked, "not a directory").unwrap();
+        let issues = GithubIssues::with_api(github.endpoint.clone(), Some(blocked.clone()), None);
+        let result = issues.read("o/r#1");
+        assert!(
+            matches!(result, IssueRead::Failed(ref message) if message.contains("cannot record GitHub cache")),
+            "{result:?}"
+        );
+        assert_eq!(github.count(), 1);
+        assert_eq!(fs::read_to_string(blocked).unwrap(), "not a directory");
     }
 
     // {test}`requirements.authoring.github_reads`

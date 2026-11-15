@@ -1,8 +1,8 @@
 {
   "requirement": "Every `habeas author` form MUST accept `--missing` and `--force`, which are\nmutually exclusive; `--missing` MUST be the default. Under `--missing`, the\ncommand MUST assess only the selected subjects whose evidence is missing, stale,\nor invalid, and MUST preserve every current record without invoking a model,\nincluding accepted FIXME judgments and current false judgments; a current false\njudgment is reassessed only when its subject or inputs change or `--force` is\ngiven. Under `--force`, the command MUST assess every selected subject. `--stdout`\nMUST imply `--force`, because it writes no evidence. The command MUST report the\nnumber of selected subjects it skipped as current. When no assessment is needed,\nthe command MUST succeed without resolving model configuration or credentials.",
   "determination": true,
-  "rationale": "I found no gap. Each obligation in `requirements.authoring.refresh` has code that carries it out, and a test that runs that code and asserts the outcome.\n\n**Flags**\n- **Accepted on every form:** `src/main.rs#enum[Command]` defines `--missing` and `--force` on `Author`. This covers the `author-evidence` alias, a single subject, `--all`, `sites:` and `citations:` subjects.\n- **Mutually exclusive:** `--missing` has `conflicts_with_all = [\"force\", \"stdout\"]`.\n- **`--missing` is the default:** `missing` is ignored in `main` (`missing: _`), and only `force` changes behavior.\n- **Tests:** `missing_keeps_current_records_and_force_reassesses_every_selected_subject` runs `--missing`, `--force`, `--missing --force` (single subject and `--all`) and `--stdout --missing`. It asserts the \"cannot be used with\" error for the conflicting combinations.\n\n**`--missing` selection and preservation**\n- **Batch:** `src/authoring/batch.rs#fn[select_subjects]` selects a subject only if `force` is set or `current(&evidence)` is false.\n- **What counts as current:** `fn[current]` treats Valid, Fixme and DeterminationFalse as current. Missing, Invalid and stale records, including false judgments whose inputs or reference set changed, are reassessed. Stale and invalid records are detected through `LoadedDetailEvidence::state`, where any error other than \"determination is false\" yields Invalid.\n- **Single subject:** `author_evidence_with_options` in `src/authoring/mod.rs` calls `batch::subject_is_current` and returns `None` before any model or configuration step.\n- **Tests:**\n  - `batch_preserves_current_false_judgments_and_reauthors_stale_ones` and `batch_reauthors_a_false_judgment_when_its_reference_set_changes` cover the false-judgment cases.\n  - `batch_fills_evidence_preserves_current_records_and_reauthors_only_changed_inputs` covers the accepted FIXME record, missing evidence on the first run, and reauthoring only the changed subject.\n  - The citation and site tests cover current single reviews being kept.\n\n**`--force` and `--stdout`**\n- **Assess everything:** `--force` is passed in `AuthoringOptions` to `select_subjects`, which then skips no subject. `--stdout` sets `force` in `author_evidence_with_options`.\n- **Tests:** `missing_keeps_current_records_and_force_reassesses_every_selected_subject` asserts that `--force` on one subject adds a model call and that `--stdout` adds another (\"`--stdout` implies `--force`\"). It also asserts that `--all --force` gives \"6 authored; 0 skipped as current; 0 failed\".\n\n**Reporting skipped as current**\n- **Batch:** `main` prints \"N authored; M skipped as current; K failed\".\n- **Single subject:** `main` prints \"<subject>: evidence is current; 1 skipped as current (use --force to reassess)\".\n- **Tests:** the tests above assert both strings.\n\n**No configuration or credentials when nothing needs assessment**\n- **Batch:** `run_batch` returns early when `subjects.is_empty()`, before `config::resolve_authoring`.\n- **Single subject:** `author_evidence_with_options` returns `None` before configuration is resolved.\n- **Tests:** the tests overwrite the configuration with invalid TOML (and, in the batch test, delete it) and assert success and no new model calls.\n\n`MAY` imposes nothing to check. The behaviors the code adds (the explanatory suffix text and the closed-issue staleness check) fall within what the requirement describes.",
-  "references": "478fa0bebb1a31187080e75cc57211aade41d5a63067a3d3825d85c2dfa46c44",
+  "rationale": "I found no gaps. Every obligation in `requirements.authoring.refresh` has implementing code reachable from the {impl} items, and each has a test carrying a {test} reference.\n\n**Obligations, code and tests**\n\n- **Both flags accepted by every `habeas author` form, mutually exclusive, `--missing` the default.**\n  - Code: in `src/main.rs#enum[Command]`, the `Author` variant declares `missing` with `conflicts_with_all = [\"force\", \"stdout\"]`, and `force`. Both `--all` and single-subject forms are variants of `Author`. The default is implicit: unless `force` is set, the code takes the `--missing` path.\n  - Test: `tests/authoring_batch.rs#fn[missing_keeps_current_records_and_force_reassesses_every_selected_subject]` runs `--missing` and `--force` together on a single subject and on `--all`, and asserts \"cannot be used with\" in both cases. It also covers `--missing` with `--stdout`.\n- **Under `--missing`, assess only subjects whose evidence is missing, stale or invalid.**\n  - Code: `src/authoring/batch.rs#fn[select_subjects]` selects a subject unless `!force && current(..)`. `fn[current]` accepts `Valid`, `Fixme` and `DeterminationFalse` states only.\n  - Tests: the missing case is covered by the first `--all` run in the tests. The stale case is covered by `batch_fills_evidence_preserves_current_records_and_reauthors_only_changed_inputs`, `batch_preserves_current_false_judgments_and_reauthors_stale_ones` and `batch_reauthors_a_false_judgment_when_its_reference_set_changes`. The invalid case is covered by the `{invalid` alpha record in the `missing_keeps_current...` test, which is reassessed under `--missing`.\n- **Preserve every current record without invoking a model, including accepted FIXME judgments and current false judgments.**\n  - Code: the `current` check in `select_subjects`. In the single-subject form, `fn[author_evidence_with_options]` returns `None` via `batch::subject_is_current`.\n  - Tests: the beta FIXME is preserved in `batch_fills_evidence_...`. Current false records are preserved in `batch_preserves_current_false_judgments...`, where the server subject count does not change and the alpha file bytes are unchanged.\n- **A current false judgment is reassessed only when its subject or inputs change, or under `--force`.**\n  - Tests: `batch_preserves_current_false_judgments...` changes the source, so gamma is reassessed, and then runs `requirements.alpha --force`. `batch_reauthors_a_false_judgment_when_its_reference_set_changes` covers a reference-set change.\n- **Under `--force`, assess every selected subject.**\n  - Code: `select_subjects` and `author_evidence_with_options` skip the currency check when `force` is set.\n  - Tests: `author requirements.alpha --force` adds one model conversation. `author --all --force` reports \"6 authored; 0 skipped as current\".\n- **`--stdout` implies `--force`.**\n  - Code: `author_evidence_with_options` computes `force = options.force || matches!(output, Stdout)`.\n  - Test: `missing_keeps_current...` asserts `--stdout` on a current subject still invokes the model (\"--stdout implies --force\").\n- **Report the number of selected subjects skipped as current.**\n  - Code: the batch summary in `main` prints \"N skipped as current\". The single-subject path prints \"evidence is current; 1 skipped as current\" or \"...; 0 skipped as current\".\n  - Tests: exact summary strings are asserted in the batch tests, the policy test and the single-subject checks.\n- **Succeed without resolving model configuration or credentials when no assessment is needed.**\n  - Code: `run_batch` returns early when `subjects.is_empty()`, before `config::resolve_authoring`. `author_evidence_with_options` returns before `configured_assessment`.\n  - Tests: the batch tests run with invalid TOML and with the config file removed, and still succeed with no model calls. The single-subject, `sites:` and `citations:` forms are tested the same way.\n\n**Other checks**\n\n- The single-subject and batch paths both reach the implementing code from the `main` and `author_evidence` {impl} references.\n- The extra output \"(use --force to reassess)\" falls within the required skip report.\n- The test references on each test function cover the obligations above, so no required test was found only by searching.",
+  "references": "09d83d7c3f5bc4d90dc105f23b29a9e3d92c351b174ebf34614660e2ea2100e1",
   "inputs": [
     {
       "requirements": "requirements.authoring.refresh",
@@ -32,7 +32,7 @@
     {
       "file": "src/main.rs",
       "item": "fn[main]",
-      "hash": "42ef4a96b3415d8d33c51f238537e73ae6df30846bfd269a71cb72a6540736b0"
+      "hash": "45893b6502189459e48ee669e8e1b7c4d69f889c0c213417573af01914278208"
     },
     {
       "file": "tests/authoring_batch.rs",
@@ -42,7 +42,7 @@
     {
       "file": "tests/authoring_batch.rs",
       "item": "fn[batch_preserves_current_false_judgments_and_reauthors_stale_ones]",
-      "hash": "553c44e42f8cb7db568916b652c54605804266953a1dfa16b857a1b79e50b1cd"
+      "hash": "ecd8286756010d984c05bc3ecb60af95a7fad2a7ec0dce1c5d9da83f690293a4"
     },
     {
       "file": "tests/authoring_batch.rs",
@@ -62,17 +62,12 @@
     {
       "file": "tests/authoring_batch.rs",
       "item": "fn[missing_keeps_current_records_and_force_reassesses_every_selected_subject]",
-      "hash": "e0aea3da9d2370cbbc257ef19c72508c3bb954f0b7e9736a132b02f035eb61a9"
+      "hash": "b6564e796dad6a64797035c0ce7d420e90a4b4a9e6552f17e78f943d1b331e9c"
     },
     {
-      "file": "src/authoring/batch.rs",
-      "item": "fn[select_subjects]",
-      "hash": "ed11f5b5c04721b95d9ed4011b06990000a8001164569876b49b50bb04f08814"
-    },
-    {
-      "file": "src/authoring/batch.rs",
-      "item": "fn[subject_is_current]",
-      "hash": "376d98a1cf3cb12976e60944dd8f9c32de2f2b8b4def10533289d3c388576e91"
+      "file": "tests/authoring_batch.rs",
+      "item": "fn[policy_comes_from_the_flag_then_the_configuration_then_defaults_to_confirm]",
+      "hash": "4f22daa7e42e5fe9583eaa3cee2932f05cd0c82c1664ebe84c3c0b70a3ae00db"
     },
     {
       "file": "src/authoring/mod.rs",
@@ -81,13 +76,23 @@
     },
     {
       "file": "src/authoring/batch.rs",
+      "item": "fn[select_subjects]",
+      "hash": "ed11f5b5c04721b95d9ed4011b06990000a8001164569876b49b50bb04f08814"
+    },
+    {
+      "file": "src/authoring/batch.rs",
       "item": "fn[run_batch]",
-      "hash": "b03db13bb56c6b6d963a5b52671ac7d68bcbc32f30f48809a4ca699bd432c8b2"
+      "hash": "39041d22881fc01b1275e5411005225c70e1ccc4dadd0ba8dc59c0fd448a16fe"
+    },
+    {
+      "file": "src/authoring/batch.rs",
+      "item": "fn[subject_is_current]",
+      "hash": "376d98a1cf3cb12976e60944dd8f9c32de2f2b8b4def10533289d3c388576e91"
     },
     {
       "file": "src/main.rs",
       "item": "enum[Command]",
-      "hash": "760c0529481714f6070a895f89841a0ddfe315b62ca7fbac265fc5cf5c6c668f"
+      "hash": "78a1deaaa93894e14f00421826d2bd5799f9a77f49660222f59e404426b14b3b"
     }
   ]
 }

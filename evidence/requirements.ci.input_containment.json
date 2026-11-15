@@ -1,7 +1,7 @@
 {
   "requirement": "Every file named directly by an evidence input or resolved from its selector MUST resolve within the project root unless permitted by workspace path configuration or discovered Cargo generated-output policy. Symlink targets MUST follow the same policy. Validation MUST enforce explicit workspace disallow entries and report missing, unreadable, or excluded files. It MUST check existing generated inputs without running a build. {cite}`requirements.configuration.evidence_paths` {cite}`requirements.authoring.generated_inputs`",
   "determination": true,
-  "rationale": "I found no gaps. Each obligation has code reachable from the `{impl}` items and a test that asserts its outcome.\n\n**Reachability.** `src/evidence.rs#fn[validate_input]` leads to the outline, definition and requirements input validation. Those paths go through `OutlineCache::parse`, `read_project_file` and `check_project_file` in `src/inputs.rs`. They end in `src/authoring/access.rs#fn[resolve_evidence_file]`. `InputSelector::resolve` calls `check_project_file` for declaring files. `src/authoring/tools.rs#fn[project_path]` applies the same `SourceAccess::path` policy to authoring reads. All the checks below sit in that reachable code, so none needs its own reference.\n\n**Obligations and their code**\n- **Files stay within the project root unless permitted.** `resolve_evidence_file` rejects any path whose requested location or resolved target falls outside the canonical root. It makes an exception only when `policy.allowed` matches or the path lies in a discovered `generated_roots` directory. Otherwise it returns \"resolves outside the repository without an allowed evidence path\".\n- **Symlink targets follow the same policy.** `resolve` canonicalizes the target, and `resolve_evidence_file` tests both the requested path and the target. The disallow check also covers both.\n- **Explicit disallow entries are enforced.** `policy.check_disallow(&root.join(file), &target)` runs first, so disallow wins over allow and over generated outputs.\n- **Missing, unreadable, or excluded files are reported.** `resolve` reports \"cannot open …\". `read_project_file` reports \"cannot read …\". `check_disallow` reports \"disallowed by habeas.toml rule …\". `resolve_evidence_file` also rejects non-files.\n- **Existing generated inputs are checked without running a build.** `generated_roots` runs only `cargo metadata --offline --locked --no-deps` and inspects existing output records.\n\n**Tests**\n- Escape through a symlink to a sibling directory with the same prefix: `tests/evidence_boundaries.rs#fn[symlinks_may_resolve_inside_but_not_to_a_sibling_with_the_same_prefix]`.\n- External path rejected without an allow entry, accepted with one, still checked for freshness, and rejected when disallowed: `configured_external_inputs_validate_and_remain_subject_to_freshness_and_disallow`.\n- Disallowed ancestors reached through symlinks: `evidence_rejects_disallowed_ancestors_even_when_symlinks_target_allowed_sources`. The `src/authoring/access.rs` tests cover the alias-target and parent-component cases directly.\n- Disallow on declaring files of definition and requirements inputs: `definition_and_requirements_inputs_obey_containment_for_declaring_files`.\n- Disallow reaching the `status` command: `tests/commands.rs#fn[status_applies_workspace_disallow_to_existing_evidence]`.\n- Missing and unreadable files: `unreadable_and_missing_inputs_are_reported`. The unreadable half runs only on unix and only when the file mode is actually unreadable, which is a test-environment condition, not a missing check.\n- Discovered external Cargo output: validated, freshness-checked, overridden by disallow, and `assert!(!target.exists())` shows no build ran: `discovered_external_cargo_outputs_validate_freshness_and_obey_disallow`.",
+  "rationale": "I found no gaps. Every obligation in `requirements.ci.input_containment` has code reachable from the two `{impl}` items and a test that exercises it.\n\n**Reachability.** `src/evidence.rs#fn[validate_input]` calls `validate_outline_input` or `validate_resolved_input`. Those call `InputSelector::resolve` and `OutlineCache::parse`, which call `read_project_file` or `check_project_file`. That reaches `src/authoring/access.rs#fn[resolve_evidence_file]`, which carries out the path rules. The authoring side, `src/authoring/tools.rs#fn[project_path]`, calls `SourceAccess::path`, which uses the same policy code.\n\n**Obligations, code and tests**\n- **Files resolve within the project root unless permitted by workspace allow or generated-output policy.**\n  - Code: `resolve_evidence_file` rejects a path whose requested location or resolved target is outside the root. It makes an exception only for `policy.allowed(...)` or for a discovered generated root (`generated_roots`).\n  - Tests: `symlinks_may_resolve_inside_but_not_to_a_sibling_with_the_same_prefix` checks the outside-root rejection, and `configured_external_inputs_validate_and_remain_subject_to_freshness_and_disallow` checks an external allow. `discovered_external_cargo_outputs_validate_freshness_and_obey_disallow` checks the generated-output exception, and `explicit_allow_overrides_defaults_but_disallow_wins_for_alias_targets` checks allow and disallow together.\n- **Symlink targets follow the same policy.**\n  - Code: `resolve` canonicalizes the path, so the target is what gets checked. The root check requires both the requested path and the target to be inside, and `check_disallow` checks both.\n  - Tests: `symlinks_may_resolve_inside_but_not_to_a_sibling_with_the_same_prefix`, `explicit_allow_overrides_defaults_but_disallow_wins_for_alias_targets` (alias to a disallowed target), `disallowed_ancestors_cannot_redirect_reads_into_allowed_targets`, `policy_resolves_symlinks_before_parent_components_without_allowing_wrong_subtrees`, and `evidence_rejects_disallowed_ancestors_even_when_symlinks_target_allowed_sources`.\n- **Validation enforces explicit disallow entries.**\n  - Code: `PathPolicy::check_disallow`, called from `resolve_evidence_file`.\n  - Tests: `status_applies_workspace_disallow_to_existing_evidence`, `definition_and_requirements_inputs_obey_containment_for_declaring_files` (definition and requirements inputs), `configured_external_inputs_validate_and_remain_subject_to_freshness_and_disallow`, and `discovered_external_cargo_outputs_validate_freshness_and_obey_disallow` (disallow overrides the generated-output permission).\n- **Validation reports missing, unreadable, or excluded files.**\n  - Code: missing files give `cannot open ...` from `resolve`, unreadable ones give `cannot read ...` from `read_project_file`, and excluded ones give the \"disallowed\" error. `validate_outline_input` pushes these errors with the input label.\n  - Tests: `unreadable_and_missing_inputs_are_reported`, plus the disallow tests above. The unreadable assertion runs only when the file really is unreadable, for example when the test is not running as a privileged user. That is an environmental guard, not a missing test.\n- **Existing generated inputs are checked without running a build.**\n  - Code: `generated_roots` runs `cargo metadata --offline --locked --no-deps`, and `discover_generated_roots` reads existing `root-output` records. Neither runs a build.\n  - Test: `discovered_external_cargo_outputs_validate_freshness_and_obey_disallow` asserts that the target directory does not exist afterwards.\n\nThe requirement cites `requirements.configuration.evidence_paths` and `requirements.authoring.generated_inputs`. I treated both as context and did not reassess their own implementation or tests.\n\nI found no unspecified extra behavior.",
   "references": "df189d0591d47592539799a51d220c6299d3199df8d90d3749f3fedb916e3a35",
   "inputs": [
     {
@@ -116,7 +116,7 @@
     {
       "file": "tests/evidence_boundaries.rs",
       "item": "fn[outline_inputs_survive_moves_and_unhashed_comments_but_not_edits]",
-      "hash": "9ae3216cd1f487646179be6964b144a815e61ee3011a021f0610ea78ca2fe0d4"
+      "hash": "f3f43479daa44decd163d41f84be8845c1140552efd9c14aac2adb5e42440a58"
     },
     {
       "file": "tests/evidence_boundaries.rs",
@@ -155,8 +155,8 @@
     },
     {
       "file": "src/inputs.rs",
-      "item": "fn[read_project_file]",
-      "hash": "e41f9a27f04e9f92ef30a0f9364eb43397ec3142bd9947b7c34d0d4ea691ba1d"
+      "item": "fn[check_project_file]",
+      "hash": "d229a2e14bc49aad09e4bca7ab3bdab6d475f05819973da2477323152e7aa4e5"
     },
     {
       "file": "src/authoring/access.rs",
@@ -167,6 +167,31 @@
       "file": "src/authoring/access.rs",
       "item": "fn[generated_roots]",
       "hash": "9dd7146ab5036c06150dcc167104190647ba9db76fd8be516605664ce825bbf3"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "fn[discover_generated_roots]",
+      "hash": "c841d9d538fd8ff27cc1a0e979a7c0a85848034f579cd5c58ce0f087c08f9488"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "impl[PathPolicy]",
+      "hash": "682d26ee9171ec9d76183444c82d48e36efdb578d3e036f2a3c29c4476301659"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "impl[OutlineCache]/fn[parse]",
+      "hash": "1734ee17e8afa6697e5e01b8386737395f3d5d3cc8a0ad44f84b178ac329a08e"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "fn[read_project_file]",
+      "hash": "e41f9a27f04e9f92ef30a0f9364eb43397ec3142bd9947b7c34d0d4ea691ba1d"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[validate_outline_input]",
+      "hash": "0bfab0f3093185b18122d349a70a23b379326bd79611fac1753184bff16d08bb"
     }
   ]
 }

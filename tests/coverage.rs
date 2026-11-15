@@ -130,6 +130,11 @@ fn deleting_the_only_record_that_read_an_item_warns_at_once() {
     record(root, "rules.render", &["fn[render]"]);
     commit(root, "first");
     assert!(warned(root).is_empty());
+    fs::write(
+        root.join("md/rules.md"),
+        ":::{req} check\nChecking MUST work.\n:::\n",
+    )
+    .unwrap();
     fs::remove_file(root.join("evidence/rules.render.json")).unwrap();
     assert_eq!(warned(root), ["render"]);
 }

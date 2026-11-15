@@ -1,8 +1,8 @@
 {
   "requirement": "When source-access policy denies a mandatory input, the assessment MUST abort\nbefore any model request and report the denied path and reason to its caller;\nfor an untracked file, the report MUST say what {cite}`requirements.authoring.read_denial.untracked`\nsays. The aborted assessment MUST NOT write evidence or emit evidence JSON, and\nits usage record MUST identify the failure. In a batch, other assessments MUST\ncontinue, including queued assessments, and their successful writes MUST be\nretained; the command MUST return a nonzero exit status after the batch\nfinishes.",
   "determination": true,
-  "rationale": "I found no gaps. Each obligation in `requirements.authoring.read_denial.mandatory` has code that carries it out and a test that exercises it.\n\n**Abort before any model request, and report the denied path and reason**\n- `configured_record` in `src/authoring/mod.rs` calls `subject.sources(root)?` before `RigProvider::connect` and before `assess_subject`. A denied mandatory input therefore returns an `io::Error` carrying the path and reason before any request is made.\n- That error propagates through `configured_assessment` and `author_evidence_with_options` (single run), or through `prepare_assessment` and `run_batch` (batch), to the caller.\n- `src/authoring/inputs.rs#mod[tests]/fn[unreadable_or_denied_anchors_fail_before_inference]` asserts `PermissionDenied` and that the message names `private/skill.md`.\n- `tests/authoring_batch.rs#fn[a_denied_mandatory_input_aborts_only_its_assessment]` asserts the CLI diagnostic names `private.txt` and that the mock server saw no request for `requirements.alpha`.\n\n**Untracked file report**\n- The message comes from `SourceAccess::path` in `src/authoring/access.rs`, which carries the `read_denial.untracked` {impl} reference. It says the file is untracked, that the caller can stage it with `git add`, and that it can be permitted with a workspace `habeas.toml` allow rule. Nothing stages or permits the file itself.\n- `tests/authoring_batch.rs#fn[an_untracked_mandatory_input_is_reported_with_how_to_stage_it]` asserts the CLI diagnostic contains \"notes.txt\", \"untracked\", \"git add\" and \"allow rule\". It also asserts no model request was made.\n\n**No evidence written and no evidence JSON emitted**\n- `configured_assessment` writes the evidence file or stdout only after `configured_record` succeeds. The batch `write_record` only runs on an `Ok` pending assessment.\n- The batch test asserts `evidence/requirements.alpha.json` does not exist. It also runs `author requirements.alpha --stdout` and asserts a nonzero exit and empty stdout.\n\n**Usage record identifies the failure**\n- Both `prepare_assessment` and `author_evidence_with_options` call `usage.finish(\"failed\")` for a non-interrupt error.\n- The batch test asserts the aborted run's record has `outcome == \"failed\"`, `request_count == 0` and `evidence_written == false`.\n\n**Batch behavior**\n- In `run_batch`, only an `Interrupted` error triggers `cancel_on_error`. A denial error is pushed to `outcome.failures` and the loop keeps launching queued subjects.\n- The batch test uses concurrency 1, so later assessments were queued. It asserts `alpha_case`, `beta` and `gamma` still produce evidence with `determination == true`.\n- Successful writes are retained because `write_record` has already run for each of them.\n- `src/main.rs#fn[main]` returns an error, and so a nonzero exit, when `outcome.failures` is non-empty. That happens after the batch loop has finished and the summary has printed. The batch test asserts `!output.status.success()`.\n\nNo unspecified behavior turned up in the {impl} items. Every obligation has a test carrying a `{test}` reference to the subject.",
-  "references": "3f0772760e41b3a2bfb39a02611e0d4079bc3958b2f09912af38caaf898d54d7",
+  "rationale": "I found no gap against `requirements.authoring.read_denial.mandatory`. Each obligation has code and a test, except that the disallow-rule reason text is not asserted by a test tagged for this requirement; I judged that acceptable.\n\n**Abort before any model request.**\n- `src/authoring/mod.rs#fn[configured_record]` calls `subject.sources(root)?` before the adaptive router and before `RigProvider::connect`.\n- `AssessmentSources::prepare` in `src/authoring/inputs.rs` reads the mandatory inputs and returns the denial as an `io::Error` of kind `PermissionDenied`.\n- Tests: `tests/authoring_batch.rs#fn[a_denied_mandatory_input_aborts_only_its_assessment]` asserts the mock server received no request for `requirements.alpha`. `fn[an_untracked_mandatory_input_is_reported_with_how_to_stage_it]` asserts `server.subjects().is_empty()`.\n\n**Report the denied path and reason to the caller.**\n- The policy denial messages come from `SourceAccess::path` and `PathPolicy::check_disallow` in `src/authoring/access.rs`. They name the path and the reason.\n- `AssessmentSources::prepare` wraps anchor errors as \"cannot read :impl: anchor …: {error}\", which keeps the message and error kind.\n- `run_batch` and `author_evidence_with_options` return the error, and `main` prints it.\n- Tests: the batch test asserts stderr contains `private.txt`. `unreadable_or_denied_anchors_fail_before_inference` in `src/authoring/inputs.rs` asserts the path and kind `PermissionDenied`.\n- The reason is asserted for the untracked and outside-project cases. No test tagged for this requirement asserts the disallow-rule reason text. The reason text is produced by `check_disallow`, which other requirements own, and the subject code only passes it through.\n\n**Untracked report.**\n- `SourceAccess::path` produces \"is untracked … `git add` … workspace habeas.toml allow rule\". It never stages or permits the file.\n- The test `an_untracked_mandatory_input_is_reported_with_how_to_stage_it` asserts the diagnostic contains `notes.txt`, `untracked`, `git add` and `allow rule`.\n\n**No evidence written or emitted, and the usage record identifies the failure.**\n- `configured_assessment` returns on the `configured_record(...)?` error before it writes the file or stdout.\n- `prepare_assessment` in batch mode and `author_evidence_with_options` in single mode call `usage.finish(\"failed\")`. The record's `outcome` is \"failed\", and the file is created before preparation, so a record exists.\n- The batch test asserts the evidence file is absent, usage `outcome == \"failed\"`, `request_count == 0` and `evidence_written == false`. It also asserts `--stdout` produces empty stdout and a nonzero exit.\n\n**Batch continues and keeps successful writes.**\n- `cancel_on_error` in `src/authoring/batch.rs` stops the batch only for `Interrupted`. A `PermissionDenied` failure is pushed to `outcome.failures`, and the loop keeps launching queued subjects.\n- The batch test runs at concurrency 1, so later subjects were queued, and asserts the other three have `determination == true` evidence.\n\n**Nonzero exit after the batch finishes.**\n- `main` returns an error after printing the summary when `outcome.failures` is non-empty.\n- The batch test asserts `!output.status.success()`.",
+  "references": "c9ba168083b931d99204ced73c13d28b95d4ebe7e89ae6d6165d327cacb5aaef",
   "inputs": [
     {
       "requirements": "requirements.authoring.read_denial.mandatory",
@@ -39,7 +39,7 @@
     {
       "file": "src/authoring/batch.rs",
       "item": "fn[run_batch]",
-      "hash": "b03db13bb56c6b6d963a5b52671ac7d68bcbc32f30f48809a4ca699bd432c8b2"
+      "hash": "39041d22881fc01b1275e5411005225c70e1ccc4dadd0ba8dc59c0fd448a16fe"
     },
     {
       "file": "src/authoring/inputs.rs",
@@ -54,7 +54,12 @@
     {
       "file": "src/authoring/mod.rs",
       "item": "fn[configured_record]",
-      "hash": "53f7e17d3dc1d00bf7fceeb70c1003f4b51381ee4be2d97466da338d42d99f58"
+      "hash": "add8153b5c92c9322a5ec2ec989ceae49f1726eb80c3273601628b77e93bc182"
+    },
+    {
+      "file": "src/main.rs",
+      "item": "fn[main]",
+      "hash": "45893b6502189459e48ee669e8e1b7c4d69f889c0c213417573af01914278208"
     },
     {
       "file": "tests/authoring_batch.rs",
@@ -67,14 +72,14 @@
       "hash": "43b7d2fa8d92d3ba4f5a6125d2e60063a282cfd47c57703865c728928609467f"
     },
     {
-      "file": "src/authoring/mod.rs",
-      "item": "fn[prepare_assessment]",
-      "hash": "e186d250a7d7946631e1f4b942654657f6ebf9d8d270889cb0583065b7e08752"
-    },
-    {
       "file": "src/authoring/batch.rs",
       "item": "fn[cancel_on_error]",
       "hash": "724b85616cad80ea4228094ada80d8e3eb6ece526ae6ac2c8d48cf876f87d782"
+    },
+    {
+      "file": "src/authoring/mod.rs",
+      "item": "fn[prepare_assessment]",
+      "hash": "e186d250a7d7946631e1f4b942654657f6ebf9d8d270889cb0583065b7e08752"
     },
     {
       "file": "src/authoring/mod.rs",
@@ -82,9 +87,24 @@
       "hash": "ca2a3f3c24f0899ba8e1cbc1cff6bd0c36dbc5561a73be25c66f054b04d1f5be"
     },
     {
-      "file": "src/authoring/batch.rs",
-      "item": "fn[author_all]",
-      "hash": "04085915b6e2a6c34a2f30d39b22a3bb7286cc3beae8edbf5062489ae157f017"
+      "file": "src/authoring/mod.rs",
+      "item": "impl[AuthoringSubject]/fn[sources]",
+      "hash": "36f857322afb0f2890837f728ec3cf8c1f095ffeecdd015378188269063a4fa4"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "impl[SourceAccess]/fn[path]",
+      "hash": "f0e7caec7c72bf2c61e1b012845f8a8825e87d5e7db0afb2a1cdcf65d18466fc"
+    },
+    {
+      "file": "src/authoring/access.rs",
+      "item": "impl[PathPolicy]/fn[check_disallow]",
+      "hash": "cd6d3d914a9da2f58116fbbbce20e2e5f89eb02a3c2a73eed083dba8c9d24589"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "impl[AssessmentSources]/fn[prepare]",
+      "hash": "a2e105c58b8d10db1d4cf5d05b025518db1e18f63d477a4f8cdf449067a361f8"
     }
   ]
 }

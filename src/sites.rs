@@ -163,6 +163,7 @@ pub(crate) fn subject_label(requirement: &str, file: &str, item: &str) -> String
     format!("sites:{requirement}/{file}#{item}")
 }
 
+// {cite}`habeas:util`
 /// Whether a path lies in the site review directory.
 pub(crate) fn is_review_path(evidence_root: &Path, path: &Path) -> bool {
     path.strip_prefix(evidence_root)
@@ -912,6 +913,7 @@ no_match:
 
     // {test}`requirements.references.distributed`
     #[test]
+    // {test}`requirements.authoring.no_line_numbers`
     fn sites_are_the_innermost_nodes_of_site_matches_and_violations_within_them() {
         let temp = project(RULE, SOURCE);
         let (errors, sites) = inspect(temp.path());
@@ -1570,5 +1572,27 @@ no_match: ["struct S;"]
         ] {
             assert!(info.contains(text), "{text}\n{info}");
         }
+        write_review(root, "fn[check_two]", json!({"applies":"yes"}));
+        let invalid = crate::status_markdown(root, false).unwrap();
+        assert!(
+            invalid.contains("| `requirements.rule` | `src/lib.rs` | `fn[check_two]` | Invalid |"),
+            "{invalid}"
+        );
+        assert!(invalid.contains("applies must be a Boolean"), "{invalid}");
+        write_review(root, "fn[check_two]", json!({}));
+        fs::write(
+            root.join("src/lib.rs"),
+            SOURCE.replace("fn check_two() {}", "fn check_two() { let changed = 1; }"),
+        )
+        .unwrap();
+        let stale = crate::status_markdown(root, false).unwrap();
+        assert!(
+            stale.contains("| `requirements.rule` | `src/lib.rs` | `fn[check_two]` | Invalid |"),
+            "{stale}"
+        );
+        assert!(
+            stale.contains("outline input changed: src/lib.rs fn[check_two]"),
+            "{stale}"
+        );
     }
 }

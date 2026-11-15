@@ -33,6 +33,7 @@ pub struct ProjectConfig {}
 // {impl}`requirements.configuration.serialization`
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+// {impl}`requirements.configuration.evidence_paths`
 pub struct WorkspaceConfig {
     pub version: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -167,6 +168,7 @@ pub struct AuthoringConfig {
 pub enum BackendConfig {
     Bedrock(BedrockConfig),
     Ollama(OllamaConfig),
+    Openai(OpenAiConfig),
 }
 
 // {impl}`requirements.configuration.serialization`
@@ -189,6 +191,22 @@ pub struct BedrockConfig {
 #[serde(deny_unknown_fields)]
 pub struct OllamaConfig {
     pub model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key_env: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<SecretString>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub options: BTreeMap<String, OptionValue>,
+}
+
+// {impl}`requirements.configuration.serialization`
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OpenAiConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub endpoint: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -263,6 +281,7 @@ impl fmt::Display for AssessmentPolicy {
 pub enum BackendKind {
     Bedrock,
     Ollama,
+    Openai,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -357,6 +376,7 @@ impl WorkspaceConfig {
     // {impl}`requirements.configuration.workspace_structure`
     // {impl}`requirements.configuration.serialization`
     // {impl}`requirements.authoring.configuration_serialization`
+    // {impl}`requirements.configuration.evidence_paths`
     pub fn to_toml(&self) -> io::Result<String> {
         self.validate(Path::new("workspace configuration"))?;
         toml::to_string_pretty(self).map_err(|_| {
@@ -448,6 +468,7 @@ impl ProjectConfig {
 
 impl UserAuthoringConfig {
     // {impl}`requirements.configuration.loading`
+    // {impl}`requirements.authoring.configuration_structure`
     pub fn validate(&self, path: &Path) -> io::Result<()> {
         if let Some(name) = &self.default {
             validate_name(path, "authoring.default", name)?;
@@ -488,6 +509,10 @@ impl BackendConfig {
                 backend: BackendKind::Bedrock,
                 model: config.model.clone(),
             },
+            Self::Openai(config) => ModelRef {
+                backend: BackendKind::Openai,
+                model: config.model().to_owned(),
+            },
             Self::Ollama(config) => ModelRef {
                 backend: BackendKind::Ollama,
                 model: config.model.clone(),
@@ -499,19 +524,40 @@ impl BackendConfig {
         match self {
             Self::Bedrock(config) => &config.options,
             Self::Ollama(config) => &config.options,
+            Self::Openai(config) => &config.options,
         }
     }
 
     // {impl}`requirements.authoring.configuration_storage`
+    // {impl}`requirements.authoring.openai_defaults`
     pub fn options_json(&self) -> io::Result<serde_json::Value> {
         for value in self.options().values() {
             value.validate()?;
         }
-        serde_json::to_value(self.options()).map_err(io::Error::other)
+        let mut options = serde_json::to_value(self.options()).map_err(io::Error::other)?;
+        if let Self::Openai(_) = self {
+            let options = options
+                .as_object_mut()
+                .expect("configuration options are a map");
+            options
+                .entry("max_output_tokens")
+                .or_insert_with(|| serde_json::json!(16_384));
+            let reasoning = options
+                .entry("reasoning")
+                .or_insert_with(|| serde_json::json!({}));
+            if let Some(reasoning) = reasoning.as_object_mut() {
+                reasoning
+                    .entry("effort")
+                    .or_insert_with(|| serde_json::json!("low"));
+            }
+        }
+        Ok(options)
     }
 
     // {impl}`requirements.configuration.loading`
     // {impl}`requirements.configuration.feature_sections`
+    // {impl}`requirements.authoring.openai_defaults`
+    // {impl}`requirements.authoring.configuration_structure`
     fn validate(&self, path: &Path, setting: &str) -> io::Result<()> {
         if self.model_ref().model.is_empty() {
             return Err(invalid(
@@ -520,8 +566,12 @@ impl BackendConfig {
                 "expected a nonempty model ID",
             ));
         }
-        if let Self::Ollama(config) = self
-            && let Some(name) = &config.api_key_env
+        let api_key_env = match self {
+            Self::Ollama(config) => &config.api_key_env,
+            Self::Openai(config) => &config.api_key_env,
+            Self::Bedrock(_) => &None,
+        };
+        if let Some(name) = api_key_env
             && (name.is_empty() || name.contains(['=', '\0']))
         {
             return Err(invalid(
@@ -573,6 +623,24 @@ impl BackendConfig {
                     }
                 }
             }
+            Self::Openai(config) => {
+                if let Some(key) = &config.api_key {
+                    if config.api_key_env.is_some() {
+                        return Err(invalid(
+                            path,
+                            &format!("{setting}.api_key"),
+                            "api_key and api_key_env cannot both be set",
+                        ));
+                    }
+                    if key.expose_secret().is_empty() {
+                        return Err(invalid(
+                            path,
+                            &format!("{setting}.api_key"),
+                            "credential values must be nonempty",
+                        ));
+                    }
+                }
+            }
         }
         for (key, value) in self.options() {
             let field = format!("{setting}.options.{key}");
@@ -581,6 +649,10 @@ impl BackendConfig {
                 "model"
                     | "modelId"
                     | "model_id"
+                    | "input"
+                    | "instructions"
+                    | "previous_response_id"
+                    | "conversation"
                     | "prompt"
                     | "messages"
                     | "system"
@@ -620,6 +692,7 @@ impl OptionValue {
 
 impl OllamaConfig {
     // {impl}`requirements.configuration.serialization`
+    // {impl}`requirements.authoring.configuration_structure`
     pub fn endpoint(&self) -> &str {
         self.endpoint.as_deref().unwrap_or("http://localhost:11434")
     }
@@ -647,6 +720,40 @@ impl OllamaConfig {
     }
 }
 
+impl OpenAiConfig {
+    // {impl}`requirements.authoring.openai_defaults`
+    pub fn model(&self) -> &str {
+        self.model.as_deref().unwrap_or("gpt-6.1-sol")
+    }
+
+    // {impl}`requirements.configuration.serialization`
+    // {impl}`requirements.authoring.configuration_structure`
+    pub fn endpoint(&self) -> &str {
+        self.endpoint
+            .as_deref()
+            .unwrap_or("https://api.openai.com/v1")
+    }
+
+    // {impl}`requirements.configuration.serialization`
+    pub fn api_key(&self) -> io::Result<String> {
+        self.api_key_from(|name| std::env::var_os(name))
+    }
+
+    // {impl}`requirements.configuration.serialization`
+    // {impl}`requirements.authoring.configuration_structure`
+    pub fn api_key_from(&self, lookup: impl Fn(&str) -> Option<OsString>) -> io::Result<String> {
+        if let Some(key) = &self.api_key {
+            return Ok(key.expose_secret().to_owned());
+        }
+        let name = self.api_key_env.as_deref().unwrap_or("OPENAI_API_KEY");
+        lookup(name)
+                .filter(|value| !value.is_empty())
+                .and_then(|value| value.into_string().ok())
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput,
+                    format!("authoring api_key_env {name:?} must name a set, nonempty UTF-8 environment variable")))
+    }
+}
+
 impl ResolvedAuthoringConfig {
     // {impl}`requirements.authoring.configuration_structure`
     pub fn model_ref(&self) -> ModelRef {
@@ -654,19 +761,28 @@ impl ResolvedAuthoringConfig {
     }
 
     /// The policy from `--policy` when given, otherwise from this
-    /// configuration, otherwise `confirm`.
+    /// configuration, otherwise `once` for OpenAI and `confirm` for other backends.
     // {impl}`requirements.authoring.policy`
+    // {impl}`requirements.authoring.configuration_structure`
     pub fn effective_policy(&self, explicit: Option<AssessmentPolicy>) -> AssessmentPolicy {
-        explicit.or(self.policy).unwrap_or_default()
+        explicit.or(self.policy).unwrap_or({
+            if matches!(self.backend, BackendConfig::Openai(_)) {
+                AssessmentPolicy::Once
+            } else {
+                AssessmentPolicy::Confirm
+            }
+        })
     }
 
     pub fn effective_concurrency(&self) -> usize {
         self.concurrency
             .map(NonZeroUsize::get)
             .unwrap_or_else(|| match &self.backend {
-                BackendConfig::Bedrock(_) => std::thread::available_parallelism()
-                    .map(NonZeroUsize::get)
-                    .unwrap_or(1),
+                BackendConfig::Bedrock(_) | BackendConfig::Openai(_) => {
+                    std::thread::available_parallelism()
+                        .map(NonZeroUsize::get)
+                        .unwrap_or(1)
+                }
                 BackendConfig::Ollama(_) => 1,
             })
     }

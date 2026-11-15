@@ -308,6 +308,7 @@ fn an_unacknowledged_gap_beside_an_acknowledged_one_is_false() {
 // {test}`requirements.index.state`
 // {test}`requirements.cli.fixme_summary`
 // {test}`requirements.ci.determination`
+// {test}`requirements.examples.evidence`
 #[test]
 fn malformed_fixme_is_invalid_and_reports_the_required_shape() {
     let temp = fixture();
