@@ -5105,6 +5105,34 @@ fn adaptive_sol_failure_is_final_and_confirm_uses_sol_verification() {
             );
         }
     }
+    for policy in ["once", "confirm"] {
+        let server = Server::start(vec![
+            response(
+                "submit_judgment",
+                json!({"determination":false,"rationale":"Mini found a gap."}),
+            ),
+            response(
+                "submit_judgment",
+                json!({"determination":false,"rationale":"Sol confirms the gap."}),
+            ),
+        ]);
+        let fixture = Fixture::new(&server.endpoint);
+        configure_adaptive_fixture(&fixture, &server.endpoint);
+        let output = fixture.run(&["author", SUBJECT, "--policy", policy]);
+        assert!(output.status.success(), "{output:?}");
+        let requests = server.finish();
+        assert_eq!(
+            requests
+                .iter()
+                .map(|request| request.body["model"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["gpt-5.4-mini", "gpt-6.1-sol"]
+        );
+        let evidence: Value =
+            serde_json::from_slice(&fs::read(&fixture.evidence).unwrap()).unwrap();
+        assert_eq!(evidence["determination"], false);
+        assert_eq!(evidence["rationale"], "Sol confirms the gap.");
+    }
 }
 
 // {cite}`habeas:util`

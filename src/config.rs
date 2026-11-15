@@ -556,6 +556,7 @@ impl BackendConfig {
     // {impl}`requirements.configuration.loading`
     // {impl}`requirements.configuration.feature_sections`
     // {impl}`requirements.authoring.openai_defaults`
+    // {impl}`requirements.authoring.configuration_structure`
     fn validate(&self, path: &Path, setting: &str) -> io::Result<()> {
         if self.model_ref().model.is_empty() {
             return Err(invalid(
