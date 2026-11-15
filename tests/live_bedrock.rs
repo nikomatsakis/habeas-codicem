@@ -161,6 +161,30 @@ fn credentials_available(config: &BedrockConfig) -> bool {
     })
 }
 
+// {cite}`habeas:util`
+fn evidence_snapshot(root: &Path) -> std::collections::BTreeMap<std::path::PathBuf, Vec<u8>> {
+    let mut files = std::collections::BTreeMap::new();
+    let mut pending = vec![root.to_owned()];
+    while let Some(path) = pending.pop() {
+        if !path.exists() {
+            continue;
+        }
+        if path.is_dir() {
+            pending.extend(
+                fs::read_dir(&path)
+                    .unwrap()
+                    .map(|entry| entry.unwrap().path()),
+            );
+        } else {
+            files.insert(
+                path.strip_prefix(root).unwrap().to_owned(),
+                fs::read(path).unwrap(),
+            );
+        }
+    }
+    files
+}
+
 // {test}`requirements.integration.live_bedrock_test`
 // {test}`requirements.authoring.delivered_inputs`
 // {test}`requirements.authoring.provider`
@@ -219,6 +243,8 @@ fn live_bedrock_authoring() {
     // No citation points to this file, so assessing its implementation requires
     // an additional source read instead of only the mandatory initial inputs.
     fs::write(project.join("src/parity.rs"), "pub fn is_even(value: u32) -> bool {\n    value % 2 == 0\n}\n\n#[test]\nfn parity_cases() {\n    assert!(is_even(0));\n    assert!(!is_even(1));\n    assert!(is_even(2));\n    assert!(!is_even(u32::MAX));\n}\n").unwrap();
+    let checkout_evidence = Path::new(env!("CARGO_MANIFEST_DIR")).join("evidence");
+    let before = evidence_snapshot(&checkout_evidence);
     let output = Command::new(env!("CARGO_BIN_EXE_habeas"))
         .current_dir(&project)
         .args([
@@ -250,6 +276,11 @@ fn live_bedrock_authoring() {
         "model must inspect the fixture's source through a read tool"
     );
     assert!(!project.join("evidence").exists());
+    assert_eq!(
+        evidence_snapshot(&checkout_evidence),
+        before,
+        "checkout evidence changed"
+    );
     let usage_path = stderr
         .lines()
         .find_map(|line| line.strip_prefix("Usage: "))

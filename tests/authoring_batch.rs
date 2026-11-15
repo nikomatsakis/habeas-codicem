@@ -15,6 +15,7 @@ use tempfile::TempDir;
 #[derive(Default)]
 struct Requests {
     subjects: Vec<String>,
+    conversations: Vec<(String, Value)>,
     active: usize,
     peak: usize,
     first_pair_overlapped: bool,
@@ -37,9 +38,14 @@ enum Behavior {
     #[cfg_attr(not(unix), allow(dead_code))]
     WaitAfterFirst,
     /// The subject's first request is throttled with HTTP 429.
-    ThrottledOnce { subject: &'static str },
+    ThrottledOnce {
+        subject: &'static str,
+    },
     /// A judgment is false when the prompt shows a closed issue.
     ClosedIssueIsFalse,
+    /// Hold the three post-warmup requirement requests until all arrive.
+    WarmupBarrier,
+    ReadEachSubject,
 }
 
 // {cite}`habeas:util`
@@ -179,6 +185,9 @@ fn serve(
     let mut state = lock.lock().unwrap();
     let first_for_subject = !state.subjects.contains(&subject);
     state.subjects.push(subject.clone());
+    if matches!(behavior, Behavior::ReadEachSubject) {
+        state.conversations.push((subject.clone(), request.clone()));
+    }
     let position = state.timeline.len();
     state.timeline.push((subject.clone(), Instant::now(), None));
     let first_request = state.subjects.len() == 1;
@@ -193,6 +202,31 @@ fn serve(
             .unwrap();
         state = next;
         state.first_pair_overlapped = state.subjects.len() >= 2;
+    }
+    if matches!(behavior, Behavior::WarmupBarrier)
+        && subject.starts_with("requirement ")
+        && state
+            .subjects
+            .iter()
+            .filter(|s| s.starts_with("requirement "))
+            .count()
+            > 1
+    {
+        let (next, timeout) = arrived
+            .wait_timeout_while(state, Duration::from_secs(10), |state| {
+                state
+                    .subjects
+                    .iter()
+                    .filter(|s| s.starts_with("requirement "))
+                    .count()
+                    < 4
+            })
+            .unwrap();
+        state = next;
+        assert!(
+            !timeout.timed_out(),
+            "post-warmup requests did not run concurrently"
+        );
     }
     drop(state);
     // The denied subject's first request reads a denied file; once the
@@ -253,6 +287,17 @@ fn serve(
         json!({"error": "fixture provider is throttling"})
     } else if failed {
         json!({"error": "fixture model rejected this subject"})
+    } else if first_for_subject && matches!(behavior, Behavior::ReadEachSubject) {
+        let name = subject.rsplit('.').next().unwrap();
+        json!({
+            "model":"fixture-model", "created_at":"2026-01-01T00:00:00Z",
+            "message":{"role":"assistant", "content":"", "tool_calls":[{
+                "id":format!("read-{name}"), "type":"function", "function":{
+                    "name":"habeas", "arguments":{"file":"src/lib.rs", "item":format!("fn[{name}]")}
+                }
+            }]},
+            "done":true, "done_reason":"stop", "prompt_eval_count":11, "eval_count":7
+        })
     } else if denied {
         json!({
             "model":"fixture-model", "created_at":"2026-01-01T00:00:00Z",
@@ -617,6 +662,54 @@ fn ollama_batches_are_serial_by_default() {
     );
     assert_eq!(server.subjects().len(), 6);
     assert_eq!(server.requests.0.lock().unwrap().peak, 1);
+}
+
+// {test}`requirements.authoring.concurrency`
+#[test]
+fn concurrent_assessments_keep_their_own_continuing_histories() {
+    let server = Server::start_with(false, Behavior::ReadEachSubject);
+    let fixture = Fixture::new(&server.endpoint, Some(4));
+    let output = fixture.run(&["author", "--all"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let state = server.requests.0.lock().unwrap();
+    assert_eq!(state.conversations.len(), 12);
+    for subject in state
+        .subjects
+        .iter()
+        .collect::<std::collections::BTreeSet<_>>()
+    {
+        let requests: Vec<_> = state
+            .conversations
+            .iter()
+            .filter(|(s, _)| s == subject)
+            .map(|(_, r)| &r["messages"])
+            .collect();
+        assert_eq!(requests.len(), 2);
+        let first = requests[0].as_array().unwrap();
+        let second = requests[1].as_array().unwrap();
+        assert_eq!(&second[..first.len()], first);
+        let continuation = &second[first.len()..];
+        assert_eq!(continuation.len(), 2);
+        assert_eq!(continuation[0]["role"], "assistant");
+        let calls = continuation[0]["tool_calls"].as_array().unwrap();
+        assert_eq!(calls.len(), 1);
+        let name = subject.rsplit('.').next().unwrap();
+        assert_eq!(
+            calls[0]["function"]["arguments"]["item"],
+            format!("fn[{name}]")
+        );
+        assert_eq!(continuation[1]["role"], "tool");
+        assert!(
+            continuation[1]["content"]
+                .as_str()
+                .unwrap()
+                .contains(&format!("fn[{name}]"))
+        );
+    }
 }
 
 // {test}`requirements.authoring.concurrency`
@@ -2167,7 +2260,8 @@ fn assert_warmed_first(server: &Server) -> Vec<Vec<(String, Instant, Option<Inst
 // {test}`requirements.authoring.cache_warmup`
 #[test]
 fn a_batch_warms_each_kind_with_one_assessment_before_starting_the_others() {
-    let server = Server::start(false, None);
+    mock_server_waits_for_remaining_request_headers();
+    let server = Server::start_with(false, Behavior::WarmupBarrier);
     let fixture = Fixture::new(&server.endpoint, Some(8));
     let output = fixture.run(&["author", "--all"]);
     assert!(
@@ -2217,7 +2311,6 @@ fn a_failed_first_request_still_releases_its_kind() {
 }
 
 // {cite}`habeas:util`
-#[test]
 fn mock_server_waits_for_remaining_request_headers() {
     let server = Server::start(false, None);
     let mut client = TcpStream::connect(server.endpoint.trim_start_matches("http://")).unwrap();

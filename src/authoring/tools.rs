@@ -233,8 +233,8 @@ fn with_not_listed(
     if not_listed.is_empty() {
         return Ok(listing);
     }
-    // On the first page, counted toward its size.
-    Ok(listing.with_extra("not_listed", Value::Array(not_listed)))
+    // Start on the first page; large arrays continue through ordinary paging.
+    Ok(listing.with_not_listed(not_listed))
 }
 
 /// What a result containing redacted text tells the model, since tool

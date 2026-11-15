@@ -4721,6 +4721,7 @@ fn openai_responses_replays_tool_calls_and_records_usage() {
 // {test}`requirements.authoring.openai_defaults`
 #[test]
 fn openai_key_only_profile_defaults_to_sol_and_accepts_overrides() {
+    mock_server_waits_for_remaining_request_headers();
     for (extra, model, effort, max_tokens) in [
         ("", "gpt-6.1-sol", "low", 16_384),
         ("model = 'gpt-6-luna'\n", "gpt-6-luna", "low", 16_384),
@@ -4764,7 +4765,6 @@ fn openai_key_only_profile_defaults_to_sol_and_accepts_overrides() {
 }
 
 // {cite}`habeas:util`
-#[test]
 fn mock_server_waits_for_remaining_request_headers() {
     let server = Server::start(vec![json!({"ok":true})]);
     let mut client =

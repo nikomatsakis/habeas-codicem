@@ -584,7 +584,10 @@ array of `{path, reason}` with reason `untracked`, naming each untracked file
 inside the project that the listing would otherwise include or that contains a
 match, so the model can tell that sources exist which it cannot read. It MUST
 be omitted when there are none, and for a paged result it MUST appear on the
-first page. It MUST NOT give those files' contents, and they MUST NOT become
+first page, continuing across subsequent pages when needed to obey the page
+size limit. Page counts MUST include these entries as well as the ordinary
+result entries, and each array MUST retain its order. It MUST NOT give those
+files' contents, and they MUST NOT become
 evidence inputs. Files excluded for another reason, such as a workspace disallow
 rule or generated `evidence/` output, MUST NOT be read to find matches and MUST
 NOT be listed.
