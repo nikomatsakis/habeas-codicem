@@ -394,3 +394,57 @@ pub(crate) fn snippet_matches(
         .filter(|range| owning_site(&outline, snippet, range, within.as_deref()).is_some())
         .count())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // {test}`requirements.references.distributed`
+    #[test]
+    fn query_bodies_require_exactly_one_yaml_fence_and_no_other_content() {
+        let yaml = "language: rust\nrule:\n  kind: function_item\nmatch: ['fn f() {}']\nno_match: ['struct S;']";
+        let declaration = |body: &str| {
+            let text = format!(":::{{req}} example\n:::{{sites}} functions\n{body}\n:::\n:::");
+            Declaration {
+                kind: crate::DefinitionKind::Requirement,
+                source: "md/requirements.md:1".to_owned(),
+                file: "md/requirements.md".to_owned(),
+                line_start: 1,
+                line_end: text.lines().count(),
+                raw_lines: text.lines().map(str::to_owned).collect(),
+                anchors: vec![],
+                text,
+            }
+        };
+        for body in [
+            format!("```yaml\n{yaml}\n```"),
+            format!("\n\n~~~yaml\n{yaml}\n~~~\n\n"),
+        ] {
+            let (queries, errors) = parse_queries(&declaration(&body));
+            assert!(errors.is_empty(), "{body}: {errors:?}");
+            assert_eq!(queries.len(), 1);
+            assert_eq!(queries[0].name, "functions");
+            assert_eq!(queries[0].body.language, "rust");
+        }
+        for body in [
+            format!("```json\n{yaml}\n```"),
+            format!("```text\n{yaml}\n```"),
+            format!("```yml\n{yaml}\n```"),
+            format!("```yaml\n{yaml}\n```\n```yaml\n{yaml}\n```"),
+            format!("prose\n```yaml\n{yaml}\n```"),
+            format!("```yaml\n{yaml}\n```\nprose"),
+            format!("```yaml\n{yaml}\n~~~"),
+            format!("``yaml\n{yaml}\n``"),
+            yaml.to_owned(),
+        ] {
+            let (queries, errors) = parse_queries(&declaration(&body));
+            assert!(queries.is_empty(), "accepted {body:?}");
+            assert_eq!(errors.len(), 1, "{body}: {errors:?}");
+            assert!(
+                errors[0]
+                    .contains("query functions must contain exactly one fenced yaml code block"),
+                "{body}: {errors:?}"
+            );
+        }
+    }
+}

@@ -98,7 +98,7 @@ fn hashes_include_grammar_kinds_nesting_and_sha256_digests() {
 // {test}`requirements.references.outlines`
 #[test]
 fn every_profile_mapping_is_documented() {
-    let reference = include_str!("../../md/reference.md");
+    let reference = include_str!("../../../../md/reference.md");
     let table = reference
         .split_once("### Outline profiles\n")
         .unwrap()
@@ -156,20 +156,33 @@ fn every_profile_mapping_is_documented() {
 // {test}`requirements.references.outlines`
 #[test]
 fn grammar_dependencies_are_pinned_to_exact_versions() {
-    let manifest: toml::Table = toml::from_str(include_str!("../../Cargo.toml")).unwrap();
-    let dependencies = manifest["dependencies"].as_table().unwrap();
     let version = regex::Regex::new(r"^=\d+\.\d+\.\d+$").unwrap();
-    let grammars: Vec<_> = dependencies
-        .iter()
-        .filter(|(name, _)| name.starts_with("tree-sitter-"))
-        .collect();
-    assert!(!grammars.is_empty());
-    for (name, dependency) in grammars {
-        let pin = dependency
-            .as_str()
-            .or_else(|| dependency.get("version").and_then(toml::Value::as_str))
-            .unwrap();
-        assert!(version.is_match(pin), "{name}: {pin}");
+    let crates = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    for language in [
+        "css",
+        "markdown",
+        "python",
+        "rust",
+        "toml",
+        "typescript",
+        "yaml",
+    ] {
+        let path = crates.join(format!("habeas-language-{language}/Cargo.toml"));
+        let manifest: toml::Table =
+            toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let dependencies = manifest["dependencies"].as_table().unwrap();
+        let grammars: Vec<_> = dependencies
+            .iter()
+            .filter(|(name, _)| name.starts_with("tree-sitter-"))
+            .collect();
+        assert!(!grammars.is_empty(), "{}", path.display());
+        for (name, dependency) in grammars {
+            let pin = dependency
+                .as_str()
+                .or_else(|| dependency.get("version").and_then(toml::Value::as_str))
+                .unwrap();
+            assert!(version.is_match(pin), "{name}: {pin}");
+        }
     }
 }
 
