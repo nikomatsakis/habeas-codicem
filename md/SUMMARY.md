@@ -22,4 +22,5 @@
   - [Project integration](./requirements/integration.md)
   - [Project layout](./requirements/layout.md)
   - [Refactoring](./requirements/refactor.md)
+  - [Test execution coverage](./requirements/test-coverage.md)
 - [Requirements index](./requirements-index.md)
