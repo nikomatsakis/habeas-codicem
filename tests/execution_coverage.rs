@@ -106,6 +106,95 @@ fn assert_success(output: &Output) {
 }
 
 // {cite}`habeas:util`
+fn full_flow(root: &Path) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_habeas"))
+        .arg("test")
+        .current_dir(root)
+        .env("CARGO_NET_OFFLINE", "true")
+        .env_remove("CARGO_TARGET_DIR")
+        .env_remove("CARGO_BUILD_TARGET_DIR")
+        .env_remove("RUSTC_WORKSPACE_WRAPPER")
+        .env_remove("HABEAS_PREVIOUS_WORKSPACE_WRAPPER")
+        .env_remove("HABEAS_COVERAGE_RUN")
+        .env_remove("HABEAS_COVERAGE_FEATURE_LEDGER")
+        .output()
+        .unwrap()
+}
+
+// {test}`requirements.test-coverage.test`
+// {test}`requirements.test-coverage.check`
+// {test}`requirements.test-coverage.check.functions`
+#[test]
+fn full_test_flow_checks_real_function_counters_after_all_tests() {
+    let temp = fixture();
+    let root = temp.path();
+    let nextest = root.join(".config/nextest.toml");
+    let mut configuration = fs::read_to_string(&nextest)
+        .unwrap()
+        .parse::<toml_edit::DocumentMut>()
+        .unwrap();
+    configuration["profile"]["default"]["default-filter"] = toml_edit::value("kind(lib)");
+    fs::write(nextest, configuration.to_string()).unwrap();
+    fs::write(root.join("src/lib.rs"), "pub fn value(flag: bool) -> u32 {\n if flag { 10 } else { 20 }\n}\n#[cfg(test)] #[test] fn a() { assert_eq!(value(true), 10); }\n#[cfg(test)] #[test] fn b() { assert_eq!(value(false), 20); }\n").unwrap();
+    fs::write(
+        root.join("tests/processes.rs"),
+        "#[test] fn integration() { assert_eq!(coverage_fixture::value(true),10); }\n",
+    )
+    .unwrap();
+    let output = full_flow(root);
+    assert_success(&output);
+    assert!(String::from_utf8_lossy(&output.stdout).contains("Coverage check passed"));
+    let saved = runs(root);
+    assert_eq!(saved.len(), 1);
+    assert_eq!(
+        attempts(&saved[0].0).len(),
+        3,
+        "the full workspace includes unit AND integration targets"
+    );
+    for attempt in attempts(&saved[0].0) {
+        for process in attempt["processes"].as_array().unwrap() {
+            assert!(
+                process["functions"]
+                    .as_array()
+                    .is_some_and(|functions| !functions.is_empty())
+            );
+        }
+    }
+    fs::write(root.join("src/lib.rs"), "pub fn value(flag: bool) -> u32 { if flag { 10 } else { 20 } }\npub fn outer() { fn hidden() {} let f = || {}; f(); }\n#[cfg(test)] #[test] fn a() { value(true); outer(); }\n#[cfg(test)] #[test] fn b() { value(false); }\n").unwrap();
+    let output = full_flow(root);
+    assert!(!output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("#fn[outer]/fn[hidden]: zero execution"),
+        "{stdout}\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!stdout.contains("#fn[outer]: zero execution"), "{stdout}");
+    assert_eq!(
+        runs(root).last().unwrap().1["outcome"],
+        "success",
+        "tests succeeded; the policy caused failure"
+    );
+}
+
+// {test}`requirements.test-coverage.test`
+#[test]
+fn failed_suite_stops_full_flow_before_the_coverage_check() {
+    let temp = fixture();
+    let root = temp.path();
+    fs::write(root.join("src/lib.rs"),"pub fn value(_: bool) -> u32 { 10 }\n#[cfg(test)] #[test] fn failure() { panic!(\"deliberate fixture failure\"); }\n").unwrap();
+    fs::write(
+        root.join("tests/processes.rs"),
+        "#[test] fn integration() { coverage_fixture::value(true); }\n",
+    )
+    .unwrap();
+    let output = full_flow(root);
+    assert!(!output.status.success());
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("Coverage check"));
+    assert_eq!(runs(root).last().unwrap().1["outcome"], "failed");
+}
+
+// {cite}`habeas:util`
 fn retained_files(root: &Path) -> std::collections::BTreeMap<std::path::PathBuf, Vec<u8>> {
     let mut files = std::collections::BTreeMap::new();
     let mut pending = vec![root.to_owned()];
@@ -127,6 +216,7 @@ fn retained_files(root: &Path) -> std::collections::BTreeMap<std::path::PathBuf,
 
 // {test}`requirements.test-coverage.index.render_only`
 // {test}`requirements.test-coverage.index.selection`
+// {test}`requirements.test-coverage.check`
 #[cfg(unix)]
 #[test]
 fn book_rendering_preserves_retained_coverage_and_never_launches_tests() {
@@ -164,6 +254,34 @@ fn book_rendering_preserves_retained_coverage_and_never_launches_tests() {
     fs::set_permissions(&cargo, fs::Permissions::from_mode(0o755)).unwrap();
     let mut paths = vec![bin];
     paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
+    let tool_path = std::env::join_paths(&paths).unwrap();
+    let checked = Command::new(env!("CARGO_BIN_EXE_habeas"))
+        .arg("coverage-check")
+        .current_dir(root)
+        .env("PATH", &tool_path)
+        .env("HABEAS_REAL_CARGO", env!("CARGO"))
+        .env("HABEAS_CARGO_CALL_LOG", &calls)
+        .env("HABEAS_FORBIDDEN_COMMAND", &forbidden)
+        .env("CARGO_NET_OFFLINE", "true")
+        .env_remove("CARGO_TARGET_DIR")
+        .env_remove("CARGO_BUILD_TARGET_DIR")
+        .output()
+        .unwrap();
+    assert!(
+        String::from_utf8_lossy(&checked.stdout).contains("File execution coverage"),
+        "{}",
+        String::from_utf8_lossy(&checked.stderr)
+    );
+    assert!(!marker.exists(), "standalone coverage-check ran a test");
+    assert!(
+        !forbidden.exists(),
+        "standalone coverage-check launched compilation or collection"
+    );
+    assert_eq!(
+        retained_files(&storage),
+        before,
+        "standalone coverage-check modified captured data"
+    );
     let mut book = Book::new();
     book.push_item(Chapter::new(
         "Coverage",
@@ -177,7 +295,7 @@ fn book_rendering_preserves_retained_coverage_and_never_launches_tests() {
     let mut child = Command::new(env!("CARGO_BIN_EXE_habeas"))
         .arg("mdbook")
         .current_dir(root)
-        .env("PATH", std::env::join_paths(paths).unwrap())
+        .env("PATH", &tool_path)
         .env("HABEAS_REAL_CARGO", env!("CARGO"))
         .env("HABEAS_CARGO_CALL_LOG", &calls)
         .env("HABEAS_FORBIDDEN_COMMAND", &forbidden)

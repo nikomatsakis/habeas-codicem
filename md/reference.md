@@ -653,7 +653,7 @@ For an `{impl}` or `{test}` reference in a source outside the book, the words of
 
 Built-in definitions are named `habeas:<name>` and are available in every project without a declaration. Each has fixed text and permits only certain roles. Built-ins have no evidence files and do not appear in the requirements index or `habeas status`. Project definitions cannot use names beginning with `habeas:`. In the book, a reference to a built-in renders as a badge without a link; hovering over it shows the built-in's text.
 
-There is one built-in, `habeas:util`. The built-in `habeas:util` has this text:
+The built-in `habeas:util` has this text:
 
 > Cite this on an item that serves other code, including code outside the
 > project such as a library calling a trait implementation it requires, and
@@ -672,6 +672,48 @@ fn split_lines(text: &str) -> Vec<&str> {
 
 A `habeas:util` citation counts as a reference for Rust item coverage. An item whose only citations are of `habeas:util` needs no citation review; the reviews of the roots that reach it judge what it does.
 {cite}`requirements.references.builtin_definitions` {cite}`requirements.references.util`
+
+The built-in `habeas:coverage` has this text:
+
+> Cite this on a source file or explicitly declared function to propose a
+> coverage exception. Explain in prose why the item's incomplete execution
+> coverage is acceptable. Put the explanation in fenced citation commentary
+> or Rust doc comments included in the source item's assessed input. An ordinary
+> non-doc comment alone does not supply a tracked justification. The reason
+> must be substantive; difficulty alone is not a justification.
+> On a file's root item, the exception excuses only
+> that file's 80% instrumented-line threshold, including absent measurement
+> of its executable code. On an explicit function with a body, it excuses
+> that function's recorded zero execution or absence from otherwise usable
+> measurement, without excusing the file's threshold.
+> The explanation must agree with the current source and any callers or
+> configuration assumptions on which it relies. Only a current accepted
+> independent assessment permits the exception. A file exception does not
+> excuse unexecuted or not-measured functions in that file.
+> The citation applies to its source item without conditional build matching
+> and may remain when measured coverage satisfies the item's obligations.
+
+Use an ordinary citation with a prose explanation. For a file threshold, attach
+it to the root with Rust inner doc comments (`//!`); for a function, attach it to
+that function. For example:
+
+```rust
+// :::{cite} habeas:coverage
+// This defensive abort handles an invariant violation that public APIs
+// cannot construct; the reviewed callers establish that invariant.
+// :::
+fn invariant_failure() { std::process::abort(); }
+```
+
+An inline citation can instead put its explanation in a Rust doc comment.
+Only a current accepted independent citation review permits an exception.
+A file exception does not excuse individual functions; a function exception
+does not excuse its file's threshold or nested functions. A citation may remain
+when coverage improves, and applies across build configurations without parsing
+conditions in the explanation. The explanation and evidence belong in Git;
+runtime profiles and reports do not. Exceptions never inflate coverage figures.
+{impl}`requirements.test-coverage.check.exceptions.setup`
+{cite}`requirements.test-coverage.check.exceptions.anchor`
 
 ### Citation reviews
 
@@ -940,3 +982,33 @@ Instrumented compilation uses a separate cache under
 uses a custom build directory. Test processes retain the caller's Cargo build
 environment. When overriding the target directory for a run, use the same
 `CARGO_TARGET_DIR` when building the book.
+
+### Checking coverage after the suite
+
+Run `habeas test` for the complete flow: collect instrumented coverage for the
+whole workspace, then check the saved results. It fails if testing, collection,
+or the coverage check fails, and never calls a model. In CI, the two steps can
+be separate:
+
+```sh
+habeas coverage -- --workspace
+habeas coverage-check
+```
+
+Run the second command only after the first succeeds. The standalone checker
+never builds or executes tests. It requires at least 80% instrumented-line
+coverage in each first-party Rust file and an accepted explanation for every
+function with zero execution or no measurement, including feature- or
+platform-excluded functions. A partly covered function needs no exception when
+its file meets its target. The comparison uses exact counts, not rounded
+percentages, averages across files, or an 80% target in each function.
+
+The checker uses the book's combined latest-per-test selection in the active
+configuration, including child processes. Missing, stale, corrupt, or old
+line-only captures fail with guidance to recollect; citations cannot waive
+measurement failures or restore superseded successes. Files proved to have no
+executable obligations are reported separately. The output lists measured
+coverage, unmet function obligations, and accepted exceptions separately.
+Static `habeas::validate()` checks setup and saved assessment evidence without
+requiring runtime coverage; it need not run last.
+{impl}`requirements.test-coverage.check.guidance`

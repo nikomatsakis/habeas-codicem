@@ -10,6 +10,15 @@ Follow the habeas skill's "Testing and coverage artifacts": default to
 run doctests separately with `cargo test --doc --workspace`, and never stage or
 commit disposable coverage artifacts in the Cargo target directory.
 
+For post-suite `habeas coverage-check` failures, first distinguish missing or
+stale measurement from actual coverage gaps. Recollect measurement failures;
+no explanation can waive them. Add tests for coverage gaps, or give a
+substantive explanation through a standard `habeas:coverage` citation and author
+its independent citation review. Neither `habeas:util` nor `{fixme}` excuses
+execution coverage. Use `habeas test` for full verification after the changes.
+The habeas skill's "Testing and coverage artifacts" gives the per-file target
+and function obligations.
+
 ## Workflow
 
 Run commands from the project root, the directory with `book.toml` and

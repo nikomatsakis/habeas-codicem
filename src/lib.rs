@@ -914,6 +914,7 @@ mod tests {
 
     // {test}`requirements.references.book_badges`
     // {test}`requirements.references.builtin_definitions`
+    // {test}`requirements.test-coverage.check.exceptions.anchor`
     #[test]
     fn fenced_references_render_their_badge_and_body_and_built_ins_are_unlinked() {
         let mut book = Book::new();
@@ -921,6 +922,7 @@ mod tests {
             "::::{req} ready\nReady MUST hold.\n\n:::{cite} rules.other\nThe *other* rule.\n:::\n::::\n\n",
             ":::{req} other\nOther.\n:::\n\n",
             ":::{cite} habeas:util\nServes its caller.\n:::\n\n",
+            ":::{cite} habeas:coverage\nA substantive coverage explanation.\n:::\n\n",
             ":::{cite} habeas:none\nRemoved.\n:::\n\n",
             "Inline {cite}`habeas:none` stays literal.\n\n",
             "Inline {cite}`habeas:util` is a badge.\n\n",
@@ -951,6 +953,11 @@ mod tests {
 
         // A built-in has no link; its hover text is its full text.
         let util = crate::builtins::builtin("habeas:util").unwrap();
+        let coverage = crate::builtins::builtin("habeas:coverage").unwrap();
+        assert!(rendered.contains(&format!(
+            "<span class=\"habeas-req-badge habeas-req-ref-cite habeas-builtin\" title=\"{}\"><img",
+            super::escape_html(coverage.text())
+        )), "{rendered}");
         assert!(
             rendered.contains(&format!(
                 "<span class=\"habeas-req-badge habeas-req-ref-cite habeas-builtin\" title=\"{}\"><img",

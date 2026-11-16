@@ -4012,6 +4012,77 @@ mod tests {
         );
     }
 
+    // {test}`requirements.test-coverage.check.exceptions.author`
+    // {test}`requirements.references.citation_review`
+    // {test}`requirements.authoring.citation_prompt`
+    #[tokio::test]
+    async fn coverage_explanations_use_standard_citation_authoring_and_freshness() {
+        let project = inputs::tests::project();
+        let source = "// :::{cite} habeas:coverage\n// Defensive invariant abort, inaccessible through the API.\n// :::\nfn helper() {}\n";
+        fs::write(project.path().join("src/lib.rs"), source).unwrap();
+        let subject = AuthoringSubject::parse("citations:src/lib.rs#fn[helper]");
+        let mut sources = subject.sources(project.path()).unwrap();
+        let mandatory = sources.mandatory_inputs();
+        assert_eq!(mandatory[0]["item"], "fn[helper]");
+        assert!(mandatory.iter().any(|input| {
+            input["builtin"] == "habeas:coverage"
+                && input["text"][0]
+                    .as_str()
+                    .unwrap()
+                    .contains("difficulty alone")
+        }));
+        let prompt = initial_prompt(&sources).unwrap().joined();
+        assert!(prompt.contains("Defensive invariant abort"));
+        assert!(prompt.contains("For a built-in citation"));
+        assert!(prompt.contains("MUST NOT submit a FIXME"));
+        let state = tempfile::tempdir().unwrap();
+        let mut usage = UsageLog::start(state.path(), project.path(), &subject.label()).unwrap();
+        let provider = RecordingProvider::new(vec![judgment(
+            json!(true),
+            "The supplied source and explanation support the citation.",
+        )]);
+        let (_, record) = assess(&provider, &mut sources, &mut usage).await.unwrap();
+        assert_eq!(record["determination"], true);
+        assert_eq!(record["citations"][0]["name"], "habeas:coverage");
+        assert!(
+            record["inputs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|input| input.get("builtin").is_none())
+        );
+        let path = subject.evidence_path(project.path());
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
+        fs::write(
+            project.path().join("src/lib.rs"),
+            source.replace("inaccessible", "reachable"),
+        )
+        .unwrap();
+        let definitions = crate::evidence::load_definitions(project.path()).unwrap();
+        let mut errors = Vec::new();
+        let references = crate::evidence::collect_references(project.path(), &mut errors);
+        let outlines = crate::inputs::OutlineCache::default();
+        let item =
+            crate::citations::citation_items(project.path(), &definitions, &references, &outlines)
+                .remove(&("src/lib.rs".into(), "fn[helper]".into()))
+                .unwrap();
+        crate::citations::validate_review(
+            project.path(),
+            &item.review_path(),
+            &item,
+            &definitions,
+            &outlines,
+            &mut errors,
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("citations changed")),
+            "{errors:?}"
+        );
+    }
+
     // {test}`requirements.authoring.citation_prompt`
     // {test}`requirements.references.citation_review`
     // {test}`requirements.authoring.mandatory_inputs`

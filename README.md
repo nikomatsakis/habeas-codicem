@@ -40,7 +40,7 @@ If Habeas previously copied skills into `.agents/skills/habeas-*`, review them f
 
 During local development, `habeas setup --path /path/to/habeas-codicem` uses a local crate in place of the registry dependency.
 
-Run `mdbook build` to render requirement badges and linked references. The badge images load from Shields.io when the book is viewed. Run `habeas coverage` for validation; there is no separate CI command.
+Run `mdbook build` to render requirement badges and linked references. The badge images load from Shields.io when the book is viewed. Run `habeas test` for workspace tests, coverage collection, and post-suite coverage checking. CI can separate `habeas coverage -- --workspace` and `habeas coverage-check`.
 
 Use `habeas status` to list requirements with missing, false, or invalid evidence, including changed requirement text or changed source inputs. Use `habeas status --all` to list every requirement. To inspect the current requirement, validation findings, rationale, and inputs as Markdown, use a definition selection: an exact full name, or a glob where `*` matches any characters including dots:
 
@@ -165,3 +165,12 @@ Each process retains its own raw LLVM profile and captured-source report under
 `target/habeas/coverage/` (or the configured Cargo target directory). These are
 disposable build artifacts: never commit them. Building the book only reads saved
 coverage.
+
+For full verification, run `habeas test` to collect workspace coverage and then
+check it. In CI, run `habeas coverage -- --workspace`, followed on success by
+`habeas coverage-check`. The checker requires 80% instrumented-line coverage per
+first-party Rust file and a current accepted explanation for each function with
+zero execution or no measurement. Use an ordinary `habeas:coverage` citation
+with a prose rationale and author its independent citation review with
+`habeas author`. File exceptions do not waive individual functions or increase
+coverage figures. Checking saved coverage calls no model and runs no tests.

@@ -268,7 +268,7 @@ pub(crate) fn validate(
 
 /// Validates one review file against its current item.
 // {impl}`requirements.ci.errors`
-fn validate_review(
+pub(crate) fn validate_review(
     root: &Path,
     label: &str,
     item: &CitationItem,

@@ -1,7 +1,7 @@
 {
   "requirement": "For an enabled Habeas plugin, a supported agent session started within a Cargo and mdBook project whose manifest lists `habeas` under `[dev-dependencies]`, as {cite}`requirements.cli.setup` adds it, MUST receive a Symposium `SessionStart` hook. The hook MUST check whether the configuration and files required by `requirements.cli.setup`, {cite}`requirements.test-coverage.setup`, and {cite}`requirements.test-coverage.setup.configuration` are present and compatible. If not, it MUST provide nonblocking agent context saying that Habeas Codicem is not fully configured and suggesting `habeas setup`. If setup is complete or no applicable project is found, it MUST provide no setup advisory. The hook MUST NOT modify project files or run setup itself.",
   "determination": true,
-  "rationale": "I found no gap against `requirements.integration.symposium_setup_hook`.\n\n**Obligations and the code that carries them out**\n- **Session-start hook for an enabled plugin.** The `Cargo.toml` entry `[[package.metadata.symposium.hooks]]` (`name = \"habeas-setup-check\"`, `event = \"SessionStart\"`, `command = \"habeas\"`, `args = [\"hook\", \"session-start\"]`) registers the hook. `src/main.rs#fn[main]` routes `Command::Hook { SessionStart }` to `hook::session_start`. The enabling decision itself belongs to Symposium. `tests/symposium_hook_smoke.py` exercises that path.\n- **Applicable project only.** `src/hook.rs#fn[session_start_response]` first calls `setup::find_project_root`. That finds the nearest ancestor holding both `Cargo.toml` and `book.toml`, so nested working directories work. It then calls `setup::project_depends_on_habeas`, which requires `habeas` under `[dev-dependencies]`. Otherwise it returns an empty `SessionStart` object, which is no advisory.\n- **Check that configuration and files are present and compatible.** `src/setup.rs#fn[is_configured]` makes these checks:\n  - `validate_setup` for `.config/nextest.toml`, from `src/execution_coverage/configuration.rs#fn[validate_setup]`.\n  - The dev dependency.\n  - A valid book source with `SUMMARY.md`.\n  - The coverage chapter, via `coverage_chapter_plan`.\n  - The `habeas mdbook` preprocessor, restricted to the `html` renderer.\n  - `output.html.fold.enable`.\n  - The `additional-css` entry.\n  - The `habeas.css` content.\n  - The `tests/habeas.rs` content.\n  \n  These match `requirements.cli.setup`, `requirements.test-coverage.setup` and `requirements.test-coverage.setup.configuration`.\n- **Nonblocking advisory.** When `is_configured` is false, the response appends a sentence to `additionalContext`. It says \"Habeas Codicem is not fully configured … Run `habeas setup`\". It uses context only, with no blocking field, and the process exits successfully.\n- **No advisory when complete or not applicable.** The advisory is appended only when `is_configured` is false. The constant skill sentence is specified by the separate `symposium_skill_hook` requirements that the same code marks with `{impl}`. It is not a setup advisory.\n- **No modification and no running setup.** The hook only reads files.\n\n**Tests**\n- `tests/setup.rs#fn[session_start_advises_only_when_setup_is_incomplete]` covers these cases:\n  - No Habeas in the project: empty response.\n  - Habeas only under `[dependencies]`: empty response.\n  - A nested working directory.\n  - Missing stylesheet: advisory, and the hook does not recreate the file or change `book.toml`.\n  - Wrong preprocessor.\n  - Missing `fold.enable` and a disabled `fold.enable`.\n  - Missing `additional-css` entry.\n  - Different or missing `habeas.css` and `tests/habeas.rs`: advisory, and the hook does not recreate them.\n  - No `book.toml`: empty response.\n- `tests/setup.rs#fn[coverage_setup_is_idempotent_and_hook_checks_config_and_chapter]` covers the nextest config and the coverage chapter. After setup there is no advisory. An incompatible nextest config gives an advisory. A `SUMMARY.md` without the chapter gives an advisory.\n- `tests/setup.rs#fn[setup_uses_src_when_book_table_or_source_setting_is_absent]` covers a complete setup with a default book source. An invalid `book.src` gives an advisory.\n- `tests/symposium_hook_smoke.py` (`def[main]/def[session_start]`) verifies the real Symposium registration and hook invocation.\n- One minor point: no test deletes `.config/nextest.toml` outright. That case runs through the same `validate_setup` error path as the incompatible-config test, so I don't count it as a gap.",
+  "rationale": "**Verdict.** The reviewed tests adequately check `requirements.integration.symposium_setup_hook`. The gaps I looked for are covered by other tests or have no conditional of their own in the hook.\n\n**Obligations and the tests that check them**\n\n- **The hook is delivered to a session.**\n  - `tests/symposium_hook_smoke.py#def[main]/def[session_start]` is the marked test. It runs a real Symposium sync and `cargo-agents`.\n  - It asserts that Symposium recorded the decision to enable Habeas.\n  - It asserts that Symposium registered a `session-start` hook.\n  - It then invokes that hook for a Cargo project with `habeas` under `[dev-dependencies]`. It checks the delivered `additionalContext` with and without setup.\n- **The hook advises only for an applicable project.**\n  - `tests/setup.rs#fn[session_start_advises_only_when_setup_is_incomplete]` gets an empty `SessionStart` response for a project without Habeas.\n  - It gets the same empty response when `habeas` appears only under `[dependencies]`.\n  - It gets the same empty response after `book.toml` is removed.\n  - Nested working directories are exercised.\n- **The hook checks configuration and files, and the advisory is correct.**\n  - The same test checks each required piece on its own. For each, it expects the advisory text \"Habeas Codicem is not fully configured\" and `habeas setup`.\n    - The missing stylesheet.\n    - A `habeas mdbook` preprocessor replaced by another command.\n    - A missing `output.html.fold.enable`.\n    - An empty `additional-css` list.\n    - A stylesheet or `tests/habeas.rs` with differing content, and each of them missing.\n  - It also checks that a fold value of `false` counts as complete. This matches `requirements.cli.setup`, which keeps an existing value.\n  - `tests/setup.rs#fn[coverage_setup_is_idempotent_and_hook_checks_config_and_chapter]` covers the coverage files.\n    - It expects no advisory after a complete, idempotent setup.\n    - It expects the advisory after `.config/nextest.toml` is altered (`all()` changed to `test(one)`).\n    - It expects the advisory after the chapter entry is dropped from `SUMMARY.md`.\n  - `tests/setup.rs#fn[setup_uses_src_when_book_table_or_source_setting_is_absent]` covers the missing `[book]` table or `src` setting. It expects no advisory when setup is complete and an advisory when `book.src` is invalid.\n- **No setup advisory when setup is complete or no project applies.** These cases are asserted with `skill_sentence_only()` and `json!({\"SessionStart\": {}})`. The smoke test also asserts that only the skill sentence remains once `habeas setup` has run.\n- **Nonblocking context.** The response shape is only `SessionStart.additionalContext`, and the tests assert that exact shape. `src/hook.rs#fn[session_start_response]` shows it contains no blocking field.\n- **The hook MUST NOT modify project files or run setup.** The test asserts that the hook does not recreate a deleted stylesheet or `tests/habeas.rs`. It asserts that `book.toml` is unchanged and that user-modified files are left untouched.\n\n**Possible gaps considered and set aside**\n\n- The hook has no untested branch of its own for the cases below. `src/setup.rs#fn[is_configured]` delegates them to `validate_setup` and `coverage_chapter_plan`.\n  - A missing `nextest.toml`.\n  - Unrelated nextest settings that setup preserves.\n  - A custom chapter that already contains `{coverage-index}`.\n  - A conflicting chapter.\n- Other tests cover those delegated checks: `tests/execution_coverage.rs#fn[missing_unreadable_malformed_or_disabled_collector_is_a_shared_validation_error]` and `tests/setup.rs#fn[coverage_setup_preserves_custom_index_and_preflights_conflicts]`.\n- The hook's tested input classes, such as an altered nextest file and a missing chapter, already exercise the delegation.\n\nThere is no applicable {fixme}, and I found no unacknowledged gap.",
   "references": "cd0ce46358c44120240e74e2fd9c3f3065f61e4eeb45393195683d1a592c8900",
   "inputs": [
     {
@@ -60,24 +60,9 @@
       ]
     },
     {
-      "file": "Cargo.toml",
-      "item": "table[package.metadata.symposium.hooks]/pair[name]",
-      "hash": "1fcf24f829daad37e72e7b6a2b317e9be5bef4627fb363009aca1025ca06ee39"
-    },
-    {
-      "file": "src/main.rs",
-      "item": "fn[main]",
-      "hash": "7f41951e425bd5e9f2aef5354e22b8163c9ae711e40bad9734f67387305b192d"
-    },
-    {
-      "file": "src/setup.rs",
-      "item": "fn[is_configured]",
-      "hash": "71f987ef804e8c8883fdb54ddee5e3e3fe7e63e225a7519be4774aeb7d6094d1"
-    },
-    {
       "file": "tests/setup.rs",
       "item": "fn[coverage_setup_is_idempotent_and_hook_checks_config_and_chapter]",
-      "hash": "4f718043c087eb9cef9b86ffd56fe21aee861ce6f1e6251211c03a48af301892"
+      "hash": "5fbdd2142a33c58a45a9f128cf1b5f374e43815f33d6c9314310f59eb4e00de9"
     },
     {
       "file": "tests/setup.rs",
@@ -95,29 +80,19 @@
       "hash": "0fdb856b225b25c89b537b5147bf2ec49f3041ea63dc7d2cc2bd9146b20de165"
     },
     {
+      "file": "tests/symposium_hook_smoke.py",
+      "item": "def[main]",
+      "hash": "4d712ac3ccfbce77c33c9a5da609f4a2117192a15e341c4f171b4be9f31a086e"
+    },
+    {
       "file": "src/hook.rs",
-      "item": "",
-      "hash": "b20964d16cf660b5a0d17dfd14bae9b1a2cea17e0ce94c9280ac422d2c5582a9"
+      "item": "fn[session_start_response]",
+      "hash": "262cd4f188c052a8af61258a1235fabf84ea76659e094c23d52daa5ca19bc4a0"
     },
     {
       "file": "src/setup.rs",
-      "item": "fn[project_depends_on_habeas]",
-      "hash": "1a9d5fad17fcab73c1b0078499a97beeba6459541304ef0ab63197f10828512d"
-    },
-    {
-      "file": "src/setup.rs",
-      "item": "fn[find_project_root]",
-      "hash": "13f022193c6fccd79ab17c8dd4c4fee89afe90e87d5d001c3d7754846c609301"
-    },
-    {
-      "file": "src/setup.rs",
-      "item": "fn[has_habeas_dev_dependency]",
-      "hash": "fd6c6654032f55266b631a59c7f82c166cc847be6618f57bc4ebea84f0708314"
-    },
-    {
-      "file": "src/execution_coverage/configuration.rs",
-      "item": "fn[validate_setup]",
-      "hash": "bbaa9affef470a2e272027a8793d2ae15d82e33099ce8dd859e97b00cd26d5e8"
+      "item": "fn[is_configured]",
+      "hash": "71f987ef804e8c8883fdb54ddee5e3e3fe7e63e225a7519be4774aeb7d6094d1"
     }
   ]
 }

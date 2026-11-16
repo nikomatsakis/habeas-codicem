@@ -135,8 +135,10 @@ Edge cases:
   asks: the user may want it as a root, and removing it changes what the
   assessment reads.
 
-`{cite}` needs no coverage and implements nothing; a citation review checks that
-each one should not be `{impl}` or `{test}`. To defer a gap the user agrees to,
+`{cite}` implements nothing; a citation review checks project citations' roles
+and built-ins' stated criteria. Execution-coverage exceptions use
+`habeas:coverage` with an assessed prose justification, as the habeas skill's
+"Testing and coverage artifacts" explains. To defer a requirement gap the user agrees to,
 use `{fixme}` as the habeas-evidence skill's `references/fixme.md` describes.
 
 ## What the review checks

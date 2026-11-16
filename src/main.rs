@@ -22,6 +22,12 @@ enum Command {
         #[arg(last = true)]
         args: Vec<String>,
     },
+    /// Check saved file and function coverage, without running tests or a model.
+    // {impl}`requirements.test-coverage.check`
+    CoverageCheck,
+    /// Collect coverage for the full workspace, then check its coverage policy.
+    // {impl}`requirements.test-coverage.test`
+    Test,
     #[command(hide = true)]
     CoverageProcess {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
@@ -141,6 +147,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             command: Some(MdbookCommand::Supports { .. })
         } | Command::Setup { .. }
             | Command::Coverage { .. }
+            | Command::CoverageCheck
+            | Command::Test
             | Command::CoverageProcess { .. }
             | Command::Hook { .. }
             | Command::Status { .. }
@@ -154,6 +162,16 @@ fn main() -> Result<(), Box<dyn Error>> {
                 &setup::project_root()?,
                 &args,
             )?);
+        }
+        // {impl}`requirements.test-coverage.check`
+        Command::CoverageCheck => {
+            let report = habeas::execution_coverage::check(&setup::project_root()?)?;
+            print!("{}", report.text);
+            std::process::exit(i32::from(!report.passed));
+        }
+        // {impl}`requirements.test-coverage.test`
+        Command::Test => {
+            std::process::exit(habeas::execution_coverage::test(&setup::project_root()?)?);
         }
         Command::CoverageProcess { args } => {
             std::process::exit(habeas::execution_coverage::collect_process(&args)?);

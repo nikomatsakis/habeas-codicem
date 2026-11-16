@@ -10,8 +10,8 @@ use std::sync::{
 };
 
 use super::{
-    Attempt, Process, Run, configuration, digest, input_hashes, load, now, save, walk,
-    workspace_inputs,
+    Attempt, FunctionExecution, Process, Run, configuration, digest, input_hashes, load, now, save,
+    walk, workspace_inputs,
 };
 
 // {cite}`habeas:util`
@@ -1223,11 +1223,11 @@ fn finish(root: &Path, dir: &Path, cov: &Path, profdata: &Path, run: &mut Run) -
                     .collect::<Vec<_>>();
                 export(cov, &merged, &objects, root, &run.sources)
             });
-            let (lines, diagnostic) = match result {
-                Ok(lines) => (lines, None),
+            let (lines, functions, diagnostic) = match result {
+                Ok((lines, functions)) => (lines, Some(functions), None),
                 Err(error) => {
                     failed = true;
-                    (BTreeMap::new(), Some(error.to_string()))
+                    (BTreeMap::new(), None, Some(error.to_string()))
                 }
             };
             attempt.processes.push(Process {
@@ -1237,6 +1237,7 @@ fn finish(root: &Path, dir: &Path, cov: &Path, profdata: &Path, run: &mut Run) -
                     .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
                     .collect(),
                 lines,
+                functions,
                 diagnostic,
             });
         }
@@ -1262,13 +1263,16 @@ fn finish(root: &Path, dir: &Path, cov: &Path, profdata: &Path, run: &mut Run) -
 }
 
 // {cite}`habeas:util`
+type ProcessCoverage = (BTreeMap<String, BTreeMap<u32, u64>>, Vec<FunctionExecution>);
+
+// {impl}`requirements.test-coverage.check.functions`
 fn export(
     cov: &Path,
     profile: &Path,
     objects: &[PathBuf],
     root: &Path,
     sources: &BTreeMap<String, String>,
-) -> io::Result<BTreeMap<String, BTreeMap<u32, u64>>> {
+) -> io::Result<ProcessCoverage> {
     let first = objects
         .first()
         .ok_or_else(|| io::Error::other("No instrumented executable coverage maps were found"))?;
@@ -1315,7 +1319,81 @@ fn export(
                 .or_insert(count);
         }
     }
-    Ok(lines)
+    let mut command = Command::new(cov);
+    command
+        .arg("export")
+        .arg(first)
+        .arg(format!("-instr-profile={}", profile.display()));
+    for object in &objects[1..] {
+        command.arg("-object").arg(object);
+    }
+    let functions = function_counts(&output(&mut command)?, root, sources)?;
+    Ok((lines, functions))
+}
+
+// {impl}`requirements.test-coverage.check.functions`
+fn function_counts(
+    json: &str,
+    root: &Path,
+    sources: &BTreeMap<String, String>,
+) -> io::Result<Vec<FunctionExecution>> {
+    // Deserialize only counters and entry locations, rather than retaining the
+    // much larger JSON file-segment and expansion maps in memory or on disk.
+    #[derive(serde::Deserialize)]
+    struct Export {
+        data: Vec<Data>,
+    }
+    #[derive(serde::Deserialize)]
+    struct Data {
+        functions: Vec<Function>,
+    }
+    #[derive(serde::Deserialize)]
+    struct Function {
+        count: u64,
+        filenames: Vec<String>,
+        regions: Vec<Vec<u64>>,
+    }
+    let export: Export = serde_json::from_str(json)?;
+    let mut counts = Vec::new();
+    for function in export.data.into_iter().flat_map(|data| data.functions) {
+        // Region kind 0 is a code region. Expansion/gap regions are not an
+        // explicit function's entry. Matching uses BOTH line and byte column.
+        let Some(entry) = function
+            .regions
+            .iter()
+            .find(|region| region.len() == 8 && region[7] == 0)
+        else {
+            continue;
+        };
+        let filename = function
+            .filenames
+            .get(entry[5] as usize)
+            .ok_or_else(|| io::Error::other("invalid LLVM function file index"))?;
+        let Some(file) = Path::new(filename)
+            .strip_prefix(root)
+            .ok()
+            .filter(|path| !path.starts_with("vendor"))
+            .map(|path| path.to_string_lossy().into_owned())
+            .filter(|path| sources.contains_key(path))
+        else {
+            continue;
+        };
+        let line = u32::try_from(entry[0])
+            .ok()
+            .filter(|value| *value > 0)
+            .ok_or_else(|| io::Error::other("invalid LLVM function entry line"))?;
+        let column = u32::try_from(entry[1])
+            .ok()
+            .filter(|value| *value > 0)
+            .ok_or_else(|| io::Error::other("invalid LLVM function entry column"))?;
+        counts.push(FunctionExecution {
+            file,
+            line,
+            column,
+            count: function.count,
+        });
+    }
+    Ok(counts)
 }
 
 #[cfg(test)]

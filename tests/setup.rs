@@ -76,6 +76,8 @@ const SKILL_SENTENCE: &str = "This project tracks requirements with Habeas; load
 
 // {test}`requirements.test-coverage.setup`
 // {test}`requirements.test-coverage.setup.configuration`
+// {test}`requirements.test-coverage.check.guidance`
+// {test}`requirements.test-coverage.check.exceptions.setup`
 // {test}`requirements.integration.symposium_setup_hook`
 #[test]
 fn coverage_setup_is_idempotent_and_hook_checks_config_and_chapter() {
@@ -86,6 +88,22 @@ fn coverage_setup_is_idempotent_and_hook_checks_config_and_chapter() {
     let summary = fs::read_to_string(root.join("md/SUMMARY.md")).unwrap();
     let config = fs::read_to_string(root.join(".config/nextest.toml")).unwrap();
     assert!(root.join("md/test-coverage.md").is_file());
+    let chapter = fs::read_to_string(root.join("md/test-coverage.md")).unwrap();
+    for guidance in [
+        "habeas test",
+        "habeas coverage -- --workspace",
+        "habeas coverage-check",
+        "static validation test needs no prior coverage",
+        "80%",
+        "habeas:coverage",
+        "current accepted review",
+        "No project declaration or special configuration",
+    ] {
+        assert!(
+            chapter.contains(guidance),
+            "missing setup guidance: {guidance}"
+        );
+    }
     assert!(config.contains("coverage-process"));
     run(root, &["setup", "--path", local_crate]);
     assert_eq!(

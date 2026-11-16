@@ -8,7 +8,9 @@ description: Use at the start of any work in a project that tracks requirements 
 Habeas traces requirements, written in a project's mdBook, to the code and tests
 that implement and verify them. `habeas author` has a model assess whether tests
 adequately check each requirement and records the result as evidence under `evidence/`;
-`habeas coverage` validates that evidence without calling a model.
+`habeas::validate()` validates that evidence without calling a model.
+`habeas test` runs instrumented workspace tests and checks their saved execution
+coverage.
 
 ## Workflow
 
@@ -50,6 +52,26 @@ Profiles, reports, and captured source under the Cargo target directory
 or commit them to Git. The book combines each test's latest compatible attempt;
 source changes invalidate the combined coverage, while saved reports remain
 inspectable. Building the book does not run tests.
+
+For final verification, run `habeas test` (`cargo habeas test` in this repository).
+It collects coverage for the full workspace, then checks it. In CI, recommend
+`habeas coverage -- --workspace` followed, only on success, by
+`habeas coverage-check`. The check reads saved data and calls no model; the
+static `habeas::validate()` test requires no prior execution coverage.
+{impl}`requirements.test-coverage.check.guidance`
+
+Each first-party Rust file needs 80% instrumented-line coverage. Each completely
+unexecuted or not-measured function, including functions excluded by the build
+configuration, needs an independently assessed explanation. Partly covered
+functions need no exception when their file meets its target. Write a standard
+`{cite}` of `habeas:coverage`, with the rationale in fenced commentary or a Rust
+doc comment, and author its citation review with `habeas author`. A file-root
+citation excuses only the file threshold; a function citation excuses only that
+function. Only current accepted review evidence permits the exception. No
+project declaration or extra configuration is needed. The citation applies
+across build configurations and may remain when coverage is sufficient.
+Exceptions never increase reported percentages.
+{impl}`requirements.test-coverage.check.exceptions.setup`
 
 ## Inspecting
 

@@ -13,10 +13,17 @@ pub(crate) struct Builtin {
 
 /// Every built-in definition.
 // {impl}`requirements.references.util`
-pub(crate) const BUILTINS: &[Builtin] = &[Builtin {
-    name: "habeas:util",
-    roles: &[ReferenceKind::Cite],
-}];
+// {impl}`requirements.test-coverage.check.exceptions.anchor`
+pub(crate) const BUILTINS: &[Builtin] = &[
+    Builtin {
+        name: "habeas:util",
+        roles: &[ReferenceKind::Cite],
+    },
+    Builtin {
+        name: "habeas:coverage",
+        roles: &[ReferenceKind::Cite],
+    },
+];
 
 /// Whether a name has the reserved built-in form `habeas:<name>`.
 // {cite}`habeas:util`
@@ -33,12 +40,20 @@ pub(crate) fn builtin(name: &str) -> Option<&'static Builtin> {
 impl Builtin {
     /// The built-in's fixed text, as quoted in its requirement.
     // {impl}`requirements.references.util`
+    // {impl}`requirements.test-coverage.check.exceptions.anchor`
     pub(crate) fn text(&self) -> &'static str {
         static UTIL: OnceLock<String> = OnceLock::new();
+        static COVERAGE: OnceLock<String> = OnceLock::new();
         // Keep the approved requirement text as the sole source.
         let chapter = include_str!("../md/requirements/references.md");
         match self.name {
             "habeas:util" => UTIL.get_or_init(|| quoted_text(chapter, ":::{req} util")),
+            "habeas:coverage" => COVERAGE.get_or_init(|| {
+                quoted_text(
+                    include_str!("../md/requirements/test-coverage.md"),
+                    ":::{req} check.exceptions.anchor",
+                )
+            }),
             _ => unreachable!("every built-in has text"),
         }
     }
@@ -79,6 +94,42 @@ fn quoted_text(chapter: &str, marker: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // {test}`requirements.test-coverage.check.exceptions.anchor`
+    #[test]
+    fn coverage_builtin_uses_the_documented_text_and_only_the_citation_role() {
+        let coverage = builtin("habeas:coverage").unwrap();
+        assert_eq!(
+            coverage.text(),
+            quoted_text(
+                include_str!("../md/reference.md"),
+                "The built-in `habeas:coverage` has this text:",
+            )
+        );
+        assert!(coverage.text().contains("difficulty alone"));
+        assert!(coverage.text().contains("file's 80%"));
+        assert!(
+            coverage
+                .text()
+                .contains("without conditional build matching")
+        );
+        assert!(coverage.check(ReferenceKind::Cite).is_ok());
+        for kind in [
+            ReferenceKind::Impl,
+            ReferenceKind::Test,
+            ReferenceKind::Fixme,
+            ReferenceKind::Term,
+        ] {
+            assert!(coverage.check(kind).is_err());
+        }
+        assert_eq!(
+            BUILTINS
+                .iter()
+                .filter(|builtin| builtin.name == "habeas:coverage")
+                .count(),
+            1
+        );
+    }
 
     // {test}`requirements.references.util`
     // {test}`requirements.references.builtin_definitions`

@@ -8,15 +8,19 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 mod book;
+mod check;
 mod configuration;
 mod runner;
 
 pub use book::marker_ranges;
 pub(crate) use book::populate;
+pub use check::{CheckReport, check, test};
 pub use configuration::{configure, validate_setup, workspace_root};
 pub use runner::{collect_process, compile_process, run};
 
-pub const CHAPTER: &str = "# Test coverage\n\nCollect Rust unit and integration test coverage with `habeas coverage`.\nFor focused runs, forward nextest arguments with `habeas coverage -- -E 'test(name)'`.\nRun doctests separately with `cargo test --doc --workspace`.\n\nCoverage is disposable build output in the Cargo target directory. The index\ncombines each test's latest compatible attempt; source changes invalidate its\ncontribution. Building this book reads saved reports and never runs tests.\n\nThe overview maps project files to their line coverage percentages. Choose a\ntest to see only the files it executes, including its child processes. Expand\nthe optional details to inspect run metadata or individual source lines.\n\n:::{coverage-index}\n:::\n";
+// {impl}`requirements.test-coverage.check.guidance`
+// {impl}`requirements.test-coverage.check.exceptions.setup`
+pub const CHAPTER: &str = "# Test coverage\n\nCollect Rust unit and integration test coverage with `habeas coverage`.\nFor focused runs, forward nextest arguments with `habeas coverage -- -E 'test(name)'`.\nRun doctests separately with `cargo test --doc --workspace`.\n\nFor full verification, `habeas test` collects coverage for the whole workspace,\nthen checks it. In CI, run `habeas coverage -- --workspace` and, after it succeeds,\nrun `habeas coverage-check` as a separate step. Checking saved coverage runs no\ntests and calls no model; the static validation test needs no prior coverage.\n\nEvery first-party Rust file needs 80% instrumented-line coverage. Every function\nwith zero execution or no measurement needs an accepted explanation, including\nfunctions excluded by features or platform. Ordinary partly covered functions\nneed no exception when their file meets its target.\n\nUse a standard `habeas:coverage` citation with a substantive prose justification\nin fenced commentary or a Rust doc comment. A file-root citation excuses only\nthe file threshold; a function citation excuses only that function. Author its\nindependent citation review with `habeas author`; only a current accepted review\npermits an exception. No project declaration or special configuration is needed.\nCitations remain applicable across build configurations and can remain after\ncoverage improves. Exceptions never increase measured percentages.\n\nCoverage is disposable build output in the Cargo target directory. The index\ncombines each test's latest compatible attempt; source changes invalidate its\ncontribution. Building this book reads saved reports and never runs tests.\n\nThe overview maps project files to their line coverage percentages. Choose a\ntest to see only the files it executes, including its child processes. Expand\nthe optional details to inspect run metadata or individual source lines.\n\n:::{coverage-index}\n:::\n";
 
 // {impl}`requirements.test-coverage.storage`
 // {impl}`requirements.test-coverage.storage.provenance`
@@ -61,7 +65,21 @@ struct Process {
     pid: u32,
     profiles: Vec<String>,
     lines: BTreeMap<String, BTreeMap<u32, u64>>,
+    /// Absent in older line-only captures; those remain browsable in the book.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    functions: Option<Vec<FunctionExecution>>,
     diagnostic: Option<String>,
+}
+
+// {impl}`requirements.test-coverage.check.functions`
+// {impl}`requirements.test-coverage.check.measurement`
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct FunctionExecution {
+    file: String,
+    /// LLVM's entry-region start, with one-based line and byte column.
+    line: u32,
+    column: u32,
+    count: u64,
 }
 
 // {cite}`habeas:util`
