@@ -13,6 +13,49 @@ fn selectors(outline: &Outline) -> Vec<String> {
         .collect()
 }
 
+// {test}`requirements.references.structural_hash`
+#[test]
+fn hashes_include_grammar_kinds_nesting_and_sha256_digests() {
+    // Identical leaf text parsed under distinct grammars has distinct kinds.
+    let rust = outline("sample.rs", "x;");
+    let python = outline("sample.py", "x;");
+    assert_ne!(
+        rust.nodes[0].structural_hash,
+        python.nodes[0].structural_hash
+    );
+    let mut nested = super::hash::Encoder::new();
+    nested.kind("a");
+    nested.kind("b");
+    nested.words("x");
+    nested.end();
+    nested.end();
+    let mut siblings = super::hash::Encoder::new();
+    siblings.kind("a");
+    siblings.end();
+    siblings.kind("b");
+    siblings.words("x");
+    siblings.end();
+    assert_ne!(nested.finish(), siblings.finish());
+    // Standard SHA-256 empty vector, and SHA-256 of a tagged, length-prefixed
+    // text token: b"T" + 5_u64.to_le_bytes() + b"hello".
+    let empty = outline("sample.txt", "");
+    for hash in [
+        &empty.nodes[0].structural_hash,
+        &empty.nodes[0].identity_hash,
+    ] {
+        assert_eq!(
+            hash,
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+    }
+    let line = outline("sample.txt", "hello");
+    assert_eq!(
+        line.nodes[1].structural_hash,
+        "8b8d04e8a7ca68bfe4afe50ada62c244b03c0dcd31aafb2b885c81095f1fdd5c"
+    );
+    assert_eq!(line.nodes[1].identity_hash, line.nodes[1].structural_hash);
+}
+
 // {test}`requirements.references.outlines`
 #[test]
 fn every_profile_mapping_is_documented() {
@@ -176,6 +219,7 @@ extern crate core;
 }
 
 // {test}`requirements.references.structural_hash`
+// {test}`requirements.references.outlines`
 #[test]
 fn identity_hashes_include_own_attached_siblings_but_not_descendants() {
     let hashes = |source: &str, selector: &str| {
@@ -254,6 +298,7 @@ fn anonymous_selectors_use_identity_hashes() {
 
 // {test}`requirements.references.structural_hash`
 // {test}`requirements.references.selector_raw_lines`
+// {test}`requirements.references.outlines`
 #[test]
 fn hashes_skip_whitespace_and_plain_comments_but_not_doc_comments() {
     let base = concat!(
@@ -730,6 +775,29 @@ fn toml_and_yaml_profiles_name_keys() {
     );
 }
 
+// {test}`requirements.references.outline_selectors`
+#[test]
+fn anonymous_container_selectors_use_identity_hashes_and_survive_descendant_edits() {
+    let before = outline("a.yml", "items:\n  - f: 1\n");
+    let after = outline("a.yml", "items:\n  - f: 200\n");
+    let index = before
+        .nodes
+        .iter()
+        .position(|node| node.kind == "item")
+        .unwrap();
+    let node = &before.nodes[index];
+    assert_ne!(node.identity_hash, node.structural_hash);
+    assert_eq!(
+        node.selector,
+        format!("pair[items]/item@{}", &node.identity_hash[..12])
+    );
+    let edited = &after.nodes[after.resolve(&node.selector).unwrap()];
+    assert_eq!(edited.identity_hash, node.identity_hash);
+    assert_ne!(edited.structural_hash, node.structural_hash);
+    assert_eq!(edited.selector, node.selector);
+    assert!(after.resolve(&format!("{}/pair[f]", node.selector)).is_ok());
+}
+
 // {test}`requirements.references.rust_item_selectors`
 // {test}`requirements.references.selector_nested`
 // {test}`requirements.references.selector_impl_and_trait`
@@ -973,6 +1041,7 @@ fn a_comment_after_another_comment_on_its_line_forms_its_own_run() {
 }
 
 // {test}`requirements.references.selector_duplicate_names`
+// {test}`requirements.references.outlines`
 #[test]
 fn duplicate_names_are_numbered_in_source_order_without_line_numbers() {
     let source = "#[cfg(a)]\nfn run() { a() }\n#[cfg(b)]\nfn run() { b() }\n";

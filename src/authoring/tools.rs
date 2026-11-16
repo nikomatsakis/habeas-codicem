@@ -4,6 +4,7 @@ use std::io;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
 
+use grep_matcher::Matcher;
 use serde_json::{Map, Value, json};
 
 use super::inputs::AssessmentSources;
@@ -24,6 +25,8 @@ pub(crate) struct ToolDelivery {
 // {impl}`requirements.authoring.outline_tool`
 // {impl}`requirements.authoring.reference_index`
 // {impl}`requirements.authoring.github_reads`
+// {impl}`requirements.authoring.finish_search`
+// {impl}`requirements.authoring.finish_search.description`
 // {impl}`requirements.authoring.tool_descriptions.common_case`
 // {impl}`requirements.authoring.tool_descriptions.special_cases`
 pub(crate) fn definitions() -> Vec<Value> {
@@ -43,7 +46,7 @@ pub(crate) fn definitions() -> Vec<Value> {
             }, "additionalProperties":false}
         }),
         json!({
-            "name": "list_files", "description": "List the immediate files and directories of a project-relative directory (default .). The result is an array of {path, kind}, where kind is file or directory; returned paths can be listed or read in another call. Directory listings are not evidence inputs.",
+            "name": "list_files", "description": "List the immediate files and directories of a project-relative directory (default .). The result is an array of {path, kind}, where kind is file or directory; returned paths can be listed or read in another call. Use list_files for directory entries and outline for selectable nodes in one file. Directory listings are not evidence inputs.",
             "parameters":{"type":"object","properties":{"path":{"type":"string","default":"."}},"additionalProperties":false}
         }),
         json!({
@@ -51,11 +54,11 @@ pub(crate) fn definitions() -> Vec<Value> {
             "parameters":{"type":"object","properties":{"file":{"type":"string"}},"required":["file"],"additionalProperties":false}
         }),
         json!({
-            "name":"ripgrep", "description":"Search a project-relative file or directory (default .) using ripgrep regex syntax and case-sensitive matching. Searches only locate code. The result is {matches: [{file, item, kind, lines: [{text, matched}]}]}: one entry for each innermost outline node containing a match (a match in a comment belongs to the node the comment belongs to), with the node's item selector and kind, and its matching lines (matched true) plus context lines before and after each match (default 2; zero means matches only), in source order and without line numbers. Windows stop at file boundaries, overlapping windows are merged, and a line with text \"…\" and matched false separates windows within one node. Results are not evidence inputs and carry no definitions: read with the habeas tool, e.g. {file, item}, any node whose code your conclusion relies on. No matches returns an empty matches array. With referencing {selection, roles, scope}, search only sources within path that carry a reference in one of roles (impl, test, cite, or fixme; default [impl, test, cite]) to a requirement or example the selection matches (a full name, or a glob where * matches any characters including dots), including :impl: and :test: declaration anchors: scope node searches only the outline nodes that contain or are named by those references, and scope file (the default) their whole files, e.g. {\"pattern\":\"errors\",\"referencing\":{\"selection\":\"requirements.ci.*\",\"roles\":[\"impl\"],\"scope\":\"node\"}}.",
+            "name":"ripgrep", "description":"Search a project-relative file or directory (default .) using ripgrep regex syntax and case-sensitive matching. Use ripgrep for text patterns, ast_grep for syntax-tree rules, and references for requirement-reference sites. Account for snippets you rely on with finish_search. The result is {search_id, matches: [{tag, file, item, kind, lines: [{text, matched}]}]}: one entry for each innermost outline node containing a match (a match in a comment belongs to the node the comment belongs to), with the node's item selector and kind, and its matching lines (matched true) plus context lines before and after each match (default 2; zero means matches only), in source order and without line numbers. Windows stop at item boundaries, overlapping windows are merged within each item, and a line with text \"…\" and matched false separates windows within one node. Results carry no definitions. Before submitting, call finish_search with the result UUID and the tags whose snippets you used to justify your conclusion without an additional source read. Entries whose source you also read may be omitted; including them is harmless. Use an empty used list if no entries qualify. Selected items become evidence dependencies without another source read. No matches returns an empty matches array. With referencing {selection, roles, scope}, search only sources within path that carry a reference in one of roles (impl, test, cite, or fixme; default [impl, test, cite]) to a requirement or example the selection matches (a full name, or a glob where * matches any characters including dots), including :impl: and :test: declaration anchors: scope node searches only the outline nodes that contain or are named by those references, and scope file (the default) their whole files, e.g. {\"pattern\":\"errors\",\"referencing\":{\"selection\":\"requirements.ci.*\",\"roles\":[\"impl\"],\"scope\":\"node\"}}.",
             "parameters":{"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string","default":"."},"context":{"type":"integer","minimum":0,"default":2},"referencing":reference_scope_schema()},"required":["pattern"],"additionalProperties":false}
         }),
         json!({
-            "name":"ast_grep", "description":"Search syntax trees in process with an ast-grep rule. Supply exactly one form: {language, rule, path (default .), referencing (optional)} or {query}. language is one of rust, python, typescript, tsx, css, markdown, toml, or yaml, matched with Habeas's pinned grammars; only files of that language are searched. rule is an object holding the keys of an ast-grep rule file's rule core, written as JSON: rule (required), and optional utils (named rules) and constraints (metavariable name to rule). A rule object combines atomic rules: pattern (code with metavariables, where $A matches one node, $$$A any number of nodes, and $_ one node without capturing), kind (a grammar node kind such as function_item), regex (a Rust regex the node's whole text must match), and nthChild; relational rules: inside, has, precedes, and follows, each taking a rule plus optional stopBy (neighbor, the default, end, or a rule) and field; and composite rules: all, any, not, and matches (a utils name). Patterns parse as standalone code, so a fragment that does not parse on its own, such as a type or parameter, needs the context and selector form: pattern: {context: \"fn f(x: &mut Vec<String>) {}\", selector: reference_type} parses context and matches the node of kind selector within it. Example: {\"language\":\"rust\",\"rule\":{\"rule\":{\"pattern\":\"$X.unwrap()\",\"inside\":{\"kind\":\"function_item\",\"stopBy\":\"end\"}}}}. path selects a project-relative file or directory (default .); referencing works as for ripgrep, and results are ordered by path and then line. The query form, e.g. {\"query\":\"requirements.ci.errors/error_accumulators\"}, runs a query a distributed requirement declares, named <full-name>/<query-name>, exactly as validation runs it, including its paths, exclude, and within, and returns each match's site. Searches only locate code. The result has ripgrep's form, {matches: [{file, item, kind, lines: [{text, matched}]}]}: one entry for each innermost outline node containing a match (a match in a comment belongs to the node the comment belongs to; a query match belongs to its site), with the node's item selector and kind, and the matched lines, without line numbers. Results are not evidence inputs and carry no definitions: read with the habeas tool, e.g. {file, item}, any node whose code your conclusion relies on. No matches returns an empty matches array.",
+            "name":"ast_grep", "description":"Search syntax trees in process with an ast-grep rule. Use ripgrep for text patterns, ast_grep for syntax-tree rules, and references for requirement-reference sites. Supply exactly one form: {language, rule, path (default .), referencing (optional)} or {query}. language is one of rust, python, typescript, tsx, css, markdown, toml, or yaml, matched with Habeas's pinned grammars; only files of that language are searched. rule is an object holding the keys of an ast-grep rule file's rule core, written as JSON: rule (required), and optional utils (named rules) and constraints (metavariable name to rule). A rule object combines atomic rules: pattern (code with metavariables, where $A matches one node, $$$A any number of nodes, and $_ one node without capturing), kind (a grammar node kind such as function_item), regex (a Rust regex the node's whole text must match), and nthChild; relational rules: inside, has, precedes, and follows, each taking a rule plus optional stopBy (neighbor, the default, end, or a rule) and field; and composite rules: all, any, not, and matches (a utils name). Patterns parse as standalone code, so a fragment that does not parse on its own, such as a type or parameter, needs the context and selector form: pattern: {context: \"fn f(x: &mut Vec<String>) {}\", selector: reference_type} parses context and matches the node of kind selector within it. Example: {\"language\":\"rust\",\"rule\":{\"rule\":{\"pattern\":\"$X.unwrap()\",\"inside\":{\"kind\":\"function_item\",\"stopBy\":\"end\"}}}}. path selects a project-relative file or directory (default .); referencing works as for ripgrep, and results are ordered by path and then line. The query form, e.g. {\"query\":\"requirements.ci.errors/error_accumulators\"}, runs a query a distributed requirement declares, named <full-name>/<query-name>, exactly as validation runs it, including its paths, exclude, and within, and returns each match's site. The result has ripgrep's form, {search_id, matches: [{tag, file, item, kind, lines: [{text, matched}]}]}: one entry for each innermost outline node containing a match (a match in a comment belongs to the node the comment belongs to; a query match belongs to its site), with the node's item selector and kind, and the matched lines, without line numbers. Results carry no definitions. Before submitting, call finish_search with the result UUID and the tags whose snippets you used to justify your conclusion without an additional source read. Entries whose source you also read may be omitted; including them is harmless. Use an empty used list if no entries qualify. Selected items become evidence dependencies without another source read. No matches returns an empty matches array.",
             "parameters":{"type":"object","properties":{"language":{"type":"string","enum":crate::structural::QueryLanguage::names()},"rule":{"type":"object"},"path":{"type":"string","default":"."},"referencing":reference_scope_schema(),"query":{"type":"string"}},"additionalProperties":false}
         }),
         json!({
@@ -69,6 +72,14 @@ pub(crate) fn definitions() -> Vec<Value> {
         json!({
             "name":"next_page", "description":"Return the following page of a paged result of habeas (line-range form), list_files, outline, ripgrep, ast_grep, or references, in the same shape as its first page. token is the page's next value, e.g. {\"token\":\"abc123\"}. Tokens are opaque.",
             "parameters":{"type":"object","properties":{"token":{"type":"string"}},"required":["token"],"additionalProperties":false}
+        }),
+        json!({
+            "name":"finish_search",
+            "description":"Close a delivered search and record dependencies for snippets you used to justify your conclusion without an additional source read. search_id is the result's UUID and used is an array of its short entry tags, e.g. {\"search_id\":\"11111111-1111-4111-8111-111111111111\",\"used\":[\"1\"]}. Entries whose source you also read may be omitted; including them is harmless. Use used:[] when no entries qualify, including an empty search. Every delivered search must be finished before submission. The result is {search_id, finished:true}; no additional source is delivered.",
+            "parameters":{"type":"object","properties":{
+                "search_id":{"type":"string","format":"uuid"},
+                "used":{"type":"array","items":{"type":"string"}}
+            },"required":["search_id","used"],"additionalProperties":false}
         }),
     ];
     definitions
@@ -124,6 +135,7 @@ pub(crate) fn dispatch_paged(
         "references" => deliver(references(sources, arguments)),
         "next_page" => check_keys(arguments, &["token"])
             .and_then(|()| pages.next_page(string(arguments, "token")?)),
+        "finish_search" => pages.finish_search(&Value::Object(arguments.clone())),
         // GitHub reads are not evidence inputs.
         "github" => crate::github::tool(&sources.github, &Value::Object(arguments.clone()))
             .map(|result| ToolDelivery {
@@ -619,16 +631,36 @@ fn search(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Result<
         sources,
         path,
         &|file, _| regions.as_ref().is_none_or(|regions| regions.has(file)),
-        &|_, path| {
+        &|file, path| {
             let mut searcher = grep_searcher::SearcherBuilder::new()
                 .line_number(true)
                 .binary_detection(grep_searcher::BinaryDetection::quit(0))
                 .build();
             let mut lines = Vec::new();
+            // Do not parse binary or unrelated sources merely to discover
+            // whether they match. Once a file qualifies, search the cached
+            // snapshot again so match ranges, excerpts, and hashes agree.
+            searcher.search_path(
+                &matcher,
+                path,
+                grep_searcher::sinks::Lossy(|number, _| {
+                    lines.push(number as usize);
+                    Ok(true)
+                }),
+            )?;
+            if lines.is_empty() {
+                return Ok(None);
+            }
+            let parsed = sources.parse_file(file)?;
+            let parsed = parsed
+                .as_ref()
+                .as_ref()
+                .map_err(|error| io::Error::other(error.clone()))?;
+            lines.clear();
             searcher
-                .search_path(
+                .search_slice(
                     &matcher,
-                    path,
+                    parsed.source.as_bytes(),
                     grep_searcher::sinks::Lossy(|number, _| {
                         lines.push(number as usize);
                         Ok(true)
@@ -651,6 +683,16 @@ fn search(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Result<
             .as_ref()
             .map_err(|error| io::Error::other(error.clone()))?;
         let count = parsed.source.lines().count();
+        let source_lines = parsed.source.split_inclusive('\n').collect::<Vec<_>>();
+        let mut offset = 0;
+        let line_offsets = source_lines
+            .iter()
+            .map(|line| {
+                let start = offset;
+                offset += line.len();
+                start
+            })
+            .collect::<Vec<_>>();
         lines.sort_unstable();
         lines.dedup();
         let mut nodes = SearchNodes::default();
@@ -672,9 +714,22 @@ fn search(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Result<
             };
             let start = line.saturating_sub(context).max(first);
             let end = line.saturating_add(context).min(last);
-            for index in parsed.outline.nodes_for_lines([line], true) {
-                nodes.add(index, line..=line, start..=end);
-            }
+            matcher
+                .find_iter(
+                    source_lines[line - 1].trim_end_matches('\n').as_bytes(),
+                    |found| {
+                        let range = (line_offsets[line - 1] + found.start())
+                            ..(line_offsets[line - 1] + found.end());
+                        let index = crate::structural::innermost_node(
+                            &parsed.outline,
+                            &parsed.source,
+                            &range,
+                        );
+                        nodes.add(index, line..=line, start..=end);
+                        true
+                    },
+                )
+                .map_err(io::Error::other)?;
         }
         entries.extend(nodes.entries(&file, parsed));
     }
@@ -707,46 +762,66 @@ impl SearchNodes {
 
     /// The entries in source order: each node's file, selector, and kind,
     /// and its lines' redacted text, each marked as matching or not, with an
-    /// elision line between separate windows and no line numbers. Windows
-    /// are merged across the file: each line appears once, with the node it
-    /// matches in, or else with the first node whose window holds it. These
-    /// are not evidence inputs.
+    /// elision line between separate windows and no line numbers. Context
+    /// is clipped to each item, including boundaries within a physical line.
     // {impl}`requirements.authoring.redaction`
     // {impl}`requirements.references.outline_selectors`
     // {impl}`requirements.authoring.text_search`
     // {impl}`requirements.authoring.no_line_numbers`
+    // {impl}`requirements.authoring.search_accounting.excerpts`
     fn entries(self, file: &str, parsed: &crate::inputs::ParsedSource) -> Vec<Value> {
-        let text = parsed.redacted.lines().collect::<Vec<_>>();
+        let redaction = crate::redaction::Redaction::of_file(&parsed.path, &parsed.source);
+        let mut offset = 0;
+        let text = parsed
+            .source
+            .split_inclusive('\n')
+            .map(|line| {
+                let start = offset;
+                offset += line.len();
+                let body = line.trim_end_matches('\n').trim_end_matches('\r');
+                (start, start + body.len())
+            })
+            .collect::<Vec<_>>();
         let mut nodes = self.0.into_iter().collect::<Vec<_>>();
         nodes.sort_by_key(|(index, _)| {
             let node = &parsed.outline.nodes[*index];
             (node.line_start, node.byte_start, *index)
         });
-        let mut shown = nodes
-            .iter()
-            .flat_map(|(_, (matched, _))| matched.iter().copied())
-            .collect::<BTreeSet<_>>();
-        let matching = shown.clone();
         nodes
             .into_iter()
-            .map(|(index, (mut lines, around))| {
-                for line in around {
-                    if shown.insert(line) {
-                        lines.insert(line);
-                    }
-                }
+            .map(|(index, (matched, around))| {
                 let node = &parsed.outline.nodes[index];
+                let mut first = node.source_start;
+                let mut last = node.byte_end;
+                for comment in parsed
+                    .outline
+                    .comments
+                    .iter()
+                    .filter(|comment| comment.owner == index)
+                {
+                    first = first.min(comment.byte_start);
+                    last = last.max(comment.byte_end);
+                }
+                let lines = matched.union(&around);
                 let mut shown_lines = Vec::new();
                 let mut previous = None;
                 for line in lines {
-                    let Some(source) = line.checked_sub(1).and_then(|line| text.get(line)) else {
+                    let Some(&(start, end)) = line.checked_sub(1).and_then(|line| text.get(line))
+                    else {
                         continue;
                     };
-                    if previous.is_some_and(|previous: usize| previous + 1 < line) {
+                    let (start, end) = (start.max(first), end.min(last));
+                    if start > end || end < first || start > last {
+                        continue;
+                    }
+                    if previous.is_some_and(|previous: usize| previous + 1 < *line) {
                         shown_lines.push(json!({"text": ELISION, "matched": false}));
                     }
-                    previous = Some(line);
-                    shown_lines.push(json!({"text": source, "matched": matching.contains(&line)}));
+                    previous = Some(*line);
+                    shown_lines.push(json!({
+                        "text": redaction.slice(&parsed.source, start..end),
+                        "matched": matched.contains(line),
+                    }));
                 }
                 json!({
                     "file": file,
@@ -1329,11 +1404,11 @@ mod tests {
         // accompany it.
         assert!(search.inputs.is_empty());
         assert_eq!(
-            search.result,
-            json!({"matches": [{
-                "file": "src/lib.rs", "item": "fn[work]", "kind": "fn",
+            search.result["matches"],
+            json!([{
+                "file": "src/lib.rs", "item": "fn[work]", "kind": "fn", "tag":"1",
                 "lines": [{"text": "fn work() {}", "matched": true}],
-            }]})
+            }])
         );
         // Outlining it lists its items without content and records nothing.
         let outline = dispatch(&sources, "outline", &json!({"file":"src/lib.rs"})).unwrap();
@@ -1836,9 +1911,8 @@ mod tests {
         git(root.path(), &["add", "--force", "."]);
         let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
         let search = dispatch(&sources, "ripgrep", &json!({"pattern":"needle"})).unwrap();
-        // Each needle line is its own plain-text `line` node. The windows of
-        // two lines on each side overlap at line 4 and are merged, so each line
-        // appears once, with the first node whose window holds it.
+        // Each plain-text line is an item. Even a large context window must
+        // not include neighboring items.
         assert!(search.inputs.is_empty());
         let matches = search.result["matches"].as_array().unwrap();
         assert_eq!(matches.len(), 2, "{matches:#?}");
@@ -1862,12 +1936,7 @@ mod tests {
                     .collect::<Vec<_>>()
             })
             .collect::<Vec<_>>();
-        let window = |range: std::ops::RangeInclusive<usize>| {
-            range
-                .map(|number| (lines[number - 1].as_str(), number == 2 || number == 6))
-                .collect::<Vec<_>>()
-        };
-        assert_eq!(shown, [window(1..=4), window(5..=8)]);
+        assert_eq!(shown, [vec![("needle", true)], vec![("needle", true)]]);
         let exact = dispatch(
             &sources,
             "ripgrep",
@@ -1883,7 +1952,7 @@ mod tests {
             json!([{"text": "needle", "matched": true}])
         );
         let absent = dispatch(&sources, "ripgrep", &json!({"pattern":"NEEDLE"})).unwrap();
-        assert_eq!(absent.result, json!({"matches":[]}));
+        assert_eq!(absent.result["matches"], json!([]));
         assert!(dispatch(&sources, "ripgrep", &json!({"pattern":"["})).is_err());
         assert!(
             dispatch(
@@ -2630,6 +2699,7 @@ mod tests {
     // {test}`requirements.authoring.reference_index`
     // {test}`requirements.references.definition_globs`
     // {test}`requirements.authoring.no_line_numbers`
+    // {test}`requirements.authoring.read_denial`
     #[test]
     // {test}`requirements.references.authoring_inputs`
     fn references_list_names_and_flattened_sites_without_recording_inputs() {
@@ -2726,10 +2796,10 @@ mod tests {
             all.result
         );
         for roles in [json!(null), json!("impl"), json!(["fixme"]), json!([1])] {
-            assert!(
-                dispatch(&sources, "references", &json!({"roles":roles})).is_err(),
-                "accepted invalid role filter {roles}"
-            );
+            let error = dispatch(&sources, "references", &json!({"roles":roles}))
+                .err()
+                .unwrap();
+            assert!(error.to_string().contains("role"), "{roles}: {error}");
         }
 
         let flattened = dispatch(
@@ -2836,7 +2906,8 @@ mod tests {
                 &json!({"pattern": "needle", "path": "src", "context": 0}),
             )
             .unwrap();
-            assert_eq!(again.result, first.result);
+            assert_eq!(again.result["matches"], first.result["matches"]);
+            assert_ne!(again.result["search_id"], first.result["search_id"]);
         }
         assert!(dispatch(&sources, "ripgrep", &json!({"pattern": "("})).is_err());
     }
@@ -3249,6 +3320,7 @@ mod tests {
     // {test}`requirements.authoring.outline_tool`
     // {test}`requirements.references.outlines`
     // {test}`requirements.authoring.no_line_numbers`
+    // {test}`requirements.authoring.read_denial`
     #[test]
     fn outline_lists_nested_nodes_without_text_or_inputs() {
         let root = project();
@@ -3278,8 +3350,15 @@ mod tests {
             && entry["name"].is_null()
             && entry["item"].as_str().unwrap().starts_with("line@")));
         assert!(entries[1].get("line_start").is_none());
-        assert!(dispatch(&sources, "outline", &json!({"file":"missing.rs"})).is_err());
-        assert!(dispatch(&sources, "outline", &json!({})).is_err());
+        for (arguments, message) in [
+            (json!({"file":"missing.rs"}), "missing.rs"),
+            (json!({}), "file"),
+            (json!({"file":1}), "file"),
+            (json!({"file":"src/lib.rs", "extra":true}), "extra"),
+        ] {
+            let error = dispatch(&sources, "outline", &arguments).err().unwrap();
+            assert!(error.to_string().contains(message), "{arguments}: {error}");
+        }
 
         fs::write(
             root.path().join("habeas.toml"),
@@ -3363,6 +3442,35 @@ mod tests {
     }
 
     // {test}`requirements.authoring.text_search`
+    #[test]
+    fn context_windows_include_exactly_the_requested_lines_on_each_side() {
+        let root = project();
+        let source = "fn long() {\n    before_far();\n    before_three();\n    before_two();\n    before_one();\n    needle();\n    after_one();\n    after_two();\n    after_three();\n    after_far();\n}\n";
+        fs::write(root.path().join("src/lib.rs"), source).unwrap();
+        let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        for context in [None, Some(0), Some(1), Some(2), Some(3)] {
+            let mut arguments = json!({"pattern":"needle","path":"src/lib.rs"});
+            if let Some(context) = context {
+                arguments["context"] = json!(context);
+            }
+            let delivery = dispatch(&sources, "ripgrep", &arguments).unwrap();
+            let count = context.unwrap_or(2);
+            let expected = source
+                .lines()
+                .enumerate()
+                .skip(5 - count)
+                .take(2 * count + 1)
+                .map(|(index, text)| json!({"text":text, "matched":index == 5}))
+                .collect::<Vec<_>>();
+            assert_eq!(
+                delivery.result["matches"][0]["lines"],
+                json!(expected),
+                "{context:?}"
+            );
+        }
+    }
+
+    // {test}`requirements.authoring.text_search`
     // {test}`requirements.authoring.no_line_numbers`
     #[test]
     fn separate_windows_in_one_node_are_divided_by_an_elision_line() {
@@ -3382,7 +3490,7 @@ mod tests {
         assert_eq!(
             matched(&search),
             &vec![
-                json!({"file": "src/lib.rs", "item": "fn[long]", "kind": "fn", "lines": [
+                json!({"file": "src/lib.rs", "item": "fn[long]", "kind": "fn", "tag":"1", "lines": [
                     {"text": "    needle(1);", "matched": true},
                     {"text": ELISION, "matched": false},
                     {"text": "    needle(2);", "matched": true},
@@ -3402,6 +3510,189 @@ mod tests {
             "{lines:?}"
         );
         assert_eq!(lines.len(), 8);
+        let defaults = dispatch(
+            &sources,
+            "ripgrep",
+            &json!({"pattern":"needle","path":"src/lib.rs"}),
+        )
+        .unwrap();
+        assert_eq!(
+            defaults.result["matches"][0]["lines"],
+            joined.result["matches"][0]["lines"]
+        );
+    }
+
+    // {test}`requirements.authoring.search_accounting.excerpts`
+    // {test}`requirements.authoring.text_search`
+    // {test}`requirements.authoring.structural_search`
+    // {test}`requirements.authoring.redaction`
+    #[test]
+    fn search_excerpts_stop_at_byte_boundaries_including_attached_comments_and_attributes() {
+        let root = project();
+        let token = format!("ghp_{}", "S".repeat(36));
+        fs::write(root.path().join("src/lib.rs"), format!(
+            "fn before() {{ unwanted_before(); }}\n\
+             /// needle docs\n\
+             #[inline]\n\
+             fn target() {{\n    let café = \"{token}\";\n    needle();\n}}\n\
+             fn after() {{ unwanted_after(); }}\n\
+             fn left() {{ unwanted_left(); }} /* needle attached */ #[inline] fn right() {{ needle(); }} fn last() {{ unwanted_last(); }}\n"
+        )).unwrap();
+        let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        for (tool, args) in [
+            (
+                "ripgrep",
+                json!({"pattern":"needle","path":"src/lib.rs","context":99}),
+            ),
+            (
+                "ast_grep",
+                json!({"language":"rust","path":"src/lib.rs",
+                "rule":{"rule":{"any":[{"pattern":"needle()"},{"kind":"block_comment","regex":"needle"}]}}}),
+            ),
+        ] {
+            let result = dispatch(&sources, tool, &args).unwrap().result;
+            let matches = result["matches"].as_array().unwrap();
+            assert_eq!(matches.len(), 3, "{tool}: {matches:?}");
+            assert_eq!(matches[0]["item"], "fn[target]");
+            assert_eq!(matches[1]["item"], "fn[left]");
+            assert_eq!(matches[2]["item"], "fn[right]");
+            assert!(!matches[1]["lines"].to_string().contains("fn right"));
+            assert!(!matches[2]["lines"].to_string().contains("fn left"));
+            assert!(!matches[2]["lines"].to_string().contains("needle attached"));
+            let text = result.to_string();
+            for unwanted in [
+                "unwanted_before",
+                "unwanted_after",
+                "unwanted_last",
+                "fn last",
+            ] {
+                assert!(!text.contains(unwanted), "{tool}: {text}");
+            }
+            assert!(!text.contains(&token), "{text}");
+            if tool == "ripgrep" {
+                let lines = &matches[0]["lines"];
+                assert!(lines.to_string().contains("needle docs"));
+                assert!(lines.to_string().contains("#[inline]"));
+                assert!(lines.to_string().contains("café"));
+                assert!(lines.to_string().contains("[REDACTED:"));
+            }
+            assert!(matches[1]["lines"].to_string().contains("needle attached"));
+            assert!(
+                matches[2]["lines"]
+                    .to_string()
+                    .contains("#[inline] fn right")
+            );
+        }
+        let only = dispatch(
+            &sources,
+            "ripgrep",
+            &json!({"pattern":"café","path":"src/lib.rs","context":0}),
+        )
+        .unwrap();
+        assert_eq!(only.result["matches"].as_array().unwrap().len(), 1);
+        assert_eq!(only.result["matches"][0]["item"], "fn[target]");
+        let attributes = dispatch(
+            &sources,
+            "ripgrep",
+            &json!({
+                "pattern":"inline","path":"src/lib.rs","context":0
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            found(&attributes),
+            ["src/lib.rs#fn[target]", "src/lib.rs#fn[right]"]
+        );
+    }
+
+    // {test}`requirements.authoring.text_search`
+    // {test}`requirements.authoring.search_accounting.excerpts`
+    #[test]
+    fn exact_match_ranges_preserve_regex_anchors_and_skip_unmatched_or_binary_sources() {
+        let root = project();
+        fs::write(
+            root.path().join("src/lib.rs"),
+            "fn exact() { needle(); }\nfn last() {}\n",
+        )
+        .unwrap();
+        fs::write(root.path().join("src/broken.rs"), "fn incomplete( {\n").unwrap();
+        fs::write(root.path().join("image.bin"), b"\0needle\xff").unwrap();
+        let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        for pattern in [
+            r"^fn exact",
+            r"needle\(\); \}$",
+            r"(?i)EXACT",
+            r"^fn exact.*$",
+        ] {
+            let result = dispatch(
+                &sources,
+                "ripgrep",
+                &json!({"pattern":pattern,"context":10}),
+            )
+            .unwrap();
+            assert_eq!(
+                found(&result),
+                ["src/lib.rs#fn[exact]"],
+                "{pattern}: {}",
+                result.result
+            );
+            assert_eq!(
+                result.result["matches"][0]["lines"],
+                json!([
+                    {"text":"fn exact() { needle(); }","matched":true}
+                ])
+            );
+        }
+    }
+
+    // {test}`requirements.authoring.finish_search`
+    // {test}`requirements.authoring.finish_search.description`
+    // {test}`requirements.authoring.tool_descriptions.common_case`
+    #[test]
+    fn finish_search_advertises_the_accounting_schema_and_selection_rule() {
+        let tools = definitions();
+        let finish = tools
+            .iter()
+            .find(|tool| tool["name"] == "finish_search")
+            .unwrap();
+        assert_eq!(
+            finish["parameters"],
+            json!({"type":"object","properties":{
+            "search_id":{"type":"string","format":"uuid"},
+            "used":{"type":"array","items":{"type":"string"}}
+        },"required":["search_id","used"],"additionalProperties":false})
+        );
+        let description = finish["description"].as_str().unwrap();
+        for phrase in [
+            "snippets you used to justify your conclusion without an additional source read",
+            "Entries whose source you also read may be omitted; including them is harmless",
+            "Use used:[] when no entries qualify, including an empty search",
+            "Every delivered search must be finished before submission",
+            "{search_id, finished:true}",
+            "no additional source is delivered",
+            "search_id is the result's UUID and used is an array of its short entry tags",
+            r#"{"search_id":"11111111-1111-4111-8111-111111111111","used":["1"]}"#,
+        ] {
+            assert!(description.contains(phrase), "{phrase}: {description}");
+        }
+        for name in ["ripgrep", "ast_grep"] {
+            let description =
+                tools.iter().find(|tool| tool["name"] == name).unwrap()["description"]
+                    .as_str()
+                    .unwrap();
+            for phrase in [
+                "tags whose snippets you used to justify your conclusion without an additional source read",
+                "Entries whose source you also read may be omitted; including them is harmless",
+                "Use an empty used list if no entries qualify",
+                "Before submitting, call finish_search",
+                "Use ripgrep for text patterns, ast_grep for syntax-tree rules, and references for requirement-reference sites",
+            ] {
+                assert!(
+                    description.contains(phrase),
+                    "{name}: {phrase}: {description}"
+                );
+            }
+        }
     }
 
     // {test}`requirements.authoring.text_search`
@@ -3429,7 +3720,7 @@ mod tests {
         // A comment match belongs to its owner, and shows the matching line.
         assert_eq!(
             matched(&search)[1],
-            json!({"file": "src/lib.rs", "item": "fn[after]", "kind": "fn",
+            json!({"file": "src/lib.rs", "item": "fn[after]", "kind": "fn", "tag":"2",
                 "lines": [{"text": "// needle in a comment", "matched": true}]})
         );
         assert_eq!(
@@ -3483,15 +3774,15 @@ mod tests {
             "default 2",
             "zero means matches only",
             "overlapping windows are merged",
-            "Windows stop at file boundaries",
-            "Searches only locate code",
-            "{matches: [{file, item, kind, lines: [{text, matched}]}]}",
+            "Windows stop at item boundaries",
+            "Before submitting, call finish_search",
+            "{search_id, matches: [{tag, file, item, kind, lines: [{text, matched}]}]}",
             "without line numbers",
             "separates windows within one node",
             "one entry for each innermost outline node containing a match",
             "a match in a comment belongs to the node the comment belongs to",
-            "Results are not evidence inputs and carry no definitions",
-            "read with the habeas tool, e.g. {file, item}, any node whose code your conclusion relies on",
+            "Results carry no definitions",
+            "Selected items become evidence dependencies without another source read",
             "No matches returns an empty matches array",
             "With referencing {selection, roles, scope}",
             "Search a project-relative file or directory (default .)",
@@ -3506,6 +3797,8 @@ mod tests {
     }
 
     // {test}`requirements.authoring.text_search`
+    // {test}`requirements.authoring.read_denial`
+    // {test}`requirements.authoring.additional_read`
     #[test]
     fn search_records_nothing_clamps_at_eof_and_reports_failures() {
         let root = project();
@@ -3539,22 +3832,19 @@ mod tests {
             &json!({"pattern":"fn needle","path":"src","context":5}),
         )
         .unwrap();
-        // The window around the last line stops at the end of the file, and
-        // the context lines of another item belong to the matching node.
+        // Context includes the attached comment and stops at the item boundary.
         assert_eq!(
             matched(&search),
             &vec![
-                json!({"file": "src/lib.rs", "item": "fn[needle]", "kind": "fn",
+                json!({"file": "src/lib.rs", "item": "fn[needle]", "kind": "fn", "tag":"1",
                 "lines": [
-                    {"text": "fn first() {}", "matched": false},
-                    {"text": "", "matched": false},
                     {"text": "// {term}`terms.value`", "matched": false},
                     {"text": "fn needle() {}", "matched": true},
                 ]})
             ]
         );
         // The terminology the node uses is neither supplied nor recorded.
-        assert_eq!(search.result, json!({"matches": matched(&search)}));
+        assert!(search.result.get("definitions").is_none());
         assert!(sources.recorded_inputs().is_empty());
         let hidden = dispatch(
             &sources,
@@ -3744,7 +4034,7 @@ mod tests {
         assert_eq!(found(&limited).len(), 2);
         // A matching definition with no references in the roles finds nothing.
         let none = search(json!({"selection":"requirements.third"}), 0).unwrap();
-        assert_eq!(none.result, json!({"matches": []}));
+        assert_eq!(none.result["matches"], json!([]));
         for (referencing, message) in [
             (
                 json!({"selection":"requirements.none"}),
@@ -3850,6 +4140,7 @@ mod tests {
     }
 
     // {test}`requirements.authoring.not_listed`
+    // {test}`requirements.authoring.search_accounting.entry_tags`
     #[test]
     // {test}`requirements.authoring.read_denial`
     fn listings_and_searches_name_untracked_files_without_their_contents() {
@@ -3877,6 +4168,7 @@ mod tests {
                         .iter()
                         .map(|entry| {
                             assert_eq!(entry["reason"], "untracked");
+                            assert!(entry.get("tag").is_none());
                             entry["path"].as_str().unwrap().to_owned()
                         })
                         .collect::<Vec<_>>()
@@ -4007,6 +4299,7 @@ mod tests {
     }
 
     // {test}`requirements.authoring.file_discovery`
+    // {test}`requirements.authoring.read_denial`
     #[test]
     fn failed_listings_return_explanatory_tool_errors() {
         let root = project();
@@ -4027,6 +4320,7 @@ mod tests {
     }
 
     // {test}`requirements.authoring.tool_descriptions.common_case`
+    // {test}`requirements.authoring.tool_descriptions.special_cases`
     #[test]
     fn descriptions_give_each_argument_and_the_result_form() {
         for definition in definitions() {
@@ -4052,11 +4346,12 @@ mod tests {
                 "list_files" => "{path, kind}",
                 "outline" => "item selector",
                 "ripgrep" | "ast_grep" => {
-                    "{matches: [{file, item, kind, lines: [{text, matched}]}]}"
+                    "{search_id, matches: [{tag, file, item, kind, lines: [{text, matched}]}]}"
                 }
                 "references" => "definition name, role, file, and item",
                 "next_page" => "same shape",
                 "github" => "state (open or closed), title, and body",
+                "finish_search" => "{search_id, finished:true}",
                 _ => continue,
             };
             assert!(
@@ -4066,6 +4361,7 @@ mod tests {
             let phrases: &[&str] = match name {
                 "list_files" => &[
                     "immediate files and directories",
+                    "Use list_files for directory entries and outline for selectable nodes in one file",
                     "project-relative",
                     "default .",
                     "listed or read",
@@ -4164,6 +4460,26 @@ mod tests {
             "{requirement}"
         );
         assert!(requirement.get("note").is_none(), "{requirement}");
+        fs::write(
+            root.path().join("md/requirements.md"),
+            format!(":::{{req}} ready\nThe credential {token} MUST be private.\n:::\n"),
+        )
+        .unwrap();
+        fs::write(
+            root.path().join("md/terms.md"),
+            format!(":::{{definition}} secret\n:phrase: secret\nA credential {token}.\n:::\n"),
+        )
+        .unwrap();
+        let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        for args in [
+            json!({"requirements":"requirements.ready"}),
+            json!({"definition":"terms.secret"}),
+        ] {
+            let result = dispatch(&sources, "habeas", &args).unwrap().result;
+            assert!(!result.to_string().contains(&token));
+            assert!(result.to_string().contains("[REDACTED:"));
+            assert_eq!(result["note"], REDACTION_NOTE);
+        }
     }
 
     // {test}`requirements.authoring.result_pages`
@@ -4228,7 +4544,8 @@ mod tests {
                 "ast_grep",
                 "references",
                 "github",
-                "next_page"
+                "next_page",
+                "finish_search"
             ]
         );
         let ast_grep = &definitions[4];
@@ -4265,13 +4582,13 @@ mod tests {
             "the context and selector form",
             "path selects a project-relative file or directory (default .); referencing works as for ripgrep, and results are ordered by path and then line",
             "named <full-name>/<query-name>, exactly as validation runs it, including its paths, exclude, and within, and returns each match's site",
-            "Searches only locate code",
-            "{matches: [{file, item, kind, lines: [{text, matched}]}]}",
+            "Before submitting, call finish_search",
+            "{search_id, matches: [{tag, file, item, kind, lines: [{text, matched}]}]}",
             "one entry for each innermost outline node containing a match",
             "a match in a comment belongs to the node the comment belongs to",
             "the matched lines, without line numbers",
-            "Results are not evidence inputs and carry no definitions",
-            "read with the habeas tool, e.g. {file, item}, any node whose code your conclusion relies on",
+            "Results carry no definitions",
+            "Selected items become evidence dependencies without another source read",
             "No matches returns an empty matches array",
             r#"{"language":"rust","rule":{"rule":{"pattern":"$X.unwrap()","inside":{"kind":"function_item","stopBy":"end"}}}}"#,
             r#"{"query":"requirements.ci.errors/error_accumulators"}"#,
@@ -4283,6 +4600,7 @@ mod tests {
     // {test}`requirements.authoring.structural_search`
     // {test}`requirements.references.outline_comments`
     // {test}`requirements.authoring.redaction`
+    // {test}`requirements.authoring.read_denial`
     #[test]
     fn ast_grep_returns_innermost_nodes_of_the_language_and_reports_failures() {
         let root = project();
@@ -4368,7 +4686,7 @@ mod tests {
         .unwrap();
         assert_eq!(found(&python), ["src/tool.py#"]);
         let none = rust(json!({"rule":{"pattern":"missing()"}}), ".").unwrap();
-        assert_eq!(none.result, json!({"matches": []}));
+        assert_eq!(none.result["matches"], json!([]));
         assert!(none.inputs.is_empty());
         for (arguments, message) in [
             (

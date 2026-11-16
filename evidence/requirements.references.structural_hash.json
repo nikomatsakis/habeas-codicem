@@ -1,8 +1,8 @@
 {
   "requirement": "A node's structural hash MUST be the SHA-256 digest of an unambiguous encoding of\nits outline-relevant structure, including siblings its profile attaches to it:\nthe kinds of its named grammar nodes and, in source order, its text pieces. A\ntext piece MUST be the text of a leaf token, or text inside a node that no child\ntoken covers. Each text piece MUST be hashed as its ordered list of words, where\nwords are separated by whitespace, the whitespace itself, including leading and\ntrailing whitespace, is never hashed, and each word is encoded separately, so\n`ab cd` and `abcd` differ. The same rule MUST apply in every language. Comments\nMUST be excluded, except comment kinds the profile includes; the Rust profile MUST include doc comments. For an included comment, only its text and its\nprofile's comment group MUST be hashed, not its delimiter tokens such as `//`,\n`///`, `//!`, `/*`, `*/`, or a leading `*`; the Rust profile's groups are inner\nand outer doc comments. The words of consecutive included comments of one group\nMUST be hashed as one ordered list, so reflowing them across more or fewer lines\nor comments does not change the hash, while moving text between groups does. A `line`\nnode's hash MUST be computed by the same word rule over the line's text. A node's\nidentity hash MUST be computed the same way but MUST also exclude its outline\ndescendants and their attached siblings, so editing a descendant does not change\nits ancestors' selectors.",
   "determination": true,
-  "rationale": "I found no gaps: every obligation has reachable code and a test that asserts its outcome.\n\n**Code**\n- `src/outline/mod.rs#fn[parse_redacted]` is the root `{impl}`. It builds `Builder`, and `Builder::finish` calls `hash(index, identity)`, which calls `encode`, with `Encoder` in `src/outline/hash.rs`. All of that is reachable from the root.\n- The SHA-256 digest and the unambiguous encoding are in `Encoder` (`field` and `kind`). Each field is a tag plus a length prefix, `kind` opens a named grammar node, and `end` closes it.\n- Named grammar node kinds and text pieces in source order are covered by `Builder::encode`. A piece is a leaf token's text, or the gaps inside a node that no child covers (TOML strings, YAML block scalars, Markdown inline text).\n- Words and whitespace are handled by `Encoder::words`. It splits on whitespace and encodes each word with its own field, so leading and trailing whitespace is never hashed and `ab cd` differs from `abcd`. `encode` applies this to every language.\n- Comments are excluded unless `profile.hashes_comment` says otherwise. Only the Rust profile hashes doc comments, through `is_doc_comment`. The other profiles use `never`.\n- For an included comment, `rust.rs#fn[doc_prose]` strips `//`, `///`, `//!`, `/*`, `*/` and a leading `*`. It returns the group `inner_doc_comment` or `outer_doc_comment`.\n- `Encoder::prose` keeps one open run per group, so consecutive same-group comments hash as one word list and moving words between groups changes the hash.\n- Attached siblings are hashed for a node because `Builder::hash` encodes `draft.attached` before `draft.core`. The `attaches` profile functions decide which siblings attach, for example Rust attributes and doc comments and Python decorators.\n- A `line` node's hash is `hash::line` over the trimmed text, used in `mod.rs#fn[plain_text]`. It follows the word rule.\n- The identity hash comes from `encode` with `identity = true`. It skips any node whose owner in the `owners` map is a different draft, so descendants and their attached siblings are excluded.\n\n**Tests**\n- Whitespace skipped, plain comments excluded, doc comments and attributes included, and identity versus structural hash: `hashes_skip_whitespace_and_plain_comments_but_not_doc_comments` and `identity_hashes_include_own_attached_siblings_but_not_descendants`.\n- Reflowing doc comments across lines and comments, including block and inner doc comments: `reflowing_doc_comments_keeps_the_hash` and `reflowing_inner_and_block_doc_comments_keeps_the_hash`.\n- Moving text between inner and outer groups: `inner_and_outer_doc_comments_hash_in_separate_groups`.\n- Words encoded separately across Rust, Markdown, TOML and YAML: `prose_words_are_encoded_separately`, `string_literals_hash_as_words`, `reflowing_markdown_paragraphs_keeps_the_hash`, `markdown_hashes_include_paragraph_text_between_punctuation_tokens` and `editing_a_doc_comment_word_changes_the_hash`.\n- Comments excluded in the Python, TypeScript, CSS, Markdown, TOML and YAML profiles: `comments_are_excluded_from_hashes_in_every_other_profile`.\n- Python attached decorators and the class identity hash: `python_decorators_attach_to_the_decorated_definition_for_hashing`.\n- The `line` hash: `plain_text_line_hashes_ignore_whitespace_but_not_word_breaks`.\n- Anonymous selectors built from identity hashes: `anonymous_selectors_use_identity_hashes`.\n- Redaction effects on hashes, in `src/redaction/tests.rs#fn[hashes_do_not_depend_on_credential_values]`, and end-to-end evidence use, in `tests/evidence_boundaries.rs#fn[outline_inputs_survive_moves_and_unhashed_comments_but_not_edits]`.\n\nI found no unspecified observable behavior and no unreached implementation of the hash rules.",
-  "references": "63684ef5143f9cc8dcc9680fcec847a735db06901b10866068cecc715258436f",
+  "rationale": "The reviewed tests adequately cover `requirements.references.structural_hash`. All paths are in `src/outline/tests.rs` unless noted.\n\n**SHA-256 digest of an unambiguous encoding, with grammar kinds and nesting**\n- `hashes_include_grammar_kinds_nesting_and_sha256_digests` checks that identical text `x;` hashes differently under the Rust and Python grammars, so kinds are hashed.\n- The same test checks that a nested encoding differs from a sibling encoding, so structure is hashed unambiguously.\n- It also asserts exact SHA-256 vectors: the empty-input digest for both the structural and identity hash, and the tagged, length-prefixed digest of a `hello` line.\n\n**Text pieces, words and whitespace**\n- `prose_words_are_encoded_separately` checks `ab cd` against `abcd` in a Rust doc comment and in a Markdown section. It also checks that whitespace and line breaks are not hashed.\n- `string_literals_hash_as_words` covers leaf string tokens in Rust, TOML and YAML block scalars.\n- `markdown_hashes_include_paragraph_text_between_punctuation_tokens` and `reflowing_markdown_paragraphs_keeps_the_hash` cover text inside a node that no child token covers.\n- `plain_text_line_hashes_ignore_whitespace_but_not_word_breaks` covers the `line` node rule. It checks leading, trailing and interior whitespace, and that `twowords` and `two word` differ. It also compares the result with `hash::line`.\n\n**Same rule in every language**\n- The tests span Rust, Python, TypeScript, CSS, Markdown, TOML, YAML and plain text.\n\n**Comment exclusion and Rust doc comments**\n- `hashes_skip_whitespace_and_plain_comments_but_not_doc_comments` covers Rust plain comments, and also checks that doc comment and attribute edits change the hash.\n- `comments_are_excluded_from_hashes_in_every_other_profile` covers Python, TypeScript, CSS, Markdown, TOML and YAML. For each it checks that comment changes or removal leave the hash unchanged and that a non-comment change alters it.\n\n**Included comments hashed by text and group only**\n- `reflowing_doc_comments_keeps_the_hash` and `editing_a_doc_comment_word_changes_the_hash` cover reflow across lines and comments. `reflowing_doc_comments_keeps_the_hash` also compares `///` with `/** * */`.\n- `reflowing_inner_and_block_doc_comments_keeps_the_hash` compares `//!` with `/*! */` and block `/** * */` with `///`.\n- `inner_and_outer_doc_comments_hash_in_separate_groups` checks that moving text between the inner and outer groups changes the hash. It also checks that splitting words within one group does not.\n\n**Siblings attached by the profile, and the identity hash**\n- Only the Rust (attributes, outer doc comments) and Python (decorators) profiles attach siblings. The other profiles use `attaches: never`.\n- `identity_hashes_include_own_attached_siblings_but_not_descendants` checks that a node's own attached doc comment and attribute change its identity hash. It also checks that a descendant's doc or attribute edits change the ancestor's structural hash but not its identity hash.\n- `python_decorators_attach_to_the_decorated_definition_for_hashing` makes the same checks for Python decorators.\n- `anonymous_selectors_use_identity_hashes` and `tests/evidence_boundaries.rs#fn[outline_inputs_survive_moves_and_unhashed_comments_but_not_edits]` give end-to-end coverage of these hash properties.\n- `src/redaction/tests.rs#fn[hashes_do_not_depend_on_credential_values]` is marked against this requirement and uses the same hash path.\n\nI found no obligation without a test and no wrong expected result. There are no acknowledged gaps, and none are needed.",
+  "references": "afad7f7a4977f5069c6bd21d81b33885d901dfa80f558fb3a17b62d282eead87",
   "inputs": [
     {
       "requirements": "requirements.references.structural_hash",
@@ -33,34 +33,9 @@
       ]
     },
     {
-      "file": "src/outline/css.rs",
-      "item": "static[PROFILE]",
-      "hash": "0bf1dfbe0c2c40460cb88b794a62d36744f68dcbc3594167ff858e076313884f"
-    },
-    {
-      "file": "src/outline/markdown.rs",
-      "item": "static[PROFILE]",
-      "hash": "6c26c9de591ae5caf053d6eae49f7352edb284aeb2939ca36908930a1c9dc82a"
-    },
-    {
-      "file": "src/outline/mod.rs",
-      "item": "fn[parse_redacted]",
-      "hash": "72a135c94535238cacd27a58ffdfbcc7cb971d61f3c13de0fd10700d44008167"
-    },
-    {
-      "file": "src/outline/plain.rs",
-      "item": "static[PROFILE]",
-      "hash": "c7ee59cc7a0c87ae0f4ab527834e28bff8159e38b46769ca16d59b5c5bb19052"
-    },
-    {
-      "file": "src/outline/python.rs",
-      "item": "static[PROFILE]",
-      "hash": "9892ebb8117827ad4238e5f692d32c1172c7111a6a138c1a283678508a427605"
-    },
-    {
-      "file": "src/outline/rust.rs",
-      "item": "static[PROFILE]",
-      "hash": "58414cfd9ba6701d94197225579bcc40b1bd66e93f5bf7478c4d240b735b85e9"
+      "file": "src/outline/tests.rs",
+      "item": "fn[hashes_include_grammar_kinds_nesting_and_sha256_digests]",
+      "hash": "009de9be6e819d4bd7eb434f3709e7ed34884bc4baafa4a64fb2f9a915570fc8"
     },
     {
       "file": "src/outline/tests.rs",
@@ -133,21 +108,6 @@
       "hash": "f26be9baae4c2b9c5af49923c24f9d641224e324b519ee492fed794d6af5fedf"
     },
     {
-      "file": "src/outline/toml.rs",
-      "item": "static[PROFILE]",
-      "hash": "8903c43d39d46b9c1b9335b3dc91e629b074c0456ef02b52aabcf90d99a67bef"
-    },
-    {
-      "file": "src/outline/typescript.rs",
-      "item": "static[TSX_PROFILE]",
-      "hash": "f93e2a86fbd9a7274d813e963f790f9a217f12620c1fa2fee66f10f378e39eb2"
-    },
-    {
-      "file": "src/outline/yaml.rs",
-      "item": "static[PROFILE]",
-      "hash": "3d656a9337d0b6bb36b5fc7817fe9a8c203e04fa21dd6b6c54c1b9a9281b9c75"
-    },
-    {
       "file": "src/redaction/tests.rs",
       "item": "fn[hashes_do_not_depend_on_credential_values]",
       "hash": "495c27757733832de498936ab966e65023bd9caf2eadd297f66ef59f09624e82"
@@ -158,44 +118,44 @@
       "hash": "f3f43479daa44decd163d41f84be8845c1140552efd9c14aac2adb5e42440a58"
     },
     {
-      "file": "src/outline/hash.rs",
-      "item": "",
-      "hash": "0d0ccb6a7820d763c4236c041d42111378d10de6e866d597f6bf0f8e0987619e"
-    },
-    {
-      "file": "src/outline/mod.rs",
-      "item": "impl[Builder<'tree,%20'source>]",
-      "hash": "9fcb0ee790cbfcfcfeb2cbf82074ff9c22d94bb5827777df13f85813f995a47d"
-    },
-    {
-      "file": "src/outline/mod.rs",
-      "item": "fn[plain_text]",
-      "hash": "4f3b316712177077546712701ceb34834b3fa240a4ac0b80714043abcf49c6ca"
-    },
-    {
-      "file": "src/outline/profile.rs",
-      "item": "",
-      "hash": "949c92a33dbdf03386519d96dbff0560ab0f00b74a2fff126d8ee16c3a157dbd"
+      "file": "src/outline/python.rs",
+      "item": "fn[attaches]",
+      "hash": "9eb229f991cc769dcb4c3d8de72ff2c67ac63601b5ff505ab42d76f5046d3043"
     },
     {
       "file": "src/outline/rust.rs",
-      "item": "fn[doc_prose]",
-      "hash": "dba03ed6432cac2a376746baf015d9e33130bf8457df8254d4482cd0734207e6"
+      "item": "fn[attaches]",
+      "hash": "dc5b39a9e6b53d96362298d3f1132f6952cf877cec1deabed79489471072d09a"
     },
     {
-      "file": "src/outline/rust.rs",
-      "item": "fn[is_doc_comment]",
-      "hash": "8b502a6799572b359e72be73cc58f3657fc7bcd6f18a92f00737885d6dc5c478"
+      "file": "src/outline/css.rs",
+      "item": "static[PROFILE]",
+      "hash": "0bf1dfbe0c2c40460cb88b794a62d36744f68dcbc3594167ff858e076313884f"
     },
     {
-      "file": "src/outline/rust.rs",
-      "item": "fn[is_comment]",
-      "hash": "062e7387928f80f073be4b44da8f8b8068a5293307e39a6e8210c682952b7c29"
+      "file": "src/outline/markdown.rs",
+      "item": "static[PROFILE]",
+      "hash": "6c26c9de591ae5caf053d6eae49f7352edb284aeb2939ca36908930a1c9dc82a"
     },
     {
-      "file": "src/outline/rust.rs",
-      "item": "fn[is_inner_doc_comment]",
-      "hash": "cc00c23eca7bfb8df6ba33992439ea21d78c71e733e33ac5fe5c66f938411858"
+      "file": "src/outline/plain.rs",
+      "item": "static[PROFILE]",
+      "hash": "c7ee59cc7a0c87ae0f4ab527834e28bff8159e38b46769ca16d59b5c5bb19052"
+    },
+    {
+      "file": "src/outline/toml.rs",
+      "item": "static[PROFILE]",
+      "hash": "8903c43d39d46b9c1b9335b3dc91e629b074c0456ef02b52aabcf90d99a67bef"
+    },
+    {
+      "file": "src/outline/typescript.rs",
+      "item": "const[TYPESCRIPT]",
+      "hash": "ea3a809f6bd1904e589ad57a169339efa8a74806c737782227a8efb527e58a86"
+    },
+    {
+      "file": "src/outline/yaml.rs",
+      "item": "static[PROFILE]",
+      "hash": "3d656a9337d0b6bb36b5fc7817fe9a8c203e04fa21dd6b6c54c1b9a9281b9c75"
     }
   ]
 }

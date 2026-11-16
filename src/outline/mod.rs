@@ -54,6 +54,8 @@ pub(crate) struct OutlineNode {
     /// non-comment token.
     pub(crate) byte_start: usize,
     pub(crate) byte_end: usize,
+    /// Start of the item's source including attached grammar siblings.
+    pub(crate) source_start: usize,
     /// SHA-256 structural hash, lowercase hex.
     pub(crate) structural_hash: String,
     /// SHA-256 identity hash, lowercase hex; excludes outline descendants.
@@ -284,6 +286,7 @@ fn plain_text(
             declaration_line: index + 1,
             byte_start: *start,
             byte_end: end,
+            source_start: *start,
             structural_hash: hash.clone(),
             identity_hash: hash,
         });
@@ -316,6 +319,7 @@ fn root_node(
         declaration_line: 1,
         byte_start: 0,
         byte_end: source.len(),
+        source_start: 0,
         structural_hash,
         identity_hash,
     }
@@ -601,6 +605,7 @@ impl<'tree, 'source> Builder<'tree, 'source> {
                 line_end,
                 declaration_line: lines.line(draft.declaration_byte),
                 byte_start: draft.core.start_byte(),
+                source_start: start,
                 byte_end: if self.profile.trailing_comments_outside {
                     content_end(draft.core)
                 } else {

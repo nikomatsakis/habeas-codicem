@@ -2323,6 +2323,7 @@ fn initial_acknowledgments_supply_closed_and_missing_issue_states_without_source
 // {test}`requirements.authoring.github_reads`
 // {test}`requirements.authoring.batch`
 // {test}`requirements.ci.outcomes`
+// {test}`requirements.configuration.state_location`
 #[test]
 fn closing_an_acknowledged_issue_makes_the_fixme_record_stale_and_reassessed() {
     let server = Server::start_with(false, Behavior::ClosedIssueIsFalse);
