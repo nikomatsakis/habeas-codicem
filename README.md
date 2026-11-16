@@ -24,11 +24,11 @@ Run `cargo agents sync` in your terminal and choose **Enable** when it offers Ha
 
 To configure the project before starting an agent session, or if the hook is unavailable in your agent, run `cargo install habeas` and `habeas setup` yourself. For development from a checkout, use `cargo install --path .`.
 
-`habeas setup` adds Habeas as a dev dependency, configures `[preprocessor.habeas]` to run `habeas mdbook`, adds the badge stylesheet, and creates `tests/habeas.rs`. Setup can be run again without duplicating configuration or overwriting differing files.
+`habeas setup` adds Habeas as a dev dependency, configures `[preprocessor.habeas]` to run `habeas mdbook`, adds the badge stylesheet, creates `tests/habeas.rs`, configures nextest's per-process collector, and adds the coverage chapter. Setup can be run again without duplicating configuration or overwriting differing files.
 
 Add a `{test}` reference to an appropriate project requirement or named example on the generated test, and give the rest of your Rust functions references before expecting validation to pass. Mark code with `{impl}` where it implements part of a definition, tests with `{test}` where they are designed to verify one, and use `{cite}` only for related code that does neither; see [References](md/reference.md#references).
 
-Configure a Bedrock or Ollama model using the [authoring examples](md/reference.md#authoring-evidence-with-a-model), then run `habeas author --all` to create or refresh requirement and example evidence. The harness gives each assessment its own model conversation; the supervising agent fixes reported gaps instead of writing evidence itself. Current records are preserved, including false judgments whose subject and inputs are unchanged. Run `cargo test --workspace` afterward to validate the saved evidence without inference.
+Configure a Bedrock or Ollama model using the [authoring examples](md/reference.md#authoring-evidence-with-a-model), then run `habeas author --all` to create or refresh requirement and example evidence. The harness gives each assessment its own model conversation; the supervising agent fixes reported gaps instead of writing evidence itself. Current records are preserved, including false judgments whose subject and inputs are unchanged. Run `habeas coverage` afterward to validate the saved evidence without inference.
 
 Bedrock authoring defaults to the available logical CPU count in simultaneous
 assessments; Ollama defaults to one. Set a positive `concurrency` in the named
@@ -40,7 +40,7 @@ If Habeas previously copied skills into `.agents/skills/habeas-*`, review them f
 
 During local development, `habeas setup --path /path/to/habeas-codicem` uses a local crate in place of the registry dependency.
 
-Run `mdbook build` to render requirement badges and linked references. The badge images load from Shields.io when the book is viewed. Run `cargo test --workspace` for validation; there is no separate CI command.
+Run `mdbook build` to render requirement badges and linked references. The badge images load from Shields.io when the book is viewed. Run `habeas coverage` for validation; there is no separate CI command.
 
 Use `habeas status` to list requirements with missing, false, or invalid evidence, including changed requirement text or changed source inputs. Use `habeas status --all` to list every requirement. To inspect the current requirement, validation findings, rationale, and inputs as Markdown, use a definition selection: an exact full name, or a glob where `*` matches any characters including dots:
 
@@ -151,3 +151,17 @@ Review each generated release PR before merging it. The normal pull-request CI r
 ## License
 
 Habeas Codicem is licensed under either of [MIT](LICENSE-MIT) or [Apache 2.0](LICENSE-APACHE), at your option.
+
+## Execution coverage
+
+Install `cargo-nextest` (>= 0.9.116) and `rustup component add llvm-tools-preview`.
+Use `habeas coverage` for unit and integration tests, including focused runs
+(`habeas coverage -- -E 'test(name)'`), and `cargo test --doc --workspace` for
+doctests. In this repository use `cargo habeas coverage`.
+
+The mdBook coverage index combines the latest attempt per test for the latest
+build configuration. Source or build-input changes exclude old contributions.
+Each process retains its own raw LLVM profile and captured-source report under
+`target/habeas/coverage/` (or the configured Cargo target directory). These are
+disposable build artifacts: never commit them. Building the book only reads saved
+coverage.

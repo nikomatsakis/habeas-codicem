@@ -1,3 +1,5 @@
+mod common;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -24,6 +26,7 @@ fn fixture() -> TempDir {
     )
     .unwrap();
     fs::write(temp.path().join("md/glossary.md"), ":::{definition} a\n:phrase: alpha\n\nSee {term}`glossary.b`.\n:::\n\n:::{definition} b\n:phrase: beta\n\nSee {term}`glossary.a`.\n:::\n").unwrap();
+    common::coverage_setup(temp.path());
     temp
 }
 
@@ -240,6 +243,25 @@ fn globs_exclude_terms_but_capture_referenced_terms_outside_the_glob() {
         errors
             .iter()
             .all(|error| !error.contains("rules.unrelated")),
+        "{errors:?}"
+    );
+
+    // A directly referenced definition outside the glob is also mandatory.
+    record(
+        root,
+        "rules.ready",
+        vec![
+            requirements(root, "rules.*", &["rules.ready"]),
+            definition(root, "glossary.b"),
+            definition(root, "rules.used"),
+        ],
+    );
+    approve(&path);
+    let errors = validate_repository(root).unwrap().errors;
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.contains("glossary.a, found 0")),
         "{errors:?}"
     );
 

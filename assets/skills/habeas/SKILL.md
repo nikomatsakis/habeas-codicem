@@ -8,7 +8,7 @@ description: Use at the start of any work in a project that tracks requirements 
 Habeas traces requirements, written in a project's mdBook, to the code and tests
 that implement and verify them. `habeas author` has a model assess whether tests
 adequately check each requirement and records the result as evidence under `evidence/`;
-`cargo test --workspace` validates that evidence without calling a model.
+`habeas coverage` validates that evidence without calling a model.
 
 ## Workflow
 
@@ -18,7 +18,7 @@ adequately check each requirement and records the result as evidence under `evid
       | --- | --- |
       | A design session, or any change to behavior, code, tests, or requirement text, including renaming code in place | habeas-requirements |
       | Moving code, tests, or requirements to another file, chapter, or outline node, or renaming a requirement, without changing them | habeas-refactor |
-      | Creating or refreshing evidence; `cargo test` or `habeas status` reports Habeas findings | habeas-evidence |
+      | Creating or refreshing evidence; `habeas coverage` or `habeas status` reports Habeas findings | habeas-evidence |
       | Adopting Habeas in an existing codebase, or most of the code has no references | habeas-bootstrap-requirements |
 
       If Habeas is not configured yet (no `tests/habeas.rs` calling
@@ -34,6 +34,22 @@ adequately check each requirement and records the result as evidence under `evid
 
 Run commands from the project root, the directory with `book.toml` and
 `Cargo.toml`.
+
+## Testing and coverage artifacts
+
+Use `habeas coverage` by default for every Rust unit and integration test run,
+including focused runs (`habeas coverage -- -E 'test(name)'`). The workflow uses
+`cargo nextest` for parallel process runs and retains independent process
+coverage. In this repository use the local alias, `cargo habeas coverage`.
+Run doctests separately with `cargo test --doc --workspace`. Install prerequisites
+with `cargo install cargo-nextest --locked` (>= 0.9.116) and
+`rustup component add llvm-tools-preview` when needed.
+
+Profiles, reports, and captured source under the Cargo target directory
+(`target/habeas/coverage/` by default) are disposable build artifacts. Never stage
+or commit them to Git. The book combines each test's latest compatible attempt;
+source changes invalidate the combined coverage, while saved reports remain
+inspectable. Building the book does not run tests.
 
 ## Inspecting
 

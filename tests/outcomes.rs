@@ -1,3 +1,5 @@
+mod common;
+
 use std::fs;
 use std::path::Path;
 
@@ -85,6 +87,7 @@ fn fixture() -> TempDir {
             "inputs": [source_input]
         }),
     );
+    common::coverage_setup(temp.path());
     temp
 }
 

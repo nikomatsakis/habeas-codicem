@@ -1,6 +1,8 @@
 //! `habeas refactor` end to end: evidence stays valid across moves whose
 //! content is unchanged, and only those.
 
+mod common;
+
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
@@ -31,6 +33,7 @@ fn project() -> TempDir {
     .unwrap();
     fs::write(root.join("data.txt"), "checked data\n").unwrap();
     fs::write(root.join("src/config.rs"), config_source("")).unwrap();
+    common::coverage_setup(root);
     temp
 }
 

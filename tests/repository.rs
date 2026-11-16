@@ -195,7 +195,9 @@ fn ci_tests_pull_requests_and_main_then_deploys_the_book_from_main() {
     let test = workflow_job(&workflow, "test-and-build");
     let steps = [
         "run: node --test .github/scripts/autofix.test.mjs",
-        "run: cargo test --locked --workspace",
+        "cargo build --release --locked -p habeas",
+        "cargo habeas coverage -- --locked --workspace",
+        "run: cargo test --locked --doc --workspace",
         "run: mdbook test",
         "run: mdbook build",
         "uses: actions/upload-pages-artifact@v4",

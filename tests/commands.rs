@@ -1,3 +1,5 @@
+mod common;
+
 use std::fs;
 use std::path::Path;
 use std::process::{Command, Output};
@@ -98,6 +100,7 @@ fn fixture() -> TempDir {
         "{broken",
     )
     .unwrap();
+    common::coverage_setup(temp.path());
     temp
 }
 
@@ -211,6 +214,7 @@ fn fixme_fixture() -> TempDir {
         )
         .unwrap();
     }
+    common::coverage_setup(temp.path());
     let report = habeas::validate_repository(temp.path()).unwrap();
     assert!(report.errors.is_empty(), "{:?}", report.errors);
     temp

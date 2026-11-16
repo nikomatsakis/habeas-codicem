@@ -1478,12 +1478,15 @@ fn authoring_documentation_shows_each_configuration_task() {
     let any_block = |needle: &str| blocks.iter().any(|block| block.contains(needle));
     assert!(chapter.contains("Create the user file at the [shared configuration location]"));
     assert!(chapter.contains("For workspace settings, create `habeas.toml`"));
-    // Bedrock and Ollama examples, a default, a remote Ollama server, and a
+    // Each backend's example, a default, a remote Ollama server, and a
     // project selection.
     assert!(any_block("backend = \"bedrock\""));
     assert!(any_block("backend = \"ollama\""));
-    assert!(any_block("backend = \"openai\""));
-    assert!(any_block("api_key_env = \"OPENAI_API_KEY\""));
+    let openai = blocks
+        .iter()
+        .find(|block| block.contains("backend = \"openai\""))
+        .expect("authoring documentation must include a complete OpenAI example");
+    assert!(openai.contains("api_key_env = \"OPENAI_API_KEY\""));
     assert!(any_block("[authoring]\ndefault = "));
     assert!(any_block("endpoint = \"http://workstation:11434\""));
     assert!(any_block("[authoring.projects."));
@@ -1492,6 +1495,7 @@ fn authoring_documentation_shows_each_configuration_task() {
         "`us-east-1`",
         "`workstation`",
         "`/absolute/path/to/project`",
+        "`OPENAI_API_KEY_VALUE`",
     ] {
         assert!(chapter.contains(placeholder), "{placeholder}");
     }
@@ -1514,6 +1518,8 @@ fn authoring_documentation_shows_each_configuration_task() {
         "`[authoring.configs.<name>.options]`",
         "`api_key_env = \"OLLAMA_API_KEY\"`",
         "Omit `aws_profile` or `region` to use AWS SDK defaults",
+        "`reasoning = ",
+        "`max_output_tokens = ",
     ] {
         assert!(chapter.contains(phrase), "{phrase}");
     }

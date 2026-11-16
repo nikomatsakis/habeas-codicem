@@ -1,3 +1,5 @@
+mod common;
+
 use std::fs;
 use std::path::Path;
 
@@ -21,6 +23,7 @@ fn fixture() -> TempDir {
     .unwrap();
     fs::write(root.join("data.txt"), "first\nsecond\n").unwrap();
     write_inputs(&root, vec![]);
+    common::coverage_setup(&root);
     temp
 }
 

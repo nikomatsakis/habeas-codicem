@@ -17,6 +17,16 @@ struct Cli {
 #[derive(Subcommand)]
 // {impl}`requirements.authoring.reporting`
 enum Command {
+    /// Run nextest with independent LLVM coverage for each test process.
+    Coverage {
+        #[arg(last = true)]
+        args: Vec<String>,
+    },
+    #[command(hide = true)]
+    CoverageProcess {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<std::ffi::OsString>,
+    },
     Mdbook {
         #[command(subcommand)]
         command: Option<MdbookCommand>,
@@ -100,7 +110,17 @@ enum HookCommand {
 }
 
 // {impl}`requirements.authoring.read_denial.mandatory`
+// {impl}`requirements.test-coverage.run`
+// {impl}`requirements.test-coverage.processes`
 fn main() -> Result<(), Box<dyn Error>> {
+    if std::env::current_exe()?
+        .file_stem()
+        .is_some_and(|name| name == "habeas-rustc")
+    {
+        std::process::exit(habeas::execution_coverage::compile_process(
+            &std::env::args_os().skip(1).collect::<Vec<_>>(),
+        )?);
+    }
     // {impl}`requirements.cli.clap`
     let cli = Cli::parse();
     // {impl}`requirements.configuration.workspace_location`
@@ -120,6 +140,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         Command::Mdbook {
             command: Some(MdbookCommand::Supports { .. })
         } | Command::Setup { .. }
+            | Command::Coverage { .. }
+            | Command::CoverageProcess { .. }
             | Command::Hook { .. }
             | Command::Status { .. }
             | Command::Info { .. }
@@ -127,6 +149,15 @@ fn main() -> Result<(), Box<dyn Error>> {
         habeas::config::load_workspace_evidence(&std::env::current_dir()?)?;
     }
     match cli.command {
+        Command::Coverage { args } => {
+            std::process::exit(habeas::execution_coverage::run(
+                &setup::project_root()?,
+                &args,
+            )?);
+        }
+        Command::CoverageProcess { args } => {
+            std::process::exit(habeas::execution_coverage::collect_process(&args)?);
+        }
         // {impl}`requirements.cli.mdbook`
         Command::Mdbook { command: None } => {
             let (context, mut book) = mdbook_preprocessor::parse_input(io::stdin())?;

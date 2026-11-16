@@ -13,6 +13,7 @@ pub mod config;
 mod coverage_history;
 mod definition_glob;
 mod evidence;
+pub mod execution_coverage;
 mod fenced;
 mod fixme;
 mod github;
@@ -231,6 +232,7 @@ pub fn preprocess_book(book: &mut Book, root: &Path) -> io::Result<()> {
         .collect();
     let plan = index::DetailPlan::find(book, &evidence_definitions, &order)?;
     plan.populate(book, root, &evidence_definitions)?;
+    execution_coverage::populate(book, root)?;
 
     // {impl}`requirements.index.source_links`
     book.for_each_chapter_mut(|chapter| {

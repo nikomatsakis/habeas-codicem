@@ -1,6 +1,6 @@
 # How it works
 
-Habeas reads requirements from an mdBook and evidence from JSON files in the same repository. `cargo test --workspace` checks the evidence; `mdbook build` renders links to it.
+Habeas reads requirements from an mdBook and evidence from JSON files in the same repository. `habeas coverage` checks the evidence; `mdbook build` renders links to it.
 
 ## Requirements
 
@@ -553,7 +553,7 @@ rerunning for a different determination.
 
 ### Live Bedrock tests
 
-`cargo test` includes a live Bedrock integration test. It skips with a visible
+`habeas coverage` includes a live Bedrock integration test. It skips with a visible
 warning in CI or when the AWS SDK cannot load credentials. Outside CI, a missing
 Bedrock authoring configuration fails the test. A skip returns successfully, so
 Cargo displays `ok` rather than `ignored`. Once credentials load, provider and
@@ -563,7 +563,7 @@ requests and retain their usage records in the usual user state directory.
 Run just these tests with:
 
 ```sh
-cargo test --test live_bedrock
+cargo habeas coverage -- --test live_bedrock
 ```
 
 The live test uses the project's or user's selected Bedrock configuration,
@@ -571,13 +571,13 @@ falling back to the first named Bedrock configuration in name order. To select
 one explicitly:
 
 ```sh
-HABEAS_LIVE_CONFIG=sonnet cargo test --test live_bedrock
+HABEAS_LIVE_CONFIG=sonnet cargo habeas coverage -- --test live_bedrock
 ```
 
 The test uses a temporary project and stdout evidence output, leaving the
 checkout's evidence unchanged. Any set `CI` environment variable disables live
 testing before configuration or credential lookup, even if credentials are
-available. For example, `CI=1 cargo test` runs the suite without live inference.
+available. For example, `CI=1 cargo habeas coverage` runs the suite without live inference.
 {cite}`requirements.integration.live_bedrock_test`
 
 ## References
@@ -795,7 +795,7 @@ in one step leaves its evidence stale, so commit the move first.
 
 ## Checking and viewing
 
-The test created by `habeas setup` calls `habeas::validate()`. Run `cargo test --workspace` to find missing evidence, false determinations, changed lines, changed reference sets, uncovered `{test}` references, misplaced or malformed `{fixme}` references, missing or stale citation reviews, and uncovered Rust items. Validation accepts true and FIXME judgments when all other evidence checks pass. FIXME remains visible in status and the book with its recorded references and rationale. These checks are deterministic: they verify the saved evidence without inference or reassessing the reviewer's judgment about documented gaps. The check reports all the errors it finds, with diffs for changed text. Run `mdbook build` to render the book. {cite}`requirements.ci.determination`
+The test created by `habeas setup` calls `habeas::validate()`. Run `habeas coverage` to find missing evidence, false determinations, changed lines, changed reference sets, uncovered `{test}` references, misplaced or malformed `{fixme}` references, missing or stale citation reviews, and uncovered Rust items. Validation accepts true and FIXME judgments when all other evidence checks pass. FIXME remains visible in status and the book with its recorded references and rationale. These checks are deterministic: they verify the saved evidence without inference or reassessing the reviewer's judgment about documented gaps. The check reports all the errors it finds, with diffs for changed text. Run `mdbook build` to render the book. {cite}`requirements.ci.determination`
 
 Run `habeas status [<selection>]` from within the project to list requirements and named
 examples needing attention and their validation findings. FIXME judgments are
@@ -895,3 +895,48 @@ requirements and examples. Their referenced definitions are captured regardless 
 Changing a definition's phrase or body invalidates its snapshots. Validation reports missing or stale
 snapshots without modifying them. A term link does not replace a function's required
 requirement or example reference.
+
+## Test execution coverage
+
+{impl}`requirements.test-coverage.run`
+{impl}`requirements.test-coverage.index`
+
+`habeas coverage [-- <nextest arguments>]` runs instrumented Rust unit and
+integration tests with nextest. With no arguments it selects the workspace.
+It preserves nextest concurrency, filters, retries and test failures. Run
+`cargo test --doc --workspace` separately for doctests.
+
+Install `cargo-nextest` >= 0.9.116 and the active Rust toolchain's matching LLVM
+tools (`rustup component add llvm-tools-preview`). `habeas setup` configures
+`.config/nextest.toml` at the workspace root, preserving unrelated settings and
+reporting wrapper conflicts. Both `habeas status` and the validation test check
+this setup without running tests or requiring earlier coverage. Effective
+profile inheritance and wrapper precedence are checked before each coverage run.
+
+Add a chapter to `SUMMARY.md` containing:
+
+```text
+:::{coverage-index}
+:::
+```
+
+The index combines each test's latest started attempt within the most recently
+used instrumented configuration. Filtered runs update only their selected tests.
+Failed and interrupted attempts remain visible; missing profiles cannot fall
+back to older successful attempts. Source and build-input changes invalidate the
+workspace's combined coverage. Other build configurations and older attempts
+remain inspectable as historical reports, with the captured source. Coverage
+percentages count unique instrumented file-and-line locations, including child
+processes; process percentages are not averaged. The view does not establish
+that all current tests were measured.
+
+Profiles, normalized reports, source snapshots and matching coverage maps live
+under `habeas/coverage/` in Cargo's target directory and are disposable build
+output. Do not commit them. `cargo clean` removes them. Building the book reads
+these records and never runs tests or collects profiles.
+
+Instrumented compilation uses a separate cache under
+`habeas/instrumented/` in that target directory, including when Cargo normally
+uses a custom build directory. Test processes retain the caller's Cargo build
+environment. When overriding the target directory for a run, use the same
+`CARGO_TARGET_DIR` when building the book.

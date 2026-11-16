@@ -1,6 +1,8 @@
 //! `habeas::validate()` reads the process's current directory, so each case
 //! runs it in a child copy of this test binary started in a fixture project.
 
+mod common;
+
 use std::fs;
 use std::path::Path;
 use std::process::{Command, Output};
@@ -91,6 +93,8 @@ fn validate_fails_the_test_with_every_error_and_authoring_instructions() {
             .filter(|line| line.starts_with("- "))
             .collect::<Vec<_>>()
     );
+
+    common::coverage_setup(&root);
 
     // Valid evidence passes.
     fs::write(root.join("md/rules.md"), ":::{req} ready\nReady.\n:::\n").unwrap();

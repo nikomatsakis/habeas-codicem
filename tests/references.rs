@@ -1,6 +1,8 @@
 //! Fenced references, built-in definitions, and citation reviews, checked
 //! through repository validation and `habeas status`.
 
+mod common;
+
 use std::fs;
 use std::path::Path;
 
@@ -25,6 +27,7 @@ fn project() -> TempDir {
     fs::write(root.join("Cargo.toml"), "[package]\nname = \"fixture\"\n").unwrap();
     fs::write(root.join("book.toml"), "[book]\nsrc = \"md\"\n").unwrap();
     fs::write(root.join("md/rules.md"), ":::{req} ready\nReady.\n:::\n").unwrap();
+    common::coverage_setup(root);
     temp
 }
 

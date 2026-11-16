@@ -10,6 +10,11 @@ that implement and verify them. Bootstrapping derives requirements from code
 that already exists, so every requirement starts as a proposal: observed
 behavior may be intended, a bug, or incidental.
 
+Follow the habeas skill's "Testing and coverage artifacts": default to
+`habeas coverage` for unit, integration and focused runs through `cargo nextest`;
+run doctests separately with `cargo test --doc --workspace`, and never stage or
+commit disposable coverage artifacts in the Cargo target directory.
+
 ## Workflow
 
 Steps 1 to 3 run once. Repeat steps 4 to 7 for each area, such as one command
@@ -21,7 +26,7 @@ to a subagent to keep it out of your context.
       references" and "What the review checks" sections govern tagging. Aim for
       accurate references, not a coverage number. If the project has no
       `tests/habeas.rs` calling `habeas::validate()`, Habeas is not set up: ask
-      before running `habeas setup`. If a requirement already exists, confirm
+      before running `habeas setup`. Before bootstrapping evidence, check coverage readiness with `habeas status`: the validation test also checks the saved `.config/nextest.toml` collector and default-profile rules. Use `habeas setup` to establish or repair the integration under the existing setup authorization. Report conflicting nextest settings or chapter contents for review; preserve project-specific settings. If a requirement already exists, confirm
       authoring works with `habeas author --stdout <full-name>`, which always
       assesses and writes no evidence. If it fails, read the habeas-evidence
       skill's `references/authoring-failures.md`.
@@ -43,7 +48,7 @@ to a subagent to keep it out of your context.
       had no requirement to try, run `habeas author <full-name>` on one of the
       area's requirements to confirm authoring works before going on.
 - [ ] 7. Validate and author the area:
-      - [ ] a. Run `cargo test --workspace`, which makes no model calls, and fix
+      - [ ] a. Run `habeas coverage`, which makes no model calls, and fix
             the reference errors in this area's files. Leave uncovered items for
             now: assessments that read reached code cover them, and none have
             run yet. Items in areas not yet bootstrapped wait for their own

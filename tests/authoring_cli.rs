@@ -1,3 +1,5 @@
+mod common;
+
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
@@ -683,6 +685,7 @@ fn acknowledged_empty_input_boundary_is_explained_and_accepted() {
         json!({"determination":{"FIXME":["example/app#125"]},"rationale":rationale}),
     )])]);
     let fixture = Fixture::new(&server.endpoint);
+    common::coverage_setup(&fixture.project);
     fs::write(fixture.project.join("md/requirements.md"), ":::{req} ready\nThe readiness check MUST accept every string, including the empty string.\n:::\n").unwrap();
     fs::write(fixture.project.join("src/lib.rs"), "// {impl}`requirements.ready`\n// :::{fixme} requirements.ready\n// :github: example/app#125\n// The empty-string boundary is not tested.\n// :::\npub fn ready(input: &str) -> bool { !input.is_empty() }\n// {test}`requirements.ready`\nfn ready_test() { assert!(ready(\"nonempty\")); }\n").unwrap();
     let output = fixture.run(&["author", SUBJECT]);
@@ -1398,6 +1401,7 @@ fn verbose_single_author_reports_only_false_rationale_without_source_inputs() {
             json!({"determination": determination, "rationale": rationale}),
         )])]);
         let fixture = Fixture::new(&server.endpoint);
+        common::coverage_setup(&fixture.project);
         let output = fixture.run(&["author", SUBJECT, flag]);
         assert!(output.status.success(), "{output:?}");
         assert_eq!(server.finish().len(), 1);
@@ -3042,6 +3046,8 @@ fn home_markers(home: &str) -> &'static [&'static str] {
             "omit a leading `reqs/` and a trailing `/index` or `/README`",
             "silently defines nothing",
             "needs a longer outer fence such as `::::{req}`",
+            "Profiles, reports, and captured source under the Cargo target directory",
+            "Install prerequisites",
         ],
         "habeas-requirements" => &[
             "Write drafts from the request straight into the chapter",
@@ -3141,6 +3147,64 @@ fn bundled_skills_are_five_skill_directories_each_home_to_its_topics() {
     // Each topic is stated in full in exactly one skill.
     for home in SKILLS {
         assert_home(home);
+    }
+}
+
+// {test}`requirements.test-coverage.guidance`
+// {test}`requirements.test-coverage.guidance.doctests`
+// {test}`requirements.test-coverage.guidance.artifacts`
+#[test]
+fn bundled_skills_default_to_process_coverage_and_keep_artifacts_disposable() {
+    for name in ["habeas", "habeas-evidence", "habeas-bootstrap-requirements"] {
+        let text = bundled_skill(name)
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        for required in [
+            "`habeas coverage`",
+            "`cargo nextest`",
+            "focused runs",
+            "`cargo test --doc --workspace`",
+            "disposable",
+            "Cargo target directory",
+        ] {
+            assert!(text.contains(required), "{name} omits {required}");
+        }
+        assert!(
+            text.contains("by default") || text.contains("default to"),
+            "{name}"
+        );
+        assert!(
+            text.to_lowercase().contains("never stage or commit"),
+            "{name}"
+        );
+        if name != "habeas" {
+            assert!(text.contains("Follow the habeas skill's \"Testing and coverage artifacts\""));
+        }
+    }
+    let home = bundled_skill("habeas");
+    for required in [
+        "Profiles, reports, and captured source",
+        "cargo install cargo-nextest --locked",
+        "rustup component add llvm-tools-preview",
+        "target/habeas/coverage/",
+    ] {
+        assert!(home.contains(required), "coverage home omits {required}");
+    }
+}
+
+// {test}`requirements.test-coverage.setup.bootstrap`
+#[test]
+fn bootstrap_checks_and_repairs_coverage_setup_and_preserves_conflicts() {
+    let text = bundled_skill("habeas-bootstrap-requirements");
+    for required in [
+        "Before bootstrapping evidence, check coverage readiness with `habeas status`",
+        "saved `.config/nextest.toml` collector and default-profile rules",
+        "Use `habeas setup` to establish or repair",
+        "Report conflicting nextest settings or chapter contents for review",
+        "preserve project-specific settings",
+    ] {
+        assert!(text.contains(required), "bootstrap omits {required}");
     }
 }
 
@@ -3632,7 +3696,7 @@ fn the_habeas_skill_routes_each_task_to_the_skill_that_covers_it() {
         (
             &[
                 "Creating or refreshing evidence",
-                "`cargo test` or `habeas status` reports Habeas findings",
+                "`habeas coverage` or `habeas status` reports Habeas findings",
             ][..],
             "habeas-evidence",
         ),

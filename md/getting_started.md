@@ -30,7 +30,7 @@ cargo install habeas
 habeas setup
 ```
 
-`habeas setup` adds Habeas as a Cargo dev dependency, configures mdBook to use the installed `habeas mdbook` preprocessor, copies the badge stylesheet, and creates `tests/habeas.rs`. That test calls `habeas::validate()`, so normal Cargo tests check your requirements and evidence.
+`habeas setup` adds Habeas as a Cargo dev dependency, configures mdBook to use the installed `habeas mdbook` preprocessor, copies the badge stylesheet, creates `tests/habeas.rs`, configures the per-process collector in `.config/nextest.toml` at the Cargo workspace root, and adds a test coverage chapter. That test calls `habeas::validate()`, so normal Cargo tests check your requirements and evidence.
 
 Once the plugin is enabled, `cargo agents sync` provides Habeas's skills to your configured agents. Run it again after updating the Habeas dependency to refresh the skills.
 
@@ -42,10 +42,18 @@ Configure an authoring model using the [Bedrock or Ollama examples](./reference.
 
 ```sh
 habeas author --all
-cargo test --workspace
+habeas coverage
+cargo test --doc --workspace
 ```
 
 The authoring harness assesses each requirement and example in a separate model
 conversation. The supervising agent fixes reported gaps and reruns the command;
 it does not compose evidence itself. CI checks the saved evidence without inference.
 See [How it works](./reference.md) for the evidence index and local-checkout workflow.
+
+Install `cargo-nextest` (>= 0.9.116) and the active toolchain's LLVM tools with
+`cargo install cargo-nextest --locked` and `rustup component add llvm-tools-preview`.
+Use `habeas coverage -- <nextest arguments>` for filtered runs as well as full
+suite runs. Raw profiles, per-process reports and captured sources stay under
+the Cargo target directory (`target/habeas/coverage/` by default), are never
+committed, and disappear with `cargo clean`.

@@ -3,6 +3,7 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
+use pulldown_cmark::{Event, Parser, Tag};
 use toml_edit::{Array, DocumentMut, Item, Table, value};
 
 const TEST_SOURCE: &str = "#[test]\nfn habeas() {\n    habeas::validate();\n}\n";
@@ -82,6 +83,42 @@ pub(crate) fn write_new_or_same(path: &Path, content: &str) -> Result<(), Box<dy
     Ok(())
 }
 
+// {impl}`requirements.test-coverage.setup`
+fn coverage_chapter_plan(source_dir: &Path) -> Result<Option<(PathBuf, String)>, Box<dyn Error>> {
+    let summary = fs::read_to_string(source_dir.join("SUMMARY.md"))?;
+    let mut markers = 0;
+    for event in Parser::new(&summary) {
+        if let Event::Start(Tag::Link { dest_url, .. }) = event {
+            let path = dest_url.split('#').next().unwrap_or("");
+            if path.ends_with(".md") {
+                let content = fs::read_to_string(source_dir.join(path))?;
+                markers += habeas::execution_coverage::marker_ranges(&content)?.len();
+            }
+        }
+    }
+    if markers > 1 {
+        return Err("only one {coverage-index} directive is permitted".into());
+    }
+    if markers == 1 {
+        return Ok(None);
+    }
+    let path = source_dir.join("test-coverage.md");
+    if path.exists() && fs::read_to_string(&path)? != habeas::execution_coverage::CHAPTER {
+        return Err(format!(
+            "{} already exists with different content; review this conflicting coverage chapter",
+            path.display()
+        )
+        .into());
+    }
+    Ok(Some((
+        path,
+        format!(
+            "{}\n- [Test coverage](./test-coverage.md)\n",
+            summary.trim_end()
+        ),
+    )))
+}
+
 // {impl}`requirements.cli.mdbook`
 pub(crate) fn run(local_crate: Option<&Path>) -> Result<(), Box<dyn Error>> {
     let root = project_root()?;
@@ -101,6 +138,8 @@ pub(crate) fn run(local_crate: Option<&Path>) -> Result<(), Box<dyn Error>> {
     if !source_dir.join("SUMMARY.md").is_file() {
         return Err(format!("cannot find mdBook SUMMARY.md in {}", source_dir.display()).into());
     }
+    let coverage_chapter = coverage_chapter_plan(&source_dir)?;
+    let (nextest_path, nextest_source) = habeas::execution_coverage::configure(&root)?;
 
     let css_path = source_dir.join("habeas.css");
     let test_path = root.join("tests/habeas.rs");
@@ -174,13 +213,23 @@ pub(crate) fn run(local_crate: Option<&Path>) -> Result<(), Box<dyn Error>> {
     write_new_or_same(&css_path, BADGE_CSS)?;
     write_new_or_same(&test_path, TEST_SOURCE)?;
     fs::write(&book_path, book.to_string())?;
+    fs::create_dir_all(nextest_path.parent().unwrap())?;
+    fs::write(nextest_path, nextest_source)?;
+    if let Some((path, summary)) = coverage_chapter {
+        write_new_or_same(&path, habeas::execution_coverage::CHAPTER)?;
+        fs::write(source_dir.join("SUMMARY.md"), summary)?;
+    }
     println!("Habeas configured in {}", root.display());
     Ok(())
 }
 
 // {impl}`requirements.cli.setup_project`
+// {impl}`requirements.integration.symposium_setup_hook`
 // {cite}`requirements.cli.setup_css`
 pub(crate) fn is_configured(root: &Path) -> bool {
+    if habeas::execution_coverage::validate_setup(root).is_err() {
+        return false;
+    }
     let manifest = match fs::read_to_string(root.join("Cargo.toml"))
         .ok()
         .and_then(|source| source.parse::<DocumentMut>().ok())
@@ -209,6 +258,9 @@ pub(crate) fn is_configured(root: &Path) -> bool {
             .all(|part| matches!(part, Component::Normal(_) | Component::CurDir))
         || !root.join(source_path).join("SUMMARY.md").is_file()
     {
+        return false;
+    }
+    if !coverage_chapter_plan(&root.join(source_path)).is_ok_and(|plan| plan.is_none()) {
         return false;
     }
 

@@ -169,7 +169,7 @@ that contains it.
   this.
 - Each snippet parses as a whole file, so a Rust snippet must be complete items,
   not a bare expression.
-- `cargo test --workspace` runs every snippet and reports a wrong result, and a
+- `habeas coverage` runs every snippet and reports a wrong result, and a
   site query that matches nothing in the project.
 
 ## Review

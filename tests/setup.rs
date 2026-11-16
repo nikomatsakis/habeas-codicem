@@ -74,6 +74,81 @@ fn session_start(project: &Path, cwd: &Path) -> Value {
 
 const SKILL_SENTENCE: &str = "This project tracks requirements with Habeas; load the `habeas` skill before starting any work.";
 
+// {test}`requirements.test-coverage.setup`
+// {test}`requirements.test-coverage.setup.configuration`
+// {test}`requirements.integration.symposium_setup_hook`
+#[test]
+fn coverage_setup_is_idempotent_and_hook_checks_config_and_chapter() {
+    let temp = fixture();
+    let root = temp.path();
+    let local_crate = env!("CARGO_MANIFEST_DIR");
+    run(root, &["setup", "--path", local_crate]);
+    let summary = fs::read_to_string(root.join("md/SUMMARY.md")).unwrap();
+    let config = fs::read_to_string(root.join(".config/nextest.toml")).unwrap();
+    assert!(root.join("md/test-coverage.md").is_file());
+    assert!(config.contains("coverage-process"));
+    run(root, &["setup", "--path", local_crate]);
+    assert_eq!(
+        fs::read_to_string(root.join("md/SUMMARY.md")).unwrap(),
+        summary
+    );
+    assert_eq!(
+        fs::read_to_string(root.join(".config/nextest.toml")).unwrap(),
+        config
+    );
+    assert!(!advises_setup(&session_start(root, root)));
+    fs::write(
+        root.join(".config/nextest.toml"),
+        config.replace("all()", "test(one)"),
+    )
+    .unwrap();
+    assert!(advises_setup(&session_start(root, root)));
+    fs::write(root.join(".config/nextest.toml"), config).unwrap();
+    fs::write(root.join("md/SUMMARY.md"), "# Summary\n").unwrap();
+    assert!(advises_setup(&session_start(root, root)));
+}
+
+// {test}`requirements.test-coverage.setup`
+// {test}`requirements.test-coverage.setup.configuration`
+#[test]
+fn coverage_setup_preserves_custom_index_and_preflights_conflicts() {
+    let temp = fixture();
+    let root = temp.path();
+    fs::write(
+        root.join("md/custom.md"),
+        "A custom report.\n\n:::{coverage-index}\n:::\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("md/SUMMARY.md"),
+        "# Summary\n\n- [Custom](custom.md)\n",
+    )
+    .unwrap();
+    run(root, &["setup", "--path", env!("CARGO_MANIFEST_DIR")]);
+    assert!(!root.join("md/test-coverage.md").exists());
+    assert!(
+        fs::read_to_string(root.join("md/custom.md"))
+            .unwrap()
+            .starts_with("A custom report.")
+    );
+    let temp = fixture();
+    let root = temp.path();
+    fs::write(root.join("md/test-coverage.md"), "User content\n").unwrap();
+    let original = fs::read_to_string(root.join("book.toml")).unwrap();
+    let result = Command::new(env!("CARGO_BIN_EXE_habeas"))
+        .arg("setup")
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(!result.status.success());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("test-coverage.md"));
+    assert_eq!(
+        fs::read_to_string(root.join("book.toml")).unwrap(),
+        original
+    );
+    assert!(!root.join(".config/nextest.toml").exists());
+}
+
 // {cite}`habeas:util`
 /// The response for an applicable project whose setup is complete.
 fn skill_sentence_only() -> Value {

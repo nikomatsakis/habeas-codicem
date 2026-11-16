@@ -208,6 +208,11 @@ pub(crate) fn inspect_repository_with_progress(
     let md_root = book_source_dir(&root, &mut errors);
     let definitions = collect_definitions(&root, &md_root, &mut errors);
     let mut discovery_errors = errors.clone();
+    // {impl}`requirements.test-coverage.setup.validation`
+    // {impl}`requirements.test-coverage.setup.validation.static`
+    if let Err(error) = crate::execution_coverage::validate_setup(&root) {
+        errors.push(error.to_string());
+    }
     // Only the coverage report uses `[coverage]`, so an invalid table is a
     // finding but not a discovery failure, and authoring still proceeds.
     if let Some(error) = crate::config::coverage_error(&root) {
@@ -2251,6 +2256,10 @@ pub(crate) mod tests {
         fs::create_dir_all(temp.path().join("evidence")).unwrap();
         fs::create_dir_all(temp.path().join("src")).unwrap();
         fs::write(temp.path().join("book.toml"), "[book]\nsrc = \"md\"\n").unwrap();
+        fs::write(temp.path().join("Cargo.toml"), "[workspace]\n").unwrap();
+        let (path, source) = crate::execution_coverage::configure(temp.path()).unwrap();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, source).unwrap();
         fs::write(
             temp.path().join("src/main.rs"),
             "// first line\n// second line\n",
@@ -2379,7 +2388,7 @@ pub(crate) mod tests {
             }));
             let expected_counts = [
                 ("evidence files", if invalid { 2 } else { 1 }),
-                ("reference source files", if invalid { 6 } else { 3 }),
+                ("reference source files", if invalid { 8 } else { 5 }),
                 ("reference coverage", 1),
             ];
             for (stage, total) in expected_counts {
@@ -2444,7 +2453,11 @@ pub(crate) mod tests {
     fn inspection_progress_reports_empty_phases_as_complete() {
         let temp = TempDir::new().unwrap();
         fs::create_dir(temp.path().join("md")).unwrap();
+        fs::write(temp.path().join("Cargo.toml"), "[workspace]\n").unwrap();
         fs::write(temp.path().join("book.toml"), "[book]\nsrc = 'md'\n").unwrap();
+        let (path, source) = crate::execution_coverage::configure(temp.path()).unwrap();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, source).unwrap();
         let mut updates = Vec::new();
         let inspected =
             super::inspect_repository_with_progress(temp.path(), |update| updates.push(update))
