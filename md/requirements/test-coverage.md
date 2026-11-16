@@ -184,6 +184,63 @@ incomplete coverage, and MUST NOT imply that every current test has coverage
 merely because all available records are valid.
 :::
 
+:::{req} index.file_map
+A file coverage map MUST identify each file by its workspace-relative path and
+show its covered and instrumented line counts and percentage. These counts MUST
+use the union rule of {cite}`requirements.test-coverage.index.summary`,
+restricted to the file and the records represented by that map, including
+associated child processes. The map MUST visually distinguish coverage levels
+while also displaying percentages as text. The percentage MUST describe the
+map's recorded instrumented lines, rather than all physical source lines.
+
+A listed file with instrumented lines but no positive execution counts MUST
+show 0%. A listed file with no recorded instrumented lines in otherwise usable
+coverage MUST show "not measured" without a percentage. Coverage whose
+completeness cannot be established MUST be identified as unavailable rather
+than as 0% or "not measured".
+:::
+
+:::{req} index.file_map.combined
+The coverage index MUST present a file coverage map of all current first-party
+Rust files under {cite}`requirements.references.rust_item_coverage` as its
+primary overview. Its counts MUST use only the records eligible for the
+combined view under {cite}`requirements.test-coverage.index.selection` and
+{cite}`requirements.test-coverage.index.freshness`, following
+{cite}`requirements.test-coverage.index.file_map`.
+
+The overview MUST visibly identify coverage excluded because it is stale,
+missing, or unreadable. When those exclusions leave no usable selected
+records, the map MUST show coverage as unavailable; when no coverage has been
+recorded, files MUST show "not measured" and the collection guidance of
+{cite}`requirements.test-coverage.index.unavailable` MUST remain visible.
+The test and run details required by
+{cite}`requirements.test-coverage.index.summary` MUST remain available on
+demand rather than expanded by default.
+:::
+
+:::{req} index.file_map.test
+Each test-attempt report under
+{cite}`requirements.test-coverage.index.details` MUST present a file coverage
+map as its primary overview, listing the first-party Rust files in the
+originating run's captured source that have positive execution counts in that
+attempt. Files whose recorded execution counts are all zero, or that have no
+recorded instrumented lines, MUST be omitted from this map. Its counts MUST use
+that attempt's test
+process and associated child processes, following
+{cite}`requirements.test-coverage.index.file_map`. Source changes MUST NOT
+prevent displaying a complete historical attempt's map using its captured
+source.
+
+When complete coverage records no positive execution counts for any file, the
+map MUST show "No files covered by this test" rather than an empty report.
+
+If coverage for the attempt is missing, unreadable, or incomplete, its map MUST
+show coverage as unavailable rather than numerical percentages. Readable
+line-level and per-process details required by
+{cite}`requirements.test-coverage.index.details` MUST remain available on
+demand rather than expanded by default.
+:::
+
 :::{req} index.details
 For the records displayed by {cite}`requirements.test-coverage.index.summary`,
 `habeas mdbook` MUST generate a detail subchapter under the index chapter for
