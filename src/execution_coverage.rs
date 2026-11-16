@@ -16,7 +16,7 @@ pub(crate) use book::populate;
 pub use configuration::{configure, validate_setup, workspace_root};
 pub use runner::{collect_process, compile_process, run};
 
-pub const CHAPTER: &str = "# Test coverage\n\nCollect Rust unit and integration test coverage with `habeas coverage`.\nFor focused runs, forward nextest arguments with `habeas coverage -- -E 'test(name)'`.\nRun doctests separately with `cargo test --doc --workspace`.\n\nCoverage is disposable build output in the Cargo target directory. The index\ncombines each test's latest compatible attempt; source changes invalidate its\ncontribution. Building this book reads saved reports and never runs tests.\n\n:::{coverage-index}\n:::\n";
+pub const CHAPTER: &str = "# Test coverage\n\nCollect Rust unit and integration test coverage with `habeas coverage`.\nFor focused runs, forward nextest arguments with `habeas coverage -- -E 'test(name)'`.\nRun doctests separately with `cargo test --doc --workspace`.\n\nCoverage is disposable build output in the Cargo target directory. The index\ncombines each test's latest compatible attempt; source changes invalidate its\ncontribution. Building this book reads saved reports and never runs tests.\n\nThe overview maps project files to their line coverage percentages. Choose a\ntest to see only the files it executes, including its child processes. Expand\nthe optional details to inspect run metadata or individual source lines.\n\n:::{coverage-index}\n:::\n";
 
 // {impl}`requirements.test-coverage.storage`
 // {impl}`requirements.test-coverage.storage.provenance`

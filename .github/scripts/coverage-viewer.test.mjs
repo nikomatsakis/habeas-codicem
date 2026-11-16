@@ -14,15 +14,16 @@ class Element {
   remove() { this.removed = true; }
 }
 
-function fixture() {
+function fixture(collapsed = false) {
   const root = new Element("div");
+  const disclosure = collapsed ? new Element("details") : null;
   const listeners = new Map();
   const window = {
     addEventListener: (name, listener) => listeners.set(name, listener),
     removeEventListener: name => listeners.delete(name),
   };
   const document = {
-    getElementById: () => root,
+    getElementById: id => id.endsWith("-details") ? disclosure : root,
     createElement: tag => {
       const node = new Element(tag);
       if (tag === "iframe") node.contentWindow = {};
@@ -31,7 +32,7 @@ function fixture() {
   };
   const context = vm.createContext({ window, document });
   vm.runInContext(readFileSync(new URL("../../assets/coverage-viewer.js", import.meta.url), "utf8"), context);
-  return { root, listeners, render: context.habeasRenderCoverage };
+  return { root, disclosure, listeners, render: context.habeasRenderCoverage };
 }
 
 function contents(node) {
@@ -75,4 +76,22 @@ test("process reports preserve counters, source text, child identity and lazy fi
   const size = closed.children.length;
   closed.events.toggle();
   assert.equal(closed.children.length, size);
+});
+
+// {test}`requirements.test-coverage.index.file_map.test`
+test("line-level source is loaded only when requested, once per report", () => {
+  const { root, disclosure, listeners, render } = fixture(true);
+  render({ target: "report", source: "snapshot.html", run: "run-1", processes: [] });
+  assert.equal(root.children.length, 0);
+  assert.equal(listeners.has("message"), false);
+  disclosure.open = true;
+  disclosure.events.toggle();
+  assert.equal(root.children.filter(node => node.tag === "iframe").length, 1);
+  assert.equal(listeners.has("message"), true);
+  const size = root.children.length;
+  disclosure.open = false;
+  disclosure.events.toggle();
+  disclosure.open = true;
+  disclosure.events.toggle();
+  assert.equal(root.children.length, size);
 });

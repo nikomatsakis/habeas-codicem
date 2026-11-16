@@ -96,6 +96,7 @@ fn readable(record: &Record) -> bool {
 }
 
 // {impl}`requirements.test-coverage.index.summary`
+// {impl}`requirements.test-coverage.index.file_map`
 fn union<'a>(records: impl Iterator<Item = &'a Record>) -> BTreeMap<(String, u32), u64> {
     let mut result: BTreeMap<(String, u32), u64> = BTreeMap::new();
     for record in records {
@@ -113,6 +114,98 @@ fn union<'a>(records: impl Iterator<Item = &'a Record>) -> BTreeMap<(String, u32
     result
 }
 
+// {impl}`requirements.test-coverage.index.file_map`
+#[derive(Clone, Copy)]
+enum MapAvailability {
+    Complete,
+    Partial,
+    Unavailable,
+}
+
+// {impl}`requirements.test-coverage.index.file_map`
+fn file_map(
+    files: impl IntoIterator<Item = String>,
+    totals: &BTreeMap<(String, u32), u64>,
+    availability: MapAvailability,
+    positive_only: bool,
+) -> String {
+    let mut counts = BTreeMap::<&str, (usize, usize)>::new();
+    for ((file, _), count) in totals {
+        let (covered, total) = counts.entry(file).or_default();
+        *total += 1;
+        *covered += usize::from(*count > 0);
+    }
+    let mut folders = BTreeMap::<String, Vec<(String, usize, usize)>>::new();
+    for file in files {
+        let (covered, total) = counts.get(file.as_str()).copied().unwrap_or_default();
+        if positive_only && covered == 0 {
+            continue;
+        }
+        let folder = file.rsplit_once('/').map_or(".", |(folder, _)| folder);
+        folders
+            .entry(folder.to_owned())
+            .or_default()
+            .push((file, covered, total));
+    }
+    let mut result = String::from(
+        "<style>\n\
+        .habeas-coverage-map { margin: 1.5em 0; }\n\
+        .habeas-coverage-files { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); gap: .7em; }\n\
+        .habeas-coverage-file { border: 1px solid var(--table-border, #888); border-radius: 6px; padding: .8em; min-width: 0; }\n\
+        .habeas-coverage-file header { display: flex; gap: .8em; justify-content: space-between; align-items: baseline; }\n\
+        .habeas-coverage-file code { overflow-wrap: anywhere; background: transparent; padding: 0; }\n\
+        .habeas-coverage-file strong { white-space: nowrap; }\n\
+        .habeas-coverage-bar { height: 8px; border-radius: 4px; background: var(--table-border, #ddd); overflow: hidden; margin: .7em 0 .4em; }\n\
+        .habeas-coverage-fill { height: 100%; }\n\
+        .habeas-coverage-file small { opacity: .8; }\n\
+        .habeas-coverage-picker { width: 100%; padding: .5em; margin: .5em 0; color: var(--fg, inherit); background: var(--bg, inherit); }\n\
+        .habeas-coverage-details > summary { cursor: pointer; font-weight: bold; padding: .7em 0; }\n\
+        </style>\n\
+        <section class=\"habeas-coverage-map\" aria-label=\"File coverage map\">\n",
+    );
+    result.push_str("<p>Percentages measure recorded instrumented lines. Color and bar length indicate the fraction executed.</p>\n");
+    if folders.is_empty() && positive_only {
+        result.push_str("<p>No files covered by this test</p>\n");
+    }
+    for (folder, files) in folders {
+        result.push_str(&format!(
+            "<h3><code>{}</code></h3><div class=\"habeas-coverage-files\">\n",
+            escaped(&folder)
+        ));
+        for (file, covered, total) in files {
+            let state = match (availability, total) {
+                (MapAvailability::Unavailable, _) | (MapAvailability::Partial, 0) => "unavailable",
+                (_, 0) => "not measured",
+                _ => "measured",
+            };
+            result.push_str(&format!(
+                "<article class=\"habeas-coverage-file\" data-file=\"{}\" data-status=\"{state}\"><header><code>{}</code>",
+                escaped(&file), escaped(&file),
+            ));
+            if state == "measured" {
+                let percentage = 100.0 * covered as f64 / total as f64;
+                let label = if covered > 0 && percentage < 0.1 {
+                    "&lt;0.1%".to_owned()
+                } else {
+                    format!("{percentage:.1}%")
+                };
+                result.push_str(&format!(
+                    "<strong>{label}</strong></header><div class=\"habeas-coverage-bar\" role=\"meter\" aria-label=\"{} line coverage\" aria-valuemin=\"0\" aria-valuemax=\"100\" aria-valuenow=\"{percentage:.6}\"><div class=\"habeas-coverage-fill\" style=\"width:{percentage:.6}%;background:hsl({:.1},55%,45%)\"></div></div><small>{covered}/{total} instrumented lines covered</small>",
+                    escaped(&file), percentage * 1.2,
+                ));
+            } else {
+                result.push_str(&format!(
+                    "<strong>{state}</strong></header><p>Coverage {state}.</p>"
+                ));
+            }
+            result.push_str("</article>\n");
+        }
+        result.push_str("</div>\n");
+    }
+    result.push_str("</section>\n\n");
+    result
+}
+
 // {impl}`requirements.test-coverage.index`
 // {impl}`requirements.test-coverage.index.selection`
 // {impl}`requirements.test-coverage.index.freshness`
@@ -123,6 +216,8 @@ fn union<'a>(records: impl Iterator<Item = &'a Record>) -> BTreeMap<(String, u32
 // {impl}`requirements.test-coverage.index.details`
 // {impl}`requirements.test-coverage.processes.reports`
 // {impl}`requirements.test-coverage.storage.configuration`
+// {impl}`requirements.test-coverage.index.file_map`
+// {impl}`requirements.test-coverage.index.file_map.combined`
 pub(crate) fn populate(book: &mut Book, project: &Path) -> io::Result<()> {
     populate_in(book, project, None)
 }
@@ -150,6 +245,8 @@ fn populate_in(book: &mut Book, project: &Path, target: Option<PathBuf>) -> io::
     };
     let mut diagnostics = Vec::new();
     let mut uncertain_history = false;
+    let mut current_files = BTreeSet::new();
+    let mut discovery_failed = false;
     let mut records = Vec::new();
     let root_and_target = workspace_root(project).and_then(|root| {
         Ok((
@@ -162,6 +259,19 @@ fn populate_in(book: &mut Book, project: &Path, target: Option<PathBuf>) -> io::
     match root_and_target {
         Err(error) => diagnostics.push(format!("Coverage storage is unavailable: {error}")),
         Ok((target, root)) => {
+            let mut errors = Vec::new();
+            let discovered = crate::evidence::discovered_files(&root, &mut errors);
+            discovery_failed = !errors.is_empty();
+            diagnostics.extend(errors);
+            current_files.extend(
+                crate::rust_coverage::rust_files(&root, &discovered)
+                    .into_iter()
+                    .filter_map(|file| {
+                        file.strip_prefix(&root)
+                            .ok()
+                            .map(|relative| relative.to_string_lossy().into_owned())
+                    }),
+            );
             let storage = target.join("habeas/coverage");
             if storage.is_dir() {
                 let entries = match fs::read_dir(storage) {
@@ -301,12 +411,12 @@ fn populate_in(book: &mut Book, project: &Path, target: Option<PathBuf>) -> io::
         }
     }
     let selected: BTreeSet<_> = selected.into_values().collect();
-    let totals = union(
-        selected
-            .iter()
-            .map(|&index| &records[index])
-            .filter(|record| !uncertain_history && record.fresh && readable(record)),
-    );
+    let usable: Vec<_> = selected
+        .iter()
+        .map(|&index| &records[index])
+        .filter(|record| !uncertain_history && record.fresh && readable(record))
+        .collect();
+    let totals = union(usable.iter().copied());
     let covered = totals.values().filter(|&&count| count > 0).count();
     let mut summary = String::from("## Combined execution coverage\n\n");
     if uncertain_history {
@@ -315,17 +425,59 @@ fn populate_in(book: &mut Book, project: &Path, target: Option<PathBuf>) -> io::
     if records.is_empty() {
         summary.push_str("No test coverage is available. Run `habeas coverage` (or `cargo habeas coverage` in this repository), then rebuild the book.\n\n");
     } else {
-        let configuration = &records.last().unwrap().run.configuration_inputs;
-        summary.push_str(&format!(
-            "Build configuration: {}.\n\n",
-            display(&serde_json::to_string(configuration)?)
-        ));
         if totals.is_empty() {
             summary.push_str("Line coverage: **unavailable** (no fresh instrumented lines).\n\n");
         } else {
             summary.push_str(&format!("Line coverage: **{covered}/{} ({:.1}%)** from the union of instrumented file-and-line locations.\n\n", totals.len(), covered as f64 / totals.len() as f64 * 100.0));
         }
         summary.push_str("This combines saved attempts, including filtered runs. It does **not establish that all current tests were measured**. Failed, interrupted, stale and unavailable results are shown below; incomplete records do not contribute totals.\n\n");
+    }
+    let stale = selected
+        .iter()
+        .filter(|&&index| !records[index].fresh)
+        .count();
+    let incomplete = selected
+        .iter()
+        .filter(|&&index| records[index].fresh && !readable(&records[index]))
+        .count();
+    if stale > 0 || incomplete > 0 {
+        summary.push_str(&format!(
+            "**Excluded coverage:** {stale} stale test attempts; {incomplete} unavailable test attempts.\n\n"
+        ));
+    }
+    if !selected.is_empty() {
+        summary.push_str("<label for=\"habeas-coverage-test\">View a test's coverage map</label>\n<select id=\"habeas-coverage-test\" class=\"habeas-coverage-picker\" onchange=\"if(this.value) window.location.href=this.value\"><option value=\"\">Combined coverage</option>\n");
+        let mut choices: Vec<_> = selected.iter().map(|&index| &records[index]).collect();
+        choices.sort_by_key(|record| (&record.attempt.binary, &record.attempt.test));
+        for record in choices {
+            summary.push_str(&format!(
+                "<option value=\"{}\">{} / {}</option>\n",
+                escaped(&crate::chapter_href(&index_path, &record.detail, None)),
+                escaped(&record.attempt.binary),
+                escaped(&record.attempt.test),
+            ));
+        }
+        summary.push_str("</select>\n\n");
+    }
+    let availability = if discovery_failed
+        || uncertain_history
+        || (!records.is_empty() && usable.is_empty())
+        || (records.is_empty() && !diagnostics.is_empty())
+    {
+        MapAvailability::Unavailable
+    } else if stale > 0 || incomplete > 0 {
+        MapAvailability::Partial
+    } else {
+        MapAvailability::Complete
+    };
+    summary.push_str(&file_map(current_files, &totals, availability, false));
+    if !records.is_empty() {
+        summary.push_str("<details class=\"habeas-coverage-details\"><summary>Test runs and provenance</summary>\n\n");
+        let configuration = &records.last().unwrap().run.configuration_inputs;
+        summary.push_str(&format!(
+            "Build configuration: {}.\n\n",
+            display(&serde_json::to_string(configuration)?)
+        ));
         summary.push_str("| Test process | Attempt | Captured (Unix ns) | Run outcome / attempt outcome | Coverage | Originating run, revision and dirty state | Command / selection |\n| --- | --- | --- | --- | --- | --- | --- |\n");
         for (index, record) in records.iter().enumerate().rev() {
             let state = if uncertain_history {
@@ -348,7 +500,7 @@ fn populate_in(book: &mut Book, project: &Path, target: Option<PathBuf>) -> io::
                 display(record.run.revision.as_deref().unwrap_or("unknown")), record.run.dirty.map_or("unknown", |dirty| if dirty { "yes" } else { "no" }),
                 display(&record.run.command.join(" ")), display(&record.run.selection.join(" "))));
         }
-        summary.push('\n');
+        summary.push_str("\n</details>\n\n");
     }
     for diagnostic in diagnostics {
         summary.push_str(&format!(
@@ -412,11 +564,27 @@ fn populate_in(book: &mut Book, project: &Path, target: Option<PathBuf>) -> io::
 }
 
 // {impl}`requirements.test-coverage.index.details`
+// {impl}`requirements.test-coverage.index.file_map`
+// {impl}`requirements.test-coverage.index.file_map.test`
 fn detail(record: &Record, index: &Path) -> String {
     let attempt = &record.attempt;
     let mut result = format!(
-        "# Test process coverage\n\n[Back to coverage index]({})\n\nBinary: {}. Test: {}. Attempt: {}. Outcome: {}.\n\nRun: {} ({}). Captured at Unix ns {}.\n\n",
+        "# Test process coverage\n\n[Back to coverage index]({})\n\n## {}\n\n",
         crate::chapter_href(&record.detail, index, None),
+        display(&attempt.test),
+    );
+    if readable(record) {
+        result.push_str(&file_map(
+            record.run.sources.keys().cloned(),
+            &union(std::iter::once(record)),
+            MapAvailability::Complete,
+            true,
+        ));
+    } else {
+        result.push_str("**Coverage unavailable:** this test's coverage is missing, unreadable or incomplete.\n\n");
+    }
+    result.push_str(&format!(
+        "<details class=\"habeas-coverage-details\"><summary>Run and attempt details</summary>\n\nBinary: {}. Test: {}. Attempt: {}. Outcome: {}.\n\nRun: {} ({}). Captured at Unix ns {}.\n\n</details>\n\n",
         display(&attempt.binary),
         display(&attempt.test),
         display(&attempt.attempt),
@@ -424,7 +592,7 @@ fn detail(record: &Record, index: &Path) -> String {
         display(&record.run.id),
         escaped(&record.run.outcome),
         attempt.started
-    );
+    ));
     for diagnostic in &attempt.diagnostics {
         result.push_str(&format!("**Unavailable:** {}\n\n", escaped(diagnostic)));
     }
@@ -442,7 +610,7 @@ fn detail(record: &Record, index: &Path) -> String {
             "lines": process.lines.iter().map(|(file, lines)| (file.clone(), lines.iter().map(|(line, count)| (line.to_string(), count.to_string())).collect::<BTreeMap<_, _>>())).collect::<BTreeMap<_, _>>(),
         })).collect::<Vec<_>>();
         let config = serde_json::json!({"target": id, "source": source, "run": record.run.id, "processes": processes});
-        result.push_str(&format!("<div id=\"{id}\"></div>\n\n<script id=\"{id}-data\" type=\"application/json\">{}</script>\n\n<script>\n{}\nhabeasRenderCoverage(JSON.parse(document.getElementById('{id}-data').textContent));\n</script>\n\n<noscript>Enable JavaScript to view source lines with per-process execution counts.</noscript>\n\n", json_html(&config), include_str!("../../assets/coverage-viewer.js")));
+        result.push_str(&format!("<details id=\"{id}-details\" class=\"habeas-coverage-details\"><summary>Source lines and individual processes</summary>\n<div id=\"{id}\"></div>\n</details>\n\n<script id=\"{id}-data\" type=\"application/json\">{}</script>\n\n<script>\n{}\nhabeasRenderCoverage(JSON.parse(document.getElementById('{id}-data').textContent));\n</script>\n\n<noscript>Enable JavaScript to view source lines with per-process execution counts.</noscript>\n\n", json_html(&config), include_str!("../../assets/coverage-viewer.js")));
     }
     result
 }
@@ -608,6 +776,241 @@ mod tests {
         };
         save(&attempt_dir.join("attempt.json"), &attempt).unwrap();
         attempt_dir
+    }
+
+    fn map_html(content: &str) -> &str {
+        content
+            .split("<section class=\"habeas-coverage-map\"")
+            .nth(1)
+            .unwrap()
+            .split("</section>")
+            .next()
+            .unwrap()
+    }
+
+    fn file_card<'a>(content: &'a str, file: &str) -> &'a str {
+        content
+            .split(&format!("data-file=\"{}\"", escaped(file)))
+            .nth(1)
+            .unwrap()
+            .split("</article>")
+            .next()
+            .unwrap()
+    }
+
+    // {test}`requirements.test-coverage.index.file_map`
+    // {test}`requirements.test-coverage.index.file_map.combined`
+    // {test}`requirements.test-coverage.index.file_map.test`
+    #[test]
+    fn file_maps_union_process_locations_and_filter_unexecuted_test_files() {
+        let (temp, mut book) = fixture();
+        let root = temp.path();
+        fs::write(
+            root.join("code.rs"),
+            "fn one() {}\nfn two() {}\nfn three() {}\n",
+        )
+        .unwrap();
+        fs::write(root.join("zero.rs"), "fn zero() {}\n").unwrap();
+        fs::write(root.join("unmeasured.rs"), "// no instrumentation\n").unwrap();
+        let path = record(root, "one", 1, "a", &[(1, 2), (2, 0)]);
+        let run_path = path.parent().unwrap().parent().unwrap().join("run.json");
+        let mut run: Run = load(&run_path).unwrap();
+        for file in ["zero.rs", "unmeasured.rs"] {
+            run.sources
+                .insert(file.into(), fs::read_to_string(root.join(file)).unwrap());
+        }
+        save(&run_path, &run).unwrap();
+        let mut attempt: Attempt = load(&path.join("attempt.json")).unwrap();
+        attempt.processes[0]
+            .lines
+            .insert("zero.rs".into(), BTreeMap::from([(1, 0)]));
+        fs::write(path.join("2-child.profraw"), "child profile fixture").unwrap();
+        attempt.processes.push(Process {
+            pid: 2,
+            profiles: vec!["2-child.profraw".into()],
+            diagnostic: None,
+            lines: BTreeMap::from([("code.rs".into(), BTreeMap::from([(1, 0), (3, u64::MAX)]))]),
+        });
+        save(&path.join("attempt.json"), &attempt).unwrap();
+        populate(&mut book, root).unwrap();
+        let index = &book.chapters().next().unwrap().content;
+        let map = map_html(index);
+        assert!(file_card(map, "code.rs").contains("2/3 instrumented lines covered"));
+        assert!(file_card(map, "code.rs").contains("66.7%"));
+        assert!(file_card(map, "zero.rs").contains("0.0%"));
+        let unmeasured = file_card(map, "unmeasured.rs");
+        assert!(unmeasured.contains("not measured"));
+        assert!(!unmeasured.contains('%'));
+        assert!(index.contains("View a test's coverage map"));
+        let mut html = String::new();
+        pulldown_cmark::html::push_html(
+            &mut html,
+            pulldown_cmark::Parser::new_ext(index, pulldown_cmark::Options::all()),
+        );
+        assert!(html.contains("<details class=\"habeas-coverage-details\">"));
+        assert!(!html.contains("<details class=\"habeas-coverage-details\" open"));
+        assert!(html.contains("<table>"));
+        let detail = &book.chapters().nth(1).unwrap().content;
+        let map = map_html(detail);
+        assert!(file_card(map, "code.rs").contains("2/3 instrumented lines covered"));
+        assert!(!map.contains("zero.rs"));
+        assert!(!map.contains("unmeasured.rs"));
+        assert!(detail.contains("Source lines and individual processes"));
+        assert!(!detail.contains("class=\"habeas-coverage-details\" open"));
+        assert!(detail.contains("\"kind\":\"Child\""));
+    }
+
+    // {test}`requirements.test-coverage.index.file_map`
+    // {test}`requirements.test-coverage.index.file_map.combined`
+    // {test}`requirements.test-coverage.index.file_map.test`
+    #[test]
+    fn maps_distinguish_no_runs_zero_hits_stale_and_incomplete_coverage() {
+        let (temp, book) = fixture();
+        let root = temp.path();
+        let mut no_runs = book.clone();
+        populate(&mut no_runs, root).unwrap();
+        let index = &no_runs.chapters().next().unwrap().content;
+        assert!(file_card(map_html(index), "code.rs").contains("not measured"));
+        assert!(index.contains("Run `habeas coverage`"));
+
+        let path = record(root, "zero", 1, "a", &[(1, 0), (2, 0)]);
+        let mut zero = book.clone();
+        populate(&mut zero, root).unwrap();
+        assert!(
+            file_card(
+                map_html(&zero.chapters().next().unwrap().content),
+                "code.rs"
+            )
+            .contains("0.0%")
+        );
+        let detail = &zero.chapters().nth(1).unwrap().content;
+        assert!(map_html(detail).contains("No files covered by this test"));
+        assert!(!map_html(detail).contains("data-file="));
+
+        let mut attempt: Attempt = load(&path.join("attempt.json")).unwrap();
+        attempt.processes[0]
+            .lines
+            .get_mut("code.rs")
+            .unwrap()
+            .insert(1, 1);
+        save(&path.join("attempt.json"), &attempt).unwrap();
+        fs::write(root.join("code.rs"), "changed source\n").unwrap();
+        fs::write(root.join("new.rs"), "fn newly_added() {}\n").unwrap();
+        let mut stale = book.clone();
+        populate(&mut stale, root).unwrap();
+        let index = &stale.chapters().next().unwrap().content;
+        for file in ["code.rs", "new.rs"] {
+            let card = file_card(map_html(index), file);
+            assert!(card.contains("unavailable"));
+            assert!(!card.contains('%'));
+        }
+        assert!(index.contains("1 stale test attempts"));
+        // The historical attempt's complete map uses its captured source.
+        let detail = &stale.chapters().nth(1).unwrap().content;
+        assert!(file_card(map_html(detail), "code.rs").contains("50.0%"));
+        assert!(!map_html(detail).contains("new.rs"));
+
+        attempt.processes.push(Process {
+            pid: 2,
+            profiles: vec!["missing-child.profraw".into()],
+            diagnostic: None,
+            lines: BTreeMap::from([("code.rs".into(), BTreeMap::from([(2, 1)]))]),
+        });
+        save(&path.join("attempt.json"), &attempt).unwrap();
+        let mut incomplete = book.clone();
+        populate(&mut incomplete, root).unwrap();
+        let detail = &incomplete.chapters().nth(1).unwrap().content;
+        assert!(detail.contains("**Coverage unavailable:**"));
+        assert!(!detail.contains("habeas-coverage-map"));
+        assert!(!detail.contains("instrumented lines covered"));
+        assert!(!detail.contains("No files covered by this test"));
+        assert!(detail.contains("Source lines and individual processes"));
+        assert!(detail.contains("\"kind\":\"Test\""));
+
+        fs::write(root.join("code.rs"), "fn one() {}\nfn two() {}\n").unwrap();
+        fs::remove_file(root.join("new.rs")).unwrap();
+        let mut unreadable = book.clone();
+        populate(&mut unreadable, root).unwrap();
+        let index = &unreadable.chapters().next().unwrap().content;
+        assert!(index.contains("1 unavailable test attempts"));
+        let card = file_card(map_html(index), "code.rs");
+        assert!(card.contains("unavailable"));
+        assert!(!card.contains('%'));
+        // Unreadable metadata cannot establish latest-per-test selection.
+        fs::write(path.join("attempt.json"), "not JSON").unwrap();
+        let mut uncertain = book;
+        populate(&mut uncertain, root).unwrap();
+        let index = &uncertain.chapters().next().unwrap().content;
+        assert!(index.contains("Coverage history is incomplete"));
+        assert!(file_card(map_html(index), "code.rs").contains("unavailable"));
+    }
+
+    // {test}`requirements.test-coverage.index.file_map`
+    // {test}`requirements.test-coverage.index.file_map.combined`
+    #[test]
+    fn incomplete_attempts_do_not_label_their_files_as_unmeasured_in_a_partial_map() {
+        let (temp, book) = fixture();
+        let root = temp.path();
+        fs::write(root.join("other.rs"), "fn other() {}\n").unwrap();
+        let good = record(root, "good", 1, "a", &[(1, 1)]);
+        let bad = record(root, "bad", 2, "a", &[]);
+        let mut attempt: Attempt = load(&bad.join("attempt.json")).unwrap();
+        attempt.processes[0].lines =
+            BTreeMap::from([("other.rs".into(), BTreeMap::from([(1, 1)]))]);
+        save(&bad.join("attempt.json"), &attempt).unwrap();
+        for path in [&good, &bad] {
+            let run_path = path.parent().unwrap().parent().unwrap().join("run.json");
+            let mut run: Run = load(&run_path).unwrap();
+            run.sources
+                .insert("other.rs".into(), "fn other() {}\n".into());
+            save(&run_path, &run).unwrap();
+        }
+        fs::remove_file(bad.join("1-1.profraw")).unwrap();
+        let mut partial = book.clone();
+        populate(&mut partial, root).unwrap();
+        let index = &partial.chapters().next().unwrap().content;
+        assert!(file_card(map_html(index), "code.rs").contains("100.0%"));
+        let unavailable = file_card(map_html(index), "other.rs");
+        assert!(unavailable.contains("unavailable"));
+        assert!(!unavailable.contains("not measured"));
+        assert!(!unavailable.contains('%'));
+        assert!(index.contains("1 unavailable test attempts"));
+        // A stale selected attempt leaves the same unknown per-file state.
+        let run_path = bad.parent().unwrap().parent().unwrap().join("run.json");
+        let mut run: Run = load(&run_path).unwrap();
+        run.inputs
+            .insert("missing-build-input".into(), "old-hash".into());
+        save(&run_path, &run).unwrap();
+        let mut stale = book;
+        populate(&mut stale, root).unwrap();
+        let index = &stale.chapters().next().unwrap().content;
+        assert!(file_card(map_html(index), "code.rs").contains("100.0%"));
+        assert!(file_card(map_html(index), "other.rs").contains("unavailable"));
+        assert!(index.contains("1 stale test attempts"));
+    }
+
+    // {test}`requirements.test-coverage.index.file_map`
+    #[test]
+    fn file_map_escapes_paths_and_does_not_round_positive_coverage_to_zero() {
+        let file = "src/<unsafe>\".rs".to_owned();
+        let totals = (1..=2000)
+            .map(|line| ((file.clone(), line), u64::from(line == 1)))
+            .collect();
+        let map = file_map([file], &totals, MapAvailability::Complete, true);
+        assert!(map.contains("src/&lt;unsafe&gt;&quot;.rs"));
+        assert!(!map.contains("<unsafe>"));
+        assert!(map.contains("&lt;0.1%"));
+        assert!(map.contains("1/2000 instrumented lines covered"));
+        assert!(!map.contains("<strong>0.0%</strong>"));
+        assert!(map.contains("background:hsl("));
+        assert!(map.contains("role=\"meter\""));
+        let empty = file_map(
+            Vec::new(),
+            &BTreeMap::new(),
+            MapAvailability::Complete,
+            false,
+        );
+        assert!(!empty.contains("data-file="));
     }
 
     // {test}`requirements.test-coverage.storage.provenance`
