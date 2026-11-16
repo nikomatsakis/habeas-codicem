@@ -699,6 +699,25 @@ fn validate_evidence_file(
             return;
         }
     };
+    let subject = crate::sdk::HabeasNode::Requirement(crate::sdk::RequirementId(
+        path.file_stem()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned(),
+    ));
+    let domain = crate::sdk::HabeasDomain {
+        root,
+        definitions,
+        outlines,
+    };
+    crate::evidence_format::check_native(&value, &subject, &domain, &label, errors);
+    let value = match crate::evidence_format::view(&value) {
+        Ok(value) => value,
+        Err(error) => {
+            errors.push(format!("{label}: invalid evidence format: {error}"));
+            return;
+        }
+    };
     let Some(object) = value.as_object() else {
         errors.push(format!("{label}: expected a JSON object"));
         return;

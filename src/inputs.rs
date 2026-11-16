@@ -66,6 +66,27 @@ pub(crate) struct OutlineCache {
     files: Mutex<HashMap<PathBuf, Arc<Result<ParsedSource, String>>>>,
     /// Content to parse in place of a file's, by project-relative path.
     overrides: HashMap<String, String>,
+    catalogs: Mutex<HashMap<PathBuf, Arc<Result<ReferenceCatalog, String>>>>,
+}
+
+pub(crate) struct ReferenceCatalog {
+    pub references: Vec<crate::evidence::SourceReference>,
+    pub files: Vec<PathBuf>,
+}
+
+impl Clone for OutlineCache {
+    fn clone(&self) -> Self {
+        Self {
+            files: Mutex::new(self.files.lock().expect("outline cache lock").clone()),
+            overrides: self.overrides.clone(),
+            catalogs: Mutex::new(
+                self.catalogs
+                    .lock()
+                    .expect("reference catalog lock")
+                    .clone(),
+            ),
+        }
+    }
 }
 
 impl OutlineCache {
@@ -75,7 +96,39 @@ impl OutlineCache {
         Self {
             files: Mutex::default(),
             overrides,
+            catalogs: Mutex::default(),
         }
+    }
+
+    /// Repository relationships share one discovery snapshot per inspection.
+    pub(crate) fn reference_catalog(&self, root: &Path) -> Arc<Result<ReferenceCatalog, String>> {
+        if let Some(catalog) = self
+            .catalogs
+            .lock()
+            .expect("reference catalog lock")
+            .get(root)
+        {
+            return catalog.clone();
+        }
+        let mut errors = Vec::new();
+        let files = crate::evidence::discovered_files(root, &mut errors);
+        let references = crate::evidence::collect_references_with_progress(
+            root,
+            &files,
+            &mut errors,
+            &mut |_| {},
+        );
+        let catalog = Arc::new(if errors.is_empty() {
+            Ok(ReferenceCatalog { references, files })
+        } else {
+            Err(errors.join("\n"))
+        });
+        self.catalogs
+            .lock()
+            .expect("reference catalog lock")
+            .entry(root.into())
+            .or_insert(catalog)
+            .clone()
     }
 
     // {impl}`requirements.authoring.outline_tool`
@@ -376,8 +429,26 @@ fn check_project_file(root: &Path, file: &str) -> Result<PathBuf, String> {
 
 pub(crate) fn read_project_file(root: &Path, file: &str) -> Result<(PathBuf, String), String> {
     let path = check_project_file(root, file)?;
-    let content =
-        fs::read_to_string(&path).map_err(|error| format!("cannot read {file}: {error}"))?;
+    // Habeas has already checked its explicit allow/disallow and build-output
+    // policy. A provider scope can therefore include an allowed external file.
+    let (scope, location) = match path.strip_prefix(root) {
+        Ok(relative) => (root, relative),
+        Err(_) => (
+            path.parent().expect("source parent"),
+            Path::new(path.file_name().expect("source name")),
+        ),
+    };
+    let resource = habeas_sdk::resource::ResourceId {
+        scheme: "repo".into(),
+        location: location.to_string_lossy().into_owned(),
+    };
+    let source = habeas_sdk::sources::LocalSources::new(scope)
+        .read_sync(&resource)
+        .map_err(|error| format!("cannot read {file}: {error}"))?;
+    let content = source
+        .text()
+        .map_err(|error| format!("cannot read {file}: {error}"))?
+        .to_owned();
     Ok((path, content))
 }
 

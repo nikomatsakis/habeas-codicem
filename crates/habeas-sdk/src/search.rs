@@ -42,4 +42,22 @@ impl RegexSearch {
             })?;
         Ok(lines)
     }
+
+    /// Search a provider's supplied bytes without requiring a local path.
+    pub fn search_bytes(&self, bytes: &[u8]) -> io::Result<Vec<usize>> {
+        let mut searcher = grep_searcher::SearcherBuilder::new()
+            .line_number(true)
+            .binary_detection(grep_searcher::BinaryDetection::quit(0))
+            .build();
+        let mut lines = Vec::new();
+        searcher.search_slice(
+            &self.matcher,
+            bytes,
+            grep_searcher::sinks::Lossy(|number, _| {
+                lines.push(number as usize);
+                Ok(true)
+            }),
+        )?;
+        Ok(lines)
+    }
 }

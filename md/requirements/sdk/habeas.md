@@ -81,11 +81,10 @@ correction, `submit_judgment` and `submit_verification` names, and the
 Searches still record only the enclosing nodes of explicitly selected excerpts;
 tracking search result sets and adding a hook to change that policy are deferred.
 
-The current runtime still uses the earlier `AuthorContext`/`CheckContext` API
-and an `AssessmentJudge` wrapper in `src/authoring/mod.rs`. Replacing that
-wrapper is part of implementing this destination API; the new SDK record must
-retain the actual dependency trace instead of being discarded after extracting
-its judgment.
+Habeas implements this review procedure in `src/authoring/sdk.rs`, using the
+SDK's `ValidationContext` and typed ask builders. Assessments and verifications
+share the conversation loop through Habeas's adapters. The saved record retains
+the SDK dependency trace, including the reads used to confirm a judgment.
 
 That delivery distinction matters to the SDK contract: a prepared page that the
 model never receives is not an observed input. A model tool can therefore use

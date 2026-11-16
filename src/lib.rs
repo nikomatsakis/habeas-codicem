@@ -21,6 +21,7 @@ mod index;
 mod inputs;
 pub mod judgment;
 pub(crate) use habeas_sdk::outline;
+mod evidence_format;
 mod redaction;
 mod refactor;
 mod rust_coverage;

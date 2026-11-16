@@ -143,9 +143,11 @@ impl AssessmentSources {
             definitions: &definitions,
             outlines: &outlines,
         };
-        let mut checks = habeas_sdk::graph::CheckContext::new(&domain);
+        let checks = habeas_sdk::graph::InspectionContext::new(&domain);
         let reference_set = checks
-            .query_snapshot(&crate::sdk::RequirementId(subject_name.to_owned()))?
+            .outgoing_edges(&crate::sdk::HabeasNode::Requirement(
+                crate::sdk::RequirementId(subject_name.to_owned()),
+            ))?
             .fingerprint
             .value;
         // Tests contribute source. Refining declarations contribute their text;

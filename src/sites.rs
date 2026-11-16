@@ -635,6 +635,25 @@ fn validate_review(
             return;
         }
     };
+    let subject =
+        crate::sdk::HabeasNode::review_subject(&crate::authoring::AuthoringSubject::Site {
+            requirement: site.requirement.clone(),
+            file: site.file.clone(),
+            item: site.item.clone(),
+        });
+    let domain = crate::sdk::HabeasDomain {
+        root,
+        definitions,
+        outlines,
+    };
+    crate::evidence_format::check_native(&value, &subject, &domain, &label, errors);
+    let value = match crate::evidence_format::view(&value) {
+        Ok(value) => value,
+        Err(error) => {
+            errors.push(format!("{label}: invalid evidence format: {error}"));
+            return;
+        }
+    };
     let Some(object) = value.as_object() else {
         errors.push(format!("{label}: expected a JSON object"));
         return;

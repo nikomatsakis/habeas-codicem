@@ -112,6 +112,19 @@ async fn run_batch(
         select_subjects(&root, &inspection, sites_of, options.force, &mut |update| {
             progress.inspect(update)
         });
+    if !options.force {
+        let (all, _) = select_subjects(&root, &inspection, sites_of, true, &mut |_| {});
+        for subject in all.into_iter().filter(|candidate| {
+            !subjects
+                .iter()
+                .any(|selected| selected.label() == candidate.label())
+        }) {
+            crate::evidence_format::convert_file(
+                &subject.evidence_path(&root),
+                &crate::sdk::HabeasNode::review_subject(&subject),
+            )?;
+        }
+    }
     let mut outcome = BatchOutcome {
         completed: Vec::new(),
         failures: Vec::new(),

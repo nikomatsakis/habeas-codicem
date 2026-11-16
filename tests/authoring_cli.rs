@@ -1449,6 +1449,8 @@ fn verbose_single_author_reports_only_false_rationale_without_source_inputs() {
 // {test}`requirements.authoring.delivered_inputs`
 // {test}`requirements.authoring.usage_storage`
 // {test}`requirements.authoring.reporting`
+// {test}`requirements.sdk.habeas.evidence_format`
+// {test}`requirements.sdk.habeas.evidence_conversion.writes`
 // {test}`requirements.ci.schema`
 #[test]
 fn stdout_emits_only_evidence_json_without_changing_project_files() {
@@ -1508,13 +1510,20 @@ fn stdout_emits_only_evidence_json_without_changing_project_files() {
         assert_eq!(
             keys(&evidence),
             [
+                "dependencies",
                 "determination",
+                "format_version",
                 "inputs",
                 "rationale",
                 "references",
-                "requirement"
+                "requirement",
+                "review_version"
             ]
         );
+        assert_eq!(evidence["format_version"], 1);
+        assert_ne!(evidence["review_version"], "*");
+        assert!(!evidence["review_version"].as_str().unwrap().is_empty());
+        assert!(evidence["dependencies"].as_array().unwrap().len() >= inputs.len());
         for input in inputs.iter().filter(|input| input.get("item").is_some()) {
             assert_eq!(keys(input), ["file", "hash", "item"], "{input}");
         }

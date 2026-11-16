@@ -10,7 +10,10 @@ pub mod redaction;
 pub mod search;
 pub mod structural;
 
+pub mod agent;
 pub mod graph;
 pub mod procedure;
+pub mod sources;
+pub mod storage;
 pub use habeas_language as language;
 pub mod resource;
