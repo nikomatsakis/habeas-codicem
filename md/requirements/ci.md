@@ -23,33 +23,58 @@ For requirement and example evidence, both `true` and `FIXME` MUST satisfy the d
 :::{req} review_criteria
 The reviewer MUST assess the named subject using its text, referenced requirements,
 and terminology definitions. For a requirement, the reviewer MUST assess whether
-the code marked with `{impl}` implements every stated obligation completely and
-exactly as stated, and whether its
-tests cover the interesting cases in the design space, including relevant
-boundaries and failure cases. The reviewer MUST also assess whether the
-implementation is reachable: code that carries out part of the requirement
-under {cite}`requirements.references.roles` and that no item marked `{impl}` for
-it reaches under {cite}`requirements.references.procedure`, including code that
-refers to it only with `{cite}`, MUST be treated as a gap. Behavior in the `{impl}` code that the requirement does not
-specify MUST be accounted for by another definition that the same code
-implements; otherwise it MUST be treated as a gap. When another requirement implements part of the subject, the
+the reviewed tests adequately check its stated obligations, including relevant
+input classes, boundaries, condition combinations, state transitions, and failure
+cases. These cases MUST follow from the requirement's obligations; the reviewer
+MUST NOT require behavior for inputs the text leaves unspecified. The reviewer
+MUST derive expected outcomes from the text, inspect the tests and relevant
+helpers or fixtures, and map each obligation assessed here to concrete test
+inputs and assertions in the rationale. It MUST separately identify obligations
+delegated to a refining requirement or a distributed site's review and any
+established testing exemptions. It MUST assess both whether expected results conform
+to the text and whether the assertions enforce those results.
+
+For every proposed adequacy gap, the reviewer MUST describe plausible behavior
+that violates a stated obligation but would be accepted by the reviewed tests,
+and explain which missing scenarios or weak assertions allow it. For an incorrect
+expected result, it MUST instead identify the assertion and explain its conflict
+with the text. A counterexample MUST identify a requirement-relevant distinction
+that the tests miss; another untested value in an already represented input class
+MUST NOT by itself establish a gap without explaining why it could expose
+different required behavior. It MUST check other relevant tests and helpers before reporting a
+gap and distinguish missing information from an established inadequacy. A marking
+gap or an ambiguity MUST be identified as such, without requiring a behavioral
+counterexample. A judgment of `true` MUST mean the reviewed tests adequately check
+the subject under these criteria, including the testing exemptions of
+{cite}`requirements.authoring.testing_bar`; it MUST NOT assert implementation
+correctness. The reviewer MAY request implementation source to resolve a
+specific question and MUST state that question in its rationale. It MUST NOT
+derive expected behavior from the implementation or assess implementation
+correctness, implementation reachability, or unspecified implementation behavior
+as additional tasks.
+
+When another requirement implements part of the subject, the
 reviewer MUST assess whether its text carries out that part, and MUST NOT
 reassess its implementation, tests, or evidence; that requirement is assessed
-separately. When there are no tests, the reviewer MUST assess whether the logic is
-simple enough to need no test or a test is impractical to author, and explain that
-judgment in the rationale.
+separately. When there are no tests, the reviewer MUST apply the testing
+exemptions of {cite}`requirements.authoring.testing_bar` and explain any
+exemption it establishes.
 
 The reviewer MUST apply these rules in every assessment. MUST and MUST NOT state
-obligations; where the reviewer judges whether source code meets the text, an unmet SHOULD MUST be treated as a gap unless the subject's text or a source comment gives a reason it does not apply; MAY imposes nothing to
+obligations; a SHOULD MUST impose an obligation unless the subject's text or a
+source comment gives a reason it does not apply, and the reviewer MUST apply the
+testing criteria to every applicable SHOULD in a test-adequacy assessment and
+explain each exception in the rationale; MAY imposes nothing to
 check; examples and sample output in the text illustrate the obligations its
 prose states and bind their exact form only where the text says so. When the subject's
 text admits two readings its wording supports equally and they lead to different conclusions, such as whether code conforms or which role a citation calls for, the ambiguity MUST be treated as a gap and the rationale MUST name
 the readings. A test that verifies the subject without a `{test}` reference to it
-MUST be treated as a marking gap. A gap MUST be
-reported only for a specific obligation and a specific source item the reviewer
-has read; the reviewer MUST look for unreached implementations among the sources
-that reference the subject and by targeted search for what its obligations
-produce, not by surveying unrelated code. Style, performance, logging, how
+MUST be treated as a marking gap; a helper reached from a marked test MUST NOT
+need a reference of its own. A gap MUST be
+reported only for a specific obligation with relevant sources the reviewer
+has read. Before reporting a missing test, the reviewer MUST perform targeted
+discovery of relevant tests and identify the missing scenario; an absent test
+MUST NOT require an invented source location. Style, performance, logging, how
 helpers are factored, robustness the text does not require, and silently ignoring input the text does not mention MUST NOT be treated as gaps, and the reviewer MUST NOT report bugs or issues outside the
 subject's text.
 
@@ -79,7 +104,7 @@ site or treat a site without an `{impl}` reference as a gap.
 
 For an example, the reviewer MUST assess whether tests exist whose setup and
 assertions cover its scenario and expected outcomes. The rationale MUST identify
-the relevant sources and explain the implementation and testing judgments for a
+the relevant sources and explain the testing judgment for a
 requirement, or the test coverage for an example. Referenced requirements provide
 context; they MUST NOT become additional subjects to assess in full.
 :::
@@ -88,13 +113,18 @@ context; they MUST NOT become additional subjects to assess in full.
 Every assessment judgment MUST use one of these outcomes, applying
 {cite}`requirements.ci.review_criteria`:
 
-- `true`: the sources support the subject and its testing obligations.
+- `true`: the reviewed tests adequately check a requirement or example under
+  {cite}`requirements.ci.review_criteria`, including applicable testing
+  exemptions and obligations assessed by a refining requirement or a site's
+  own review. For a citation or site review, the review finds no gap under its
+  own task.
 - `false`: the sources do not support the subject, or information is missing,
   and the gaps are not all acknowledged by `{fixme}` references to it.
 - `FIXME`: some aspects remain unmet or untested, and `{fixme}` references to
   the subject acknowledge every one of those gaps. The reviewer MUST explain the
   gaps and their source locations in the rationale and record their issue
-  references or other identifying content from the inputs.
+  references or other identifying content from the supplied acknowledgments or
+  inputs.
 
 The JSON `determination` MUST be `true`, `false`, or an object containing exactly
 `"FIXME"` with a nonempty array of nonempty strings, such as
@@ -106,11 +136,16 @@ references the assessed definition, or, for a site review, the distributed requi
 MUST list each distinct issue reference the acknowledging `{fixme}` references
 name in their option lines, as written after `:github:`, and, for a `{fixme}`
 naming no issue, its body's words, without comment delimiters, joined by single
-spaces. A `{fixme}` reference describing a gap that no longer exists MUST itself
-be treated as a gap. A `{fixme}` naming a GitHub issue that
+spaces. A `{fixme}` reference describing a gap that the review establishes no
+longer exists within its task's scope MUST itself be treated as a gap. A reference
+describing only an implementation defect MUST NOT create a test-adequacy gap or
+require implementation review; it MUST acknowledge a testing gap only when its
+body describes that same gap. A `{fixme}` naming a GitHub issue that
 {cite}`requirements.authoring.github_reads` reports closed MUST NOT count as
 acknowledging its gap. A FIXME judgment MUST be grounded in recorded evidence
-inputs.
+inputs or, for an acknowledgment supplied under
+{cite}`requirements.authoring.fixme_inputs`, the reference-set digest covering
+that acknowledgment.
 :::
 
 See [FIXME examples](#fixme-examples) for concrete review judgments and CI results.
@@ -327,14 +362,17 @@ contains this reference:
 ```text
 // :::{fixme} requirements.queue.full
 // :github: example/queue#125
-// Capacity-zero insertion does not return Full yet.
+// Capacity-zero insertion does not return Full yet and has no test.
 // :::
 ```
 
-The reviewer finds the remaining behavior implemented and adequately tested.
+The tests cover positive capacities but omit zero-capacity insertion. The
+reviewer identifies that missing test as a gap and finds no other testing gaps.
 The judgment is `{"FIXME": ["example/queue#125"]}`, with a rationale explaining the zero-capacity
-gap and locating the comment. The recorded inputs include the comment and reviewed
-sources. CI accepts the evidence when all other checks pass.
+gap and locating the comment. The initial request supplies the acknowledgment
+without the containing implementation source, and the reference-set digest
+covers its location and body. Recorded inputs cover the reviewed tests.
+CI accepts the evidence when all other checks pass.
 {cite}`requirements.ci.outcomes`
 {cite}`requirements.ci.determination`
 :::
@@ -365,7 +403,7 @@ coverage; the example does not receive a `true` judgment.
 ### An acknowledged gap without an issue number
 
 :::{example} fixme_without_issue
-The implementation and tests satisfy a requirement except for a platform-specific
+The tests adequately check a requirement except for a platform-specific
 test gap recorded in the test source:
 
 ```text
@@ -386,13 +424,15 @@ other checks pass.
 ### An additional, unacknowledged gap
 
 :::{example} fixme_with_unacknowledged_gap
-The queue implementation acknowledges its zero-capacity bug with a `{fixme}`
-reference naming `example/queue#125`.
-The reviewer also finds that insertion overwrites an existing entry when a
-positive-capacity queue is full, contrary to the requirement. No `{fixme}`
-reference acknowledges that second gap. The judgment is `false`, with a rationale
-describing both gaps and their source locations. The existing FIXME does not
-account for the additional defect. CI rejects the false determination.
+The queue implementation acknowledges its zero-capacity bug and the missing
+zero-capacity test with a `{fixme}` reference naming `example/queue#125`.
+The reviewer also finds that the positive-capacity test checks the `Full` result
+but never asserts that existing entries are preserved, as the requirement
+demands. An implementation that returns `Full` while overwriting an existing
+entry would pass that test. No `{fixme}` reference acknowledges this assertion
+gap. The judgment is `false`, with a rationale describing both testing gaps and
+their source locations. The existing FIXME does not account for the additional
+gap. CI rejects the false determination.
 {cite}`requirements.ci.outcomes`
 {cite}`requirements.ci.determination`
 :::

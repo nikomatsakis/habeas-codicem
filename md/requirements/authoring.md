@@ -270,19 +270,23 @@ Every assessment prompt MUST replace `{{judgment_rules}}` with this text, so all
 assessments judge by the same rules:
 
 ```text
-- Base every conclusion only on source code you have read: the items in the
-  mandatory inputs, or items you read with the habeas tool. ripgrep, ast_grep,
+- Derive obligations from the supplied subject and contextual text. Base
+  conclusions about tests or other source behavior only on source code you have
+  received: mandatory inputs or items read with the habeas tool. Supplied
+  acknowledgments establish what a {fixme} reference says and which issues it
+  names; they do not establish that its claimed gap is real. ripgrep, ast_grep,
   outline, list_files, and references only locate items; read any item whose
-  code your conclusion relies on. Comments state intent; check the behavior in
-  the code itself.
+  code your conclusion relies on. Comments state intent; check behavior and
+  assertions in the code itself.
 - Judge only against the text your task names. Report a gap only where your task
-  or these rules define one, for a specific item you have read, giving its
-  location. Missing code or tests for an obligation is a gap only after you have
-  looked where your task directs and not found them; name the obligation. Do not
-  report other bugs or issues you notice; edge cases the text does not name are
+  or these rules define one, naming the obligation and the relevant sources you
+  have read. For a missing test, identify the obligation or scenario after
+  looking where your task directs; do not invent a source item for absent code.
+  Do not report other bugs or issues you notice; edge cases the text does not name are
   not gaps.
-- Where your task judges whether source code meets the text, an unmet SHOULD is
-  a gap unless the text or a source comment gives a reason it does not apply.
+- A SHOULD imposes an obligation unless the text or a source comment gives a
+  reason it does not apply. In a test-adequacy assessment, apply the testing
+  criteria to each applicable SHOULD, and explain any exception in your rationale.
   MAY imposes nothing to check. Examples and sample output inside the text
   illustrate the obligations its prose states; they bind their exact form only
   where the text says the output takes that form.
@@ -293,16 +297,21 @@ assessments judge by the same rules:
 - These are not gaps: style, performance, logging, how helpers are factored,
   robustness the text does not require, and silently ignoring input the text
   does not mention.
-- A gap is acknowledged only by a {fixme} reference, in the inputs or in a
-  source you read, to the requirement or example your task judges against, or,
+- A gap is acknowledged only by a {fixme} reference, in the supplied
+  acknowledgments, in the inputs, or in a source you read, to the requirement
+  or example your task judges against, or,
   in a site review, to the distributed requirement within the site, whose body
   describes that same gap, and whose named issues are open; a {fixme} naming a
   closed issue no longer acknowledges its gap. A plain FIXME or TODO comment is
-  not an acknowledgment. In a FIXME determination or an acknowledgments list,
+  not an acknowledgment. Judge an acknowledgment only within your task's scope.
+  An acknowledgment of an implementation bug alone does not establish a
+  test-adequacy gap or acknowledge a different missing-test or assertion gap.
+  Do not inspect implementation correctness merely to validate an out-of-scope
+  acknowledgment. In a FIXME determination or an acknowledgments list,
   give each distinct issue its :github: option names once, such as
   "rust-lang/rust#123", and, for a {fixme} naming no issue, its body's words
-  joined by single spaces. A {fixme} describing a gap that no longer exists is
-  itself a gap.
+  joined by single spaces. A {fixme} describing a gap that your review establishes
+  no longer exists within its task's scope is itself a gap.
 - Explain your judgment in a Markdown rationale with source locations, including
   any acknowledged gaps.
 - Give a source location as its file and outline selector, the address the
@@ -908,8 +917,12 @@ reuse a cached result less than one hour old instead of contacting GitHub. A mal
 MUST return an explanatory tool error.
 
 When the mandatory inputs contain a `{fixme}` reference under
-{cite}`requirements.references.roles`, the harness MUST look up the state of
-each issue its `:github:` lines name, in the same way, and MUST supply each state with that input to the model as `open` or `closed`; when GitHub cannot be reached, the issue MUST be assumed open. These states MUST NOT be recorded either. Instead, `habeas status` and `habeas author` MUST treat a recorded FIXME determination as stale, exactly as if one of its inputs had changed, when an issue that one of its acknowledging `{fixme}` references names, or for a site review the `{fixme}` references inside the site, is closed or does not exist; repository validation, which never contacts GitHub, MUST NOT.
+{cite}`requirements.references.roles`, or the initial request includes one under
+{cite}`requirements.authoring.fixme_inputs`, the harness MUST look up the state of
+each issue its `:github:` lines name in the same way and MUST supply each state
+with the corresponding source input or acknowledgment as `open` or `closed`;
+when GitHub cannot be reached, the issue MUST be assumed open. These states MUST
+NOT be recorded either. Instead, `habeas status` and `habeas author` MUST treat a recorded FIXME determination as stale, exactly as if one of its inputs had changed, when an issue that one of its acknowledging `{fixme}` references names, or for a site review the `{fixme}` references inside the site, is closed or does not exist; repository validation, which never contacts GitHub, MUST NOT.
 
 The harness MAY take the GitHub API base URL from `HABEAS_GITHUB_API_URL`,
 accepting only `http://127.0.0.1:<port>`, so that tests can use a local server.
@@ -921,7 +934,7 @@ accepting only `http://127.0.0.1:<port>`, so that tests can use a local server.
 The harness MUST expose a `references` tool with this interface:
 
 ```text
-references({ selection: String? }) -> ReferenceIndex
+references({ selection: String?, roles: Array<"impl" | "cite" | "test">? }) -> ReferenceIndex
 
 ReferenceIndex {
     definitions: Array<DefinitionName>,
@@ -943,10 +956,14 @@ Without `selection`, the tool MUST return
 the full name and kind of every requirement and named example in full-name
 order, with empty `sites`. With `selection`, it MUST return the selected definitions
 in full-name order and one flattened `sites` array containing every valid
-`{impl}`, `{cite}`, and `{test}` reference to any match under
+reference to any match whose role is in `roles`, defaulting to
+`["impl", "cite", "test"]`, under
 {cite}`requirements.references.discovery`, each naming the definition it
 references, ordered by name, file, and position in the file, without line
-numbers. An anchor under {cite}`requirements.references.anchors` MUST be
+numbers. Roles MUST be treated as a set: repeating a permitted role MUST NOT
+duplicate sites or change the result.
+An anchor under {cite}`requirements.references.anchors` whose role is selected
+by `roles` MUST be
 reported as a site for its anchored file, with the anchored node's selector as
 `item` when it names one and no `item` when it names the whole file. Every
 other site MUST give as `item` the selector of its smallest enclosing outline
@@ -956,9 +973,18 @@ source fails, the tool MUST return an explanatory tool error naming the source.
 An invalid selection or one matching no definition MUST return an explanatory tool
 error.
 
-Results are listings without source text. Like directory listings, they MUST
+An empty `roles` array MUST return no sites while preserving the selected
+definitions' names and kinds. An unknown role or a value other than an array of
+permitted role strings MUST return an explanatory tool error. Without `selection`,
+`roles` MUST NOT change the definition-name listing.
+
+Results MUST contain no requirement text, example text, reference commentary,
+or source text. Like directory listings, they MUST
 NOT become evidence inputs; the model requests the sources it relies on with the
-`habeas` tool.
+`habeas` tool. For example,
+`references({selection: "requirements.cli.status", roles: ["impl"]})` MUST
+locate only that subject's implementation references and anchors, without
+supplying their source or recording evidence inputs.
 :::
 
 ### Submit the result: `submit_judgment`
@@ -1074,6 +1100,48 @@ The contribution rules live with [requirements](../requirements.md#requirements-
 [terminology](definitions.md#terminology-as-authoring-inputs). Existing
 evidence is [not carried forward](ci.md#existing-evidence-inputs-used-by-authoring).
 
+:::{req} fixme_inputs
+For a requirement or example assessment, the initial request MUST include every
+valid named `{fixme}` reference to the subject found under
+{cite}`requirements.references.discovery`, except a reference inside one of
+the subject's sites under {cite}`requirements.references.site_review`, in this
+form:
+
+```text
+Acknowledgment {
+    file: String,
+    item: String,
+    body: String,
+    issues: Array<{ reference: String, state: "open" | "closed" }>,
+}
+```
+
+`file` and `item` MUST locate the containing source by project-relative path and
+outline selector, using `<root>` for a whole file. `body` MUST contain the
+reference's complete fenced commentary without its fences or source-comment
+delimiters, including its option lines, redacted under
+{cite}`requirements.authoring.redaction`. `issues` MUST give every distinct issue
+its `:github:` lines name, in their order, with state supplied under
+{cite}`requirements.authoring.github_reads`. Acknowledgments MUST be ordered by
+file and position in the file and MUST carry no line numbers or containing
+implementation source.
+
+The locations and bodies MUST be protected against staleness by the reference-set
+digest under {cite}`requirements.ci.reference_set`; the acknowledgment MUST NOT
+create an outline input merely to cover its containing source. Actual reads of
+that source MUST still be recorded under
+{cite}`requirements.authoring.delivered_inputs`. Sources MUST satisfy
+{cite}`requirements.authoring.source_tools`; an inaccessible acknowledgment
+MUST be reported before inference.
+
+Terminology definitions referenced by an acknowledgment's body MUST contribute
+their complete, transitive declarations to the mandatory input set under
+{cite}`requirements.definitions.authoring_inputs` and MUST be recorded as
+definition inputs. Only the acknowledgment's body MUST contribute these
+dependencies; its containing implementation source MUST NOT be supplied merely
+to discover them.
+:::
+
 ### Prompt template
 
 :::{req} initial_prompt
@@ -1083,7 +1151,8 @@ subject message under {cite}`requirements.authoring.prompt_parts`. The harness M
 or `example`, `{{subject_name}}` with the full subject name,
 `{{habeas_background}}`, `{{reference_roles}}`, and `{{distributed_background}}`
 under {cite}`requirements.authoring.habeas_background`, `{{judgment_rules}}` under
-{cite}`requirements.authoring.judgment_rules`, and `{{mandatory_inputs}}` with the
+{cite}`requirements.authoring.judgment_rules`, `{{acknowledgments}}` with the JSON
+array of {cite}`requirements.authoring.fixme_inputs`, and `{{mandatory_inputs}}` with the
 complete mandatory inputs as a JSON array using
 the existing evidence-input formats. It MUST replace `{{subject_task}}`, for a requirement, with the text of
 {cite}`requirements.authoring.requirement_task` followed by that of
@@ -1099,7 +1168,7 @@ and {cite}`requirements.ci.outcomes`.
 ```text
 # Task
 
-Assess whether a project's source code and tests satisfy one {{subject_kind}}.
+Assess whether a project's tests adequately check one {{subject_kind}}.
 Your determination should be the one any careful reviewer would reach from the
 same text and sources.
 
@@ -1112,21 +1181,27 @@ same text and sources.
 # Your task
 
 The mandatory inputs at the end contain the subject, the requirements and
-examples it cites, the vocabulary definitions it uses, and every source item
-carrying an {impl}, {test}, or {fixme} reference to it. Each {fixme} input shows
-the state of the issues it names.
+examples it cites, the vocabulary definitions it uses, and the source text of
+its {test} items and :test: anchors. Requirement and example declarations that
+refine the subject through {impl} are also included. Implementation source is
+not included merely because it carries an {impl} reference or :impl: anchor.
+You can locate it with references and request it with habeas when needed.
+Each {fixme} acknowledgment includes the state of the issues it names.
 
 Cited requirements and examples are context: when the subject requires behavior
-under or following a cited requirement, check that the subject's code applies
-that requirement in the subject's case, but do not reassess the cited
-requirement's own implementation or tests. For a requirement subject, the code
-that decides to apply the cited requirement in the subject's case implements
-that obligation of the subject, even when it only calls code implementing the
-cited requirement; it needs its own {impl} reference and a test.
+under or following a cited requirement, check that the subject's tests cover
+applying it in the subject's case. Do not reassess the cited requirement's
+implementation or tests.
 
 When another requirement's text carries an {impl} reference to the subject,
 assess only whether that text carries out the obligations it covers; do not
 reassess its implementation or tests, and those obligations need no test here.
+
+Judge test adequacy, rather than whether the current implementation is correct.
+Derive expected behavior from the requirement and examples, even if you request
+implementation source. A true judgment means the reviewed tests adequately
+check the subject under the criteria below. You do not need to find a defect
+when those criteria are met.
 
 {{subject_task}}
 
@@ -1150,6 +1225,10 @@ Judge against: the subject's text.
 
 {{distributed_task}}
 
+# Acknowledgments
+
+{{acknowledgments}}
+
 # Mandatory inputs
 
 {{mandatory_inputs}}
@@ -1158,58 +1237,67 @@ Judge against: the subject's text.
 
 :::{req} requirement_task
 The requirement task of {cite}`requirements.authoring.initial_prompt` MUST be
-this text, the steps a requirement's review follows for its obligations,
-marking, and unspecified behavior:
+this text, the steps a requirement's review follows to assess test adequacy:
 
 ```text
-1. List each MUST, MUST NOT, and SHOULD clause as an obligation. Split a clause
-   into one obligation for each item it joins with "and", "or", or a list, and
-   for each separate condition or property it states; do not form combinations
-   of items.
-2. For each, find the code that carries it out, among the {impl} items, the code
-   they call, and the code that calls them. In your rationale, map each
-   obligation to its code and to the tests step 5 requires.
-3. Reachability: the code that carries out each obligation must be reachable
-   from the subject's {impl} items by following the code: what they call, the
-   types they use, and the implementations of trait methods they call,
-   including by searching for those implementations, and what those reach in
-   turn. Reading their callers for context does not make the callers
-   reachable. Look for unreached implementations among the sources that
-   reference the subject and by targeted search for what its obligations
-   produce; do not survey unrelated code. Code reachable
-   this way needs no reference of its own; do not report it for lacking one.
-   Code you could find only by searching elsewhere, such as for a message an
-   obligation produces, is a gap: name the item that should carry an {impl}
-   reference. Each test step 5 requires must carry a {test} reference to the
-   subject; one you could find only by searching is a gap.
-4. Unspecified behavior: a distinct observable behavior in the {impl} code, such
-   as an extra output, error, exit status, or option, or acceptance of a kind of
-   input, is a gap unless the subject or another requirement the same code marks
-   with {impl} specifies it; read those requirements before calling it a gap.
-   Behavior within what the text describes, even where its examples do not show
-   it, is specified, and so are the headings, layout, and wording the code
-   chooses for output the text requires.
+1. Derive testable obligations and expected outcomes from each MUST, MUST NOT,
+   and SHOULD clause. Separate independent conditions and properties while
+   preserving alternatives the text permits. Identify ambiguities separately.
+2. Identify relevant input classes, boundaries, condition combinations, and
+   state transitions from the requirement. Use only distinctions that affect
+   an obligation; do not invent required behavior for unspecified inputs.
+3. Read the supplied tests and request helpers or fixtures needed to understand
+   their inputs and assertions. Use targeted discovery to look for relevant
+   tests before reporting a missing scenario.
+4. Map each obligation assessed here to concrete test scenarios and assertions
+   in your rationale. Identify obligations delegated to a refining requirement
+   or a distributed site's review, and any established testing exemptions,
+   separately. Check both whether the expected result is correct under the
+   requirement and whether the assertions enforce it. Execution without a
+   relevant assertion does not establish adequacy; assertions in helpers,
+   snapshots, and parameterized or property tests can do so.
+5. For each proposed adequacy gap, describe plausible requirement-violating
+   behavior that the reviewed tests would accept. Cite the requirement clause
+   and explain why the tested inputs or assertions would miss it. A wrong
+   expected result is a gap too: explain how the assertion contradicts the
+   requirement rather than claiming it proves a missing scenario.
+   Explain the requirement-relevant distinction the counterexample exposes.
+   Another untested value in an already represented input class is not a gap
+   without explaining why it could expose different required behavior.
+6. Check whether another reviewed test or helper already rules out that
+   behavior. Report unresolved questions separately from established gaps.
+   If information needed to decide adequacy remains unavailable, choose false
+   and explain what is missing without inventing a behavioral gap.
+   A relevant test without a {test} reference to the subject is a marking gap;
+   a helper reached from a marked test needs no reference of its own. Do not
+   confuse marking gaps with inadequate assertions.
+7. Request implementation source only to resolve a specific question, stating
+   that question in your rationale. Derive expected behavior from the
+   requirement, not the implementation. Do not assess implementation
+   correctness, implementation reachability, or unspecified implementation
+   behavior as additional tasks.
 ```
 :::
 
 :::{req} testing_bar
-The requirement task MUST continue with this step, which sets when a
+The requirement task MUST continue with these criteria, which set when a
 requirement's obligations need tests:
 
 ```text
-5. Testing:
-   - Every obligation, and every boundary or failure case the text names, needs
-     a test that runs the code carrying it out and asserts its outcome; calling
-     that code directly counts.
-   - Branches for cases the text does not distinguish need no test of their
-     own, but when the code produces output the text governs along separate
-     paths, such as verbose and default modes, each path needs a test.
+Testing criteria:
+   - Every obligation assessed here, and every boundary or failure case the text
+     names for that obligation, needs
+     a test that exercises the required behavior and asserts its outcome.
+   - Distinct modes and scenarios the text governs, such as verbose and
+     default modes, each need a relevant test. Implementation branches for
+     cases the text does not distinguish need no test of their own.
    - An untested obligation is a gap unless the code carrying it out has no
      conditional and no transformation of its own, such as passing a value
      through unchanged, or running it would need network services, real elapsed
      time, or process-wide state such as environment variables or the current
      directory, and no test in the project sets that up; say which, and why.
-     Files and directories a test can create do not qualify.
+     Request source if needed to establish a claimed exemption. Files and
+     directories a test can create do not qualify.
    - That exemption does not cover an obligation that itself states that a value
      stays unchanged, distinct, or present; such an obligation needs a test.
 ```
@@ -1229,16 +1317,17 @@ This subject is a distributed requirement. Its sites need no {impl} reference
 and each has its own review, so do not vet them. Also assess the requirement and
 its queries:
 
-6. Each obligation must be either one that each site upholds on its own, or one
-   that particular code carries out, assessed under 2 to 5. An obligation that
+8. Each obligation must be either one that each site upholds on its own, or one
+   that particular code carries out, whose tests you assess under 1 to 7 and the
+   testing criteria. An obligation that
    neither covers is a gap.
-7. The site queries must select every place the text's description of a site
+9. The site queries must select every place the text's description of a site
    covers, and no place outside the requirement's stated scope. Run each site
    query once with ast_grep by its name, <subject>/<query>, scan its matches,
    and search briefly for the construct the text describes to find places the
    queries miss. Obligations that decide which places are sites, such as how a
    variable is named, are checked by this search.
-8. Judge whether each query's conditions are adequately tested by its
+10. Judge whether each query's conditions are adequately tested by its
    snippets, as you would judge tests of code: its match snippets should show
    what it selects, and its no_match snippets nearby code it must not select.
    A condition without a snippet of its own is not by itself a gap. This
@@ -1260,10 +1349,19 @@ MUST be this text:
 ```text
 The subject is a named example. First check that it describes a concrete case
 with expected behavior; a missing concrete case or expected behavior is a gap.
-Check that tests' setup and assertions cover its
-scenario and assert each expected outcome it states, and say how. A true
-judgment needs at least one {test} reference to the example in the mandatory
-inputs.
+Read its supplied tests and request helpers or
+fixtures needed to understand their setup and assertions. Check that they cover
+its scenario and assert each expected outcome it states, with expected results
+derived from the example and its referenced requirements. Say which inputs and
+assertions check each outcome. For a proposed gap, describe requirement-violating
+behavior those tests would accept, or an assertion whose expected result
+contradicts the example. Check whether another reviewed test or helper resolves
+the gap, and report unresolved questions separately. Request implementation
+source only for a specific question, stating it in your rationale.
+If information needed to decide adequacy remains unavailable, choose false and
+explain what is missing without inventing a behavioral gap.
+A true judgment needs at least one {test} reference to the example in the
+mandatory inputs; choose true when the tests adequately check it.
 ```
 :::
 
@@ -1914,9 +2012,13 @@ evidence MUST remain a validation failure rather than trigger authoring.
 ## Examples
 
 :::{example} complete_initial_bundle
-A requirement has an implementation citation in one function, a test citation in
-another, and a terminology reference. The initial prompt contains the complete
-requirement, both functions, and the required definition as evidence inputs.
+A requirement has an implementation reference in one function, a test reference
+in another, and a terminology reference. The initial prompt contains the complete
+requirement, the test function's source text, and the required terminology
+definition as evidence inputs. The implementation reference alone does not add
+that function's source to the initial prompt. A references request can locate it
+without creating an evidence input; a subsequent habeas request supplies its
+source text and records the selected node and hash.
 {cite}`requirements.authoring_input`
 {cite}`requirements.references.authoring_inputs`
 {cite}`requirements.definitions.authoring_inputs`
@@ -1959,11 +2061,15 @@ completes; ordinary evidence validation reports the false determination.
 :::
 
 :::{example} acknowledged_gap
-The cited code implements a requirement except for a boundary case explicitly
-documented in a source comment as `FIXME(#125)`. The model finds no other gaps
-and calls `submit_judgment` once with `determination: {"FIXME": ["#125"]}` and a
-rationale locating the comment and explaining the boundary case. The harness
-saves that judgment and the source inputs, including the comment. CI accepts
+The tests omit a boundary case explicitly required by a requirement. A fenced
+`{fixme}` reference to that requirement describes the missing test and names
+`:github: example/app#125`. The model receives that acknowledgment and its open
+issue state without the containing implementation source. It finds no other gaps
+and calls `submit_judgment` once with
+`determination: {"FIXME": ["example/app#125"]}` and a rationale locating the
+acknowledgment and explaining the untested boundary. The harness saves that
+judgment, the source inputs it supplied, and the reference-set digest covering
+the acknowledgment. CI accepts
 the FIXME judgment when all other evidence checks pass.
 {cite}`requirements.ci.outcomes`
 {cite}`requirements.ci.determination`

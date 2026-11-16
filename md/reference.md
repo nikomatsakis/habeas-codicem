@@ -39,23 +39,35 @@ example. Each requirement or example evidence file records five fields:
 | `references` | A SHA-256 digest of the definition's reference set: each incoming `{impl}` or `{test}` reference's role, file, and the outline node it belongs to, with the words of a fenced reference's commentary in a source outside the book, plus its `:impl:` and `:test:` anchors. `{cite}` references do not contribute. Adding, removing, or re-roling a reference or anchor, editing its commentary, or moving a reference to another node makes the evidence stale even when no input changed; moving one within its node does not. {cite}`requirements.ci.reference_set` |
 | `inputs` | Sources supporting it. Inputs select an outline node of a file, a definition selection, or a terminology definition. |
 
-For a requirement, the model reviews whether the code marked `{impl}` implements its
-stated obligations completely and exactly, and whether tests cover the interesting
-design cases. It also checks that the implementation is marked completely: code
-that implements part of the requirement without `{impl}`, including code that only
-cites it, is a gap, as is behavior in the `{impl}` code that neither this nor
-another definition implemented there specifies. When another requirement
-implements part of the subject, the review checks only that its text carries out
-that part; that requirement is assessed separately. If there are no tests,
-its rationale explains why the logic is simple enough to need none or testing is impractical.
+For a requirement, the model reviews whether the tests adequately check its
+stated obligations. It derives expected behavior from the requirement and maps
+obligations to concrete test inputs and assertions, including relevant boundaries
+and failure cases. For an alleged gap, it explains what requirement-violating
+behavior the tests would accept, or which asserted expectation contradicts the
+requirement. It follows helpers and fixtures before concluding that an assertion
+is missing. When another requirement implements part of the subject, the review
+checks only that its text carries out that part; that requirement is assessed
+separately. Existing exemptions for trivial logic or impractical tests still
+apply and must be explained.
 For an example, the model reviews whether tests cover its scenario and expected outcomes;
 a true judgment requires a covered `{test}` reference. The assessment concerns
 the named subject, using referenced requirements and definitions as context.
 {cite}`requirements.ci.review_criteria` {cite}`requirements.examples.evidence`
 
+The initial request supplies the requirement or example, its context, and the
+source text of its marked tests and test anchors. An implementation reference
+alone does not put its source in that request. The model can discover
+implementation locations with `references({selection: "...", roles: ["impl"]})`
+and request source with `habeas`; a discovery listing contains no requirement or
+source text and creates no evidence input. A source read records its selector
+and hash. A passing assessment supports test adequacy, and does not establish
+implementation correctness.
+{cite}`requirements.references.authoring_inputs`
+{cite}`requirements.authoring.reference_index`
+
 The model chooses `true` when that review supports the subject and FIXME when
 fenced `{fixme}` references to the subject acknowledge every remaining
-implementation or testing gap; otherwise it chooses `false` for gaps or missing
+gap in its task; otherwise it chooses `false` for gaps or missing
 information. A plain `FIXME` or `TODO` comment acknowledges nothing. A `{fixme}`
 names the definition, may begin with `:github: <owner>/<repo>#<number>` lines
 naming the issues that track the gap, and describes the gap in its body:
@@ -63,7 +75,7 @@ naming the issues that track the gap, and describes the gap in its body:
 ```text
 // :::{fixme} requirements.queue.full
 // :github: example/queue#125
-// Capacity-zero insertion does not return Full yet.
+// Capacity-zero insertion does not return Full yet and has no test.
 // :::
 ```
 
@@ -71,8 +83,11 @@ The FIXME array lists each issue the acknowledging `{fixme}` references name, as
 written after `:github:`, and, for one naming no issue, its body's words joined
 by single spaces, with each gap and source location explained in the rationale.
 Validation reports a FIXME string that no current `{fixme}` to the subject
-could have produced. The harness captures those source inputs, and editing a
-`{fixme}` makes the evidence stale. A named `{fixme}` belongs in sources outside
+could have produced. For a requirement or example assessment, the initial request
+supplies acknowledgment comments and issue states without pulling in their
+containing implementation source. The reference-set digest covers their
+locations and bodies, so editing a `{fixme}` makes the evidence stale.
+A named `{fixme}` belongs in sources outside
 the book; an unnamed `:::{fixme}` with only `:github:` lines may tie any place,
 including a requirement's text, to the issues it names.
 {cite}`requirements.ci.outcomes`
