@@ -17,12 +17,14 @@ use std::{
 pub type LanguageRegistry = Registry;
 pub type LanguageId = String;
 
+// {cite}`habeas:util`
 #[derive(Clone, Debug, Default)]
 pub struct SourceScope {
     pub prefix: String,
 }
 
 impl SourceScope {
+    // {cite}`habeas:util`
     pub fn contains(&self, id: &ResourceId) -> bool {
         let prefix = self.prefix.trim_end_matches('/').trim_start_matches("./");
         prefix.is_empty()
@@ -32,12 +34,14 @@ impl SourceScope {
     }
 }
 
+// {cite}`habeas:util`
 #[derive(Clone, Debug)]
 pub struct SourceFile {
     pub bytes: Arc<[u8]>,
     pub language: Option<LanguageId>,
 }
 impl SourceFile {
+    // {cite}`habeas:util`
     pub fn text(&self) -> Result<&str, SourceError> {
         std::str::from_utf8(&self.bytes).map_err(|error| SourceError::Invalid(error.to_string()))
     }
@@ -50,12 +54,14 @@ pub struct ParsedSource {
     pub outline: Outline,
 }
 
+// {cite}`habeas:util`
 #[derive(Debug)]
 pub enum SourceError {
     Io(std::io::Error),
     Invalid(String),
 }
 impl std::fmt::Display for SourceError {
+    // {cite}`habeas:util`
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Io(error) => error.fmt(f),
@@ -65,28 +71,33 @@ impl std::fmt::Display for SourceError {
 }
 impl std::error::Error for SourceError {}
 impl From<std::io::Error> for SourceError {
+    // {cite}`habeas:util`
     fn from(error: std::io::Error) -> Self {
         Self::Io(error)
     }
 }
 
+// {cite}`habeas:util`
 pub struct TextQuery {
     pub scope: SourceScope,
     pub pattern: String,
     pub context_lines: usize,
     pub limit: Option<usize>,
 }
+// {cite}`habeas:util`
 pub struct TextMatch {
     pub resource: ResourceId,
     pub line: usize,
     pub excerpt: String,
 }
+// {cite}`habeas:util`
 pub struct StructuralQuery {
     pub scope: SourceScope,
     pub language: LanguageId,
     pub rule: Map<String, Value>,
     pub limit: Option<usize>,
 }
+// {cite}`habeas:util`
 pub struct StructuralMatch {
     pub node: OutlineId,
     pub excerpt: String,
@@ -112,6 +123,7 @@ pub trait SourceProvider: Send + Sync {
     fn read(&self, id: &ResourceId)
     -> impl Future<Output = Result<SourceFile, Self::Error>> + Send;
 
+    // {cite}`habeas:util`
     fn parse(
         &self,
         id: &ResourceId,
@@ -125,6 +137,7 @@ pub trait SourceProvider: Send + Sync {
     ) -> impl Future<Output = Result<TextMatches, Self::Error>> + Send {
         defaults::search_text(self, query)
     }
+    // {cite}`habeas:util`
     fn search_structure(
         &self,
         query: &StructuralQuery,
@@ -209,6 +222,7 @@ pub mod defaults {
         })
     }
 
+    // {cite}`habeas:util`
     pub async fn search_structure<P: SourceProvider + ?Sized>(
         provider: &P,
         query: &StructuralQuery,
@@ -264,6 +278,7 @@ pub struct LocalSources {
     root: PathBuf,
 }
 impl LocalSources {
+    // {cite}`habeas:util`
     pub fn new(root: impl Into<PathBuf>) -> Self {
         Self { root: root.into() }
     }
@@ -335,20 +350,24 @@ impl SourceProvider for LocalSources {
     }
 }
 
+// {cite}`habeas:util`
 pub struct SourceAnalysis<P> {
     pub provider: P,
     pub languages: Registry,
 }
 impl<P: SourceProvider> SourceAnalysis<P> {
+    // {cite}`habeas:util`
     pub fn new(provider: P, languages: Registry) -> Self {
         Self {
             provider,
             languages,
         }
     }
+    // {cite}`habeas:util`
     pub async fn parse(&self, id: &ResourceId) -> Result<ParsedSource, P::Error> {
         self.provider.parse(id, &self.languages).await
     }
+    // {cite}`habeas:util`
     pub async fn search_structure(
         &self,
         query: &StructuralQuery,

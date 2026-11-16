@@ -1006,6 +1006,7 @@ mod tests {
     }
 
     // {test}`requirements.references.anchors`
+    // {test}`requirements.ci.requirement_text`
     #[test]
     // {test}`requirements.ci.span`
     // {test}`requirements.examples.definition`

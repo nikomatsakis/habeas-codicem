@@ -1630,6 +1630,7 @@ fn missing_duplicate_and_invalid_submissions_preserve_existing_evidence() {
 
 // {test}`requirements.authoring.deterministic_validation`
 // {test}`requirements.configuration.loading`
+// {test}`requirements.sdk.habeas.evidence_conversion.writes`
 #[test]
 fn ordinary_status_ignores_invalid_user_authoring_configuration() {
     let fixture = Fixture::new("http://127.0.0.1:1");
@@ -1654,6 +1655,7 @@ fn ordinary_status_ignores_invalid_user_authoring_configuration() {
 
 // {test}`requirements.authoring.deterministic_validation`
 // {test}`requirements.authoring.configuration`
+// {test}`requirements.sdk.habeas.evidence_conversion.writes`
 #[test]
 fn missing_or_stale_evidence_fails_validation_without_contacting_the_provider() {
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();

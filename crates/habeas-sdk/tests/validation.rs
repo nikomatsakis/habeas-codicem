@@ -236,11 +236,13 @@ impl AgentInputRenderer<Memory> for Renderer {
     }
 }
 
+// {cite}`habeas:util`
 #[derive(Default)]
 struct MockAgent {
     requests: Mutex<Vec<(String, Fingerprint, Vec<(u8, String)>, Value)>>,
     barrier: Option<Arc<tokio::sync::Barrier>>,
     invalid: bool,
+    prefix_result: bool,
 }
 impl Agent<Memory> for MockAgent {
     fn run<'a>(
@@ -256,6 +258,11 @@ impl Agent<Memory> for MockAgent {
             for input in &request.inputs {
                 inspection.observe_read(input.node, input.fingerprint.clone());
             }
+            let n = if self.prefix_result && request.prefix == "independent" {
+                11
+            } else {
+                7
+            };
             self.requests.lock().unwrap().push((
                 request.prefix,
                 request.prefix_fingerprint,
@@ -269,12 +276,13 @@ impl Agent<Memory> for MockAgent {
             Ok(if self.invalid {
                 json!({"n": "wrong"})
             } else {
-                json!({"n": 7})
+                json!({"n": n})
             })
         })
     }
 }
 
+// {cite}`habeas:util`
 #[derive(Debug, Deserialize, JsonSchema)]
 struct Answer {
     n: usize,
@@ -322,6 +330,13 @@ fn snapshots_record_exact_reads_and_retain_distinct_versions() {
             metadata: (),
         },
     );
+    assert_eq!(
+        record.dependencies,
+        vec![
+            Dependency::Node(1, fp("before")),
+            Dependency::Node(1, fp("after"))
+        ]
+    );
     assert!(!record_is_current(&graph, "v1", &record).unwrap());
 }
 
@@ -365,13 +380,25 @@ fn wildcard_versions_still_check_inputs_and_errors() {
     assert!(!record_is_current(&graph, "v42", &record).unwrap());
     graph.state.lock().unwrap().fail_read = true;
     assert_eq!(record_is_current(&graph, "v42", &record), Err("read"));
+    for (stored, requested) in [
+        ("v41", "v42"),
+        ("v42", "v420"),
+        ("V42", "v42"),
+        ("v42", "*"),
+    ] {
+        assert!(!procedure_matches(stored, requested));
+    }
+    assert!(procedure_matches("v42", "v42"));
     assert!(!procedure_matches("v*", "v42"));
     assert!(!procedure_matches("", "v42"));
     assert!(procedure_matches("*", "anything"));
 }
 
+// {test}`requirements.sdk.graph.evidence.checking_records`
+// {test}`requirements.sdk.graph.edges`
 // {test}`requirements.sdk.graph.validation.root_inputs`
 // {test}`requirements.sdk.graph.outgoing_edges`
+// {test}`requirements.sdk.graph.fingerprinting.snapshot`
 #[test]
 fn labeled_selection_records_all_edges_without_reading_targets() {
     let graph = Memory::default();
@@ -393,14 +420,58 @@ fn labeled_selection_records_all_edges_without_reading_targets() {
         .lock()
         .unwrap()
         .edges
-        .insert(1, vec![(8, 2), (7, 3), (7, 3)]);
+        .insert(1, vec![(8, 2), (7, 5), (7, 3), (7, 5)]);
     assert!(!record_is_current(&graph, "v1", &record).unwrap());
     let selected = ctx.successors(&7).unwrap();
     assert_eq!(
         selected.iter().map(|edge| edge.target).collect::<Vec<_>>(),
-        vec![3, 3]
+        vec![5, 3, 5]
     );
     assert!(graph.state.lock().unwrap().reads.is_empty());
+    let edge = selected[0].clone();
+    assert_eq!((edge.label, edge.target), (7, 5));
+    assert!(format!("{edge:?}").contains("target: 5"));
+    let selected_ctx = ValidationContext::new(&graph, 1);
+    selected_ctx.successors(&7).unwrap();
+    let selected_record = selected_ctx.inspection().finish(
+        "v1".into(),
+        Judgment {
+            result: false,
+            rationale: "selection".into(),
+            metadata: (),
+        },
+    );
+    assert!(record_is_current(&graph, "v1", &selected_record).unwrap());
+    let original = graph.state.lock().unwrap().edges[&1].clone();
+    let original_fingerprint = graph.outgoing_edges(&1).unwrap().fingerprint;
+    graph.state.lock().unwrap().edges.get_mut(&1).unwrap()[1].0 = 9;
+    assert_ne!(
+        graph.outgoing_edges(&1).unwrap().fingerprint,
+        original_fingerprint
+    );
+    assert!(!record_is_current(&graph, "v1", &selected_record).unwrap());
+    graph
+        .state
+        .lock()
+        .unwrap()
+        .edges
+        .insert(1, original.clone());
+    graph.state.lock().unwrap().edges.get_mut(&1).unwrap().pop();
+    assert_ne!(
+        graph.outgoing_edges(&1).unwrap().fingerprint,
+        original_fingerprint
+    );
+    assert!(!record_is_current(&graph, "v1", &selected_record).unwrap());
+    graph.state.lock().unwrap().edges.insert(1, original);
+    assert!(record_is_current(&graph, "v1", &selected_record).unwrap());
+    graph.state.lock().unwrap().edges.get_mut(&1).unwrap()[0].1 = 99;
+    assert!(!record_is_current(&graph, "v1", &selected_record).unwrap());
+    graph.state.lock().unwrap().fail_edges = Some(1);
+    assert_eq!(
+        record_is_current(&graph, "v1", &selected_record),
+        Err("edges")
+    );
+    graph.state.lock().unwrap().fail_edges = None;
     let old = graph.outgoing_edges(&1).unwrap().fingerprint;
     graph
         .state
@@ -415,6 +486,8 @@ fn labeled_selection_records_all_edges_without_reading_targets() {
 
 // {test}`requirements.sdk.graph.validation.validate_node`
 // {test}`requirements.sdk.graph.validation.check_node`
+// {test}`requirements.sdk.graph.agent-calls.procedures`
+// {test}`requirements.sdk.graph.validation.check_procedure`
 // {test}`requirements.sdk.graph.validation.deterministic_procedures`
 // {test}`requirements.sdk.graph.validation.procedure_identity`
 #[tokio::test]
@@ -458,6 +531,7 @@ async fn runner_reuses_negative_judgments_and_records_only_callback_observations
 // {test}`requirements.sdk.graph.validation.validate_node.errors`
 // {test}`requirements.sdk.graph.validation.check_node`
 // {test}`requirements.sdk.graph.validation.procedure_identity`
+// {test}`requirements.sdk.graph.validation.judgment`
 #[tokio::test]
 async fn resolution_storage_and_callback_errors_are_not_judgments() {
     let graph = Memory::default();
@@ -492,6 +566,8 @@ async fn resolution_storage_and_callback_errors_are_not_judgments() {
     assert!(graph.state.lock().unwrap().records.is_empty());
 }
 
+// {test}`requirements.sdk.graph.agent-calls.judge`
+// {test}`requirements.sdk.graph.agent-calls.author_procedure`
 // {test}`requirements.sdk.graph.agent-calls.model_capability`
 // {test}`requirements.sdk.graph.agent-calls.judge.node_contents`
 #[tokio::test]
@@ -519,8 +595,10 @@ async fn dropped_builders_and_missing_agents_do_not_resolve_queued_inputs() {
 
 // {test}`requirements.sdk.graph.agent-calls.judge`
 // {test}`requirements.sdk.graph.agent-calls.judge.node_contents`
+// {test}`requirements.sdk.graph.agent-calls.judge.phases`
 // {test}`requirements.sdk.graph.agent-calls.judge.rendering`
 // {test}`requirements.sdk.graph.agent-calls.judge.submission`
+// {test}`requirements.sdk.graph.fingerprinting.snapshot`
 #[tokio::test]
 async fn explicit_insertions_preserve_order_repetition_and_selection_snapshots() {
     let graph = Memory::default();
@@ -528,18 +606,21 @@ async fn explicit_insertions_preserve_order_repetition_and_selection_snapshots()
         let mut state = graph.state.lock().unwrap();
         state.contents.insert(1, "subject".into());
         state.contents.insert(2, "test".into());
-        state.edges.insert(1, vec![(7, 2), (8, 99), (7, 2)]);
+        state.contents.insert(3, "implementation".into());
+        state.edges.insert(1, vec![(7, 3), (8, 99), (7, 2), (7, 3)]);
     }
     let agent = MockAgent::default();
     let ctx = ValidationContext::with_agent(&graph, 1, &agent, &Renderer);
-    let answer: Answer = ctx
-        .ask()
+    let future = ctx
+        .ask::<Answer>()
         .context(String::from("question"))
         .current_node_contents()
         .successors_content(7)
         .current_node_contents()
-        .await
-        .unwrap();
+        .into_future();
+    fn assert_send<T: Send>(_: &T) {}
+    assert_send(&future);
+    let answer = future.await.unwrap();
     assert_eq!(answer.n, 7);
     let requests = agent.requests.lock().unwrap();
     assert_eq!(requests[0].0, "question");
@@ -547,14 +628,23 @@ async fn explicit_insertions_preserve_order_repetition_and_selection_snapshots()
         requests[0].2,
         vec![
             (1, "subject".into()),
+            (3, "implementation".into()),
             (2, "test".into()),
-            (2, "test".into()),
+            (3, "implementation".into()),
             (1, "subject".into())
         ]
     );
     assert_eq!(requests[0].3["properties"]["n"]["type"], "integer");
-    assert_eq!(graph.state.lock().unwrap().reads, vec![1, 2, 2, 1]);
-    assert_eq!(ctx.inspection().dependencies().len(), 3);
+    assert_eq!(graph.state.lock().unwrap().reads, vec![1, 3, 2, 3, 1]);
+    assert_eq!(
+        ctx.inspection().dependencies(),
+        vec![
+            Dependency::OutgoingEdges(1, fp("[(7, 3), (8, 99), (7, 2), (7, 3)]")),
+            Dependency::Node(1, fp("subject")),
+            Dependency::Node(3, fp("implementation")),
+            Dependency::Node(2, fp("test")),
+        ]
+    );
 }
 
 struct CountingContext {
@@ -568,8 +658,11 @@ impl Context for CountingContext {
     }
 }
 
+// {test}`requirements.sdk.graph.agent-calls.judge`
 // {test}`requirements.sdk.graph.agent-calls.agent_context`
 // {test}`requirements.sdk.graph.agent-calls.judge.caching`
+// {test}`requirements.sdk.domain`
+// {test}`requirements.sdk.graph.agent-calls.author_procedure`
 #[tokio::test]
 async fn contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text() {
     let graph = Memory::default();
@@ -789,6 +882,7 @@ fn every_heterogeneous_tuple_arity_renders_elements_in_order() {
 
 // {test}`requirements.sdk.graph.agent-calls.author_procedure`
 // {test}`requirements.sdk.graph.agent-calls.procedures`
+// {test}`requirements.sdk.domain`
 #[tokio::test]
 async fn shared_context_allows_independent_concurrent_agent_calls() {
     let graph = Memory::default();
@@ -800,6 +894,7 @@ async fn shared_context_allows_independent_concurrent_agent_calls() {
         .insert(1, "subject".into());
     let agent = MockAgent {
         barrier: Some(Arc::new(tokio::sync::Barrier::new(2))),
+        prefix_result: true,
         ..MockAgent::default()
     };
     let ctx = ValidationContext::with_agent(&graph, 1, &agent, &Renderer);
@@ -814,12 +909,139 @@ async fn shared_context_allows_independent_concurrent_agent_calls() {
     .await
     .unwrap();
     assert_eq!(first.unwrap().n, 7);
-    assert_eq!(second.unwrap().n, 7);
+    assert_eq!(second.unwrap().n, 11);
     assert_eq!(agent.requests.lock().unwrap().len(), 2);
     assert_eq!(
         ctx.inspection().dependencies(),
         vec![Dependency::Node(1, fp("subject"))]
     );
+}
+
+// {test}`requirements.sdk.domain`
+// {test}`requirements.sdk.graph.agent-calls.author_procedure`
+// {test}`requirements.sdk.graph.evidence.node_inputs`
+#[tokio::test]
+async fn later_lighter_agent_calls_preserve_the_contexts_existing_trace() {
+    let graph = Memory::default();
+    graph
+        .state
+        .lock()
+        .unwrap()
+        .contents
+        .insert(1, "retained".into());
+    let agent = MockAgent::default();
+    let ctx = ValidationContext::with_agent(&graph, 1, &agent, &Renderer);
+    fn assert_send_sync<T: Send + Sync>(_: &T) {}
+    assert_send_sync(&ctx);
+    let _: Answer = ctx
+        .ask()
+        .current_node_contents()
+        .successors_content(7)
+        .await
+        .unwrap();
+    let retained = ctx.inspection().dependencies();
+    assert_eq!(
+        retained,
+        vec![
+            Dependency::OutgoingEdges(1, fp("[]")),
+            Dependency::Node(1, fp("retained")),
+        ]
+    );
+    let _: Answer = ctx.ask().context("lighter".to_owned()).await.unwrap();
+    assert_eq!(ctx.inspection().dependencies(), retained);
+    assert!(agent.requests.lock().unwrap()[1].2.is_empty());
+    assert_eq!(
+        ctx.inspection()
+            .finish(
+                "v1".into(),
+                Judgment {
+                    result: true,
+                    rationale: "retained".into(),
+                    metadata: (),
+                }
+            )
+            .dependencies,
+        retained
+    );
+}
+
+// {test}`requirements.sdk.graph.traversal.validation_parallelism`
+// {test}`requirements.sdk.graph.traversal.validation_cycles`
+// {test}`requirements.sdk.domain`
+#[tokio::test]
+async fn cyclic_ready_work_is_bounded_by_each_configured_parallelism_limit() {
+    for limit in [1, 2, 3] {
+        let graph = Memory {
+            read_in_callback: true,
+            edges_in_callback: true,
+            delay: true,
+            ..Memory::default()
+        };
+        {
+            let mut state = graph.state.lock().unwrap();
+            for node in 1..=6 {
+                state.contents.insert(node, format!("node {node}"));
+                state.edges.insert(node, vec![(1, node % 6 + 1)]);
+            }
+        }
+        let validator = Validator::new(&graph, |_| Ok("v1".into()));
+        let outcome = validator
+            .validate_transitive(
+                &1,
+                TraversalOptions {
+                    concurrency: NonZeroUsize::new(limit).unwrap(),
+                },
+            )
+            .await;
+        assert!(outcome.complete);
+        assert_eq!(outcome.nodes.len(), 6);
+        assert_eq!(graph.peak.load(Ordering::SeqCst), limit);
+        let state = graph.state.lock().unwrap();
+        let mut started = state.started.clone();
+        started.sort();
+        assert_eq!(started, vec![1, 2, 3, 4, 5, 6]);
+        for (node, record) in &state.records {
+            assert_eq!(
+                record.dependencies,
+                vec![
+                    Dependency::Node(*node, fp(format!("node {node}"))),
+                    Dependency::OutgoingEdges(*node, fp(format!("{:?}", state.edges[node]))),
+                ]
+            );
+        }
+    }
+}
+
+// {test}`requirements.sdk.graph.traversal.validation_parallelism`
+// {test}`requirements.sdk.graph.traversal.validate_transitive`
+#[tokio::test]
+async fn independent_acyclic_components_share_the_validation_limit() {
+    let graph = Memory {
+        delay: true,
+        ..Memory::default()
+    };
+    graph
+        .state
+        .lock()
+        .unwrap()
+        .edges
+        .insert(1, vec![(1, 2), (1, 3), (1, 4)]);
+    let outcome = Validator::new(&graph, |_| Ok("v1".into()))
+        .validate_transitive(
+            &1,
+            TraversalOptions {
+                concurrency: NonZeroUsize::new(2).unwrap(),
+            },
+        )
+        .await;
+    assert!(outcome.complete);
+    assert_eq!(outcome.nodes.len(), 4);
+    assert_eq!(graph.peak.load(Ordering::SeqCst), 2);
+    let state = graph.state.lock().unwrap();
+    assert_eq!(state.finished.last(), Some(&1));
+    let mut leaves = state.finished[..3].to_vec();
+    leaves.sort();
+    assert_eq!(leaves, vec![2, 3, 4]);
 }
 
 // {test}`requirements.sdk.graph.agent-calls.judge.submission`
@@ -840,9 +1062,13 @@ async fn invalid_typed_submission_is_an_agent_error() {
 // {test}`requirements.sdk.graph.traversal.validate_transitive`
 // {test}`requirements.sdk.graph.traversal.validation_cycles`
 // {test}`requirements.sdk.graph.traversal.validation_parallelism`
+// {test}`requirements.sdk.domain`
+// {test}`requirements.sdk.graph.outgoing_edges`
 #[tokio::test]
 async fn cycles_shared_targets_negative_judgments_and_parallelism() {
     let graph = Memory {
+        read_in_callback: true,
+        edges_in_callback: true,
         delay: true,
         ..Memory::default()
     };
@@ -852,6 +1078,9 @@ async fn cycles_shared_targets_negative_judgments_and_parallelism() {
         state.edges.insert(2, vec![(1, 3), (1, 9)]);
         state.edges.insert(3, vec![(1, 2), (1, 9)]);
         state.edges.insert(9, vec![(1, 9)]);
+        for node in [1, 2, 3, 9] {
+            state.contents.insert(node, format!("content {node}"));
+        }
     }
     let validator = Validator::new(&graph, |_| Ok("v1".into()));
     let results = validator
@@ -875,12 +1104,15 @@ async fn cycles_shared_targets_negative_judgments_and_parallelism() {
     assert_eq!(state.finished[0], 9);
     assert_eq!(state.finished[3], 1);
     assert_eq!(graph.peak.load(Ordering::SeqCst), 2);
-    assert!(
-        state
-            .records
-            .values()
-            .all(|record| record.dependencies.is_empty())
-    );
+    for (node, record) in &state.records {
+        assert_eq!(
+            record.dependencies,
+            vec![
+                Dependency::Node(*node, fp(format!("content {node}"))),
+                Dependency::OutgoingEdges(*node, fp(format!("{:?}", state.edges[node]))),
+            ]
+        );
+    }
 }
 
 // {test}`requirements.sdk.graph.traversal.validate_transitive`
@@ -919,6 +1151,8 @@ async fn discovery_errors_report_incomplete_traversal_and_do_not_deadlock() {
 
 // {test}`requirements.sdk.graph.traversal.validate_transitive`
 // {test}`requirements.sdk.graph.validation.root_inputs`
+// {test}`requirements.sdk.graph.outgoing_edges`
+// {test}`requirements.sdk.graph.fingerprinting.snapshot`
 #[tokio::test]
 async fn traversal_keeps_discovered_edges_and_reuse_does_not_skip_children() {
     let graph = Memory {
@@ -942,4 +1176,130 @@ async fn traversal_keeps_discovered_edges_and_reuse_does_not_skip_children() {
         .await;
     assert_eq!(results.nodes.len(), 2);
     assert_eq!(graph.state.lock().unwrap().started, vec![2, 1, 2]);
+}
+
+// {test}`requirements.sdk.graph.agent-calls.judge.caching`
+// {test}`requirements.sdk.graph.agent-calls.agent_context`
+#[test]
+fn prefix_hashes_match_known_utf8_sha256_without_normalization() {
+    assert_eq!(
+        context_fingerprint(""),
+        Fingerprint {
+            scheme: "context-prefix-sha256-v1".into(),
+            value: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".into(),
+        }
+    );
+    assert_eq!(
+        context_fingerprint("héllo").value,
+        "3c48591d8d098a4538f5e013dfcf406e948eac4d3277b10bf614e295d6068179"
+    );
+    assert_eq!(context_fingerprint("héllo"), context_fingerprint("héllo"));
+    assert_ne!(context_fingerprint("é"), context_fingerprint("e\u{301}"));
+    assert_ne!(context_fingerprint("a b"), context_fingerprint("a  b"));
+}
+
+// {test}`requirements.sdk.graph.validation.check_procedure`
+#[test]
+fn agent_errors_expose_the_agreed_string_payload() {
+    use std::error::Error;
+    let error = ValidationError::<std::io::Error>::Agent("provider detail".to_owned());
+    assert_eq!(error.to_string(), "agent: provider detail");
+    assert!(error.source().is_none());
+    let ValidationError::Agent(message) = error else {
+        panic!("agent error variant")
+    };
+    let message: String = message;
+    assert_eq!(message, "provider detail");
+    let graph = ValidationError::Graph(std::io::Error::other("graph detail"));
+    assert_eq!(graph.source().unwrap().to_string(), "graph detail");
+}
+
+struct FailingRenderer;
+impl AgentInputRenderer<Memory> for FailingRenderer {
+    fn render(&self, _: &AgentInput<'_, Memory>) -> Result<String, &'static str> {
+        Err("render")
+    }
+}
+
+// {test}`requirements.sdk.graph.agent-calls.judge`
+// {test}`requirements.sdk.graph.agent-calls.judge.node_contents`
+// {test}`requirements.sdk.graph.agent-calls.judge.rendering`
+// {test}`requirements.sdk.graph.agent-calls.author_procedure`
+#[tokio::test]
+async fn queued_reads_selection_and_rendering_fail_before_agent_invocation() {
+    let graph = Memory::default();
+    let agent = MockAgent::default();
+    let ctx = ValidationContext::with_agent(&graph, 1, &agent, &Renderer);
+    drop(ctx.ask::<Answer>().current_node_contents());
+    assert!(agent.requests.lock().unwrap().is_empty());
+    for edges in [vec![], vec![(8, 99)]] {
+        graph.state.lock().unwrap().edges.insert(1, edges.clone());
+        let ctx = ValidationContext::with_agent(&graph, 1, &agent, &Renderer);
+        ctx.ask::<Answer>().successors_content(7).await.unwrap();
+        assert!(graph.state.lock().unwrap().reads.is_empty());
+        assert_eq!(
+            ctx.inspection().dependencies(),
+            vec![Dependency::OutgoingEdges(1, fp(format!("{edges:?}")))]
+        );
+    }
+    let initial_calls = agent.requests.lock().unwrap().len();
+    graph.state.lock().unwrap().fail_read = true;
+    assert!(matches!(
+        ctx.ask::<Answer>().current_node_contents().await,
+        Err(ValidationError::Graph("read"))
+    ));
+    graph.state.lock().unwrap().fail_read = false;
+    graph.state.lock().unwrap().fail_edges = Some(1);
+    assert!(matches!(
+        ctx.ask::<Answer>().successors_content(7).await,
+        Err(ValidationError::Graph("edges"))
+    ));
+    graph.state.lock().unwrap().fail_edges = None;
+    graph
+        .state
+        .lock()
+        .unwrap()
+        .contents
+        .insert(1, "root".into());
+    let ctx = ValidationContext::with_agent(&graph, 1, &agent, &FailingRenderer);
+    assert!(matches!(
+        ctx.ask::<Answer>().current_node_contents().await,
+        Err(ValidationError::Graph("render"))
+    ));
+    assert!(ctx.inspection().dependencies().is_empty());
+    assert_eq!(agent.requests.lock().unwrap().len(), initial_calls);
+}
+
+// {test}`requirements.sdk.graph.traversal.validation_cycles`
+// {test}`requirements.sdk.graph.traversal.validate_transitive`
+#[tokio::test]
+async fn callback_errors_inside_cycles_release_dependents() {
+    let graph = Memory {
+        read_in_callback: true,
+        ..Memory::default()
+    };
+    {
+        let mut state = graph.state.lock().unwrap();
+        state.edges.insert(1, vec![(1, 2)]);
+        state.edges.insert(2, vec![(1, 3)]);
+        state.edges.insert(3, vec![(1, 2)]);
+        state.contents.insert(1, "source".into());
+        state.contents.insert(3, "peer".into());
+    }
+    let validator = Validator::new(&graph, |_| Ok("v1".into()));
+    let results = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        validator.validate_transitive(&1, TraversalOptions::default()),
+    )
+    .await
+    .unwrap();
+    assert!(results.complete);
+    assert_eq!(results.nodes.len(), 3);
+    assert!(results.nodes.iter().any(
+        |(node, result)| *node == 2 && matches!(result, Err(ValidationError::Graph("missing")))
+    ));
+    let state = graph.state.lock().unwrap();
+    assert!(state.records.contains_key(&1) && state.records.contains_key(&3));
+    assert!(!state.records.contains_key(&2));
+    assert_eq!(state.finished.last(), Some(&1));
 }

@@ -296,13 +296,19 @@ pub(crate) fn check_native(
         return;
     }
     let current = crate::sdk::review_version(subject);
-    let record = decode(value, subject);
+    // The application validators report application fields individually.
+    // Freshness needs only the SDK header, not a second strict application decode.
+    let record = versioned_fields(value).map(|(procedure, dependencies)| Record {
+        procedure,
+        dependencies,
+        output: habeas_sdk::graph::Judgment {
+            result: false,
+            rationale: String::new(),
+            metadata: value.clone(),
+        },
+    });
     match current.and_then(|version| {
         record.and_then(|mut record| {
-            let current = habeas_sdk::graph::record_is_current(domain, &version, &record);
-            if matches!(current, Ok(true)) {
-                return current;
-            }
             // Existing application checks give precise diagnostics for these
             // same historical observations. Keep generic findings for versions
             // and additional SDK observations that those checks cannot explain.
@@ -558,5 +564,63 @@ mod tests {
             ..graph
         };
         assert!(!habeas_sdk::graph::record_is_current(&changed, "any", &record).unwrap());
+    }
+    // {test}`requirements.sdk.habeas.evidence_conversion.atomic`
+    #[test]
+    fn atomic_conversion_replaces_the_file_and_never_exposes_partial_bytes() {
+        use std::sync::{
+            Arc, Barrier,
+            atomic::{AtomicBool, Ordering},
+        };
+        let root = tempfile::tempdir().unwrap();
+        let subject = AuthoringSubject::Definition("old.ready".into());
+        let node = HabeasNode::review_subject(&subject);
+        let path = subject.evidence_path(root.path());
+        let old = legacy(&subject);
+        write_atomic(&path, &old).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let mut after =
+            serde_json::to_vec_pretty(&encode(&decode(&old, &node).unwrap()).unwrap()).unwrap();
+        after.push(b'\n');
+        #[cfg(unix)]
+        let inode = {
+            use std::os::unix::fs::MetadataExt;
+            std::fs::metadata(&path).unwrap().ino()
+        };
+        let barrier = Arc::new(Barrier::new(2));
+        let done = Arc::new(AtomicBool::new(false));
+        std::thread::scope(|scope| {
+            let writer_barrier = barrier.clone();
+            let writer_done = done.clone();
+            let path = &path;
+            scope.spawn(move || {
+                writer_barrier.wait();
+                convert_file(path, &node).unwrap();
+                writer_done.store(true, Ordering::SeqCst);
+            });
+            barrier.wait();
+            loop {
+                let bytes = std::fs::read(&path).unwrap();
+                assert!(bytes == before || bytes == after);
+                if done.load(Ordering::SeqCst) {
+                    break;
+                }
+            }
+        });
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            assert_ne!(std::fs::metadata(&path).unwrap().ino(), inode);
+        }
+        assert_eq!(std::fs::read(&path).unwrap(), after);
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        std::fs::write(path.join("keep"), b"original").unwrap();
+        assert!(write_atomic(&path, &old).is_err());
+        assert_eq!(std::fs::read(path.join("keep")).unwrap(), b"original");
+        assert_eq!(
+            std::fs::read_dir(path.parent().unwrap()).unwrap().count(),
+            1
+        );
     }
 }

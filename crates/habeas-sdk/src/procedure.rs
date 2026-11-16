@@ -10,20 +10,24 @@ use std::{borrow::Cow, future::IntoFuture, marker::PhantomData};
 
 // {impl}`requirements.sdk.graph.agent-calls.agent_context`
 pub trait Context {
+    // {impl}`requirements.sdk.graph.agent-calls.agent_context`
     fn contents(&self) -> Cow<'_, String>;
 }
 
 impl<C: Context + ?Sized> Context for &C {
+    // {impl}`requirements.sdk.graph.agent-calls.agent_context`
     fn contents(&self) -> Cow<'_, String> {
         (**self).contents()
     }
 }
 impl Context for String {
+    // {impl}`requirements.sdk.graph.agent-calls.agent_context`
     fn contents(&self) -> Cow<'_, String> {
         Cow::Borrowed(self)
     }
 }
 impl<C: Context> Context for [C] {
+    // {impl}`requirements.sdk.graph.agent-calls.agent_context`
     fn contents(&self) -> Cow<'_, String> {
         Cow::Owned(
             self.iter()
@@ -34,6 +38,7 @@ impl<C: Context> Context for [C] {
     }
 }
 impl<C: Context> Context for Vec<C> {
+    // {impl}`requirements.sdk.graph.agent-calls.agent_context`
     fn contents(&self) -> Cow<'_, String> {
         self.as_slice().contents()
     }
@@ -41,6 +46,7 @@ impl<C: Context> Context for Vec<C> {
 macro_rules! tuple_context {
     ($($type:ident:$index:tt),+) => {
         impl<$($type: Context),+> Context for ($($type,)+) {
+            // {impl}`requirements.sdk.graph.agent-calls.agent_context`
             fn contents(&self) -> Cow<'_, String> {
                 Cow::Owned(vec![$(self.$index.contents().into_owned()),+].join("\n\n"))
             }
@@ -66,15 +72,18 @@ pub struct AgentInput<'i, D: Graph> {
 }
 
 pub trait AgentInputRenderer<D: Graph>: Send + Sync {
+    // {impl}`requirements.sdk.graph.agent-calls.judge.rendering`
     fn render(&self, input: &AgentInput<'_, D>) -> Result<String, D::Error>;
 }
 
+// {cite}`habeas:util`
 pub struct PreparedInput<N> {
     pub node: N,
     pub text: String,
     pub fingerprint: Fingerprint,
 }
 
+// {cite}`habeas:util`
 /// A harness acknowledges delivered snapshots through `inspection.observe_read`,
 /// including snapshots delivered before a later conversation error.
 pub struct AgentRequest<N> {
@@ -88,6 +97,7 @@ pub struct AgentRequest<N> {
 
 /// Returns one accepted structured tool submission; assistant text is an error.
 pub trait Agent<D: Graph + Fingerprinting>: Send + Sync {
+    // {cite}`habeas:util`
     fn run<'a>(
         &'a self,
         request: AgentRequest<D::NodeId>,
@@ -104,10 +114,12 @@ pub struct ValidationContext<'d, D: Graph + Fingerprinting> {
 }
 
 impl<'d, D: Graph + Fingerprinting> ValidationContext<'d, D> {
+    // {cite}`habeas:util`
     pub fn new(graph: &'d D, node: D::NodeId) -> Self {
         Self::configured(graph, node, None, None, None)
     }
 
+    // {cite}`habeas:util`
     pub fn with_agent(
         graph: &'d D,
         node: D::NodeId,
@@ -117,6 +129,7 @@ impl<'d, D: Graph + Fingerprinting> ValidationContext<'d, D> {
         Self::configured(graph, node, Some(agent), Some(renderer), None)
     }
 
+    // {cite}`habeas:util`
     pub(crate) fn configured(
         graph: &'d D,
         node: D::NodeId,
@@ -133,6 +146,7 @@ impl<'d, D: Graph + Fingerprinting> ValidationContext<'d, D> {
         }
     }
 
+    // {impl}`requirements.sdk.graph.agent-calls.author_procedure`
     pub fn inspection(&self) -> &InspectionContext<'d, D> {
         &self.inspection
     }
@@ -142,6 +156,7 @@ impl<'d, D: Graph + Fingerprinting> ValidationContext<'d, D> {
         &self.node
     }
 
+    // {impl}`requirements.sdk.graph.validation.root_inputs`
     pub fn successors(
         &self,
         label: &D::EdgeLabel,
@@ -173,6 +188,7 @@ impl<'d, D: Validation> ValidationContext<'d, D> {
     }
 }
 
+// {impl}`requirements.sdk.graph.agent-calls.judge.phases`
 pub struct ContextPhase;
 /// The reusable prefix is sealed after the first node insertion.
 ///
@@ -193,6 +209,7 @@ pub struct ContextPhase;
 // {test}`requirements.sdk.graph.agent-calls.judge.phases`
 pub struct NodePhase;
 
+// {cite}`habeas:util`
 enum Insertion<L> {
     Current,
     Successors(L, fn(&L, &L) -> bool),
@@ -215,6 +232,7 @@ impl<'a, 'd, D: Validation, R> Ask<'a, 'd, D, R, ContextPhase> {
 }
 
 impl<'a, 'd, D: Validation, R, P> Ask<'a, 'd, D, R, P> {
+    // {cite}`habeas:util`
     fn into_node_phase(self) -> Ask<'a, 'd, D, R, NodePhase> {
         Ask {
             ctx: self.ctx,
@@ -296,15 +314,14 @@ where
             prefix_fingerprint,
             inputs,
             result_schema: serde_json::to_value(schemars::schema_for!(R))
-                .map_err(|error| ValidationError::Agent(std::io::Error::other(error)))?,
+                .map_err(|error| ValidationError::Agent(error.to_string()))?,
             submission_name: "submit_result".into(),
         };
         let value = agent
             .run(request, &self.ctx.inspection)
             .await
-            .map_err(ValidationError::Agent)?;
-        serde_json::from_value(value)
-            .map_err(|error| ValidationError::Agent(std::io::Error::other(error)))
+            .map_err(|error| ValidationError::Agent(error.to_string()))?;
+        serde_json::from_value(value).map_err(|error| ValidationError::Agent(error.to_string()))
     }
 }
 

@@ -6,6 +6,7 @@ use crate::{
 use futures::future::BoxFuture;
 use serde_json::json;
 
+// {cite}`habeas:util`
 /// A result and the exact observations acknowledged when it is delivered.
 pub struct ToolDelivery<N> {
     pub text: String,
@@ -13,7 +14,9 @@ pub struct ToolDelivery<N> {
 }
 
 pub trait ToolSession<D: Graph>: Send {
+    // {cite}`habeas:util`
     fn definitions(&self) -> io::Result<Vec<ToolDefinition>>;
+    // {cite}`habeas:util`
     fn dispatch<'a>(
         &'a mut self,
         name: &'a str,
@@ -23,13 +26,16 @@ pub trait ToolSession<D: Graph>: Send {
 
 /// Each agent call gets fresh tool state, including its own result pages.
 pub trait ToolFactory<D: Graph>: Send + Sync {
+    // {cite}`habeas:util`
     fn session<'a>(&'a self) -> Box<dyn ToolSession<D> + 'a>
     where
         D::NodeId: 'a;
 }
 
+// {cite}`habeas:util`
 pub struct NoTools;
 impl<D: Graph> ToolFactory<D> for NoTools {
+    // {cite}`habeas:util`
     fn session<'a>(&'a self) -> Box<dyn ToolSession<D> + 'a>
     where
         D::NodeId: 'a,
@@ -38,9 +44,11 @@ impl<D: Graph> ToolFactory<D> for NoTools {
     }
 }
 impl<D: Graph> ToolSession<D> for NoTools {
+    // {cite}`habeas:util`
     fn definitions(&self) -> io::Result<Vec<ToolDefinition>> {
         Ok(Vec::new())
     }
+    // {cite}`habeas:util`
     fn dispatch<'a>(
         &'a mut self,
         name: &'a str,
@@ -50,6 +58,7 @@ impl<D: Graph> ToolSession<D> for NoTools {
     }
 }
 
+// {cite}`habeas:util`
 /// The default typed harness, with tracked graph tools and optional source tools.
 pub struct ToolAgent<P, R, T = NoTools> {
     pub provider: P,
@@ -57,6 +66,7 @@ pub struct ToolAgent<P, R, T = NoTools> {
     pub tools: T,
 }
 impl<P, R> ToolAgent<P, R> {
+    // {cite}`habeas:util`
     pub fn new(provider: P, renderer: R) -> Self {
         Self {
             provider,
@@ -66,6 +76,7 @@ impl<P, R> ToolAgent<P, R> {
     }
 }
 impl<P, R, T> ToolAgent<P, R, T> {
+    // {cite}`habeas:util`
     pub fn with_tools<U>(self, tools: U) -> ToolAgent<P, R, U> {
         ToolAgent {
             provider: self.provider,
@@ -138,6 +149,7 @@ where
     }
 }
 
+// {cite}`habeas:util`
 struct GraphSession<'a, 'd, D: Graph + Fingerprinting, R> {
     inspection: &'a InspectionContext<'d, D>,
     renderer: &'a R,
@@ -154,6 +166,7 @@ where
     D::Error: std::fmt::Display,
     R: AgentInputRenderer<D>,
 {
+    // {cite}`habeas:util`
     fn node(&self, arguments: &Value) -> io::Result<D::NodeId> {
         let path: NodePath =
             serde_json::from_value(arguments["path"].clone()).map_err(io::Error::other)?;
@@ -165,6 +178,7 @@ where
                 io::Error::other("unknown node path; inspect outgoing_edges of a known node first")
             })
     }
+    // {cite}`habeas:util`
     fn deliver_page(&mut self, page: usize) -> io::Result<String> {
         let (text, dependency) = self
             .pages
@@ -182,6 +196,7 @@ where
     R: AgentInputRenderer<D>,
 {
     type Output = Value;
+    // {cite}`habeas:util`
     fn tools(&self) -> io::Result<Vec<ToolDefinition>> {
         let path = json!({"type":"object","required":["segments"],"properties":{"segments":{"type":"array","items":{"type":"string"}}}});
         let mut tools: Vec<ToolDefinition> = [
@@ -197,6 +212,7 @@ where
         tools.extend(self.tools.definitions()?);
         Ok(tools)
     }
+    // {cite}`habeas:util`
     fn submit(&mut self, _: &str, arguments: &Value) -> io::Result<Submission<Value>> {
         let object = arguments
             .as_object()
@@ -204,6 +220,7 @@ where
             .ok_or_else(|| io::Error::other("submit_result requires exactly result"))?;
         Ok(Submission::Accepted(object["result"].clone()))
     }
+    // {cite}`habeas:util`
     async fn dispatch(&mut self, name: &str, arguments: &Value) -> io::Result<String> {
         match name {
             "read_node" => {
@@ -245,8 +262,7 @@ where
                 let node = self.node(arguments)?;
                 let snapshot = self
                     .inspection
-                    .graph()
-                    .outgoing_edges(&node)
+                    .prepare_edges(&node)
                     .map_err(|error| io::Error::other(error.to_string()))?;
                 self.pending
                     .push(Dependency::OutgoingEdges(node, snapshot.fingerprint));
@@ -279,6 +295,7 @@ where
         }
         Ok(())
     }
+    // {cite}`habeas:util`
     fn cut_off(&mut self, response: &CompletionResponse, limit: u64) -> Vec<Message> {
         let results = response
             .tool_calls()

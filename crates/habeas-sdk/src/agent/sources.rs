@@ -13,6 +13,7 @@ use rig_core::completion::ToolDefinition;
 use serde_json::{Value, json};
 use std::io;
 
+// {cite}`habeas:util`
 /// Maps a delivered parse snapshot into the consumer's graph observation.
 /// The callback receives the exact bytes parsed, never a replacement read.
 pub struct SourceTools<P, F> {
@@ -27,6 +28,7 @@ where
     P::Error: std::fmt::Display,
     F: Fn(&OutlineId, &ParsedSource) -> Result<Option<Dependency<D::NodeId>>, String> + Send + Sync,
 {
+    // {cite}`habeas:util`
     fn session<'a>(&'a self) -> Box<dyn ToolSession<D> + 'a>
     where
         D::NodeId: 'a,
@@ -38,6 +40,7 @@ where
     }
 }
 
+// {cite}`habeas:util`
 struct SourceSession<'a, P, F, N> {
     tools: &'a SourceTools<P, F>,
     pages: Vec<ToolDelivery<N>>,
@@ -50,6 +53,7 @@ where
     P::Error: std::fmt::Display,
     F: Fn(&OutlineId, &ParsedSource) -> Result<Option<Dependency<D::NodeId>>, String> + Send + Sync,
 {
+    // {cite}`habeas:util`
     fn definitions(&self) -> io::Result<Vec<ToolDefinition>> {
         let resource = json!({"type":"object","required":["scheme","location"],
             "properties":{"scheme":{"type":"string"},"location":{"type":"string"}}});
@@ -60,7 +64,7 @@ where
                 "parameters":{"type":"object","required":["pattern"],"properties":{"pattern":{"type":"string"},"prefix":{"type":"string"},"context_lines":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":0}}}}),
             json!({"name":"search_structure","description":"Find structural matches using a language and ast-grep rule. Results locate sources; use read_source to read identified contents.",
                 "parameters":{"type":"object","required":["language","rule"],"properties":{"language":{"type":"string"},"rule":{"type":"object"},"prefix":{"type":"string"},"limit":{"type":"integer","minimum":0}}}}),
-            json!({"name":"outline_source","description":"Parse a resource and inspect its outline selectors. The consumer maps delivered source snapshots to graph inputs.",
+            json!({"name":"outline_source","description":"Parse a resource and inspect its outline selectors. Discovery does not record graph inputs. Use read_source to inspect contents.",
                 "parameters":{"type":"object","required":["resource"],"properties":{"resource":resource}}}),
             json!({"name":"read_source","description":"Read an outline node from a resource. selector is an outline selector, or empty for the whole file. Long contents have page IDs.",
                 "parameters":{"type":"object","required":["resource"],"properties":{"resource":resource,"selector":{"type":"string"}}}}),
@@ -188,10 +192,12 @@ where
                         .outline
                         .resolve(selector)
                         .map_err(|error| invalid(error.to_string()))?;
-                    if let Some(observation) =
-                        (self.tools.observation)(&id, &parsed).map_err(invalid)?
-                    {
-                        dependencies.push(observation);
+                    if name == "read_source" {
+                        if let Some(observation) =
+                            (self.tools.observation)(&id, &parsed).map_err(invalid)?
+                        {
+                            dependencies.push(observation);
+                        }
                     }
                     if name == "outline_source" {
                         json!({"resource":id.resource,"nodes":parsed.outline.nodes.iter().map(|node|

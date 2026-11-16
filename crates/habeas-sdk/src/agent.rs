@@ -20,15 +20,18 @@ pub use sources::SourceTools;
 pub use tools::{NoTools, ToolAgent, ToolDelivery, ToolFactory, ToolSession};
 
 pub trait CompletionProvider: Send + Sync {
+    // {cite}`habeas:util`
     fn complete(
         &self,
         request: CompletionRequest,
     ) -> impl Future<Output = io::Result<CompletionResponse>> + Send;
+    // {cite}`habeas:util`
     fn output_limit(&self) -> Option<u64> {
         None
     }
 }
 
+// {cite}`habeas:util`
 pub enum Submission<T> {
     Accepted(T),
     Retry(String),
@@ -39,19 +42,25 @@ pub enum Submission<T> {
 pub trait Conversation: Send {
     type Output: Send;
 
+    // {cite}`habeas:util`
     fn tools(&self) -> io::Result<Vec<ToolDefinition>>;
+    // {cite}`habeas:util`
     fn submit(&mut self, name: &str, arguments: &Value) -> io::Result<Submission<Self::Output>>;
+    // {cite}`habeas:util`
     fn dispatch(
         &mut self,
         name: &str,
         arguments: &Value,
     ) -> impl Future<Output = io::Result<String>> + Send;
+    // {cite}`habeas:util`
     fn delivered(&mut self) -> io::Result<()> {
         Ok(())
     }
+    // {cite}`habeas:util`
     fn begin_request(&mut self) -> io::Result<usize> {
         Ok(0)
     }
+    // {cite}`habeas:util`
     fn end_request(
         &mut self,
         _index: usize,
@@ -60,14 +69,19 @@ pub trait Conversation: Send {
     ) -> io::Result<()> {
         Ok(())
     }
+    // {cite}`habeas:util`
     fn retried(&mut self, _index: usize) -> io::Result<()> {
         Ok(())
     }
+    // {cite}`habeas:util`
     fn skipped_tool(&mut self, _name: &str) {}
+    // {cite}`habeas:util`
     fn tool(&mut self, _name: &str, _failed: bool) {}
+    // {cite}`habeas:util`
     fn save(&mut self) -> io::Result<()> {
         Ok(())
     }
+    // {cite}`habeas:util`
     fn cut_off(&mut self, response: &CompletionResponse, limit: u64) -> Vec<Message>;
 }
 

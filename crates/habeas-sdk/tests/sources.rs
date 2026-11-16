@@ -43,6 +43,7 @@ impl SourceProvider for FailingProvider {
     }
 }
 
+// {test}`requirements.sdk.sources.provider_results.search_completeness`
 // {test}`requirements.sdk.sources.provider.errors`
 #[tokio::test]
 async fn failed_provider_operations_never_become_successful_empty_results() {
@@ -125,6 +126,7 @@ impl SourceProvider for Memory {
 // {test}`requirements.sdk.sources.provider_defaults`
 // {test}`requirements.sdk.sources.provider_defaults.composition`
 // {test}`requirements.sdk.sources.provider_results.parse_snapshot`
+// {test}`requirements.sdk.sources.provider_results`
 #[tokio::test]
 async fn defaults_use_provider_primitives_and_keep_one_parse_snapshot() {
     let memory = Memory {
@@ -168,6 +170,7 @@ async fn defaults_use_provider_primitives_and_keep_one_parse_snapshot() {
 
 // {test}`requirements.sdk.sources.provider_results.search_completeness`
 // {test}`requirements.sdk.sources.provider.errors`
+// {test}`requirements.sdk.sources.provider_results`
 #[tokio::test]
 async fn completeness_is_false_only_when_a_match_is_omitted_and_errors_propagate() {
     let memory = Memory {
@@ -294,6 +297,7 @@ async fn local_provider_scopes_paths_and_rejects_resources_outside_its_root() {
     }
 }
 
+// {cite}`habeas:util`
 #[cfg(feature = "default-languages")]
 struct CachedParse {
     parses: AtomicUsize,
@@ -326,6 +330,7 @@ impl SourceProvider for CachedParse {
     }
 }
 
+// {test}`requirements.sdk.sources.provider_defaults`
 // {test}`requirements.sdk.sources.provider_defaults.composition`
 // {test}`requirements.sdk.sources.provider_results`
 // {test}`requirements.sdk.sources.provider_results.search_completeness`
@@ -362,4 +367,186 @@ async fn structural_search_uses_overridden_parses_their_snapshot_and_requested_s
         }
     }
     assert_eq!(provider.parses.load(Ordering::SeqCst), 3);
+}
+
+struct Primitives {
+    empty_listing: bool,
+    text: &'static str,
+    language: Option<&'static str>,
+}
+impl SourceProvider for Primitives {
+    async fn list(&self, _: &SourceScope) -> Result<Vec<ResourceId>, SourceError> {
+        Ok(if self.empty_listing {
+            vec![]
+        } else {
+            vec![id("generated")]
+        })
+    }
+    async fn read(&self, _: &ResourceId) -> Result<SourceFile, SourceError> {
+        Ok(SourceFile {
+            bytes: self.text.as_bytes().into(),
+            language: self.language.map(str::to_owned),
+        })
+    }
+    type Error = SourceError;
+}
+
+// {test}`requirements.sdk.sources.provider.errors`
+// {test}`requirements.sdk.sources.provider_results.search_completeness`
+#[tokio::test]
+async fn successful_empty_listing_and_empty_resources_are_distinct_from_errors() {
+    for empty_listing in [true, false] {
+        let provider = Primitives {
+            empty_listing,
+            text: "",
+            language: None,
+        };
+        assert_eq!(
+            provider.list(&SourceScope::default()).await.unwrap().len(),
+            usize::from(!empty_listing)
+        );
+        assert!(
+            provider
+                .read(&id("generated"))
+                .await
+                .unwrap()
+                .bytes
+                .is_empty()
+        );
+        let parsed = provider.parse(&id("generated"), &registry()).await.unwrap();
+        assert!(parsed.source.bytes.is_empty());
+        let result = provider
+            .search_text(&TextQuery {
+                scope: SourceScope::default(),
+                pattern: "hit".into(),
+                context_lines: 0,
+                limit: None,
+            })
+            .await
+            .unwrap();
+        assert!(result.complete && result.matches.is_empty());
+        #[cfg(feature = "default-languages")]
+        {
+            let result = provider
+                .search_structure(
+                    &StructuralQuery {
+                        scope: SourceScope::default(),
+                        language: "rust".into(),
+                        rule: serde_json::json!({"rule":{"kind":"function_item"}})
+                            .as_object()
+                            .unwrap()
+                            .clone(),
+                        limit: None,
+                    },
+                    &registry(),
+                )
+                .await
+                .unwrap();
+            assert!(result.complete && result.matches.is_empty());
+        }
+    }
+}
+
+// {test}`requirements.sdk.sources.provider_defaults`
+// {test}`requirements.sdk.sources.provider_defaults.composition`
+// {test}`requirements.sdk.sources.provider_results`
+// {test}`requirements.sdk.sources.provider_results.parse_snapshot`
+#[cfg(feature = "default-languages")]
+#[tokio::test]
+async fn list_read_only_provider_supports_selected_language_parse_and_structural_search() {
+    let provider = Primitives {
+        empty_listing: false,
+        text: "fn provided() { call(); }\n",
+        language: Some("rust"),
+    };
+    let parsed = provider.parse(&id("generated"), &registry()).await.unwrap();
+    assert_eq!(parsed.source.text().unwrap(), provider.text);
+    assert!(parsed.outline.resolve("fn[provided]").is_ok());
+    let query = StructuralQuery {
+        scope: SourceScope::default(),
+        language: "rust".into(),
+        rule: serde_json::json!({"rule":{"pattern":"call()"}})
+            .as_object()
+            .unwrap()
+            .clone(),
+        limit: None,
+    };
+    let matches = provider
+        .search_structure(&query, &registry())
+        .await
+        .unwrap();
+    assert!(matches.complete);
+    assert_eq!(matches.matches.len(), 1);
+    assert_eq!(matches.matches[0].node.selector, "fn[provided]");
+    assert_eq!(matches.matches[0].excerpt, "call()");
+    assert_eq!(matches.matches[0].node.resource, id("generated"));
+    let mut mismatch = StructuralQuery {
+        language: "python".into(),
+        scope: SourceScope::default(),
+        rule: serde_json::json!({"rule":{"pattern":"call()"}})
+            .as_object()
+            .unwrap()
+            .clone(),
+        limit: None,
+    };
+    let empty = provider
+        .search_structure(&mismatch, &registry())
+        .await
+        .unwrap();
+    assert!(empty.complete && empty.matches.is_empty());
+    mismatch.language = "not-a-language".into();
+    assert!(
+        provider
+            .search_structure(&mismatch, &registry())
+            .await
+            .is_err()
+    );
+    // Explicit language wins over a location's extension.
+    assert!(
+        provider
+            .parse(&id("file.py"), &registry())
+            .await
+            .unwrap()
+            .outline
+            .resolve("fn[provided]")
+            .is_ok()
+    );
+    let implicit = Primitives {
+        language: None,
+        ..provider
+    };
+    assert!(
+        implicit
+            .parse(&id("file.rs"), &registry())
+            .await
+            .unwrap()
+            .outline
+            .resolve("fn[provided]")
+            .is_ok()
+    );
+}
+
+// {test}`requirements.sdk.sources.source_addresses`
+#[test]
+fn addresses_preserve_opaque_fields_and_compare_each_identity_component() {
+    use habeas_sdk::resource::OutlineId;
+    let address = OutlineId {
+        resource: ResourceId {
+            scheme: "custom".into(),
+            location: "opaque://key with spaces/../é".into(),
+        },
+        selector: "opaque selector".into(),
+    };
+    assert_eq!(address, address.clone());
+    assert_eq!(address.resource.location, "opaque://key with spaces/../é");
+    assert!(format!("{address:?}").contains("opaque selector"));
+    for field in ["scheme", "location", "selector"] {
+        let mut other = address.clone();
+        match field {
+            "scheme" => other.resource.scheme.push('!'),
+            "location" => other.resource.location.push('!'),
+            _ => other.selector.push('!'),
+        }
+        assert_ne!(address, other);
+    }
 }

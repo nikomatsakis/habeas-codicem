@@ -646,7 +646,7 @@ fn validate_review(
         definitions,
         outlines,
     };
-    crate::evidence_format::check_native(&value, &subject, &domain, &label, errors);
+    let native = value.clone();
     let value = match crate::evidence_format::view(&value) {
         Ok(value) => value,
         Err(error) => {
@@ -654,6 +654,7 @@ fn validate_review(
             return;
         }
     };
+    crate::evidence_format::check_native(&native, &subject, &domain, &label, errors);
     let Some(object) = value.as_object() else {
         errors.push(format!("{label}: expected a JSON object"));
         return;
@@ -1332,6 +1333,25 @@ no_match: ["struct S;"]
                 "{errors:#?}"
             );
         }
+    }
+
+    // {test}`requirements.references.distributed`
+    // {test}`requirements.ci.errors`
+    #[test]
+    fn within_cannot_name_another_violation_query() {
+        let temp = project(&RULE.replace("within: checkers", "within: panics"), SOURCE);
+        let (errors, _) = inspect(temp.path());
+        let findings: Vec<_> = errors
+            .iter()
+            .filter(|error| error.contains("within names no site query \"panics\""))
+            .collect();
+        assert_eq!(findings.len(), 1, "{errors:#?}");
+        assert!(
+            !errors
+                .iter()
+                .any(|error| error.contains("must also have a site query")),
+            "{errors:#?}"
+        );
     }
 
     // {test}`requirements.ci.errors`

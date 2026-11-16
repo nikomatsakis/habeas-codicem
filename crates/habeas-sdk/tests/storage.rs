@@ -9,13 +9,22 @@ use std::sync::{
 fn record(id: &str) -> Record<String, Value> {
     Record {
         procedure: "v1".into(),
-        dependencies: vec![Dependency::Node(
-            "source".into(),
-            Fingerprint {
-                scheme: "sha-v1".into(),
-                value: "a".repeat(64),
-            },
-        )],
+        dependencies: vec![
+            Dependency::Node(
+                "source".into(),
+                Fingerprint {
+                    scheme: "sha-v1".into(),
+                    value: "a".repeat(64),
+                },
+            ),
+            Dependency::OutgoingEdges(
+                "subject".into(),
+                Fingerprint {
+                    scheme: "edges-v1".into(),
+                    value: "ordered targets".into(),
+                },
+            ),
+        ],
         output: Judgment {
             result: false,
             rationale: "a negative review".into(),
@@ -83,8 +92,53 @@ async fn records_round_trip_and_malformed_or_incompatible_data_is_an_error() {
     ));
 }
 
+// {test}`requirements.sdk.filesystem-storage.interface`
+// {test}`requirements.sdk.filesystem-storage.store`
+// {test}`requirements.sdk.filesystem-storage.keys`
+// {test}`requirements.sdk.filesystem-storage.load`
+#[tokio::test]
+async fn send_futures_create_missing_roots_and_nested_paths_without_shortening_keys() {
+    fn send<T: Send>(value: T) -> T {
+        value
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("missing").join("root");
+    let store = FileEvidenceStorage::new(&root);
+    let path = NodePath {
+        segments: vec!["parent".into(), "".into(), "child".into()],
+    };
+    assert!(!root.exists());
+    let record = record("nested");
+    send(store.store(&path, &record)).await.unwrap();
+    assert!(store.record_path(&path).is_file());
+    assert_eq!(
+        send(store.load::<String, Value>(&path))
+            .await
+            .unwrap()
+            .unwrap()
+            .output,
+        record.output
+    );
+    // The encoded component exceeds common filesystem name limits. It must
+    // fail rather than silently hash or truncate the consumer's key.
+    let too_long = NodePath {
+        segments: vec!["x".repeat(4096)],
+    };
+    assert!(matches!(
+        store.load::<String, Value>(&too_long).await,
+        Err(FileStorageError::Io(_))
+    ));
+    assert!(matches!(
+        store.store(&too_long, &record).await,
+        Err(FileStorageError::Io(_))
+    ));
+    assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
+}
+
+// {cite}`habeas:util`
 struct BadMetadata;
 impl Serialize for BadMetadata {
+    // {cite}`habeas:util`
     fn serialize<S: Serializer>(&self, _: S) -> Result<S::Ok, S::Error> {
         Err(serde::ser::Error::custom("cannot serialize"))
     }
@@ -128,6 +182,7 @@ async fn failed_serialization_preserves_records_and_failed_replacement_cleans_up
 }
 
 // {test}`requirements.sdk.filesystem-storage.store`
+// {test}`requirements.sdk.filesystem-storage.interface`
 #[test]
 fn concurrent_readers_only_observe_complete_records_from_competing_writes() {
     let temp = tempfile::tempdir().unwrap();
@@ -168,4 +223,74 @@ fn concurrent_readers_only_observe_complete_records_from_competing_writes() {
         assert!(reads > 0);
     });
     assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 1);
+}
+
+struct StoredGraph(FileEvidenceStorage);
+impl Graph for StoredGraph {
+    type NodeId = String;
+    type NodeContent = ();
+    type EdgeLabel = ();
+    type JudgmentMetadata = Value;
+    type Error = FileStorageError;
+    fn node_content(&self, _: &String) -> Result<(), Self::Error> {
+        Ok(())
+    }
+    fn node_path(&self, node: &String) -> NodePath {
+        NodePath {
+            segments: vec!["consumer".into(), node.clone()],
+        }
+    }
+    fn outgoing_edges(&self, _: &String) -> Result<Snapshot<Vec<Edge<String, ()>>>, Self::Error> {
+        Ok(Snapshot {
+            content: vec![],
+            fingerprint: Fingerprint {
+                scheme: "empty".into(),
+                value: String::new(),
+            },
+        })
+    }
+}
+impl EvidenceStorage for StoredGraph {
+    async fn load_evidence(
+        &self,
+        node: &String,
+    ) -> Result<Option<Record<String, Value>>, Self::Error> {
+        self.0.load(&self.node_path(node)).await
+    }
+    async fn store_evidence(
+        &self,
+        node: &String,
+        record: &Record<String, Value>,
+    ) -> Result<(), Self::Error> {
+        self.0.store(&self.node_path(node), record).await
+    }
+}
+
+// {test}`requirements.sdk.graph.evidence.evidence_storage.filesystem`
+// {test}`requirements.sdk.graph.evidence.evidence_storage`
+// {test}`requirements.sdk.filesystem-storage.interface`
+// {test}`requirements.sdk.filesystem-storage.load`
+#[tokio::test]
+async fn consumer_delegates_evidence_storage_using_only_the_requested_nodes_path() {
+    let temp = tempfile::tempdir().unwrap();
+    let graph = StoredGraph(FileEvidenceStorage::new(temp.path().join("new")));
+    let node = "opaque/é".to_string();
+    assert!(graph.load_evidence(&node).await.unwrap().is_none());
+    let record = record("delegated");
+    graph.store_evidence(&node, &record).await.unwrap();
+    let loaded = graph.load_evidence(&node).await.unwrap().unwrap();
+    assert_eq!(loaded.dependencies, record.dependencies);
+    assert_eq!(loaded.output, record.output);
+    assert!(
+        graph
+            .load_evidence(&"other".into())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    std::fs::write(graph.0.record_path(&graph.node_path(&node)), b"bad JSON").unwrap();
+    assert!(matches!(
+        graph.load_evidence(&node).await,
+        Err(FileStorageError::Json(_))
+    ));
 }

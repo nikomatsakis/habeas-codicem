@@ -110,18 +110,19 @@ impl OutlineCache {
         {
             return catalog.clone();
         }
-        let mut errors = Vec::new();
-        let files = crate::evidence::discovered_files(root, &mut errors);
+        // A discovery failure aborts; this is not a validation site.
+        let mut failures = Vec::new();
+        let files = crate::evidence::discovered_files(root, &mut failures);
         let references = crate::evidence::collect_references_with_progress(
             root,
             &files,
-            &mut errors,
+            &mut failures,
             &mut |_| {},
         );
-        let catalog = Arc::new(if errors.is_empty() {
+        let catalog = Arc::new(if failures.is_empty() {
             Ok(ReferenceCatalog { references, files })
         } else {
-            Err(errors.join("\n"))
+            Err(failures.join("\n"))
         });
         self.catalogs
             .lock()

@@ -46,6 +46,7 @@ pub trait Graph: Send + Sync {
     type Error: Send;
 
     fn node_content(&self, node: &Self::NodeId) -> Result<Self::NodeContent, Self::Error>;
+    // {impl}`requirements.sdk.graph.node_path`
     fn node_path(&self, node: &Self::NodeId) -> NodePath;
     fn outgoing_edges(
         &self,
@@ -55,6 +56,7 @@ pub trait Graph: Send + Sync {
 
 // {impl}`requirements.sdk.graph.fingerprinting.fingerprint_content`
 pub trait Fingerprinting: Graph {
+    // {impl}`requirements.sdk.graph.fingerprinting.fingerprint_content`
     fn fingerprint(&self, node: &Self::NodeId, content: &Self::NodeContent) -> Fingerprint;
 }
 
@@ -81,12 +83,14 @@ pub struct Record<N, M> {
     pub output: Judgment<M>,
 }
 
+// {cite}`habeas:util`
 /// An ordered, deduplicated log for adapters retaining their own wire inputs.
 #[derive(Clone, Debug)]
 pub struct Trace<T> {
     observations: Vec<T>,
 }
 impl<T> Default for Trace<T> {
+    // {cite}`habeas:util`
     fn default() -> Self {
         Self {
             observations: Vec::new(),
@@ -94,11 +98,13 @@ impl<T> Default for Trace<T> {
     }
 }
 impl<T: PartialEq> Trace<T> {
+    // {cite}`habeas:util`
     pub fn observe(&mut self, value: T) {
         if !self.observations.contains(&value) {
             self.observations.push(value);
         }
     }
+    // {cite}`habeas:util`
     pub fn observations(&self) -> &[T] {
         &self.observations
     }
@@ -106,6 +112,7 @@ impl<T: PartialEq> Trace<T> {
 
 // {impl}`requirements.sdk.graph.evidence.evidence_storage`
 pub trait EvidenceStorage: Graph {
+    // {impl}`requirements.sdk.graph.evidence.evidence_storage`
     fn load_evidence(
         &self,
         node: &Self::NodeId,
@@ -113,6 +120,7 @@ pub trait EvidenceStorage: Graph {
         Output = Result<Option<Record<Self::NodeId, Self::JudgmentMetadata>>, Self::Error>,
     > + Send;
 
+    // {impl}`requirements.sdk.graph.evidence.evidence_storage`
     fn store_evidence(
         &self,
         node: &Self::NodeId,
@@ -120,15 +128,21 @@ pub trait EvidenceStorage: Graph {
     ) -> impl Future<Output = Result<(), Self::Error>> + Send;
 }
 
+// {impl}`requirements.sdk.domain`
+pub trait Domain: Graph + Validation + Fingerprinting + EvidenceStorage {}
+
+impl<T: Graph + Validation + Fingerprinting + EvidenceStorage> Domain for T {}
+
 // {impl}`requirements.sdk.graph.validation.check_procedure`
 #[derive(Debug)]
 pub enum ValidationError<E> {
     Graph(E),
     NoAgentConfigured,
-    Agent(std::io::Error),
+    Agent(String),
 }
 
 impl<E: std::fmt::Display> std::fmt::Display for ValidationError<E> {
+    // {cite}`habeas:util`
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Graph(error) => error.fmt(f),
@@ -139,17 +153,18 @@ impl<E: std::fmt::Display> std::fmt::Display for ValidationError<E> {
 }
 
 impl<E: std::error::Error + 'static> std::error::Error for ValidationError<E> {
+    // {cite}`habeas:util`
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Graph(error) => Some(error),
-            Self::Agent(error) => Some(error),
-            Self::NoAgentConfigured => None,
+            Self::Agent(_) | Self::NoAgentConfigured => None,
         }
     }
 }
 
 // {impl}`requirements.sdk.graph.validation.check_procedure`
 pub trait Validation: Graph + Fingerprinting + Sized {
+    // {impl}`requirements.sdk.graph.validation.check_procedure`
     fn validate<'a, 'd>(
         &'a self,
         ctx: &'a ValidationContext<'d, Self>,
@@ -169,6 +184,7 @@ pub struct InspectionContext<'d, D: Graph + Fingerprinting> {
 }
 
 impl<'d, D: Graph + Fingerprinting> InspectionContext<'d, D> {
+    // {cite}`habeas:util`
     pub fn new(graph: &'d D) -> Self {
         Self {
             graph,
@@ -177,6 +193,7 @@ impl<'d, D: Graph + Fingerprinting> InspectionContext<'d, D> {
         }
     }
 
+    // {cite}`habeas:util`
     pub(crate) fn with_edges(
         graph: &'d D,
         retained: Option<(D::NodeId, Snapshot<Vec<Edge<D::NodeId, D::EdgeLabel>>>)>,
@@ -187,10 +204,12 @@ impl<'d, D: Graph + Fingerprinting> InspectionContext<'d, D> {
         }
     }
 
+    // {cite}`habeas:util`
     pub fn graph(&self) -> &'d D {
         self.graph
     }
 
+    // {cite}`habeas:util`
     pub fn read(&self, node: &D::NodeId) -> Result<D::NodeContent, D::Error> {
         Ok(self.read_snapshot(node)?.content)
     }
@@ -217,10 +236,7 @@ impl<'d, D: Graph + Fingerprinting> InspectionContext<'d, D> {
         &self,
         node: &D::NodeId,
     ) -> Result<Snapshot<Vec<Edge<D::NodeId, D::EdgeLabel>>>, D::Error> {
-        let snapshot = match &self.retained {
-            Some((retained_node, snapshot)) if retained_node == node => snapshot.clone(),
-            _ => self.graph.outgoing_edges(node)?,
-        };
+        let snapshot = self.prepare_edges(node)?;
         self.observe(Dependency::OutgoingEdges(
             node.clone(),
             snapshot.fingerprint.clone(),
@@ -228,15 +244,30 @@ impl<'d, D: Graph + Fingerprinting> InspectionContext<'d, D> {
         Ok(snapshot)
     }
 
+    /// Prepare a relationship result without claiming delivery. The current
+    /// traversal node uses its retained selection, just like direct inspection.
+    // {cite}`habeas:util`
+    pub fn prepare_edges(
+        &self,
+        node: &D::NodeId,
+    ) -> Result<Snapshot<Vec<Edge<D::NodeId, D::EdgeLabel>>>, D::Error> {
+        match &self.retained {
+            Some((retained_node, snapshot)) if retained_node == node => Ok(snapshot.clone()),
+            _ => self.graph.outgoing_edges(node),
+        }
+    }
+
     /// Import the fingerprint of the exact snapshot delivered to the caller.
     pub fn observe_read(&self, node: D::NodeId, fingerprint: Fingerprint) {
         self.observe(Dependency::Node(node, fingerprint));
     }
 
+    // {cite}`habeas:util`
     pub fn observe_edges(&self, node: D::NodeId, fingerprint: Fingerprint) {
         self.observe(Dependency::OutgoingEdges(node, fingerprint));
     }
 
+    // {cite}`habeas:util`
     fn observe(&self, observation: Dependency<D::NodeId>) {
         let mut observations = self.observations.lock().expect("dependency trace poisoned");
         if !observations.contains(&observation) {
@@ -244,6 +275,7 @@ impl<'d, D: Graph + Fingerprinting> InspectionContext<'d, D> {
         }
     }
 
+    // {cite}`habeas:util`
     pub fn dependencies(&self) -> Vec<Dependency<D::NodeId>> {
         self.observations
             .lock()
@@ -251,6 +283,7 @@ impl<'d, D: Graph + Fingerprinting> InspectionContext<'d, D> {
             .clone()
     }
 
+    // {impl}`requirements.sdk.graph.evidence.record`
     pub fn finish(
         &self,
         procedure: String,

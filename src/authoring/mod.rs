@@ -673,6 +673,7 @@ fn confirmed_record(
     chosen
 }
 
+// {cite}`habeas:util`
 fn merge_review_inputs(
     value: &mut Value,
     assessments: &[&Value],

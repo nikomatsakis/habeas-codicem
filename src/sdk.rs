@@ -11,9 +11,11 @@ use habeas_sdk::{
 };
 use std::{collections::BTreeMap, path::Path};
 
+// {cite}`habeas:util`
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct RequirementId(pub String);
 
+// {cite}`habeas:util`
 /// Habeas node identities use the SDK's common outline address for sources.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) enum HabeasNode {
@@ -29,6 +31,7 @@ pub(crate) enum HabeasNode {
 }
 
 impl From<&InputSelector> for HabeasNode {
+    // {cite}`habeas:util`
     fn from(selector: &InputSelector) -> Self {
         match selector {
             InputSelector::Outline { file, item } => Self::Source(OutlineId {
@@ -50,6 +53,7 @@ impl From<&InputSelector> for HabeasNode {
 }
 
 impl HabeasNode {
+    // {cite}`habeas:util`
     pub(crate) fn selector(&self) -> Result<InputSelector, std::io::Error> {
         Ok(match self {
             Self::Requirement(id) => InputSelector::Requirements {
@@ -79,6 +83,7 @@ impl HabeasNode {
     }
 }
 
+// {cite}`habeas:util`
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum HabeasEdgeLabel {
     Implements,
@@ -87,6 +92,7 @@ pub(crate) enum HabeasEdgeLabel {
     Mandatory,
 }
 
+// {cite}`habeas:util`
 pub(crate) struct HabeasDomain<'a> {
     pub root: &'a Path,
     pub definitions: &'a BTreeMap<String, Declaration>,
@@ -101,12 +107,14 @@ impl Graph for HabeasDomain<'_> {
     type JudgmentMetadata = serde_json::Value;
     type Error = std::io::Error;
 
+    // {cite}`habeas:util`
     fn node_content(&self, node: &HabeasNode) -> Result<ResolvedInput, std::io::Error> {
         let node = node.selector()?;
         node.resolve(self.root, self.definitions, self.outlines)
             .map_err(std::io::Error::other)
     }
 
+    // {cite}`habeas:util`
     fn node_path(&self, node: &HabeasNode) -> NodePath {
         let segments = match node {
             HabeasNode::Requirement(id) => vec!["requirement".into(), id.0.clone()],
@@ -138,6 +146,7 @@ impl Graph for HabeasDomain<'_> {
         NodePath { segments }
     }
 
+    // {cite}`habeas:util`
     fn outgoing_edges(
         &self,
         node: &HabeasNode,
@@ -206,6 +215,7 @@ impl Graph for HabeasDomain<'_> {
 }
 
 impl HabeasNode {
+    // {cite}`habeas:util`
     pub(crate) fn review_subject(subject: &crate::authoring::AuthoringSubject) -> Self {
         use crate::authoring::AuthoringSubject;
         let source = |file: &str, item: &str| OutlineId {
@@ -229,6 +239,7 @@ impl HabeasNode {
         }
     }
 
+    // {cite}`habeas:util`
     pub(crate) fn evidence_path(&self, root: &Path) -> Option<std::path::PathBuf> {
         match self {
             Self::Requirement(id) => Some(root.join("evidence").join(format!("{}.json", id.0))),
@@ -274,6 +285,7 @@ impl habeas_sdk::graph::EvidenceStorage for HabeasDomain<'_> {
         crate::evidence_format::decode(&value, node).map(Some)
     }
 
+    // {cite}`habeas:util`
     async fn store_evidence(
         &self,
         node: &HabeasNode,
@@ -298,6 +310,7 @@ impl Fingerprinting for HabeasDomain<'_> {
     }
 }
 
+// {cite}`habeas:util`
 pub(crate) fn input_fingerprint(input: &serde_json::Value) -> Fingerprint {
     use sha2::{Digest, Sha256};
     Fingerprint {
@@ -309,6 +322,7 @@ pub(crate) fn input_fingerprint(input: &serde_json::Value) -> Fingerprint {
     }
 }
 
+// {cite}`habeas:util`
 /// CI resolves inputs through the same model-free API used by authoring.
 /// Habeas subsequently reports its detailed, field-specific diagnostics.
 pub(crate) fn resolve_input(
@@ -334,6 +348,8 @@ mod tests {
 
     // {test}`requirements.sdk.graph.evidence.checking_records`
     // {test}`requirements.sdk.graph.domain_types`
+    // {test}`requirements.sdk.graph.fingerprinting.fingerprint_content`
+    // {test}`requirements.sdk.graph.fingerprinting.snapshot`
     #[test]
     fn requirement_edges_and_input_freshness_use_the_sdk() {
         let root = tempfile::tempdir().unwrap();
@@ -360,7 +376,22 @@ mod tests {
         let selector = InputSelector::Requirements {
             requirements: query.0.clone(),
         };
-        ctx.read(&HabeasNode::from(&selector)).unwrap();
+        let retained = ctx.read(&HabeasNode::from(&selector)).unwrap();
+        assert_eq!(
+            selector.to_input(&retained),
+            serde_json::json!({
+                "matches":["requirements.ready"],
+                "requirements":"requirements.ready",
+                "text":[":::{req} ready", "The project MUST be ready.", ":::"]
+            })
+        );
+        assert_eq!(
+            domain.fingerprint(&HabeasNode::from(&selector), &retained),
+            Fingerprint {
+                scheme: "habeas-input-v1".into(),
+                value: "a60363aa2a9f4d79aff6d511c59e574752e36810da394f6087a72c164adabf7c".into(),
+            }
+        );
         let record = ctx.finish(
             "test-review-v1".into(),
             habeas_sdk::graph::Judgment {
@@ -389,6 +420,28 @@ mod tests {
                 file: "src/lib.rs".into(),
                 item: "fn[ready]".into()
             })
+        );
+        let source_node = snapshot.content[0].target.clone();
+        let retained_source = changed.node_content(&source_node).unwrap();
+        let retained_fingerprint = changed.fingerprint(&source_node, &retained_source);
+        fs::write(
+            root.path().join("src/lib.rs"),
+            "// {impl}`requirements.ready`\nfn ready() { changed(); }\n",
+        )
+        .unwrap();
+        let current_outlines = OutlineCache::default();
+        let current = HabeasDomain {
+            outlines: &current_outlines,
+            ..changed
+        };
+        assert_eq!(
+            current.fingerprint(&source_node, &retained_source),
+            retained_fingerprint
+        );
+        let current_source = current.node_content(&source_node).unwrap();
+        assert_ne!(
+            current.fingerprint(&source_node, &current_source),
+            retained_fingerprint
         );
     }
 }

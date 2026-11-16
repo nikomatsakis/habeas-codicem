@@ -2,11 +2,13 @@ use super::*;
 use futures::{StreamExt, future::BoxFuture, stream::FuturesUnordered};
 use std::num::NonZeroUsize;
 
+// {cite}`habeas:util`
 pub struct TraversalOptions {
     pub concurrency: NonZeroUsize,
 }
 
 impl Default for TraversalOptions {
+    // {cite}`habeas:util`
     fn default() -> Self {
         Self {
             concurrency: NonZeroUsize::new(4).unwrap(),
@@ -14,6 +16,7 @@ impl Default for TraversalOptions {
     }
 }
 
+// {cite}`habeas:util`
 pub struct TraversalResult<N, M, E> {
     pub complete: bool,
     pub nodes: Vec<(N, Result<Judgment<M>, ValidationError<E>>)>,
@@ -21,7 +24,7 @@ pub struct TraversalResult<N, M, E> {
 
 impl<'d, D, F> Validator<'d, D, F>
 where
-    D: Validation + EvidenceStorage,
+    D: Domain,
     F: Fn(&D::NodeId) -> Result<String, D::Error> + Send + Sync,
 {
     // {impl}`requirements.sdk.graph.traversal.validate_transitive`
@@ -130,6 +133,7 @@ where
     }
 }
 
+// {cite}`habeas:util`
 /// Iterative Kosaraju avoids stack overflow on long reachable chains.
 fn components(edges: &[Vec<usize>]) -> Vec<Vec<usize>> {
     let mut visited = vec![false; edges.len()];

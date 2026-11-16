@@ -300,7 +300,7 @@ pub(crate) fn validate_review(
         definitions,
         outlines,
     };
-    crate::evidence_format::check_native(&value, &subject, &domain, &label, errors);
+    let native = value.clone();
     let value = match crate::evidence_format::view(&value) {
         Ok(value) => value,
         Err(error) => {
@@ -308,6 +308,7 @@ pub(crate) fn validate_review(
             return;
         }
     };
+    crate::evidence_format::check_native(&native, &subject, &domain, &label, errors);
     let Some(object) = value.as_object() else {
         errors.push(format!("{label}: expected a JSON object"));
         return;

@@ -137,6 +137,45 @@ fn shared_agent_guidance_documents_post_suite_checks_and_standard_explanations()
     }
 }
 
+// {test}`requirements.install.symposium`
+// {test}`requirements.install.symposium.skill_hook`
+#[test]
+fn installation_guides_cover_setup_hooks_refresh_and_preserving_local_skills() {
+    for path in ["README.md", "md/getting_started.md"] {
+        let text = repository_file(path);
+        for required in [
+            "Cargo project",
+            "book.toml",
+            "SUMMARY.md",
+            "cargo install symposium",
+            "cargo agents init",
+            "cargo add --dev habeas",
+            "cargo agents sync",
+            "**Enable**",
+            "project tracks requirements with Habeas",
+            "load the `habeas` skill",
+            "habeas setup",
+            "after updating the Habeas dependency",
+            ".agents/skills/habeas-*",
+            "local edits",
+            "different names or elsewhere",
+            "remove those old copies",
+        ] {
+            assert!(text.contains(required), "{path} omits {required}");
+        }
+        assert!(text.contains("advises the agent"), "{path}: {text}");
+        assert!(text.find("Save").unwrap() < text.find("remove those old copies").unwrap());
+    }
+    let readme = repository_file("README.md");
+    assert!(readme.contains("Its session-start hook tells the agent that the project tracks requirements with Habeas and to load the `habeas` skill before starting any work."));
+    assert!(readme.contains("The hook also checks the project and advises the agent to run `habeas setup` when configuration is incomplete."));
+    let guide = repository_file("md/getting_started.md");
+    assert!(guide.contains("When an agent starts a session in this project, Habeas's hook tells it that the project tracks requirements with Habeas and to load the `habeas` skill before starting any work."));
+    assert!(guide.contains(
+        "if configuration is missing or incompatible, it advises the agent to run `habeas setup`"
+    ));
+}
+
 /// The lines of one top-level job in a GitHub Actions workflow, from its
 /// `  <name>:` line to the next top-level job.
 // {cite}`habeas:util`

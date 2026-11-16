@@ -14,6 +14,7 @@ use habeas_sdk::{
 };
 use std::sync::Mutex;
 
+// {cite}`habeas:util`
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 struct ReviewAnswer {
     determination: Value,
@@ -21,6 +22,7 @@ struct ReviewAnswer {
     applies: Option<bool>,
 }
 
+// {cite}`habeas:util`
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 struct VerificationAnswer {
     real: bool,
@@ -30,11 +32,13 @@ struct VerificationAnswer {
     applies: Option<bool>,
 }
 
+// {cite}`habeas:util`
 enum Operation {
     Assess,
     Verify(Judgment, String),
 }
 
+// {cite}`habeas:util`
 /// Immutable snapshots identify the contents used to assemble this review.
 struct ReviewGraph<'a> {
     root: PathBuf,
@@ -46,6 +50,9 @@ struct ReviewGraph<'a> {
     system: String,
     operation: Operation,
     conversation: Mutex<Option<(&'a mut AssessmentSources, &'a mut UsageLog)>>,
+    // The public SDK reports an agent error as text. Preserve the provider's
+    // original error separately for Habeas's classification and batch policy.
+    agent_failure: Mutex<Option<io::Error>>,
 }
 
 impl Graph for ReviewGraph<'_> {
@@ -55,6 +62,7 @@ impl Graph for ReviewGraph<'_> {
     type JudgmentMetadata = Value;
     type Error = io::Error;
 
+    // {cite}`habeas:util`
     fn node_content(&self, node: &HabeasNode) -> io::Result<Value> {
         if let Some((_, input)) = self.mandatory.iter().find(|(id, _)| id == node) {
             return Ok(input.clone());
@@ -63,9 +71,11 @@ impl Graph for ReviewGraph<'_> {
         let contents = self.domain().node_content(node)?;
         Ok(selector.to_model_input(&contents))
     }
+    // {cite}`habeas:util`
     fn node_path(&self, node: &HabeasNode) -> NodePath {
         self.domain().node_path(node)
     }
+    // {cite}`habeas:util`
     fn outgoing_edges(
         &self,
         node: &HabeasNode,
@@ -95,6 +105,7 @@ impl Graph for ReviewGraph<'_> {
 }
 
 impl ReviewGraph<'_> {
+    // {cite}`habeas:util`
     fn domain(&self) -> HabeasDomain<'_> {
         HabeasDomain {
             root: &self.root,
@@ -105,11 +116,13 @@ impl ReviewGraph<'_> {
 }
 
 impl Fingerprinting for ReviewGraph<'_> {
+    // {cite}`habeas:util`
     fn fingerprint(&self, _: &HabeasNode, content: &Value) -> Fingerprint {
         input_fingerprint(&model_recorded_input(content))
     }
 }
 
+// {cite}`habeas:util`
 fn model_recorded_input(value: &Value) -> Value {
     let mut value = value.clone();
     if let Some(object) = value.as_object_mut() {
@@ -118,8 +131,10 @@ fn model_recorded_input(value: &Value) -> Value {
     recorded_input(&value)
 }
 
+// {cite}`habeas:util`
 struct Renderer;
 impl AgentInputRenderer<ReviewGraph<'_>> for Renderer {
+    // {cite}`habeas:util`
     fn render(&self, input: &AgentInput<'_, ReviewGraph<'_>>) -> io::Result<String> {
         serde_json::to_string(input.contents).map_err(io::Error::other)
     }
@@ -129,6 +144,7 @@ impl AgentInputRenderer<ReviewGraph<'_>> for Renderer {
 // {impl}`requirements.sdk.graph.agent-calls.procedures`
 // {impl}`requirements.authoring.mandatory_inputs`
 impl Validation for ReviewGraph<'_> {
+    // {cite}`habeas:util`
     async fn validate<'a, 'd>(
         &'a self,
         ctx: &'a ValidationContext<'d, Self>,
@@ -149,8 +165,8 @@ impl Validation for ReviewGraph<'_> {
                 } else {
                     request.await?
                 };
-                let judgment = Judgment::from_value(&answer.determination)
-                    .map_err(|error| ValidationError::Agent(io::Error::other(error)))?;
+                let judgment =
+                    Judgment::from_value(&answer.determination).map_err(ValidationError::Agent)?;
                 (judgment, answer.rationale, answer.applies, None)
             }
             Operation::Verify(..) => {
@@ -198,6 +214,7 @@ impl Validation for ReviewGraph<'_> {
     }
 }
 
+// {cite}`habeas:util`
 struct ReviewAgent<'p, P>(&'p P);
 
 // {impl}`requirements.sdk.graph.agent-calls.author_procedure`
@@ -303,7 +320,14 @@ impl<P: CompletionProvider> Agent<ReviewGraph<'_>> for ReviewAgent<'_, P> {
             }
             .await;
             *graph.conversation.lock().expect("review lease lock") = Some((sources, usage));
-            result
+            match result {
+                Ok(value) => Ok(value),
+                Err(error) => {
+                    let message = error.to_string();
+                    *graph.agent_failure.lock().expect("review error lock") = Some(error);
+                    Err(io::Error::other(message))
+                }
+            }
         })
     }
 }
@@ -321,6 +345,7 @@ pub(super) async fn assess(
     Ok((determination, value))
 }
 
+// {cite}`habeas:util`
 pub(super) async fn verify(
     provider: &impl CompletionProvider,
     sources: &mut AssessmentSources,
@@ -407,12 +432,21 @@ async fn run(
         },
         operation,
         conversation: Mutex::new(Some((sources, usage))),
+        agent_failure: Mutex::new(None),
     };
     let agent = ReviewAgent(provider);
     let ctx = ValidationContext::with_agent(&graph, node.clone(), &agent, &Renderer);
     let judgment = match graph.validate(&ctx).await {
         Ok(judgment) => judgment,
-        Err(ValidationError::Graph(error) | ValidationError::Agent(error)) => return Err(error),
+        Err(ValidationError::Graph(error)) => return Err(error),
+        Err(ValidationError::Agent(message)) => {
+            return Err(graph
+                .agent_failure
+                .lock()
+                .expect("review error lock")
+                .take()
+                .unwrap_or_else(|| io::Error::other(message)));
+        }
         Err(ValidationError::NoAgentConfigured) => {
             return Err(io::Error::other("no agent is configured"));
         }
@@ -463,9 +497,56 @@ mod tests {
         }
     }
 
+    // {test}`requirements.authoring.provider_backoff`
+    // {test}`requirements.authoring.usage_requests.failures`
+    #[tokio::test]
+    async fn sdk_string_errors_preserve_habeas_provider_reports_and_error_kinds() {
+        struct FailingProvider(io::ErrorKind);
+        impl CompletionProvider for FailingProvider {
+            async fn complete(&self, _: CompletionRequest) -> io::Result<CompletionResponse> {
+                Err(io::Error::new(
+                    self.0,
+                    rig_core::error::ProviderError::from_provider_body("Original provider report.")
+                        .with_provider_status(Some(403.try_into().unwrap()))
+                        .with_provider_code(Some("AccessDeniedException".into())),
+                ))
+            }
+        }
+        for kind in [io::ErrorKind::Other, io::ErrorKind::PermissionDenied] {
+            let root = inputs::tests::project();
+            let state = tempfile::tempdir().unwrap();
+            let mut sources =
+                AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+            let mut usage =
+                UsageLog::start(state.path(), root.path(), "requirements.ready").unwrap();
+            let error = assess(&FailingProvider(kind), &mut sources, &mut usage)
+                .await
+                .unwrap_err();
+            assert_eq!(error.kind(), kind);
+            assert_eq!(
+                providers::failure_codes(&error),
+                (Some(403), Some("AccessDeniedException".into()))
+            );
+            assert!(
+                error
+                    .get_ref()
+                    .unwrap()
+                    .downcast_ref::<rig_core::error::ProviderError>()
+                    .is_some()
+            );
+            assert!(error.to_string().contains("Original provider report."));
+            assert!(
+                !AuthoringSubject::Definition("requirements.ready".into())
+                    .evidence_path(root.path())
+                    .exists()
+            );
+        }
+    }
+
     // {test}`requirements.sdk.habeas.evidence_format`
     // {test}`requirements.sdk.habeas.evidence_conversion.legacy_freshness`
     // {test}`requirements.sdk.graph.agent-calls.judge.rendering`
+    // {test}`requirements.sdk.graph.agent-calls.judge.caching`
     #[tokio::test]
     async fn authoring_keeps_the_prepared_subject_snapshot_and_concrete_version() {
         let root = inputs::tests::project();
@@ -486,6 +567,7 @@ mod tests {
         )]);
         let (_, value) = assess(&provider, &mut sources, &mut usage).await.unwrap();
         assert_eq!(value["review_version"], crate::sdk::REVIEW_VERSION);
+        assert_ne!(value["review_version"], "*");
         assert_eq!(value["requirement"], original_subject_text);
         let mut expected = original_prompt.request();
         expected.tools = tool_definitions_with("submit_judgment", false).unwrap();
@@ -618,21 +700,234 @@ mod tests {
         assert_eq!(crate::evidence_format::view(&new).unwrap(), old);
         crate::evidence_format::write_atomic(&path, &old).unwrap();
         let before = fs::read(&path).unwrap();
-        let state = tempfile::tempdir().unwrap();
-        let mut usage = UsageLog::start(state.path(), root.path(), "requirements.ready").unwrap();
         assert!(
-            configured_assessment(
+            author_evidence_with_options(
                 root.path(),
                 "requirements.ready",
                 Some("missing-configuration"),
                 EvidenceOutput::Stdout,
-                None,
-                &mut usage
+                AuthoringOptions::default(),
             )
             .await
             .is_err()
         );
         assert_eq!(fs::read(&path).unwrap(), before);
         assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 1);
+    }
+    // {test}`requirements.sdk.habeas.evidence_format`
+    // {test}`requirements.sdk.habeas.evidence_format.errors`
+    // {test}`requirements.sdk.habeas.evidence_format.loading`
+    // {test}`requirements.sdk.habeas.evidence_conversion.legacy_freshness`
+    // {test}`requirements.ci.schema`
+    // {test}`requirements.ci.errors`
+    // {test}`requirements.ci.requirement_text`
+    #[tokio::test]
+    async fn every_review_kind_loads_both_formats_and_reports_each_application_failure_once() {
+        use habeas_sdk::graph::EvidenceStorage;
+        let source = format!(
+            "{}\n// {{cite}}`requirements.rule`\nfn helper() {{}}\n// {{test}}`requirements.sample`\n#[test]\nfn sample() {{}}\n",
+            crate::sites::tests::SOURCE
+        );
+        let chapter = format!(
+            "{}\n:::{{example}} sample\nAn empty checker succeeds. {{cite}}`requirements.rule`\n:::\n",
+            crate::sites::tests::RULE
+        );
+        let root = crate::sites::tests::project(&chapter, &source);
+        let subjects = [
+            AuthoringSubject::Definition("requirements.rule".into()),
+            AuthoringSubject::Definition("requirements.sample".into()),
+            AuthoringSubject::Citation {
+                file: "src/lib.rs".into(),
+                item: "fn[helper]".into(),
+            },
+            AuthoringSubject::Site {
+                requirement: "requirements.rule".into(),
+                file: "src/lib.rs".into(),
+                item: "fn[check_two]".into(),
+            },
+        ];
+        for subject in subjects {
+            let mut sources = subject.sources(root.path()).unwrap();
+            sources.record_inputs(&sources.mandatory_inputs().to_vec());
+            let old = record(&sources, &Judgment::True, "Reviewed inputs.", Some(true));
+            let node = HabeasNode::review_subject(&subject);
+            let path = subject.evidence_path(root.path());
+            let label = path
+                .strip_prefix(root.path())
+                .unwrap()
+                .to_string_lossy()
+                .into_owned();
+            let findings = || {
+                crate::evidence::inspect_repository(root.path())
+                    .unwrap()
+                    .report
+                    .errors
+                    .into_iter()
+                    .filter(|error| error.starts_with(&format!("{label}:")))
+                    .collect::<Vec<_>>()
+            };
+            let definitions = crate::evidence::load_definitions(root.path()).unwrap();
+            let outlines = crate::inputs::OutlineCache::default();
+            let graph = HabeasDomain {
+                root: root.path(),
+                definitions: &definitions,
+                outlines: &outlines,
+            };
+            let decoded = crate::evidence_format::decode(&old, &node).unwrap();
+            for version in ["*", crate::sdk::REVIEW_VERSION] {
+                let mut native = crate::evidence_format::encode(&decoded).unwrap();
+                native["review_version"] = json!(version);
+                crate::evidence_format::write_atomic(&path, &old).unwrap();
+                let legacy_findings = findings();
+                assert!(legacy_findings.is_empty(), "{label}: {legacy_findings:?}");
+                crate::evidence_format::write_atomic(&path, &native).unwrap();
+                assert_eq!(findings(), legacy_findings, "{label}");
+                let before = fs::read(&path).unwrap();
+                let loaded = graph.load_evidence(&node).await.unwrap().unwrap();
+                assert_eq!(loaded.procedure, version);
+                assert_eq!(loaded.dependencies, decoded.dependencies);
+                assert_eq!(loaded.output, decoded.output);
+                assert_eq!(fs::read(&path).unwrap(), before);
+            }
+            for mutations in [
+                json!({"rationale":""}),
+                json!({"determination":"bad"}),
+                json!({"inputs":null}),
+                json!({"unexpected":true}),
+                json!({"rationale":"","determination":"bad"}),
+            ] {
+                let mut legacy = old.clone();
+                legacy
+                    .as_object_mut()
+                    .unwrap()
+                    .extend(mutations.as_object().unwrap().clone());
+                let mut native = crate::evidence_format::encode(&decoded).unwrap();
+                native
+                    .as_object_mut()
+                    .unwrap()
+                    .extend(mutations.as_object().unwrap().clone());
+                crate::evidence_format::write_atomic(&path, &legacy).unwrap();
+                let legacy_findings = findings();
+                crate::evidence_format::write_atomic(&path, &native).unwrap();
+                let native_findings = findings();
+                assert!(!native_findings.is_empty(), "{label}: {mutations}");
+                assert_eq!(native_findings, legacy_findings, "{label}: {mutations}");
+                let mut unique = native_findings.clone();
+                unique.sort();
+                unique.dedup();
+                assert_eq!(unique.len(), native_findings.len());
+                let before = fs::read(&path).unwrap();
+                assert!(graph.load_evidence(&node).await.is_err());
+                assert_eq!(fs::read(&path).unwrap(), before);
+            }
+            // '*' accepts an unknown procedure version while preserving all
+            // application checks. Each mutation changes one semantic concern.
+            let mut stale_input = old["inputs"][0].clone();
+            if stale_input.get("hash").is_some() {
+                stale_input["hash"] = json!("0".repeat(64));
+            } else {
+                stale_input["text"] = json!(["Different historical text."]);
+            }
+            let mut changed_inputs = old["inputs"].clone();
+            changed_inputs[0] = stale_input;
+            let mut semantic_mutations = vec![
+                (json!({"determination":false}), "determination is false"),
+                (json!({"inputs":changed_inputs}), "changed"),
+            ];
+            match &subject {
+                AuthoringSubject::Definition(_) => {
+                    let text_field = if old.get("example").is_some() {
+                        "example"
+                    } else {
+                        "requirement"
+                    };
+                    semantic_mutations
+                        .push((json!({text_field:"Changed subject text."}), "text changed"));
+                    semantic_mutations.push((
+                        json!({"references":"0".repeat(64)}),
+                        "reference set changed",
+                    ));
+                }
+                AuthoringSubject::Citation { .. } => {
+                    for field in ["file", "item"] {
+                        semantic_mutations.push((json!({field:"different"}), "must be"));
+                    }
+                    let mut changed = old["citations"].clone();
+                    changed[0]["commentary"] = json!("Changed commentary.");
+                    semantic_mutations.push((json!({"citations":changed}), "citations changed"));
+                }
+                AuthoringSubject::Site { .. } => {
+                    for field in ["requirement", "file", "item"] {
+                        semantic_mutations.push((json!({field:"different"}), "must be"));
+                    }
+                    semantic_mutations.push((json!({"queries":["different"]}), "queries changed"));
+                    semantic_mutations.push((
+                        json!({"fixmes":[{"item":"fn[check_two]","commentary":"Different"}]}),
+                        "changed",
+                    ));
+                    semantic_mutations.push((
+                        json!({"applies":false,"determination":false}),
+                        "applies is false",
+                    ));
+                }
+            }
+            for (mutations, expected) in semantic_mutations {
+                let mut legacy = old.clone();
+                legacy
+                    .as_object_mut()
+                    .unwrap()
+                    .extend(mutations.as_object().unwrap().clone());
+                // Convert historical fields without resolving current inputs.
+                let changed_record = crate::evidence_format::decode(&legacy, &node).unwrap();
+                let native = crate::evidence_format::encode(&changed_record).unwrap();
+                assert_eq!(native["review_version"], "*");
+                crate::evidence_format::write_atomic(&path, &legacy).unwrap();
+                let legacy_findings = findings();
+                assert!(
+                    legacy_findings
+                        .iter()
+                        .any(|finding| finding.contains(expected)),
+                    "{label}: {mutations}: {legacy_findings:?}"
+                );
+                crate::evidence_format::write_atomic(&path, &native).unwrap();
+                assert_eq!(findings(), legacy_findings, "{label}: {mutations}");
+                // Staleness is an application finding, not a loading error.
+                let before = fs::read(&path).unwrap();
+                assert!(graph.load_evidence(&node).await.unwrap().is_some());
+                assert_eq!(fs::read(&path).unwrap(), before);
+            }
+            for version in [json!(2), json!("unsupported")] {
+                let mut invalid = crate::evidence_format::encode(&decoded).unwrap();
+                invalid["format_version"] = version;
+                crate::evidence_format::write_atomic(&path, &invalid).unwrap();
+                let errors = findings();
+                assert_eq!(errors.len(), 1, "{label}: {errors:?}");
+                assert!(errors[0].contains("unsupported evidence format version"));
+                let before = fs::read(&path).unwrap();
+                assert!(graph.load_evidence(&node).await.is_err());
+                assert_eq!(fs::read(&path).unwrap(), before);
+            }
+            for header in [
+                json!({"format_version":2}),
+                json!({"review_version":"v1"}),
+                json!({"dependencies":[]}),
+            ] {
+                let mut invalid = old.clone();
+                invalid
+                    .as_object_mut()
+                    .unwrap()
+                    .extend(header.as_object().unwrap().clone());
+                crate::evidence_format::write_atomic(&path, &invalid).unwrap();
+                assert_eq!(findings().len(), 1, "{label}: {:?}", findings());
+                assert!(graph.load_evidence(&node).await.is_err());
+            }
+            fs::write(&path, b"malformed JSON").unwrap();
+            assert!(graph.load_evidence(&node).await.is_err());
+            assert_eq!(fs::read(&path).unwrap(), b"malformed JSON");
+            crate::evidence_format::write_atomic(&path, &old).unwrap();
+            let loaded = graph.load_evidence(&node).await.unwrap().unwrap();
+            assert_eq!(loaded.procedure, "*");
+            assert_eq!(loaded.output, decoded.output);
+        }
     }
 }

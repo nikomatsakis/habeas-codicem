@@ -710,7 +710,7 @@ fn validate_evidence_file(
         definitions,
         outlines,
     };
-    crate::evidence_format::check_native(&value, &subject, &domain, &label, errors);
+    let native = value.clone();
     let value = match crate::evidence_format::view(&value) {
         Ok(value) => value,
         Err(error) => {
@@ -718,6 +718,7 @@ fn validate_evidence_file(
             return;
         }
     };
+    crate::evidence_format::check_native(&native, &subject, &domain, &label, errors);
     let Some(object) = value.as_object() else {
         errors.push(format!("{label}: expected a JSON object"));
         return;
@@ -1950,8 +1951,8 @@ pub(crate) fn collect_references_with_progress(
 /// The inline and fenced references in one text file, in line order.
 /// Where roles count as references in a file's content: the byte ranges of
 /// its comments when it has a language outline, or `None` where roles count
-/// anywhere: Markdown, which has its own rules, plain text, and a file that
-/// cannot be parsed, which is reported elsewhere.
+/// anywhere: Markdown, which has its own rules, and plain text. Syntax errors
+/// do not expand the grammar's comment ranges.
 // {impl}`requirements.references.reference_contexts`
 pub(crate) fn reference_contexts(
     file: &Path,
@@ -1962,14 +1963,7 @@ pub(crate) fn reference_contexts(
     }
     let profile = crate::outline::profile_for_path(file);
     profile.language?;
-    let outline = crate::outline::parse_with(profile, content).ok()?;
-    Some(
-        outline
-            .comments
-            .iter()
-            .map(|comment| comment.byte_start..comment.byte_end)
-            .collect(),
-    )
+    crate::outline::comment_ranges(profile, content).ok()
 }
 
 /// Whether a role at byte `start` counts under [`reference_contexts`].
@@ -2136,6 +2130,59 @@ pub(crate) mod tests {
                 )
             ),
             ["c.comment"]
+        );
+        for file in ["script.ts", "component.tsx"] {
+            assert_eq!(
+                names(
+                    file,
+                    format!(
+                        "// {}\n/** {} */\n/* {} */\nconst s = \"{}\";\nconst t = `${{\"{}\"}}`;\n",
+                        role("ts.line"),
+                        role("ts.doc"),
+                        role("ts.block"),
+                        role("ts.string"),
+                        role("ts.template")
+                    )
+                ),
+                ["ts.line", "ts.doc", "ts.block"]
+            );
+        }
+        assert_eq!(
+            names(
+                "style.css",
+                format!(
+                    "/* {} */\na {{ content: \"{}\"; }}\n",
+                    role("css.comment"),
+                    role("css.string")
+                )
+            ),
+            ["css.comment"]
+        );
+        for file in ["config.yaml", "config.yml"] {
+            assert_eq!(
+                names(
+                    file,
+                    format!(
+                        "# {}\na: \"{}\"\nb: |\n  {}\n",
+                        role("yaml.comment"),
+                        role("yaml.string"),
+                        role("yaml.block")
+                    )
+                ),
+                ["yaml.comment"]
+            );
+        }
+        // Parser recovery must still distinguish comments from strings.
+        assert_eq!(
+            names(
+                "broken.rs",
+                format!(
+                    "// {}\nfn f() {{ let s = \"{}\";\n",
+                    role("broken.comment"),
+                    role("broken.string")
+                )
+            ),
+            ["broken.comment"]
         );
         // A fenced role spanning lines of a string literal is literal too.
         assert_eq!(
@@ -3541,6 +3588,7 @@ pub(crate) mod tests {
     // {test}`requirements.ci.requirements_inputs`
     // {test}`requirements.ci.orphans`
     #[test]
+    // {test}`requirements.ci.orphans`
     fn cited_example_with_a_test_and_matching_evidence_validates() {
         let temp = fixture();
         let chapter = "# Rules\n\n:::{req} ready\nReady.\n:::\n\n:::{example} case\nGiven ready, it succeeds. {cite}`rules.ready` {test}`rules.ready`\n:::\n";

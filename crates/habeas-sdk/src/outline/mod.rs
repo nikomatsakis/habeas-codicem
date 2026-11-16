@@ -166,6 +166,16 @@ fn parse_grammar(
     let Some(language) = grammar else {
         return Ok(plain_text(profile, source, redaction, &lines));
     };
+    let tree = parse_tree(profile, language, source)?;
+    check_errors(&tree, &lines)?;
+    Ok(Builder::new(profile, source, redaction, &tree).finish(&lines))
+}
+
+fn parse_tree(
+    profile: &'static Profile,
+    language: fn() -> tree_sitter::Language,
+    source: &str,
+) -> Result<Tree, OutlineError> {
     let mut parser = Parser::new();
     parser
         .set_language(&language())
@@ -173,12 +183,35 @@ fn parse_grammar(
             line: 1,
             message: format!("cannot load {} grammar: {error}", profile.name),
         })?;
-    let tree = parser.parse(source, None).ok_or_else(|| OutlineError {
+    parser.parse(source, None).ok_or_else(|| OutlineError {
         line: 1,
         message: "parser produced no tree".to_owned(),
-    })?;
-    check_errors(&tree, &lines)?;
-    Ok(Builder::new(profile, source, redaction, &tree).finish(&lines))
+    })
+}
+
+/// Locate comment prose even when an unrelated syntax error prevents outlining.
+/// Recovery nodes do not make string literals or other data into comments.
+// {impl}`requirements.references.reference_contexts`
+pub fn comment_ranges(
+    profile: &'static Profile,
+    source: &str,
+) -> Result<Vec<std::ops::Range<usize>>, OutlineError> {
+    let Some(language) = profile.language else {
+        return Ok(Vec::new());
+    };
+    let tree = parse_tree(profile, language, source)?;
+    let mut pending = vec![tree.root_node()];
+    let mut ranges = Vec::new();
+    while let Some(node) = pending.pop() {
+        if (profile.is_comment)(node, source) {
+            ranges.push(node.byte_range());
+        } else {
+            let mut cursor = node.walk();
+            pending.extend(node.named_children(&mut cursor));
+        }
+    }
+    ranges.sort_by_key(|range| range.start);
+    Ok(ranges)
 }
 
 /// Reports the first syntax error in a tree.

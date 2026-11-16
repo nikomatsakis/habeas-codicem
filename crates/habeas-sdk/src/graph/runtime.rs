@@ -1,6 +1,7 @@
 use super::*;
 use crate::procedure::{Agent, AgentInputRenderer};
 
+// {impl}`requirements.sdk.graph.validation.check_node`
 #[derive(Debug)]
 pub enum EvidenceState<M> {
     Current(Judgment<M>),
@@ -9,6 +10,7 @@ pub enum EvidenceState<M> {
 }
 
 /// Model-free checking with an application-supplied review-version resolver.
+// {impl}`requirements.sdk.graph.validation.check_node`
 pub struct Checker<'d, D, F> {
     pub(crate) graph: &'d D,
     pub(crate) procedure: F,
@@ -33,6 +35,7 @@ where
         self.check_with_version(node, &procedure).await
     }
 
+    // {cite}`habeas:util`
     pub(crate) async fn check_with_version(
         &self,
         node: &D::NodeId,
@@ -49,7 +52,8 @@ where
     }
 }
 
-pub struct Validator<'d, D: Validation, F> {
+// {impl}`requirements.sdk.graph.validation.validate_node`
+pub struct Validator<'d, D: Domain, F> {
     pub(crate) checker: Checker<'d, D, F>,
     agent: Option<&'d dyn Agent<D>>,
     renderer: Option<&'d dyn AgentInputRenderer<D>>,
@@ -57,7 +61,7 @@ pub struct Validator<'d, D: Validation, F> {
 
 impl<'d, D, F> Validator<'d, D, F>
 where
-    D: Validation + EvidenceStorage,
+    D: Domain,
     F: Fn(&D::NodeId) -> Result<String, D::Error> + Send + Sync,
 {
     pub fn new(graph: &'d D, procedure: F) -> Self {
@@ -68,6 +72,7 @@ where
         }
     }
 
+    // {impl}`requirements.sdk.graph.agent-calls.procedures`
     pub fn with_agent(
         mut self,
         agent: &'d dyn Agent<D>,
@@ -78,6 +83,7 @@ where
         self
     }
 
+    // {impl}`requirements.sdk.graph.validation.check_node`
     pub async fn check_node(
         &self,
         node: &D::NodeId,

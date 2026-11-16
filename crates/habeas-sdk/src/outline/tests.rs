@@ -96,6 +96,7 @@ fn hashes_include_grammar_kinds_nesting_and_sha256_digests() {
 }
 
 // {test}`requirements.references.outlines`
+// {test}`requirements.references.rust_item_selectors`
 #[test]
 fn every_profile_mapping_is_documented() {
     let reference = include_str!("../../../../md/reference.md");
@@ -151,6 +152,22 @@ fn every_profile_mapping_is_documented() {
         && cells[3] == "`line`"
         && cells[4] == "each non-blank line"
         && cells[5] == "anonymous"));
+    for selector in [
+        "mod[local]/fn[run]",
+        "impl[Thing]/fn[run]",
+        "impl[Thing/Trait]/fn[run]",
+        "trait[Trait]/fn[read]",
+        "extern[C]/fn[puts]",
+        "fn[outer]/fn[inner]",
+        "impl[Wrapper<T>/Trait]",
+        "use@3f2a9c01b7de",
+    ] {
+        assert!(reference.contains(&format!("`{selector}`")), "{selector}");
+    }
+    assert!(
+        reference.contains("`use` declarations and item-position macro invocations are anonymous")
+    );
+    assert!(reference.contains("Modules are never resolved across files."));
 }
 
 // {test}`requirements.references.outlines`
@@ -245,6 +262,7 @@ extern crate core;
         "trait[Trait]/type[Item]",
         "extern[C]/fn[puts]",
         "extern[Rust]/fn[other]",
+        "fn[outer]",
         "fn[outer]/fn[inner]",
         "fn[repeated]#1",
         "fn[repeated]#2",
@@ -366,14 +384,12 @@ fn hashes_skip_whitespace_and_plain_comments_but_not_doc_comments() {
     assert_eq!((start, end), (1, 4));
     let (moved, start, _) = hash(&format!("\n\n{base}"));
     assert_eq!((moved.as_str(), start), (original.as_str(), 3));
-    assert_eq!(
-        hash(concat!(
-            "/// Doc.\n#[inline]\n// {cite}",
-            "`c.d`\nfn run() {\n    let x  =  1;\n}\n"
-        ))
-        .0,
-        original
+    let multiline = concat!(
+        "/// Doc.\n#[inline]\n// {cite}",
+        "`c.d`\nfn run() {\n    let x  =  1;\n}\n"
     );
+    assert_eq!(hash(multiline), (original.clone(), 1, 6));
+    assert_eq!(hash(&format!("\n\n{multiline}")), (original.clone(), 3, 8));
     assert_ne!(hash(&base.replace("Doc.", "Docs.")).0, original);
     assert_ne!(hash(&base.replace("inline", "cold")).0, original);
     assert_ne!(hash(&base.replace("= 1", "= 2")).0, original);
@@ -886,6 +902,7 @@ fn outer() { fn inner() {} }
         "impl[%5Bu8;%204%5D]/fn[edge]",
         "trait[Trait]/fn[read]",
         "extern[C]/fn[puts]",
+        "fn[outer]",
         "fn[outer]/fn[inner]",
         "fn[repeated]#1",
         "fn[repeated]#2",
@@ -1346,6 +1363,7 @@ fn inner_and_outer_doc_comments_hash_in_separate_groups() {
     );
 }
 
+// {test}`requirements.sdk.sources.language_provider`
 #[test]
 fn custom_provider_handles_generated_content_and_structural_search() {
     use crate::language::{LanguageProvider, Profile, Registry};
