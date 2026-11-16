@@ -347,6 +347,45 @@ mod tests {
     }
 
     // {test}`requirements.test-coverage.setup.configuration`
+    #[test]
+    fn setup_conflicts_name_the_setting_and_preserve_existing_native_configuration() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(temp.path().join("Cargo.toml"), "[workspace]\n").unwrap();
+        let (path, valid) = configure(temp.path()).unwrap();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        for (source, setting) in [
+            (
+                valid.replace("coverage-process", "other-command"),
+                "scripts.wrapper.habeas-coverage",
+            ),
+            (
+                valid.replace("within-wrapper", "overrides-wrapper"),
+                "scripts.wrapper.habeas-coverage",
+            ),
+            (
+                "experimental = 'wrong'\n".to_owned(),
+                "experimental must be an array",
+            ),
+            ("scripts = 'wrong'\n".to_owned(), "scripts must be a table"),
+            (
+                "[profile.default]\nscripts = 'wrong'\n".to_owned(),
+                "profile.default.scripts must be an array of tables",
+            ),
+            (
+                "[[profile.default.scripts]]\nfilter = 'test(x)'\nrun-wrapper = 'custom'\n"
+                    .to_owned(),
+                "profile.default.scripts",
+            ),
+        ] {
+            fs::write(&path, &source).unwrap();
+            let error = configure(temp.path()).unwrap_err().to_string();
+            assert!(error.contains(setting), "{setting}: {error}");
+            assert!(error.contains(".config/nextest.toml"), "{error}");
+            assert_eq!(fs::read_to_string(&path).unwrap(), source);
+        }
+    }
+
+    // {test}`requirements.test-coverage.setup.configuration`
     // {test}`requirements.test-coverage.setup.validation.static`
     #[test]
     fn workspace_member_uses_the_native_config_at_the_workspace_root() {

@@ -428,6 +428,8 @@ fn invalid_mappings_fail_with_a_usage_error_and_change_nothing() {
     for (args, message) in [
         (vec!["--map", "rules.load"], "expected <old>=<new>"),
         (vec!["--map", "=core.load"], "expected <old>=<new>"),
+        (vec!["--map", "rules.check="], "expected <old>=<new>"),
+        (vec!["--map", "src/config.rs="], "expected <old>=<new>"),
         (vec!["--map", "rules.check=rules.check"], "different"),
         (vec!["--map", "rules.load=core.load"], "ambiguous"),
         (

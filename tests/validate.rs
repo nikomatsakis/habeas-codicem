@@ -41,6 +41,7 @@ fn validate_in(cwd: &Path, state: &Path) -> Output {
 }
 
 // {test}`requirements.integration.validate`
+// {test}`requirements.test-coverage.check.guidance`
 #[test]
 fn validate_fails_the_test_with_every_error_and_authoring_instructions() {
     let temp = TempDir::new().unwrap();
@@ -113,6 +114,10 @@ fn validate_fails_the_test_with_every_error_and_authoring_instructions() {
     .unwrap();
     let output = validate_in(&root, &state);
     assert!(output.status.success(), "{output:?}");
+    assert!(
+        !root.join("target/habeas/coverage").exists(),
+        "static validation needs no execution data"
+    );
 }
 
 // {test}`requirements.integration.validate`

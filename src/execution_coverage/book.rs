@@ -1250,7 +1250,7 @@ mod tests {
         for (test, start, config, counts) in [
             ("two", 40, "build-a", [(2, 1)]),
             ("one", 30, "build-a", [(1, 1)]),
-            ("one", 20, "build-b", [(1, 0)]),
+            ("one", 35, "build-b", [(1, 0)]),
             ("two", 10, "build-a", [(2, 0)]),
         ] {
             let attempt = record(temp.path(), test, start, config, &counts);

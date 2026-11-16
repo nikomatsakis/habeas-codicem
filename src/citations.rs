@@ -324,6 +324,8 @@ pub(crate) fn validate_review(
             .map(|(index, citation)| {
                 parse_citation(citation, &format!("{label}: citations[{index}]"), errors)
             })
+            .collect::<Vec<_>>()
+            .into_iter()
             .collect::<Option<Vec<_>>>();
         if let Some(parsed) = parsed
             && !same_citations(&parsed, &item.citations)

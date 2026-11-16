@@ -732,6 +732,7 @@ fn acknowledged_empty_input_boundary_is_explained_and_accepted() {
 // {test}`requirements.authoring.usage_storage`
 // {test}`requirements.configuration.serialization`
 #[test]
+// {test}`requirements.configuration.documentation`
 fn authoring_uses_nearest_workspace_configuration_without_a_user_file() {
     let server = Server::start(vec![reply(vec![call(
         "submit",
@@ -3064,7 +3065,8 @@ fn home_markers(home: &str) -> &'static [&'static str] {
             "## Fixing findings",
             "An item has recent coverage when it has its own reference, or when a recent version of an existing evidence record or review read it",
             "A FIXME judgment, such as",
-            "gets a citation review, which checks that each citation is sensible",
+            "gets a citation review. For project requirements and examples it checks that",
+            "For built-ins it checks their permitted forms and stated criteria",
             "A site the requirement does not apply to is judged true",
             "The goal is that independent assessments of the same subject reach the same determination",
             "describing the change relative to the prior commit rather than the drafts that led to it",
@@ -4599,9 +4601,10 @@ fn bundled_skills_direct_the_reference_procedure_and_report_items_without_one() 
         ] {
             assert!(!text.contains(grouping), "{name} suggests {grouping:?}");
         }
+        let reference_guidance = text.replace("no explanation can waive them", "");
         for waiver in ["may waive", "can waive", "waiver applies", "is exempt"] {
             assert!(
-                !text.to_lowercase().contains(waiver),
+                !reference_guidance.to_lowercase().contains(waiver),
                 "{name} offers a waiver"
             );
         }
@@ -4675,7 +4678,7 @@ fn bundled_skills_direct_behavior_review_against_requirements() {
     );
     assert_phrases(
         "habeas-requirements",
-        &["To defer a gap the user agrees to, use `{fixme}`"],
+        &["To defer a requirement gap the user agrees to, use `{fixme}`"],
     );
     // Roots get `{impl}`, tests `{test}`, and `{cite}` only for related code.
     assert_text(
@@ -4684,7 +4687,7 @@ fn bundled_skills_direct_behavior_review_against_requirements() {
         &[
             "1. A test designed to verify it gets `{test}`",
             "2. Otherwise a root gets `{impl}`. Leave what it reaches unmarked",
-            "`{cite}` needs no coverage and implements nothing",
+            "`{cite}` implements nothing; a citation review checks project citations' roles and built-ins' stated criteria",
         ],
     );
     assert_phrases(

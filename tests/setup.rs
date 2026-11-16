@@ -98,6 +98,12 @@ fn coverage_setup_is_idempotent_and_hook_checks_config_and_chapter() {
         "habeas:coverage",
         "current accepted review",
         "No project declaration or special configuration",
+        "after it succeeds,\nrun `habeas coverage-check` as a separate step",
+        "`habeas test` collects coverage for the whole workspace,\nthen checks it",
+        "substantive prose justification",
+        "fenced commentary or a Rust doc comment",
+        "citation review with `habeas author`",
+        "Ordinary partly covered functions\nneed no exception when their file meets its target",
     ] {
         assert!(
             chapter.contains(guidance),
@@ -121,13 +127,58 @@ fn coverage_setup_is_idempotent_and_hook_checks_config_and_chapter() {
     )
     .unwrap();
     assert!(advises_setup(&session_start(root, root)));
+    assert_eq!(
+        fs::read_to_string(root.join(".config/nextest.toml")).unwrap(),
+        config.replace("all()", "test(one)")
+    );
     fs::write(root.join(".config/nextest.toml"), config).unwrap();
     fs::write(root.join("md/SUMMARY.md"), "# Summary\n").unwrap();
     assert!(advises_setup(&session_start(root, root)));
+    assert_eq!(
+        fs::read_to_string(root.join("md/SUMMARY.md")).unwrap(),
+        "# Summary\n"
+    );
+    fs::write(root.join("md/SUMMARY.md"), &summary).unwrap();
+    fs::remove_file(root.join("md/test-coverage.md")).unwrap();
+    assert!(advises_setup(&session_start(root, root)));
+    assert!(
+        !root.join("md/test-coverage.md").exists(),
+        "hook must not recreate a missing chapter"
+    );
+    fs::write(
+        root.join("md/test-coverage.md"),
+        "User's chapter with no coverage directive.\n",
+    )
+    .unwrap();
+    assert!(advises_setup(&session_start(root, root)));
+    assert_eq!(
+        fs::read_to_string(root.join("md/test-coverage.md")).unwrap(),
+        "User's chapter with no coverage directive.\n"
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("md/SUMMARY.md")).unwrap(),
+        summary
+    );
+    fs::write(root.join("md/test-coverage.md"), &chapter).unwrap();
+    fs::remove_file(root.join(".config/nextest.toml")).unwrap();
+    assert!(advises_setup(&session_start(root, root)));
+    assert!(
+        !root.join(".config/nextest.toml").exists(),
+        "hook must not recreate the collector configuration"
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("md/test-coverage.md")).unwrap(),
+        chapter
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("md/SUMMARY.md")).unwrap(),
+        summary
+    );
 }
 
 // {test}`requirements.test-coverage.setup`
 // {test}`requirements.test-coverage.setup.configuration`
+// {test}`requirements.integration.symposium_setup_hook`
 #[test]
 fn coverage_setup_preserves_custom_index_and_preflights_conflicts() {
     let temp = fixture();
@@ -145,6 +196,10 @@ fn coverage_setup_preserves_custom_index_and_preflights_conflicts() {
     run(root, &["setup", "--path", env!("CARGO_MANIFEST_DIR")]);
     assert!(!root.join("md/test-coverage.md").exists());
     assert!(
+        !advises_setup(&session_start(root, root)),
+        "a rendered custom coverage chapter completes setup"
+    );
+    assert!(
         fs::read_to_string(root.join("md/custom.md"))
             .unwrap()
             .starts_with("A custom report.")
@@ -153,6 +208,7 @@ fn coverage_setup_preserves_custom_index_and_preflights_conflicts() {
     let root = temp.path();
     fs::write(root.join("md/test-coverage.md"), "User content\n").unwrap();
     let original = fs::read_to_string(root.join("book.toml")).unwrap();
+    let original_summary = fs::read_to_string(root.join("md/SUMMARY.md")).unwrap();
     let result = Command::new(env!("CARGO_BIN_EXE_habeas"))
         .arg("setup")
         .current_dir(root)
@@ -165,6 +221,61 @@ fn coverage_setup_preserves_custom_index_and_preflights_conflicts() {
         original
     );
     assert!(!root.join(".config/nextest.toml").exists());
+    assert_eq!(
+        fs::read_to_string(root.join("md/test-coverage.md")).unwrap(),
+        "User content\n"
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("md/SUMMARY.md")).unwrap(),
+        original_summary
+    );
+
+    let temp = fixture();
+    let root = temp.path();
+    fs::write(root.join("md/unlinked.md"), ":::{coverage-index}\n:::\n").unwrap();
+    fs::write(
+        root.join("md/rules.md"),
+        "```text\n:::{coverage-index}\n:::\n```\n",
+    )
+    .unwrap();
+    run(root, &["setup", "--path", env!("CARGO_MANIFEST_DIR")]);
+    assert!(root.join("md/test-coverage.md").is_file());
+    assert!(
+        fs::read_to_string(root.join("md/SUMMARY.md"))
+            .unwrap()
+            .contains("(./test-coverage.md)")
+    );
+}
+
+// {test}`requirements.test-coverage.setup.configuration`
+#[test]
+fn setup_reports_a_conflicting_nextest_wrapper_without_writing_project_files() {
+    let temp = fixture();
+    let root = temp.path();
+    let (path, native) = habeas::execution_coverage::configure(root).unwrap();
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let conflict = native.replace("coverage-process", "custom-command");
+    fs::write(&path, &conflict).unwrap();
+    let book = fs::read(root.join("book.toml")).unwrap();
+    let summary = fs::read(root.join("md/SUMMARY.md")).unwrap();
+    let manifest = fs::read(root.join("Cargo.toml")).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_habeas"))
+        .arg("setup")
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        error.contains(".config/nextest.toml") && error.contains("scripts.wrapper.habeas-coverage"),
+        "{error}"
+    );
+    assert_eq!(fs::read_to_string(path).unwrap(), conflict);
+    assert_eq!(fs::read(root.join("book.toml")).unwrap(), book);
+    assert_eq!(fs::read(root.join("md/SUMMARY.md")).unwrap(), summary);
+    assert_eq!(fs::read(root.join("Cargo.toml")).unwrap(), manifest);
+    assert!(!root.join("md/test-coverage.md").exists());
+    assert!(!root.join("tests/habeas.rs").exists());
 }
 
 // {cite}`habeas:util`

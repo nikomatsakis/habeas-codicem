@@ -936,6 +936,10 @@ mod tests {
         let rendered = book.chapters().next().unwrap().content.clone();
 
         // The project reference links to its definition, then its body.
+        let mut html = String::new();
+        pulldown_cmark::html::push_html(&mut html, pulldown_cmark::Parser::new(&rendered));
+        assert!(html.contains("<p>The <em>other</em> rule.</p>"), "{html}");
+        assert!(html.contains("alt=\"req rules.ready\""), "{html}");
         let linked = "<div class=\"habeas-fenced-ref\">\n\n<p><a class=\"habeas-req-badge habeas-req-ref-cite\" href=\"rules.html#habeas-req-rules.other\">";
         let start = rendered.find(linked).expect(&rendered);
         let after = &rendered[start..];

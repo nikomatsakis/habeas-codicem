@@ -3488,6 +3488,7 @@ pub(crate) mod tests {
     // {test}`requirements.ci.schema`
     // {test}`requirements.references.evidence_coverage`
     // {test}`requirements.ci.requirements_inputs`
+    // {test}`requirements.ci.orphans`
     #[test]
     fn cited_example_with_a_test_and_matching_evidence_validates() {
         let temp = fixture();

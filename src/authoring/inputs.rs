@@ -1708,6 +1708,7 @@ pub(super) mod tests {
     // {test}`requirements.references.anchors`
     // {test}`requirements.authoring.mandatory_inputs`
     // {test}`requirements.authoring.fixme_inputs`
+    // {test}`requirements.references.roles`
     #[test]
     fn references_contribute_their_owning_outline_nodes() {
         let root = project();

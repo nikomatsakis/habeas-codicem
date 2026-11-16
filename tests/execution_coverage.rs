@@ -3,6 +3,7 @@ mod common;
 
 use serde_json::Value;
 use std::fs;
+use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Output};
 use tempfile::TempDir;
@@ -121,13 +122,69 @@ fn full_flow(root: &Path) -> Output {
         .unwrap()
 }
 
+// {cite}`habeas:util`
+fn saved_check(root: &Path) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_habeas"))
+        .arg("coverage-check")
+        .current_dir(root)
+        .env_remove("CARGO_TARGET_DIR")
+        .env_remove("CARGO_BUILD_TARGET_DIR")
+        .output()
+        .unwrap()
+}
+
+// {cite}`habeas:util`
+fn model_tripwire(
+    root: &Path,
+) -> (
+    std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    std::sync::mpsc::Sender<()>,
+    std::thread::JoinHandle<()>,
+) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    fs::write(root.join("habeas.toml"), format!(
+        "version = 1\n[authoring]\ndefault = 'trap'\n[authoring.configs.trap]\nbackend = 'ollama'\nmodel = 'must-not-be-invoked'\nendpoint = 'http://{}'\n",
+        listener.local_addr().unwrap()
+    )).unwrap();
+    let count = std::sync::Arc::new(AtomicUsize::new(0));
+    let observed = count.clone();
+    let (stop, stopped) = std::sync::mpsc::channel();
+    let thread = std::thread::spawn(move || {
+        loop {
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    observed.fetch_add(1, Ordering::SeqCst);
+                    let _ = stream.write_all(b"HTTP/1.1 500 Unexpected model request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(error) => panic!("{error}"),
+            }
+            if !matches!(
+                stopped.try_recv(),
+                Err(std::sync::mpsc::TryRecvError::Empty)
+            ) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    });
+    (count, stop, thread)
+}
+
 // {test}`requirements.test-coverage.test`
 // {test}`requirements.test-coverage.check`
 // {test}`requirements.test-coverage.check.functions`
+// {test}`requirements.test-coverage.check.guidance`
 #[test]
 fn full_test_flow_checks_real_function_counters_after_all_tests() {
     let temp = fixture();
     let root = temp.path();
+    let (requests, stop, server) = model_tripwire(root);
+    fs::create_dir(root.join("evidence")).unwrap();
+    fs::write(root.join("evidence/sentinel.txt"), "existing evidence").unwrap();
+    let original_evidence = retained_files(&root.join("evidence"));
     let nextest = root.join(".config/nextest.toml");
     let mut configuration = fs::read_to_string(&nextest)
         .unwrap()
@@ -144,6 +201,10 @@ fn full_test_flow_checks_real_function_counters_after_all_tests() {
     let output = full_flow(root);
     assert_success(&output);
     assert!(String::from_utf8_lossy(&output.stdout).contains("Coverage check passed"));
+    let checked = saved_check(root);
+    assert_success(&checked);
+    assert!(String::from_utf8_lossy(&checked.stdout).contains("Coverage check passed"));
+    assert_eq!(retained_files(&root.join("evidence")), original_evidence);
     let saved = runs(root);
     assert_eq!(saved.len(), 1);
     assert_eq!(
@@ -174,6 +235,17 @@ fn full_test_flow_checks_real_function_counters_after_all_tests() {
         runs(root).last().unwrap().1["outcome"],
         "success",
         "tests succeeded; the policy caused failure"
+    );
+    let checked = saved_check(root);
+    assert!(!checked.status.success());
+    assert!(String::from_utf8_lossy(&checked.stdout).contains("Coverage check failed"));
+    assert_eq!(retained_files(&root.join("evidence")), original_evidence);
+    stop.send(()).unwrap();
+    server.join().unwrap();
+    assert_eq!(
+        requests.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "verification must never call a model"
     );
 }
 
@@ -267,6 +339,10 @@ fn book_rendering_preserves_retained_coverage_and_never_launches_tests() {
         .env_remove("CARGO_BUILD_TARGET_DIR")
         .output()
         .unwrap();
+    assert!(
+        !checked.status.success(),
+        "filtered coverage leaves unmeasured functions"
+    );
     assert!(
         String::from_utf8_lossy(&checked.stdout).contains("File execution coverage"),
         "{}",
@@ -748,6 +824,43 @@ fn real_parallel_processes_retries_child_profiles_and_filtered_reruns() {
     }
 }
 
+// {test}`requirements.test-coverage.run`
+#[test]
+fn configured_retries_filters_profiles_and_libtest_arguments_are_preserved() {
+    let temp = fixture();
+    let root = temp.path();
+    let path = root.join(".config/nextest.toml");
+    let mut config: toml_edit::DocumentMut = fs::read_to_string(&path).unwrap().parse().unwrap();
+    config["profile"]["default"]["retries"] = toml_edit::value(1);
+    config["profile"]["default"]["default-filter"] = toml_edit::value("test(retries)");
+    config["profile"]["focused"]["default-filter"] = toml_edit::value("test(second)");
+    fs::write(path, config.to_string()).unwrap();
+    assert_success(&coverage(root, &[]));
+    let saved = runs(root);
+    let records = attempts(&saved[0].0);
+    assert_eq!(records.len(), 2, "{records:?}");
+    assert!(records.iter().all(|attempt| attempt["test"] == "retries"));
+    assert!(records.iter().any(|attempt| attempt["outcome"] == "failed"));
+    assert!(
+        records
+            .iter()
+            .any(|attempt| attempt["outcome"] == "success")
+    );
+    assert_success(&coverage(
+        root,
+        &["--profile", "focused", "--", "--exact", "second"],
+    ));
+    let saved = runs(root);
+    let records = attempts(&saved.last().unwrap().0);
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0]["test"], "second");
+    assert_eq!(
+        saved.last().unwrap().1["selection"],
+        serde_json::json!(["--profile", "focused", "--", "--exact", "second"])
+    );
+    assert_eq!(saved[0].1["configuration"], saved[1].1["configuration"]);
+}
+
 // {test}`requirements.test-coverage.failures`
 // {test}`requirements.test-coverage.storage.outcomes`
 #[cfg(unix)]
@@ -908,6 +1021,7 @@ fn rendezvous(own: &str, other: &str) {
 // {test}`requirements.test-coverage.failures`
 // {test}`requirements.test-coverage.storage.outcomes`
 // {test}`requirements.test-coverage.processes.reports`
+// {test}`requirements.test-coverage.test`
 #[cfg(unix)]
 #[test]
 fn passing_tests_with_missing_or_corrupt_profiles_fail_collection_and_retain_partial_reports() {
@@ -927,6 +1041,13 @@ unsafe extern "C" { fn _exit(status: i32) -> !; }
     assert!(!output.status.success());
     assert!(
         String::from_utf8_lossy(&output.stderr)
+            .contains("partial profiles and reports have been retained")
+    );
+    let combined = full_flow(root);
+    assert!(!combined.status.success());
+    assert!(!String::from_utf8_lossy(&combined.stdout).contains("Coverage check"));
+    assert!(
+        String::from_utf8_lossy(&combined.stderr)
             .contains("partial profiles and reports have been retained")
     );
     let saved = runs(root);

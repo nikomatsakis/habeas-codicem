@@ -20,6 +20,103 @@ fn repository_toml(path: &str) -> toml::Table {
     repository_file(path).parse().unwrap()
 }
 
+// {test}`requirements.install.symposium`
+// {test}`requirements.install.symposium.skill_hook`
+#[test]
+fn getting_started_documents_symposium_setup_and_skill_migration() {
+    for path in ["README.md", "md/getting_started.md"] {
+        let text = repository_file(path);
+        for phrase in [
+            "cargo install symposium",
+            "cargo agents init",
+            "cargo add --dev habeas",
+            "cargo agents sync",
+            "Enable",
+            "Ask me later",
+            "session",
+            "hook",
+            "`habeas` skill",
+            "habeas setup",
+            "updating",
+            "local edits",
+        ] {
+            assert!(text.contains(phrase), "{path} omits {phrase}");
+        }
+        let paragraphs = text
+            .split("\n\n")
+            .map(|paragraph| paragraph.split_whitespace().collect::<Vec<_>>().join(" "))
+            .collect::<Vec<_>>();
+        assert!(
+            paragraphs
+                .iter()
+                .any(|paragraph| paragraph.contains("hook tells")
+                    && paragraph.contains("load the `habeas` skill before starting any work")
+                    && paragraph.contains("session")),
+            "{path}: hook must direct skill loading"
+        );
+        let advice = if path == "README.md" {
+            "The hook also checks the project and advises the agent to run `habeas setup` when configuration is incomplete"
+        } else {
+            "The hook also checks setup: if configuration is missing or incompatible, it advises the agent to run `habeas setup`"
+        };
+        assert!(
+            text.contains(advice),
+            "{path}: missing conditional setup advice"
+        );
+        assert!(
+            paragraphs
+                .iter()
+                .any(|paragraph| paragraph.contains("cargo agents sync")
+                    && paragraph.contains("after updating the Habeas dependency to refresh")),
+            "{path}: missing update/sync/refresh guidance"
+        );
+        assert!(
+            paragraphs.iter().any(|paragraph| {
+                paragraph.contains(".agents/skills/habeas-*")
+                    && paragraph.contains("local edits")
+                    && paragraph.contains("different names or elsewhere")
+                    && paragraph
+                        .find("Save")
+                        .zip(paragraph.find("remove those old copies"))
+                        .is_some_and(|(save, remove)| save < remove)
+                    && paragraph
+                        .find("remove those old copies")
+                        .zip(paragraph.rfind("sync"))
+                        .is_some_and(|(remove, sync)| remove < sync)
+            }),
+            "{path}: preserve customizations before removing copies and syncing"
+        );
+    }
+}
+
+// {test}`requirements.test-coverage.check.guidance`
+// {test}`requirements.test-coverage.check.exceptions.setup`
+#[test]
+fn shared_agent_guidance_documents_post_suite_checks_and_standard_explanations() {
+    let skill = repository_file("assets/skills/habeas/SKILL.md");
+    for phrase in [
+        "It collects coverage for the full workspace, then checks it",
+        "`habeas coverage -- --workspace` followed, only on success, by\n`habeas coverage-check`",
+        "static `habeas::validate()` test requires no prior execution coverage",
+        "Partly covered\nfunctions need no exception when their file meets its target",
+        "standard\n`{cite}` of `habeas:coverage`",
+        "rationale in fenced commentary or a Rust\ndoc comment",
+        "citation review with `habeas author`",
+        "Only current accepted review evidence permits the exception",
+        "No\nproject declaration or extra configuration is needed",
+    ] {
+        assert!(skill.contains(phrase), "agent guidance omits {phrase}");
+    }
+    let reference = repository_file("md/reference.md");
+    for phrase in [
+        "whole workspace, then check the saved results",
+        "Run the second command only after the first succeeds",
+        "it need not run last",
+    ] {
+        assert!(reference.contains(phrase), "reference omits {phrase}");
+    }
+}
+
 /// The lines of one top-level job in a GitHub Actions workflow, from its
 /// `  <name>:` line to the next top-level job.
 // {cite}`habeas:util`

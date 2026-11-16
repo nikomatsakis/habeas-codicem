@@ -124,8 +124,14 @@ fn exceptions(
     outlines: &OutlineCache,
     errors: &mut Vec<String>,
 ) -> io::Result<BTreeMap<(String, String), bool>> {
-    let definitions = crate::evidence::load_definitions(root)?;
     let references = crate::evidence::collect_references(root, errors);
+    let definitions = match crate::evidence::load_definitions(root) {
+        Ok(definitions) => definitions,
+        Err(error) => {
+            errors.push(error.to_string());
+            return Ok(BTreeMap::new());
+        }
+    };
     let items = citation_items(root, &definitions, &references, outlines);
     let mut accepted = BTreeMap::new();
     for (key, item) in items {
@@ -196,12 +202,13 @@ fn check_in(project: &Path, target: PathBuf) -> io::Result<CheckReport> {
     let mut errors = Vec::new();
     if saved.uncertain_history {
         errors.push("Coverage history is incomplete: cannot establish latest-per-test selection or active build configuration. Repair or remove corrupt build artifacts, then recollect coverage.".into());
-        errors.extend(saved.diagnostics.iter().cloned());
     }
     if saved.selected.is_empty() {
         errors.push(
             "No usable coverage has been collected. Run `habeas coverage -- --workspace`.".into(),
         );
+    }
+    if saved.uncertain_history || saved.selected.is_empty() {
         errors.extend(saved.diagnostics.iter().cloned());
     }
     let selected: Vec<_> = saved
@@ -259,20 +266,9 @@ fn check_in(project: &Path, target: PathBuf) -> io::Result<CheckReport> {
     if totals.is_empty() && !selected.is_empty() {
         errors.push("No usable instrumented lines are available; recollect coverage.".into());
     }
-    // Measurement failures cannot be waived, even by valid citation evidence.
-    if !errors.is_empty() {
-        return Ok(CheckReport {
-            passed: false,
-            text: format!(
-                "Coverage check failed:\n{}\n",
-                errors
-                    .iter()
-                    .map(|error| format!("- {error}"))
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            ),
-        });
-    }
+    // Source discovery, parsing and citation checks remain independent of
+    // measurement. No exception can clear a measurement failure.
+    let measured = errors.is_empty();
     let mut counters = BTreeMap::<(String, u32, u32), u64>::new();
     for record in &selected {
         for process in &record.attempt.processes {
@@ -310,6 +306,9 @@ fn check_in(project: &Path, target: PathBuf) -> io::Result<CheckReport> {
                 continue;
             }
         };
+        if !measured {
+            continue;
+        }
         let lines: Vec<_> = totals
             .range((file.clone(), 0)..=(file.clone(), u32::MAX))
             .map(|((_, line), count)| (*line, *count))
@@ -387,6 +386,8 @@ fn check_in(project: &Path, target: PathBuf) -> io::Result<CheckReport> {
             text.push_str(&format!("- {exception}\n"));
         }
     }
+    let mut seen = std::collections::BTreeSet::new();
+    errors.retain(|error| seen.insert(error.clone()));
     if !errors.is_empty() {
         text.push_str("\nUnsatisfied obligations and invalid evidence:\n");
         for error in &errors {
@@ -543,6 +544,7 @@ mod tests {
     }
 
     // {test}`requirements.test-coverage.check.threshold`
+    // {test}`requirements.test-coverage.check.report`
     #[test]
     fn exact_per_file_threshold_and_partial_functions() {
         assert!(!threshold(79_999, 100_000)); // displays 80.0%, still fails
@@ -559,7 +561,7 @@ mod tests {
         );
         let result = report(root);
         assert!(result.passed, "{}", result.text);
-        assert!(result.text.contains("4/5 (80.0%)"));
+        assert!(result.text.contains("4/5 (80.0%) — pass"));
         // Another file cannot be rescued by the first one's higher percentage.
         fs::write(root.join("driver.rs"), "fn driver() {}").unwrap();
         let mut p = process(root, &[(1, 1), (2, 1), (3, 1), (4, 1), (5, 1)], 1);
@@ -573,8 +575,52 @@ mod tests {
         record(root, "a", 2, "same", vec![p]);
         let result = report(root);
         assert!(!result.passed);
-        assert!(result.text.contains("driver.rs: 0/1 (0.0%)"));
+        assert!(result.text.contains("driver.rs: 0/1 (0.0%) — FAIL"));
         assert!(result.text.contains("uncovered lines: 1"));
+        fs::write(root.join("driver.rs"), "fn driver() {\n let a=1;\n let b=2;\n let c=3;\n let d=4;\n let e=5;\n let f=6;\n let g=7;\n let h=8;\n}\n").unwrap();
+        let mut p = process(root, &[(1, 1), (2, 1), (3, 1), (4, 1), (5, 1)], 1);
+        p.lines.insert(
+            "driver.rs".into(),
+            (1..=10).map(|line| (line, u64::from(line <= 7))).collect(),
+        );
+        p.functions.as_mut().unwrap().push(FunctionExecution {
+            file: "driver.rs".into(),
+            line: 1,
+            column: 1,
+            count: 1,
+        });
+        record(root, "a", 3, "same", vec![p]);
+        let result = report(root);
+        assert!(
+            !result.passed,
+            "the 85% average of 100% and 70% cannot rescue driver.rs"
+        );
+        assert!(result.text.contains("driver.rs: 7/10 (70.0%) — FAIL"));
+        assert!(
+            !result.text.contains("#fn[driver]:"),
+            "the function did execute"
+        );
+    }
+
+    // {test}`requirements.test-coverage.check.threshold`
+    #[test]
+    fn a_function_below_eighty_percent_needs_no_exception_when_its_file_passes() {
+        let temp = fixture(
+            "fn partly() {\n let x=1;\n}\nfn fully() {\n let a=1;\n let b=2;\n let c=3;\n let d=4;\n let e=5;\n let f=6;\n let g=7;\n}\n",
+        );
+        let root = temp.path();
+        let lines = (1..=12)
+            .map(|line| (line, u64::from(line != 2 && line != 3)))
+            .collect::<Vec<_>>();
+        record(root, "a", 1, "same", vec![process(root, &lines, 1)]);
+        let result = report(root);
+        assert!(
+            result.passed,
+            "partly is at 1/3 while its file passes: {}",
+            result.text
+        );
+        assert!(result.text.contains("code.rs: 10/12 (83.3%) — pass"));
+        assert!(!result.text.contains("Accepted exceptions"));
     }
 
     // {test}`requirements.test-coverage.check.threshold`
@@ -631,17 +677,23 @@ mod tests {
 
     // {test}`requirements.test-coverage.check.scope`
     // {test}`requirements.test-coverage.check.threshold`
+    // {test}`requirements.test-coverage.check.functions`
     #[test]
     fn default_trait_bodies_and_cfg_exclusions_are_obligations_but_declarations_are_not() {
         let temp =
             fixture("trait T { fn declaration(); fn body() {} }\n#[cfg(any())] fn excluded() {}\n");
         let root = temp.path();
-        let mut p = process(root, &[(1, 1)], 1);
+        let mut p = process(root, &[(1, 1)], 0);
         p.functions.as_mut().unwrap().retain(|f| f.line == 1);
         record(root, "traits", 1, "same", vec![p]);
         let result = report(root);
         assert!(!result.passed);
         assert!(result.text.contains("#fn[excluded]: not measured"));
+        assert!(
+            result.text.contains("#trait[T]/fn[body]: zero execution"),
+            "{}",
+            result.text
+        );
         assert!(!result.text.contains("fn[declaration]"));
         let parsed = crate::outline::parse_with(
             &crate::outline::RUST_PROFILE,
@@ -664,6 +716,7 @@ mod tests {
     }
 
     // {test}`requirements.test-coverage.check.measurement`
+    // {test}`requirements.test-coverage.check.threshold`
     #[test]
     fn stale_missing_legacy_and_uncertain_history_cannot_use_older_success() {
         let temp = fixture("fn a() {}");
@@ -703,6 +756,9 @@ mod tests {
     // {test}`requirements.test-coverage.check.exceptions.reviews`
     // {test}`requirements.test-coverage.check.exceptions.binding`
     // {test}`requirements.test-coverage.check.report`
+    // {test}`requirements.test-coverage.check.functions`
+    // {test}`requirements.test-coverage.check.measurement`
+    // {test}`requirements.test-coverage.check.threshold`
     #[test]
     fn accepted_file_and_function_explanations_remain_separate_from_execution() {
         let temp = fixture(
@@ -738,6 +794,26 @@ mod tests {
             report(root).passed,
             "citation may remain when no exception is needed"
         );
+        fs::write(root.join("driver.rs"), "fn driver() {}").unwrap();
+        let mut p = process(root, &[], 0);
+        p.lines.insert("driver.rs".into(), BTreeMap::from([(1, 1)]));
+        p.functions.as_mut().unwrap().push(FunctionExecution {
+            file: "driver.rs".into(),
+            line: 1,
+            column: 1,
+            count: 1,
+        });
+        record(root, "a", 5, "unmeasured-file", vec![p]);
+        let result = report(root);
+        assert!(result.passed, "{}", result.text);
+        assert!(
+            result
+                .text
+                .contains("code.rs: not measured — accepted exception"),
+            "{}",
+            result.text
+        );
+        assert!(!result.text.contains("code.rs: 0/"), "{}", result.text);
         reviews(root, json!(false));
         assert!(!report(root).passed);
         assert!(report(root).text.contains("determination is false"));
@@ -747,6 +823,7 @@ mod tests {
 
     // {test}`requirements.test-coverage.check.exceptions.reviews`
     // {test}`requirements.test-coverage.check.exceptions.author`
+    // {test}`requirements.test-coverage.check.exceptions`
     #[test]
     fn standard_inline_doc_and_fenced_commentary_reviews_track_their_explanations() {
         let source = "/// Defensive invariant abort, inaccessible through the API.\n// {cite}`habeas:coverage`\nfn a() {}\n";
@@ -810,6 +887,8 @@ mod tests {
     // {test}`requirements.test-coverage.check.measurement`
     // {test}`requirements.test-coverage.check.scope`
     // {test}`requirements.test-coverage.check.threshold`
+    // {test}`requirements.test-coverage.check.report`
+    // {test}`requirements.test-coverage.check.functions`
     #[test]
     fn unmeasured_executable_files_and_parse_failures_do_not_disappear() {
         let temp = fixture("struct S; trait T { fn declaration(); }");
@@ -824,9 +903,14 @@ mod tests {
             count: 1,
         });
         record(root, "driver", 1, "same", vec![p]);
+        let result = report(root);
+        assert!(result.passed, "{}", result.text);
         assert!(
-            report(root).passed,
-            "declaration-only file is proved to have no executable obligations"
+            result
+                .text
+                .contains("code.rs: no executable obligations — pass"),
+            "{}",
+            result.text
         );
         fs::write(root.join("code.rs"), "fn missing() {}").unwrap();
         let mut p = process(root, &[], 1);
@@ -872,5 +956,310 @@ mod tests {
         attempt.processes[0].diagnostic = Some("broken coverage map".into());
         save(&path.join("attempt.json"), &attempt).unwrap();
         assert!(!report(root).passed);
+    }
+
+    // {test}`requirements.test-coverage.check.exceptions`
+    // {test}`requirements.test-coverage.check.exceptions.reviews`
+    // {test}`requirements.test-coverage.check.report`
+    // {test}`requirements.test-coverage.check.threshold`
+    #[test]
+    fn missing_and_stale_explanations_fail_the_report() {
+        let source = "//! :::{cite} habeas:coverage\n//! File rationale.\n//! :::\n// :::{cite} habeas:coverage\n// Function rationale.\n// :::\nfn a() {}\n";
+        let temp = fixture(source);
+        let root = temp.path();
+        record(root, "a", 1, "same", vec![process(root, &[(7, 0)], 0)]);
+        let result = report(root);
+        assert!(!result.passed);
+        assert!(
+            result
+                .text
+                .contains("missing citation review; run `habeas author"),
+            "{}",
+            result.text
+        );
+        reviews(root, json!(true));
+        assert!(report(root).passed);
+        fs::write(
+            root.join("code.rs"),
+            source.replace("Function rationale", "Changed rationale"),
+        )
+        .unwrap();
+        record(root, "a", 2, "same", vec![process(root, &[(7, 0)], 0)]);
+        let result = report(root);
+        assert!(!result.passed);
+        assert!(result.text.contains("citations changed"), "{}", result.text);
+        assert!(
+            result.text.contains("#fn[a]: zero execution"),
+            "{}",
+            result.text
+        );
+        fs::write(root.join("code.rs"), source).unwrap();
+        reviews(root, json!(true));
+        fs::write(
+            root.join("code.rs"),
+            source.replace("fn a() {}", "fn a() { let changed = 1; }"),
+        )
+        .unwrap();
+        record(root, "a", 3, "same", vec![process(root, &[(7, 0)], 0)]);
+        let result = report(root);
+        assert!(!result.passed);
+        assert!(
+            result.text.contains("outline input changed"),
+            "{}",
+            result.text
+        );
+        assert!(
+            result.text.contains("code.rs:7 #fn[a]: zero execution"),
+            "{}",
+            result.text
+        );
+    }
+
+    // {test}`requirements.test-coverage.check.exceptions`
+    // {test}`requirements.test-coverage.check.exceptions.reviews`
+    // {test}`requirements.test-coverage.check.threshold`
+    #[test]
+    fn function_explanations_never_transfer_to_other_functions_or_the_file() {
+        for (source, waived, remaining) in [
+            (
+                "// :::{cite} habeas:coverage\n// Outer reason.\n// :::\nfn outer() {\n fn inner() {}\n}\nfn sibling() {}\n",
+                "fn[outer]",
+                ["fn[outer]/fn[inner]", "fn[sibling]"],
+            ),
+            (
+                "fn outer() {\n // :::{cite} habeas:coverage\n // Inner reason.\n // :::\n fn inner() {}\n}\nfn sibling() {}\n",
+                "fn[outer]/fn[inner]",
+                ["fn[outer]", "fn[sibling]"],
+            ),
+        ] {
+            let temp = fixture(source);
+            let root = temp.path();
+            reviews(root, json!(true));
+            record(root, "a", 1, "same", vec![process(root, &[(1, 1)], 0)]);
+            let result = report(root);
+            assert!(!result.passed);
+            assert!(
+                result
+                    .text
+                    .contains(&format!("- code.rs#{waived}: zero execution")),
+                "{}",
+                result.text
+            );
+            for selector in remaining {
+                assert!(
+                    result
+                        .text
+                        .contains(&format!("#{selector}: zero execution; requires")),
+                    "{}",
+                    result.text
+                );
+            }
+            assert!(
+                !result
+                    .text
+                    .contains(&format!("#{waived}: zero execution; requires")),
+                "{}",
+                result.text
+            );
+            record(root, "a", 2, "same", vec![process(root, &[(1, 0)], 0)]);
+            let result = report(root);
+            assert!(
+                result.text.contains("code.rs: 0/1 (0.0%) — FAIL"),
+                "{}",
+                result.text
+            );
+            fs::write(root.join("driver.rs"), "fn other_file() {}").unwrap();
+            record(root, "a", 3, "same", vec![process(root, &[(1, 1)], 0)]);
+            let result = report(root);
+            assert!(result.text.contains("driver.rs: not measured — FAIL"));
+            assert!(result.text.contains("#fn[other_file]: not measured"));
+        }
+    }
+
+    // {test}`requirements.test-coverage.check.measurement`
+    // {test}`requirements.ci.errors`
+    #[test]
+    fn accepted_exceptions_cannot_waive_invalid_measurement_and_checks_still_collect_errors() {
+        let source = "//! :::{cite} habeas:coverage\n//! File rationale.\n//! :::\n// :::{cite} habeas:coverage\n// Function rationale.\n// :::\nfn a() {}\n";
+        for failure in [
+            "absent",
+            "missing profile",
+            "legacy",
+            "corrupt counters",
+            "stale",
+            "corrupt history",
+            "empty lines",
+        ] {
+            let temp = fixture(source);
+            let root = temp.path();
+            reviews(root, json!(true));
+            if failure != "absent" {
+                record(root, "a", 1, "same", vec![process(root, &[(7, 1)], 1)]);
+                let mut p = process(root, &[(7, 0)], 0);
+                if failure == "legacy" {
+                    p.functions = None;
+                }
+                if failure == "corrupt counters" {
+                    p.functions.as_mut().unwrap()[0].line = 0;
+                }
+                if failure == "empty lines" {
+                    p.lines.clear();
+                }
+                let newest = record(root, "a", 2, "same", vec![p]);
+                match failure {
+                    "missing profile" => fs::remove_file(newest.join("profile.profraw")).unwrap(),
+                    "stale" => fs::write(
+                        root.join("code.rs"),
+                        format!("{source}\n// changed build input\n"),
+                    )
+                    .unwrap(),
+                    "corrupt history" => fs::write(
+                        newest.parent().unwrap().parent().unwrap().join("run.json"),
+                        "{",
+                    )
+                    .unwrap(),
+                    _ => {}
+                }
+            }
+            let result = report(root);
+            assert!(!result.passed, "{failure}: {}", result.text);
+            assert!(
+                !result.text.contains("accepted exception"),
+                "{failure}: {}",
+                result.text
+            );
+            assert!(
+                !result.text.contains("0/1 (0.0%)"),
+                "{failure}: {}",
+                result.text
+            );
+            if failure == "legacy" {
+                assert!(
+                    result
+                        .text
+                        .contains("recollect coverage with this Habeas version")
+                );
+            }
+            if failure == "corrupt counters" {
+                assert!(result.text.contains("corrupt function attribution"));
+            }
+            if failure == "empty lines" {
+                assert!(result.text.contains("No usable instrumented lines"));
+            }
+            fs::remove_file(root.join("evidence/citations/code.rs/fn[a].json")).unwrap();
+            let result = report(root);
+            assert!(
+                result.text.contains("missing citation review"),
+                "{failure}: {}",
+                result.text
+            );
+            let mut seen = std::collections::BTreeSet::new();
+            for line in result.text.lines().filter(|line| line.starts_with("- ")) {
+                assert!(seen.insert(line), "duplicate finding: {line}");
+            }
+            fs::write(root.join("broken.rs"), "fn malformed(").unwrap();
+            fs::write(root.join("book.toml"), "[book]\nsrc = 7\n").unwrap();
+            let result = report(root);
+            assert!(
+                result
+                    .text
+                    .to_lowercase()
+                    .contains("cannot parse rust source"),
+                "{}",
+                result.text
+            );
+            assert!(
+                result.text.contains("book.src must be a string"),
+                "{}",
+                result.text
+            );
+        }
+    }
+
+    // {test}`requirements.test-coverage.check.scope`
+    // {test}`requirements.test-coverage.check.functions`
+    #[test]
+    fn methods_tests_and_helpers_are_included_and_discovery_failures_are_reported() {
+        let source = "struct S;\nimpl S { fn method(&self) {} }\n#[cfg(test)] mod tests {\n #[test] fn case() {}\n fn helper() {}\n}\n";
+        let temp = fixture(source);
+        let root = temp.path();
+        record(root, "a", 1, "same", vec![process(root, &[(1, 1)], 0)]);
+        let result = report(root);
+        for selector in [
+            "impl[S]/fn[method]",
+            "mod[tests]/fn[case]",
+            "mod[tests]/fn[helper]",
+        ] {
+            assert!(
+                result
+                    .text
+                    .contains(&format!("#{selector}: zero execution")),
+                "{}",
+                result.text
+            );
+        }
+        git2::Repository::init(root).unwrap();
+        fs::write(root.join(".git/index"), "corrupt Git index").unwrap();
+        let result = report(root);
+        assert!(!result.passed);
+        assert!(
+            result.text.contains("cannot discover reference sources"),
+            "{}",
+            result.text
+        );
+    }
+
+    // {test}`requirements.test-coverage.check.report`
+    #[test]
+    fn uncovered_ranges_and_function_locations_are_reported() {
+        let temp = fixture("fn a() {\n let x = 1;\n let y = 2;\n let z = 3;\n}\n");
+        let root = temp.path();
+        record(
+            root,
+            "a",
+            1,
+            "same",
+            vec![process(root, &[(1, 1), (2, 0), (3, 0), (4, 1), (5, 0)], 0)],
+        );
+        let result = report(root);
+        assert!(!result.passed);
+        assert!(
+            result.text.contains("uncovered lines: 2-3, 5"),
+            "{}",
+            result.text
+        );
+        assert!(
+            result
+                .text
+                .contains("code.rs:1 #fn[a]: zero execution; requires"),
+            "{}",
+            result.text
+        );
+    }
+
+    // {test}`requirements.test-coverage.check.guidance`
+    #[test]
+    fn static_validation_never_uses_runtime_gaps_to_decide_citation_applicability() {
+        let temp = fixture(
+            "//! :::{cite} habeas:coverage\n//! File rationale.\n//! :::\n// :::{cite} habeas:coverage\n// Function rationale.\n// :::\nfn a() {}\n",
+        );
+        let root = temp.path();
+        let (path, source) = crate::execution_coverage::configure(root).unwrap();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, source).unwrap();
+        reviews(root, json!(true));
+        assert!(!root.join("target/habeas/coverage").exists());
+        assert!(crate::validate_repository(root).unwrap().errors.is_empty());
+        for (started, count) in [(1, 0), (2, 1)] {
+            record(
+                root,
+                "a",
+                started,
+                "same",
+                vec![process(root, &[(7, count)], count)],
+            );
+            let result = crate::validate_repository(root).unwrap();
+            assert!(result.errors.is_empty(), "{:?}", result.errors);
+        }
     }
 }

@@ -4022,8 +4022,18 @@ mod tests {
         fs::write(project.path().join("src/lib.rs"), source).unwrap();
         let subject = AuthoringSubject::parse("citations:src/lib.rs#fn[helper]");
         let mut sources = subject.sources(project.path()).unwrap();
-        let mandatory = sources.mandatory_inputs();
+        let mandatory = sources.mandatory_inputs().to_vec();
         assert_eq!(mandatory[0]["item"], "fn[helper]");
+        assert!(
+            mandatory[0]["text"].to_string().contains("fn helper() {}"),
+            "{mandatory:?}"
+        );
+        assert!(
+            mandatory[0]["hash"]
+                .as_str()
+                .is_some_and(|hash| hash.len() == 64),
+            "{mandatory:?}"
+        );
         assert!(mandatory.iter().any(|input| {
             input["builtin"] == "habeas:coverage"
                 && input["text"][0]
@@ -4044,6 +4054,16 @@ mod tests {
         let (_, record) = assess(&provider, &mut sources, &mut usage).await.unwrap();
         assert_eq!(record["determination"], true);
         assert_eq!(record["citations"][0]["name"], "habeas:coverage");
+        assert!(
+            record["inputs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|input| input["file"] == "src/lib.rs"
+                    && input["item"] == "fn[helper]"
+                    && input["hash"] == mandatory[0]["hash"]),
+            "{record:?}"
+        );
         assert!(
             record["inputs"]
                 .as_array()

@@ -71,6 +71,7 @@ fn locations_use_absolute_xdg_values_and_platform_fallbacks() {
 // {test}`requirements.configuration.serialization`
 // {test}`requirements.configuration.workspace_structure`
 #[test]
+// {test}`requirements.configuration.documentation`
 fn absent_and_minimal_configuration_are_distinct_and_read_only() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("user.toml");
@@ -420,6 +421,7 @@ fn ollama_authentication_resolves_separately_and_rejects_missing_values() {
 // {test}`requirements.configuration.serialization`
 #[test]
 // {test}`requirements.configuration.evidence_paths`
+// {test}`requirements.configuration.documentation`
 fn workspace_discovery_uses_nearest_file_without_merging_or_rewriting_it() {
     let temp = tempfile::tempdir().unwrap();
     let project = temp.path().join("project");

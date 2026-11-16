@@ -1339,14 +1339,17 @@ fn function_counts(
 ) -> io::Result<Vec<FunctionExecution>> {
     // Deserialize only counters and entry locations, rather than retaining the
     // much larger JSON file-segment and expansion maps in memory or on disk.
+    // {cite}`habeas:util`
     #[derive(serde::Deserialize)]
     struct Export {
         data: Vec<Data>,
     }
+    // {cite}`habeas:util`
     #[derive(serde::Deserialize)]
     struct Data {
         functions: Vec<Function>,
     }
+    // {cite}`habeas:util`
     #[derive(serde::Deserialize)]
     struct Function {
         count: u64,
