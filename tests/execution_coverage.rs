@@ -192,7 +192,13 @@ fn full_test_flow_checks_real_function_counters_after_all_tests() {
         .unwrap();
     configuration["profile"]["default"]["default-filter"] = toml_edit::value("kind(lib)");
     fs::write(nextest, configuration.to_string()).unwrap();
-    fs::write(root.join("src/lib.rs"), "pub fn value(flag: bool) -> u32 {\n if flag { 10 } else { 20 }\n}\n#[cfg(test)] #[test] fn a() { assert_eq!(value(true), 10); }\n#[cfg(test)] #[test] fn b() { assert_eq!(value(false), 20); }\n").unwrap();
+    let manifest = fs::read_to_string(root.join("Cargo.toml")).unwrap();
+    fs::write(
+        root.join("Cargo.toml"),
+        format!("{manifest}\n[dev-dependencies]\ntokio = {{ version = '1', features = ['macros', 'rt'] }}\n"),
+    )
+    .unwrap();
+    fs::write(root.join("src/lib.rs"), "pub fn value(flag: bool) -> u32 {\n if flag { 10 } else { 20 }\n}\n#[cfg(test)] #[test] fn a() { assert_eq!(value(true), 10); }\n#[cfg(test)] #[test] fn b() { assert_eq!(value(false), 20); }\n#[cfg(test)] #[tokio::test] async fn asynchronous() { assert_eq!(value(true), 10); }\n").unwrap();
     fs::write(
         root.join("tests/processes.rs"),
         "#[test] fn integration() { assert_eq!(coverage_fixture::value(true),10); }\n",
@@ -209,8 +215,8 @@ fn full_test_flow_checks_real_function_counters_after_all_tests() {
     assert_eq!(saved.len(), 1);
     assert_eq!(
         attempts(&saved[0].0).len(),
-        3,
-        "the full workspace includes unit AND integration targets"
+        4,
+        "the full workspace includes sync and async unit tests AND integration targets"
     );
     for attempt in attempts(&saved[0].0) {
         for process in attempt["processes"].as_array().unwrap() {
@@ -221,7 +227,7 @@ fn full_test_flow_checks_real_function_counters_after_all_tests() {
             );
         }
     }
-    fs::write(root.join("src/lib.rs"), "pub fn value(flag: bool) -> u32 { if flag { 10 } else { 20 } }\npub fn outer() { fn hidden() {} let f = || {}; f(); }\n#[cfg(test)] #[test] fn a() { value(true); outer(); }\n#[cfg(test)] #[test] fn b() { value(false); }\n").unwrap();
+    fs::write(root.join("src/lib.rs"), "pub fn value(flag: bool) -> u32 { if flag { 10 } else { 20 } }\npub fn outer() { fn hidden() {} let f = || {}; f(); }\n#[cfg(test)] #[test] fn a() { value(true); outer(); }\n#[cfg(test)] #[test] fn b() { value(false); }\n#[cfg(test)] #[tokio::test] async fn asynchronous() { assert_eq!(value(true), 10); }\n").unwrap();
     let output = full_flow(root);
     assert!(!output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);

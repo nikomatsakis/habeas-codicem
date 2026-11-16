@@ -38,6 +38,7 @@ struct Function {
     selector: String,
     line: u32,
     column: u32,
+    keyword: (u32, u32),
 }
 
 // {impl}`requirements.test-coverage.check.scope`
@@ -64,6 +65,12 @@ fn inventory(source: &str, outline: &crate::outline::Outline) -> io::Result<(Vec
                     .iter()
                     .find(|item| item.kind == "fn" && item.byte_start == node.start_byte())
                     .ok_or_else(|| io::Error::other("function has no source outline identity"))?;
+                let mut cursor = node.walk();
+                let keyword = node
+                    .children(&mut cursor)
+                    .find(|child| child.kind() == "fn")
+                    .ok_or_else(|| io::Error::other("function has no fn keyword"))?
+                    .start_position();
                 functions.push(Function {
                     selector: item.selector.clone(),
                     line: (node.start_position().row + 1)
@@ -72,6 +79,10 @@ fn inventory(source: &str, outline: &crate::outline::Outline) -> io::Result<(Vec
                     column: (node.start_position().column + 1)
                         .try_into()
                         .map_err(io::Error::other)?,
+                    keyword: (
+                        (keyword.row + 1).try_into().map_err(io::Error::other)?,
+                        (keyword.column + 1).try_into().map_err(io::Error::other)?,
+                    ),
                 });
             }
             // No recorded lines is not proof that macro-generated code has no
@@ -349,11 +360,20 @@ fn check_in(project: &Path, target: PathBuf) -> io::Result<CheckReport> {
             }
         }
         for function in functions {
-            let key = (file.clone(), function.line, function.column);
-            if counters.get(&key).is_some_and(|&count| count > 0) {
+            // Attribute expansion can remove modifiers: tokio::test's wrapper
+            // starts at the original fn keyword rather than the async token.
+            // Both points belong to this declaration, never a nested body.
+            let keys = [
+                (file.clone(), function.line, function.column),
+                (file.clone(), function.keyword.0, function.keyword.1),
+            ];
+            if keys
+                .iter()
+                .any(|key| counters.get(key).is_some_and(|&count| count > 0))
+            {
                 continue;
             }
-            let state = if counters.contains_key(&key) {
+            let state = if keys.iter().any(|key| counters.contains_key(key)) {
                 "zero execution"
             } else {
                 "not measured"
@@ -541,6 +561,26 @@ mod tests {
                 "inputs": [{"file": item.file, "item": item.item, "hash": parsed.outline.nodes[node].structural_hash}]
             })).unwrap()).unwrap();
         }
+    }
+
+    // {test}`requirements.test-coverage.check.functions`
+    #[test]
+    fn expanded_async_entries_match_the_fn_keyword_without_borrowing_closure_execution() {
+        let source = "#[tokio::test]\nasync fn work() { let callback = || {}; callback(); }\n";
+        let temp = fixture(source);
+        let root = temp.path();
+        let mut p = process(root, &[(2, 1)], 1);
+        p.functions.as_mut().unwrap()[0].column = 7; // fn after async
+        record(root, "work", 1, "same", vec![p.clone()]);
+        let result = report(root);
+        assert!(result.passed, "{}", result.text);
+        // Executing only the closure must not count as entering this function.
+        p.functions.as_mut().unwrap()[0].column =
+            source.lines().nth(1).unwrap().find("||").unwrap() as u32 + 1;
+        record(root, "work", 2, "same", vec![p]);
+        let result = report(root);
+        assert!(!result.passed);
+        assert!(result.text.contains("#fn[work]: not measured"));
     }
 
     // {test}`requirements.test-coverage.check.threshold`
@@ -781,14 +821,27 @@ mod tests {
         let result = report(root);
         assert!(result.passed, "{}", result.text);
         assert!(result.text.contains("0/1 (0.0%)"));
-        assert!(result.text.contains("Accepted exceptions (do not increase"));
+        let exceptions = result
+            .text
+            .split_once("\nAccepted exceptions (do not increase execution coverage):\n")
+            .unwrap()
+            .1;
+        assert!(exceptions.contains("- code.rs: file threshold (0/1 (0.0%))"));
+        assert!(exceptions.contains("- code.rs#fn[a]: zero execution"));
         let mut absent = process(root, &[(8, 0)], 0);
         absent.functions = Some(vec![]);
         record(root, "a", 3, "windows", vec![absent]);
+        let result = report(root);
         assert!(
-            report(root).passed,
+            result.passed,
             "same accepted citation covers unmeasured functions without conditional matching"
         );
+        let exceptions = result
+            .text
+            .split_once("\nAccepted exceptions (do not increase execution coverage):\n")
+            .unwrap()
+            .1;
+        assert!(exceptions.contains("- code.rs#fn[a]: not measured"));
         record(root, "a", 4, "covered", vec![process(root, &[(8, 1)], 1)]);
         assert!(
             report(root).passed,
