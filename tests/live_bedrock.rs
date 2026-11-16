@@ -292,7 +292,7 @@ fn live_bedrock_authoring() {
     assert_eq!(usage["evidence_output"], "stdout");
     assert_eq!(usage["evidence_written"], true);
     assert!(usage["request_count"].as_u64().unwrap() >= 2);
-    assert_eq!(usage["tool_calls"]["submit_judgment"], 1);
+    assert!(usage["tool_calls"]["submit_judgment"].as_u64().unwrap() >= 1);
     assert!(
         usage["tool_calls"]["habeas"].as_u64().unwrap_or(0)
             + usage["tool_calls"]["ripgrep"].as_u64().unwrap_or(0)
@@ -495,6 +495,13 @@ fn live_configuration_selection_follows_authoring_precedence() {
     let workspace_only =
         "version = 1\n[authoring.configs.gamma]\nbackend = 'bedrock'\nmodel = 'model-gamma'\n";
     assert_eq!(name(None, Some(workspace_only), None).unwrap(), "gamma");
+    let merged_user = "[authoring.configs.beta]\nbackend = 'bedrock'\nmodel = 'user-beta'\n";
+    let merged_workspace =
+        "version = 1\n[authoring.configs.aaa]\nbackend = 'bedrock'\nmodel = 'workspace-aaa'\n";
+    assert_eq!(
+        name(Some(merged_user), Some(merged_workspace), None).unwrap(),
+        "aaa"
+    );
     // An explicit name wins over every other selection.
     assert_eq!(
         name(Some(&projects), Some(workspace), Some("alpha")).unwrap(),

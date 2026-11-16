@@ -6,6 +6,7 @@ use std::io;
 use serde_json::{Map, Value, json};
 
 use super::inputs::AssessmentSources;
+use super::searches::Searches;
 use super::tools::ToolDelivery;
 
 /// The largest serialized result returned whole, and the largest page.
@@ -93,6 +94,7 @@ impl Listing {
         indexes: &[usize],
         definitions: &[Value],
         page: Option<Value>,
+        search_instructions: bool,
     ) -> Value {
         if self.arrays.is_empty() {
             let entries = Value::Array(entries.iter().map(|entry| (*entry).clone()).collect());
@@ -121,6 +123,19 @@ impl Listing {
         if self.evidence {
             object.insert("definitions".into(), Value::Array(definitions.to_vec()));
         }
+        if self.arrays.contains(&"matches") {
+            // The real UUID is assigned with the retained dependency snapshot.
+            object.insert(
+                "search_id".into(),
+                json!("00000000-0000-0000-0000-000000000000"),
+            );
+            if search_instructions {
+                object.insert(
+                    "instructions".into(),
+                    json!(super::approved_text("search_accounting.instructions", 0)),
+                );
+            }
+        }
         if let Some(page) = page {
             object.insert("page".into(), page);
         }
@@ -137,6 +152,7 @@ const NOTE_RESERVE: usize = super::tools::REDACTION_NOTE.len() + 16;
 #[derive(Default)]
 pub(crate) struct ResultPages {
     pages: HashMap<String, (Value, Vec<Value>)>,
+    searches: Searches,
 }
 
 impl ResultPages {
@@ -149,8 +165,21 @@ impl ResultPages {
     pub(crate) fn deliver(
         &mut self,
         sources: &AssessmentSources,
-        listing: Listing,
+        mut listing: Listing,
     ) -> io::Result<ToolDelivery> {
+        // Tags are attached before sizing, and never assigned to not_listed.
+        // {impl}`requirements.authoring.search_accounting.entry_tags`
+        let search = listing.arrays.iter().position(|key| *key == "matches");
+        let instructions = search.is_some() && self.searches.needs_instructions();
+        if let Some(search) = search {
+            let mut tag = 0;
+            for (array, entry) in &mut listing.entries {
+                if *array == search {
+                    tag += 1;
+                    entry["tag"] = json!(tag.to_string());
+                }
+            }
+        }
         let values: Vec<&Value> = listing.entries.iter().map(|(_, value)| value).collect();
         let indexes: Vec<usize> = listing.entries.iter().map(|(index, _)| *index).collect();
         let owned: Vec<Value> = values.iter().map(|value| (*value).clone()).collect();
@@ -159,7 +188,7 @@ impl ResultPages {
         } else {
             Vec::new()
         };
-        let whole = listing.render(&values, &indexes, &definitions, None);
+        let mut whole = listing.render(&values, &indexes, &definitions, None, instructions);
         // Room for the redaction note only when it will be added.
         let reserve = if super::tools::needs_redaction_note(sources, &whole) {
             NOTE_RESERVE
@@ -167,6 +196,8 @@ impl ResultPages {
             0
         };
         if whole.to_string().len() + reserve <= PAGE_LIMIT {
+            self.searches.prepare(sources, &mut whole)?;
+            self.searches.delivered(&whole);
             return Ok(ToolDelivery {
                 result: whole,
                 inputs: delivered(&listing, owned, definitions),
@@ -178,7 +209,7 @@ impl ResultPages {
             vec![Vec::new(); owned.len()]
         };
         let total = values.len();
-        let pages = paginate(&listing, &values, &accompanying, reserve);
+        let pages = paginate(&listing, &values, &accompanying, reserve, instructions);
         let tokens: Vec<String> = (1..pages.len()).map(|_| self.token()).collect();
         let mut rendered = Vec::new();
         for (number, range) in pages.iter().enumerate() {
@@ -192,7 +223,15 @@ impl ResultPages {
             if tokens.get(number).is_some() {
                 page["note"] = json!(PAGE_NOTE);
             }
-            let result = listing.render(entries, page_indexes, &definitions, Some(page));
+            // {impl}`requirements.authoring.search_accounting.pagination`
+            let mut result = listing.render(
+                entries,
+                page_indexes,
+                &definitions,
+                Some(page),
+                instructions && number == 0,
+            );
+            self.searches.prepare(sources, &mut result)?;
             let inputs = delivered(
                 &listing,
                 entries.iter().map(|entry| (*entry).clone()).collect(),
@@ -202,6 +241,7 @@ impl ResultPages {
         }
         let mut rendered = rendered.into_iter();
         let (result, inputs) = rendered.next().expect("a paged result has a first page");
+        self.searches.delivered(&result);
         for (token, page) in tokens.into_iter().zip(rendered) {
             self.pages.insert(token, page);
         }
@@ -209,16 +249,28 @@ impl ResultPages {
     }
 
     /// The page a `next_page` token names, in the shape of the first.
-    pub(crate) fn next_page(&self, token: &str) -> io::Result<ToolDelivery> {
+    // {impl}`requirements.authoring.search_accounting.page_replay`
+    pub(crate) fn next_page(&mut self, token: &str) -> io::Result<ToolDelivery> {
         let (result, inputs) = self.pages.get(token).ok_or_else(|| {
             io::Error::other(format!(
                 "unknown page token {token:?}: a token is valid only in the assessment whose paged result returned it; repeat that tool call to page through its result again"
             ))
         })?;
+        self.searches.delivered(result);
         Ok(ToolDelivery {
             result: result.clone(),
             inputs: inputs.clone(),
         })
+    }
+
+    // {cite}`habeas:util`
+    pub(crate) fn finish_search(&mut self, arguments: &Value) -> io::Result<ToolDelivery> {
+        self.searches.finish(arguments)
+    }
+
+    // {cite}`habeas:util`
+    pub(crate) fn outstanding_searches(&self) -> Vec<String> {
+        self.searches.outstanding()
     }
 
     /// A fresh opaque token of [`TOKEN_LENGTH`] characters.
@@ -274,6 +326,7 @@ fn paginate(
     values: &[&Value],
     accompanying: &[Vec<Value>],
     reserve: usize,
+    search_instructions: bool,
 ) -> Vec<std::ops::Range<usize>> {
     let total = values.len();
     let longest = json!({
@@ -282,7 +335,7 @@ fn paginate(
         "next": "0".repeat(TOKEN_LENGTH),
         "note": PAGE_NOTE,
     });
-    let mut empty = listing.render(&[], &[], &[], Some(longest));
+    let mut empty = listing.render(&[], &[], &[], Some(longest), search_instructions);
     if listing.arrays.contains(&"not_listed") {
         empty["not_listed"] = json!([]);
     }
@@ -332,7 +385,7 @@ mod tests {
 
     /// Follows a paged result to its end, checking each page's size and
     /// counts, and returns every page's delivery.
-    fn all_pages(pages: &ResultPages, first: ToolDelivery) -> Vec<ToolDelivery> {
+    fn all_pages(pages: &mut ResultPages, first: ToolDelivery) -> Vec<ToolDelivery> {
         let page = &first.result["page"];
         let total = page["total_entries"].as_u64().unwrap();
         let mut delivered = vec![first];
@@ -418,7 +471,7 @@ mod tests {
         let mut pages = ResultPages::default();
         let first =
             dispatch_paged(&sources, &mut pages, "list_files", &json!({"path":"src"})).unwrap();
-        let delivered = all_pages(&pages, first);
+        let delivered = all_pages(&mut pages, first);
         assert_eq!(
             delivered[0].result["not_listed"].as_array().unwrap().len(),
             40,
@@ -458,7 +511,7 @@ mod tests {
                     .as_array()
                     .is_some_and(|v| !v.is_empty())
             );
-            let delivered = all_pages(&pages, first);
+            let delivered = all_pages(&mut pages, first);
             let mut actual_tracked = Vec::new();
             let mut actual_untracked = Vec::new();
             for page in delivered {
@@ -488,6 +541,7 @@ mod tests {
     }
 
     // {test}`requirements.authoring.result_pages`
+    // {test}`requirements.authoring.search_accounting.result_ids`
     #[test]
     fn text_and_structural_search_results_page_whole_ordered_matches() {
         let root = project();
@@ -506,7 +560,10 @@ mod tests {
             let mut pages = ResultPages::default();
             let first = dispatch_paged(&sources, &mut pages, tool, &arguments).unwrap();
             let mut items = Vec::new();
-            for page in all_pages(&pages, first) {
+            let mut ids = std::collections::BTreeSet::new();
+            for page in all_pages(&mut pages, first) {
+                let id = uuid::Uuid::parse_str(page.result["search_id"].as_str().unwrap()).unwrap();
+                assert!(ids.insert(id), "reused search UUID for {tool}");
                 assert!(page.result.to_string().len() <= PAGE_LIMIT, "{tool}");
                 let matches = page.result["matches"].as_array().unwrap();
                 assert_eq!(page.result["page"]["total_entries"], 600);
@@ -527,6 +584,84 @@ mod tests {
         }
     }
 
+    // {test}`requirements.authoring.search_accounting.pagination`
+    // {test}`requirements.authoring.search_accounting.page_replay`
+    // {test}`requirements.authoring.search_accounting.outstanding`
+    // {test}`requirements.authoring.search_accounting.entry_tags`
+    // {test}`requirements.authoring.search_accounting.result_ids`
+    // {test}`requirements.authoring.search_accounting.instructions`
+    // {test}`requirements.authoring.finish_search.completion`
+    // {test}`requirements.authoring.finish_search.invalid`
+    // {test}`requirements.authoring.result_pages`
+    #[test]
+    fn search_pages_are_accounted_only_when_delivered_and_replay_stays_closed() {
+        let root = project();
+        let source: String = (0..600)
+            .map(|i| format!("fn needle_{i:04}() {{ let marker = 1; }}\n"))
+            .collect();
+        fs::write(root.path().join("src/lib.rs"), source).unwrap();
+        let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        for (tool, arguments) in [
+            ("ripgrep", json!({"pattern":"marker","path":"src/lib.rs"})),
+            (
+                "ast_grep",
+                json!({"language":"rust","rule":{"rule":{"pattern":"let marker = 1;"}}}),
+            ),
+        ] {
+            let mut pages = ResultPages::default();
+            let first = dispatch_paged(&sources, &mut pages, tool, &arguments)
+                .unwrap()
+                .result;
+            let token = first["page"]["next"].as_str().unwrap().to_owned();
+            assert_eq!(
+                first["instructions"],
+                super::super::approved_text("search_accounting.instructions", 0)
+            );
+            uuid::Uuid::parse_str(first["search_id"].as_str().unwrap()).unwrap();
+            assert_eq!(
+                pages.outstanding_searches(),
+                [first["search_id"].as_str().unwrap()]
+            );
+            let undelivered = pages.pages[&token].0.clone();
+            assert!(
+                pages
+                    .finish_search(&json!({"search_id":undelivered["search_id"],"used":[]}))
+                    .is_err()
+            );
+            assert!(
+                pages
+                    .finish_search(&json!({"search_id":first["search_id"],
+                "used":[undelivered["matches"][0]["tag"]]}))
+                    .is_err()
+            );
+            let second = pages.next_page(&token).unwrap().result;
+            uuid::Uuid::parse_str(second["search_id"].as_str().unwrap()).unwrap();
+            assert_eq!(second, undelivered);
+            assert_ne!(first["search_id"], second["search_id"]);
+            assert!(second.get("instructions").is_none());
+            assert_eq!(pages.outstanding_searches().len(), 2);
+            let finished = pages
+                .finish_search(&json!({"search_id":second["search_id"],
+                "used":[second["matches"][0]["tag"]]}))
+                .unwrap();
+            assert_eq!(finished.inputs.len(), 1);
+            assert_eq!(finished.inputs[0]["item"], second["matches"][0]["item"]);
+            let replay = pages.next_page(&token).unwrap().result;
+            assert_eq!(replay, second);
+            assert_eq!(
+                pages.outstanding_searches(),
+                [first["search_id"].as_str().unwrap()]
+            );
+            pages
+                .finish_search(&json!({"search_id":first["search_id"],"used":[]}))
+                .unwrap();
+            assert!(pages.outstanding_searches().is_empty());
+            assert!(sources.recorded_inputs().is_empty());
+            assert!(first.to_string().len() <= PAGE_LIMIT);
+            assert!(second.to_string().len() <= PAGE_LIMIT);
+        }
+    }
+
     // {test}`requirements.authoring.tool_descriptions.special_cases`
     // {test}`requirements.authoring.result_pages`
     #[test]
@@ -543,7 +678,7 @@ mod tests {
         let mut pages = ResultPages::default();
         let first =
             dispatch_paged(&sources, &mut pages, "list_files", &json!({"path":"src"})).unwrap();
-        let delivered = all_pages(&pages, first);
+        let delivered = all_pages(&mut pages, first);
         let mut listed = Vec::new();
         for page in &delivered {
             assert!(page.result.to_string().len() <= PAGE_LIMIT);
@@ -581,7 +716,7 @@ mod tests {
             &json!({"file":"src/lib.rs"}),
         )
         .unwrap();
-        let delivered = all_pages(&pages, first);
+        let delivered = all_pages(&mut pages, first);
         let nodes = delivered
             .iter()
             .flat_map(|page| page.result["entries"].as_array().unwrap().clone())
@@ -624,7 +759,7 @@ mod tests {
             &json!({"file":"src/lib.rs","line_start":1}),
         )
         .unwrap();
-        let delivered = all_pages(&pages, first);
+        let delivered = all_pages(&mut pages, first);
         let mut items = Vec::new();
         for (number, page) in delivered.iter().enumerate() {
             assert!(page.result.to_string().len() <= PAGE_LIMIT);
@@ -656,7 +791,7 @@ mod tests {
         // A token is unknown to another assessment, and an unknown token is
         // an explanatory tool error.
         let token = delivered[0].result["page"]["next"].as_str().unwrap();
-        let other = ResultPages::default();
+        let mut other = ResultPages::default();
         let error = other.next_page(token).err().unwrap();
         assert!(error.to_string().contains("unknown page token"), "{error}");
         let error = dispatch_paged(
@@ -700,7 +835,7 @@ mod tests {
             &json!({"file":"src/lib.rs","line_start":1}),
         )
         .unwrap();
-        let delivered = all_pages(&pages, first);
+        let delivered = all_pages(&mut pages, first);
         let sizes = delivered
             .iter()
             .map(|page| {
@@ -773,7 +908,7 @@ mod tests {
             &json!({"selection": "requirements.*"}),
         )
         .unwrap();
-        let delivered = all_pages(&pages, first);
+        let delivered = all_pages(&mut pages, first);
         let (mut definitions, mut sites) = (Vec::new(), Vec::new());
         for page in &delivered {
             assert!(page.result.to_string().len() <= PAGE_LIMIT);

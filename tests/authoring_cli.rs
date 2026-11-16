@@ -121,6 +121,24 @@ impl Server {
                 });
                 before_reply();
                 let mut response = response;
+                if response == json!({"__finish_latest_search":true}) {
+                    let messages = requests.last().unwrap().body["messages"]
+                        .as_array()
+                        .unwrap();
+                    let search = messages
+                        .iter()
+                        .rev()
+                        .filter_map(|message| {
+                            serde_json::from_str::<Value>(message["content"].as_str()?).ok()
+                        })
+                        .find(|result| result.get("matches").is_some())
+                        .unwrap();
+                    response = reply(vec![call(
+                        "finish",
+                        "finish_search",
+                        json!({"search_id":search["search_id"],"used":[]}),
+                    )]);
+                }
                 let status = response
                     .as_object_mut()
                     .and_then(|object| object.remove("__http_status"))
@@ -361,6 +379,8 @@ fn implementation_discovery_has_no_text_or_evidence_until_the_model_requests_a_r
 // {test}`requirements.authoring.invocation`
 // {test}`requirements.configuration.serialization`
 // {test}`requirements.ci.fixme_implementation_gap`
+// {test}`requirements.authoring.finish_search.empty`
+// {test}`requirements.authoring.finish_search.completion`
 #[test]
 // {test}`requirements.authoring.persistence`
 // {test}`requirements.authoring.reporting`
@@ -389,6 +409,7 @@ fn ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free() {
                 json!({"file":"absent.txt","line_start":1}),
             ),
         ]),
+        json!({"__finish_latest_search":true}),
         reply(vec![call(
             "submit",
             "submit_judgment",
@@ -409,7 +430,7 @@ fn ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free() {
     // rewritten.
     assert_eq!(fs::read(&user_config).unwrap(), configured);
     let requests = server.finish();
-    assert_eq!(requests.len(), 2);
+    assert_eq!(requests.len(), 3);
     for request in &requests {
         assert!(request.headers.starts_with("POST /api/chat HTTP/1.1\r\n"));
         assert!(request.headers.to_ascii_lowercase().contains(&format!(
@@ -445,6 +466,7 @@ fn ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free() {
         tools,
         [
             "ast_grep",
+            "finish_search",
             "github",
             "habeas",
             "list_files",
@@ -565,13 +587,14 @@ fn ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free() {
     assert_eq!(usage["outcome"], "completed");
     assert_eq!(usage["determination"], "FIXME");
     assert_eq!(usage["evidence_written"], true);
-    assert_eq!(usage["request_count"], 2);
-    assert_eq!(usage["tool_call_count"], 6);
+    assert_eq!(usage["request_count"], 3);
+    assert_eq!(usage["tool_call_count"], 7);
     assert_eq!(usage["tool_calls"]["habeas"], 3);
     assert_eq!(usage["tool_failures"]["habeas"], 1);
     // The directory listing counts as a tool call but is not an input.
     assert_eq!(usage["tool_calls"]["list_files"], 1);
     assert_eq!(usage["tool_calls"]["ripgrep"], 1);
+    assert_eq!(usage["tool_calls"]["finish_search"], 1);
     let usage_inputs = usage["inputs"].as_array().unwrap();
     assert!(
         !usage_inputs
@@ -593,8 +616,8 @@ fn ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free() {
             .any(|input| input["origin"] == "habeas" && input["unique"] == true),
         "{usage_inputs:?}"
     );
-    assert_eq!(usage["tokens"]["input"], 22);
-    assert_eq!(usage["tokens"]["output"], 14);
+    assert_eq!(usage["tokens"]["input"], 33);
+    assert_eq!(usage["tokens"]["output"], 21);
     assert_eq!(usage["tokens"]["complete"], true);
     assert!(
         usage["inputs"]
@@ -1853,6 +1876,7 @@ fn bedrock_cli_uses_selected_profile_region_and_converse_tools() {
             tools,
             [
                 "ast_grep",
+                "finish_search",
                 "github",
                 "habeas",
                 "list_files",
@@ -2590,7 +2614,7 @@ fn all_adapters_preserve_prompt_tools_and_evidence_with_default_connections() {
     // and the entire evidence document, including inputs and reference hashes.
     assert_eq!(ollama, bedrock);
     assert_eq!(ollama, openai);
-    assert_eq!(ollama.1.len(), 9);
+    assert_eq!(ollama.1.len(), 10);
     assert_eq!(ollama_evidence["requirement"], REQUIREMENT);
     assert_eq!(ollama_evidence["determination"], true);
     assert_eq!(ollama_evidence["rationale"], submit["rationale"]);
@@ -5111,7 +5135,7 @@ fn openai_responses_replays_tool_calls_and_records_usage() {
         assert_eq!(request.body["model"], "fixture-openai");
         assert_eq!(request.body["max_output_tokens"], 1024);
         assert_eq!(request.body["reasoning"]["effort"], "low");
-        assert_eq!(request.body["tools"].as_array().unwrap().len(), 9);
+        assert_eq!(request.body["tools"].as_array().unwrap().len(), 10);
         assert_no_checkpoints(&request.body);
     }
     assert!(

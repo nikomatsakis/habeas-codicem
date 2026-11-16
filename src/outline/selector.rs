@@ -243,9 +243,9 @@ mod tests {
     // {test}`requirements.references.outline_selectors`
     #[test]
     fn names_round_trip_through_percent_encoding() {
-        let name = "a b/c[d]#e@f%g\té";
+        let name = "a b/c[d]#e@f%g\té\u{a0}\u{3000}";
         let encoded = encode_name(name);
-        assert_eq!(encoded, "a%20b%2Fc%5Bd%5D%23e%40f%25g%09é");
+        assert_eq!(encoded, "a%20b%2Fc%5Bd%5D%23e%40f%25g%09é%C2%A0%E3%80%80");
         assert_eq!(decode_name(&encoded).unwrap(), name);
         assert!(decode_name("a/b").is_err());
         assert!(decode_name("%zz").is_err());

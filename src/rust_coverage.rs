@@ -682,7 +682,33 @@ mod tests {
         assert!(!stale.covers("src/lib.rs", &outline, index));
     }
 
+    // {test}`requirements.references.rust_item_coverage`
+    #[test]
+    fn a_containing_read_covers_nested_items_only_with_its_current_hash() {
+        let outline = crate::outline::parse_with(
+            &crate::outline::RUST_PROFILE,
+            "struct Thing; impl Thing { fn run(&self) {} } fn unrelated() {}",
+        )
+        .unwrap();
+        let parent = outline.resolve("impl[Thing]").unwrap();
+        let child = outline.resolve("impl[Thing]/fn[run]").unwrap();
+        let unrelated = outline.resolve("fn[unrelated]").unwrap();
+        for (hash, covered) in [
+            (outline.nodes[parent].structural_hash.clone(), true),
+            ("0".repeat(64), false),
+        ] {
+            let mut reads = super::EvidenceReads::default();
+            reads.add_record(&serde_json::json!({"inputs": [{
+                "file": "src/lib.rs", "item": "impl[Thing]", "hash": hash
+            }]}));
+            assert_eq!(reads.covers("src/lib.rs", &outline, child), covered);
+            assert!(!reads.covers("src/lib.rs", &outline, unrelated));
+            assert!(!reads.covers("other.rs", &outline, child));
+        }
+    }
+
     // {test}`requirements.references.coverage.tests`
+    // {test}`requirements.references.procedure`
     #[test]
     fn test_functions_need_a_test_reference() {
         let source = concat!(

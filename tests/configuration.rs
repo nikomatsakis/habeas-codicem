@@ -1269,6 +1269,7 @@ fn feature_sections_are_scoped_and_absent_sections_use_defaults() {
 }
 
 // {test}`requirements.configuration.documentation`
+// {test}`requirements.configuration.state_location`
 #[test]
 fn configuration_documentation_covers_locations_structure_editing_and_removal() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -1289,6 +1290,18 @@ fn configuration_documentation_covers_locations_structure_editing_and_removal() 
         // Resolution rules and defaults.
         "Selection order is `--config`, the user's per-project selection, workspace default, then user default",
         "omitted settings use their documented defaults",
+        "Relative paths in this file use its directory as their base",
+        "An allow overrides all defaults; disallow wins if both match",
+        "Paths name literal files or directory subtrees, not globs",
+        "An omitted `allow` or `disallow` means an empty list",
+        "delete the whole `[evidence]` table to restore the default source-access rules",
+        "`reauthorings` must be a positive integer; without it, the last 3 commits",
+        "$XDG_STATE_HOME/habeas/authoring/usage",
+        "$HOME/.local/state/habeas/authoring/usage",
+        "%LOCALAPPDATA%/habeas/state/authoring/usage",
+        "$XDG_STATE_HOME/habeas/github",
+        "`<owner>+<repo>+<number>.json`, recording the `issue`",
+        "Unix time it was `fetched` in seconds",
         // Credential-source references.
         "add `api_key_env = \"OLLAMA_API_KEY\"`",
         "aws_profile = \"research\"",
@@ -1371,6 +1384,8 @@ fn documented_configuration_examples_are_complete_valid_files() {
 }
 
 // {test}`requirements.authoring.configuration_documentation`
+// {test}`requirements.configuration.state_location`
+// {test}`requirements.configuration.documentation`
 #[test]
 fn authoring_documentation_shows_each_configuration_task() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -1409,8 +1424,24 @@ fn authoring_documentation_shows_each_configuration_task() {
             before.rsplit("```").next().unwrap(),
             after.trim_start().split("\n\n").next().unwrap()
         );
+        let intro = intro.split_whitespace().collect::<Vec<_>>().join(" ");
+        let target = if source.contains("[evidence]") || source.contains(".credentials]") {
+            "`habeas.toml`"
+        } else {
+            "user `config.toml`"
+        };
+        assert!(
+            intro.contains(target),
+            "missing target file: {intro}\n{source}"
+        );
+        if source.contains("[authoring.projects.") {
+            assert!(
+                intro.contains("valid only in the user file, never in a workspace file"),
+                "{intro}"
+            );
+        }
         let every_uppercase = intro.contains("replace every uppercase placeholder");
-        for placeholder in ["MODEL_ID", "MODEL_TAG"] {
+        for placeholder in ["MODEL_ID", "MODEL_TAG", "OPENAI_API_KEY_VALUE"] {
             if source.contains(placeholder) {
                 assert!(
                     every_uppercase || intro.contains(&format!("`{placeholder}`")),
@@ -1421,14 +1452,38 @@ fn authoring_documentation_shows_each_configuration_task() {
         if source.contains(".credentials]") {
             assert!(every_uppercase, "{intro}");
         }
+        for (placeholder, instruction) in [
+            ("research", "`research` with your AWS profile name"),
+            ("us-east-1", "`us-east-1` with your region"),
+            (
+                "workstation:11434",
+                "`workstation` in the URL with your server",
+            ),
+            (
+                "/absolute/path/to/project",
+                "`/absolute/path/to/project` with the canonical path to your checkout",
+            ),
+            (
+                "generated",
+                "Replace `generated` and `generated/private` with your own paths",
+            ),
+        ] {
+            if source.contains(placeholder) {
+                assert!(intro.contains(instruction), "{placeholder}: {intro}");
+            }
+        }
         blocks.push(source.to_owned());
         before = after.to_owned();
     }
     let any_block = |needle: &str| blocks.iter().any(|block| block.contains(needle));
+    assert!(chapter.contains("Create the user file at the [shared configuration location]"));
+    assert!(chapter.contains("For workspace settings, create `habeas.toml`"));
     // Bedrock and Ollama examples, a default, a remote Ollama server, and a
     // project selection.
     assert!(any_block("backend = \"bedrock\""));
     assert!(any_block("backend = \"ollama\""));
+    assert!(any_block("backend = \"openai\""));
+    assert!(any_block("api_key_env = \"OPENAI_API_KEY\""));
     assert!(any_block("[authoring]\ndefault = "));
     assert!(any_block("endpoint = \"http://workstation:11434\""));
     assert!(any_block("[authoring.projects."));
@@ -1449,6 +1504,11 @@ fn authoring_documentation_shows_each_configuration_task() {
     ] {
         assert!(chapter.contains(phrase), "{phrase}");
     }
+    let records = fs::read_to_string(root.join("md/requirements/authoring.md")).unwrap();
+    assert!(records.contains("Each assessment MUST have a separate JSON usage record"));
+    assert!(
+        records.contains("identify its format version, run, project root, subject kind and full")
+    );
     // Backend-specific options and credential-source references.
     for phrase in [
         "`[authoring.configs.<name>.options]`",
@@ -1459,6 +1519,30 @@ fn authoring_documentation_shows_each_configuration_task() {
     }
     assert!(reference.contains("[authoring.configs.cloud.options]"));
     assert!(reference.contains("`num_ctx`"));
+    let chapter = chapter.split_whitespace().collect::<Vec<_>>().join(" ");
+    for phrase in [
+        "Bedrock and OpenAI default to the available logical CPU count; Ollama defaults to one",
+        "OpenAI defaults to `policy = \"once\"`",
+        "Other backends continue to default to `confirm`",
+        "The default model is `gpt-6.1-sol`, with low reasoning effort and an output-token limit of 16,384",
+        "OpenAI uses the Responses API at `https://api.openai.com/v1`; `endpoint` overrides that base URL",
+        "You may omit `api_key_env` to use `OPENAI_API_KEY` implicitly",
+        "set `OPENAI_API_KEY` to your API key outside the file",
+        "Do not combine `credentials` with `aws_profile`, or `api_key` with `api_key_env`",
+    ] {
+        assert!(chapter.contains(phrase), "{phrase}");
+    }
+    let reference = fs::read_to_string(root.join("md/reference.md"))
+        .unwrap()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    for phrase in [
+        "Ollama defaults to `http://localhost:11434`",
+        "except `maxTokens`: without it, each Bedrock request asks for at most 16,384 output tokens",
+    ] {
+        assert!(reference.contains(phrase), "{phrase}");
+    }
 }
 
 // {test}`requirements.configuration.loading`
@@ -1489,6 +1573,7 @@ fn commands_without_evidence_inputs_ignore_an_invalid_workspace_file() {
 }
 
 // {test}`requirements.configuration.documentation`
+// {test}`requirements.authoring.configuration_documentation`
 #[test]
 fn documented_configuration_examples_name_the_file_to_edit() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -1538,6 +1623,7 @@ fn documented_configuration_examples_name_the_file_to_edit() {
 }
 
 // {test}`requirements.configuration.documentation`
+// {test}`requirements.authoring.configuration_documentation`
 #[test]
 fn documented_configuration_examples_identify_their_placeholders() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));

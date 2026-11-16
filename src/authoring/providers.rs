@@ -524,12 +524,34 @@ mod tests {
                     attempts += 1;
                     now += delay;
                     // No attempt starts after the minute.
-                    assert!(now <= start + RETRY_LIMIT);
+                    assert!(now <= start + Duration::from_secs(60));
                 }
                 Retry::Stop(error) => break error.to_string(),
             }
         };
         assert!(attempts > 3, "{attempts}");
+        let mut within_minute = ProviderBackoff::default();
+        assert!(matches!(
+            within_minute.retry(throttled(), start),
+            Retry::Wait(_)
+        ));
+        assert!(
+            matches!(within_minute.retry(throttled(),start + Duration::from_secs(58)),
+            Retry::Wait(delay) if delay <= Duration::from_secs(2))
+        );
+        for (minimum, should_wait) in [("60", true), ("61", false)] {
+            let error = io::Error::other(with_retry_after(
+                provider_error(Some(429), Some("ThrottlingException")),
+                minimum,
+            ));
+            match ProviderBackoff::default().retry(error, start) {
+                Retry::Wait(delay) => {
+                    assert!(should_wait, "waited past one minute");
+                    assert_eq!(delay, Duration::from_secs(60));
+                }
+                Retry::Stop(_) => assert!(!should_wait, "stopped exactly at one minute"),
+            }
+        }
         assert!(message.contains("kept failing for a minute"), "{message}");
         assert!(
             message.contains(&format!("after {} attempts", attempts + 1)),
@@ -647,6 +669,20 @@ mod tests {
             ProviderBackoff::default().next_delay(&error),
             Some(Duration::from_secs(90))
         );
+        for minimum in ["0", "5", "45"] {
+            let mut backoff = ProviderBackoff::default();
+            let throttled = io::Error::other(provider_error(Some(429), None));
+            for _ in 0..6 {
+                backoff.next_delay(&throttled).unwrap();
+            }
+            let error =
+                io::Error::other(with_retry_after(provider_error(Some(429), None), minimum));
+            for _ in 0..100 {
+                let delay = backoff.next_delay(&error).unwrap();
+                let lower = Duration::from_secs(minimum.parse::<u64>().unwrap().max(30));
+                assert!((lower..=Duration::from_secs(60)).contains(&delay));
+            }
+        }
     }
 
     // {test}`requirements.authoring.provider_backoff`
