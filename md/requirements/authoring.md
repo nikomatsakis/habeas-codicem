@@ -158,7 +158,8 @@ applied.
 
 # Submitting
 
-You MUST end by calling submit_verification exactly once. A verification
+You MUST end by calling submit_verification until one submission is accepted.
+A rejected submission does not complete the assessment. A verification
 written in your reply text is not accepted.
 ```
 
@@ -376,7 +377,8 @@ requirements or examples the item does not cite, except as step 3 requires.
 
 Choose true when your task finds no gap, {"FIXME": ["..."]} when every gap is
 acknowledged, and false otherwise. You MUST end by calling submit_judgment
-exactly once with determination and rationale. A judgment written in your
+with determination and rationale until one submission is accepted.
+A rejected submission does not complete the assessment. A judgment written in your
 reply text is not accepted.
 ```
 
@@ -459,7 +461,8 @@ site's callers, or other sites.
 
 Choose true when your task finds no gap, {"FIXME": ["..."]} when every gap is
 acknowledged, and false otherwise. You MUST end by calling submit_judgment
-exactly once with applies, determination, and rationale. A judgment written in
+with applies, determination, and rationale until one submission is accepted.
+A rejected submission does not complete the assessment. A judgment written in
 your reply text is not accepted.
 ```
 
@@ -564,7 +567,7 @@ and the last failure's HTTP status and provider error code, when available.
 
 ## Model tools
 
-The model receives nine tools: `habeas`, `list_files`, `outline`, `ripgrep`, `ast_grep`, `github`, `references`, `next_page`, and `submit_judgment`.
+The model receives ten tools: `habeas`, `list_files`, `outline`, `ripgrep`, `ast_grep`, `github`, `references`, `next_page`, `finish_search`, and `submit_judgment`.
 The following notation defines their arguments and results; names in uppercase
 are data types, and optional fields show their defaults.
 
@@ -813,9 +816,14 @@ ReferenceScope {
     scope: "node" | "file" = "file",
 }
 
-SearchResult { matches: Array<SearchMatch> }
+SearchResult {
+    search_id: UUID,
+    instructions: Optional<String>,
+    matches: Array<SearchMatch>,
+}
 
 SearchMatch {
+    tag: String,         // short tag for finish_search
     file: String,
     item: String,        // selector of the innermost outline node
     kind: String,
@@ -833,8 +841,9 @@ parallelism, so the same sources always produce the same inputs. Explicitly allo
 be searched even when ignored or hidden; workspace disallow rules still apply.
 `context`
 MUST be nonnegative and specify how many lines before and after each matching
-line to include, defaulting to two on each side. Windows MUST stop at file
-boundaries, and overlapping windows in the same file MUST be merged. The result
+line to include, defaulting to two on each side. Windows MUST stop at item
+boundaries under {cite}`requirements.authoring.search_accounting.excerpts`,
+and overlapping windows within the same item MUST be merged. The result
 MUST give one entry for each innermost outline node containing a match, where a
 match in a comment belongs to the node the comment belongs to under
 {cite}`requirements.references.outline_comments`: the node's file, selector
@@ -843,10 +852,12 @@ and context lines in source order, each marked as matching or not and redacted
 under {cite}`requirements.authoring.redaction`. Results MUST NOT give line
 numbers; the model locates and cites code by selector. Separate windows within
 one node MUST be distinguishable, such as by an elision line that is not
-marked as matching. Search results MUST NOT become
-evidence inputs and MUST NOT include definitions; the model-facing description
-MUST tell the model to read with the `habeas` tool any node whose code its
-conclusion relies on. Setting `context` to zero MUST return only matching lines.
+marked as matching. Search results MUST NOT include definitions. Selected snippets MUST contribute
+evidence inputs through {cite}`requirements.authoring.finish_search.inputs`;
+unselected snippets MUST NOT contribute inputs merely through discovery.
+Results and descriptions MUST follow
+{cite}`requirements.authoring.search_accounting.instructions` and
+{cite}`requirements.authoring.finish_search.description`. Setting `context` to zero MUST return only matching lines.
 With `referencing`, the tool MUST search only sources, within `path`, that carry
 a reference in one of `roles` to a requirement or example the `selection`
 matches under {cite}`requirements.references.definition_globs`, including
@@ -885,12 +896,184 @@ ordering, and source-access policy as {cite}`requirements.authoring.text_search`
 over files of that language. Each match MUST be returned as the entry of the
 innermost outline node containing it, in the `SearchResult` form and under the
 rules of {cite}`requirements.authoring.text_search`, with the matched lines as
-its lines; search results MUST NOT become evidence inputs. Its model-facing description MUST
+its lines; selected snippets MUST contribute inputs through
+{cite}`requirements.authoring.finish_search.inputs`. Its model-facing description MUST
 explain the rule syntax and the `context` and `selector` form for fragments that
 do not parse as standalone code. Explicitly requesting an excluded path MUST be
 handled as a denial under {cite}`requirements.authoring.read_denial`. No matches
 MUST return an empty array; an invalid language or rule, or a failed search,
 MUST return an explanatory tool error.
+:::
+
+### Account for search snippets
+
+:::{req} search_accounting.result_ids
+Each successfully delivered `ripgrep` or `ast_grep` result MUST contain a
+`search_id` UUID identifying only that result in the current assessment.
+A new search call MUST use new UUIDs.
+:::
+
+:::{req} search_accounting.entry_tags
+Each `matches` entry MUST have a short string `tag`, unique within its result,
+for selection by `finish_search`. Entries under `not_listed` MUST NOT receive
+selectable tags.
+:::
+
+:::{req} search_accounting.outstanding
+A successfully delivered search result MUST become outstanding, including
+a result with no matches, and remain outstanding until accepted by
+`finish_search`. Failed searches and undelivered results MUST NOT create
+outstanding searches.
+:::
+
+:::{req} search_accounting.pagination
+Each delivered search page under {cite}`requirements.authoring.result_pages`
+MUST have its own `search_id` and independently require `finish_search`.
+Fetching another page MUST NOT require finishing an earlier page.
+:::
+
+:::{req} search_accounting.page_replay
+Repeated retrieval of the same search page MUST preserve its UUID and tags
+and MUST NOT reopen it if it has already been finished.
+:::
+
+:::{req} search_accounting.instructions
+The first delivered search result in each assessment MUST include an
+`instructions` field containing this text:
+
+```text
+Before submitting your assessment, close every delivered search with finish_search({search_id, used:[tags]}). Submission fails while any search remains open. Include a tag only when you used information in its snippet to justify your conclusion without an additional source read. Entries whose source you subsequently read with habeas may be omitted; including them is harmless. Use used:[] when no entries qualify, including for an empty search. finish_search records dependencies and does not request more source.
+```
+:::
+
+:::{req} search_accounting.excerpts
+Every `ripgrep` or `ast_grep` excerpt, including matching and context text,
+MUST be clipped to
+the source span of the outline item identified by their `file` and `item`,
+including that item's attached source under
+{cite}`requirements.references.outline_comments`.
+Clipping MUST apply within a line shared by different items.
+:::
+
+:::{req} finish_search
+The harness MUST expose:
+
+```text
+finish_search({ search_id: UUID, used: Array<String> })
+    -> { search_id: UUID, finished: true }
+```
+
+The arguments MUST contain exactly these fields.
+:::
+
+:::{req} finish_search.description
+The model-facing search and `finish_search` tool descriptions MUST give the
+same selection guidance as
+{cite}`requirements.authoring.search_accounting.instructions`.
+:::
+
+:::{req} finish_search.completion
+For a valid call, `finish_search` MUST finish the named search result and
+return the acknowledgment defined by {cite}`requirements.authoring.finish_search`.
+:::
+
+:::{req} finish_search.empty
+`finish_search` MUST accept an empty `used` array, including when the search
+has no matches, and finish the result without adding search-derived inputs.
+:::
+
+:::{req} finish_search.no_additional_source
+`finish_search` MUST NOT require another model-requested source read or
+deliver additional source text or definitions.
+:::
+
+:::{req} finish_search.inputs
+For each tag selected by a valid `finish_search` call, the harness MUST record
+its `file`, `item`, and structural hash as an outline input under
+{cite}`requirements.ci.outline_inputs` before acknowledging that call.
+:::
+
+:::{req} finish_search.snapshot
+The hash recorded for a selected tag MUST describe the source snapshot that
+produced its delivered excerpt, even if the file changes before `finish_search`.
+:::
+
+:::{req} finish_search.unselected
+A `finish_search` call MUST NOT add inputs for tags it does not select.
+It MUST retain all previously recorded inputs, including inputs recorded
+by earlier `finish_search` calls.
+:::
+
+:::{req} finish_search.deduplication
+Duplicate selected tags and identical recorded inputs MUST have no
+additional effect.
+:::
+
+:::{req} finish_search.repetition
+Repeated valid calls for a finished search MUST retain previously recorded dependencies
+and add dependencies for newly selected tags.
+:::
+
+:::{req} finish_search.invalid
+Missing, extra, or wrongly typed arguments, an invalid or unknown UUID,
+a UUID from another assessment, or a tag outside that UUID's delivered
+`matches` MUST return an explanatory tool error. The assessment MUST
+continue so the model can correct the call.
+:::
+
+:::{req} finish_search.atomicity
+A rejected `finish_search` call MUST change neither recorded dependencies
+nor outstanding searches, including when only some supplied tags are valid.
+:::
+
+:::{req} submission.searches
+An otherwise valid `submit_judgment` or `submit_verification` call MUST be
+rejected while any search remains outstanding.
+:::
+
+:::{req} submission.searches.diagnostic
+The tool error for an outstanding-search rejection MUST list
+every outstanding UUID and explain that `finish_search` is required before
+resubmitting.
+:::
+
+:::{req} submission.searches.recovery
+An outstanding-search rejection MUST leave the assessment open for the model
+to finish its searches and submit again. It MUST NOT accept a judgment or
+publish evidence.
+:::
+
+:::{req} submission.searches.line_numbers
+After validating submission arguments or resolving the UUID resubmission
+form, the outstanding-search gate MUST precede line-number rejection or
+acceptance. An outstanding-search rejection MUST NOT consume the line-number
+resubmission or submission reminder.
+:::
+
+:::{req} submission.searches.accompanying_calls
+Non-submission tool calls accompanying a submission, including `finish_search`,
+MUST be skipped, even when the submission is rejected for outstanding searches.
+:::
+
+:::{example} search_accounting.helper_freshness
+A marked test calls `assert_refusal`. A search excerpt of that helper supplies
+the refusal and byte-preservation assertions used to justify the judgment.
+The model finishes the search with the helper's tag without reading it with
+`habeas`. Saved evidence MUST include the helper's outline input.
+
+Replacing the helper with a no-op MUST make that evidence stale, even when
+the marked test source is unchanged.
+{test}`requirements.authoring.finish_search.inputs`
+{test}`requirements.authoring.finish_search.snapshot`
+:::
+
+:::{example} search_accounting.recovery
+Two search results remain outstanding; one has no matches. Submission MUST
+return an error naming both UUIDs. Finishing only the first MUST leave
+submission rejected with the second UUID. Finishing the empty search with
+`used: []` MUST permit an otherwise valid subsequent submission.
+{test}`requirements.authoring.submission.searches`
+{test}`requirements.authoring.submission.searches.recovery`
 :::
 
 ### Read GitHub issues: `github`
@@ -992,7 +1175,8 @@ supplying their source or recording evidence inputs.
 :::{req} result_pages
 A result of the `habeas` line-range form, `list_files`, `outline`, `ripgrep`,
 `ast_grep`, or `references` whose serialized JSON exceeds 32 KiB MUST be
-returned in pages. Each page MUST hold whole entries of the result's arrays, such
+returned in pages. The size limit MUST include search UUIDs, tags, and instructions.
+Each page MUST hold whole entries of the result's arrays, such
 as inputs, matches, nodes, or sites, with its accompanying definitions, in the
 result's order, and MUST NOT exceed 32 KiB unless a single entry does, which
 then forms a page of its own. Every paged result MUST include:
@@ -1028,12 +1212,15 @@ Judgment = Boolean | { FIXME: Array<String> }
 The judgment MUST use the three outcomes and nonempty FIXME entries defined by
 {cite}`requirements.ci.outcomes`.
 `rationale` MUST be nonempty Markdown. This tool call MUST supply the final
-assessment result. The model MUST invoke it exactly once over the entire
-assessment. If a response ends without invoking it, and the assessment has
+assessment result. The model MUST obtain exactly one accepted submission over the entire
+assessment. Rejected attempts under
+{cite}`requirements.authoring.submission.searches.recovery` and
+{cite}`requirements.authoring.line_numbers.rejection` do not count as accepted
+submissions. If a response ends without invoking it, and the assessment has
 not already been reminded, the harness MUST continue the conversation with one
 user message, `Reminder: you MUST submit your result with the submit_judgment
 tool.`, naming the assessment's submission tool. If a later response also ends
-without invoking it, or the model invokes it more than once, the harness MUST
+without invoking it, or a response contains multiple submission calls, the harness MUST
 report an error and leave existing evidence unchanged. The reminder MUST be
 counted in usage like any other turn.
 The harness MUST check the complete model response for multiple submissions
@@ -1042,7 +1229,8 @@ A valid single submission MUST finish the assessment; there is no submission
 repair or resubmission loop, except the one continuation after a response cut
 off at its output limit under {cite}`requirements.authoring.output_limit`, the
 one reminder above, and the one resubmission after a rejection under
-{cite}`requirements.authoring.line_numbers.rejection`. An assessment that fails before accepting a valid
+{cite}`requirements.authoring.line_numbers.rejection`, and recovery under
+{cite}`requirements.authoring.submission.searches.recovery`. An assessment that fails before accepting a valid
 judgment MUST emit no evidence JSON to stdout.
 :::
 
@@ -1062,7 +1250,9 @@ When the only submission in a response under
 {cite}`requirements.authoring.verifier_prompt`, is otherwise valid but its
 rationale cites line numbers under
 {cite}`requirements.authoring.line_numbers.detection`, and it is the
-assessment's first such submission, the harness MUST reject it instead of
+assessment's first such submission, and it passes the outstanding-search gate
+under {cite}`requirements.authoring.submission.searches.line_numbers`, the
+harness MUST reject it instead of
 accepting it and continue the conversation. The tool result MUST quote the
 matched text, repeat the location guidance of
 {cite}`requirements.authoring.judgment_rules`, and give a fresh random UUID,
@@ -1074,8 +1264,10 @@ A rejection MUST be counted in usage like any other turn.
 :::{req} line_numbers.resubmission
 After a rejection under {cite}`requirements.authoring.line_numbers.rejection`,
 a submission whose `rationale` is exactly the UUID that rejection gave MUST
-accept the rejected submission unchanged, ignoring the new submission's other
-fields. Any other rationale that cites line numbers MUST fail the assessment, so
+resolve to the rejected submission unchanged, ignoring the new submission's
+other fields; acceptance remains subject to
+{cite}`requirements.authoring.submission.searches.line_numbers`. After passing that gate, any other rationale that cites line numbers MUST fail
+the assessment, so
 an assessment rejects at most one submission. The UUID MUST NOT be recorded in
 evidence.
 :::
@@ -1145,7 +1337,7 @@ to discover them.
 ### Prompt template
 
 :::{req} initial_prompt
-The initial request MUST provide the nine tool definitions above and the
+The initial request MUST provide the ten tool definitions above and the
 following prompt, the first block as its system prompt and the second as its
 subject message under {cite}`requirements.authoring.prompt_parts`. The harness MUST replace `{{subject_kind}}` with `requirement`
 or `example`, `{{subject_name}}` with the full subject name,
@@ -1213,7 +1405,8 @@ when those criteria are met.
 
 Choose true when your task finds no gap, {"FIXME": ["..."]} when every gap is
 acknowledged, and false otherwise. You MUST end by calling submit_judgment
-exactly once with determination and rationale. A judgment written in your
+with determination and rationale until one submission is accepted.
+A rejected submission does not complete the assessment. A judgment written in your
 reply text is not accepted.
 ```
 
@@ -1938,7 +2131,8 @@ credential sources instead.
 
 :::{req} delivered_inputs
 The harness MUST record the sources it supplies to the model, including
-mandatory inputs and additional reads, using the evidence input formats
+mandatory inputs, additional reads, and selected search dependencies under
+{cite}`requirements.authoring.finish_search.inputs`, using the evidence input formats
 defined by {cite}`requirements.ci.outline_inputs`,
 {cite}`requirements.ci.requirements_inputs`, and
 {cite}`requirements.definitions.inputs`. The harness MUST create these records
