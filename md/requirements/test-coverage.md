@@ -308,6 +308,220 @@ run. It MUST work during the first instrumented test run, before that run's
 profiles and reports have been written.
 :::
 
+## Post-suite coverage check
+
+Stricter coverage policy for security-sensitive code, including how projects
+identify that code, is deferred to
+[issue #47](https://github.com/nikomatsakis/habeas-codicem/issues/47).
+
+:::{req} check
+`habeas coverage-check` MUST check saved execution coverage against
+{cite}`requirements.test-coverage.check.threshold` and
+{cite}`requirements.test-coverage.check.functions`, returning success only when
+every applicable obligation is satisfied or has accepted exception evidence
+under {cite}`requirements.test-coverage.check.exceptions`. The command MUST NOT
+build the project, execute tests, collect coverage, or invoke an assessment model.
+:::
+
+:::{req} test
+`habeas test` MUST run the full-workspace instrumented nextest workflow of
+{cite}`requirements.test-coverage.run` and, only after that workflow succeeds,
+run the post-suite check of {cite}`requirements.test-coverage.check`. It MUST
+return a failing exit status if test execution, coverage collection, or the
+post-suite check fails. It MUST NOT author exception evidence or invoke an
+assessment model.
+:::
+
+:::{req} check.scope
+The coverage check MUST consider every explicitly declared function or method
+with a body in the first-party Rust sources of
+{cite}`requirements.references.rust_item_coverage`, including test functions,
+test helpers, and default trait methods. Declarations without bodies MUST NOT
+create execution-coverage obligations. Source discovery or parsing failures
+MUST cause the check to fail rather than silently omit functions.
+
+A function whose measurement cannot be established MUST be reported as not
+measured rather than silently excluded. Functions excluded by the selected
+build configuration require exception evidence under
+{cite}`requirements.test-coverage.check.exceptions`.
+:::
+
+:::{req} check.threshold
+Each first-party Rust file under
+{cite}`requirements.references.rust_item_coverage` MUST have at least 80%
+execution coverage of its instrumented lines, or current accepted exception
+evidence explaining why the file falls below that target under
+{cite}`requirements.test-coverage.check.exceptions`. Counts MUST use the
+file-and-line union rule of {cite}`requirements.test-coverage.index.summary`;
+a line counts as executed when any eligible test process or its associated
+child processes has a positive execution count for it.
+
+The check MUST use the combined selection and freshness rules of
+{cite}`requirements.test-coverage.index.selection` and
+{cite}`requirements.test-coverage.index.freshness`, restricted to the active
+build configuration. It MUST compare exact counts rather than rounded displayed
+percentages, average file percentages, or impose an 80% target within each
+function. A file whose executable code is not measured MUST require exception
+evidence rather than pass with a fabricated percentage. A file established to
+contain no executable coverage obligations MUST be reported as such and MUST
+NOT require a threshold exception.
+Absence of recorded instrumented lines alone MUST NOT establish that a file
+contains no executable coverage obligations.
+:::
+
+:::{req} check.functions
+Every function under {cite}`requirements.test-coverage.check.scope` without
+recorded execution attributable to it MUST have current accepted exception
+evidence under {cite}`requirements.test-coverage.check.exceptions`, even when
+its containing file meets the target of
+{cite}`requirements.test-coverage.check.threshold`.
+
+Execution attributable only to another function, including a nested function
+or closure, MUST NOT establish coverage of the enclosing function merely
+because their source locations overlap. Having no recorded lines alone MUST
+NOT establish that a function has no executable coverage obligations.
+:::
+
+:::{req} check.measurement
+The coverage check MUST fail when no usable coverage has been collected, or when
+a selected latest attempt has missing, unreadable, or stale coverage. It MUST
+distinguish these measurement failures from measured lines with zero execution
+and from individual functions absent from otherwise usable coverage. Exception
+evidence MUST NOT excuse measurement failures or permit substitution of an
+older attempt. Excluded historical runs and incompatible configurations MUST
+NOT by themselves cause failure.
+
+Coverage whose format does not support the function attribution required by
+{cite}`requirements.test-coverage.check.functions` MUST be rejected with guidance
+to recollect coverage. When missing or corrupt metadata prevents establishing
+the latest-per-test selection or active configuration, the check MUST fail
+rather than silently use remaining records. Historical data MAY be disregarded
+without failure only when its exclusion can be established.
+:::
+
+:::{req} check.exceptions
+An unmet file threshold or an unexecuted or not-measured function MAY satisfy
+the coverage policy only
+through current, accepted, independently assessed evidence explaining why its
+coverage is incomplete. An exception MUST be attached to the source file or
+function whose incomplete coverage it justifies. A file-threshold exception
+MUST NOT automatically excuse untested functions.
+An exception MUST NOT excuse another source item's incomplete coverage.
+Changes to the source item, justification, or other inputs
+of its citation review MUST invalidate the affected exception under
+{cite}`requirements.references.citation_review`.
+
+A source comment or unassessed justification alone MUST NOT count as accepted
+exception evidence. Function and gap identities MUST remain portable between
+equivalent local and CI checkouts rather than depend on checkout paths,
+run identifiers, timestamps, or process identifiers.
+:::
+
+:::{req} check.exceptions.anchor
+Habeas MUST provide the built-in `habeas:coverage` under
+{cite}`requirements.references.builtin_definitions`, with this text:
+
+> Cite this on a source file or explicitly declared function to propose a
+> coverage exception. Explain in prose why the item's incomplete execution
+> coverage is acceptable. Put the explanation in fenced citation commentary
+> or Rust doc comments included in the source item's assessed input. An ordinary
+> non-doc comment alone does not supply a tracked justification. The reason
+> must be substantive; difficulty alone is not a justification.
+> On a file's root item, the exception excuses only
+> that file's 80% instrumented-line threshold, including absent measurement
+> of its executable code. On an explicit function with a body, it excuses
+> that function's recorded zero execution or absence from otherwise usable
+> measurement, without excusing the file's threshold.
+> The explanation must agree with the current source and any callers or
+> configuration assumptions on which it relies. Only a current accepted
+> independent assessment permits the exception. A file exception does not
+> excuse unexecuted or not-measured functions in that file.
+> The citation applies to its source item without conditional build matching
+> and may remain when measured coverage satisfies the item's obligations.
+
+Only `{cite}` MAY reference this built-in, inline or fenced using the standard
+reference forms of {cite}`requirements.references.roles`. The built-in MUST be
+available in every project without a project requirement, site query, or
+exception-specific configuration.
+:::
+
+:::{req} check.exceptions.reviews
+Exception proposals MUST be `{cite}` references to `habeas:coverage`
+under {cite}`requirements.test-coverage.check.exceptions.anchor`. Each proposal
+MUST have a current, accepted citation review of its source item under
+{cite}`requirements.references.citation_review`. The reviewer MUST assess
+whether the justification adequately explains the proposed exception, not merely
+whether the citation has the right role. An acknowledgment of missing coverage
+without an adequate justification MUST NOT authorize an exception.
+
+File-threshold proposals MUST belong to the source file's root item. Proposals
+concerning unexecuted or not-measured functions MUST belong to their explicitly
+declared function's item. One accepted function proposal MUST cover both zero execution
+and absence from otherwise usable measurement, without separate exception kinds.
+A proposal in a nested function MUST NOT authorize exceptions
+for its enclosing function, and an enclosing function's proposal MUST NOT
+authorize exceptions for nested functions.
+:::
+
+:::{req} check.exceptions.binding
+The coverage check MUST use the citation's source attachment and current
+accepted review to identify an exception. It MUST NOT require structured
+exception metadata, match exceptions to targets, profiles, or feature sets, or
+interpret build conditions in prose as machine-enforced restrictions.
+A citation with a current accepted review MUST remain eligible across build
+configurations even when its prose describes a condition specific to one
+configuration. Satisfying the item's measured coverage obligations MUST NOT
+by itself invalidate the citation or make its presence a coverage-check error.
+:::
+
+:::{req} check.exceptions.author
+The `habeas author` workflow MUST support authoring and refreshing exception
+evidence under {cite}`requirements.test-coverage.check.exceptions`. Assessment
+inputs MUST include the current file or function source, the built-in's fixed
+text, and its citation commentary under
+{cite}`requirements.references.citation_review`.
+
+Justifications and their assessment evidence MUST be retainable in Git
+independently of the disposable coverage artifacts under
+{cite}`requirements.test-coverage.storage`. Raw profiles, coverage reports, and
+captured source snapshots MUST NOT be required in Git to validate an exception
+against freshly collected coverage.
+:::
+
+:::{req} check.exceptions.setup
+Setup-generated coverage documentation and bundled agent instructions MUST
+explain how to write a standard `habeas:coverage` citation with a prose
+justification under
+{cite}`requirements.test-coverage.check.exceptions.anchor` and author or refresh
+its citation review using `habeas author`. The instructions MUST explain that
+the anchor requires no project declaration or exception-specific configuration,
+that only current accepted citation evidence permits an exception, and that
+ordinary partially uncovered functions need none when their file meets its
+target.
+:::
+
+:::{req} check.report
+The coverage check MUST show each file's measured coverage and threshold result,
+identify each unsatisfied function by source file and function, list uncovered
+locations or absence of measurement, and explain missing, stale, or rejected
+exception evidence. It MUST report accepted
+exceptions separately from executed coverage; accepting an exception MUST NOT
+increase any displayed execution-coverage percentage.
+:::
+
+:::{req} check.guidance
+Habeas's bundled agent instructions and setup-generated coverage documentation
+MUST recommend running `habeas coverage-check` after a successful full-workspace
+instrumented nextest run using `habeas coverage -- --workspace`, as a separate
+CI step. They MUST document `habeas test` as the command running collection and
+post-suite checking in order under {cite}`requirements.test-coverage.test`.
+
+The static validation test MUST NOT require current collected execution
+coverage or validate exception applicability against current runtime gaps.
+Those checks belong to the post-suite coverage command. Coverage checking
+MUST NOT depend on running the static validation test last.
+:::
+
 :::{req} setup.bootstrap
 :impl: assets/skills/habeas-bootstrap-requirements/SKILL.md
 The `habeas-bootstrap-requirements` skill MUST direct agents to check the
