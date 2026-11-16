@@ -822,14 +822,14 @@ habeas status --verbose
 
 Agent skills installed by Habeas point to `habeas info` for looking up definition details.
 
-To add an evidence index, list a chapter in `SUMMARY.md` and put this directive in it:
+The build appends a Requirements index chapter automatically. To choose where the index goes, list a chapter in `SUMMARY.md` and put this directive in it:
 
 ```text
 :::{requirements-index}
 :::
 ```
 
-The build fills that chapter with a table of requirement and example states linking to their evidence pages. With or without an index, the build adds an evidence page for every requirement and example, nested under the chapter that defines it; each definition badge and its "See evidence" link open that page. `habeas setup` enables `output.html.fold` so these pages stay folded in the sidebar until a reader expands their chapter. {cite}`requirements.index.detail_pages`
+The build fills the index chapter with a table of requirement and example states linking to their evidence pages. It adds an evidence page for every requirement and example as a subchapter of the index; each definition badge links to its definition anchor, with a separate integrated → link that opens the evidence page. The automatic chapter requires no source file or `SUMMARY.md` entry. `habeas setup` enables `output.html.fold` so these pages stay folded in the sidebar until a reader expands the index chapter. {cite}`requirements.index.chapter` {cite}`requirements.index.chapter.default` {cite}`requirements.index.detail_pages`
 
 ## Using a local checkout
 

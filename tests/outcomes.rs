@@ -416,6 +416,7 @@ fn fixme_does_not_hide_stale_inputs_or_uncovered_references() {
 // {test}`requirements.cli.info`
 // {test}`requirements.index.state`
 // {test}`requirements.index.detail_format`
+// {test}`requirements.index.detail_pages`
 // {test}`requirements.examples.index`
 #[test]
 fn valid_fixme_remains_visible_in_status_info_and_book() {
@@ -455,11 +456,7 @@ fn valid_fixme_remains_visible_in_status_info_and_book() {
         .find(|chapter| chapter.name == "Index")
         .unwrap();
     assert!(index.content.contains("FIXME"));
-    // Detail pages are nested under the defining chapter.
-    let detail = book
-        .chapters()
-        .next()
-        .unwrap()
+    let detail = index
         .sub_items
         .iter()
         .find_map(|item| match item {

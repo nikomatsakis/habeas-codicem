@@ -16,13 +16,14 @@ use crate::{
     definition_blocks, escape_html, overlaps_protected, protected_ranges, shield_badge,
 };
 
-/// Where generated evidence detail pages and the optional index go.
+/// Where the requirements index and its generated evidence detail pages go.
 // {impl}`requirements.index.detail_pages`
 // {impl}`requirements.index.chapter`
 pub(crate) struct DetailPlan {
-    index_path: Option<PathBuf>,
+    index_path: PathBuf,
+    generated_index: bool,
     detail_paths: BTreeMap<String, PathBuf>,
-    /// Defining chapter paths, each with its definitions in definition order.
+    /// Definitions in book order, attached to the index chapter.
     chapters: Vec<(PathBuf, Vec<String>)>,
 }
 
@@ -284,6 +285,7 @@ impl EvidenceState {
 
 impl DetailPlan {
     // {impl}`requirements.index.chapter`
+    // {impl}`requirements.index.chapter.default`
     // {impl}`requirements.examples.index`
     // {impl}`requirements.index.detail_pages`
     // {impl}`requirements.index.path_conflicts`
@@ -303,27 +305,29 @@ impl DetailPlan {
                 index_path = chapter.path.clone();
             }
         }
+        let generated_index = index_path.is_none();
+        let index_path = index_path.unwrap_or_else(|| PathBuf::from("requirements-index.md"));
+        let names = order
+            .iter()
+            .filter(|name| definitions.contains_key(*name))
+            .cloned()
+            .collect::<Vec<_>>();
         let mut detail_paths = BTreeMap::new();
-        let mut chapters: Vec<(PathBuf, Vec<String>)> = Vec::new();
-        for name in order {
-            let Some(definition) = definitions.get(name) else {
-                continue;
-            };
-            let path = detail_path(&definition.path, name);
-            detail_paths.insert(name.clone(), path);
-            match chapters
-                .iter_mut()
-                .find(|(chapter, _)| *chapter == definition.path)
-            {
-                Some((_, names)) => names.push(name.clone()),
-                None => chapters.push((definition.path.clone(), vec![name.clone()])),
-            }
+        for name in &names {
+            detail_paths.insert(name.clone(), detail_path(&index_path, name));
         }
+        let chapters = vec![(index_path.clone(), names)];
         let existing_paths = book
             .chapters()
             .filter_map(|chapter| chapter.path.as_ref())
             .collect::<BTreeSet<_>>();
         // {impl}`requirements.index.path_conflicts`
+        if generated_index && existing_paths.contains(&index_path) {
+            return Err(invalid_index(&format!(
+                "generated requirements index {} conflicts with a book chapter",
+                index_path.display()
+            )));
+        }
         let mut generated = BTreeSet::new();
         for path in detail_paths.values() {
             if existing_paths.contains(path) || !generated.insert(path) {
@@ -335,6 +339,7 @@ impl DetailPlan {
         }
         Ok(Self {
             index_path,
+            generated_index,
             detail_paths,
             chapters,
         })
@@ -352,6 +357,7 @@ impl DetailPlan {
     // {impl}`requirements.index.state`
     // {impl}`requirements.examples.index`
     // {impl}`requirements.index.chapter`
+    // {impl}`requirements.index.chapter.default`
     // {impl}`requirements.index.detail_pages`
     pub(crate) fn populate(
         &self,
@@ -359,9 +365,6 @@ impl DetailPlan {
         root: &Path,
         definitions: &BTreeMap<String, Definition>,
     ) -> io::Result<()> {
-        if self.detail_paths.is_empty() && self.index_path.is_none() {
-            return Ok(());
-        }
         let config = Config::from_disk(root.join("book.toml")).map_err(io::Error::other)?;
         let source_links = SourceLinks::from_config(&config)?;
         let inspection = inspect_repository(root)?;
@@ -382,17 +385,15 @@ impl DetailPlan {
             let definition = definitions
                 .get(name)
                 .expect("every detail page has a definition");
-            if let Some(index_path) = &self.index_path {
-                let detail_href = chapter_href(index_path, detail_path, None);
-                rows.push((
-                    format!("[`{name}`]({detail_href}) ({})", definition.kind.noun()),
-                    evidence.state().label(),
-                ));
-            }
+            let detail_href = chapter_href(&self.index_path, detail_path, None);
+            rows.push((
+                format!("[`{name}`]({detail_href}) ({})", definition.kind.noun()),
+                evidence.state().label(),
+            ));
             let content = render_detail_page(
                 name,
                 detail_path,
-                self.index_path.as_deref(),
+                Some(&self.index_path),
                 definition,
                 evidence.borrowed(),
                 &sources,
@@ -409,14 +410,36 @@ impl DetailPlan {
         // {impl}`requirements.cli.shared_status_rendering`
         let rows = render_evidence_table(&rows);
 
+        if self.generated_index {
+            let number = book
+                .items
+                .iter()
+                .filter_map(|item| match item {
+                    BookItem::Chapter(chapter) => chapter.number.as_ref()?.first().copied(),
+                    _ => None,
+                })
+                .max()
+                .unwrap_or(0)
+                + 1;
+            let mut chapter = Chapter::new(
+                "Requirements index",
+                "# Requirements index\n\n:::{requirements-index}\n:::\n".to_owned(),
+                &self.index_path,
+                Vec::new(),
+            );
+            chapter.source_path = None;
+            chapter.number = Some(SectionNumber::new(vec![number]));
+            book.push_item(chapter);
+        }
+
         // {impl}`requirements.index.navigation`
-        let mut index_found = self.index_path.is_none();
+        let mut index_found = false;
         let mut chapters_found = 0;
         book.for_each_chapter_mut(|chapter| {
             let Some(path) = chapter.path.clone() else {
                 return;
             };
-            if self.index_path.as_deref() == Some(path.as_path()) {
+            if self.index_path == path {
                 index_found = true;
                 let ranges = marker_ranges(&chapter.content)
                     .expect("the index directive was checked before the book was changed");
@@ -459,7 +482,7 @@ impl DetailPlan {
             return Err(invalid_index("the requirements index chapter disappeared"));
         }
         if chapters_found != self.chapters.len() {
-            return Err(invalid_index("a defining chapter disappeared"));
+            return Err(invalid_index("the requirements index chapter disappeared"));
         }
         Ok(())
     }
@@ -1130,7 +1153,7 @@ mod tests {
 
         let definition = book.chapters().next().unwrap();
         assert!(definition.content.contains(
-            "id=\"habeas-req-requirements.core.ready\" href=\"core/requirements.core.ready.html\""
+            "id=\"habeas-req-requirements.core.ready\" href=\"#habeas-req-requirements.core.ready\""
         ));
         let index = book
             .chapters()
@@ -1145,7 +1168,7 @@ mod tests {
             ("uncovered", "Invalid"),
         ] {
             let link = format!(
-                "| [`requirements.core.{name}`](../requirements/core/requirements.core.{name}.html)"
+                "| [`requirements.core.{name}`](requirements-index/requirements.core.{name}.html)"
             );
             let row = index
                 .content
@@ -1179,9 +1202,9 @@ mod tests {
                 .unwrap();
             assert_eq!(pipes[column + 1] - pipes[column] - 3, widest);
         }
-        assert!(index.sub_items.is_empty());
-        assert_eq!(definition.sub_items.len(), 5);
-        let ready = definition
+        assert!(definition.sub_items.is_empty());
+        assert_eq!(index.sub_items.len(), 5);
+        let ready = index
             .sub_items
             .iter()
             .find_map(|item| match item {
@@ -1197,20 +1220,22 @@ mod tests {
         );
         assert_eq!(
             ready.number.as_deref().map(Vec::as_slice),
-            Some(&[3, 1][..])
+            Some(&[4, 1][..])
         );
         assert_eq!(
             ready.path.as_deref(),
-            Some(Path::new("requirements/core/requirements.core.ready.md"))
+            Some(Path::new(
+                "appendix/requirements-index/requirements.core.ready.md"
+            ))
         );
+        assert!(ready.content.contains(
+            "[View definition](../../requirements/core.html#habeas-req-requirements.core.ready)"
+        ));
         assert!(
             ready
                 .content
-                .contains("[View definition](../core.html#habeas-req-requirements.core.ready)")
+                .contains("[Requirements index](../requirements-index.html) · [View definition]")
         );
-        assert!(ready.content.contains(
-            "[Requirements index](../../appendix/requirements-index.html) · [View definition]"
-        ));
         assert!(
             ready
                 .content
@@ -1218,7 +1243,7 @@ mod tests {
         );
         assert!(ready.content.contains("> Ready MUST work."));
         assert!(!ready.content.contains("## Evidence record"));
-        let changed = definition
+        let changed = index
             .sub_items
             .iter()
             .find_map(|item| match item {
@@ -1229,7 +1254,7 @@ mod tests {
             })
             .unwrap();
         assert!(changed.content.contains("requirement text changed"));
-        let absent = definition
+        let absent = index
             .sub_items
             .iter()
             .find_map(|item| match item {
@@ -1600,33 +1625,55 @@ mod tests {
     // {test}`requirements.index.path_conflicts`
     #[test]
     fn generated_detail_path_cannot_replace_a_chapter() {
+        for with_marker in [false, true] {
+            let mut book = Book::new();
+            if with_marker {
+                book.push_item(Chapter::new(
+                    "Index",
+                    ":::{requirements-index}\n:::\n".to_owned(),
+                    "requirements-index.md",
+                    Vec::new(),
+                ));
+            }
+            book.push_item(Chapter::new(
+                "Existing",
+                String::new(),
+                "requirements-index/requirements.ready.md",
+                Vec::new(),
+            ));
+            let definitions = BTreeMap::from([(
+                "requirements.ready".to_owned(),
+                Definition {
+                    path: Path::new("requirements.md").to_path_buf(),
+                    text: "Ready MUST work.".to_owned(),
+                    kind: DefinitionKind::Requirement,
+                },
+            )]);
+            let error =
+                match DetailPlan::find(&book, &definitions, &["requirements.ready".to_owned()]) {
+                    Err(error) => error,
+                    Ok(_) => panic!("a generated detail page replaced a chapter"),
+                };
+            assert!(error.to_string().contains("conflicts with a book chapter"));
+        }
+    }
+
+    // {test}`requirements.index.path_conflicts`
+    #[test]
+    fn default_index_path_cannot_replace_an_existing_chapter() {
         let mut book = Book::new();
         book.push_item(Chapter::new(
-            "Index",
-            ":::{requirements-index}\n:::\n".to_owned(),
-            "requirements-index.md",
-            Vec::new(),
-        ));
-        book.push_item(Chapter::new(
             "Existing",
-            String::new(),
-            "requirements/requirements.ready.md",
-            Vec::new(),
+            "Existing content.".into(),
+            "requirements-index.md",
+            vec![],
         ));
-        let definitions = BTreeMap::from([(
-            "requirements.ready".to_owned(),
-            Definition {
-                path: Path::new("requirements.md").to_path_buf(),
-                text: "Ready MUST work.".to_owned(),
-                kind: DefinitionKind::Requirement,
-            },
-        )]);
-        let error = match DetailPlan::find(&book, &definitions, &["requirements.ready".to_owned()])
-        {
-            Err(error) => error,
-            Ok(_) => panic!("a generated detail page replaced a chapter"),
-        };
-        assert!(error.to_string().contains("conflicts with a book chapter"));
+        let error = preprocess_book(&mut book, Path::new(".")).unwrap_err();
+        assert!(error.to_string().contains(
+            "generated requirements index requirements-index.md conflicts with a book chapter"
+        ));
+        assert_eq!(book.items.len(), 1);
+        assert_eq!(book.chapters().next().unwrap().content, "Existing content.");
     }
 
     // {test}`requirements.index.invalid_detail`
@@ -1760,7 +1807,6 @@ mod tests {
             .chapters()
             .find(|chapter| chapter.name == "Index")
             .unwrap();
-        let rules = book.chapters().next().unwrap();
         for (name, state) in [
             ("false_clean", "Determination false"),
             ("false_stale", "Invalid"),
@@ -1769,14 +1815,14 @@ mod tests {
             ("fixme_clean", "FIXME"),
             ("fixme_stale", "Invalid"),
         ] {
-            let link = format!("| [`rules.{name}`](rules/rules.{name}.html)");
+            let link = format!("| [`rules.{name}`](requirements-index/rules.{name}.html)");
             let row = index
                 .content
                 .lines()
                 .find(|line| line.starts_with(&link))
                 .unwrap_or_else(|| panic!("missing {link} in:\n{}", index.content));
             assert_eq!(row.split('|').nth(2).unwrap().trim(), state, "{row}");
-            let page = rules
+            let page = index
                 .sub_items
                 .iter()
                 .find_map(|item| match item {
@@ -1864,7 +1910,6 @@ mod tests {
             .chapters()
             .find(|chapter| chapter.name == "Index")
             .unwrap();
-        let rules = book.chapters().next().unwrap();
         for (name, state) in [
             ("valid", "Valid"),
             ("pending", "Determination false"),
@@ -1872,14 +1917,15 @@ mod tests {
             ("changed", "Invalid"),
             ("missing", "Missing"),
         ] {
-            let link = format!("| [`rules.{name}`](rules/rules.{name}.html) (example)");
+            let link =
+                format!("| [`rules.{name}`](requirements-index/rules.{name}.html) (example)");
             let row = index
                 .content
                 .lines()
                 .find(|line| line.starts_with(&link))
                 .unwrap_or_else(|| panic!("missing {link} in:\n{}", index.content));
             assert_eq!(row.split('|').nth(2).unwrap().trim(), state, "{row}");
-            let page = rules
+            let page = index
                 .sub_items
                 .iter()
                 .find_map(|item| match item {
@@ -1936,11 +1982,9 @@ mod tests {
         preprocess_book(&mut book, temp.path()).unwrap();
 
         let rules = book.chapters().next().unwrap();
-        assert!(
-            rules
-                .content
-                .contains("id=\"habeas-example-rules.pending\" href=\"rules/rules.pending.html\"")
-        );
+        assert!(rules.content.contains(
+            "id=\"habeas-example-rules.pending\" href=\"#habeas-example-rules.pending\""
+        ));
         let index = book
             .chapters()
             .find(|chapter| chapter.name == "Index")
@@ -1948,22 +1992,22 @@ mod tests {
         assert!(
             index
                 .content
-                .contains("| [`rules.pending`](rules/rules.pending.html) (example)")
+                .contains("| [`rules.pending`](requirements-index/rules.pending.html) (example)")
         );
         assert!(
             index
                 .content
-                .contains("| [`rules.missing`](rules/rules.missing.html) (example)")
+                .contains("| [`rules.missing`](requirements-index/rules.missing.html) (example)")
         );
         // The requirement's row is identified as one too.
         assert!(
             index
                 .content
-                .contains("| [`rules.ready`](rules/rules.ready.html) (requirement)"),
+                .contains("| [`rules.ready`](requirements-index/rules.ready.html) (requirement)"),
             "{}",
             index.content
         );
-        let pending = rules
+        let pending = index
             .sub_items
             .iter()
             .find_map(|item| match item {
@@ -1979,7 +2023,7 @@ mod tests {
         );
         assert!(pending.content.contains("The case still needs a test."));
 
-        let missing = rules
+        let missing = index
             .sub_items
             .iter()
             .find_map(|item| match item {
@@ -2037,6 +2081,12 @@ mod tests {
 
         let mut book = Book::new();
         book.push_item(Chapter::new("Rules", source, "rules.md", Vec::new()));
+        book.push_item(Chapter::new(
+            "Index",
+            ":::{requirements-index}\n:::\n".into(),
+            "requirements-index.md",
+            Vec::new(),
+        ));
         preprocess_book(&mut book, root).unwrap();
         let page = book
             .chapters()
@@ -2078,7 +2128,7 @@ mod tests {
         );
         assert_eq!(content.matches("</details>").count(), 11);
         assert!(content.contains("<code>requirements selection rules.base</code>"));
-        assert!(!content.contains("Requirements index"));
+        assert!(content.contains("[Requirements index](../requirements-index.html)"));
     }
 
     // {test}`requirements.index.detail_format`
@@ -2120,6 +2170,12 @@ mod tests {
 
         let mut book = Book::new();
         book.push_item(Chapter::new("Rules", source, "rules.md", Vec::new()));
+        book.push_item(Chapter::new(
+            "Index",
+            ":::{requirements-index}\n:::\n".into(),
+            "requirements-index.md",
+            Vec::new(),
+        ));
         preprocess_book(&mut book, root).unwrap();
         let page = book
             .chapters()
