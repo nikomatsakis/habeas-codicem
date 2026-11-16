@@ -1973,10 +1973,11 @@ fn a_single_missing_or_stale_subject_is_assessed_under_default_or_explicit_missi
     );
     assert_eq!(server.subjects(), ["requirement requirements.alpha"]);
     let before = fixture.evidence("requirements.alpha");
-    let source = fixture.project.join("src/lib.rs");
+    // Changing the supplied subject text makes its assessment stale.
+    let source = fixture.project.join("md/requirements.md");
     let changed = fs::read_to_string(&source)
         .unwrap()
-        .replace("-> u8 { 1 }", "-> u8 { 1_u8 }");
+        .replace("alpha MUST return one.", "alpha MUST return exactly one.");
     fs::write(source, changed).unwrap();
     let output = fixture.run(&["author", "requirements.alpha", "--missing"]);
     assert!(

@@ -2398,6 +2398,9 @@ mod tests {
             "a {fixme} naming a\n  closed issue no longer acknowledges its gap",
             "including\n  any acknowledged gaps",
             "A {fixme} describing a gap that your review establishes\n  no longer exists within its task's scope is itself a gap.",
+            "A plain FIXME or TODO comment is\n  not an acknowledgment.",
+            "An acknowledgment of an implementation bug alone does not establish a\n  test-adequacy gap or acknowledge a different missing-test or assertion gap.",
+            "Do not inspect implementation correctness merely to validate an out-of-scope\n  acknowledgment.",
         ] {
             assert!(
                 prompt.contains(guidance),

@@ -260,18 +260,24 @@ fn an_acknowledged_implementation_gap_records_its_issue() {
             .any(|error| error.contains("is neither an issue named by a {fixme}")),
         "{errors:?}"
     );
-    // A plain FIXME comment acknowledges nothing.
-    let errors = judge_ready(
-        temp.path(),
+    // Plain FIXME/TODO markers and prose acknowledge nothing.
+    for source in [
         "// FIXME(example/queue#125): capacity-zero insertion does not return Full yet.\n",
-        json!({ "FIXME": ["example/queue#125"] }),
-    );
-    assert!(
-        errors
-            .iter()
-            .any(|error| error.contains("\"example/queue#125\" is neither an issue")),
-        "{errors:?}"
-    );
+        "// TODO(example/queue#125): capacity-zero insertion does not return Full yet.\n",
+        "// Capacity-zero insertion still needs a test; tracked by example/queue#125.\n",
+    ] {
+        let errors = judge_ready(
+            temp.path(),
+            source,
+            json!({ "FIXME": ["example/queue#125"] }),
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("\"example/queue#125\" is neither an issue")),
+            "{source}: {errors:?}"
+        );
+    }
 }
 
 // {test}`requirements.ci.determination`

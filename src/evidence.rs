@@ -1150,6 +1150,7 @@ impl SourceReference {
     /// Whether a `{fixme}` can be an edge: named, fenced, and outside the
     /// book. Other placements are validation errors, and an unnamed
     /// `{fixme}` is never an edge. Every other role can be.
+    // {cite}`habeas:util`
     pub(crate) fn is_fixme_edge(&self) -> bool {
         self.kind != ReferenceKind::Fixme
             || (!self.name.is_empty() && self.commentary.is_some() && !self.in_book)
@@ -3021,6 +3022,35 @@ pub(crate) mod tests {
             format!("src/main.rs:1: {unknown} has no matching requirement"),
         ] {
             assert!(errors.contains(&detail), "missing {detail:?} in:\n{errors}");
+        }
+
+        // Coverage setup and coverage-history configuration failures must
+        // also leave independent later evidence and reference checks running.
+        fs::write(temp.path().join("book.toml"), "[book]\nsrc = 'md'\n").unwrap();
+        let (path, valid) = crate::execution_coverage::configure(temp.path()).unwrap();
+        for (configuration, nextest, expected) in [
+            ("version = 1\n", "[", ".config/nextest.toml"),
+            (
+                "version = 1\n[coverage]\nreauthorings = 0\n",
+                "",
+                "coverage.reauthorings",
+            ),
+        ] {
+            fs::write(temp.path().join("habeas.toml"), configuration).unwrap();
+            fs::write(&path, if nextest.is_empty() { &valid } else { nextest }).unwrap();
+            let errors = validate_repository(temp.path()).unwrap().errors;
+            for detail in [
+                expected.to_owned(),
+                "evidence/ghost.json: invalid JSON".to_owned(),
+                format!("src/main.rs:1: {unknown} has no matching requirement"),
+            ] {
+                assert!(
+                    errors.iter().any(|error| error.contains(&detail)),
+                    "missing {detail:?} in:\n{errors:?}"
+                );
+            }
+            let unique = errors.iter().collect::<std::collections::BTreeSet<_>>();
+            assert_eq!(errors.len(), unique.len(), "{errors:?}");
         }
     }
 

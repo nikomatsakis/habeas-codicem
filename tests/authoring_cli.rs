@@ -3183,6 +3183,35 @@ fn bundled_skills_default_to_process_coverage_and_keep_artifacts_disposable() {
         }
     }
     let home = bundled_skill("habeas");
+    assert_text(
+        "default coverage directive",
+        &collapse(&home),
+        &[
+            "Use `habeas coverage` by default for every Rust unit and integration test run, including focused runs (`habeas coverage -- -E 'test(name)'`)",
+            "The workflow uses `cargo nextest` for parallel process runs and retains independent process coverage",
+            "Run doctests separately with `cargo test --doc --workspace`",
+        ],
+    );
+    for name in ["habeas-evidence", "habeas-bootstrap-requirements"] {
+        assert_text(
+            name,
+            &collapse(&bundled_skill(name)),
+            &[
+                "Follow the habeas skill's \"Testing and coverage artifacts\": default to `habeas coverage` for unit, integration and focused runs through `cargo nextest`",
+                "run doctests separately with `cargo test --doc --workspace`",
+            ],
+        );
+    }
+    assert_text(
+        "approved implementation SOP",
+        &collapse(include_str!("../agent-sops/approved-implementation.sop.md")),
+        &[
+            "Use `cargo habeas coverage -- <nextest arguments>` for every Rust unit and integration test run, including focused or filtered runs",
+            "It executes parallel processes through `cargo nextest` and retains coverage for each process",
+            "Run doctests separately with `cargo test --doc --workspace`",
+            "profiles, reports, and source snapshots under the Cargo target directory are disposable build output: never stage or commit them to Git",
+        ],
+    );
     for required in [
         "Profiles, reports, and captured source",
         "cargo install cargo-nextest --locked",
@@ -4858,12 +4887,19 @@ fn bundled_skills_explain_distributed_requirements() {
             "Don't reference the distributed requirement from a site just because it is a site",
             "A site review reads its site, which covers it for Rust item coverage",
             "`habeas author --all` authors a site review for each site",
-            "`cargo test --workspace` runs every snippet",
+            "`habeas coverage` runs every snippet",
             "Query directives belong inside a requirement",
             "a single identifier",
             "invalid YAML",
             "unknown query keys",
             "a nonexistent site query",
+            "unique across both query kinds",
+            "`within` belongs only to violation queries",
+            "unsupported languages",
+            "rules that cannot compile",
+            "empty `match` or `no_match` lists",
+            "snippets that fail to parse or have the wrong match result",
+            "violation queries without a site query",
             "only matches inside that query's sites count",
             "`match` snippets for what it selects",
             "`no_match` snippets for nearby code it must not select",

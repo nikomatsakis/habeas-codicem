@@ -26,6 +26,8 @@ that requirement. Validation reports missing or extra YAML blocks, invalid YAML,
 unknown query keys, unsupported languages, and rules that cannot compile. A
 violation query naming a nonexistent site query in `within` is also invalid;
 `within` belongs only to violation queries.
+Validation also rejects empty `match` or `no_match` lists, snippets that fail to
+parse or have the wrong match result, and violation queries without a site query.
 
 Each body has these keys: `language` (`rust`, `python`, `typescript`, `tsx`,
 `css`, `markdown`, `toml`, or `yaml`); optional `paths` and `exclude`, lists of

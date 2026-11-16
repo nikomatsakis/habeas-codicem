@@ -436,6 +436,81 @@ mod tests {
     }
 
     // {test}`requirements.authoring.result_pages`
+    #[test]
+    fn redacted_results_reserve_space_for_the_note_on_every_delivered_page() {
+        let root = project();
+        let token = crate::redaction::tests::github_token();
+        let read = |count: usize, padding: usize| {
+            let source = (0..count)
+                .map(|index| {
+                    format!(
+                        "fn item_{index}() {{ let key = \"{token}\"; let padding = \"{}\"; }}\n",
+                        "x".repeat(padding)
+                    )
+                })
+                .collect::<String>();
+            fs::write(root.path().join("src/secret.rs"), source).unwrap();
+            let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+            let mut pages = ResultPages::default();
+            let first = dispatch_paged(
+                &sources,
+                &mut pages,
+                "habeas",
+                &json!({"file":"src/secret.rs","line_start":1}),
+            )
+            .unwrap();
+            let mut delivered = vec![first];
+            while let Some(next) = delivered.last().unwrap().result["page"]["next"].as_str() {
+                let next = next.to_owned();
+                delivered.push(
+                    dispatch_paged(&sources, &mut pages, "next_page", &json!({"token":next}))
+                        .unwrap(),
+                );
+            }
+            for page in &delivered {
+                let encoded = page.result.to_string();
+                assert!(encoded.len() <= PAGE_LIMIT, "{}", encoded.len());
+                assert_eq!(page.result["note"], super::super::tools::REDACTION_NOTE);
+                // Continuation guidance is inside `page`; the redaction
+                // explanation is a separate note on the enclosing result.
+                if page.result["page"]["next"].is_string() {
+                    assert_eq!(page.result["page"]["note"], PAGE_NOTE);
+                } else {
+                    assert!(page.result["page"].get("note").is_none());
+                }
+                assert!(!encoded.contains(&token));
+                assert!(encoded.contains("[REDACTED:"));
+            }
+            delivered
+        };
+        let baseline = read(4, 1);
+        assert_eq!(baseline.len(), 1);
+        assert!(baseline[0].result.get("page").is_none());
+        let mut without_note = baseline[0].result.clone();
+        without_note.as_object_mut().unwrap().remove("note");
+        let size = without_note.to_string().len();
+        let padding = 1 + (PAGE_LIMIT - 5 - size) / 4;
+        // The raw result fits; its redaction note pushes it over the limit.
+        assert!(size + 4 * (padding - 1) <= PAGE_LIMIT);
+        assert!(size + 4 * (padding - 1) + super::super::tools::REDACTION_NOTE.len() > PAGE_LIMIT);
+        for (count, padding) in [(4, padding), (256, 256)] {
+            let pages = read(count, padding);
+            assert!(pages.len() > 1);
+            let items = pages
+                .iter()
+                .flat_map(|page| page.result["inputs"].as_array().unwrap())
+                .map(|input| input["item"].as_str().unwrap().to_owned())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                items,
+                (0..count)
+                    .map(|index| format!("fn[item_{index}]"))
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
+
+    // {test}`requirements.authoring.result_pages`
     // {test}`requirements.authoring.not_listed`
     #[test]
     fn not_listed_comes_on_the_first_page_within_the_page_limit() {
@@ -731,6 +806,7 @@ mod tests {
     // {test}`requirements.authoring.result_pages`
     // {test}`requirements.authoring.delivered_inputs`
     // {test}`requirements.definitions.authoring_inputs`
+    // {test}`requirements.authoring.read_denial`
     #[test]
     // {test}`requirements.authoring.source_tools`
     fn paged_inputs_carry_their_definitions_and_deliver_only_their_own_inputs() {
@@ -752,6 +828,13 @@ mod tests {
         fs::write(root.path().join("src/lib.rs"), source).unwrap();
         let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
         let mut pages = ResultPages::default();
+        let error = dispatch_paged(&sources, &mut pages, "next_page", &json!({}))
+            .err()
+            .unwrap();
+        assert!(
+            error.to_string().contains("token must be a string"),
+            "{error}"
+        );
         let first = dispatch_paged(
             &sources,
             &mut pages,

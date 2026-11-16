@@ -104,6 +104,65 @@ fn capture(root: &Path) {
     );
 }
 
+// {test}`requirements.definitions.dependencies`
+#[test]
+fn subjects_require_their_terms_without_a_requirements_input() {
+    for subject in ["rules.ready", "rules.case"] {
+        let temp = fixture();
+        let root = temp.path();
+        // A noncyclic chain requires repeated expansion beyond the first hop.
+        fs::write(
+            root.join("md/glossary.md"),
+            ":::{definition} a\n:phrase: alpha\nSee {term}`glossary.b`.\n:::\n\n:::{definition} b\n:phrase: beta\nSee {term}`glossary.c`.\n:::\n\n:::{definition} c\n:phrase: gamma\nSee {term}`glossary.d`.\n:::\n\n:::{definition} d\n:phrase: delta\nThe leaf.\n:::\n",
+        ).unwrap();
+        let rules = root.join("md/rules.md");
+        fs::write(
+            &rules,
+            format!(
+                "{}\n:::{{example}} case\nUse {{term}}`glossary.a`. {{cite}}`rules.ready`\n:::\n",
+                fs::read_to_string(&rules).unwrap()
+            ),
+        )
+        .unwrap();
+        fs::write(
+            root.join("src/lib.rs"),
+            "// {test}`rules.case`\n#[test]\nfn test_case() { assert!(true); }\n",
+        )
+        .unwrap();
+        let input = outline_input(root, "src/lib.rs", "fn[test_case]").unwrap();
+        for name in ["rules.ready", "rules.case"] {
+            let path = record(
+                root,
+                name,
+                vec![
+                    input.clone(),
+                    definition(root, "glossary.a"),
+                    definition(root, "glossary.b"),
+                    definition(root, "glossary.c"),
+                    definition(root, "glossary.d"),
+                ],
+            );
+            approve(&path);
+        }
+        let errors = validate_repository(root).unwrap().errors;
+        assert!(errors.is_empty(), "{errors:?}");
+        let path = record(root, subject, vec![input.clone()]);
+        approve(&path);
+        let before = fs::read(&path).unwrap();
+        let errors = validate_repository(root).unwrap().errors;
+        for term in ["glossary.a", "glossary.b", "glossary.c", "glossary.d"] {
+            assert!(
+                errors.iter().any(
+                    |error| error.starts_with(&format!("evidence/{subject}.json"))
+                        && error.contains(&format!("{term}, found 0"))
+                ),
+                "{subject}: {errors:?}"
+            );
+        }
+        assert_eq!(fs::read(&path).unwrap(), before);
+    }
+}
+
 fn approve(path: &Path) {
     let mut record: Value = serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
     record["determination"] = json!(true);
@@ -661,6 +720,32 @@ fn changed_definition_snapshots_show_a_compact_diff_and_text_is_required() {
                 .any(|error| error.starts_with("evidence/rules.ready.json")
                     && error.contains("text")),
             "{text:?}: {errors:?}"
+        );
+    }
+    let rules = root.join("md/rules.md");
+    fs::write(
+        &rules,
+        format!(
+            "{}\n:::{{example}} case\nAn example. {{cite}}`rules.ready`\n:::\n",
+            fs::read_to_string(&rules).unwrap()
+        ),
+    )
+    .unwrap();
+    for name in ["rules.ready", "rules.case"] {
+        let mut broken = record.clone();
+        broken["inputs"]
+            .as_array_mut()
+            .unwrap()
+            .push(definition(root, name));
+        fs::write(&path, broken.to_string()).unwrap();
+        let errors = validate_repository(root).unwrap().errors;
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.starts_with("evidence/rules.ready.json")
+                    && error.contains(name)
+                    && error.contains("no matching named definition")),
+            "{name}: {errors:?}"
         );
     }
 }

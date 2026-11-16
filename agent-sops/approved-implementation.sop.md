@@ -21,7 +21,7 @@ Apply the shared one-PR protocol. Start in **🛠 Author code**.
    transition protocol: restore this run's code changes, propose requirements
    in a separate requirements-only commit, and wait for approval on this PR.
 3. For code changes, run `git diff --check`, `cargo habeas coverage -- --locked --workspace`,
-   `cargo test --locked --doc --workspace`, `mdbook test`, and `mdbook build`. Inspect `cargo habeas status` (or installed
+   `cargo test --doc --workspace`, `mdbook test`, and `mdbook build`. Inspect `cargo habeas status` (or installed
    `habeas status`). Fix failures caused by your changes. Report checks that
    could not run or unrelated failures that remain. For a requirements
    transition, run the proposal checks described in the shared protocol.
@@ -35,3 +35,4 @@ integration test run, including focused or filtered runs. It executes parallel
 processes through `cargo nextest` and retains coverage for each process. Coverage
 profiles, reports, and source snapshots under the Cargo target directory are
 disposable build output: never stage or commit them to Git.
+Run doctests separately with `cargo test --doc --workspace`.

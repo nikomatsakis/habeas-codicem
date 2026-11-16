@@ -881,6 +881,9 @@ pub(super) mod tests {
     #[test]
     fn acknowledgment_only_terms_are_supplied_and_validated_without_implementation_reads() {
         let root = project();
+        let (path, configuration) = crate::execution_coverage::configure(root.path()).unwrap();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, configuration).unwrap();
         fs::create_dir(root.path().join("evidence")).unwrap();
         let terms = ":::{definition} unit\n:phrase: unit\nA unit.\n:::\n\n:::{definition} boundary\n:phrase: boundary\nA {term}`terms.unit` at the limit.\n:::\n";
         fs::write(root.path().join("md/terms.md"), terms).unwrap();
@@ -898,7 +901,8 @@ pub(super) mod tests {
                 .iter()
                 .any(|input| input.get("item").is_some())
         );
-        sources.record_inputs(&sources.mandatory_inputs().to_vec());
+        let mandatory = sources.mandatory_inputs().to_vec();
+        sources.record_inputs(&mandatory);
         let record = json!({
             "requirement": "The project MUST be ready.",
             "determination": {"FIXME": ["The {term}`terms.boundary` is untested."]},
