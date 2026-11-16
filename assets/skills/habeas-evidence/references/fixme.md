@@ -4,6 +4,13 @@ A FIXME judgment, such as `{"FIXME": ["rust-lang/rust#123"]}`, means `{fixme}`
 references to the definition acknowledge every remaining gap. Validation
 accepts it like `true` when all other checks pass.
 
+For requirement and example evidence, the gap must be in test adequacy or
+another criterion of that assessment. A comment acknowledging only an
+implementation bug does not acknowledge a different missing-test or assertion
+gap. The initial request supplies the acknowledgment comment and issue state
+without requiring the model to read its containing implementation. The
+reference-set digest protects its location and body against staleness.
+
 When a gap is real and the user agrees to defer it, add a fenced `{fixme}`
 reference to the definition near the code or test it concerns, naming the issue
 that tracks it:

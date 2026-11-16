@@ -185,9 +185,7 @@ fn serve(
     let mut state = lock.lock().unwrap();
     let first_for_subject = !state.subjects.contains(&subject);
     state.subjects.push(subject.clone());
-    if matches!(behavior, Behavior::ReadEachSubject) {
-        state.conversations.push((subject.clone(), request.clone()));
-    }
+    state.conversations.push((subject.clone(), request.clone()));
     let position = state.timeline.len();
     state.timeline.push((subject.clone(), Instant::now(), None));
     let first_request = state.subjects.len() == 1;
@@ -535,6 +533,7 @@ raise SystemExit(process.returncode if process.returncode >= 0 else 128 - proces
 // {test}`requirements.configuration.loading`
 // {test}`requirements.authoring.configuration`
 // {test}`requirements.authoring.refresh`
+// {test}`requirements.authoring.persistence`
 #[test]
 fn batch_fills_evidence_preserves_current_records_and_reauthors_only_changed_inputs() {
     let server = Server::start(true, None);
@@ -542,9 +541,12 @@ fn batch_fills_evidence_preserves_current_records_and_reauthors_only_changed_inp
     let source = fixture.project.join("src/lib.rs");
     fs::write(
         &source,
-        fs::read_to_string(&source).unwrap().replace(
-            "pub fn beta()",
-            "// :::{fixme} requirements.beta\n// :github: example/app#123\n// Beta has no test yet.\n// :::\npub fn beta()",
+        format!(
+            "{}\n// {{test}}`requirements.alpha`\n#[test]\nfn alpha_requirement() {{ assert_eq!(alpha(), 1); }}\n",
+            fs::read_to_string(&source).unwrap().replace(
+                "pub fn beta()",
+                "// :::{fixme} requirements.beta\n// :github: example/app#123\n// Beta has no test yet.\n// :::\npub fn beta()",
+            )
         ),
     )
     .unwrap();
@@ -569,6 +571,16 @@ fn batch_fills_evidence_preserves_current_records_and_reauthors_only_changed_inp
     let example = fixture.evidence("requirements.alpha_case");
     let gamma = fixture.evidence("requirements.gamma");
     let gamma_case = fixture.evidence("requirements.gamma_case");
+    for (record, name) in [(&example, "alpha_case"), (&gamma_case, "gamma_case")] {
+        assert!(record.get("requirement").is_none(), "{record}");
+        assert!(
+            record["example"]
+                .as_str()
+                .unwrap()
+                .contains(name.split('_').next().unwrap()),
+            "{record}"
+        );
+    }
     let usage = fixture.usage();
     assert_eq!(usage.len(), 6);
     assert!(
@@ -623,8 +635,30 @@ fn batch_fills_evidence_preserves_current_records_and_reauthors_only_changed_inp
     let changed = fs::read_to_string(&source)
         .unwrap()
         .replace("-> u8 { 1 }", "-> u8 { 1_u8 }");
-    fs::write(source, changed).unwrap();
+    fs::write(&source, changed).unwrap();
+    let unread_change = fixture.run(&["author", "--all"]);
+    assert!(unread_change.status.success(), "{unread_change:?}");
+    assert_eq!(server.subjects().len(), 6);
+    fs::write(
+        &source,
+        fs::read_to_string(&source).unwrap().replace(
+            "fn alpha_requirement() { assert_eq!(alpha(), 1); }",
+            "fn alpha_requirement() { assert_eq!(alpha(), 1_u8); }",
+        ),
+    )
+    .unwrap();
+    #[cfg(unix)]
+    let updated = fixture.run_in_pty(false, "xterm-256color");
+    #[cfg(not(unix))]
     let updated = fixture.run(&["author", "--all"]);
+    #[cfg(unix)]
+    {
+        let escape = regex::Regex::new(r"\x1b\[[0-?]*[ -/]*[@-~]").unwrap();
+        let raw = String::from_utf8_lossy(&updated.stderr);
+        let plain = escape.replace_all(&raw, "");
+        assert!(plain.contains("1/1 finished"), "{plain}");
+        assert!(!plain.contains("6/6 finished"), "{plain}");
+    }
     assert!(
         updated.status.success(),
         "{}",
@@ -854,6 +888,18 @@ fn terminal_progress_distinguishes_judgments_from_authoring_errors() {
     );
     assert!(plain.contains("100%"), "{plain}");
     assert!(plain.contains("6/6 finished"), "{plain}");
+    assert!(
+        regex::Regex::new(r"\b[1-9][0-9]* active\b")
+            .unwrap()
+            .is_match(&plain),
+        "{plain}"
+    );
+    assert!(
+        regex::Regex::new(r"\b[1-9][0-9]* queued\b")
+            .unwrap()
+            .is_match(&plain),
+        "{plain}"
+    );
     let elapsed = regex::Regex::new(r"\[\d{2}:\d{2}:\d{2}\]").unwrap();
     assert!(
         plain
@@ -1037,14 +1083,26 @@ fn assert_interruption_stops_the_batch(overlap: bool, concurrency: usize) {
     let plain = escape.replace_all(&terminal, "");
     assert!(plain.contains("Stopped"), "{plain}");
     assert!(plain.contains("assessments not started"), "{plain}");
+    let started = concurrency + 1;
+    let remaining = 6 - started;
+    assert!(
+        plain.contains(&format!("{remaining} assessments not started")),
+        "{plain}"
+    );
     // A cancelled batch does not compute coverage warnings.
     assert!(!plain.contains("coverage history"), "{plain}");
     let stopped = &plain[plain.rfind("Stopped").unwrap()..];
     assert!(!stopped.contains("100%"), "{stopped}");
     assert!(!stopped.contains("6/6 finished"), "{stopped}");
     assert!(String::from_utf8_lossy(&output.stdout).contains("1 authored;"));
-    assert!(server.subjects().len() < 6);
+    // A launched assessment may be cancelled before its HTTP request arrives.
+    let received = server.subjects().len();
+    assert!(
+        (concurrency..=started).contains(&received),
+        "{received} requests for {started} launched assessments"
+    );
     let usage = fixture.usage();
+    assert_eq!(usage.len(), started);
     assert_eq!(
         usage
             .iter()
@@ -1059,6 +1117,25 @@ fn assert_interruption_stops_the_batch(overlap: bool, concurrency: usize) {
             .any(|run| run["outcome"] == "cancelled" && run["evidence_written"] == false),
         "{usage:?}"
     );
+    assert_eq!(
+        usage
+            .iter()
+            .filter(|run| run["outcome"] == "cancelled" && run["evidence_written"] == false)
+            .count(),
+        concurrency,
+        "{usage:?}"
+    );
+    let screen = final_screen(&output.stderr);
+    for expected in [
+        "Stopped".to_owned(),
+        format!("{started}/6 finished"),
+        format!("errors {concurrency}"),
+        "0 active".to_owned(),
+        format!("{remaining} queued"),
+    ] {
+        assert!(screen.contains(&expected), "missing {expected}: {screen}");
+    }
+    assert!(!screen.contains("100%"), "{screen}");
     let written = fs::read_dir(fixture.project.join("evidence"))
         .unwrap()
         .count();
@@ -1162,6 +1239,8 @@ fn a_denied_mandatory_input_aborts_only_its_assessment() {
     assert!(!output.status.success(), "{output:?}");
     let diagnostic = String::from_utf8_lossy(&output.stderr);
     assert!(diagnostic.contains("private.txt"), "{diagnostic}");
+    assert!(diagnostic.contains("disallowed"), "{diagnostic}");
+    assert!(diagnostic.contains("habeas.toml rule"), "{diagnostic}");
     // It made no request; the others ran and kept their evidence.
     let subjects = server.subjects();
     assert!(
@@ -1240,6 +1319,15 @@ fn an_untracked_mandatory_input_is_reported_with_how_to_stage_it() {
 fn batch_preserves_current_false_judgments_and_reauthors_stale_ones() {
     let server = Server::start(false, None);
     let fixture = Fixture::new(&server.endpoint, Some(2));
+    let source = fixture.project.join("src/lib.rs");
+    let original = fs::read_to_string(&source).unwrap();
+    fs::write(
+        &source,
+        format!(
+            "{original}\n// {{test}}`requirements.gamma`\n#[test]\nfn gamma_requirement() {{ assert_eq!(gamma(), 3); }}\n"
+        ),
+    )
+    .unwrap();
     let output = fixture.run(&["author", "--all"]);
     assert!(
         output.status.success(),
@@ -1251,7 +1339,7 @@ fn batch_preserves_current_false_judgments_and_reauthors_stale_ones() {
         let path = fixture.project.join(format!("evidence/{name}.json"));
         let mut record = fixture.evidence(name);
         record["determination"] = json!(false);
-        record["rationale"] = json!("The implementation omits a boundary case.");
+        record["rationale"] = json!("The tests omit a boundary case.");
         fs::write(&path, serde_json::to_vec_pretty(&record).unwrap()).unwrap();
         fs::read(path).unwrap()
     };
@@ -1278,12 +1366,12 @@ fn batch_preserves_current_false_judgments_and_reauthors_stale_ones() {
         false
     );
 
-    let source = fixture.project.join("src/lib.rs");
     fs::write(
         &source,
-        fs::read_to_string(&source)
-            .unwrap()
-            .replace("-> u8 { 3 }", "-> u8 { 3_u8 }"),
+        fs::read_to_string(&source).unwrap().replace(
+            "fn gamma_requirement() { assert_eq!(gamma(), 3); }",
+            "fn gamma_requirement() { assert_eq!(gamma(), 3_u8); }",
+        ),
     )
     .unwrap();
     let stale = fixture.run(&["author", "--all"]);
@@ -1316,8 +1404,8 @@ fn batch_preserves_current_false_judgments_and_reauthors_stale_ones() {
     );
 }
 
-/// A new reference inside a node already among a record's inputs changes no
-/// recorded hash, but changes the reference set, so the record is stale.
+/// A new test reference changes the reference set and requires its source
+/// to be supplied on reassessment, even when the old assessment read no code.
 // {test}`requirements.authoring.batch`
 // {test}`requirements.ci.reference_set`
 // {test}`requirements.authoring.refresh`
@@ -1356,12 +1444,13 @@ fn batch_reauthors_a_false_judgment_when_its_reference_set_changes() {
     let errors = habeas::validate_repository(&fixture.project)
         .unwrap()
         .errors;
-    assert_eq!(errors.len(), 2, "{errors:?}");
+    assert_eq!(errors.len(), 3, "{errors:?}");
     assert!(
         errors[0].starts_with("evidence/requirements.delta.json: determination is false")
             && errors[1].starts_with("evidence/requirements.delta.json: reference set changed"),
         "{errors:?}"
     );
+    assert!(errors[2].contains("no input covers {test}"), "{errors:?}");
 
     let stale = fixture.run(&["author", "--all"]);
     assert!(
@@ -1436,6 +1525,41 @@ fn site_reviews_are_authored_by_requirement_and_orphans_deleted_by_all() {
     }
     assert_eq!(server.subjects().len(), 2, "no model was invoked");
     fs::write(&fixture.config, &fixture.config_text).unwrap();
+    let mut before: Value = serde_json::from_slice(&fs::read(&review).unwrap()).unwrap();
+    before["rationale"] = json!("CURRENT_RECORD_BEFORE_FORCE");
+    fs::write(&review, before.to_string()).unwrap();
+    let output = fixture.run(&["author", site, "--force"]);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(server.subjects().len(), 3);
+    assert!(review.exists());
+    assert_eq!(
+        serde_json::from_slice::<Value>(&fs::read(&review).unwrap()).unwrap()["item"],
+        "fn[alpha]"
+    );
+    assert!(
+        !fs::read_to_string(&review)
+            .unwrap()
+            .contains("CURRENT_RECORD_BEFORE_FORCE")
+    );
+    let output = fixture.run(&["author", "--all", "--force"]);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(server.subjects().len(), 12);
+    assert_eq!(
+        server
+            .subjects()
+            .iter()
+            .filter(|s| *s == "src/lib.rs fn[alpha]")
+            .count(),
+        3
+    );
+    assert_eq!(
+        server
+            .subjects()
+            .iter()
+            .filter(|s| *s == "src/lib.rs fn[beta]")
+            .count(),
+        2
+    );
     let output = fixture.run(&["author", "sites:requirements.alpha"]);
     assert!(!output.status.success());
     assert!(
@@ -1710,6 +1834,35 @@ fn batch_authors_citation_reviews_and_preserves_current_ones() {
     }
     assert_eq!(server.subjects().len(), 7, "no model was invoked");
     fs::write(&fixture.config, &fixture.config_text).unwrap();
+    let path = fixture
+        .project
+        .join("evidence/citations/src/lib.rs/fn[helper].json");
+    let mut before: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    before["rationale"] = json!("CURRENT_RECORD_BEFORE_FORCE");
+    fs::write(&path, before.to_string()).unwrap();
+    let output = fixture.run(&["author", citation, "--force"]);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(server.subjects().len(), 8);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&fs::read(&path).unwrap()).unwrap()["item"],
+        "fn[helper]"
+    );
+    assert!(
+        !fs::read_to_string(&path)
+            .unwrap()
+            .contains("CURRENT_RECORD_BEFORE_FORCE")
+    );
+    let output = fixture.run(&["author", "--all", "--force"]);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(server.subjects().len(), 15);
+    assert_eq!(
+        server
+            .subjects()
+            .iter()
+            .filter(|s| *s == "src/lib.rs fn[helper]")
+            .count(),
+        3
+    );
     // A citation review can also be named on its own.
     let single = fixture.run(&["author", "citations:src/lib.rs#fn[helper]", "--stdout"]);
     assert!(
@@ -1725,7 +1878,7 @@ fn batch_authors_citation_reviews_and_preserves_current_ones() {
         stderr.contains("coverage history is incomplete"),
         "{stderr}"
     );
-    assert_eq!(server.subjects().len(), 8);
+    assert_eq!(server.subjects().len(), 16);
 }
 
 // {test}`requirements.authoring.confirmation`
@@ -2066,6 +2219,7 @@ struct FakeGithub {
     endpoint: String,
     state: Arc<Mutex<&'static str>>,
     requests: Arc<Mutex<usize>>,
+    headers: Arc<Mutex<Vec<String>>>,
 }
 
 impl FakeGithub {
@@ -2075,6 +2229,8 @@ impl FakeGithub {
         let endpoint = format!("http://{}", listener.local_addr().unwrap());
         let state = Arc::new(Mutex::new("open"));
         let requests = Arc::new(Mutex::new(0));
+        let headers = Arc::new(Mutex::new(Vec::new()));
+        let served_headers = headers.clone();
         let (served_state, served) = (state.clone(), requests.clone());
         thread::spawn(move || {
             for stream in listener.incoming() {
@@ -2082,12 +2238,15 @@ impl FakeGithub {
                 let mut reader = BufReader::new(&mut stream);
                 let mut request = String::new();
                 reader.read_line(&mut request).unwrap();
+                let mut request_headers = String::new();
                 loop {
                     let mut line = String::new();
                     if reader.read_line(&mut line).unwrap() == 0 || line == "\r\n" {
                         break;
                     }
+                    request_headers.push_str(&line);
                 }
+                served_headers.lock().unwrap().push(request_headers);
                 *served.lock().unwrap() += 1;
                 let (status, body) = if request.starts_with("GET /repos/example/queue/issues/125 ")
                 {
@@ -2111,6 +2270,7 @@ impl FakeGithub {
             endpoint,
             state,
             requests,
+            headers,
         }
     }
 
@@ -2120,10 +2280,49 @@ impl FakeGithub {
     }
 }
 
+// {test}`requirements.authoring.fixme_inputs`
+// {test}`requirements.authoring.github_reads`
+#[test]
+fn initial_acknowledgments_supply_closed_and_missing_issue_states_without_source() {
+    let server = Server::start(false, None);
+    let github = FakeGithub::start();
+    *github.state.lock().unwrap() = "closed";
+    let fixture = Fixture::new(&server.endpoint, None);
+    let source = fixture.project.join("src/lib.rs");
+    fs::write(&source, fs::read_to_string(&source).unwrap().replace(
+        "pub fn beta()",
+        "// :::{fixme} requirements.beta\n// :github: example/queue#125\n// :github: example/queue#404\n// Boundary cases are untested.\n// :::\npub fn beta()",
+    )).unwrap();
+    let output = fixture
+        .command()
+        .env("HABEAS_GITHUB_API_URL", &github.endpoint)
+        .args(["author", "requirements.beta"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let state = server.requests.0.lock().unwrap();
+    let request = &state.conversations[0].1;
+    let user = request["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["role"] == "user")
+        .unwrap()["content"]
+        .as_str()
+        .unwrap();
+    for issue in ["example/queue#125", "example/queue#404"] {
+        let expected = format!("\"reference\": \"{issue}\",\n        \"state\": \"closed\"");
+        assert!(user.contains(&expected), "{user}");
+    }
+    assert!(user.contains("Boundary cases are untested."), "{user}");
+    assert!(!user.contains("pub fn beta()"), "{user}");
+}
+
 // {test}`requirements.ci.fixme_closed_issue`
 // {test}`requirements.cli.fixme_issues`
 // {test}`requirements.authoring.github_reads`
 // {test}`requirements.authoring.batch`
+// {test}`requirements.ci.outcomes`
 #[test]
 fn closing_an_acknowledged_issue_makes_the_fixme_record_stale_and_reassessed() {
     let server = Server::start_with(false, Behavior::ClosedIssueIsFalse);
@@ -2142,6 +2341,7 @@ fn closing_an_acknowledged_issue_makes_the_fixme_record_stale_and_reassessed() {
         let output = fixture
             .command()
             .env("HABEAS_GITHUB_API_URL", &github.endpoint)
+            .env("GITHUB_TOKEN", "TEST_GITHUB_TOKEN")
             .args(args)
             .output()
             .unwrap();
@@ -2153,6 +2353,11 @@ fn closing_an_acknowledged_issue_makes_the_fixme_record_stale_and_reassessed() {
         String::from_utf8(output.stdout).unwrap()
     };
     run(&["author", "--all"]);
+    assert!(github.headers.lock().unwrap().iter().any(|headers| {
+        headers
+            .to_ascii_lowercase()
+            .contains("authorization: bearer test_github_token\r\n")
+    }));
     assert_eq!(server.subjects().len(), 6);
     // The issue was open, so record the acknowledged gap as current FIXME
     // evidence.

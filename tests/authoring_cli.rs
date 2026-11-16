@@ -269,6 +269,80 @@ fn reply(calls: Vec<Value>) -> Value {
         "done":true,"done_reason":"stop","prompt_eval_count":11,"eval_count":7})
 }
 
+// {test}`requirements.authoring.mandatory_inputs`
+// {test}`requirements.authoring.reference_index`
+// {test}`requirements.authoring.delivered_inputs`
+// {test}`requirements.authoring.fixme_inputs`
+// {test}`requirements.authoring.complete_initial_bundle`
+#[test]
+fn implementation_discovery_has_no_text_or_evidence_until_the_model_requests_a_read() {
+    let server = Server::start(vec![
+        reply(vec![call(
+            "locate",
+            "references",
+            json!({"selection": SUBJECT, "roles": ["impl"]}),
+        )]),
+        reply(vec![call(
+            "read",
+            "habeas",
+            json!({"file": "src/lib.rs", "item": "fn[ready]"}),
+        )]),
+        reply(vec![call(
+            "submit",
+            "submit_judgment",
+            json!({"determination": true, "rationale": "The tests check the requirement."}),
+        )]),
+    ]);
+    let fixture = Fixture::new(&server.endpoint);
+    let output = fixture.run(&["author", SUBJECT]);
+    assert!(output.status.success(), "{output:?}");
+    let requests = server.finish();
+    assert_eq!(requests.len(), 3);
+    let prompt = prompt_text(&requests[0].body);
+    assert!(prompt.contains("fn ready_test()"));
+    assert!(prompt.contains("One acknowledged gap."));
+    assert!(!prompt.contains("pub fn ready()"));
+    let tool_result = |request: &Request| -> Value {
+        let message = request.body["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .rev()
+            .find(|message| message["role"] == "tool")
+            .unwrap();
+        serde_json::from_str(message["content"].as_str().unwrap()).unwrap()
+    };
+    let locations = tool_result(&requests[1]);
+    assert!(locations.to_string().contains("fn[ready]"), "{locations:#}");
+    for text in [
+        REQUIREMENT,
+        "One acknowledged gap.",
+        "pub fn ready()",
+        "\"input\"",
+        "\"inputs\"",
+    ] {
+        assert!(!locations.to_string().contains(text), "{locations:#}");
+    }
+    let read = tool_result(&requests[2]);
+    assert!(read["input"]["text"].to_string().contains("pub fn ready()"));
+    assert_eq!(read["input"]["file"], "src/lib.rs");
+    assert_eq!(read["input"]["item"], "fn[ready]");
+    assert_eq!(
+        read["input"]["hash"],
+        habeas::outline_input(&fixture.project, "src/lib.rs", "fn[ready]").unwrap()["hash"]
+    );
+    let record: Value = serde_json::from_slice(&fs::read(&fixture.evidence).unwrap()).unwrap();
+    let inputs = record["inputs"].as_array().unwrap();
+    assert_eq!(
+        inputs
+            .iter()
+            .filter(|input| input["file"] == "src/lib.rs" && input["item"] == "fn[ready]")
+            .count(),
+        1
+    );
+    assert!(!fixture.usage()["inputs"].to_string().contains("references"));
+}
+
 // {test}`requirements.authoring.complete_initial_bundle`
 // {test}`requirements.authoring.invocation`
 // {test}`requirements.authoring.additional_read`
@@ -286,6 +360,7 @@ fn reply(calls: Vec<Value>) -> Value {
 // {test}`requirements.authoring.github_reads`
 // {test}`requirements.authoring.invocation`
 // {test}`requirements.configuration.serialization`
+// {test}`requirements.ci.fixme_implementation_gap`
 #[test]
 // {test}`requirements.authoring.persistence`
 // {test}`requirements.authoring.reporting`
@@ -349,15 +424,15 @@ fn ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free() {
     }
     let prompt = prompt_text(&requests[0].body);
     for text in [
-        "Assess whether a project's source code and tests satisfy one requirement.",
+        "Assess whether a project's tests adequately check one requirement.",
         REQUIREMENT,
         "SECRET_DEFINITION_TEXT",
-        "fn ready()",
         "fn ready_test()",
         "You MUST end by calling submit_judgment",
     ] {
         assert!(prompt.contains(text), "prompt missing {text}");
     }
+    assert!(!prompt.contains("pub fn ready()"), "{prompt}");
     assert!(!prompt.contains("OLD_RATIONALE_MUST_NOT_REACH_MODEL"));
     let mut tools = requests[0].body["tools"]
         .as_array()
@@ -410,22 +485,27 @@ fn ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free() {
     );
     assert_eq!(evidence["requirement"], REQUIREMENT);
     let inputs = evidence["inputs"].as_array().unwrap();
-    // The `{fixme}` reached the model and is covered by the recorded input
-    // for the function it belongs to.
-    assert!(prompt.contains("// :github: example/app#125"));
-    assert!(prompt.contains("// One acknowledged gap."));
+    assert!(
+        inputs
+            .iter()
+            .any(|input| input["file"] == "src/lib.rs" && input["item"] == "fn[ready_test]"),
+        "{inputs:#?}"
+    );
+    // The acknowledgment reaches the model as metadata, without the
+    // containing implementation. Its body is protected by the reference set.
+    assert!(prompt.contains(":github: example/app#125"));
+    assert!(prompt.contains("One acknowledged gap."));
     // GitHub is unreachable, so the issue is supplied as open, but the state
     // is not recorded.
     assert!(
-        prompt.contains(
-            "\"github_issues\": [\n      {\n        \"issue\": \"example/app#125\",\n        \"state\": \"open\"\n      }\n    ]"
-        ),
+        prompt.contains("\"reference\": \"example/app#125\"")
+            && prompt.contains("\"state\": \"open\""),
         "{prompt}"
     );
     assert!(!evidence.to_string().contains("github_issues"));
     assert!(!fixture.usage().to_string().contains("github_issues"));
     assert!(
-        inputs
+        !inputs
             .iter()
             .any(|input| input["file"] == "src/lib.rs" && input["item"] == "fn[ready]"),
         "{inputs:#?}"
@@ -573,7 +653,7 @@ fn ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free() {
 // {test}`requirements.authoring.acknowledged_gap`
 #[test]
 fn acknowledged_empty_input_boundary_is_explained_and_accepted() {
-    let rationale = "`src/lib.rs#fn[ready]` accepts nonempty input but rejects the empty-string boundary. The adjacent acknowledgment tracks that gap as example/app#125.";
+    let rationale = "`src/lib.rs#fn[ready_test]` checks nonempty input but omits the required empty-string boundary. The acknowledgment tracks that test gap as example/app#125.";
     let server = Server::start(vec![reply(vec![call(
         "submit",
         "submit_judgment",
@@ -581,14 +661,16 @@ fn acknowledged_empty_input_boundary_is_explained_and_accepted() {
     )])]);
     let fixture = Fixture::new(&server.endpoint);
     fs::write(fixture.project.join("md/requirements.md"), ":::{req} ready\nThe readiness check MUST accept every string, including the empty string.\n:::\n").unwrap();
-    fs::write(fixture.project.join("src/lib.rs"), "// {impl}`requirements.ready`\n// :::{fixme} requirements.ready\n// :github: example/app#125\n// Empty input is incorrectly rejected.\n// :::\npub fn ready(input: &str) -> bool { !input.is_empty() }\n// {test}`requirements.ready`\nfn ready_test() { assert!(ready(\"nonempty\")); }\n").unwrap();
+    fs::write(fixture.project.join("src/lib.rs"), "// {impl}`requirements.ready`\n// :::{fixme} requirements.ready\n// :github: example/app#125\n// The empty-string boundary is not tested.\n// :::\npub fn ready(input: &str) -> bool { !input.is_empty() }\n// {test}`requirements.ready`\nfn ready_test() { assert!(ready(\"nonempty\")); }\n").unwrap();
     let output = fixture.run(&["author", SUBJECT]);
     assert!(output.status.success(), "{output:?}");
     let requests = server.finish();
     assert_eq!(requests.len(), 1);
     let prompt = prompt_text(&requests[0].body);
-    assert!(prompt.contains("Empty input is incorrectly rejected."));
-    assert!(prompt.contains("!input.is_empty()"));
+    assert!(prompt.contains("The empty-string boundary is not tested."));
+    assert!(prompt.contains("fn ready_test()"));
+    assert!(prompt.contains("example/app#125"));
+    assert!(!prompt.contains("!input.is_empty()"));
     let record: Value = serde_json::from_slice(&fs::read(&fixture.evidence).unwrap()).unwrap();
     assert_eq!(
         record["determination"],
@@ -597,6 +679,13 @@ fn acknowledged_empty_input_boundary_is_explained_and_accepted() {
     assert_eq!(record["rationale"], rationale);
     assert!(
         record["inputs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|input| input["file"] == "src/lib.rs" && input["item"] == "fn[ready_test]")
+    );
+    assert!(
+        !record["inputs"]
             .as_array()
             .unwrap()
             .iter()
@@ -677,6 +766,60 @@ fn authoring_uses_nearest_workspace_configuration_without_a_user_file() {
         String::from_utf8_lossy(&output.stderr).into_owned(),
     ] {
         assert!(!text.contains("WORKSPACE_LITERAL_KEY"), "{text}");
+    }
+}
+
+// {test}`requirements.authoring.invocation`
+// {test}`requirements.authoring.configuration`
+#[test]
+fn an_explicit_configuration_selects_the_nondefault_workspace_profile() {
+    let server = Server::start(vec![reply(vec![call(
+        "submit",
+        "submit_judgment",
+        json!({"determination":true,"rationale":"The supplied sources support the subject."}),
+    )])]);
+    let fixture = Fixture::new(&server.endpoint);
+    fs::remove_file(fixture.config.join("habeas/config.toml")).unwrap();
+    let nested = fixture.project.join("src/nested");
+    fs::create_dir(&nested).unwrap();
+    fs::write(nested.join("habeas.toml"), format!(
+        "version = 1\n[authoring]\ndefault = 'default'\n[authoring.configs.default]\nbackend = 'ollama'\nmodel = 'WRONG_DEFAULT_MODEL'\nendpoint = 'http://127.0.0.1:9'\n[authoring.configs.alternate]\npolicy = 'once'\nbackend = 'ollama'\nmodel = 'alternate-model'\nendpoint = '{}'\napi_key = 'ALTERNATE_TEST_KEY'\n", server.endpoint
+    )).unwrap();
+    let output = fixture
+        .command()
+        .current_dir(&nested)
+        .args(["author", SUBJECT, "--config", "alternate", "--force"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let requests = server.finish();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].body["model"], "alternate-model");
+    assert!(requests[0].headers.contains("ALTERNATE_TEST_KEY"));
+    assert_eq!(fixture.usage()["model"], "alternate-model");
+    assert_eq!(fixture.usage()["backend"], "ollama");
+}
+
+// {test}`requirements.authoring.configuration`
+#[test]
+fn version_only_configurations_cannot_author_needed_evidence() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let fixture = Fixture::new(&format!("http://{}", listener.local_addr().unwrap()));
+    fs::write(fixture.config.join("habeas/config.toml"), "version = 1\n").unwrap();
+    fs::write(fixture.project.join("habeas.toml"), "version = 1\n").unwrap();
+    let before = fs::read(&fixture.evidence).unwrap();
+    for args in [&["author", SUBJECT][..], &["author", "--all"]] {
+        let output = fixture.run(args);
+        assert!(!output.status.success(), "{args:?}: {output:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("no authoring configuration"),
+            "{output:?}"
+        );
+        assert_eq!(fs::read(&fixture.evidence).unwrap(), before);
+        assert!(
+            matches!(listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock)
+        );
     }
 }
 
@@ -761,11 +904,11 @@ fn false_is_a_completed_assessment() {
     let server = Server::start(vec![reply(vec![call(
         "submit",
         "submit_judgment",
-        json!({"determination":false,"rationale":"src/lib.rs documents the zero-capacity gap as FIXME(#125), but push also overwrites a full positive-capacity queue without acknowledging that defect."}),
+        json!({"determination":false,"rationale":"The test checks refusal for a full positive-capacity queue, without acknowledging missing checks for preservation and zero capacity."}),
     )])]);
     let fixture = Fixture::new(&server.endpoint);
     fs::write(fixture.project.join("md/requirements.md"), ":::{req} ready\nInserting into a full queue MUST return false without overwriting its entries, including at zero capacity.\n:::\n").unwrap();
-    fs::write(fixture.project.join("src/lib.rs"), "// {impl}`requirements.ready`\n// FIXME(#125): zero-capacity insertion panics.\npub fn push(queue: &mut [u8], value: u8) -> bool {\n    queue[0] = value;\n    true\n}\n").unwrap();
+    fs::write(fixture.project.join("src/lib.rs"), "// {impl}`requirements.ready`\n// FIXME(#125): zero-capacity insertion panics.\npub fn push(queue: &mut [u8], value: u8) -> bool {\n    queue[0] = value;\n    true\n}\n\n// {test}`requirements.ready`\n#[test]\nfn full_queue() { let mut queue = [1]; assert!(!push(&mut queue, 2)); }\n").unwrap();
     let output = fixture.run(&["author-evidence", SUBJECT, "--config", "mock"]);
     assert!(
         output.status.success(),
@@ -775,8 +918,9 @@ fn false_is_a_completed_assessment() {
     let requests = server.finish();
     let prompt = prompt_text(&requests[0].body);
     assert!(prompt.contains("and false otherwise."));
-    assert!(prompt.contains("FIXME(#125): zero-capacity insertion panics"));
-    assert!(prompt.contains("queue[0] = value"));
+    assert!(!prompt.contains("FIXME(#125): zero-capacity insertion panics"));
+    assert!(!prompt.contains("queue[0] = value"));
+    assert!(prompt.contains("fn full_queue()"));
     let evidence: Value = serde_json::from_slice(&fs::read(&fixture.evidence).unwrap()).unwrap();
     assert_eq!(evidence["determination"], false);
     assert!(!evidence["inputs"].as_array().unwrap().is_empty());
@@ -895,6 +1039,8 @@ fn approved_text(name: &str, index: usize) -> &'static str {
 
 // {test}`requirements.authoring.initial_prompt`
 // {test}`requirements.authoring.prompt_parts`
+// {test}`requirements.authoring.fixme_inputs`
+// {test}`requirements.authoring.invocation`
 #[test]
 fn initial_prompt_substitutes_subject_and_mandatory_inputs_into_the_template() {
     let template = approved_text("initial_prompt", 0);
@@ -918,6 +1064,44 @@ fn initial_prompt_substitutes_subject_and_mandatory_inputs_into_the_template() {
         .unwrap();
         let output = fixture.run(&["author", subject]);
         assert!(output.status.success(), "{output:?}");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.starts_with(&format!("{subject}: ollama / {MODEL}")),
+            "{stdout}"
+        );
+        let evidence_path = stdout
+            .lines()
+            .find_map(|line| line.strip_prefix("Evidence: "))
+            .unwrap();
+        assert_eq!(
+            std::path::Path::new(evidence_path),
+            fixture.project.join(format!("evidence/{subject}.json"))
+        );
+        let record: Value = serde_json::from_slice(&fs::read(evidence_path).unwrap()).unwrap();
+        let field = if kind == "requirement" {
+            "requirement"
+        } else {
+            "example"
+        };
+        let other = if kind == "requirement" {
+            "example"
+        } else {
+            "requirement"
+        };
+        assert!(record.get(other).is_none(), "{record}");
+        assert_eq!(
+            record[field],
+            if kind == "requirement" {
+                REQUIREMENT
+            } else {
+                "Calling ready succeeds. {cite}`requirements.ready`"
+            }
+        );
+        let usage_path = stdout
+            .lines()
+            .find_map(|line| line.strip_prefix("Usage: "))
+            .unwrap();
+        assert!(std::path::Path::new(usage_path).is_file(), "{stdout}");
         let requests = server.finish();
         let (system, prompt) = opening(&requests[0].body);
 
@@ -944,12 +1128,39 @@ fn initial_prompt_substitutes_subject_and_mandatory_inputs_into_the_template() {
         assert!(!expected.contains("{{"), "{expected}");
         assert_eq!(system, expected);
         assert!(!system.contains(subject), "{system}");
+        let acknowledgments: Value = serde_json::from_str(
+            prompt
+                .split_once("# Acknowledgments\n\n")
+                .unwrap()
+                .1
+                .split_once("\n\n# Mandatory inputs")
+                .unwrap()
+                .0,
+        )
+        .unwrap();
+        if kind == "requirement" {
+            assert_eq!(
+                acknowledgments,
+                json!([{
+                    "body": ":github: example/app#125\n One acknowledged gap.",
+                    "file": "src/lib.rs",
+                    "issues": [{"reference": "example/app#125", "state": "open"}],
+                    "item": "fn[ready]",
+                }])
+            );
+        } else {
+            assert_eq!(acknowledgments, json!([]));
+        }
         let (before, after) = subject_template.split_once("{{mandatory_inputs}}").unwrap();
         // The subject is not distributed, so its distributed task is empty.
         let before = before
             .replace("{{subject_kind}}", kind)
             .replace("{{subject_name}}", subject)
-            .replace("{{distributed_task}}", "");
+            .replace("{{distributed_task}}", "")
+            .replace(
+                "{{acknowledgments}}",
+                &serde_json::to_string_pretty(&acknowledgments).unwrap(),
+            );
         assert!(
             before.contains(&format!("\nSubject: {kind} {subject}\n")),
             "{before}"
@@ -1592,7 +1803,7 @@ fn bedrock_cli_uses_selected_profile_region_and_converse_tools() {
         assert_eq!(body["additionalModelRequestFields"], json!({"top_k":12}));
         let prompt = prompt_text(body);
         assert!(
-            prompt.contains("Assess whether a project's source code")
+            prompt.contains("Assess whether a project's tests adequately check")
                 && prompt.contains(REQUIREMENT)
         );
         let tool_specs = body["toolConfig"]["tools"].as_array().unwrap();
@@ -1720,6 +1931,15 @@ fn bedrock_run(model: &str) -> (Vec<Value>, Value) {
 /// bodies, and the usage record.
 // {cite}`habeas:util`
 fn bedrock_exchange(model: &str, responses: Vec<Value>) -> (Output, Vec<Value>, Value) {
+    bedrock_exchange_with_limit(model, responses, None)
+}
+
+// {cite}`habeas:util`
+fn bedrock_exchange_with_limit(
+    model: &str,
+    responses: Vec<Value>,
+    max_tokens: Option<u64>,
+) -> (Output, Vec<Value>, Value) {
     let server = Server::start(responses);
     let fixture = Fixture::new(&server.endpoint);
     fs::write(
@@ -1727,6 +1947,17 @@ fn bedrock_exchange(model: &str, responses: Vec<Value>) -> (Output, Vec<Value>, 
         format!("version = 1\n[authoring]\ndefault = 'cloud'\n[authoring.configs.cloud]\npolicy = 'once'\nbackend = 'bedrock'\nmodel = '{model}'\nregion = 'us-west-2'\n"),
     )
     .unwrap();
+    if let Some(limit) = max_tokens {
+        let path = fixture.config.join("habeas/config.toml");
+        fs::write(
+            &path,
+            format!(
+                "{}[authoring.configs.cloud.options]\nmaxTokens = {limit}\n",
+                fs::read_to_string(&path).unwrap()
+            ),
+        )
+        .unwrap();
+    }
     let mut command = fixture.command();
     for key in [
         "AWS_SESSION_TOKEN",
@@ -1861,13 +2092,51 @@ fn cut_off_submission(id: &str) -> Value {
 const LIMIT_NOTE: &str = "Your previous response reached the 16384-token output limit and was cut off,\nso its tool call was incomplete. Keep within the limit: make your rationale\nshorter, then call the tool again.";
 
 // {test}`requirements.authoring.output_limit`
+#[test]
+fn a_configured_bedrock_limit_controls_requests_and_the_continuation_note() {
+    let mut cut_off = cut_off_submission("cut");
+    cut_off["usage"] = json!({"inputTokens":7,"outputTokens":321,"totalTokens":328});
+    let (output, bodies, usage) = bedrock_exchange_with_limit(
+        "fixture-uncached-model",
+        vec![
+            cut_off,
+            json!({
+                "output":{"message":{"role":"assistant","content":[{"toolUse":
+                    {"toolUseId":"submit","name":"submit_judgment","input":
+                        {"determination":true,"rationale":"Short."}}}]}},
+                "stopReason":"tool_use",
+                "usage":{"inputTokens":9,"outputTokens":5,"totalTokens":14},
+                "metrics":{"latencyMs":1}
+            }),
+        ],
+        Some(321),
+    );
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(bodies.len(), 2);
+    for body in &bodies {
+        assert_eq!(body["inferenceConfig"]["maxTokens"], 321);
+    }
+    let note = bodies[1]["messages"].as_array().unwrap().last().unwrap();
+    assert_eq!(
+        note["content"][1]["text"],
+        LIMIT_NOTE.replace("16384", "321")
+    );
+    assert_eq!(usage["request_count"], 2);
+    assert_eq!(usage["outcome"], "completed");
+}
+
+// {test}`requirements.authoring.output_limit`
 // {test}`requirements.authoring.submission`
 #[test]
 fn a_response_cut_off_at_the_output_limit_is_continued_once() {
+    let mut cut_off = cut_off_submission("cut");
+    cut_off["output"]["message"]["content"].as_array_mut().unwrap().push(
+        json!({"toolUse":{"toolUseId":"read-cut","name":"habeas","input":{"file":"src/lib.rs"}}}),
+    );
     let (output, bodies, usage) = bedrock_exchange(
         "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
         vec![
-            cut_off_submission("cut"),
+            cut_off,
             json!({
                 "output":{"message":{"role":"assistant","content":[{"toolUse":
                     {"toolUseId":"submit","name":"submit_judgment","input":
@@ -1897,19 +2166,26 @@ fn a_response_cut_off_at_the_output_limit_is_continued_once() {
     let note = &second[first.len() + 1];
     assert_eq!(note["role"], "user");
     let content = note["content"].as_array().unwrap();
-    assert_eq!(content.len(), 2, "{note}");
+    assert_eq!(content.len(), 3, "{note}");
     assert_eq!(content[0]["toolResult"]["toolUseId"], "cut");
     assert_eq!(content[0]["toolResult"]["status"], "error");
     assert!(
         content[0]["toolResult"].to_string().contains("not run"),
         "{note}"
     );
-    assert_eq!(content[1]["text"], LIMIT_NOTE);
+    assert_eq!(content[1]["toolResult"]["toolUseId"], "read-cut");
+    assert_eq!(content[1]["toolResult"]["status"], "error");
+    assert!(
+        content[1]["toolResult"].to_string().contains("not run"),
+        "{note}"
+    );
+    assert_eq!(content[2]["text"], LIMIT_NOTE);
     // Both requests are recorded, and the cut-off call never ran.
     assert_eq!(usage["request_count"], 2);
     assert_eq!(usage["requests"].as_array().unwrap().len(), 2);
     assert_eq!(usage["tool_calls"]["submit_judgment"], 2);
     assert_eq!(usage["tool_skipped"]["submit_judgment"], 1);
+    assert_eq!(usage["tool_skipped"]["habeas"], 1);
     assert_eq!(usage["outcome"], "completed");
 }
 
@@ -2981,7 +3257,10 @@ fn the_requirements_skill_is_home_of_drafting_review_references_and_criteria() {
     assert_text(
         "what the review checks",
         &section(raw, "## What the review checks"),
-        &["an obligation the `{impl}` code does not implement completely and exactly as stated"],
+        &[
+            "obligations, boundaries, and failure cases no test runs and asserts",
+            "The supervising agent must still check that the code fulfills each applicable requirement",
+        ],
     );
     assert_text(
         "requirement review criteria",
@@ -4220,7 +4499,7 @@ fn bundled_skills_direct_behavior_review_against_requirements() {
         "habeas-evidence",
         &[
             "A judgment is one of three outcomes",
-            "`true`: the code and tests satisfy the definition, with no gap",
+            "`true`: the reviewed tests adequately check the definition, with no gap under",
             "`false`: there is a gap that no `{fixme}` reference acknowledges",
             "FIXME: `{fixme}` references acknowledge every remaining gap",
         ],
@@ -4249,9 +4528,9 @@ fn bundled_skills_direct_behavior_review_against_requirements() {
         "what the review checks",
         &section(skill_md("habeas-requirements"), "## What the review checks"),
         &[
-            "an obligation the `{impl}` code does not implement completely and exactly as stated",
-            "code that carries out part of the requirement but is not reachable from its `{impl}` items, including code that only cites it, and a test that verifies it without `{test}`",
-            "observable behavior in `{impl}` code that no requirement implemented there specifies",
+            "assertions whose expected results contradict the requirement",
+            "a standalone test designed to verify the subject without `{test}`",
+            "The supervising agent must still check that the code fulfills each applicable requirement",
             "obligations, boundaries, and failure cases no test runs and asserts",
             "A test may be omitted only for code with no logic of its own, or code that needs network services, real time, or process-wide state no project test sets up",
             "an obligation that a value stays unchanged, distinct, or present always needs a test",
@@ -4359,7 +4638,7 @@ fn bundled_skills_mark_roots_and_handle_uncovered_items() {
         "habeas-evidence",
         &[
             "except uncovered Rust items: leave those until after step 3, because an assessment that reads an item covers it",
-            "| rationale names code the reviewer found only by searching | add `{impl}` to the item it names, making it a root",
+            "| rationale identifies an unmarked standalone test | add `{test}` for the requirement or example it verifies",
         ],
     );
     assert_phrases(
@@ -4479,6 +4758,30 @@ fn bundled_skills_explain_distributed_requirements() {
             "Each site-query match makes a site",
         ],
     );
+    assert_text(
+        "distributed query contract",
+        &collapse(distributed_reference()),
+        &[
+            "one fenced `yaml` block and a name unique within the requirement",
+            "`css`, `markdown`, `toml`, or `yaml`",
+            "optional `paths` and `exclude`, lists of project-relative files or directories",
+            "an ast-grep `rule`, with optional `utils` and `constraints`",
+            "A violation match is reported to the site that contains it",
+            "Don't reference the distributed requirement from a site just because it is a site",
+            "A site review reads its site, which covers it for Rust item coverage",
+            "`habeas author --all` authors a site review for each site",
+            "`cargo test --workspace` runs every snippet",
+            "Query directives belong inside a requirement",
+            "a single identifier",
+            "invalid YAML",
+            "unknown query keys",
+            "a nonexistent site query",
+            "only matches inside that query's sites count",
+            "`match` snippets for what it selects",
+            "`no_match` snippets for nearby code it must not select",
+            "a site query that matches nothing in the project",
+        ],
+    );
 }
 
 // {test}`requirements.cli.distributed_guidance.when`
@@ -4579,17 +4882,14 @@ fn bundled_skills_give_distributed_guidance_as_do_and_dont_lists() {
         assert!(items.len() >= 2, "{heading}");
         for item in &items {
             assert!(item.starts_with(prefix), "{heading}: {item}");
+            if heading == "## Do" {
+                assert!(!item.starts_with("- Don't "), "{heading}: {item}");
+            }
         }
     }
-    // The guidance of each part is an item of one of the lists.
-    let lists = format!(
-        "{} {}",
-        section(reference, "## Do"),
-        section(reference, "## Don't")
-    );
     assert_text(
-        "Do and Don't lists",
-        &lists,
+        "Do list",
+        &section(reference, "## Do"),
         &[
             "- Make a requirement distributed only when",
             "- Separate obligations each site upholds",
@@ -4597,10 +4897,16 @@ fn bundled_skills_give_distributed_guidance_as_do_and_dont_lists() {
             "- Give every query `match` and `no_match` snippets",
             "check that the site queries select every place the obligation applies and no others",
             "- Describe sites exactly as the site queries select them",
+            "- Let `habeas author --all` author the site reviews.",
+        ],
+    );
+    assert_text(
+        "Don't list",
+        &section(reference, "## Don't"),
+        &[
             "- Don't describe sites more broadly",
             "- Don't state a per-site obligation",
             "- Don't reference the distributed requirement from a site",
-            "- Let `habeas author --all` author the site reviews.",
             "- Don't re-run a false site review for a different result",
         ],
     );

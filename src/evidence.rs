@@ -779,15 +779,19 @@ fn validate_evidence_file(
         ));
     }
 
-    crate::terms::validate_dependencies(
-        root,
-        definitions,
-        outlines,
-        object,
-        expected.map(|d| d.text.as_str()),
-        &label,
-        errors,
-    );
+    // A known subject's terminology is checked with its acknowledgments once
+    // reference discovery has completed. Orphaned records have no such context.
+    if expected.is_none() {
+        crate::terms::validate_dependencies(
+            root,
+            definitions,
+            outlines,
+            object,
+            None,
+            &label,
+            errors,
+        );
+    }
     if let Some(inputs) = array_field(object, "inputs", &label, errors) {
         for (index, input) in inputs.iter().enumerate() {
             validate_input(
@@ -1147,6 +1151,48 @@ impl SourceReference {
     }
 }
 
+/// Comment-only acknowledgment metadata. Callers select the subject's edges
+/// and exclude acknowledgments belonging to its site reviews.
+// {impl}`requirements.authoring.fixme_inputs`
+pub(crate) fn fixme_acknowledgments<'a>(
+    root: &Path,
+    outlines: &OutlineCache,
+    references: impl IntoIterator<Item = &'a SourceReference>,
+) -> Result<Vec<Value>, String> {
+    let mut references = references
+        .into_iter()
+        .filter(|reference| {
+            reference.kind == ReferenceKind::Fixme
+                && reference.closed
+                && reference.is_fixme_edge()
+                && reference.commentary.as_deref().is_some_and(|body| {
+                    let parsed = crate::fixme::FixmeBody::parse(body);
+                    parsed.problems.is_empty() && !parsed.description.is_empty()
+                })
+        })
+        .collect::<Vec<_>>();
+    references.sort_by(|a, b| a.file.cmp(&b.file).then(a.line.cmp(&b.line)));
+    references
+        .into_iter()
+        .map(|reference| {
+            let file = display_path(root, &reference.file);
+            let parsed = outlines.parse(root, &file);
+            let parsed = parsed.as_ref().as_ref().map_err(Clone::clone)?;
+            let item = if parsed.outline.profile.language.is_some() {
+                let index = parsed.outline.owner_at_line(reference.line);
+                parsed.outline.nodes[index].selector.as_str()
+            } else {
+                ""
+            };
+            Ok(serde_json::json!({
+                "file": file,
+                "item": if item.is_empty() { "<root>" } else { item },
+                "body": reference.commentary,
+            }))
+        })
+        .collect()
+}
+
 /// One edge of a definition's reference set: its origin (an in-source
 /// reference or a declaration anchor), role, file, and outline selector.
 // {impl}`requirements.ci.reference_set`
@@ -1463,6 +1509,44 @@ fn validate_references(
         });
         let evidence_file = root.join("evidence").join(format!("{name}.json"));
         let references = by_definition.remove(*name).unwrap_or_default();
+        // The acknowledgment body can introduce terminology without requiring
+        // an input selecting the containing implementation.
+        // {impl}`requirements.definitions.dependencies`
+        if let Some(mut record) = fs::read_to_string(&evidence_file)
+            .ok()
+            .and_then(|content| serde_json::from_str::<Value>(&content).ok())
+            .and_then(|value| value.as_object().cloned())
+        {
+            match fixme_acknowledgments(root, outlines, references.iter().copied()) {
+                Ok(acknowledgments) => {
+                    record.insert("acknowledgments".to_owned(), Value::Array(acknowledgments));
+                    crate::terms::validate_dependencies(
+                        root,
+                        definitions,
+                        outlines,
+                        &record,
+                        Some(&definition.text),
+                        &display_path(root, &evidence_file),
+                        errors,
+                    );
+                }
+                Err(error) => {
+                    errors.push(format!(
+                        "{}: cannot resolve acknowledgments: {error}",
+                        display_path(root, &evidence_file),
+                    ));
+                    crate::terms::validate_dependencies(
+                        root,
+                        definitions,
+                        outlines,
+                        &record,
+                        Some(&definition.text),
+                        &display_path(root, &evidence_file),
+                        errors,
+                    );
+                }
+            }
+        }
         if definition.kind == DefinitionKind::Example
             && !references
                 .iter()
@@ -1533,12 +1617,11 @@ fn validate_references(
             ));
         }
         let inputs = evidence_input_ranges(root, &evidence_file, definitions, outlines);
-        // `{cite}` points from its source to the definition, so it is not part of
-        // the definition's evidence. A `{fixme}` inside a site is covered by
-        // the site's review instead and was left out above.
+        // Only tests require a source input. Implementation locations and
+        // acknowledgment bodies remain protected by the reference-set digest.
         for reference in references
             .into_iter()
-            .filter(|reference| reference.kind != ReferenceKind::Cite)
+            .filter(|reference| reference.kind == ReferenceKind::Test)
         {
             if !inputs.iter().any(|input| {
                 input.file == reference.file
@@ -1559,7 +1642,7 @@ fn validate_references(
         // outline input must select that node or one of its ancestors.
         for anchor in &definition.anchors {
             match anchor.resolve(root, outlines) {
-                Ok(target) => {
+                Ok(target) if anchor.kind == ReferenceKind::Test => {
                     if !inputs.iter().any(|input| {
                         input.node.as_ref().is_some_and(|node| {
                             node.path == target.path && target.nodes.contains(&node.index)
@@ -1576,6 +1659,7 @@ fn validate_references(
                         ));
                     }
                 }
+                Ok(_) => {}
                 Err(error) => errors.push(format!(
                     "{}: :{}: anchor {} on {} {name} at {} does not resolve to a readable, permitted file or node: {error}",
                     display_path(root, &evidence_file),
@@ -2080,6 +2164,20 @@ pub(crate) mod tests {
         let mut other = entries();
         other[0].item = "fn[c]".to_owned();
         assert_ne!(digest_entries(entries()), digest_entries(other));
+        assert_ne!(
+            digest_entries(vec![entry("test", "a", "bc")]),
+            digest_entries(vec![entry("test", "ab", "c")]),
+        );
+        let mut words_one = entry("fixme", "src/lib.rs", "fn[f]");
+        words_one.origin = "fenced-reference";
+        words_one.words = vec!["ab".to_owned(), "c".to_owned()];
+        let mut words_two = entry("fixme", "src/lib.rs", "fn[f]");
+        words_two.origin = "fenced-reference";
+        words_two.words = vec!["a".to_owned(), "bc".to_owned()];
+        assert_ne!(
+            digest_entries(vec![words_one]),
+            digest_entries(vec![words_two])
+        );
     }
 
     /// Validation errors other than citation reviews, for fixtures that test
@@ -2863,6 +2961,7 @@ pub(crate) mod tests {
     }
 
     // {test}`requirements.ci.errors`
+    // {test}`requirements.definitions.inputs`
     #[test]
     fn configuration_and_dependency_failures_do_not_stop_later_checks() {
         let temp = fixture();
@@ -3188,6 +3287,7 @@ pub(crate) mod tests {
             "target/debug/out.rs",
             "crates/sub/target/out.rs",
             ".git/info/notes",
+            "nested/.git/info/notes",
         ] {
             let path = temp.path().join(file);
             fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -3282,6 +3382,7 @@ pub(crate) mod tests {
     }
 
     // {test}`requirements.ci.fence_lengths`
+    // {test}`requirements.ci.span`
     #[test]
     fn validates_four_or_more_colon_fences_and_longer_closers() {
         let body = "Body MUST remain.\n\n:::{note}\nNested.\n:::\n\nStill in the requirement.";
@@ -3476,7 +3577,7 @@ pub(crate) mod tests {
     // {test}`requirements.references.evidence_coverage`
     // {test}`requirements.references.roles`
     #[test]
-    fn uncovered_cite_is_not_reported_while_uncovered_impl_and_test_are() {
+    fn only_test_references_require_recorded_source_coverage() {
         let temp = fixture();
         fs::write(
             temp.path().join("md/rules.md"),
@@ -3501,13 +3602,7 @@ pub(crate) mod tests {
             .iter()
             .filter(|error| error.contains("no input covers"))
             .collect();
-        assert_eq!(uncovered.len(), 2, "{errors:#?}");
-        assert!(
-            uncovered
-                .iter()
-                .any(|error| error.contains("impl") && error.contains("src/main.rs:3")),
-            "{errors:#?}"
-        );
+        assert_eq!(uncovered.len(), 1, "{errors:#?}");
         assert!(
             uncovered
                 .iter()
@@ -3521,10 +3616,17 @@ pub(crate) mod tests {
 
         fs::write(
             &path,
-            record(json!([
-                outline(temp.path(), "src/main.rs", "fn[run]"),
-                outline(temp.path(), "src/main.rs", "fn[check]")
-            ])),
+            record(json!([outline(temp.path(), "src/main.rs", "fn[check]")])),
+        )
+        .unwrap();
+        let errors = without_citation_reviews(validate_repository(temp.path()).unwrap().errors);
+        assert!(errors.is_empty(), "{errors:?}");
+
+        // The unread implementation's body can change without invalidating
+        // this assessment; its reference set still describes the same roots.
+        fs::write(
+            temp.path().join("src/main.rs"),
+            source.replace("fn run() {}", "fn run() { panic!(\"changed\"); }"),
         )
         .unwrap();
         let errors = without_citation_reviews(validate_repository(temp.path()).unwrap().errors);
@@ -3611,7 +3713,7 @@ pub(crate) mod tests {
         fs::write(root.join("skills/ready.md"), "# Skill\nUse ready.\n").unwrap();
         fs::write(
             root.join("md/requirements.md"),
-            ":::{req} ready\n:impl: skills/ready.md\n:test: missing.sh\nReady MUST hold.\n:::\n\n:::{example} case\n:test: skills/ready.md\nA ready case. {cite}`requirements.ready`\n:::\n",
+            ":::{req} ready\n:test: skills/ready.md\n:test: missing.sh\nReady MUST hold.\n:::\n\n:::{example} case\n:test: skills/ready.md\nA ready case. {cite}`requirements.ready`\n:::\n",
         )
         .unwrap();
         // The root node is the whole file; its heading's section is not.
@@ -3645,7 +3747,7 @@ pub(crate) mod tests {
         let errors = validate_repository(root).unwrap().errors.join("\n");
         assert!(!errors.contains("text changed"), "{errors}");
         assert!(
-            errors.contains("evidence/requirements.ready.json: no input selects skills/ready.md (lines 1-2) anchored by :impl: on requirement requirements.ready"),
+            errors.contains("evidence/requirements.ready.json: no input selects skills/ready.md (lines 1-2) anchored by :test: on requirement requirements.ready"),
             "{errors}"
         );
         assert!(
@@ -3656,7 +3758,7 @@ pub(crate) mod tests {
 
         fs::write(
             root.join("md/requirements.md"),
-            ":::{req} ready\n:impl: skills/ready.md\nReady MUST hold.\n:::\n\n:::{example} case\n:test: skills/ready.md\nA ready case. {cite}`requirements.ready`\n:::\n",
+            ":::{req} ready\n:test: skills/ready.md\nReady MUST hold.\n:::\n\n:::{example} case\n:test: skills/ready.md\nA ready case. {cite}`requirements.ready`\n:::\n",
         )
         .unwrap();
         write(
@@ -3705,7 +3807,7 @@ pub(crate) mod tests {
         .unwrap();
         fs::write(
             root.join("md/requirements.md"),
-            ":::{req} ready\n:impl: src/lib.rs#mod[inner]/fn[run]\nReady MUST hold.\n:::\n",
+            ":::{req} ready\n:test: src/lib.rs#mod[inner]/fn[run]\nReady MUST hold.\n:::\n",
         )
         .unwrap();
         let write = |inputs: Value| {
@@ -3734,13 +3836,20 @@ pub(crate) mod tests {
         assert_eq!(
             errors,
             [
-                "evidence/requirements.ready.json: no input selects src/lib.rs#mod[inner]/fn[run] (lines 2-2) anchored by :impl: on requirement requirements.ready"
+                "evidence/requirements.ready.json: no input selects src/lib.rs#mod[inner]/fn[run] (lines 2-2) anchored by :test: on requirement requirements.ready"
             ],
         );
         for item in ["mod[inner]/fn[run]", "mod[inner]", ""] {
             write(json!([outline(root, "src/lib.rs", item)]));
             assert!(anchor_errors().is_empty(), "{item}: {:?}", anchor_errors());
         }
+        fs::write(
+            root.join("md/requirements.md"),
+            ":::{req} ready\n:impl: src/lib.rs#mod[inner]/fn[run]\nReady MUST hold.\n:::\n",
+        )
+        .unwrap();
+        write(json!([]));
+        assert!(anchor_errors().is_empty(), "{:?}", anchor_errors());
         fs::write(
             root.join("md/requirements.md"),
             ":::{req} ready\n:impl: src/lib.rs#fn[missing]\nReady MUST hold.\n:::\n",

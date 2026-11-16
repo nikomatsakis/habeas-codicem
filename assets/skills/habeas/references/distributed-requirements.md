@@ -20,6 +20,13 @@ fenced `yaml` block and a name unique within the requirement:
   whole site, and a violation query that misses a construct does not by itself
   make the requirement false.
 
+Query directives belong inside a requirement. Each name is a single identifier
+(ASCII letters, digits, underscores, or hyphens), unique across both query kinds in
+that requirement. Validation reports missing or extra YAML blocks, invalid YAML,
+unknown query keys, unsupported languages, and rules that cannot compile. A
+violation query naming a nonexistent site query in `within` is also invalid;
+`within` belongs only to violation queries.
+
 Each body has these keys: `language` (`rust`, `python`, `typescript`, `tsx`,
 `css`, `markdown`, `toml`, or `yaml`); optional `paths` and `exclude`, lists of
 project-relative files or directories; an ast-grep `rule`, with optional `utils`

@@ -177,11 +177,14 @@ Paths MUST follow the path rules in {cite}`requirements.ci.schema`. Option lines
 MUST NOT form part of the definition's text for evidence comparison or for
 requirements inputs, and MUST NOT render as body text.
 
-An anchored file or node MUST be covered by the definition's evidence under
-{cite}`requirements.references.evidence_coverage`, by an input selecting it, so changing the file makes that evidence stale. A path or selector that
+For each `:test:` anchor, the harness MUST include the selected file or node's
+source text in the initial model request under
+{cite}`requirements.authoring.mandatory_inputs` and MUST record that selection
+as an evidence input under {cite}`requirements.references.evidence_coverage`,
+so changing that source makes the evidence stale.
+A `:impl:` anchor alone MUST NOT require an input selecting its source. A path or selector that
 does not resolve to a readable, permitted file or node MUST be a validation error naming the
-definition and the path; authoring MUST report it before inference, because the
-definition cannot be assessed without it. Any other option line in a `{req}` or
+definition and the path; authoring MUST report it before inference. Any other option line in a `{req}` or
 `{example}` declaration MUST be a validation error.
 :::
 
@@ -197,7 +200,17 @@ In a book chapter, each valid `{impl}`, `{cite}`, or `{test}` reference, inline 
 :::
 
 :::{req} evidence_coverage
-For every `{impl}` and `{test}` reference in a project source file, including one in a requirement or example declaration, and every `{fixme}` reference except one inside a site under {cite}`requirements.references.site_review`, the evidence file for the referenced requirement or example MUST contain an input whose resolved source ranges cover the reference's file and line. A `{cite}` reference MUST NOT require coverage; it is discoverable through {cite}`requirements.authoring.reference_index`. Habeas MUST report every uncovered reference with its role, full name, source file, and line number.
+For every `{test}` reference in a project source file, including one in a
+requirement or example declaration, the evidence file for the referenced
+requirement or example MUST contain an input whose resolved source ranges cover
+the reference's file and line. An `{impl}`, `{cite}`, or `{fixme}` reference alone
+MUST NOT require an input selecting its source. `{impl}` and `{cite}` sources
+remain discoverable through {cite}`requirements.authoring.reference_index`;
+`{fixme}` acknowledgments are supplied under
+{cite}`requirements.authoring.fixme_inputs` and tracked by
+{cite}`requirements.ci.reference_set`. Habeas MUST report every uncovered
+reference requiring coverage with its role, full name, source file, and line
+number.
 :::
 
 :::{req} rust_item_coverage
@@ -530,22 +543,32 @@ list each selected requirement's sites with their determinations.
 When authoring evidence, the edges defined by
 {cite}`requirements.references.roles` MUST determine the reference
 contributions to the mandatory input set defined by
-{cite}`requirements.authoring.mandatory_inputs`. The target of each edge leaving
-the assessed subject MUST contribute; sources with only edges into the subject
+{cite}`requirements.authoring.mandatory_inputs`. A `{cite}` made by the subject
+MUST contribute the cited definition's complete fenced declaration. A requirement
+or example declaration that references the subject with `{impl}` or `{test}`
+MUST contribute that complete declaration. For sources outside such declarations,
+an `{impl}` reference or `:impl:` anchor alone MUST NOT contribute source text;
+those sources MUST remain discoverable under
+{cite}`requirements.authoring.reference_index` and MAY be requested under
+{cite}`requirements.authoring.source_tools`. Sources with only edges into the subject
 MUST NOT contribute and remain discoverable under
-{cite}`requirements.authoring.reference_index`. A `{cite}` made by the subject
-contributes the cited definition's complete fenced declaration. An anchor under
-{cite}`requirements.references.anchors` contributes the complete anchored file,
+{cite}`requirements.authoring.reference_index`. A `:test:` anchor under
+{cite}`requirements.references.anchors` MUST contribute the complete anchored file,
 or for a `path#selector` anchor the anchored node.
-An in-source `{impl}`, `{test}`, or `{fixme}` reference to the subject, except a `{fixme}` inside one of the subject's sites under {cite}`requirements.references.site_review`, contributes the source containing it: for a reference in a supported language, the smallest enclosing
+An in-source `{test}` reference to the subject MUST contribute the source
+containing it: for a reference in a supported language, the smallest enclosing
 outline node under {cite}`requirements.references.outline_comments`; for a reference in a Markdown requirement, example, or
 terminology declaration, that complete declaration; for other references, the
 complete containing source file. Literal references, evidence copies, and
 generated output MUST remain excluded under the existing reference-discovery
 rules.
 
-These contribution rules MUST apply only to edges directly leaving the assessed
-subject. Including another declaration or source MUST NOT by itself recursively
+An in-source `{fixme}` reference alone MUST NOT contribute the containing source
+to the mandatory input set. Its acknowledgment MUST instead be supplied under
+{cite}`requirements.authoring.fixme_inputs`.
+
+These contribution rules MUST apply only to the assessed subject's direct
+references. Including another declaration or source MUST NOT by itself recursively
 expand that source's own edges. Reference links MUST NOT be described as proof
 that all substantively relevant sources have been found.
 :::

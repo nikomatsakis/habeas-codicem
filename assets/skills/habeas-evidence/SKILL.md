@@ -1,6 +1,6 @@
 ---
 name: habeas-evidence
-description: Use when Habeas evidence needs creating or refreshing, or when `cargo test` or `habeas status` reports Habeas findings such as missing, stale, or false evidence, uncovered `{impl}` or `{test}` lines, uncovered Rust items, FIXME judgments, citation or site reviews, or disagreeing assessments, even if the user only says "the habeas test is failing". Covers running `habeas author` and fixing what it flags. If evidence went stale because code or requirements moved, use habeas-refactor first.
+description: Use when Habeas evidence needs creating or refreshing, or when `cargo test` or `habeas status` reports Habeas findings such as missing, stale, or false evidence, uncovered `{test}` lines, uncovered Rust items, FIXME judgments, citation or site reviews, or disagreeing assessments, even if the user only says "the habeas test is failing". Covers running `habeas author` and fixing what it flags. If evidence went stale because code or requirements moved, use habeas-refactor first.
 ---
 
 # Habeas evidence
@@ -26,11 +26,11 @@ Run commands from the project root, the directory with `book.toml` and
       accepts a `true` or FIXME whose rationale records a disagreement, so only
       this shows it; see "Disagreeing assessments".
 - [ ] 6. Stop and report each finding that needs the user: a new or changed
-      requirement, a gap to defer, a blocker, or a missing record or false
-      judgment whose rationale names only implementation that is still pending,
-      which is expected. Don't keep
-      iterating on those, and never write placeholder evidence. Don't wait for
-      answers before step 7.
+      requirement, a gap to defer, a blocker, missing information needed to
+      decide test adequacy, or a missing record or false judgment whose rationale
+      names only implementation that is still pending, which is expected.
+      Don't keep iterating on those, and never write placeholder evidence.
+      Don't wait for answers before step 7.
 - [ ] 7. Commit every change under `evidence/` (new, updated, and deleted
       records) with the source and requirement changes they assess; CI
       validates only committed evidence.
@@ -40,10 +40,11 @@ Run commands from the project root, the directory with `book.toml` and
 ## Judgments
 
 `habeas author` records, for each requirement and example, a model's judgment
-of whether the code and tests satisfy it; `cargo test --workspace` validates
+of whether the reviewed tests adequately check it; `cargo test --workspace` validates
 those records without calling a model. A judgment is one of three outcomes:
 
-- `true`: the code and tests satisfy the definition, with no gap.
+- `true`: the reviewed tests adequately check the definition, with no gap under
+  the assessment's criteria.
 - `false`: there is a gap that no `{fixme}` reference acknowledges; the
   rationale names it.
 - FIXME: `{fixme}` references acknowledge every remaining gap; validation
@@ -75,8 +76,8 @@ those records without calling a model. A judgment is one of three outcomes:
 | --- | --- |
 | missing or stale evidence | `habeas author --all` |
 | false judgment | read the rationale with `habeas info <name>`, fix the gap it names, then `habeas author --all` |
-| uncovered `{impl}` or `{test}` line | check the reference names the right definition, then `habeas author <full-name>`; fixing the reference makes the record stale, so no `--force` is needed |
-| rationale names code the reviewer found only by searching | add `{impl}` to the item it names, making it a root; don't restructure the code or add `{cite}` to make it reachable |
+| uncovered `{test}` line | check the reference names the right definition, then `habeas author <full-name>`; fixing the reference makes the record stale, so no `--force` is needed |
+| rationale identifies an unmarked standalone test | add `{test}` for the requirement or example it verifies; a reached test helper needs no reference of its own |
 | uncovered Rust item | see "Uncovered Rust items" |
 | a real gap the user agrees to defer, a FIXME judgment, or a `{fixme}` issue that closed | read [references/fixme.md](references/fixme.md) |
 | false citation or site review | read [references/reviews.md](references/reviews.md) |

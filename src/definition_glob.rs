@@ -45,6 +45,11 @@ mod tests {
         assert!(matches("foo.*.bar", "foo.x.bar"));
         assert!(matches("foo.*.bar", "foo.x.y.bar"));
         assert!(!matches("foo.*.bar", "prefix.foo.x.bar"));
+        assert!(!matches("foo.*.bar", "foo.x.bar.suffix"));
+        assert!(!matches("foo.bar", "fooxbar"));
+        assert!(matches("foo_bar-baz", "foo_bar-baz"));
+        assert!(!matches("foo_bar-baz", "fooXbar-baz"));
+        assert!(!matches("foo_bar-baz", "foo_barXbaz"));
         assert!(!matches("foo.bar.*", "foo.bar"));
         assert!(matches("foo.bar.*", "foo.bar.x.y"));
         assert!(validate("").is_err());

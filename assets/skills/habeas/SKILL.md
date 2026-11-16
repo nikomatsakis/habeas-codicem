@@ -6,8 +6,8 @@ description: Use at the start of any work in a project that tracks requirements 
 # Habeas
 
 Habeas traces requirements, written in a project's mdBook, to the code and tests
-that implement and verify them. `habeas author` has a model assess each
-requirement and records the result as evidence under `evidence/`;
+that implement and verify them. `habeas author` has a model assess whether tests
+adequately check each requirement and records the result as evidence under `evidence/`;
 `cargo test --workspace` validates that evidence without calling a model.
 
 ## Workflow

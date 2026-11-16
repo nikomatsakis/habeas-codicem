@@ -127,11 +127,21 @@ fn cyclic_dependencies_are_required_once_and_changes_require_review() {
     let original = fs::read_to_string(&glossary).unwrap();
     fs::write(&glossary, format!("\n\n{original}")).unwrap();
     assert!(validate_repository(root).unwrap().errors.is_empty());
-    for changed in [
-        original.replace(":phrase: beta", ":phrase: new beta"),
-        original
-            .replace("See TERM", "Read TERM")
-            .replace("See {term}", "Read {term}"),
+    for (changed, definition) in [
+        (
+            original.replace(":phrase: beta", ":phrase: new beta"),
+            "glossary.b",
+        ),
+        (
+            original
+                .replace("See TERM", "Read TERM")
+                .replace("See {term}", "Read {term}"),
+            "glossary.a",
+        ),
+        (
+            original.replace("See {term}`glossary.a`.", "Read {term}`glossary.a`."),
+            "glossary.b",
+        ),
     ] {
         fs::write(&glossary, changed).unwrap();
         let report = validate_repository(root).unwrap();
@@ -139,7 +149,7 @@ fn cyclic_dependencies_are_required_once_and_changes_require_review() {
             report
                 .errors
                 .iter()
-                .any(|e| e.contains("input text changed") && e.contains("glossary.")),
+                .any(|e| e.contains("input text changed") && e.contains(definition)),
             "{:?}",
             report.errors
         );
@@ -424,6 +434,7 @@ fn definitions_share_name_and_fence_rules_and_need_no_evidence() {
 }
 
 // {test}`requirements.ci.definition_errors`
+// {test}`requirements.definitions.declaration`
 #[test]
 fn duplicates_involving_named_definitions_name_the_first_declaration() {
     for (first, second, kind) in [
@@ -530,6 +541,13 @@ fn phrases_are_plain_links_and_markdown_literals_are_preserved() {
             .content
             .contains("&#42;alpha&#42; &amp; &lt;beta&gt;")
     );
+    for literal in [
+        "`{term}`glossary.a``",
+        "```text\n{term}`glossary.a`\n```",
+        r"\{term}`glossary.a`",
+    ] {
+        assert!(chapters[1].content.contains(literal), "{literal:?}");
+    }
 }
 
 // {test}`requirements.definitions.phrase_rendering`

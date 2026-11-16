@@ -481,6 +481,12 @@ mod tests {
         assert_eq!(prepared["inputs"][0]["bytes"], "λ\nDO_NOT_LOG_SOURCE".len());
         assert_eq!(prepared["inputs"][0]["lines"], 2);
         assert_eq!(prepared["inputs"][1]["components"], 2);
+        assert_eq!(prepared["inputs"][1]["kind"], "requirements");
+        assert_eq!(
+            prepared["inputs"][1]["bytes"],
+            "PRIVATE_REQUIREMENT_TEXT".len()
+        );
+        assert_eq!(prepared["inputs"][1]["lines"], 1);
         assert_eq!(prepared["inputs"][0]["unique"], true);
         assert_eq!(prepared["inputs"][2]["unique"], false);
         assert_eq!(prepared["inputs"][2]["origin"], "habeas");
@@ -492,6 +498,21 @@ mod tests {
         assert_eq!(prepared["inputs"][3]["unique"], true);
         assert_eq!(prepared["inputs"][4]["unique"], false);
         assert!(prepared["inputs"][3]["sent_in_request"].is_null());
+        log.prepared(
+            "habeas",
+            &[
+                json!({"definition":"private.term","text":["PRIVATE_TERM_TEXT","λ"]}),
+                json!({"builtin":"habeas:util","text":["PRIVATE_BUILTIN_TEXT"]}),
+            ],
+        );
+        log.save().unwrap();
+        let kinds = persisted(&log);
+        assert_eq!(kinds["inputs"][5]["kind"], "definition");
+        assert_eq!(kinds["inputs"][5]["bytes"], "PRIVATE_TERM_TEXT\nλ".len());
+        assert_eq!(kinds["inputs"][5]["lines"], 2);
+        assert_eq!(kinds["inputs"][6]["kind"], "builtin");
+        assert_eq!(kinds["inputs"][6]["bytes"], "PRIVATE_BUILTIN_TEXT".len());
+        assert_eq!(kinds["inputs"][6]["lines"], 1);
         let index = log.begin_request().unwrap();
         let submitted = persisted(&log);
         assert_eq!(submitted["inputs"][0]["submitted_in_request"], index);
@@ -518,6 +539,9 @@ mod tests {
             "private-source-file.rs",
             "private_item",
             "private.match",
+            "private.term",
+            "PRIVATE_TERM_TEXT",
+            "PRIVATE_BUILTIN_TEXT",
         ] {
             assert!(
                 !serialized.contains(private),

@@ -13,6 +13,84 @@ fn selectors(outline: &Outline) -> Vec<String> {
         .collect()
 }
 
+// {test}`requirements.references.outlines`
+#[test]
+fn every_profile_mapping_is_documented() {
+    let reference = include_str!("../../md/reference.md");
+    let table = reference
+        .split_once("### Outline profiles\n")
+        .unwrap()
+        .1
+        .split_once("\nProfile details:")
+        .unwrap()
+        .0;
+    let mut group = "";
+    let mut rows = Vec::new();
+    for line in table.lines().filter(|line| line.starts_with('|')) {
+        let cells: Vec<_> = line.split('|').map(str::trim).collect();
+        if !cells[1].is_empty() {
+            group = cells[1];
+        }
+        rows.push((group, cells));
+    }
+    for profile in super::profile::profiles() {
+        let name = match profile.name {
+            "rust" => "Rust",
+            "python" => "Python",
+            "typescript" | "tsx" => "TypeScript",
+            "css" => "CSS",
+            "markdown" => "Markdown",
+            "toml" => "TOML",
+            "yaml" => "YAML",
+            name => panic!("undocumented profile {name}"),
+        };
+        for extension in profile.extensions {
+            assert!(
+                rows.iter().any(|(group, cells)| *group == name
+                    && cells[2].contains(&format!("`.{extension}`"))),
+                "{name}: .{extension}"
+            );
+        }
+        for rule in profile.kinds {
+            assert!(
+                rows.iter().any(|(group, cells)| {
+                    *group == name
+                        && cells[3].contains(&format!("`{}`", rule.kind))
+                        && cells[4].contains(&format!("`{}`", rule.grammar))
+                        && !cells[5].is_empty()
+                }),
+                "{name}: {} -> {}",
+                rule.grammar,
+                rule.kind
+            );
+        }
+    }
+    assert!(rows.iter().any(|(group, cells)| *group == "Plain text"
+        && cells[3] == "`line`"
+        && cells[4] == "each non-blank line"
+        && cells[5] == "anonymous"));
+}
+
+// {test}`requirements.references.outlines`
+#[test]
+fn grammar_dependencies_are_pinned_to_exact_versions() {
+    let manifest: toml::Table = toml::from_str(include_str!("../../Cargo.toml")).unwrap();
+    let dependencies = manifest["dependencies"].as_table().unwrap();
+    let version = regex::Regex::new(r"^=\d+\.\d+\.\d+$").unwrap();
+    let grammars: Vec<_> = dependencies
+        .iter()
+        .filter(|(name, _)| name.starts_with("tree-sitter-"))
+        .collect();
+    assert!(!grammars.is_empty());
+    for (name, dependency) in grammars {
+        let pin = dependency
+            .as_str()
+            .or_else(|| dependency.get("version").and_then(toml::Value::as_str))
+            .unwrap();
+        assert!(version.is_match(pin), "{name}: {pin}");
+    }
+}
+
 fn summary(outline: &Outline) -> Vec<String> {
     outline.nodes[1..]
         .iter()
@@ -35,6 +113,7 @@ fn summary(outline: &Outline) -> Vec<String> {
 // {test}`requirements.references.selector_impl_and_trait`
 // {test}`requirements.references.selector_inline_and_foreign`
 // {test}`requirements.references.selector_duplicate_names`
+// {test}`requirements.references.outlines`
 #[test]
 fn rust_selectors_follow_syntactic_ancestry() {
     let source = r#"
@@ -657,6 +736,7 @@ fn toml_and_yaml_profiles_name_keys() {
 // {test}`requirements.references.selector_inline_and_foreign`
 // {test}`requirements.references.selector_duplicate_names`
 // {test}`requirements.references.selector_use`
+// {test}`requirements.references.outlines`
 #[test]
 fn selectors_name_syntactic_ancestry_and_duplicates() {
     let source = r#"
@@ -927,6 +1007,7 @@ fn duplicate_names_are_numbered_in_source_order_without_line_numbers() {
 }
 
 // {test}`requirements.references.rust_item_selectors`
+// {test}`requirements.references.outlines`
 #[test]
 fn item_macros_are_anonymous_nodes_and_expression_macros_are_not() {
     let source = "\

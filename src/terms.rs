@@ -55,7 +55,7 @@ pub(crate) fn dependencies(
     }
 }
 
-/// Terms referenced directly by the subject text or the record's inputs.
+/// Terms referenced directly by the subject, inputs, or supplied acknowledgments.
 // {impl}`requirements.references.markdown_literals`
 // Malformed or unresolvable inputs are skipped: their own checks report them.
 fn direct_references(
@@ -68,6 +68,22 @@ fn direct_references(
     let mut pending = BTreeSet::new();
     if let Some(text) = subject {
         referenced_terms(text, true, &mut pending);
+    }
+    // This field exists only in the in-memory dependency context, not in the
+    // persisted evidence schema. Its bodies are protected by the reference set.
+    if let Some(acknowledgments) = record.get("acknowledgments").and_then(Value::as_array) {
+        for acknowledgment in acknowledgments {
+            if let (Some(file), Some(body)) = (
+                acknowledgment.get("file").and_then(Value::as_str),
+                acknowledgment.get("body").and_then(Value::as_str),
+            ) {
+                referenced_terms(
+                    body,
+                    crate::outline::is_markdown_path(Path::new(file)),
+                    &mut pending,
+                );
+            }
+        }
     }
     if let Some(inputs) = record.get("inputs").and_then(Value::as_array) {
         for input in inputs {

@@ -43,7 +43,7 @@ fn fixture() -> TempDir {
         temp.path().join("src/main.rs"),
         // No outline node follows the comment, so it belongs to the root and
         // `main` stays uncited.
-        "fn main() {}\n// {impl}`requirements.uncovered`\n",
+        "fn main() {}\n// {test}`requirements.uncovered`\n",
     )
     .unwrap();
     for (name, text, determination) in [
@@ -493,6 +493,7 @@ fn status_preserves_repository_wide_rust_findings_in_every_form() {
 
 // {test}`requirements.cli.info`
 // {test}`requirements.cli.definition_glob_search`
+// {test}`requirements.index.invalid_detail`
 #[test]
 fn info_renders_exact_and_glob_matches_as_markdown_without_an_index() {
     let temp = fixture();
@@ -536,6 +537,18 @@ fn info_renders_exact_and_glob_matches_as_markdown_without_an_index() {
         "{matches}"
     );
     assert!(matches.contains("\n\n---\n\n"), "{matches}");
+    for (name, state, finding) in [
+        ("pending", "Determination_false", "determination is false"),
+        ("stale", "Invalid", "requirement text changed"),
+        ("stale_input", "Invalid", "outline input changed"),
+    ] {
+        let output = habeas(temp.path(), &["info", &format!("requirements.{name}")]);
+        assert!(output.status.success(), "{output:?}");
+        let text = String::from_utf8(output.stdout).unwrap();
+        assert!(text.contains(&format!("evidence-{state}")), "{text}");
+        assert!(text.contains("## Validation findings"), "{text}");
+        assert!(text.contains(finding), "{text}");
+    }
 
     let missing = habeas(temp.path(), &["info", "requirements.absent"]);
     assert!(missing.status.success(), "{:?}", missing);

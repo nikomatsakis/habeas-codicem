@@ -1,8 +1,8 @@
 {
   "requirement": "When a Bedrock configuration sets no `maxTokens` option, each provider request\nMUST ask for at most 16,384 output tokens. A configured `maxTokens` MUST be used\nas given.\n\nWhen a response stops because it reached a known output limit, the harness MUST\ncontinue the same conversation once, adding a user message with an error result\nfor each tool call in the cut-off response, followed by this text with `<limit>`\nreplaced by the limit:\n\n```text\nYour previous response reached the <limit>-token output limit and was cut off,\nso its tool call was incomplete. Keep within the limit: make your rationale\nshorter, then call the tool again.\n```\n\nA second response that reaches the limit, or a response that stops at an\noutput limit that is not known, MUST fail the assessment as an incomplete\nresponse. Where the provider reports whether a response stopped at the output\nlimit or because the conversation exceeded the model's context window, the\nharness SHOULD continue only the former and fail the assessment on the latter;\nwhere it does not, the stop MUST be treated as reaching the output limit.",
   "determination": true,
-  "rationale": "The requirement is satisfied.\n\n- **Absent Bedrock `maxTokens`, every request asks for at most 16,384 tokens.** `src/authoring/providers.rs#fn[apply_bedrock_options]` assigns `DEFAULT_BEDROCK_MAX_TOKENS`, defined as 16,384 in `src/authoring/providers.rs#const[DEFAULT_BEDROCK_MAX_TOKENS]`. `src/authoring/providers.rs#impl[RigProvider/CompletionProvider]` applies these options on each completion. Tests: `src/authoring/providers.rs#mod[tests]/fn[bedrock_native_option_types_are_checked_and_only_max_tokens_is_defaulted]` and `tests/authoring_cli.rs#fn[bedrock_requests_without_max_tokens_ask_for_at_most_16k_output_tokens]`, the latter checking both requests for cached and uncached models.\n- **Configured `maxTokens` is used unchanged.** `apply_bedrock_options` assigns the configured integer directly. `tests/authoring_cli.rs#fn[bedrock_cli_uses_selected_profile_region_and_converse_tools]` asserts 321 on both outgoing requests.\n- **A known-limit cutoff continues the same conversation once.** `src/authoring/mod.rs#fn[converse]` recognizes `FinishReason::Length`, obtains the known limit, tracks whether continuation has been used, and extends existing history. `tests/authoring_cli.rs#fn[a_response_cut_off_at_the_output_limit_is_continued_once]` checks successful continuation and preservation of prior history.\n- **The continuation adds a user message, an error result for each cut-off tool call, and then the prescribed text with the limit substituted.** `src/authoring/mod.rs#fn[cut_off_continuation]` iterates over the calls, creates error results, and appends the note. `src/authoring/mod.rs#fn[approved_text]` extracts the requirement's text block; the helper substitutes the limit. The preceding continuation test asserts message role, error-result identity/status, ordering, and exact note. `tests/authoring_cli.rs#fn[a_configured_ollama_num_predict_is_the_known_output_limit]` additionally verifies substitution of a configured 512-token limit.\n- **A second cutoff fails as incomplete.** `converse` returns an incomplete-response error when its continuation flag is already set. `tests/authoring_cli.rs#fn[a_second_response_at_the_output_limit_fails_the_assessment]` asserts failure, incomplete-response diagnostics, and exactly two requests.\n- **An unknown output limit fails as incomplete.** `converse` errors when `output_limit()` returns `None`. `tests/authoring_cli.rs#fn[a_stop_at_an_output_limit_that_is_not_known_fails_the_assessment]` checks this failure without another request.\n- **When distinguishable, only output-limit stops continue; context-window overflow fails.** `converse` rejects Bedrock's `model_context_window_exceeded` before continuation. `tests/authoring_cli.rs#fn[a_context_window_overflow_fails_without_a_continuation]` asserts failure and one request; the successful Bedrock continuation test covers the output-limit case.\n- **An indistinguishable length stop is treated as an output-limit stop.** The general length branch in `converse` does this without requiring a provider-specific output-stop marker. The configured and unconfigured Ollama tests above exercise continuation and unknown-limit failure respectively.\n\nThe helper and provider trait implementation are reachable from the marked implementation roots. The other inference-option handling is covered by `requirements.authoring.configuration_storage`, marked on the provider completion implementation; it is not an unexplained additional output-limit behavior. No acknowledged gaps were supplied or found.",
-  "references": "7ef22ec89c7e3311acb5352b9c4642ead94c2686614d6c91c2740d08217d036d",
+  "rationale": "The reviewed tests cover every obligation in `requirements.authoring.output_limit`, and each one asserts its outcome.\n\n**Default and configured `maxTokens`**\n- Default of 16,384 when no `maxTokens` is set:\n  - `tests/authoring_cli.rs#fn[bedrock_requests_without_max_tokens_ask_for_at_most_16k_output_tokens]` runs two models and asserts that every request body has `inferenceConfig == {\"maxTokens\":16384}`.\n  - The unit test `src/authoring/providers.rs#mod[tests]/fn[bedrock_native_option_types_are_checked_and_only_max_tokens_is_defaulted]` asserts `request.max_tokens == Some(16_384)` when only `top_k` is set.\n  - That unit test also rejects invalid `maxTokens` values (negative, too large).\n- Configured value used as given:\n  - `fn[bedrock_cli_uses_selected_profile_region_and_converse_tools]` configures `maxTokens = 321` and asserts it appears in `inferenceConfig` on both requests.\n  - `fn[a_configured_bedrock_limit_controls_requests_and_the_continuation_note]` asserts 321 on every request.\n\n**Continuation after a cut-off at a known limit**\n- `fn[a_response_cut_off_at_the_output_limit_is_continued_once]` checks four things:\n  - The same conversation continues. The second request's messages are the first request's messages plus the cut-off assistant turn plus one user message.\n  - Every tool call in the cut-off response, two in this test, gets an error `toolResult`.\n  - The limit text follows those results as the final content item and equals `LIMIT_NOTE`, the requirement's text with 16384 substituted.\n  - The cut-off calls are never run, and the final outcome is `completed`.\n- `fn[a_configured_bedrock_limit_controls_requests_and_the_continuation_note]` checks that `<limit>` is replaced by the configured value (321).\n- `fn[a_configured_ollama_num_predict_is_the_known_output_limit]` checks the same for Ollama (512).\n\n**Failure cases**\n- A second response that reaches the limit fails: `fn[a_second_response_at_the_output_limit_fails_the_assessment]` expects a non-zero exit, an \"incomplete\" message, exactly two requests, and outcome `failed`.\n- A stop at an output limit that is not known fails: `fn[a_stop_at_an_output_limit_that_is_not_known_fails_the_assessment]` uses Ollama without `num_predict`. It expects failure with \"incomplete\", one request, unchanged evidence and outcome `failed`.\n\n**Context window versus output limit**\n- Where the provider reports the distinction, `fn[a_context_window_overflow_fails_without_a_continuation]` sends Bedrock `model_context_window_exceeded`. It asserts failure mentioning the context window, no continuation (one request), and outcome `failed`.\n- Where the provider does not report the distinction, the stop is treated as reaching the output limit. The Ollama `done_reason: \"length\"` tests above exercise that path, both continuing (limit configured) and failing (limit unknown).\n\n**Residual point**\n- OpenAI's `max_output_tokens` option has no dedicated test. The text does not distinguish providers, and the continuation logic is the same shared code that the Bedrock and Ollama tests exercise, so I do not count this as a gap.\n\nNo gaps found, and there are no acknowledgments to consider.",
+  "references": "88c4577c2d9f47f7a8dcb0677eac277254de0684b0fb83cb207eb0855f14fc4a",
   "inputs": [
     {
       "requirements": "requirements.authoring.output_limit",
@@ -36,16 +36,6 @@
       ]
     },
     {
-      "file": "src/authoring/mod.rs",
-      "item": "fn[converse]",
-      "hash": "8ff7fab0e18a2edc82384c148a31ce61194c3c1d4898e7518e1585898f91373e"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "fn[apply_bedrock_options]",
-      "hash": "f469a46a9d4ff0bdb10ee9b7acff7bdc793b65f5a1247eaaf9133c7e46e63025"
-    },
-    {
       "file": "src/authoring/providers.rs",
       "item": "mod[tests]/fn[bedrock_native_option_types_are_checked_and_only_max_tokens_is_defaulted]",
       "hash": "21ed7d2e0bae0f433277592a822919ef35507c8d6cba25226e95fdfc3245727f"
@@ -53,7 +43,7 @@
     {
       "file": "tests/authoring_cli.rs",
       "item": "fn[bedrock_cli_uses_selected_profile_region_and_converse_tools]",
-      "hash": "1fb33572c12ad75e7eba03099fae29c8b77541d75000f9f8f168c2f7861a5bcd"
+      "hash": "52db2e6d394eca844bb781dde7335197d9dff8ebafe9a80d245f1fd53c422fae"
     },
     {
       "file": "tests/authoring_cli.rs",
@@ -62,8 +52,13 @@
     },
     {
       "file": "tests/authoring_cli.rs",
+      "item": "fn[a_configured_bedrock_limit_controls_requests_and_the_continuation_note]",
+      "hash": "a8241d964010427fb0dc855482676bceb1a0bd18f481dd9f1df540aa4472b061"
+    },
+    {
+      "file": "tests/authoring_cli.rs",
       "item": "fn[a_response_cut_off_at_the_output_limit_is_continued_once]",
-      "hash": "1876949000c1dfb5abbe2368a72bcac55807a0bad0142f619f63622eb11c731b"
+      "hash": "978c17388863db707483d1bb4463593d2250701b7edef1f3533e544b51f69439"
     },
     {
       "file": "tests/authoring_cli.rs",
@@ -86,65 +81,9 @@
       "hash": "ba5dc0e41cdf60e8699c85eb79b7082d70e1fb50642ac368848cc55939bec94e"
     },
     {
-      "file": "src/authoring/mod.rs",
-      "item": "fn[cut_off_continuation]",
-      "hash": "b9d3e83199ad6f70f05d304329f66b3c41981f8a36aaa26f28f4602577bf1507"
-    },
-    {
       "file": "src/authoring/providers.rs",
-      "item": "impl[RigProvider/CompletionProvider]",
-      "hash": "4e5f5537cda5fae67501fbd8a871ee4db51114013516d841fbd7f15f27a9c6ad"
-    },
-    {
-      "requirements": "requirements.authoring.rig_configuration_mapping",
-      "matches": [
-        "requirements.authoring.rig_configuration_mapping"
-      ],
-      "text": [
-        ":::{req} rig_configuration_mapping",
-        "Habeas MUST resolve its saved configuration before constructing Rig provider",
-        "clients and completion models. The Habeas data structures MUST remain the saved",
-        "format. Rig model references MAY be reused internally without discarding the",
-        "connection settings they do not represent.",
-        "",
-        "The Bedrock adapter MUST pass the chosen AWS profile and region through AWS SDK",
-        "configuration, or use explicitly configured credentials. The Ollama adapter MUST use the chosen server, exact model ID,",
-        "and optional authentication; the server MAY be local or remote. The OpenAI adapter MUST use the Responses API, selected endpoint, exact model",
-        "ID, and resolved API key. All adapters",
-        "MUST supply the same tools and initial prompt.",
-        ":::"
-      ]
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "const[DEFAULT_BEDROCK_MAX_TOKENS]",
-      "hash": "7771b138f2adc95a6e477f96b27f6f9947828a1183504d7b2bd1bf72329aa7cc"
-    },
-    {
-      "requirements": "requirements.authoring.configuration_storage",
-      "matches": [
-        "requirements.authoring.configuration_storage"
-      ],
-      "text": [
-        ":::{req} configuration_storage",
-        "{impl}`requirements.configuration.feature_sections`",
-        "Configuration names MUST match `[A-Za-z0-9][A-Za-z0-9_-]*` and be case-sensitive.",
-        "Project-selection keys MUST be canonical absolute project-root paths. Model IDs",
-        "MUST be nonempty opaque strings, preserving tags and ARNs. `api_key_env` MUST",
-        "name a nonempty environment variable without `=` or NUL.",
-        "",
-        "Authoring MUST validate its fields under {cite}`requirements.configuration.loading`.",
-        "The `options` map MUST accept backend-defined inference settings rather than a",
-        "closed Habeas list; the adapter MUST pass them through Rig's provider parameter",
-        "mechanism and report rejection by Rig or the provider. These options MUST NOT",
-        "replace the selected model, the assessment prompt, or tool definitions.",
-        ":::"
-      ]
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "fn[approved_text]",
-      "hash": "57c939d94f090c967d2a5cb9aa31642d8674934bfff8e5e42d544c8740478806"
+      "item": "impl[RigProvider/CompletionProvider]/fn[output_limit]",
+      "hash": "d604937adf6ac07c29c16d68ad373b4b9b3233445f03727ebdebee812c029952"
     }
   ]
 }

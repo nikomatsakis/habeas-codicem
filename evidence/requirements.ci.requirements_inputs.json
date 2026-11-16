@@ -1,7 +1,7 @@
 {
   "requirement": "For a requirements input, `requirements` MUST be a {term}`requirements.references.definition_selection`, and Habeas MUST match it against all defined requirements and named examples. It MUST recompute the matches during validation, sort their full names, and compare them with `matches`. It MUST take each match's complete raw fenced declaration, including its opening and closing lines, concatenate those declarations in full-name order with one blank line between them, and compare the resulting raw lines with `text`. It MUST retain every match's current source file and inclusive line range for display and reference coverage. A selection matching no definitions MUST be invalid. Adding, removing, renaming, or changing a matched definition MUST invalidate the stored input; moving an unchanged declaration within the book MUST NOT. Errors MUST identify the selection and affected definitions when available.",
   "determination": true,
-  "rationale": "No gaps found against `requirements.ci.requirements_inputs`.\n\n**Obligations and the code that carries them out**\n\n- **`requirements` is a `definition_selection`.** `src/evidence.rs#fn[validate_input]` detects a requirements input and reads `requirements` with `string_field`. It then calls `validate_resolved_input` with `InputSelector::Requirements`. `src/inputs.rs#impl[InputSelector]/fn[resolve]` calls `definition_glob::validate`, which rejects an invalid selection with `requirements glob \"…\": <problem>`.\n- **Match against all requirements and named examples.** The same `resolve` arm loops over every collected definition. It skips `DefinitionKind::Term` and keeps names that match `definition_glob::matches`. The definitions are built by `collect_definitions`, which has the `{impl}` reference. They are a `BTreeMap`, so matches come out in full-name order.\n- **Recompute and compare `matches`.** `validate_resolved_input` compares the recorded `matches` with `resolved.matches`. `resolve` builds that list from the current book, so it is recomputed on every validation and already sorted. Any difference produces `requirements glob \"…\" matches changed; added […], removed […]`.\n- **Raw fenced declarations, joined by one blank line, compared with `text`.**\n  - `collect_definitions` stores `raw_lines` from `without_options(content, block.start..block.end)`, which includes the opening and closing fence lines.\n  - `resolve` pushes an empty line between declarations and extends `text` with each declaration's lines.\n  - `validate_resolved_input` compares the recorded `text` with the result and reports `input text changed for …`.\n  - The resolved text goes through `redact_lines`. That falls under the separate redaction requirement, which `validate_resolved_input` marks with `{impl}`.\n- **Retain each match's file and inclusive line range.** `resolve` builds a `SourceRange` for each match with `file`, `line_start` and `line_end`. `collect_definitions` computes `line_end` as `line + line_count - 1`.\n- **A selection matching nothing is invalid.** `resolve` returns `requirements glob \"…\" matches no requirement or example` when `matches` is empty.\n- **Change, add, remove or rename invalidates the input; moving an unchanged declaration does not.**\n  - Changes surface through the text comparison, and additions, removals and renames through the `matches` comparison.\n  - Line numbers are not part of the compared data, so moving a declaration leaves the input valid.\n- **Errors identify the selection and affected definitions.**\n  - Text errors name the selection through `{selector:?}` and add `changed definitions [..]` when available.\n  - Match errors name the glob together with the added and removed names.\n  - The no-match and invalid-glob errors name the glob.\n\n**Tests**\n\n- `src/evidence.rs#mod[tests]/fn[requirements_inputs_track_matched_declarations_in_full_name_order]` covers:\n  - A glob where `*` crosses dots.\n  - Full-name ordering with a blank line between declarations.\n  - Moving declarations leaves the input valid.\n  - A changed definition produces `changed definitions` and a diff.\n  - An added, a removed and a renamed definition each produce a `matches changed` error.\n  - No match.\n  - Invalid globs: `[` and the empty string.\n- `src/evidence.rs#mod[tests]/fn[cited_example_with_a_test_and_matching_evidence_validates]` covers a valid requirements input that supplies reference coverage, and a `matches changed` error when a requirement is added.\n- `src/evidence.rs#mod[tests]/fn[requirements_inputs_omit_option_lines]` checks the raw lines, the line range and the resolved text.\n- `src/index.rs#mod[tests]/fn[detail_page_shows_recorded_text_locations_and_first_matching_group]` checks that each match's name, file and inclusive range are shown for display.\n- `tests/definitions.rs#fn[declaration]` and `tests/definitions.rs#fn[requirements]` are test helpers marked with `{test}`.",
+  "rationale": "The reviewed tests cover each obligation in `requirements.ci.requirements_inputs`. I found no gap that would justify rejecting them.\n\n**Obligations and the tests that cover them**\n- **Selection must be a valid definition selection.** `src/evidence.rs#mod[tests]/fn[requirements_inputs_track_matched_declarations_in_full_name_order]` writes the invalid globs `foo.[a].bar` and `\"\"`. It asserts exactly one error for each, naming `inputs[0]`, the quoted glob and the specific problem. Valid globs and exact names are used as accepted inputs in `tests/definitions.rs` (via the `requirements` helper) and in `src/index.rs#mod[tests]/fn[detail_page_shows_recorded_text_locations_and_first_matching_group]`.\n- **Match against all requirements and named examples, recomputed at validation.** The same test uses `foo.*.bar`. `*` crosses dots, and it matches both the example `foo.a.b.bar` and the requirement `foo.a.bar`. Because the match list is recomputed from the book on each `validate_repository` call, the add, remove and rename steps below each produce a fresh result.\n- **Sort full names and compare with `matches`.** The recorded `matches` are `[\"foo.a.b.bar\",\"foo.a.bar\"]`, which is sorted order. The book declares them in the opposite order (`bar` before `nested`), so an implementation that kept file order would fail the \"no errors\" assertion.\n- **Concatenate raw fenced declarations in full-name order with one blank line, and compare with `text`.** The valid case stores the example's opening line, body and closing `:::`, then `\"\"`, then the requirement's three lines. It must validate with no errors. `src/evidence.rs#mod[tests]/fn[requirements_inputs_omit_option_lines]` checks the raw lines of a declaration that has an option line. It asserts `raw_lines` equals the opening line, body and closing line, and that the resolved input text equals `raw_lines`. `tests/definitions.rs#fn[declaration]` and `fn[requirements]` build the expected text for the integration tests.\n- **Retain each match's source file and inclusive range for display and reference coverage.** `src/index.rs#mod[tests]/fn[detail_page_shows_recorded_text_locations_and_first_matching_group]` asserts each match's file and inclusive range for `rules.base` and `rules.ready`, listed in sorted order before the recorded text. `src/evidence.rs#mod[tests]/fn[requirements_inputs_omit_option_lines]` asserts the declaration's inclusive line range. `src/evidence.rs#fn[evidence_input_ranges]` takes its coverage ranges from the same `resolved.ranges` that the display test checks. No test covers a reference with only a requirements input, but the ranges that coverage consumes are the ones the display test checks.\n- **A selection matching nothing is invalid.** The test uses `foo.*.none` and asserts the exact error `requirements glob \"foo.*.none\" matches no requirement or example`.\n- **Changing a definition invalidates the input.** Editing `Bar.` to `Changed.` gives an error that names the selection and the changed definition `foo.a.bar`, and shows the diff `- Bar.` / `+ Changed.`.\n- **Adding a definition invalidates the input.** Adding `foo.z.bar` gives `added [\"foo.z.bar\"], removed []`. `src/evidence.rs#mod[tests]/fn[cited_example_with_a_test_and_matching_evidence_validates]` repeats the check for `rules.*` and `rules.added`.\n- **Removing and renaming invalidate the input.** Removing the example gives `removed [\"foo.a.b.bar\"]`. Renaming `a.bar` to `c.bar` gives added `foo.c.bar` and removed `foo.a.bar`.\n- **Moving an unchanged declaration must not invalidate.** The test reorders the declarations and inserts prose between them, which shifts line numbers. It asserts there are still no errors.\n- **Errors identify the selection and the affected definitions.** The assertions above check this for the change, add, remove, rename and no-match cases.\n\n**Remaining observations**\n- No test moves a declaration to a different file. I treat this as an untested variation of the same input class, since the requirement says the retained file is the current one and the moved declaration's text is unchanged.\n- No test stores an unsorted `matches` list. The sorted-order checks above would catch an implementation that did not sort.\n\nNo `{fixme}` acknowledgments apply, and none are needed.",
   "references": "8cb61978c13fd6f6d1ffc3eb1394f9e51177851b37117802d91947c522ac83d0",
   "inputs": [
     {
@@ -14,16 +14,6 @@
         "For a requirements input, `requirements` MUST be a {term}`requirements.references.definition_selection`, and Habeas MUST match it against all defined requirements and named examples. It MUST recompute the matches during validation, sort their full names, and compare them with `matches`. It MUST take each match's complete raw fenced declaration, including its opening and closing lines, concatenate those declarations in full-name order with one blank line between them, and compare the resulting raw lines with `text`. It MUST retain every match's current source file and inclusive line range for display and reference coverage. A selection matching no definitions MUST be invalid. Adding, removing, renaming, or changing a matched definition MUST invalidate the stored input; moving an unchanged declaration within the book MUST NOT. Errors MUST identify the selection and affected definitions when available.",
         ":::"
       ]
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[collect_definitions]",
-      "hash": "61473bcdb7cfaa2f9a00fdf816a5995234a8e1a86063965cb6e0f4f0394361ec"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[validate_input]",
-      "hash": "33ba22d600c5d951631b03507b63324e9b11d8d358cc20011506777f5b322be7"
     },
     {
       "file": "src/evidence.rs",
@@ -43,7 +33,7 @@
     {
       "file": "src/index.rs",
       "item": "mod[tests]/fn[detail_page_shows_recorded_text_locations_and_first_matching_group]",
-      "hash": "514488b79919c3595fd8aaf6260cd9cda77cf28aa198bc791004dd8d17598dc8"
+      "hash": "eed9312a1afcd2c7843885879bbdff0ecc536c75b2a1c752673e299f1aeeb1da"
     },
     {
       "file": "tests/definitions.rs",
@@ -70,13 +60,28 @@
     },
     {
       "file": "src/evidence.rs",
-      "item": "fn[validate_resolved_input]",
-      "hash": "709c631128ce311965ed9c48a959634962d08ce9a66c64705e6eaff7ceb9b0e1"
+      "item": "mod[tests]/fn[source_references_are_covered_by_evidence_inputs]",
+      "hash": "7743c0da7f95d3de054eebaa2161bf1846dadad758f7d0a2b5175572324e6c9f"
     },
     {
-      "file": "src/inputs.rs",
-      "item": "impl[InputSelector]/fn[resolve]",
-      "hash": "8f19513af157848e366f8855e64d8f40fe62bffa1b8c3adf22c100918243d64a"
+      "file": "src/sites.rs",
+      "item": "mod[tests]/fn[a_fixme_inside_a_site_belongs_to_that_sites_review_only]",
+      "hash": "30b26840b6eea4ca778d6430505382608dbbd344930d3bc8390360d5eedafe23"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[evidence_input_ranges]",
+      "hash": "3f52fbf697d40dfacd965db9a21a865bfdd39b2d2c3d8e120e576f113b56d6f2"
+    },
+    {
+      "file": "tests/outcomes.rs",
+      "item": "fn[editing_or_adding_a_fixme_makes_evidence_stale_without_requiring_source_reads]",
+      "hash": "040117250f59ad283e82dac589bb0c10827781ea8fe26af5433d6eb8ceed651b"
+    },
+    {
+      "file": "tests/authoring_batch.rs",
+      "item": "fn[batch_reauthors_a_false_judgment_when_its_reference_set_changes]",
+      "hash": "5f86fb72c8ef0e93743a80509d401ed42d28c7c2a51cb6e108a3fdf238a03261"
     }
   ]
 }

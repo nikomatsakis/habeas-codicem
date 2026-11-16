@@ -19,7 +19,9 @@ Validation MUST reject missing definitions and changed snapshot text, identifyin
 :::
 
 :::{req} dependencies
-Requirement and example evidence MUST include a definition input for every term referenced by its subject text or reviewed inputs.
+Requirement and example evidence MUST include a definition input for every term
+referenced by its subject text, reviewed inputs, or acknowledgments supplied
+under {cite}`requirements.authoring.fixme_inputs`.
 
 Habeas MUST repeatedly include definitions referenced by required definitions until the set reaches a fixed point. Each required definition MUST have exactly one definition input per evidence record. Cyclic references MUST be permitted and MUST NOT cause repeated expansion or nontermination.
 
@@ -51,7 +53,8 @@ An evidence record has determination true and a current definition input. After 
 :::{req} authoring_inputs
 When preparing the mandatory input set defined by
 {cite}`requirements.authoring.mandatory_inputs`, every terminology definition
-referenced by the subject or any contributed source MUST contribute its complete
+referenced by the subject, any contributed source, or an acknowledgment supplied
+under {cite}`requirements.authoring.fixme_inputs` MUST contribute its complete
 fenced declaration, including its phrase option. Definitions referenced by those
 definitions MUST also be included transitively, without duplicates or
 nontermination on cycles.

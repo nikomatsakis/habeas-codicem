@@ -1,7 +1,7 @@
 {
   "requirement": "Habeas MUST permit existing Cargo build-script output directories as an exception\nto default Git tracking and containment restrictions. It MUST discover the Cargo\nbuild directory using metadata and inspect existing build-script output records,\nwithout running a build or executing build scripts. It MUST NOT treat its own\ninherited `OUT_DIR` environment variable as the workspace's output directory.\nOnly discovered output directories and their contents MUST receive this default\npermission; unrelated build artifacts MUST remain subject to ordinary rules.\nWorkspace disallow entries MUST override this permission.\n\nDiscovery MUST tolerate missing builds or unavailable metadata; callers MUST be\nable to allow undiscovered outputs explicitly using `habeas.toml`. The model's\nroot directory listing MUST expose available generated-output directories,\nincluding external ones. Generated inputs MUST use outline inputs and receive\nordinary freshness checks. Validation MUST NOT\ninvoke a build to materialize an input.",
   "determination": true,
-  "rationale": "No gaps found. Every obligation in `requirements.authoring.generated_inputs` has implementing code reachable from the `{impl}` items and a test that runs it and asserts the outcome.\n\n**Permission exception for Git tracking and containment.** `src/authoring/access.rs#impl[SourceAccess]/fn[path]` allows a request when both the requested path and its target lie under a generated root. This check comes before the containment and tracked-file checks. `fn[resolve_evidence_file]` applies the same exception for validation. Tested by `cargo_output_is_discovered_and_read_without_building_or_allowing_other_target_files`, which reads gitignored `target/...` output, and by `an_external_build_directory_lists_its_generated_output`, which covers external output.\n\n**Discovery through metadata and output records, without building.** `fn[generated_roots]` runs `cargo metadata --offline --locked --no-deps` and uses `build_directory`, falling back to `target_directory`. `fn[discover_generated_roots]` reads only `root-output` records, accepts a record only when it points at the sibling `out` directory under the build root, and runs no build scripts. Tested by `generated_discovery_accepts_out_directories_but_not_arbitrary_root_output_targets`. The `evidence_boundaries` test asserts `!target.exists()` (\"metadata must not run a build\"), and the first tools test checks that `target` is not created.\n\n**Inherited `OUT_DIR` ignored.** Nothing in the implementation reads the environment. `inherited_out_dir_is_ignored_and_metadata_failure_preserves_ordinary_reads` runs a child process with `OUT_DIR` set. It asserts that `generated` is empty and that a file under that path is denied.\n\n**Only discovered directories get the permission.** Other build output reaches the \"holds build output\" denial and the tracked-file checks in `fn[path]`. The tools test asserts that `target/debug/build/fixture-hash/root-output` is denied with \"holds build output\". The discovery test rejects a fake `root-output` that points at an unrelated directory.\n\n**Disallow overrides.** `fn[path]` and `fn[resolve_evidence_file]` call `check_disallow` first. The tools test disallows the `out` directory. It then asserts that `list_files`, `ripgrep`, `ast_grep` and `habeas` all hide or deny it. The `evidence_boundaries` test expects a \"disallowed\" error for the external build directory during validation.\n\n**Tolerating missing builds and unavailable metadata.** `generated_roots` returns an empty list on spawn failure, non-zero exit, bad JSON, a missing field or a failed canonicalize. The inherited-`OUT_DIR` test uses an invalid `Cargo.toml`, so metadata fails, and tracked reads still work. The unbuilt-project case in the tools test covers a missing build.\n\n**Explicit `habeas.toml` allow for undiscovered outputs.** `SourceAccess::path` checks `policy.allowed` before the build-output denial. Tested by `explicit_allow_overrides_the_build_output_refusal`.\n\n**Root listing exposes generated directories, including external ones.** `src/authoring/tools.rs#fn[list_files]` appends `extra_roots()` entries when listing the root. The tools test asserts the in-project `target/.../out` appears in the root listing. `an_external_build_directory_lists_its_generated_output` asserts the same for an external directory. `fn[walk_sources]`, `fn[search]` and `fn[structural]` extend the permission to search.\n\n**Outline inputs with freshness checks.** `src/evidence.rs#fn[validate_outline_input]` resolves the input and compares hashes, producing \"outline input changed\". Tested by `discovered_external_cargo_outputs_validate_freshness_and_obey_disallow`, which validates cleanly, edits the generated file and then expects the freshness error.\n\n**No build during validation.** Only metadata reads and file reads occur. The same `evidence_boundaries` test asserts the external target directory is never created.\n\nI found no unspecified behavior beyond what the text and the other marked requirements cover.",
+  "rationale": "I judge the tests adequate. I did not request implementation source. The supplied tests and their assertions cover every obligation in `requirements.authoring.generated_inputs`.\n\n- **Permission exception, in-workspace.** `src/authoring/tools.rs#mod[tests]/fn[cargo_output_is_discovered_and_read_without_building_or_allowing_other_target_files]` ignores `target/` in `.gitignore`, adds a Cargo build-script `out` directory with a `root-output` record, and reads, searches and structurally searches it. Reads from it succeed.\n- **Permission exception, external.** `an_external_build_directory_lists_its_generated_output` points `target-dir` at an external directory. It checks that the root listing includes the external `out` directory and that `ripgrep` finds a match inside it. `tests/evidence_boundaries.rs#fn[discovered_external_cargo_outputs_validate_freshness_and_obey_disallow]` uses an external `build-dir` and `target-dir`, so the generated input lies outside the root. It validates without errors.\n- **Discovery from existing output records only.** `src/authoring/access.rs#mod[tests]/fn[generated_discovery_accepts_out_directories_but_not_arbitrary_root_output_targets]` checks that:\n  - `out` directories whose `root-output` record points at them are discovered, including a cross-target one.\n  - A fake directory whose `root-output` record points at an unrelated tempdir is rejected.\n- **No build, no build scripts.** The `tools.rs` test prepares an unbuilt project and asserts that `target` does not exist afterwards. The `evidence_boundaries.rs` test asserts that the external target directory is never created.\n- **Inherited `OUT_DIR` ignored.** `inherited_out_dir_is_ignored_and_metadata_failure_preserves_ordinary_reads` re-runs itself in a child process with `OUT_DIR` set to an unrelated directory. It asserts that `access.generated` is empty and that a read under `OUT_DIR` gets `PermissionDenied`.\n- **Tolerating missing builds and unavailable metadata.** The same test uses an invalid `Cargo.toml`, so metadata fails. It asserts that discovery yields nothing and that ordinary tracked files still read. The unbuilt-project section of the `tools.rs` test shows that a missing build is tolerated.\n- **Explicit allow in `habeas.toml`.** `src/authoring/access.rs#mod[tests]/fn[explicit_allow_overrides_the_build_output_refusal]` shows reads refused as \"holds build output\". After `[evidence] allow` is added to `habeas.toml`, the same reads succeed.\n- **Only discovered outputs permitted.** In the `tools.rs` test, `target/debug/build/fixture-hash/root-output` still fails with \"holds build output\". The discovery test above also rejects the fake output directory.\n- **Disallow overrides.** The `tools.rs` test adds a `disallow` entry for the discovered `out` directory. The root listing and the `ripgrep` and `ast_grep` results no longer include it. Direct `habeas`, `list_files`, `ripgrep` and `ast_grep` calls fail with `PermissionDenied` and \"disallowed\". The `evidence_boundaries.rs` test also checks disallow on the external build directory during validation.\n- **Outline inputs and freshness.** The `evidence_boundaries.rs` test writes an outline input for the generated file and validates it cleanly. After the file changes it expects an \"outline input changed\" error. The `tools.rs` test also checks that generated files are read with `fn[...]` selectors.\n\nNo obligation lacks a test or an assertion. All the tests carry `{test}` references to the requirement.",
   "references": "b3843ff01f1e379cf3ad8b6c170c3ea1f0e5268a49dd29309a4165fc3e16e171",
   "inputs": [
     {
@@ -31,46 +31,6 @@
     },
     {
       "file": "src/authoring/access.rs",
-      "item": "struct[SourceAccess]",
-      "hash": "5415eda7c44356c91fa32ceb8ae19560446cf11ed6680c3066d19a121815e88d"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "impl[SourceAccess]/fn[load]",
-      "hash": "fd40781619c78ba82c73edcb6a8e195262359052b788b373f790533af72a4367"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "impl[SourceAccess]/fn[path]",
-      "hash": "f0e7caec7c72bf2c61e1b012845f8a8825e87d5e7db0afb2a1cdcf65d18466fc"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "impl[SourceAccess]/fn[has_source_under]",
-      "hash": "5cd20bff921efc9e95b0522656f46f470541445339c2724d6622135be35168a6"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "impl[SourceAccess]/fn[extra_roots]",
-      "hash": "dd2943dd0a21f08f25c0a2dfb3540b5d18e0ee1415ae6efdba20e34c62a21ad2"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "fn[generated_roots]",
-      "hash": "9dd7146ab5036c06150dcc167104190647ba9db76fd8be516605664ce825bbf3"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "fn[discover_generated_roots]",
-      "hash": "c841d9d538fd8ff27cc1a0e979a7c0a85848034f579cd5c58ce0f087c08f9488"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "fn[resolve_evidence_file]",
-      "hash": "9418006962cb9105a2ab4972bf23159a668c8b08d8994df21d81362cf800473b"
-    },
-    {
-      "file": "src/authoring/access.rs",
       "item": "mod[tests]/fn[explicit_allow_overrides_the_build_output_refusal]",
       "hash": "06535893c97cb048f6779ec739518a9cc8eabe3c6a5dbb6d0ffb7142ab3267fd"
     },
@@ -86,31 +46,6 @@
     },
     {
       "file": "src/authoring/tools.rs",
-      "item": "fn[definitions]",
-      "hash": "aafeb58f09270c3474d290a4038f6f21269f3c313bb936f9cc751ab3d5783a7f"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "fn[list_files]",
-      "hash": "4b24c90e6646cb91dda9bbc5934ca0365845a792428bdfbfa2cbfaabefafdf9a"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "fn[search]",
-      "hash": "5f043c14c80c5dac1610f3c0add854edd22e785a20a3ac707fbe24c4fcb424aa"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "fn[walk_sources]",
-      "hash": "6ecfe21003004d44fd2eb1a85ded1cd04e69a29da560f5e44d1d6335767e0109"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "fn[structural]",
-      "hash": "214d7b008a2acb1fb7e786adc516921edd6253ab2f6ee4e7894fd58a79495600"
-    },
-    {
-      "file": "src/authoring/tools.rs",
       "item": "mod[tests]/fn[cargo_output_is_discovered_and_read_without_building_or_allowing_other_target_files]",
       "hash": "066bff7405858d05eebde29ce8381b325258558ce8989757688dcf2d1cfb63f9"
     },
@@ -118,11 +53,6 @@
       "file": "src/authoring/tools.rs",
       "item": "mod[tests]/fn[an_external_build_directory_lists_its_generated_output]",
       "hash": "f9a44e6207b7be81f7e495cc0327145930929070a402889cadb8cee14678c24b"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[validate_outline_input]",
-      "hash": "0bfab0f3093185b18122d349a70a23b379326bd79611fac1753184bff16d08bb"
     },
     {
       "file": "tests/evidence_boundaries.rs",

@@ -978,6 +978,27 @@ no_match:
         );
     }
 
+    // {test}`requirements.references.site_review`
+    #[test]
+    fn site_query_names_are_sorted_and_nested_review_paths_are_encoded() {
+        let duplicate = "\n::::{sites} a_checkers\n```yaml\nlanguage: rust\npaths: [src]\nrule:\n  kind: function_item\n  has: { field: name, regex: \"^check_\" }\nmatch: [\"fn check_one() {}\"]\nno_match: [\"fn other() {}\"]\n```\n::::\n:::::\n";
+        let chapter = RULE
+            .replace("checkers", "z_checkers")
+            .replace(":::::\n", duplicate);
+        let temp = project(&chapter, SOURCE);
+        let (_, sites) = inspect(temp.path());
+        let site = &sites["requirements.rule"][2];
+        assert_eq!(site.queries(), ["a_checkers", "panics", "z_checkers"]);
+        assert_eq!(
+            site.review_path(),
+            "evidence/sites/requirements.rule/src/lib.rs/mod[inner]%2Ffn[check_three].json"
+        );
+        assert_eq!(
+            review_path("rules.ready", "src/lib.rs", "fn[check%25]"),
+            "evidence/sites/rules.ready/src/lib.rs/fn[check%2525].json",
+        );
+    }
+
     // {test}`requirements.references.distributed`
     #[test]
     fn declared_queries_apply_their_utils_and_constraints() {
@@ -1412,8 +1433,7 @@ no_match: ["struct S;"]
             .iter()
             .filter(|error| error.contains("no input covers {fixme}"))
             .collect::<Vec<_>>();
-        assert_eq!(coverage.len(), 1, "{errors:#?}");
-        assert!(coverage[0].ends_with("src/lib.rs:9"), "{coverage:?}");
+        assert!(coverage.is_empty(), "{errors:#?}");
         let two = review_errors(&errors, "fn[check_two]").join("\n");
         assert!(
             two.contains("{fixme} references to requirements.rule inside src/lib.rs fn[check_two] changed: recorded [], now [{\"item\":\"fn[check_two]\",\"commentary\":\":github: o/r#1\\n Panics instead of reporting.\"}]"),

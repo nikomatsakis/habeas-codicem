@@ -1,7 +1,7 @@
 {
   "requirement": "{impl}`requirements.configuration.feature_sections`\nConfiguration names MUST match `[A-Za-z0-9][A-Za-z0-9_-]*` and be case-sensitive.\nProject-selection keys MUST be canonical absolute project-root paths. Model IDs\nMUST be nonempty opaque strings, preserving tags and ARNs. `api_key_env` MUST\nname a nonempty environment variable without `=` or NUL.\n\nAuthoring MUST validate its fields under {cite}`requirements.configuration.loading`.\nThe `options` map MUST accept backend-defined inference settings rather than a\nclosed Habeas list; the adapter MUST pass them through Rig's provider parameter\nmechanism and report rejection by Rig or the provider. These options MUST NOT\nreplace the selected model, the assessment prompt, or tool definitions.",
   "determination": true,
-  "rationale": "Every obligation in `requirements.authoring.configuration_storage` has reachable implementation code and a test. I found no gaps.\n\n**Implementation**\n- **Names:** `src/config.rs#fn[validate_name]` enforces `[A-Za-z0-9][A-Za-z0-9_-]*` and is case-sensitive. `src/config.rs#impl[UserAuthoringConfig]/fn[validate]` applies it to the default name, config names and each project selection's config.\n- **Project keys:** the same `validate` requires an absolute path with no `.`/`..` components and no non-normalized spelling, and the key must equal its canonical form when the path exists.\n- **Model ID and `api_key_env`:** `src/config.rs#impl[BackendConfig]/fn[validate]` rejects an empty model ID and does no other checking, so tags and ARNs are preserved. It also rejects an `api_key_env` that is empty or contains `=` or NUL.\n- **Loading rules:** `src/config.rs#impl[UserConfig]/fn[parse]` decodes and then validates, and errors name the file and setting. I did not read `UserConfig::validate` itself; its call into the authoring `validate` follows from `parse` and from the tests.\n- **Options map:** `BackendConfig::validate` accepts arbitrary backend-defined option keys and nested values. `src/config.rs#impl[BackendConfig]/fn[options_json]` converts them to JSON. `src/authoring/providers.rs#impl[RigProvider]/fn[connect]` stores them. `src/authoring/providers.rs#impl[RigProvider/CompletionProvider]/fn[complete]` passes them through `request.additional_params`.\n- **Bedrock:** `src/authoring/providers.rs#fn[apply_bedrock_options]` maps native options onto Rig request fields and reports wrongly typed ones before any request is sent.\n- **Rejection reporting:** `src/authoring/providers.rs#fn[provider_failure]` wraps Rig's error unchanged, which reports provider rejections.\n- **Options cannot replace the model, prompt or tools:** `BackendConfig::validate` rejects the reserved keys `model`, `modelId`, `model_id`, `input`, `instructions`, `previous_response_id`, `conversation`, `prompt`, `messages`, `system`, `tools`, `tool_choice`, `toolChoice` and `toolConfig`.\n\n**Tests**\n- `tests/configuration.rs#fn[storage_rules_reject_each_invalid_field_with_its_setting]` covers invalid names, non-canonical project keys including a symlink, an empty model ID, a bad `api_key_env` (empty, `=`, NUL) and each reserved option key for `ollama` and `bedrock`. It also covers workspace files and accepted values (case-distinct names, model IDs with tags, a canonical root that does not exist).\n- `tests/configuration.rs#fn[openai_configuration_preserves_model_and_resolves_credentials]` covers the OpenAI reserved keys and exact model ID preservation.\n- `tests/configuration.rs#fn[invalid_schema_and_feature_values_report_the_configuration_path]` covers errors that identify the file.\n- `tests/configuration.rs#fn[backend_configuration_round_trips_without_materializing_defaults]` and `tests/configuration.rs#fn[user_and_workspace_authoring_tables_round_trip_every_map]` cover arbitrary and nested options, a Bedrock ARN and the project key round trip.\n- `tests/authoring_cli.rs#fn[ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free]`, `tests/authoring_cli.rs#fn[bedrock_cli_uses_selected_profile_region_and_converse_tools]` and `tests/authoring_cli.rs#fn[openai_responses_replays_tool_calls_and_records_usage]` check the configured options reaching the provider request.\n- `tests/authoring_cli.rs#fn[provider_rejection_of_inference_options_is_reported]` checks a provider 400 being surfaced and a Rig-side Bedrock type error being reported before any request.\n- `src/authoring/providers.rs#mod[tests]/fn[bedrock_native_option_types_are_checked_and_only_max_tokens_is_defaulted]` checks Bedrock option typing.\n\nThe extra checks on non-finite floats and on `inferenceConfig` are consistent with accepting only options that can be passed through and reported, so they are not unspecified behavior.",
+  "rationale": "The reviewed tests cover each obligation of `requirements.authoring.configuration_storage`.\n\n**Configuration names**\n- `tests/configuration.rs#fn[storage_rules_reject_each_invalid_field_with_its_setting]` rejects an empty name, `a.b`, `a b`, `é`, a leading `-` and a leading `_`.\n- The same test rejects an invalid `authoring.default` and an invalid project `config` value. Each failure must name the file and the setting.\n- Its accepted-values block loads `Local`, `local` and `A-1_b` side by side. That shows names are case-sensitive and allowed to start with a digit or letter and continue with `-` or `_`.\n- `fn[explicit_project_and_default_selections_choose_whole_configs]` asserts that selecting `DEFAULT` fails when only `default` exists.\n\n**Project-selection keys**\n- The same storage test rejects a relative path, a path containing `..`, a path containing `/./`, a trailing slash, and (on Unix) a symlink.\n- It accepts a canonical existing root and a canonical root that does not exist yet.\n- `fn[user_and_workspace_authoring_tables_round_trip_every_map]` checks that a canonical key is kept and survives a round trip.\n\n**Model IDs**\n- An empty Bedrock model is rejected, and an empty Ollama model is rejected in `fn[invalid_schema_and_feature_values_report_the_configuration_path]`.\n- The accepted block keeps `name:tag@sha256:abc` and a Bedrock ARN exactly as written.\n- The round-trip and `fn[openai_configuration_preserves_model_and_resolves_credentials]` tests assert that `model_ref()` returns the exact identifier.\n\n**`api_key_env`**\n- An empty value, a value containing `=`, and a value containing NUL are each rejected, and each error names the setting.\n- A valid `MODEL_KEY_1` is accepted.\n\n**Validation under `requirements.configuration.loading`**\n- The tests assert that errors contain the file path and the setting path, for both user files and workspace files.\n- Non-finite floats, including nested ones, are rejected.\n\n**`options` map**\n- Arbitrary, nested and backend-native options are accepted. `fn[backend_configuration_round_trips_without_materializing_defaults]` checks custom nested options for Bedrock.\n- Pass-through is asserted at the provider boundary:\n  - Ollama: `fn[ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free]` and `fn[provider_rejection_of_inference_options_is_reported]` assert `options.temperature` and `options.num_ctx` in the request body.\n  - Bedrock: `fn[bedrock_cli_uses_selected_profile_region_and_converse_tools]` asserts `inferenceConfig` and `additionalModelRequestFields`. The unit test `bedrock_native_option_types_are_checked_and_only_max_tokens_is_defaulted` in `src/authoring/providers.rs` covers option typing.\n  - OpenAI: `fn[openai_responses_replays_tool_calls_and_records_usage]` asserts `max_output_tokens` and `reasoning.effort`.\n- Rejection by the provider is reported: `fn[provider_rejection_of_inference_options_is_reported]` checks that the HTTP 400 text reaches stderr, that evidence is unchanged, and that usage records `failed`.\n- Rejection by Rig is reported before any request, with the message \"Bedrock options.temperature must be a number\".\n\n**Options must not replace the model, prompt or tools**\n- The storage test rejects `model`, `modelId`, `model_id`, `prompt`, `messages`, `system`, `tools`, `tool_choice`, `toolChoice` and `toolConfig` for both Ollama and Bedrock.\n- `fn[openai_configuration_preserves_model_and_resolves_credentials]` rejects `input` and `instructions` for OpenAI.\n- I read `impl[BackendConfig]/fn[validate]` in `src/config.rs` to check whether the OpenAI path needed its own tests. The deny-list is one shared list for all backends. The Ollama and Bedrock loop therefore exercises the same check OpenAI uses.\n- The CLI tests also assert that the request model equals the configured model.\n\nI found no unaddressed obligation or missing assertion, and no acknowledgments apply.",
   "references": "ef5b5f519982fb61b980d0288020e8f1b7d668ade654cb1dd9cf6c723383acda",
   "inputs": [
     {
@@ -56,38 +56,18 @@
     },
     {
       "file": "src/authoring/providers.rs",
-      "item": "impl[RigProvider/CompletionProvider]/fn[complete]",
-      "hash": "5ef22d9aeefb3a96a508f39f4a00cbc4d49201508ab909e7079551bcffac0476"
-    },
-    {
-      "file": "src/authoring/providers.rs",
       "item": "mod[tests]/fn[bedrock_native_option_types_are_checked_and_only_max_tokens_is_defaulted]",
       "hash": "21ed7d2e0bae0f433277592a822919ef35507c8d6cba25226e95fdfc3245727f"
     },
     {
-      "file": "src/config.rs",
-      "item": "impl[UserConfig]/fn[parse]",
-      "hash": "cced12b3cd02e7b45d1a113ea1a103cf3f611850298def51e6a7b0a2f8ad8630"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[BackendConfig]/fn[options_json]",
-      "hash": "3da4add93895e110bcc955074911feb54095840cfd648b2eb0a201329140e691"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "fn[resolve_authoring_from]",
-      "hash": "227df8105c2381df598b3cf036fb6596f07e44f93411d69e0840dec151c73706"
-    },
-    {
       "file": "tests/authoring_cli.rs",
       "item": "fn[ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free]",
-      "hash": "68956f83c216f2569265071cefcf0b1af95d822e4f70a8e6d7ca285e1027484d"
+      "hash": "b97f25a83a3d5d1e9fe35d005de3ae13ba82d441021b58812b65555f2d73692c"
     },
     {
       "file": "tests/authoring_cli.rs",
       "item": "fn[bedrock_cli_uses_selected_profile_region_and_converse_tools]",
-      "hash": "1fb33572c12ad75e7eba03099fae29c8b77541d75000f9f8f168c2f7861a5bcd"
+      "hash": "52db2e6d394eca844bb781dde7335197d9dff8ebafe9a80d245f1fd53c422fae"
     },
     {
       "file": "tests/authoring_cli.rs",
@@ -141,33 +121,8 @@
     },
     {
       "file": "src/config.rs",
-      "item": "impl[UserAuthoringConfig]/fn[validate]",
-      "hash": "5473444689500a71c33a09d29291b3be423c46afe6c6a23813c12524b46107fc"
-    },
-    {
-      "file": "src/config.rs",
       "item": "impl[BackendConfig]/fn[validate]",
       "hash": "7db57db8dea4e31b26daf43c7b090deb233f224706d914e07668423f8d4cf28f"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "fn[validate_name]",
-      "hash": "af0948a34f5166ccd17835a39b74af55f7a62fed82117089110d5ae2f399cc4e"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "impl[RigProvider]/fn[connect]",
-      "hash": "1a2c0128c6755d08cec22cdca2a433cb68c950d25ab6074438bc1cdada2bd48f"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "fn[apply_bedrock_options]",
-      "hash": "f469a46a9d4ff0bdb10ee9b7acff7bdc793b65f5a1247eaaf9133c7e46e63025"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "fn[provider_failure]",
-      "hash": "12241b3ea13d123e305af8735f2329f9e2e99d71dbce5f9bf5676122404cd80f"
     }
   ]
 }

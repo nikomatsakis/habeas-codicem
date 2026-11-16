@@ -884,6 +884,7 @@ fn initial_prompt(sources: &AssessmentSources) -> io::Result<Prompt> {
     values.push(("mandatory_inputs", &mandatory));
     Ok(match &sources.subject_kind {
         AssessmentKind::Definition(kind, distributed) => {
+            let acknowledgments = serde_json::to_string_pretty(&sources.model_acknowledgments())?;
             let task = subject_task(kind);
             let distributed = distributed_task(kind, *distributed);
             values.extend([
@@ -891,6 +892,7 @@ fn initial_prompt(sources: &AssessmentSources) -> io::Result<Prompt> {
                 ("subject_name", &sources.subject_name),
                 ("subject_task", &task),
                 ("distributed_task", &distributed),
+                ("acknowledgments", &acknowledgments),
             ]);
             Prompt::filled("initial_prompt", &values)
         }
@@ -1119,10 +1121,11 @@ fn site_verification(arguments: &Value) -> io::Result<Verification> {
 // {impl}`requirements.authoring.initial_prompt`
 // {impl}`requirements.ci.outcomes`
 // {impl}`requirements.authoring.site_prompt`
+// {impl}`requirements.authoring.tool_descriptions.common_case`
 fn tool_definitions_with(submit: &str, site: bool) -> io::Result<Vec<ToolDefinition>> {
     let mut definitions = tools::definitions();
     let mut submission = if submit == "submit_verification" {
-        json!({"name": "submit_verification", "description": "Submit your verification exactly once. No other message supplies the result.",
+        json!({"name": "submit_verification", "description": "Finish a gap verification by submitting its result exactly once, rather than using a source tool or a text message. real says whether the alleged gap is real; acknowledged says whether applicable FIXME comments acknowledge every real gap. acknowledgments lists their issue references, e.g. [\"owner/repo#123\"], or [] when none apply. rationale is a nonempty explanation grounded in the reviewed sources. Cite files and outline selectors, never line numbers, including in illustrative examples. Summarize diagnostic formats with placeholders rather than quoting numeric source locations. A successful submission ends this verification and records these answers.",
             "parameters": {"type":"object", "additionalProperties": false, "required":["real","acknowledged","acknowledgments","rationale"], "properties": {
                 "real":{"type":"boolean"},
                 "acknowledged":{"type":"boolean"},
@@ -1130,13 +1133,22 @@ fn tool_definitions_with(submit: &str, site: bool) -> io::Result<Vec<ToolDefinit
                 "rationale":{"type":"string","minLength":1}}}})
     } else {
         let determination = json!({"oneOf":[{"type":"boolean"},{"type":"object","additionalProperties":false,"required":["FIXME"],"properties":{"FIXME":{"type":"array","minItems":1,"items":{"type":"string","minLength":1}}}}]});
-        json!({"name": "submit_judgment", "description": "Submit your final judgment exactly once. No other message supplies the result.",
+        json!({"name": "submit_judgment", "description": "Finish the assessment by submitting your final judgment exactly once, rather than using a source tool or a text message. determination is true when the subject meets its review criteria, false when it has an unacknowledged gap, or {\"FIXME\":[\"owner/repo#123\"]} naming the issues in applicable FIXME comments that acknowledge every gap. rationale is a nonempty explanation grounded in the reviewed sources. Cite files and outline selectors, never line numbers, including in illustrative examples. Summarize diagnostic formats with placeholders rather than quoting numeric source locations. A successful submission ends this assessment and records the judgment.",
             "parameters": {"type":"object", "additionalProperties": false, "required":["determination","rationale"], "properties": {
                 "determination": determination,
                 "rationale":{"type":"string","minLength":1}}}})
     };
     // A site review also records whether the requirement applies.
     if site {
+        let description = submission["description"].as_str().unwrap().to_owned();
+        submission["description"] = json!(format!(
+            "{description} applies says whether this requirement applies to the reviewed site; when false, report no real gap{}.",
+            if submit == "submit_verification" {
+                " (real false)"
+            } else {
+                " (determination true)"
+            }
+        ));
         let parameters = &mut submission["parameters"];
         parameters["properties"]["applies"] = json!({"type": "boolean"});
         parameters["required"]
@@ -1157,6 +1169,58 @@ fn tool_definitions_with(submit: &str, site: bool) -> io::Result<Vec<ToolDefinit
 #[cfg(test)]
 fn tool_definitions() -> io::Result<Vec<ToolDefinition>> {
     tool_definitions_with("submit_judgment", false)
+}
+
+#[cfg(test)]
+mod submission_description_tests {
+    // {test}`requirements.authoring.tool_descriptions.common_case`
+    // {test}`requirements.authoring.no_line_numbers`
+    #[test]
+    fn submission_descriptions_explain_arguments_and_successful_completion() {
+        for tool in ["submit_judgment", "submit_verification"] {
+            for site in [false, true] {
+                let definitions = super::tool_definitions_with(tool, site).unwrap();
+                let value = serde_json::to_value(definitions.last().unwrap()).unwrap();
+                let description = value["description"].as_str().unwrap();
+                for argument in value["parameters"]["properties"]
+                    .as_object()
+                    .unwrap()
+                    .keys()
+                {
+                    assert!(
+                        description.contains(argument),
+                        "{tool} omits {argument}: {description}"
+                    );
+                }
+                for phrase in [
+                    "exactly once",
+                    "source tool",
+                    "nonempty explanation",
+                    "outline selectors",
+                    "never line numbers",
+                    "A successful submission ends",
+                    "owner/repo#123",
+                ] {
+                    assert!(
+                        description.contains(phrase),
+                        "{tool} omits {phrase}: {description}"
+                    );
+                }
+                if tool == "submit_judgment" {
+                    assert!(
+                        description.contains("true when the subject meets its review criteria")
+                    );
+                    assert!(description.contains("false when it has an unacknowledged gap"));
+                    assert!(description.contains(r#"{"FIXME":["owner/repo#123"]}"#));
+                } else {
+                    assert!(description.contains("real says whether the alleged gap is real"));
+                    assert!(description.contains("acknowledged says whether"));
+                    assert!(description.contains("or [] when none apply"));
+                }
+                assert_eq!(description.contains("applies says whether"), site);
+            }
+        }
+    }
 }
 
 /// The record a judgment produces: definition evidence, or a citation
@@ -1897,11 +1961,8 @@ mod tests {
             approved_text("judgment_rules", 0),
             approved_text("requirement_task", 0),
             approved_text("testing_bar", 0),
-            "List each MUST, MUST NOT, and SHOULD clause as an obligation.",
-            "Look for unreached implementations among the sources that",
-            "reference the subject and by targeted search for what its obligations",
-            "produce; do not survey unrelated code.",
-            "5. Testing:",
+            "Derive testable obligations and expected outcomes from each MUST, MUST NOT,",
+            "Testing criteria:",
             "The project MUST be ready.",
         ] {
             assert!(
@@ -1909,7 +1970,7 @@ mod tests {
                 "missing {criterion:?} in:\n{prompt}"
             );
         }
-        // Step 5 continues the requirement task's numbered steps.
+        // The testing criteria follow the requirement task.
         assert!(prompt.contains(&format!(
             "{}\n{}",
             approved_text("requirement_task", 0),
@@ -1942,7 +2003,15 @@ mod tests {
             prompt.contains("First check that it describes a concrete case\nwith expected behavior; a missing concrete case or expected behavior is a gap."),
             "{prompt}"
         );
-        assert!(!prompt.contains("5. Testing:"), "{prompt}");
+        assert!(
+            !prompt.contains(approved_text("requirement_task", 0)),
+            "{prompt}"
+        );
+        assert!(
+            !prompt.contains(approved_text("testing_bar", 0)),
+            "{prompt}"
+        );
+        assert!(!prompt.contains("Testing criteria:"), "{prompt}");
         assert!(!prompt.contains("{{"), "{prompt}");
     }
 
@@ -2285,7 +2354,7 @@ mod tests {
             "A gap is acknowledged only by a {fixme} reference",
             "a {fixme} naming a\n  closed issue no longer acknowledges its gap",
             "including\n  any acknowledged gaps",
-            "A {fixme} describing a gap that no longer exists is\n  itself a gap.",
+            "A {fixme} describing a gap that your review establishes\n  no longer exists within its task's scope is itself a gap.",
         ] {
             assert!(
                 prompt.contains(guidance),
@@ -2576,14 +2645,25 @@ mod tests {
     #[tokio::test]
     async fn a_response_without_a_submission_is_reminded_once() {
         let submit = json!({"determination": true, "rationale": "Fine."});
-        for (turns, accepted) in [
+        for (turns, accepted, count) in [
             (
                 vec![vec![], vec![("submit_judgment", submit.clone())]],
                 true,
+                2,
             ),
-            (vec![vec![], vec![]], false),
+            (vec![vec![], vec![]], false, 2),
+            (
+                vec![
+                    vec![],
+                    vec![("habeas", json!({"file":"src/lib.rs","item":"fn[work]"}))],
+                    vec![],
+                ],
+                false,
+                3,
+            ),
         ] {
             let project = inputs::tests::project();
+            fs::write(project.path().join("src/lib.rs"), "fn work() {}\n").unwrap();
             let mut sources =
                 AssessmentSources::prepare(project.path(), "requirements.ready").unwrap();
             let state = tempfile::tempdir().unwrap();
@@ -2595,7 +2675,7 @@ mod tests {
             };
             let result = assess(&provider, &mut sources, &mut usage).await;
             let requests = provider.requests.borrow();
-            assert_eq!(requests.len(), 2);
+            assert_eq!(requests.len(), count);
             assert!(!requests[0].contains("Reminder:"));
             assert!(
                 requests[1].contains(
@@ -2606,7 +2686,15 @@ mod tests {
             );
             // Both turns are counted in usage.
             let record = serde_json::to_value(&usage.record).unwrap();
-            assert_eq!(record["requests"].as_array().unwrap().len(), 2);
+            assert_eq!(record["requests"].as_array().unwrap().len(), count);
+            assert_eq!(
+                requests
+                    .last()
+                    .unwrap()
+                    .matches("Reminder: you MUST")
+                    .count(),
+                1
+            );
             if accepted {
                 assert_eq!(result.unwrap().1["rationale"], "Fine.");
             } else {
@@ -2617,11 +2705,14 @@ mod tests {
     }
 
     // {test}`requirements.authoring.submission`
+    // {test}`requirements.authoring.line_numbers.rejection`
     #[tokio::test]
     async fn a_submission_finishes_the_assessment_wherever_it_arrives() {
         let read = json!({"file": "src/lib.rs", "item": "fn[work]"});
         let submit = json!({"determination": false, "rationale": "Gaps remain."});
         let invalid = json!({"determination": "false", "rationale": "Gaps remain."});
+        let cited = json!({"determination": false, "rationale": "See line 10."});
+        let invalid_cited = json!({"determination": "false", "rationale": "See line 10."});
         for (turns, accepted, requests) in [
             // After earlier tool turns.
             (
@@ -2671,6 +2762,15 @@ mod tests {
                 false,
                 2,
             ),
+            (
+                vec![vec![
+                    ("submit_judgment", cited.clone()),
+                    ("submit_judgment", cited.clone()),
+                ]],
+                false,
+                1,
+            ),
+            (vec![vec![("submit_judgment", invalid_cited)]], false, 1),
         ] {
             let project = inputs::tests::project();
             fs::write(project.path().join("src/lib.rs"), "fn work() {}\n").unwrap();
@@ -2711,7 +2811,13 @@ mod tests {
                     );
                 }
             } else {
-                assert!(result.is_err(), "{turns:?}");
+                let error = result.unwrap_err().to_string();
+                assert!(!error.contains("line numbers"), "{turns:?}: {error}");
+                if turns.last().unwrap().len() > 1 {
+                    assert!(error.contains("exactly once"), "{error}");
+                } else {
+                    assert!(error.contains("expected true, false"), "{error}");
+                }
             }
         }
     }
@@ -2937,7 +3043,7 @@ mod tests {
         let prompts = provider.prompts();
         assert_eq!(prompts.len(), 2);
         assert!(prompts.iter().all(|(text, tools)| {
-            text.contains("Assess whether a project's source code")
+            text.contains("Assess whether a project's tests adequately check")
                 && tools.contains(&"submit_judgment".to_owned())
         }));
         assert_eq!(logs.len(), 2);
@@ -2954,7 +3060,7 @@ mod tests {
     // {test}`requirements.authoring.judgment_rules`
     #[tokio::test]
     async fn disagreeing_assessments_verify_the_less_favorable_one() {
-        for (turns, recorded, kept, conclusion) in [
+        for (turns, recorded, kept, conclusion, less) in [
             // A real, unacknowledged gap records false with the less favorable
             // (second) assessment's rationale.
             (
@@ -2966,6 +3072,7 @@ mod tests {
                 Judgment::False,
                 1,
                 "found an unacknowledged real gap",
+                1,
             ),
             // A false assessment ranks below an acknowledged gap.
             (
@@ -2977,6 +3084,7 @@ mod tests {
                 Judgment::False,
                 1,
                 "found an unacknowledged real gap",
+                1,
             ),
             // A FIXME whose gap is real but unacknowledged also becomes false.
             (
@@ -2988,6 +3096,7 @@ mod tests {
                 Judgment::False,
                 0,
                 "found an unacknowledged real gap",
+                0,
             ),
             // Real and acknowledged gaps record FIXME with the verifier's
             // acknowledgments.
@@ -3000,6 +3109,7 @@ mod tests {
                 Judgment::Fixme(vec!["example/queue#9".into()]),
                 1,
                 "found its real gaps all acknowledged",
+                1,
             ),
             // No real gap records the more favorable (second) assessment.
             (
@@ -3011,6 +3121,40 @@ mod tests {
                 Judgment::True,
                 1,
                 "found none of its claimed gaps real",
+                0,
+            ),
+            (
+                vec![
+                    judgment(json!({"FIXME": ["#7"]}), "Only the known gap."),
+                    judgment(json!(false), "An additional unacknowledged gap."),
+                    verdict(false, &[], "The additional gap is not real."),
+                ],
+                Judgment::Fixme(vec!["#7".into()]),
+                0,
+                "found none of its claimed gaps real",
+                1,
+            ),
+            (
+                vec![
+                    judgment(json!(true), "Complete."),
+                    judgment(json!({"FIXME":["#7"]}), "Issue 7 is open."),
+                    verdict(true, &["#7"], "The known gap is real and acknowledged."),
+                ],
+                Judgment::Fixme(vec!["#7".into()]),
+                1,
+                "found its real gaps all acknowledged",
+                1,
+            ),
+            (
+                vec![
+                    judgment(json!(true), "Complete."),
+                    judgment(json!({"FIXME":["#7"]}), "Issue 7 is open."),
+                    verdict(false, &[], "The known gap does not apply."),
+                ],
+                Judgment::True,
+                0,
+                "found none of its claimed gaps real",
+                1,
             ),
         ] {
             let (result, provider, logs) = confirmed(turns.clone(), true).await;
@@ -3037,11 +3181,6 @@ mod tests {
             // The verifier receives the less favorable determination, its
             // rationale, and the criteria it applied, with the source tools
             // and submit_verification only.
-            let less = if turns[1].1["determination"] == json!(false) {
-                1
-            } else {
-                0
-            };
             let prompts = provider.prompts();
             assert_eq!(prompts.len(), 3);
             let determination = turns[less].1["determination"].to_string();
@@ -3057,7 +3196,7 @@ mod tests {
                 text.contains("Judge against: the subject's text."),
                 "{text}"
             );
-            assert!(text.contains("List each MUST, MUST NOT"), "{text}");
+            assert!(text.contains("Derive testable obligations"), "{text}");
             assert!(text.contains("# Mandatory inputs"), "{text}");
             // The verifier of a requirement carries both background texts,
             // the judgment rules, and the subject's mandatory input.
@@ -3333,6 +3472,21 @@ mod tests {
             {"role": "cite", "name": "requirements.ready", "commentary": ""},
             {"role": "cite", "name": "habeas:util", "commentary": "Formats output for the caller."}
         ]);
+        let request: Value = serde_json::from_str(prompt).unwrap();
+        // Compare the actual placeholder payload, rather than text which
+        // could also appear independently in the mandatory source inputs.
+        let user = request["chat_history"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|message| message["role"] == "user")
+            .unwrap();
+        let subject_text = user["content"][0]["text"].as_str().unwrap();
+        let payload = subject_text
+            .lines()
+            .find_map(|line| line.strip_prefix("Citations to check: "))
+            .unwrap();
+        assert_eq!(serde_json::from_str::<Value>(payload).unwrap(), citations);
         assert_eq!(record["file"], "src/lib.rs");
         assert_eq!(record["item"], "fn[helper]");
         assert_eq!(record["citations"], citations);
@@ -3401,7 +3555,7 @@ mod tests {
         assert!(!prompt.system.contains(&task), "{}", prompt.system);
         assert!(
             prompt.subject.contains(&format!(
-                "Judge against: the subject's text.\n\n{task}\n\n# Mandatory inputs"
+                "Judge against: the subject's text.\n\n{task}\n\n# Acknowledgments\n\n[]\n\n# Mandatory inputs"
             )),
             "{}",
             prompt.subject
@@ -3936,6 +4090,7 @@ no_match:
     }
 
     // {test}`requirements.authoring.site_prompt`
+    // {test}`requirements.authoring.verifier_outcome`
     #[test]
     fn site_submissions_require_applies_and_a_true_determination_when_it_is_false() {
         assert_eq!(
@@ -3957,6 +4112,7 @@ no_match:
     }
 
     // {test}`requirements.authoring.verifier_prompt`
+    // {test}`requirements.authoring.verifier_outcome`
     #[test]
     fn site_verifications_require_applies_and_no_real_gap_when_it_is_false() {
         let verified = site_verification(&json!({"real": false, "acknowledged": false,
@@ -3991,6 +4147,17 @@ no_match:
                 "rationale",
                 "applies"
             ])
+        );
+        assert_eq!(submit["parameters"]["additionalProperties"], false);
+        assert_eq!(
+            submit["parameters"]["properties"],
+            json!({
+                "real":{"type":"boolean"},
+                "acknowledged":{"type":"boolean"},
+                "acknowledgments":{"type":"array","items":{"type":"string","minLength":1}},
+                "rationale":{"type":"string","minLength":1},
+                "applies":{"type":"boolean"}
+            })
         );
     }
 
@@ -4057,6 +4224,32 @@ no_match:
                 Judgment::False,
                 true,
                 "It panics.",
+            ),
+            (
+                vec![
+                    site(false, json!(true), "Not a checker."),
+                    site(true, json!(false), "It panics."),
+                    (
+                        "submit_verification",
+                        json!({
+                            "applies":true, "real":true, "acknowledged":true,
+                            "acknowledgments":["o/r#1"], "rationale":"The site acknowledges its panic."
+                        }),
+                    ),
+                ],
+                Judgment::Fixme(vec!["o/r#1".into()]),
+                true,
+                "It panics.",
+            ),
+            (
+                vec![
+                    site(true, json!({"FIXME":["o/r#1"]}), "The known gap."),
+                    site(true, json!(false), "Another gap."),
+                    check(false, false, "Only a helper."),
+                ],
+                Judgment::True,
+                false,
+                "Only a helper.",
             ),
         ] {
             let (result, provider) = site_confirmed(turns.clone()).await;

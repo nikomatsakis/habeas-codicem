@@ -144,23 +144,37 @@ use `{fixme}` as the habeas-evidence skill's `references/fixme.md` describes.
 Before running `habeas author`, check the change against what each
 requirement's assessment treats as a gap:
 
-- an obligation the `{impl}` code does not implement completely and exactly as
-  stated;
-- code that carries out part of the requirement but is not reachable from its
-  `{impl}` items, including code that only cites it, and a test that verifies it
-  without `{test}`;
-- observable behavior in `{impl}` code that no requirement implemented there
-  specifies;
 - obligations, boundaries, and failure cases no test runs and asserts. A test
   may be omitted only for code with no logic of its own, or code that needs
   network services, real time, or process-wide state no project test sets up;
   temporary files don't qualify, and an obligation that a value stays
   unchanged, distinct, or present always needs a test;
-- an unexplained unmet SHOULD, and text with two readings that the code meets
-  under only one.
+- assertions whose expected results contradict the requirement, or assertions
+  too weak to rule out plausible requirement-violating behavior;
+- a standalone test designed to verify the subject without `{test}`; helpers
+  reached from marked tests need no reference of their own;
+- an applicable SHOULD with inadequate tests, and text with two equally
+  supported readings that lead to different testing judgments.
 
 An example's review checks that tests' setup and assertions cover its scenario
 and each expected outcome. One acknowledged gap does not excuse others.
+
+Derive expected behavior from the requirement, then map each obligation assessed
+here to concrete test inputs and assertions. Follow helpers, fixtures, snapshots,
+and parameterized tests before claiming an assertion is absent. For a proposed
+adequacy gap, explain what requirement-violating behavior those tests would
+accept, and check whether another reviewed test rules it out. Identify delegated
+obligations and established testing exemptions separately.
+
+The model initially receives the subject and its context, test sources, and
+comment-only `{fixme}` acknowledgments. An `{impl}` reference or anchor alone
+does not supply implementation source. `references` locates sources without
+reading them; its `roles` filter can select implementations. A `habeas` source
+read is recorded. The model requests implementation only for a specific question;
+its passing judgment establishes test adequacy, not implementation correctness.
+The supervising agent must still check that the code fulfills each applicable
+requirement and introduces no additional end-user-observable behavior without an
+agreed requirement.
 
 ## Gotchas
 
