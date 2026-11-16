@@ -191,7 +191,7 @@ fn an_acknowledged_implementation_gap_records_its_issue() {
     let source = fixme(
         "requirements.ready",
         &["example/queue#125"],
-        "Capacity-zero insertion does not return Full yet.",
+        "Capacity-zero insertion does not return Full yet and has no test.",
     );
     let errors = judge_ready(
         temp.path(),
@@ -199,6 +199,47 @@ fn an_acknowledged_implementation_gap_records_its_issue() {
         json!({ "FIXME": ["example/queue#125"] }),
     );
     assert!(errors.is_empty(), "{errors:?}");
+    let path = temp.path().join("evidence/requirements.ready.json");
+    let mut without_source: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    without_source["inputs"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|input| input["file"] != "reviewed.rs");
+    write_record(temp.path(), "ready", without_source);
+    let report = habeas::validate_repository(temp.path()).unwrap();
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    fs::write(
+        temp.path().join("reviewed.rs"),
+        source.replace("has no test", "has no boundary test"),
+    )
+    .unwrap();
+    let errors = habeas::validate_repository(temp.path()).unwrap().errors;
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.contains("requirements.ready.json: reference set changed")),
+        "{errors:?}"
+    );
+    assert!(
+        !errors
+            .iter()
+            .any(|e| e.contains("requirements.ready.json:") && e.contains("outline input changed")),
+        "{errors:?}"
+    );
+    fs::write(temp.path().join("reviewed.rs"), &source).unwrap();
+    // Moving the same acknowledgment to another source changes its location,
+    // even when no implementation source is a recorded input.
+    fs::write(temp.path().join("relocated.rs"), &source).unwrap();
+    fs::write(temp.path().join("reviewed.rs"), "").unwrap();
+    let errors = habeas::validate_repository(temp.path()).unwrap().errors;
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.contains("requirements.ready.json: reference set changed")),
+        "{errors:?}"
+    );
+    fs::remove_file(temp.path().join("relocated.rs")).unwrap();
+    fs::write(temp.path().join("reviewed.rs"), &source).unwrap();
     // The strings must be the issues as written after `:github:`.
     for judgment in [json!(["#125"]), json!(["FIXME(example/queue#125)"])] {
         let errors = judge_ready(temp.path(), &source, json!({ "FIXME": judgment }));
@@ -209,6 +250,13 @@ fn an_acknowledged_implementation_gap_records_its_issue() {
             "{errors:?}"
         );
     }
+    let errors = judge_ready(temp.path(), &source, json!({"FIXME":["example/io#125"]}));
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.contains("is neither an issue named by a {fixme}")),
+        "{errors:?}"
+    );
     // A plain FIXME comment acknowledges nothing.
     let errors = judge_ready(
         temp.path(),
@@ -471,6 +519,7 @@ fn valid_fixme_remains_visible_in_status_info_and_book() {
 
 // {test}`requirements.ci.reference_set`
 // {test}`requirements.references.evidence_coverage`
+// {test}`requirements.authoring.fixme_inputs`
 #[test]
 fn editing_or_adding_a_fixme_makes_evidence_stale_without_requiring_source_reads() {
     let temp = fixture();

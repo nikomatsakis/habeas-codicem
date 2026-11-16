@@ -1,8 +1,8 @@
 {
   "requirement": "When the only submission in a response under\n{cite}`requirements.authoring.submission`, or a `submit_verification` call under\n{cite}`requirements.authoring.verifier_prompt`, is otherwise valid but its\nrationale cites line numbers under\n{cite}`requirements.authoring.line_numbers.detection`, and it is the\nassessment's first such submission, the harness MUST reject it instead of\naccepting it and continue the conversation. The tool result MUST quote the\nmatched text, repeat the location guidance of\n{cite}`requirements.authoring.judgment_rules`, and give a fresh random UUID,\nsaying the model may submit once more, either without line numbers or with\n`rationale` set to exactly that UUID to keep the rejected submission as it was.\nA rejection MUST be counted in usage like any other turn.",
   "determination": true,
-  "rationale": "The implementation and referenced tests satisfy `requirements.authoring.line_numbers.rejection`.\n\n| Obligation | Implementation and verification |\n|---|---|\n| Reject, rather than accept, the first otherwise-valid single submission whose rationale cites line numbers. | `src/authoring/mod.rs#fn[converse]` checks the submission count and parses the arguments before calling `Rejection::decide`. `src/authoring/line_numbers.rs#impl[Rejection]/fn[decide]` applies `cited` and returns `Outcome::Reject` on the first citation. `src/authoring/mod.rs#mod[tests]/fn[a_rationale_citing_line_numbers_is_rejected_once]` exercises this through assessment; `src/authoring/mod.rs#mod[tests]/fn[verification_line_citations_are_rejected_with_the_correct_retry_tool]` exercises verification. |\n| Continue the conversation after rejection. | The rejection branch in `src/authoring/mod.rs#fn[converse]` appends the assistant response and error tool result, then continues the request loop. Both integration tests above assert two requests and the resulting resubmission outcome. |\n| Quote the matched text in the tool result. | `src/authoring/line_numbers.rs#impl[Rejection]/fn[decide]` formats the detected match with debug quoting. `src/authoring/line_numbers.rs#mod[tests]/fn[a_rejection_gives_a_uuid_that_keeps_the_rejected_submission]` asserts the quoted match; both integration tests also check its delivery. |\n| Repeat the judgment rules' location guidance. | `src/authoring/mod.rs#fn[location_guidance]` extracts the location-guidance bullet from the approved judgment rules, obtained through `src/authoring/mod.rs#fn[approved_text]`. `converse` passes it to `Rejection::decide`, which includes it unchanged. The unit test asserts guidance inclusion, and the assessment integration test asserts that location guidance reaches the next request. |\n| Give a fresh random UUID. | `src/authoring/line_numbers.rs#impl[Rejection]/fn[decide]` calls `uuid::Uuid::new_v4()` for each rejection. The referenced unit test parses the UUID from the message and checks that a separate rejection produces a different one. |\n| Say the model may submit once more, without line numbers or with `rationale` exactly equal to the UUID to retain the rejected submission. | `src/authoring/line_numbers.rs#impl[Rejection]/fn[decide]` states both alternatives and names the supplied submission tool. The unit test verifies exact-UUID retention and clean replacement; the assessment integration test verifies both alternatives through the conversation. The verification integration test explicitly checks the instruction to call `submit_verification` once more. |\n| Count a rejection in usage like any other turn. | `src/authoring/mod.rs#fn[converse]` performs normal `UsageLog::begin_request`/`end_request` accounting before deciding rejection, records the rejected tool call, and saves usage before continuing. These helpers are in `src/authoring/usage.rs#impl[UsageLog]`. Both integration tests assert that usage contains both requests. |\n\nThe clean first-submission boundary is additionally tested by `src/authoring/mod.rs#mod[tests]/fn[a_rationale_without_line_numbers_is_accepted_at_once]`. The subsequent-citation failure and exact-UUID preservation behavior are specified by the co-marked `requirements.authoring.line_numbers.resubmission`, rather than being unspecified additions. No missing implementation reference, required test, or acknowledged gap was found.",
-  "references": "55ca141730d544a15ef0fe209de460da4aa6fdb22f151494c0eb043b9de48e3f",
+  "rationale": "The reviewed tests cover every obligation in `requirements.authoring.line_numbers.rejection`, and their assertions enforce the expected outcomes. Both the assessment and verification paths run through the shared `fn[converse]` in `src/authoring/mod.rs`, which calls `Rejection::decide` and `Rejection::resubmitted`. I read that code only to confirm the paths are shared.\n\n**Obligations and the tests that check them**\n- **Reject and continue the conversation.** The submission must be the only one in its response and otherwise valid, and it must be the first one citing line numbers.\n  - `a_rationale_citing_line_numbers_is_rejected_once` in `src/authoring/mod.rs` scripts a first submission with a cited location. It asserts exactly 2 provider requests, so the conversation continued rather than ending.\n  - `verification_line_citations_are_rejected_with_the_correct_retry_tool` covers the `submit_verification` path. A cited verdict gets a second prompt, and the clean resubmission's rationale is the one returned.\n  - `a_rationale_without_line_numbers_is_accepted_at_once` shows a clean first submission is accepted with no rejection (1 request).\n- **Not rejected when multiple or invalid.** `a_submission_finishes_the_assessment_wherever_it_arrives` has two cited submissions in one response. That case fails with an error that does not mention line numbers, so no rejection happens. A cited submission with invalid arguments (`determination` as a string) also fails with the validation error rather than a rejection.\n- **Only the first citing submission is rejected.**\n  - The third case in `a_rationale_citing_line_numbers_is_rejected_once` has a second cited submission. It must fail with \"after a rejection\".\n  - `a_rejection_gives_a_uuid_that_keeps_the_rejected_submission` in `src/authoring/line_numbers.rs` asserts the same `Outcome::Fail` directly.\n- **Quote the matched text.** The unit test asserts the message contains the matched text in quotes. The integration test and the verification test assert that the retry request contains the matched text.\n- **Repeat the location guidance.** The unit test asserts the supplied guidance is in the message. The integration test asserts the request contains \"Give a source location\".\n- **Fresh random UUID.** The unit test parses a UUID out of the message. A second `Rejection` gives a message that does not contain the first UUID.\n- **Say the model may submit once more, either way.** The unit test asserts the full sentence: \"Call submit_judgment once more, either with a rationale that gives no line numbers, or with rationale set to exactly {uuid} to keep the submission you just made as it was.\" The verification test asserts \"Call submit_verification once more\".\n- **Keep-as-was behavior.** The unit test checks `resubmitted` returns the original submission for exactly the UUID and `None` for the UUID plus a trailing space. The integration test's first case accepts the original rationale, and the UUID does not appear in the evidence. A clean replacement is accepted in the second case.\n- **Count the rejection in usage.** Both the assessment test and the verification test assert that the usage record holds 2 requests.\n\n**Gaps considered and rejected**\n- The verification test does not separately assert guidance or UUID content. Both paths use `converse`, with `rejection.decide(submit, &arguments, location_guidance())`, and the unit and integration tests assert that content. Another assertion for `submit_verification` would not check a distinct requirement-relevant branch.\n- The cited requirements (`requirements.authoring.line_numbers.detection`, `requirements.authoring.judgment_rules`, `requirements.authoring.submission`) are context, and the detection forms are not this subject's obligation.\n\nNo gap is found, and there are no acknowledgments.",
+  "references": "480d6eb7d9041303ae7d4f9ec09f58f6279b96c20b3afc138d11d6a2fa5b4f5e",
   "inputs": [
     {
       "requirements": "requirements.authoring.line_numbers.rejection",
@@ -183,19 +183,23 @@
         "assessments judge by the same rules:",
         "",
         "```text",
-        "- Base every conclusion only on source code you have read: the items in the",
-        "  mandatory inputs, or items you read with the habeas tool. ripgrep, ast_grep,",
+        "- Derive obligations from the supplied subject and contextual text. Base",
+        "  conclusions about tests or other source behavior only on source code you have",
+        "  received: mandatory inputs or items read with the habeas tool. Supplied",
+        "  acknowledgments establish what a {fixme} reference says and which issues it",
+        "  names; they do not establish that its claimed gap is real. ripgrep, ast_grep,",
         "  outline, list_files, and references only locate items; read any item whose",
-        "  code your conclusion relies on. Comments state intent; check the behavior in",
-        "  the code itself.",
+        "  code your conclusion relies on. Comments state intent; check behavior and",
+        "  assertions in the code itself.",
         "- Judge only against the text your task names. Report a gap only where your task",
-        "  or these rules define one, for a specific item you have read, giving its",
-        "  location. Missing code or tests for an obligation is a gap only after you have",
-        "  looked where your task directs and not found them; name the obligation. Do not",
-        "  report other bugs or issues you notice; edge cases the text does not name are",
+        "  or these rules define one, naming the obligation and the relevant sources you",
+        "  have read. For a missing test, identify the obligation or scenario after",
+        "  looking where your task directs; do not invent a source item for absent code.",
+        "  Do not report other bugs or issues you notice; edge cases the text does not name are",
         "  not gaps.",
-        "- Where your task judges whether source code meets the text, an unmet SHOULD is",
-        "  a gap unless the text or a source comment gives a reason it does not apply.",
+        "- A SHOULD imposes an obligation unless the text or a source comment gives a",
+        "  reason it does not apply. In a test-adequacy assessment, apply the testing",
+        "  criteria to each applicable SHOULD, and explain any exception in your rationale.",
         "  MAY imposes nothing to check. Examples and sample output inside the text",
         "  illustrate the obligations its prose states; they bind their exact form only",
         "  where the text says the output takes that form.",
@@ -206,16 +210,21 @@
         "- These are not gaps: style, performance, logging, how helpers are factored,",
         "  robustness the text does not require, and silently ignoring input the text",
         "  does not mention.",
-        "- A gap is acknowledged only by a {fixme} reference, in the inputs or in a",
-        "  source you read, to the requirement or example your task judges against, or,",
+        "- A gap is acknowledged only by a {fixme} reference, in the supplied",
+        "  acknowledgments, in the inputs, or in a source you read, to the requirement",
+        "  or example your task judges against, or,",
         "  in a site review, to the distributed requirement within the site, whose body",
         "  describes that same gap, and whose named issues are open; a {fixme} naming a",
         "  closed issue no longer acknowledges its gap. A plain FIXME or TODO comment is",
-        "  not an acknowledgment. In a FIXME determination or an acknowledgments list,",
+        "  not an acknowledgment. Judge an acknowledgment only within your task's scope.",
+        "  An acknowledgment of an implementation bug alone does not establish a",
+        "  test-adequacy gap or acknowledge a different missing-test or assertion gap.",
+        "  Do not inspect implementation correctness merely to validate an out-of-scope",
+        "  acknowledgment. In a FIXME determination or an acknowledgments list,",
         "  give each distinct issue its :github: option names once, such as",
         "  \"rust-lang/rust#123\", and, for a {fixme} naming no issue, its body's words",
-        "  joined by single spaces. A {fixme} describing a gap that no longer exists is",
-        "  itself a gap.",
+        "  joined by single spaces. A {fixme} describing a gap that your review establishes",
+        "  no longer exists within its task's scope is itself a gap.",
         "- Explain your judgment in a Markdown rationale with source locations, including",
         "  any acknowledged gaps.",
         "- Give a source location as its file and outline selector, the address the",
@@ -230,23 +239,8 @@
     },
     {
       "file": "src/authoring/line_numbers.rs",
-      "item": "impl[Rejection]/fn[decide]",
-      "hash": "7b2334514981f22fe2764ced6adf6c5ebb84f48d44d5cf9c550bcf97d522c0cf"
-    },
-    {
-      "file": "src/authoring/line_numbers.rs",
       "item": "mod[tests]/fn[a_rejection_gives_a_uuid_that_keeps_the_rejected_submission]",
-      "hash": "d9f9f123f4fa6e0e177cb099398a13be0a29abe3991ef4992c491853be92b7b6"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "fn[location_guidance]",
-      "hash": "b902656b8d648a41d9007473ab770e9e2cb016a284c85a4eca6ce02eceaf5043"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "fn[converse]",
-      "hash": "8ff7fab0e18a2edc82384c148a31ce61194c3c1d4898e7518e1585898f91373e"
+      "hash": "9b66aebeefde1f9577f37e2fb2e7c5891b91d27b0651b0df158a2b245e135952"
     },
     {
       "file": "src/authoring/mod.rs",
@@ -264,50 +258,9 @@
       "hash": "fd506ee9b26cc252200f1f59095606ed1e38b124e2ba24884c450a0c4465e871"
     },
     {
-      "file": "src/authoring/line_numbers.rs",
-      "item": "",
-      "hash": "6516ff601d822cb0f5cce2ea23353fa038d97c6d6ee3c42f2fd5f3f18164946d"
-    },
-    {
-      "requirements": "requirements.authoring.line_numbers.resubmission",
-      "matches": [
-        "requirements.authoring.line_numbers.resubmission"
-      ],
-      "text": [
-        ":::{req} line_numbers.resubmission",
-        "After a rejection under {cite}`requirements.authoring.line_numbers.rejection`,",
-        "a submission whose `rationale` is exactly the UUID that rejection gave MUST",
-        "accept the rejected submission unchanged, ignoring the new submission's other",
-        "fields. Any other rationale that cites line numbers MUST fail the assessment, so",
-        "an assessment rejects at most one submission. The UUID MUST NOT be recorded in",
-        "evidence.",
-        ":::"
-      ]
-    },
-    {
       "file": "src/authoring/mod.rs",
-      "item": "fn[approved_text]",
-      "hash": "57c939d94f090c967d2a5cb9aa31642d8674934bfff8e5e42d544c8740478806"
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "item": "impl[UsageLog]/fn[begin_request]",
-      "hash": "10fe2c955edf38792263f8bed36cb3c8b0b5994cb2a1a09c4aac923bd25120b0"
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "item": "impl[UsageLog]/fn[end_request]",
-      "hash": "c8c24e43409f1c7aff6305ff0e4cc8d368450501a4ea70eddca4d5181d330780"
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "item": "impl[UsageLog]/fn[tool]",
-      "hash": "6aa1c92817d5a63f06bc5877e1dbe06da33874a0cd09e3f509a447c61a1359c0"
-    },
-    {
-      "file": "src/authoring/usage.rs",
-      "item": "impl[UsageLog]/fn[save]",
-      "hash": "f00786722bf0d63b6d266cb3f4ce87e53bd9699565315e5733d9de8d21fccbff"
+      "item": "mod[tests]/fn[a_submission_finishes_the_assessment_wherever_it_arrives]",
+      "hash": "2e975596eb25d9cbea5a43edfdd8e59cdbc26f5ef31eb0f2491dcb8a3e6e5b6b"
     }
   ]
 }

@@ -47,7 +47,7 @@ pub(crate) fn definitions() -> Vec<Value> {
             "parameters":{"type":"object","properties":{"path":{"type":"string","default":"."}},"additionalProperties":false}
         }),
         json!({
-            "name":"outline", "description":"List a file's outline: its selectable nodes nested by ancestry, in source order, each with its item selector (for habeas {file, item} reads), kind, and name (null when anonymous), and no line numbers. Rust, Python, TypeScript, CSS, Markdown, TOML, and YAML files have language outlines; other text files list one line node per nonblank line. Results contain no source text and are not evidence inputs; read the nodes you rely on with habeas.",
+            "name":"outline", "description":"List a file's outline; file is a project-relative path. The result contains its selectable nodes nested by ancestry, in source order, each with its item selector (for habeas {file, item} reads), kind, and name (null when anonymous), and no line numbers. Rust, Python, TypeScript, CSS, Markdown, TOML, and YAML files have language outlines; other text files list one line node per nonblank line. Results contain no source text and are not evidence inputs; read the nodes you rely on with habeas.",
             "parameters":{"type":"object","properties":{"file":{"type":"string"}},"required":["file"],"additionalProperties":false}
         }),
         json!({
@@ -55,7 +55,7 @@ pub(crate) fn definitions() -> Vec<Value> {
             "parameters":{"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string","default":"."},"context":{"type":"integer","minimum":0,"default":2},"referencing":reference_scope_schema()},"required":["pattern"],"additionalProperties":false}
         }),
         json!({
-            "name":"ast_grep", "description":"Search syntax trees in process with an ast-grep rule. Supply exactly one form: {language, rule, path (default .), referencing (optional)} or {query}. language is one of rust, python, typescript, tsx, css, markdown, toml, or yaml, matched with Habeas's pinned grammars; only files of that language are searched. rule is an object holding the keys of an ast-grep rule file's rule core, written as JSON: rule (required), and optional utils (named rules) and constraints (metavariable name to rule). A rule object combines atomic rules: pattern (code with metavariables, where $A matches one node, $$$A any number of nodes, and $_ one node without capturing), kind (a grammar node kind such as function_item), regex (a Rust regex the node's whole text must match), and nthChild; relational rules: inside, has, precedes, and follows, each taking a rule plus optional stopBy (neighbor, the default, end, or a rule) and field; and composite rules: all, any, not, and matches (a utils name). Patterns parse as standalone code, so a fragment that does not parse on its own, such as a type or parameter, needs the context and selector form: pattern: {context: \"fn f(x: &mut Vec<String>) {}\", selector: reference_type} parses context and matches the node of kind selector within it. Example: {\"language\":\"rust\",\"rule\":{\"rule\":{\"pattern\":\"$X.unwrap()\",\"inside\":{\"kind\":\"function_item\",\"stopBy\":\"end\"}}}}. path and referencing work as for ripgrep, and results are ordered by path and then line. The query form, e.g. {\"query\":\"requirements.ci.errors/error_accumulators\"}, runs a query a distributed requirement declares, named <full-name>/<query-name>, exactly as validation runs it, including its paths, exclude, and within, and returns each match's site. Searches only locate code. The result has ripgrep's form, {matches: [{file, item, kind, lines: [{text, matched}]}]}: one entry for each innermost outline node containing a match (a match in a comment belongs to the node the comment belongs to; a query match belongs to its site), with the node's item selector and kind, and the matched lines, without line numbers. Results are not evidence inputs and carry no definitions: read with the habeas tool, e.g. {file, item}, any node whose code your conclusion relies on. No matches returns an empty matches array.",
+            "name":"ast_grep", "description":"Search syntax trees in process with an ast-grep rule. Supply exactly one form: {language, rule, path (default .), referencing (optional)} or {query}. language is one of rust, python, typescript, tsx, css, markdown, toml, or yaml, matched with Habeas's pinned grammars; only files of that language are searched. rule is an object holding the keys of an ast-grep rule file's rule core, written as JSON: rule (required), and optional utils (named rules) and constraints (metavariable name to rule). A rule object combines atomic rules: pattern (code with metavariables, where $A matches one node, $$$A any number of nodes, and $_ one node without capturing), kind (a grammar node kind such as function_item), regex (a Rust regex the node's whole text must match), and nthChild; relational rules: inside, has, precedes, and follows, each taking a rule plus optional stopBy (neighbor, the default, end, or a rule) and field; and composite rules: all, any, not, and matches (a utils name). Patterns parse as standalone code, so a fragment that does not parse on its own, such as a type or parameter, needs the context and selector form: pattern: {context: \"fn f(x: &mut Vec<String>) {}\", selector: reference_type} parses context and matches the node of kind selector within it. Example: {\"language\":\"rust\",\"rule\":{\"rule\":{\"pattern\":\"$X.unwrap()\",\"inside\":{\"kind\":\"function_item\",\"stopBy\":\"end\"}}}}. path selects a project-relative file or directory (default .); referencing works as for ripgrep, and results are ordered by path and then line. The query form, e.g. {\"query\":\"requirements.ci.errors/error_accumulators\"}, runs a query a distributed requirement declares, named <full-name>/<query-name>, exactly as validation runs it, including its paths, exclude, and within, and returns each match's site. Searches only locate code. The result has ripgrep's form, {matches: [{file, item, kind, lines: [{text, matched}]}]}: one entry for each innermost outline node containing a match (a match in a comment belongs to the node the comment belongs to; a query match belongs to its site), with the node's item selector and kind, and the matched lines, without line numbers. Results are not evidence inputs and carry no definitions: read with the habeas tool, e.g. {file, item}, any node whose code your conclusion relies on. No matches returns an empty matches array.",
             "parameters":{"type":"object","properties":{"language":{"type":"string","enum":crate::structural::QueryLanguage::names()},"rule":{"type":"object"},"path":{"type":"string","default":"."},"referencing":reference_scope_schema(),"query":{"type":"string"}},"additionalProperties":false}
         }),
         json!({
@@ -67,7 +67,7 @@ pub(crate) fn definitions() -> Vec<Value> {
         }),
         crate::github::tool_definition(),
         json!({
-            "name":"next_page", "description":"Return the following page of a paged result of habeas (line-range form), list_files, outline, ripgrep, ast_grep, or references, in the same shape as its first page. token is the page's next value. Tokens are opaque.",
+            "name":"next_page", "description":"Return the following page of a paged result of habeas (line-range form), list_files, outline, ripgrep, ast_grep, or references, in the same shape as its first page. token is the page's next value, e.g. {\"token\":\"abc123\"}. Tokens are opaque.",
             "parameters":{"type":"object","properties":{"token":{"type":"string"}},"required":["token"],"additionalProperties":false}
         }),
     ];
@@ -1275,6 +1275,7 @@ mod tests {
 
     // {test}`requirements.authoring.additional_read`
     // {test}`requirements.authoring.github_reads`
+    // {test}`requirements.authoring.file_discovery`
     #[test]
     fn additional_read_flow_searches_outlines_and_reads_a_rust_file() {
         let root = project();
@@ -1352,12 +1353,30 @@ mod tests {
         let item = dispatch(
             &sources,
             "habeas",
-            &json!({"file":"src/lib.rs","item":"fn[other]"}),
+            &json!({"file":"src/lib.rs","item":"fn[work]"}),
         )
         .unwrap();
-        assert_eq!(item.result["input"]["item"], "fn[other]");
-        assert_eq!(item.result["input"]["text"][0], "fn other() {}");
+        assert_eq!(item.result["input"]["item"], "fn[work]");
+        assert!(
+            item.result["input"]["text"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|line| line == "fn work() {}")
+        );
+        assert_eq!(item.result["definitions"].as_array().unwrap().len(), 1);
+        assert_eq!(item.result["definitions"][0]["definition"], "terms.value");
+        assert!(
+            item.inputs
+                .iter()
+                .any(|input| input["definition"] == "terms.value")
+        );
+        assert_eq!(item.inputs.len(), 2);
         sources.record_inputs(&item.inputs);
+        assert!(sources.recorded_inputs().contains(
+            &crate::inputs::outline_input(root.path(), "src/lib.rs", "fn[work]").unwrap()
+        ));
+        assert_eq!(sources.recorded_inputs().len(), 2);
         // A line range without line_end reads through EOF.
         let eof = dispatch(
             &sources,
@@ -1391,6 +1410,40 @@ mod tests {
     }
 
     // {test}`requirements.authoring.additional_read`
+    // {test}`requirements.authoring.file_discovery`
+    #[test]
+    fn listed_git_directories_need_an_eligible_descendant_at_any_depth() {
+        let root = project();
+        fs::create_dir_all(root.path().join("a/b")).unwrap();
+        fs::create_dir(root.path().join("blocked-only")).unwrap();
+        fs::write(root.path().join("a/b/file.txt"), "eligible\n").unwrap();
+        fs::write(root.path().join("blocked-only/hidden.txt"), "blocked\n").unwrap();
+        fs::write(
+            root.path().join("habeas.toml"),
+            "version = 1\n[evidence]\ndisallow = ['blocked-only/hidden.txt']\n",
+        )
+        .unwrap();
+        git(root.path(), &["init", "--quiet"]);
+        git(root.path(), &["add", "."]);
+        let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        let root_listing = dispatch(&sources, "list_files", &json!({})).unwrap();
+        let entries = root_listing.result.as_array().unwrap();
+        assert!(
+            entries
+                .iter()
+                .any(|e| e["path"] == "a" && e["kind"] == "directory"),
+            "{entries:?}"
+        );
+        assert!(
+            !entries.iter().any(|e| e["path"] == "blocked-only"),
+            "{entries:?}"
+        );
+        let nested = dispatch(&sources, "list_files", &json!({"path":"a"})).unwrap();
+        assert_eq!(nested.result, json!([{"path":"a/b","kind":"directory"}]));
+        assert!(root_listing.inputs.is_empty());
+        assert!(nested.inputs.is_empty());
+    }
+
     // {test}`requirements.authoring.source_tools`
     // {test}`requirements.authoring.file_discovery`
     // {test}`requirements.authoring.delivered_inputs`
@@ -1637,13 +1690,15 @@ mod tests {
 
     // {test}`requirements.authoring.redaction`
     // {test}`requirements.authoring.source_tools`
+    // {test}`requirements.authoring.delivered_inputs`
+    // {test}`requirements.definitions.authoring_inputs`
     #[test]
     fn declaration_text_reaches_the_model_redacted() {
         let root = project();
         let token = crate::redaction::tests::github_token();
         fs::write(
             root.path().join("md/terms.md"),
-            format!(":::{{definition}} value\n:phrase: value\nA value such as {token}.\n:::\n"),
+            format!(":::{{definition}} value\n:phrase: value\nA value such as {token}, with a {}.\n:::\n\n:::{{definition}} base\n:phrase: base\nA foundation.\n:::\n", role("term", "terms.base")),
         )
         .unwrap();
         fs::write(
@@ -1665,7 +1720,7 @@ mod tests {
         assert!(!text.contains(&token), "{mandatory:#}");
         for expected in [
             "The project MUST accept [REDACTED:GitHub Token] as a",
-            "A value such as [REDACTED:GitHub Token].",
+            "A value such as [REDACTED:GitHub Token], with a",
             "\"Other MUST reject\",\"[REDACTED:GitHub Token]\",\"on its own line.\"",
         ] {
             assert!(
@@ -1688,6 +1743,72 @@ mod tests {
                 "{arguments}: {:#}",
                 read.result
             );
+            let definition = arguments.get("definition").is_some();
+            assert_eq!(read.result["input"].get("definition").is_some(), definition);
+            assert_eq!(
+                read.result["input"].get("requirements").is_some(),
+                !definition
+            );
+            assert!(read.result.get("inputs").is_none());
+            let expected_terms = if definition {
+                vec!["terms.base"]
+            } else {
+                vec!["terms.base", "terms.value"]
+            };
+            let terms: Vec<_> = read.result["definitions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|input| input["definition"].as_str().unwrap())
+                .collect();
+            assert_eq!(terms, expected_terms);
+            if definition {
+                assert_eq!(read.result["input"]["definition"], "terms.value");
+                assert_eq!(
+                    read.result["input"]["text"],
+                    json!([
+                        ":::{definition} value",
+                        ":phrase: value",
+                        "A value such as [REDACTED:GitHub Token], with a {term}`terms.base`.",
+                        ":::"
+                    ])
+                );
+            } else {
+                assert_eq!(read.result["input"]["requirements"], "requirements.*");
+                assert_eq!(
+                    read.result["input"]["matches"],
+                    json!(["requirements.other", "requirements.ready"])
+                );
+                assert_eq!(
+                    read.result["input"]["text"],
+                    json!([
+                        ":::{req} other",
+                        "Other MUST reject",
+                        "[REDACTED:GitHub Token]",
+                        "on its own line.",
+                        ":::",
+                        "",
+                        ":::{req} ready",
+                        "The project MUST accept [REDACTED:GitHub Token] as a {term}`terms.value`.",
+                        "{cite}`requirements.other`",
+                        ":::"
+                    ])
+                );
+            }
+            let mut fresh = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+            assert!(fresh.recorded_inputs().is_empty());
+            fresh.record_inputs(&read.inputs);
+            fresh.record_inputs(&read.inputs);
+            let mut expected = vec![read.result["input"].clone()];
+            expected.extend(
+                read.result["definitions"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .cloned(),
+            );
+            assert_eq!(fresh.recorded_inputs(), expected);
+            assert_eq!(read.inputs, expected);
         }
     }
 
@@ -2516,7 +2637,7 @@ mod tests {
         fs::write(
             root.path().join("md/requirements.md"),
             format!(
-                ":::{{req}} ready\nThe project MUST be ready.\n:::\n\n:::{{req}} other\nOther MUST hold.\n:::\n\n:::{{example}} case\nA ready case. {}\n:::\n",
+                ":::{{req}} ready\nThe project MUST be ready.\n:::\n\n:::{{req}} other\nOther MUST hold.\n:::\n\n:::{{example}} case\nA ready case. {}\n:::\n\n:::{{definition}} word\n:phrase: word\n:impl: src/lib.rs#fn[work]\nA vocabulary term.\n:::\n",
                 role("cite", "requirements.ready")
             ),
         )
@@ -2524,10 +2645,11 @@ mod tests {
         fs::write(
             root.path().join("src/lib.rs"),
             format!(
-                "// {}\nfn work() {{\n    // {}\n}}\n\n// {}\nfn check() {{}}\n",
+                "// {}\nfn zeta() {{}}\n\n// {}\nfn work() {{\n    // {}\n    // {}\n}}\n",
+                role("test", "requirements.ready"),
                 role("impl", "requirements.ready"),
                 role("cite", "requirements.other"),
-                role("test", "requirements.ready"),
+                role("term", "requirements.word"),
             ),
         )
         .unwrap();
@@ -2571,8 +2693,8 @@ mod tests {
             result,
             json!({"definitions": [{"name": "requirements.ready", "kind": "requirement"}], "sites": [
                 {"name": "requirements.ready", "role": "cite", "file": "md/requirements.md", "item": null},
+                {"name": "requirements.ready", "role": "test", "file": "src/lib.rs", "item": "fn[zeta]"},
                 {"name": "requirements.ready", "role": "impl", "file": "src/lib.rs", "item": "fn[work]"},
-                {"name": "requirements.ready", "role": "test", "file": "src/lib.rs", "item": "fn[check]"},
             ]})
         );
         assert!(ready.inputs.is_empty());
@@ -2617,7 +2739,7 @@ mod tests {
         )
         .unwrap();
         let sites = flattened.result["sites"].as_array().unwrap();
-        assert_eq!(flattened.result["definitions"].as_array().unwrap().len(), 3);
+        assert_eq!(flattened.result["definitions"], all.result["definitions"]);
         assert_eq!(sites.len(), 4);
         assert_eq!(sites[0]["name"], "requirements.other");
         assert_eq!(sites[0]["item"], "fn[work]");
@@ -2649,7 +2771,7 @@ mod tests {
         );
         fs::remove_file(root.path().join("src/fenced.rs")).unwrap();
 
-        for selection in ["requirements.missing", "bad name", ""] {
+        for selection in ["requirements.missing", "requirements.word", "bad name", ""] {
             assert!(
                 dispatch(&sources, "references", &json!({"selection": selection})).is_err(),
                 "accepted {selection:?}"
@@ -2992,6 +3114,7 @@ mod tests {
     }
 
     // {test}`requirements.authoring.source_tools`
+    // {test}`requirements.authoring.tool_descriptions.common_case`
     #[test]
     fn habeas_tool_describes_its_argument_conventions_with_an_example_per_form() {
         let definitions = definitions();
@@ -3002,6 +3125,9 @@ mod tests {
         let description = habeas["description"].as_str().unwrap();
         for phrase in [
             // Request forms and line conventions.
+            "Read project source as evidence",
+            "Paths are project-relative",
+            "use the outline tool to list a file's selectors",
             "exactly one request form",
             "one-based and inclusive",
             "omitted line_end reads through EOF",
@@ -3046,6 +3172,7 @@ mod tests {
     }
 
     // {test}`requirements.authoring.outline_tool`
+    // {test}`requirements.authoring.tool_descriptions.common_case`
     #[test]
     fn outline_tool_is_advertised_with_a_required_file_argument() {
         let definitions = definitions();
@@ -3065,16 +3192,21 @@ mod tests {
         let description = outline["description"].as_str().unwrap();
         for phrase in [
             "item selector",
+            "List a file's outline",
+            "file is a project-relative path",
             "kind",
             "name",
             "no line numbers",
             "no source text",
+            "for habeas {file, item} reads",
+            "read the nodes you rely on with habeas",
         ] {
             assert!(description.contains(phrase), "{description}");
         }
     }
 
     // {test}`requirements.authoring.reference_index`
+    // {test}`requirements.authoring.tool_descriptions.common_case`
     #[test]
     fn references_tool_is_advertised_with_an_optional_selection() {
         let definitions = definitions();
@@ -3094,7 +3226,22 @@ mod tests {
             })
         );
         let description = references["description"].as_str().unwrap();
-        for phrase in ["{impl}", "{cite}", "{test}", "glob", ":impl:", "null"] {
+        for phrase in [
+            "{impl}",
+            "{cite}",
+            "{test}",
+            "glob",
+            ":impl:",
+            "null",
+            "Without selection, return every requirement and named example name with its kind and empty sites",
+            "a full name or a glob where * matches any characters including dots",
+            "roles filters sites and anchors by impl, cite, or test (default all three)",
+            "Locate definitions and reference sites without reading their text",
+            "[] returns names/kinds only",
+            "{impl} marks implementations, {cite} related sources, and {test} tests",
+            r#"{"selection":"requirements.cli.status","roles":["impl"]}"#,
+            "Request needed source with habeas",
+        ] {
             assert!(description.contains(phrase), "{phrase}: {description}");
         }
     }
@@ -3144,6 +3291,8 @@ mod tests {
             .err()
             .unwrap();
         assert_eq!(error.kind(), io::ErrorKind::PermissionDenied, "{error}");
+        assert!(error.to_string().contains("notes.txt"), "{error}");
+        assert!(error.to_string().contains("disallowed"), "{error}");
     }
 
     // {test}`requirements.authoring.source_tools`
@@ -3292,6 +3441,7 @@ mod tests {
     }
 
     // {test}`requirements.authoring.text_search`
+    // {test}`requirements.authoring.tool_descriptions.common_case`
     #[test]
     fn ripgrep_tool_is_advertised_with_its_interface_and_conventions() {
         let definitions = definitions();
@@ -3344,10 +3494,12 @@ mod tests {
             "read with the habeas tool, e.g. {file, item}, any node whose code your conclusion relies on",
             "No matches returns an empty matches array",
             "With referencing {selection, roles, scope}",
+            "Search a project-relative file or directory (default .)",
             "default [impl, test, cite]",
             "including :impl: and :test: declaration anchors",
             "scope node searches only the outline nodes that contain or are named by those references",
             "scope file (the default) their whole files",
+            r#"{"pattern":"errors","referencing":{"selection":"requirements.ci.*","roles":["impl"],"scope":"node"}}"#,
         ] {
             assert!(description.contains(phrase), "{phrase:?} in {description}");
         }
@@ -3911,6 +4063,35 @@ mod tests {
                 description.contains(result),
                 "{name} omits its result: {description}"
             );
+            let phrases: &[&str] = match name {
+                "list_files" => &[
+                    "immediate files and directories",
+                    "project-relative",
+                    "default .",
+                    "listed or read",
+                    "not evidence inputs",
+                ],
+                "next_page" => &[
+                    "following page",
+                    "habeas (line-range form), list_files, outline, ripgrep, ast_grep, or references",
+                    "same shape",
+                    "token is the page's next value",
+                    "opaque",
+                    r#"{"token":"abc123"}"#,
+                ],
+                "github" => &[
+                    "<owner>/<repo>#<number>",
+                    "issue or pull request",
+                    "one a {fixme} option line names",
+                ],
+                _ => &[],
+            };
+            for phrase in phrases {
+                assert!(
+                    description.contains(phrase),
+                    "{name}: missing {phrase}: {description}"
+                );
+            }
         }
     }
 
@@ -4029,6 +4210,7 @@ mod tests {
 
     // {test}`requirements.authoring.structural_search`
     // {test}`requirements.authoring.result_pages`
+    // {test}`requirements.authoring.tool_descriptions.common_case`
     #[test]
     fn ast_grep_tool_is_advertised_with_both_forms_and_rule_syntax() {
         let definitions = definitions();
@@ -4072,13 +4254,16 @@ mod tests {
         for phrase in [
             "{language, rule, path (default .), referencing (optional)} or {query}",
             "matched with Habeas's pinned grammars",
+            "Search syntax trees in process with an ast-grep rule",
+            "path selects a project-relative file or directory (default .)",
+            "language is one of rust, python, typescript, tsx, css, markdown, toml, or yaml",
             "rule (required), and optional utils (named rules) and constraints",
             "pattern (code with metavariables",
             "kind (a grammar node kind",
             "inside, has, precedes, and follows",
             "all, any, not, and matches",
             "the context and selector form",
-            "path and referencing work as for ripgrep, and results are ordered by path and then line",
+            "path selects a project-relative file or directory (default .); referencing works as for ripgrep, and results are ordered by path and then line",
             "named <full-name>/<query-name>, exactly as validation runs it, including its paths, exclude, and within, and returns each match's site",
             "Searches only locate code",
             "{matches: [{file, item, kind, lines: [{text, matched}]}]}",
@@ -4088,6 +4273,8 @@ mod tests {
             "Results are not evidence inputs and carry no definitions",
             "read with the habeas tool, e.g. {file, item}, any node whose code your conclusion relies on",
             "No matches returns an empty matches array",
+            r#"{"language":"rust","rule":{"rule":{"pattern":"$X.unwrap()","inside":{"kind":"function_item","stopBy":"end"}}}}"#,
+            r#"{"query":"requirements.ci.errors/error_accumulators"}"#,
         ] {
             assert!(description.contains(phrase), "{phrase:?} in {description}");
         }

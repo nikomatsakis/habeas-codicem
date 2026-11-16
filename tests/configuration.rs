@@ -96,6 +96,12 @@ fn absent_and_minimal_configuration_are_distinct_and_read_only() {
         Some(ProjectConfig {})
     );
     assert!(ProjectConfig::from_book_toml("[habeas]\nversion = 1\n", &path).is_err());
+    let malformed = "version = [\n";
+    fs::write(&path, malformed).unwrap();
+    let error = load_user_config(&path).unwrap_err().to_string();
+    assert!(error.contains("invalid TOML syntax"), "{error}");
+    assert!(error.contains(path.to_str().unwrap()), "{error}");
+    assert_eq!(fs::read_to_string(&path).unwrap(), malformed);
 }
 
 // {test}`requirements.authoring.configuration_structure`

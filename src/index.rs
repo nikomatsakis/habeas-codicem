@@ -1075,6 +1075,17 @@ mod tests {
         );
         assert!(marker_ranges(":::{requirements-index}\n").is_err());
         assert!(marker_ranges(":::{requirements-index}\nUnexpected.\n:::").is_err());
+        assert!(marker_ranges("::::{requirements-index}\n:::\n").is_err());
+        assert!(
+            marker_ranges("::{requirements-index}\n::\n")
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            marker_ranges("Inline :::{requirements-index}\n:::\n")
+                .unwrap()
+                .is_empty()
+        );
         assert_eq!(
             marker_ranges("::::{requirements-index}\n:::::\n")
                 .unwrap()
@@ -1620,6 +1631,19 @@ mod tests {
         }
         let error = preprocess_book(&mut book, Path::new(".")).unwrap_err();
         assert!(error.to_string().contains("only one"));
+        let mut book = Book::new();
+        book.push_item(Chapter::new(
+            "Index",
+            ":::{requirements-index}\n:::\n\n:::{requirements-index}\n:::\n".to_owned(),
+            "one.md",
+            Vec::new(),
+        ));
+        assert!(
+            preprocess_book(&mut book, Path::new("."))
+                .unwrap_err()
+                .to_string()
+                .contains("only one")
+        );
     }
 
     // {test}`requirements.index.path_conflicts`
@@ -1736,6 +1760,32 @@ mod tests {
         assert!(missing.contains("> Ready MUST work."));
         assert!(missing.contains("No rationale recorded."));
         assert!(missing.contains("No inputs recorded."));
+        for record in ["{}", r#"{"rationale":"  ","inputs":[]}"#] {
+            let page = render_detail_page(
+                "requirements.ready",
+                detail,
+                Some(index),
+                &definition,
+                DetailEvidence {
+                    state: EvidenceState::Invalid,
+                    record: Some(record),
+                    errors: &findings.map(str::to_owned),
+                    fixme_entries: &[],
+                },
+                &RenderSources {
+                    root: Path::new("."),
+                    definitions: &BTreeMap::new(),
+                    references: &[],
+                    source_links: None,
+                    outlines: &crate::inputs::OutlineCache::default(),
+                },
+            );
+            assert!(page.contains("> Ready MUST work."), "{page}");
+            assert!(page.contains("## Validation findings"), "{page}");
+            assert!(page.contains("invalid JSON"), "{page}");
+            assert!(page.contains("No rationale recorded."), "{page}");
+            assert!(page.contains("No inputs recorded."), "{page}");
+        }
     }
 
     // {test}`requirements.index.state`
@@ -2047,9 +2097,10 @@ mod tests {
             fs::create_dir_all(root.join(dir)).unwrap();
         }
         fs::write(root.join("book.toml"), "[book]\nsrc = \"md\"\n").unwrap();
-        let source = ":::{req} ready\n:impl: skills/ready.md\nReady relies on {cite}`rules.base`.\n:::\n\n:::{req} base\nBase.\n:::\n\n:::{example} case\nA case. {test}`rules.ready`\n:::\n".to_owned();
+        let source = ":::{req} ready\n:impl: skills/ready.md\n:test: skills/test.md\nReady relies on {cite}`rules.base`.\n:::\n\n:::{req} base\nBase.\n:::\n\n:::{example} case\nA case. {test}`rules.ready`\n:::\n".to_owned();
         fs::write(root.join("md/rules.md"), &source).unwrap();
         fs::write(root.join("skills/ready.md"), "# Skill\n").unwrap();
+        fs::write(root.join("skills/test.md"), "# Test\n").unwrap();
         fs::write(root.join("notes.txt"), "Notes.\n").unwrap();
         fs::write(
             root.join("src/lib.rs"),
@@ -2066,6 +2117,7 @@ mod tests {
             outline("skills/ready.md", "section[Skill]"),
             {"requirements": "rules.case", "matches": ["rules.case"], "text": ["case"]},
             outline("src/lib.rs", "fn[run]"),
+            outline("skills/test.md", ""),
         ]);
         fs::write(
             root.join("evidence/rules.ready.json"),
@@ -2100,7 +2152,7 @@ mod tests {
         };
         let groups = [
             ("Implementation", [5, 7].as_slice()),
-            ("Tests", &[2, 6]),
+            ("Tests", &[2, 6, 8]),
             ("Referenced definitions", &[4]),
             ("Other sources", &[1, 3]),
         ];
@@ -2124,9 +2176,9 @@ mod tests {
         );
         assert_eq!(
             content.matches("<details class=\"habeas-input\">").count(),
-            7
+            8
         );
-        assert_eq!(content.matches("</details>").count(), 11);
+        assert_eq!(content.matches("</details>").count(), 12);
         assert!(content.contains("<code>requirements selection rules.base</code>"));
         assert!(content.contains("[Requirements index](../requirements-index.html)"));
     }
@@ -2212,6 +2264,9 @@ mod tests {
         let location = position("- <code>rules.term</code>: <code>md/rules.md:9–13</code>\n");
         let text = position("```markdown\nrecorded term\n```");
         assert!(definition < location && location < text, "{content}");
+        let referenced = position("style=\"display: inline\">Referenced definitions</h3>");
+        let other = position("style=\"display: inline\">Other sources</h3>");
+        assert!(referenced < definition && definition < other, "{content}");
 
         // An unresolved selector is reported and its recorded text kept.
         let unresolved = position("Unresolved selector: ");

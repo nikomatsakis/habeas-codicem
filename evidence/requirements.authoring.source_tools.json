@@ -1,7 +1,7 @@
 {
   "requirement": "The harness MUST expose a `habeas` tool accepting exactly one of these request\nforms. Each form MUST correspond to one existing evidence-input kind:\n\n| Request fields | Evidence input returned | Definition |\n| --- | --- | --- |\n| `file: String`, `line_start: Integer`, optional `line_end: Integer` | Outline inputs for the innermost outline nodes covering the range | {cite}`requirements.ci.outline_inputs` |\n| `file: String`, `item: String` | Outline input | {cite}`requirements.ci.outline_inputs` |\n| `requirements: String` | Requirements input, including its matching names | {cite}`requirements.ci.requirements_inputs` |\n| `definition: String` | Definition input | {cite}`requirements.definitions.inputs` |\n\nSelector arguments MUST use the syntax defined by\n{cite}`requirements.references.outline_selectors`. Reads MUST use the current\nproject working tree, including unstaged changes to tracked files and staged new\nfiles. By default, source inputs MUST stay within the project root after\nresolving symlinks; in a Git worktree, both the requested file and its resolved\ntarget MUST be present in the Git index. Projects outside Git MUST use the same\ncontainment rules without requiring an index. Failure to read an existing\nrepository's index MUST be reported as an error.\nThe project-root `evidence/` directory MUST be excluded from model reads by\ndefault, including symlink aliases. Every source the harness supplies to the\nmodel MUST be redacted under {cite}`requirements.authoring.redaction`. Generated build outputs MUST follow\n{cite}`requirements.authoring.generated_inputs`. Workspace path overrides MUST\nfollow {cite}`requirements.configuration.evidence_paths`, including explicit\npermission for otherwise excluded inputs. A denied mandatory input MUST abort\nunder {cite}`requirements.authoring.read_denial.mandatory`, and a denied model\nread MUST return a tool error under {cite}`requirements.authoring.read_denial`.\n\nLine numbers are only a way to request sources; recorded evidence MUST identify\nsources by outline selector and structural hash, never by line number. Request\nline numbers MUST be one-based and inclusive, and omitting `line_end` MUST read\nthrough EOF. A line-range request MUST be resolved to the innermost outline\nnodes covering the requested lines, which are `line` nodes in a file using the\nplain-text profile; the result MUST show the model each node's selector and\nsource text, without line numbers, and the harness MUST record those nodes as\noutline inputs. The model-facing tool description MUST include the argument conventions\nfrom the cited requirements, including outline selector syntax, definition\nselections, and full definition names, with a short request example for each form.\n\nA successful call MUST return the requested evidence input, populated by the\nharness with the selected source text, using the existing evidence schema.\n{cite}`requirements.ci.schema`\nRequired terminology dependencies MUST be returned alongside it as additional\ndefinition inputs under {cite}`requirements.definitions.authoring_inputs`.\nFor item, requirement, and definition selections, the result MUST have this shape:\n\n```text\nHabeasResult {\n    input: EvidenceInput,\n    definitions: Array<DefinitionInput>,\n}\n```\n\nLine-range selections can contain multiple outline nodes. Their result MUST use\n`inputs: Array<EvidenceInput>` instead of the singular `input` field, including\nwhen only one node is selected.\n\n`definitions` MUST be empty when no additional terminology is required. The\nharness MUST record inputs supplied to the model in the assessment's evidence.\nA failed read MUST add no evidence input. Access-policy denials MUST be handled\nunder {cite}`requirements.authoring.read_denial`; other failed reads MUST return\nan explanatory tool error.",
   "determination": true,
-  "rationale": "I found no gap. Each obligation maps to reachable code with a test.\n\n**Roots.** The `{impl}` items are `src/authoring/inputs.rs#impl[AssessmentSources]/fn[prepare]`, `src/authoring/mod.rs#fn[converse]` and `src/inputs.rs#fn[outline_inputs_for_lines]`. `converse` calls `tools::dispatch_paged`, which reaches `read`, `AssessmentSources::read_lines`, `read_selector`, `source_input`, `additional_definitions` and `record_inputs`. The `SourceAccess` policy in `src/authoring/access.rs` is reached through `source_input` and `SourceAccess::load`.\n\n**Obligations and code**\n- **Exactly one of four request forms.** `src/authoring/tools.rs#fn[read]` branches on `item`, `file`, `requirements` or `definition`. It calls `check_keys` to reject mixed, incomplete or unknown fields. `line_start` of 0 is rejected in `read_lines`.\n  - Tested in `reading_records_only_delivered_sources_and_their_terms`, which runs ten malformed or mixed argument sets and the valid forms.\n- **Each form returns its evidence-input kind.**\n  - A line range goes through `read_lines` to `nodes_for_range` and then `read_selector`.\n  - An item read goes through `read_selector`.\n  - A requirements read uses `InputSelector::Requirements`, tested in `requirements_reads_select_requirements_and_examples_but_not_definitions`. The test asserts the matches and the error for a selection that matches nothing.\n  - A definition read uses `InputSelector::Definition`.\n  - `line_range_reads_record_the_innermost_covering_nodes` tests innermost-node resolution. The bedrock CLI test uses a `.txt` file to exercise plain-text `line` nodes.\n- **Selector syntax and EOF.** Item selectors resolve through `selector.resolve`. The tests use `fn[work]` and `mod[inner]/fn[second]`, and the line-range test checks `use@…`. `line_start: 2` with no `line_end` is tested in `reading_records_only_delivered_sources_and_their_terms`.\n- **Working-tree reads, Git index, containment, and `evidence/` exclusion.** These go through `SourceAccess::file`.\n  - `git_tools_allow_staged_and_dirty_sources_but_hide_untracked_files` covers dirty tracked files and staged new files.\n  - `git_symlink_reads_require_both_the_alias_and_target_to_be_tracked` covers symlink alias and target.\n  - The `access.rs` tests cover a nested project, a non-Git project and an unreadable index.\n  - `outside_symlinks_are_excluded_from_reads_search_and_discovery` covers containment.\n  - `generated_evidence_is_excluded_from_reads_search_and_discovery` covers `evidence/` and its symlink aliases.\n- **Redaction, generated inputs, evidence paths, denial.** These are enforced through `source_input`, `SourceAccess` and `dispatch_paged`. They are tested in `model_inputs_reads_searches_and_citation_prompts_are_redacted`, `declaration_text_reaches_the_model_redacted`, `cargo_output_is_discovered_and_read_without_building_or_allowing_other_target_files`, `explicit_allow_overrides_defaults_but_disallow_wins_for_alias_targets` and `unpermitted_requests_outside_the_project_are_recoverable_tool_errors`. The mandatory-denial abort is tested in `mandatory_git_inputs_require_staging_declarations_sources_and_terms`.\n- **Result shape and definitions.** `read` returns `{input, definitions}` for item, requirements and definition reads. The line-range form returns `{inputs, definitions}` through `Listing::inputs` and the pager. Line-range results always use `inputs`, even for one node, as `reading_records_only_delivered_sources_and_their_terms` asserts. Definitions come from `additional_definitions`. The result carries only an `item` selector and no line numbers, as the same test and `line_range_reads_record_the_innermost_covering_nodes` assert. Terminology across pages is tested in `paged_inputs_carry_their_definitions_and_deliver_only_their_own_inputs`.\n- **Recording.** `converse` collects delivered inputs in `pending` and calls `record_inputs` after the next successful provider response. Recorded outline inputs carry only the file, selector and hash, as asserted in `reading_records_only_delivered_sources_and_their_terms` and `line_range_reads_record_the_innermost_covering_nodes`. A failed read returns `Err` before any input is delivered. `unpermitted_requests_outside_the_project_are_recoverable_tool_errors` asserts `recorded_inputs().is_empty()`.\n- **Tool description.** The `habeas` entry in `definitions()` states the one-form rule, one-based inclusive lines, EOF behavior, selector syntax (`kind[name]`, `impl[Thing/Trait]`, `kind@hash`, `#N`, percent-encoding), definition selections and full terminology names. It gives a short example for each of the four forms. `habeas_tool_describes_its_argument_conventions_with_an_example_per_form` asserts all of this and the parameter list.\n- **Failed reads.** Access-policy denials and other failures return tool errors in `converse` and `dispatch_paged`. This is tested in `git_tools_allow_staged_and_dirty_sources_but_hide_untracked_files` and `explicit_untracked_reads_return_an_untracked_error_and_the_assessment_continues`.\n\nI found no unspecified behavior outside what the text, or the other requirements the same code marks, covers. The cited requirements are context only and were not reassessed.",
+  "rationale": "I found no test-adequacy gap for `requirements.authoring.source_tools`. Each obligation maps to tests that assert its outcome. I did not request implementation source.\n\n**Request forms**\n- `src/authoring/tools.rs#mod[tests]/fn[reading_records_only_delivered_sources_and_their_terms]` accepts the four valid forms (line range, item, requirements, definition).\n- The same test rejects incomplete, mixed and unknown argument combinations, which covers \"exactly one of these request forms\".\n- It also rejects a missing item and `line_start` of 0.\n- `requirements_reads_select_requirements_and_examples_but_not_definitions` covers the requirements form. A glob returns the sorted matches and `definitions` is `[]`. A selection that matches nothing, here a definition name, returns an error.\n\n**Line-range semantics and result shape**\n- `reading_records_only_delivered_sources_and_their_terms` covers omitted `line_end` reading through EOF. It also checks that a range result uses `inputs` even for a single node, and that results carry no line numbers.\n- `line_range_reads_record_the_innermost_covering_nodes` covers innermost-node resolution and the inclusive end (a 7..7 range returns the node). Recorded inputs carry only file, selector and hash, with no text.\n- Plain-text `line` nodes are exercised by the `.txt` reads in `git_tools_allow_staged_and_dirty_sources_but_hide_untracked_files` and the other `.txt` reads.\n\n**Definitions and tool description**\n- `declaration_text_reaches_the_model_redacted` checks transitive terminology (`terms.base` is pulled in through `terms.value`) for the requirements and definition forms. It also checks that those forms return `input`, never `inputs`.\n- `reading_records_only_delivered_sources_and_their_terms` checks that line-range reads supply terminology.\n- `paged_inputs_carry_their_definitions_and_deliver_only_their_own_inputs` checks that a page carries only the definitions its own inputs need.\n- `habeas_tool_describes_its_argument_conventions_with_an_example_per_form` checks the tool description. It looks for the selector syntax, the definition-selection and full-name conventions, and one example per form.\n- It also checks the parameter set.\n\n**Working-tree reads and containment**\n- `git_tools_allow_staged_and_dirty_sources_but_hide_untracked_files` covers staged new files, unstaged edits to tracked files, and untracked files being denied with a `git add` hint.\n- `git_symlink_reads_require_both_the_alias_and_target_to_be_tracked` requires both the requested file and its resolved symlink target to be in the index.\n- `outside_symlinks_are_excluded_from_reads_search_and_discovery` and `unpermitted_requests_outside_the_project_are_recoverable_tool_errors` cover project containment.\n- `src/authoring/access.rs` covers nested projects and an empty `.git` in an ancestor directory. In both cases access works without index membership where it should, or stays contained to the project.\n- The unreadable-index test (`unreadable_git_index_does_not_fall_back_to_untracked_access`) and the invalid-config test (`invalid_git_configuration_does_not_fall_back_to_untracked_access`) both assert that loading errors out rather than falling back to untracked access.\n\n**`evidence/` exclusion**\n- `generated_evidence_is_excluded_from_reads_search_and_discovery` covers the `evidence/` directory, including `./evidence`, symlink aliases, search, structural search and listing.\n- `src/evidence/` is still readable, so the exclusion applies only to the project-root directory.\n\n**Redaction**\n- `model_inputs_reads_searches_and_citation_prompts_are_redacted` and `declaration_text_reaches_the_model_redacted` check that mandatory inputs, reads, search results, requirement and definition text, and prompts are redacted. Line structure is preserved.\n\n**Generated outputs and path overrides**\n- `cargo_output_is_discovered_and_read_without_building_or_allowing_other_target_files` covers Cargo build-script output. It checks that no build runs, that the output appears in the root listing, and that other `target` files are not permitted. It also checks that a disallow overrides the generated-output permission.\n- `inherited_out_dir_is_ignored_and_metadata_failure_preserves_ordinary_reads` covers the inherited `OUT_DIR` being ignored and tolerance of missing or invalid metadata.\n- The `access.rs` allow/disallow tests cover explicit allow overriding defaults, disallow winning, and alias targets.\n\n**Denial and failure handling**\n- Denied reads return tool errors (`PermissionDenied` kind), and other failed reads return non-denial errors. Both appear in `unpermitted_requests_outside_the_project_are_recoverable_tool_errors`.\n- `tests/authoring_cli.rs#fn[explicit_untracked_reads_return_an_untracked_error_and_the_assessment_continues]` shows the model is told how to fix an untracked path, the assessment continues, and no evidence input is recorded for the failed read.\n- The mandatory-input abort is a cited requirement. `mandatory_git_inputs_require_staging_declarations_sources_and_terms` also exercises it.\n\n**Recording**\n- `bedrock_cli_uses_selected_profile_region_and_converse_tools` checks end to end that the evidence inputs equal the outline inputs for the lines read.\n- `reading_records_only_delivered_sources_and_their_terms` and `declaration_text_reaches_the_model_redacted` check that recording is idempotent.\n\nSelector syntax, redaction details and denial behaviour are cited requirements. Their own tests cover them, so I did not reassess them here.",
   "references": "f6b26de51230f0a225088931ddfb2619af4ffc71cabffb0011afee7f7f3b106b",
   "inputs": [
     {
@@ -283,7 +283,8 @@
         ":::{req} authoring_inputs",
         "When preparing the mandatory input set defined by",
         "{cite}`requirements.authoring.mandatory_inputs`, every terminology definition",
-        "referenced by the subject or any contributed source MUST contribute its complete",
+        "referenced by the subject, any contributed source, or an acknowledgment supplied",
+        "under {cite}`requirements.authoring.fixme_inputs` MUST contribute its complete",
         "fenced declaration, including its phrase option. Definitions referenced by those",
         "definitions MUST also be included transitively, without duplicates or",
         "nontermination on cycles.",
@@ -341,18 +342,8 @@
     },
     {
       "file": "src/authoring/inputs.rs",
-      "item": "impl[AssessmentSources]/fn[prepare]",
-      "hash": "a2e105c58b8d10db1d4cf5d05b025518db1e18f63d477a4f8cdf449067a361f8"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
       "item": "mod[tests]/fn[mandatory_git_inputs_require_staging_declarations_sources_and_terms]",
-      "hash": "a3545d993ee80435ed52424c332b3c17d5c8118501e2711c579c175f1f917bff"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "fn[converse]",
-      "hash": "8ff7fab0e18a2edc82384c148a31ce61194c3c1d4898e7518e1585898f91373e"
+      "hash": "93ebe10a56c8edf99fa3454bcf6f285ea2167a9f9d43ced80bf5a08a8d923106"
     },
     {
       "file": "src/authoring/pages.rs",
@@ -372,12 +363,12 @@
     {
       "file": "src/authoring/tools.rs",
       "item": "mod[tests]/fn[model_inputs_reads_searches_and_citation_prompts_are_redacted]",
-      "hash": "ec0650c2b7c17bec40f218540fac4fe48673651ba231dc64e7cc0ee6d346d06c"
+      "hash": "c5f365aeffaff61402bc18255382a276e51aff92edbfaaafaf50938262bb1860"
     },
     {
       "file": "src/authoring/tools.rs",
       "item": "mod[tests]/fn[declaration_text_reaches_the_model_redacted]",
-      "hash": "0b57b71704550d2c6dd9c0b2e0e1339c33196eabdb806fbfc0058fb9dec34507"
+      "hash": "472044f1becf45b21f44bdcf147b6fc636b40b74407c2249e634cb1ca65fc0d1"
     },
     {
       "file": "src/authoring/tools.rs",
@@ -417,17 +408,12 @@
     {
       "file": "src/authoring/tools.rs",
       "item": "mod[tests]/fn[habeas_tool_describes_its_argument_conventions_with_an_example_per_form]",
-      "hash": "3eec68e94859ed552ac6613755d4b27f29ea02406b53e3e8fa2903bcbd7e9191"
+      "hash": "25a7e963fb8f288170dd3c769caf3448febcd9cff1baff6fded7b8f3cc3d8849"
     },
     {
       "file": "src/authoring/tools.rs",
       "item": "mod[tests]/fn[line_range_reads_record_the_innermost_covering_nodes]",
       "hash": "0db04fd9193a833a3d1add4ebbc5e148c9bc707a67873cef4e2a01ba06d81bc9"
-    },
-    {
-      "file": "src/inputs.rs",
-      "item": "fn[outline_inputs_for_lines]",
-      "hash": "1a71201d6c638e1ad96c8664db6788c9c99992c61d19e49ba3902bed73995d4f"
     },
     {
       "file": "tests/authoring_cli.rs",
@@ -437,7 +423,7 @@
     {
       "file": "tests/authoring_cli.rs",
       "item": "fn[bedrock_cli_uses_selected_profile_region_and_converse_tools]",
-      "hash": "1fb33572c12ad75e7eba03099fae29c8b77541d75000f9f8f168c2f7861a5bcd"
+      "hash": "52db2e6d394eca844bb781dde7335197d9dff8ebafe9a80d245f1fd53c422fae"
     },
     {
       "file": "tests/live_bedrock.rs",
@@ -456,51 +442,6 @@
         "exactly that definition.",
         ":::"
       ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "fn[read]",
-      "hash": "b6c181bdb647f5969daad3a4bdccea56aa57026e5b81c88a9a573a8071527038"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "fn[dispatch]",
-      "hash": "758a46cbd9110b234687139f5031a8101f39dce0eb2be6cf5d7036234ae26dbb"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "fn[dispatch_paged]",
-      "hash": "46603300d61b11dcdd71d12c530be377b85055e563dde1f2f83d3db30d4f4055"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "impl[AssessmentSources]/fn[read_lines]",
-      "hash": "ffb8fff7f402ce20532747b6a86449b5dc723fd94c58a0e27d8b646295fde062"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "impl[AssessmentSources]/fn[read_selector]",
-      "hash": "e5ff48c5bcdbcb06de716561d49f5ada66bf4360db5a17d1b99f6d153ad26550"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "impl[AssessmentSources]/fn[additional_definitions]",
-      "hash": "e3388ed319591fc0df5b8e46fb83dff637a95befa4eff8d8e597d4410c6b963c"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "impl[AssessmentSources]/fn[record_inputs]",
-      "hash": "b7e67c476cd4eca057eb377efbb99b23ae0b0c84a884d0ab6e69741f231369de"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "fn[source_input]",
-      "hash": "abf52301996c9c036aac288b677c0d3852378f66031886583d303dc16e5969cc"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "fn[definitions]",
-      "hash": "aafeb58f09270c3474d290a4038f6f21269f3c313bb936f9cc751ab3d5783a7f"
     }
   ]
 }

@@ -1,7 +1,7 @@
 {
   "requirement": "The harness MUST expose an `ast_grep` tool with this interface:\n\n```text\nast_grep({ language: String, rule: Object, path: String = \".\",\n           referencing: Optional<ReferenceScope> }) -> SearchResult\nast_grep({ query: String }) -> SearchResult\n```\n\nThe second form MUST run the query a distributed requirement declares, named\n`<full-name>/<query-name>`, exactly as validation runs it, including `paths`,\n`exclude`, and `within`, and MUST return each match's site. In the first form,\n`referencing` MUST restrict the search as for\n{cite}`requirements.authoring.text_search`, and `language` MUST follow the `language` key of a query body under\n{cite}`requirements.references.distributed`, and `rule` MUST be a JSON object\nholding that body's `rule`, `utils`, and `constraints` keys. The tool MUST search\nthe requested permitted file or directory in process, with the same file walking,\nordering, and source-access policy as {cite}`requirements.authoring.text_search`,\nover files of that language. Each match MUST be returned as the entry of the\ninnermost outline node containing it, in the `SearchResult` form and under the\nrules of {cite}`requirements.authoring.text_search`, with the matched lines as\nits lines; search results MUST NOT become evidence inputs. Its model-facing description MUST\nexplain the rule syntax and the `context` and `selector` form for fragments that\ndo not parse as standalone code. Explicitly requesting an excluded path MUST be\nhandled as a denial under {cite}`requirements.authoring.read_denial`. No matches\nMUST return an empty array; an invalid language or rule, or a failed search,\nMUST return an explanatory tool error.",
   "determination": true,
-  "rationale": "I found no gap against `requirements.authoring.structural_search`.\n\n**Implementation and reachability**\n- `src/authoring/tools.rs#fn[definitions]` advertises `ast_grep` with both forms. Its description explains rule syntax, `utils` and `constraints`, the `context` and `selector` form, ordering, the query form, \"not evidence inputs\", and the empty-array result. The `language` enum comes from `QueryLanguage::names()`.\n- `src/authoring/tools.rs#fn[dispatch_paged]` routes `ast_grep` to `structural`.\n  - `structural` is reached from that {impl} item. It validates keys and rejects unexpected arguments.\n  - It requires `language` to be a string and `rule` to be an object.\n  - It compiles the rule through `StructuralRule::compile`, which accepts only the `rule`, `utils` and `constraints` keys.\n  - It applies `referencing` restrictions, as `search` does for ripgrep, through `referencing` and `regions`.\n  - It searches in process through `walk_sources`, the walker `search` also uses, restricted to files of the language.\n  - It maps each match to the innermost outline node (`crate::structural::innermost_node`, with comment ownership) and builds entries through `SearchNodes`. These carry matched lines only and have no definitions or inputs.\n  - A parse failure is returned as an error.\n- `fn[declared_query]` implements the `{query}` form. It splits `<full-name>/<query-name>` and loads the declared queries. It runs `query_matches` over the discovered files, which handles `paths`, `exclude` and `within`. It returns each match's site as an entry.\n- The `QueryLanguage` `Language` trait methods in `src/structural.rs` and the `ast-grep-config` pin in `Cargo.toml` support these.\n\n**Tests**\n- `ast_grep_tool_is_advertised_with_both_forms_and_rule_syntax` checks the tool's parameter schema and the description phrases.\n- `ast_grep_returns_innermost_nodes_of_the_language_and_reports_failures` covers these cases:\n  - Only files of the requested language are searched.\n  - Results are ordered by path and then line.\n  - Matches fall in the innermost node, and a comment match goes to the comment's owner.\n  - `utils` and `constraints` are accepted.\n  - An empty match returns `{\"matches\": []}`.\n  - The result has no `definitions` and adds no recorded inputs.\n  - Redaction is applied.\n  - Errors are returned for an invalid language, a non-object rule, an invalid rule, an unexpected key, extra arguments, and a malformed or unknown query name.\n  - A syntax error in a searched file fails the search.\n- `ast_grep_referencing_restricts_the_search_as_ripgrep_does` covers roles, `scope` `node` and `file`, an unknown scope, a missing selection, and an unknown role.\n- `ast_grep_queries_run_declared_queries_and_return_their_sites` covers site queries with `paths` and `exclude`. It also covers a violation query with `within`, where a match outside any site is discarded, and the error cases for a missing query and a malformed body.\n- Denial handling for an explicitly requested excluded path is tested in four places:\n  - The generated-evidence test (`generated_evidence_is_excluded_from_reads_search_and_discovery`).\n  - The disallowed-descendant test (`allowed_ignored_and_external_sources_are_discoverable_but_disallowed_descendants_are_not`).\n  - The Cargo-output test (`cargo_output_is_discovered_and_read_without_building_or_allowing_other_target_files`).\n  - The untracked-path CLI test (`explicit_untracked_reads_return_an_untracked_error_and_the_assessment_continues` in `tests/authoring_cli.rs`).\n- `src/structural.rs` has two unit tests. `rules_compile_for_every_grammar_and_report_invalid_input` covers rule compilation for all eight grammars. `matches_belong_to_the_innermost_node_or_comment_owner` covers innermost-node selection.\n\nNo unspecified behavior or untested obligation turned up.",
+  "rationale": "I judge the tests adequate for `requirements.authoring.structural_search`. Each obligation maps to a marked test with assertions on the outcome.\n\n**Interface and description**\n- `src/authoring/tools.rs#mod[tests]/fn[ast_grep_tool_is_advertised_with_both_forms_and_rule_syntax]` asserts the full parameter schema. That covers `language` (with its enum), `rule`, `path` (default \".\"), `referencing` (reusing ripgrep's schema), `query`, and `additionalProperties: false`.\n- The same test asserts the description phrases for rule syntax (`pattern`, `kind`, relational and composite rules, `utils`, `constraints`) and the `context` and `selector` form. It also checks the query form, the result form, \"not evidence inputs\", the pointer to `habeas`, and the empty-array statement.\n\n**Rule form**\n- `ast_grep_returns_innermost_nodes_of_the_language_and_reports_failures` checks these behaviours:\n  - Only files of the requested language are searched. A `.py` file is ignored for `rust`, and the same `unwrap` pattern run as `python` finds only the `.py` file.\n  - Results are ordered by path and then line.\n  - Each node is returned once, and a node with two matches gets two matched lines.\n  - A match in a comment is attributed to the comment's owner.\n  - `utils` and `constraints` work.\n  - Redaction is applied.\n  - There are no `definitions` and no recorded inputs.\n- Empty results return `{\"matches\": []}`.\n- Errors are asserted with messages for an unknown language, a non-string language, a non-object rule, an invalid kind, an unexpected key, an extra argument, and a malformed query name. A file that fails to parse fails the search.\n- `ast_grep_referencing_restricts_the_search_as_ripgrep_does` covers `referencing` with the `cite` role, a glob with `scope: node`, and an unknown scope, role, or missing selection.\n- `src/structural.rs#mod[tests]/fn[rules_compile_for_every_grammar_and_report_invalid_input]` compiles and matches a rule for all eight grammars. It also asserts the error cases: unknown language, missing `rule`, unexpected key, invalid kind.\n- `src/structural.rs#mod[tests]/fn[matches_belong_to_the_innermost_node_or_comment_owner]` tests innermost-node attribution, including comments and attributes.\n\n**Query form**\n- `ast_grep_queries_run_declared_queries_and_return_their_sites` runs a site query. It asserts that `paths` and `exclude` are honoured: `src/skip.rs` and `tests/outside.rs` are absent. It also asserts that a multi-line match marks all six lines as matched.\n- The same test runs a violation query. A `return` in `helper`, which lies inside no site, is discarded. The surviving match is attributed to its containing site, `fn[check]`.\n- It also asserts errors for a missing query name and a malformed query body.\n- The query form shares `query_sites` with validation, and `src/sites.rs` has its own tests of the sites and violations semantics. I did not read those tests; I only saw their names in search results. This covers the one scenario the tool test lacks, a violation match inside nested sites.\n\n**Source-access policy and denial**\n- The tool shares `walk_sources` with `ripgrep`.\n- `generated_evidence_is_excluded_from_reads_search_and_discovery` asserts that the structural search omits generated evidence. It also asserts that explicitly requesting `evidence` is denied.\n- `allowed_ignored_and_external_sources_are_discoverable_but_disallowed_descendants_are_not` asserts that allowed, hidden, ignored, and external `.rs` files are found. It asserts that disallowed descendants are omitted, and that explicitly naming them yields a `PermissionDenied` error.\n- `cargo_output_is_discovered_and_read_without_building_or_allowing_other_target_files` asserts a structural hit in build output. It asserts that the hit disappears once the output is disallowed, and that an explicit request is then denied with \"disallowed\".\n- `operating_system_permission_failures_are_ordinary_read_failures` asserts that an OS permission failure is not reported as a denial.\n- `tests/authoring_cli.rs#fn[explicit_untracked_reads_return_an_untracked_error_and_the_assessment_continues]` covers the untracked-file denial for `ast_grep`. It checks that the assessment continues and the file is not delivered.\n- Every result checked asserts that `inputs` is empty.\n\nI found no uncovered obligation and no gap, and no acknowledgments are needed.",
   "references": "331d39b2ffdfcaebb8b1be37ac1900b12aaf1864df22b51de416ea33353035f4",
   "inputs": [
     {
@@ -182,21 +182,6 @@
       ]
     },
     {
-      "file": "Cargo.toml",
-      "item": "table[dependencies]/pair[ast-grep-config]",
-      "hash": "3e3990bf5deef9d8fe686ad7c01c7f48987f4a98d91453fd08f26050b63269ae"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "fn[definitions]",
-      "hash": "aafeb58f09270c3474d290a4038f6f21269f3c313bb936f9cc751ab3d5783a7f"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "fn[dispatch_paged]",
-      "hash": "46603300d61b11dcdd71d12c530be377b85055e563dde1f2f83d3db30d4f4055"
-    },
-    {
       "file": "src/authoring/tools.rs",
       "item": "mod[tests]/fn[generated_evidence_is_excluded_from_reads_search_and_discovery]",
       "hash": "150a7f8939f9255e0cefe963dc01e9c4fff265bf14af5af7055358cd31f54227"
@@ -219,7 +204,7 @@
     {
       "file": "src/authoring/tools.rs",
       "item": "mod[tests]/fn[ast_grep_tool_is_advertised_with_both_forms_and_rule_syntax]",
-      "hash": "0ad423a534901168dd99908b655bba6215cb19bb1a48ef2009abeae04c9c340a"
+      "hash": "44579905cf4ee5bc9b3e23b0b3a8111783336c83d8f48791bfc1ff5b2c0f74da"
     },
     {
       "file": "src/authoring/tools.rs",
@@ -235,26 +220,6 @@
       "file": "src/authoring/tools.rs",
       "item": "mod[tests]/fn[ast_grep_queries_run_declared_queries_and_return_their_sites]",
       "hash": "63c1997529ca8a2e8db58e9affc378fe01774e1058cbc75fdc6013638a934350"
-    },
-    {
-      "file": "src/structural.rs",
-      "item": "impl[QueryLanguage/Language]/fn[kind_to_id]",
-      "hash": "441536ff42d412e0cae33302ce3ed14e1a045934c5682e87f44bb10f3fc2b1f2"
-    },
-    {
-      "file": "src/structural.rs",
-      "item": "impl[QueryLanguage/Language]/fn[field_to_id]",
-      "hash": "4dfe65150d1202ee5eb2a7a9b91456c383072f8414a0e2372daa6e24a164aa71"
-    },
-    {
-      "file": "src/structural.rs",
-      "item": "impl[QueryLanguage/Language]/fn[pre_process_pattern]",
-      "hash": "c8044adb16ac5a30f182d43e8ad3a9af1a3ce90e1dde978b7135a1af54610eac"
-    },
-    {
-      "file": "src/structural.rs",
-      "item": "impl[QueryLanguage/Language]/fn[build_pattern]",
-      "hash": "0117dbb4949f14afedeb5654fcd96af68ac3a7e3f2bb80f31e9c5f30e1a78a55"
     },
     {
       "file": "src/structural.rs",
@@ -275,16 +240,6 @@
       "file": "src/authoring/tools.rs",
       "item": "fn[structural]",
       "hash": "214d7b008a2acb1fb7e786adc516921edd6253ab2f6ee4e7894fd58a79495600"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "fn[search]",
-      "hash": "5f043c14c80c5dac1610f3c0add854edd22e785a20a3ac707fbe24c4fcb424aa"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "fn[declared_query]",
-      "hash": "d9c46334bd1fdcad7efaba720f845782b75790a1804d7a3318577513dc80726c"
     }
   ]
 }

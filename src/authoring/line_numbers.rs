@@ -129,7 +129,11 @@ impl Rejection {
         Outcome::Reject(format!(
             "Not accepted: the rationale cites line numbers ({found:?}). Line numbers \
              change whenever nearby code changes, so cite locations as the judgment rules \
-             say:\n\n{guidance}\n\nCall {submit} once more, either with a rationale that \
+             say:\n\n{guidance}\n\nThe detector also matches numeric locations in quoted \
+             diagnostics and illustrative examples, even when they are not source \
+             citations. Remove those numbers or replace them with placeholders throughout \
+             the rationale, including quoted text. Do not repeat the matched text while \
+             explaining this rejection. Call {submit} once more, either with a rationale that \
              gives no line numbers, or with rationale set to exactly {uuid} to keep the \
              submission you just made as it was. Another rationale that cites line numbers \
              fails the assessment."
@@ -232,6 +236,7 @@ mod tests {
             .find_map(|word| uuid::Uuid::parse_str(word).ok())
             .expect("a UUID")
             .to_string();
+        assert!(message.contains(&format!("Call submit_judgment once more, either with a rationale that gives no line numbers, or with rationale set to exactly {uuid} to keep the submission you just made as it was.")), "{message}");
         // Exactly the UUID keeps the rejected submission unchanged.
         let keep = json!({"determination": true, "rationale": uuid});
         assert_eq!(rejection.resubmitted(&keep), Some(cited.clone()));

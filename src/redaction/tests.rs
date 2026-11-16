@@ -337,6 +337,24 @@ fn regions_extend_both_ways_keep_crlf_and_scan_past_a_mebibyte() {
         redact_text(&chained),
         "let pair = \"[REDACTED:GitHub Token]\n"
     );
+    let entropy = "Xk7pQm2Rv9Ls4Tz8Wn3Yb6Hd";
+    for separator in [",", ";"] {
+        for source in [
+            format!("{entropy}{separator}{token}"),
+            format!("{token}{separator}{entropy}"),
+        ] {
+            let redacted = redact_text(&source);
+            assert!(redacted.contains(entropy), "{source}: {redacted}");
+            assert!(redacted.contains(separator), "{source}: {redacted}");
+            assert!(!redacted.contains(&token), "{source}: {redacted}");
+        }
+    }
+    let spaced = format!("{entropy}\t\r\n{token}\n\t{entropy}");
+    let redacted = redact_text(&spaced);
+    assert!(!redacted.contains(entropy), "{redacted}");
+    assert!(!redacted.contains(&token), "{redacted}");
+    assert_eq!(redacted.matches('\n').count(), spaced.matches('\n').count());
+    assert!(redacted.contains("\r\n"), "{redacted:?}");
     let large = format!("{}\n{token}\n", "x ".repeat(1 << 20));
     assert!(redact_text(&large).ends_with("\n[REDACTED:GitHub Token]\n"));
 }

@@ -2164,6 +2164,20 @@ pub(crate) mod tests {
         let mut other = entries();
         other[0].item = "fn[c]".to_owned();
         assert_ne!(digest_entries(entries()), digest_entries(other));
+        assert_ne!(
+            digest_entries(vec![entry("test", "a", "bc")]),
+            digest_entries(vec![entry("test", "ab", "c")]),
+        );
+        let mut words_one = entry("fixme", "src/lib.rs", "fn[f]");
+        words_one.origin = "fenced-reference";
+        words_one.words = vec!["ab".to_owned(), "c".to_owned()];
+        let mut words_two = entry("fixme", "src/lib.rs", "fn[f]");
+        words_two.origin = "fenced-reference";
+        words_two.words = vec!["a".to_owned(), "bc".to_owned()];
+        assert_ne!(
+            digest_entries(vec![words_one]),
+            digest_entries(vec![words_two])
+        );
     }
 
     /// Validation errors other than citation reviews, for fixtures that test
@@ -2947,6 +2961,7 @@ pub(crate) mod tests {
     }
 
     // {test}`requirements.ci.errors`
+    // {test}`requirements.definitions.inputs`
     #[test]
     fn configuration_and_dependency_failures_do_not_stop_later_checks() {
         let temp = fixture();
@@ -3272,6 +3287,7 @@ pub(crate) mod tests {
             "target/debug/out.rs",
             "crates/sub/target/out.rs",
             ".git/info/notes",
+            "nested/.git/info/notes",
         ] {
             let path = temp.path().join(file);
             fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -3366,6 +3382,7 @@ pub(crate) mod tests {
     }
 
     // {test}`requirements.ci.fence_lengths`
+    // {test}`requirements.ci.span`
     #[test]
     fn validates_four_or_more_colon_fences_and_longer_closers() {
         let body = "Body MUST remain.\n\n:::{note}\nNested.\n:::\n\nStill in the requirement.";

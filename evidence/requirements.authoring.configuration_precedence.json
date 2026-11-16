@@ -1,7 +1,7 @@
 {
   "requirement": "{impl}`requirements.configuration.feature_sections`\n`--config <name>` MUST select a configuration for that invocation. Otherwise,\nauthoring MUST use the user's selection for the canonical project root, then the\nworkspace default, then the user's default. Named workspace configurations MUST\noverride same-named user configurations as complete records. Backend, model,\nconnection settings, and options MUST come from the selected record as a unit;\nfields MUST NOT be merged between records. Workspace-only authoring MUST work\nwithout a user configuration file. Missing configuration or an unknown selection\nMUST identify the relevant configuration file and point to documented examples.\n\nAn explicit Bedrock AWS profile or region MUST override the corresponding SDK\ndefault; omitted values MUST use standard AWS SDK resolution. Ollama MUST use\nits configured endpoint or `http://localhost:11434`. If `api_key_env` is set, its\nnamed variable MUST supply the credential; a missing or empty value MUST produce\nan error before a model request. OpenAI MUST use its configured endpoint or\n`https://api.openai.com/v1`, and MUST resolve `OPENAI_API_KEY` when neither\n`api_key` nor `api_key_env` is supplied.",
   "determination": true,
-  "rationale": "I found no gap against `requirements.authoring.configuration_precedence`. Each obligation has code reachable from the marked `{impl}` items and a test that exercises it.\n\n**Reachability.** `main` and `author_all` reach `config::resolve_authoring` through `run_batch` and `configured_assessment`. That loads the workspace and user files and calls `resolve_authoring_with_workspace_from`. `resolve_authoring_from` delegates to the same function. Provider setup in `src/authoring/providers.rs#impl[RigProvider]/fn[connect]` is reached from the authoring flow. It calls `bedrock_sdk_config`, which uses `bedrock_sdk_loader`, and it calls `api_key` and `endpoint` on the Ollama and OpenAI configs.\n\n**Selection.** All of this is in `src/config.rs#fn[resolve_authoring_with_workspace_from]`.\n- **Order:** `--config <name>` comes first, then the user's project selection for the canonical project root, then the workspace default, then the user default.\n- **Workspace overrides user:** the workspace config is looked up before the user config, so a workspace record replaces a same-named user record.\n- **No merging:** the whole record is taken, including `backend`, `concurrency` and `policy`.\n- **Workspace only:** `user` can be `None`.\n- **Errors:** for missing configuration, no selection, or an unknown name, the error names the relevant file or files and includes `CONFIG_EXAMPLES`, which points to `md/requirements/authoring.md#editing-the-file`.\n\n**Tests for selection.**\n- `tests/configuration.rs#fn[explicit_project_and_default_selections_choose_whole_configs]` covers explicit, project and default selection, plus the missing-configuration error.\n- `tests/configuration.rs#fn[workspace_defaults_and_configs_combine_with_existing_user_selections]` covers workspace override and workspace-only resolution. It also covers the project > workspace default > user default order and the unknown name.\n- `tests/configuration.rs#fn[workspace_configurations_accept_validate_and_override_concurrency]` covers whole-record replacement.\n- `tests/configuration.rs#fn[unknown_selections_name_the_file_that_made_them]` and `tests/configuration.rs#fn[configurations_without_any_selection_report_how_to_choose_one]` cover the error messages.\n- `tests/authoring_cli.rs#fn[authoring_uses_nearest_workspace_configuration_without_a_user_file]` runs a workspace-only configuration through the CLI with no user file.\n\n**Bedrock.**\n- **Code:** `bedrock_sdk_loader` applies an explicit profile, region or credentials only when they are set. Otherwise it leaves the SDK's standard resolution alone.\n- **Unit tests:** `providers.rs#mod[tests]/fn[omitted_bedrock_profile_and_region_use_standard_sdk_resolution]` and `fn[explicit_bedrock_credentials_reach_the_sdk_without_the_default_chain]` check this against the SDK.\n- **CLI tests:** `tests/authoring_cli.rs#fn[bedrock_cli_uses_selected_profile_region_and_converse_tools]` checks the explicit profile and region on the wire. `fn[all_adapters_preserve_prompt_tools_and_evidence_with_default_connections]` checks the default chain.\n\n**Ollama and OpenAI.**\n- **Code:** `OllamaConfig::endpoint` falls back to `http://localhost:11434`. `OpenAiConfig::endpoint` falls back to `https://api.openai.com/v1`. `OllamaConfig::api_key_from` and `OpenAiConfig::api_key_from` read the named variable and error when it is missing or empty. OpenAI falls back to `OPENAI_API_KEY` when neither `api_key` nor `api_key_env` is set. `connect` calls `api_key()?`, which runs before any completion request.\n- **Tests:** `tests/configuration.rs#fn[backend_configuration_round_trips_without_materializing_defaults]` checks the Ollama default endpoint. `fn[openai_configuration_preserves_model_and_resolves_credentials]` checks the OpenAI default endpoint, the `OPENAI_API_KEY` fallback and the missing or empty key errors. `fn[ollama_authentication_resolves_separately_and_rejects_missing_values]` checks the Ollama key variable. `tests/authoring_cli.rs#fn[missing_or_empty_api_key_env_fails_before_any_model_request]` shows a nonzero exit, the variable named in the error, and no connection to the model endpoint. `fn[openai_responses_replays_tool_calls_and_records_usage]` and `fn[ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free]` check that `api_key_env` supplies the credential. `fn[all_adapters_preserve_prompt_tools_and_evidence_with_default_connections]` checks the default `OPENAI_API_KEY`.\n\nNo unspecified behavior and no `{fixme}` references turned up.",
+  "rationale": "I judge the marked tests adequate. They cover each obligation in `requirements.authoring.configuration_precedence`.\n\n**Selection and precedence**\n- `tests/configuration.rs#fn[explicit_project_and_default_selections_choose_whole_configs]` covers three cases:\n  - The user default is chosen when nothing else applies.\n  - A project-root selection beats the default. It is looked up through `root.join(\".\")`, which exercises canonical-root lookup.\n  - An explicit name selects a whole record, and the selected Ollama record keeps `endpoint == None`.\n- `tests/configuration.rs#fn[workspace_defaults_and_configs_combine_with_existing_user_selections]` covers the rest of the order:\n  - The workspace default beats the user default.\n  - A user project selection beats the workspace default.\n  - An explicit `workspace` name is honoured.\n  - A workspace default that names a user config resolves to the user record.\n  - With no workspace default, the user default is used.\n- The same test covers workspace-only authoring with no user config (`None` for the user), and `authoring_uses_nearest_workspace_configuration_without_a_user_file` covers it end to end through the CLI.\n\n**Whole-record override, no merging**\n- In the `shared` case of `workspace_defaults_and_configs_combine_with_existing_user_selections`, the workspace record replaces the user's `shared` record:\n  - The model is `replacement`.\n  - There is no endpoint, and the options are only `{temperature: 0.8}`, with no `top_p`.\n  - The user's `region` is not carried over, and neither are its `concurrency` and `us-west-2` fields.\n  - The config path is the workspace file.\n- `workspace_configurations_accept_validate_and_override_concurrency` checks the same override across all three backends. A user concurrency of 5 never leaks into a workspace record that has none.\n\n**Errors name the file and point to examples**\n- `explicit_project_and_default_selections_choose_whole_configs` checks the unknown-name case and the missing-configuration case. The errors contain the config path and the `editing-the-file` anchor.\n- `configurations_without_any_selection_report_how_to_choose_one` checks the no-selection case.\n- `unknown_selections_name_the_file_that_made_them` checks which file is named for a dangling user default, project selection, workspace default and `--config` name. It also checks the case with no workspace file.\n\n**Bedrock, Ollama and OpenAI**\n- Bedrock overrides:\n  - `bedrock_cli_uses_selected_profile_region_and_converse_tools` checks the profile credentials and `us-west-2`, and that the default-profile key is not used.\n  - `omitted_bedrock_profile_and_region_use_standard_sdk_resolution` checks that omitted values match standard SDK resolution, that an explicit profile resolves from that profile, and that an explicit region overrides it.\n  - `all_adapters_preserve_prompt_tools_and_evidence_with_default_connections` checks that Bedrock with no profile or region uses the default chain, reading the region and key from the environment.\n- Ollama and OpenAI endpoints:\n  - `backend_configuration_round_trips_without_materializing_defaults` checks the default Ollama endpoint `http://localhost:11434`.\n  - `openai_configuration_preserves_model_and_resolves_credentials` checks the default OpenAI endpoint `https://api.openai.com/v1`, a configured endpoint, and resolution of `OPENAI_API_KEY`.\n  - `openai_responses_replays_tool_calls_and_records_usage` and `all_adapters_preserve_prompt_tools_and_evidence_with_default_connections` check configured endpoints and the OpenAI credential via the CLI.\n- `api_key_env`:\n  - `ollama_authentication_resolves_separately_and_rejects_missing_values` checks that a missing or empty value is an error and that a set value supplies the key.\n  - `missing_or_empty_api_key_env_fails_before_any_model_request` checks the missing and empty cases for both Ollama and OpenAI through the CLI. It asserts failure, that stderr names the variable, that the listener was never contacted, and that the evidence file is unchanged.\n  - `ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free` and `openai_responses_replays_tool_calls_and_records_usage` check that the named variable's value is sent as the credential.\n\n**Observation, not a gap**\n- The CLI-level `--config` test, `tests/authoring_cli.rs#fn[an_explicit_configuration_selects_the_nondefault_workspace_profile]`, cites `requirements.authoring.invocation` and `requirements.authoring.configuration` but not this requirement.\n- The selection logic behind `--config` is tested through the marked resolver tests above. The flag itself only passes its value through to the resolver, with no conditional of its own, so I did not count the missing mark against the subject.",
   "references": "7bdcc3c680416b727b7df1059999c493c09e092591de9fcd92c385715b084f83",
   "inputs": [
     {
@@ -32,11 +32,6 @@
       ]
     },
     {
-      "file": "src/authoring/batch.rs",
-      "item": "fn[author_all]",
-      "hash": "04085915b6e2a6c34a2f30d39b22a3bb7286cc3beae8edbf5062489ae157f017"
-    },
-    {
       "file": "src/authoring/providers.rs",
       "item": "mod[tests]/fn[explicit_bedrock_credentials_reach_the_sdk_without_the_default_chain]",
       "hash": "c1dbd0d0c5a946629fa75e628e03d603331a8ae23f9fd6a0e04caf218dac06c4"
@@ -47,19 +42,9 @@
       "hash": "18871dd4c88124d1c60aac4ca99198bf26bba7ca4a445418599bf3e3df9b4cda"
     },
     {
-      "file": "src/config.rs",
-      "item": "fn[resolve_authoring_from]",
-      "hash": "227df8105c2381df598b3cf036fb6596f07e44f93411d69e0840dec151c73706"
-    },
-    {
-      "file": "src/main.rs",
-      "item": "fn[main]",
-      "hash": "45893b6502189459e48ee669e8e1b7c4d69f889c0c213417573af01914278208"
-    },
-    {
       "file": "tests/authoring_cli.rs",
       "item": "fn[ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free]",
-      "hash": "68956f83c216f2569265071cefcf0b1af95d822e4f70a8e6d7ca285e1027484d"
+      "hash": "b97f25a83a3d5d1e9fe35d005de3ae13ba82d441021b58812b65555f2d73692c"
     },
     {
       "file": "tests/authoring_cli.rs",
@@ -69,7 +54,7 @@
     {
       "file": "tests/authoring_cli.rs",
       "item": "fn[bedrock_cli_uses_selected_profile_region_and_converse_tools]",
-      "hash": "1fb33572c12ad75e7eba03099fae29c8b77541d75000f9f8f168c2f7861a5bcd"
+      "hash": "52db2e6d394eca844bb781dde7335197d9dff8ebafe9a80d245f1fd53c422fae"
     },
     {
       "file": "tests/authoring_cli.rs",
@@ -145,36 +130,6 @@
       "file": "tests/live_bedrock.rs",
       "item": "fn[credentials_available]",
       "hash": "a7873ca17f2ee02692cde9eec15128cfbee5fb23f3164e8da28351316ac02eec"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "fn[resolve_authoring_with_workspace_from]",
-      "hash": "78f64359f19af54cb5323bbe810082cbe8ccf6e628ae840ff81adca43e22c159"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "fn[bedrock_sdk_loader]",
-      "hash": "00149b3270a8dd337fa000357dd3b4d553b3cc65fc102a921444757205b85be3"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[OllamaConfig]/fn[api_key_from]",
-      "hash": "5ba74dfd70cff06aeb97d6c95de7432de9eb7024c7882e434fc214c41eb3897b"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[OpenAiConfig]/fn[api_key_from]",
-      "hash": "d89d2a4772093d5fddbd1ceac22e524c4983187bfebe71654fda3338adf000a6"
-    },
-    {
-      "file": "src/authoring/providers.rs",
-      "item": "impl[RigProvider]/fn[connect]",
-      "hash": "1a2c0128c6755d08cec22cdca2a433cb68c950d25ab6074438bc1cdada2bd48f"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "fn[resolve_authoring]",
-      "hash": "2fb277fc2ea1a1aed5d0a37cc3d9be0b0f97b41555f06cbff44571c2fffe05c0"
     }
   ]
 }

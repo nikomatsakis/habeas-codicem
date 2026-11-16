@@ -1,8 +1,8 @@
 {
-  "requirement": "The harness MUST expose a `references` tool with this interface:\n\n```text\nreferences({ selection: String? }) -> ReferenceIndex\n\nReferenceIndex {\n    definitions: Array<DefinitionName>,\n    sites: Array<ReferenceSite>,\n}\n\nDefinitionName { name: String, kind: \"requirement\" | \"example\" }\n\nReferenceSite {\n    name: String,\n    role: \"impl\" | \"cite\" | \"test\",\n    file: String,\n    item: String?,\n}\n```\n\n`selection` MUST be a {term}`requirements.references.definition_selection`.\nWithout `selection`, the tool MUST return\nthe full name and kind of every requirement and named example in full-name\norder, with empty `sites`. With `selection`, it MUST return the selected definitions\nin full-name order and one flattened `sites` array containing every valid\n`{impl}`, `{cite}`, and `{test}` reference to any match under\n{cite}`requirements.references.discovery`, each naming the definition it\nreferences, ordered by name, file, and position in the file, without line\nnumbers. An anchor under {cite}`requirements.references.anchors` MUST be\nreported as a site for its anchored file, with the anchored node's selector as\n`item` when it names one and no `item` when it names the whole file. Every\nother site MUST give as `item` the selector of its smallest enclosing outline\nnode under {cite}`requirements.references.outline_comments`. Only sources reference discovery considers under\n{cite}`requirements.references.discovery` MUST contribute sites. If reading such a\nsource fails, the tool MUST return an explanatory tool error naming the source.\nAn invalid selection or one matching no definition MUST return an explanatory tool\nerror.\n\nResults are listings without source text. Like directory listings, they MUST\nNOT become evidence inputs; the model requests the sources it relies on with the\n`habeas` tool.",
+  "requirement": "The harness MUST expose a `references` tool with this interface:\n\n```text\nreferences({ selection: String?, roles: Array<\"impl\" | \"cite\" | \"test\">? }) -> ReferenceIndex\n\nReferenceIndex {\n    definitions: Array<DefinitionName>,\n    sites: Array<ReferenceSite>,\n}\n\nDefinitionName { name: String, kind: \"requirement\" | \"example\" }\n\nReferenceSite {\n    name: String,\n    role: \"impl\" | \"cite\" | \"test\",\n    file: String,\n    item: String?,\n}\n```\n\n`selection` MUST be a {term}`requirements.references.definition_selection`.\nWithout `selection`, the tool MUST return\nthe full name and kind of every requirement and named example in full-name\norder, with empty `sites`. With `selection`, it MUST return the selected definitions\nin full-name order and one flattened `sites` array containing every valid\nreference to any match whose role is in `roles`, defaulting to\n`[\"impl\", \"cite\", \"test\"]`, under\n{cite}`requirements.references.discovery`, each naming the definition it\nreferences, ordered by name, file, and position in the file, without line\nnumbers. Roles MUST be treated as a set: repeating a permitted role MUST NOT\nduplicate sites or change the result.\nAn anchor under {cite}`requirements.references.anchors` whose role is selected\nby `roles` MUST be\nreported as a site for its anchored file, with the anchored node's selector as\n`item` when it names one and no `item` when it names the whole file. Every\nother site MUST give as `item` the selector of its smallest enclosing outline\nnode under {cite}`requirements.references.outline_comments`. Only sources reference discovery considers under\n{cite}`requirements.references.discovery` MUST contribute sites. If reading such a\nsource fails, the tool MUST return an explanatory tool error naming the source.\nAn invalid selection or one matching no definition MUST return an explanatory tool\nerror.\n\nAn empty `roles` array MUST return no sites while preserving the selected\ndefinitions' names and kinds. An unknown role or a value other than an array of\npermitted role strings MUST return an explanatory tool error. Without `selection`,\n`roles` MUST NOT change the definition-name listing.\n\nResults MUST contain no requirement text, example text, reference commentary,\nor source text. Like directory listings, they MUST\nNOT become evidence inputs; the model requests the sources it relies on with the\n`habeas` tool. For example,\n`references({selection: \"requirements.cli.status\", roles: [\"impl\"]})` MUST\nlocate only that subject's implementation references and anchors, without\nsupplying their source or recording evidence inputs.",
   "determination": true,
-  "rationale": "I found no gap against `requirements.authoring.reference_index`. Every obligation has code reachable from an {impl} item and a test that asserts its outcome.\n\n**Tool exposure.**\n- `src/authoring/tools.rs#fn[definitions]` advertises `references` with one optional string parameter, `selection`, and `additionalProperties: false`.\n- `src/authoring/tools.rs#fn[dispatch_paged]` routes the `references` call to `fn[references]`, so that function is reachable from the marked items.\n- `src/authoring/tools.rs#const[REFERENCE_ARRAYS]` fixes the result shape as `definitions` then `sites`.\n- `references_tool_is_advertised_with_an_optional_selection` tests the schema and description.\n\n**Selection must be a definition selection.**\n- `fn[references]` calls `crate::definition_glob::validate`, then filters definitions with `definition_glob::matches`.\n- The test `references_list_names_and_flattened_sites_without_recording_inputs` asserts an error for `bad name`, `\"\"`, and a non-string selection. It also asserts an error for an unknown key.\n\n**No selection.**\n- The function returns every non-term definition with its `kind` noun and an empty `sites` array. `load_definitions` returns a `BTreeMap`, so the order is by full name.\n- The same test asserts the exact JSON: `case`, `other`, `ready`, with `sites: []`.\n\n**With a selection.**\n- The function returns the selected definitions in full-name order.\n- It returns one flattened `sites` array of `impl`, `cite`, and `test` references. `fixme` and unclosed fences are dropped. Each site names its definition.\n- Sites are sorted by (name, file, line), and no line numbers appear in the output.\n- Each reference's `item` is the selector of `outline.owner_at_line`, the smallest enclosing outline node.\n- The same test asserts the exact JSON for a single name and for a glob. It covers the fenced-comment case, the `fixme` exclusion, and the unclosed fence.\n\n**Anchors.**\n- A loop over `definition.anchors` adds a site for each anchor. `item` is the node selector, or null when the anchor names the whole file. Anchors resolved through `sources.access` that are disallowed are skipped.\n- `references_report_anchors_as_file_or_node_sites` tests a whole-file anchor, a node anchor, and a disallowed `private/` anchor.\n\n**Only considered sources contribute sites.**\n- The function uses `collect_references`, which relies on `discovered_files` for the Git index and exclusion rules.\n- `references_report_only_sites_in_considered_sources` tests tracked, untracked, and disallowed files.\n\n**Read failure.**\n- Discovery errors are returned as a tool error that lists the named sources.\n- `references_name_a_considered_source_that_cannot_be_read` asserts that the message contains `src/locked.rs`.\n\n**No match.**\n- An empty selected set returns an error. The test asserts this for `requirements.missing`.\n\n**Not evidence inputs.**\n- The `Listing` carries no inputs. The tests assert `inputs.is_empty()`.\n- `reference_results_page_definitions_then_sites` in `src/authoring/pages.rs` also asserts empty inputs across pages.\n\n**Paging.** The paging test confirms definitions come first, then sites, across pages. Paging is covered by a separate requirement.\n\nI found no unspecified behavior in the {impl} code.",
-  "references": "34d880dd1d9703bfb7bde7e3282feeb6abd8a6719bb3245d0c2c5d8f70d97481",
+  "rationale": "I judge the tests adequate for `requirements.authoring.reference_index`. I did not request any implementation source. The assessment rests on the supplied tests alone.\n\n**Interface**\n- `tools.rs#mod[tests]/fn[references_tool_is_advertised_with_an_optional_selection]` asserts the exact parameter schema. `selection` is an optional string. `roles` is an array of strings limited to impl, cite and test, defaulting to all three. Additional properties are rejected.\n\n**Listing without `selection`**\n- `fn[references_list_names_and_flattened_sites_without_recording_inputs]` asserts the exact result for `{}`. The definitions are `requirements.case` (example), `requirements.other` and `requirements.ready`, in full-name order. `sites` is empty.\n- The same test shows that `{roles:[\"impl\"]}` without `selection` returns an identical result, so `roles` does not change the listing.\n- Invalid role filters (`null`, `\"impl\"`, `[\"fixme\"]`, `[1]`) all return errors.\n\n**Selection by name and glob**\n- An exact name and the glob `requirements.*` are both tested. The glob test checks definitions in full-name order and a flattened `sites` array.\n- Sites are checked for ordering by name: `requirements.other` comes first. They are checked for ordering by file: `fenced.rs` comes before `lib.rs`.\n- Position within a file is checked: `fn[zeta]` is listed before `fn[work]`, which is the reverse of alphabetical order, so the test shows ordering by position rather than by item name.\n- The returned sites carry no line numbers.\n- Reference sites for the ready, other and case definitions cover the impl, cite and test roles.\n- A `{term}` reference and a `{fixme}` reference are not reported as sites. An unclosed fence is also not a site.\n- Fenced references in comment runs resolve to the owning node, `fn[fenced]`.\n- A Markdown site gets a `section@…` item.\n- A reference inside a function body gets that function's selector.\n\n**Roles as a set**\n- `[\"impl\",\"impl\"]` returns the same single site as the plain impl filter, with no duplicates.\n- `[]` returns the definitions and an empty `sites` array.\n\n**Anchors**\n- `fn[references_report_anchors_as_file_or_node_sites]` checks a `:test:` anchor on a whole file, which reports `item: null`. It checks an `:impl:` anchor on `section[Skill]`, which reports that selector.\n- Anchors are filtered by role: with `roles:[\"impl\"]` only the impl anchor remains.\n- An anchor to a disallowed path is not reported as a site.\n\n**Considered sources only**\n- `fn[references_report_only_sites_in_considered_sources]` builds a Git index with a tracked file, an untracked file and a disallowed-path file. Only the tracked file's site is returned.\n\n**Read failure**\n- `fn[references_name_a_considered_source_that_cannot_be_read]` locks a source file. It asserts that the error names `src/locked.rs` and says reference discovery failed.\n\n**Invalid selection**\n- A missing name, a vocabulary definition (`requirements.word`), `\"bad name\"`, `\"\"` and a non-string `selection` each return an error. An unknown parameter (`name`) is also an error.\n\n**No text and no evidence inputs**\n- The `inputs` field is asserted empty in every call.\n- `tests/authoring_cli.rs#fn[implementation_discovery_has_no_text_or_evidence_until_the_model_requests_a_read]` is an end-to-end check. The `references` result with `roles:[\"impl\"]` contains the `fn[ready]` location. It contains none of the requirement text, commentary or source text, and no `input` or `inputs` keys. Evidence is recorded only after the model reads the item with `habeas`.\n\nThe `pages.rs#mod[tests]/fn[reference_results_page_definitions_then_sites]` test covers paging and is additional.\n\nI found no untested obligation, and no gap needs a FIXME acknowledgment.",
+  "references": "04c4804dc8a77855f2d37fdff54e152dc3849a0f01c2ad82942c881cfb095f28",
   "inputs": [
     {
       "requirements": "requirements.authoring.reference_index",
@@ -14,7 +14,7 @@
         "The harness MUST expose a `references` tool with this interface:",
         "",
         "```text",
-        "references({ selection: String? }) -> ReferenceIndex",
+        "references({ selection: String?, roles: Array<\"impl\" | \"cite\" | \"test\">? }) -> ReferenceIndex",
         "",
         "ReferenceIndex {",
         "    definitions: Array<DefinitionName>,",
@@ -36,10 +36,14 @@
         "the full name and kind of every requirement and named example in full-name",
         "order, with empty `sites`. With `selection`, it MUST return the selected definitions",
         "in full-name order and one flattened `sites` array containing every valid",
-        "`{impl}`, `{cite}`, and `{test}` reference to any match under",
+        "reference to any match whose role is in `roles`, defaulting to",
+        "`[\"impl\", \"cite\", \"test\"]`, under",
         "{cite}`requirements.references.discovery`, each naming the definition it",
         "references, ordered by name, file, and position in the file, without line",
-        "numbers. An anchor under {cite}`requirements.references.anchors` MUST be",
+        "numbers. Roles MUST be treated as a set: repeating a permitted role MUST NOT",
+        "duplicate sites or change the result.",
+        "An anchor under {cite}`requirements.references.anchors` whose role is selected",
+        "by `roles` MUST be",
         "reported as a site for its anchored file, with the anchored node's selector as",
         "`item` when it names one and no `item` when it names the whole file. Every",
         "other site MUST give as `item` the selector of its smallest enclosing outline",
@@ -49,9 +53,18 @@
         "An invalid selection or one matching no definition MUST return an explanatory tool",
         "error.",
         "",
-        "Results are listings without source text. Like directory listings, they MUST",
+        "An empty `roles` array MUST return no sites while preserving the selected",
+        "definitions' names and kinds. An unknown role or a value other than an array of",
+        "permitted role strings MUST return an explanatory tool error. Without `selection`,",
+        "`roles` MUST NOT change the definition-name listing.",
+        "",
+        "Results MUST contain no requirement text, example text, reference commentary,",
+        "or source text. Like directory listings, they MUST",
         "NOT become evidence inputs; the model requests the sources it relies on with the",
-        "`habeas` tool.",
+        "`habeas` tool. For example,",
+        "`references({selection: \"requirements.cli.status\", roles: [\"impl\"]})` MUST",
+        "locate only that subject's implementation references and anchors, without",
+        "supplying their source or recording evidence inputs.",
         ":::"
       ]
     },
@@ -95,11 +108,14 @@
         "MUST NOT form part of the definition's text for evidence comparison or for",
         "requirements inputs, and MUST NOT render as body text.",
         "",
-        "An anchored file or node MUST be covered by the definition's evidence under",
-        "{cite}`requirements.references.evidence_coverage`, by an input selecting it, so changing the file makes that evidence stale. A path or selector that",
+        "For each `:test:` anchor, the harness MUST include the selected file or node's",
+        "source text in the initial model request under",
+        "{cite}`requirements.authoring.mandatory_inputs` and MUST record that selection",
+        "as an evidence input under {cite}`requirements.references.evidence_coverage`,",
+        "so changing that source makes the evidence stale.",
+        "A `:impl:` anchor alone MUST NOT require an input selecting its source. A path or selector that",
         "does not resolve to a readable, permitted file or node MUST be a validation error naming the",
-        "definition and the path; authoring MUST report it before inference, because the",
-        "definition cannot be assessed without it. Any other option line in a `{req}` or",
+        "definition and the path; authoring MUST report it before inference. Any other option line in a `{req}` or",
         "`{example}` declaration MUST be a validation error.",
         ":::"
       ]
@@ -135,28 +151,13 @@
     },
     {
       "file": "src/authoring/tools.rs",
-      "item": "fn[definitions]",
-      "hash": "aafeb58f09270c3474d290a4038f6f21269f3c313bb936f9cc751ab3d5783a7f"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "fn[dispatch_paged]",
-      "hash": "46603300d61b11dcdd71d12c530be377b85055e563dde1f2f83d3db30d4f4055"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "const[REFERENCE_ARRAYS]",
-      "hash": "c9c1581ba92d24e18372fd31e39e2196fa4ca90f9ef6e265923d2fa0624b5b4d"
-    },
-    {
-      "file": "src/authoring/tools.rs",
       "item": "mod[tests]/fn[references_list_names_and_flattened_sites_without_recording_inputs]",
-      "hash": "7aed1b9c5c360b2c97025b11ccfcd09309f6b8516767c80a412ff4296c135673"
+      "hash": "16c6f2b578e686d031eb373e00599680cd1f49ef9d8a1b3ef106949fa04c6b27"
     },
     {
       "file": "src/authoring/tools.rs",
       "item": "mod[tests]/fn[references_report_anchors_as_file_or_node_sites]",
-      "hash": "05e2048cc92d139a2eb8ef0695448ae998a4563a644afeca66efab4eb35a3fb6"
+      "hash": "02a2a5835e7bcc3839446eb6091fa07c5d1c81b20938d33df7fa62b549c498ac"
     },
     {
       "file": "src/authoring/tools.rs",
@@ -171,7 +172,12 @@
     {
       "file": "src/authoring/tools.rs",
       "item": "mod[tests]/fn[references_tool_is_advertised_with_an_optional_selection]",
-      "hash": "0b9d07088af9ce09ea4d5960f92c0f29d97a6cd1f3f335fb4adb37985be7c3f1"
+      "hash": "49519cb95a2813139a60c9e58116b63031658fe12a8350ca3d50d57b128dfe63"
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "item": "fn[implementation_discovery_has_no_text_or_evidence_until_the_model_requests_a_read]",
+      "hash": "618e9b6547e8ee206953410c4d974460a290cfac3a458d6724126e16da1780c5"
     },
     {
       "definition": "requirements.references.definition_selection",
@@ -185,11 +191,6 @@
         "exactly that definition.",
         ":::"
       ]
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "fn[references]",
-      "hash": "7e9fe10423ecbfeee265dd4e33b0f9df01c429fdb20ff61fb87c24e085c72147"
     }
   ]
 }

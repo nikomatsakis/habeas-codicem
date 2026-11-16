@@ -877,6 +877,7 @@ pub(super) mod tests {
     // {test}`requirements.authoring.fixme_inputs`
     // {test}`requirements.definitions.dependencies`
     // {test}`requirements.ci.reference_set`
+    // {test}`requirements.definitions.authoring_inputs`
     #[test]
     fn acknowledgment_only_terms_are_supplied_and_validated_without_implementation_reads() {
         let root = project();
@@ -1183,6 +1184,7 @@ pub(super) mod tests {
 
     // {test}`requirements.authoring.read_denial`
     #[cfg(unix)]
+    // {test}`requirements.references.anchors`
     #[test]
     fn mandatory_inputs_through_symlinks_leaving_the_project_abort_preparation() {
         let root = project();
@@ -1367,7 +1369,7 @@ pub(super) mod tests {
         fs::write(root.path().join("skills/ready.md"), "# Skill\nBe ready.\n").unwrap();
         fs::write(
             root.path().join("md/requirements.md"),
-            ":::{req} ready\n:impl: skills/ready.md\n:test: skills/ready.md\nThe project MUST be ready.\n:::\n",
+            ":::{req} ready\n:impl: skills/ready.md\n:test: skills/ready.md\nThe project MUST be ready.\n\nKeep the whole body.\n:impl: this is body text\n:::\n",
         )
         .unwrap();
         let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
@@ -1381,7 +1383,7 @@ pub(super) mod tests {
                 json!({
                     "requirements": "requirements.ready",
                     "matches": ["requirements.ready"],
-                    "text": [":::{req} ready", "The project MUST be ready.", ":::"]
+                    "text": [":::{req} ready", "The project MUST be ready.", "", "Keep the whole body.", ":impl: this is body text", ":::"]
                 }),
                 json!({
                     "file": "skills/ready.md",
@@ -1392,9 +1394,173 @@ pub(super) mod tests {
                 }),
             ]
         );
-        assert_eq!(sources.subject_text, "The project MUST be ready.");
+        assert_eq!(
+            sources.subject_text,
+            "The project MUST be ready.\n\nKeep the whole body.\n:impl: this is body text"
+        );
     }
 
+    // {test}`requirements.references.authoring_inputs`
+    // {test}`requirements.references.anchors`
+    // {test}`requirements.authoring.mandatory_inputs`
+    #[test]
+    fn test_anchors_supply_only_the_selected_node() {
+        let root = project();
+        fs::write(
+            root.path().join("src/lib.rs"),
+            "fn target() { assert_eq!(1, 1); }\nfn sibling() { panic!(\"UNRELATED_SOURCE\"); }\n",
+        )
+        .unwrap();
+        fs::write(
+            root.path().join("md/requirements.md"),
+            ":::{req} ready\n:test: src/lib.rs#fn[target]\nThe project MUST be ready.\n:::\n",
+        )
+        .unwrap();
+        let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        let inputs = sources.mandatory_inputs();
+        assert_eq!(inputs.len(), 2, "{inputs:?}");
+        let expected =
+            crate::inputs::outline_input(root.path(), "src/lib.rs", "fn[target]").unwrap();
+        for key in ["file", "item", "hash"] {
+            assert_eq!(inputs[1][key], expected[key]);
+        }
+        assert_eq!(inputs[1]["kind"], "fn");
+        assert_eq!(
+            inputs[1]["text"],
+            json!(["fn target() { assert_eq!(1, 1); }"])
+        );
+        let prompt = super::super::initial_prompt(&sources).unwrap().joined();
+        assert!(prompt.contains("assert_eq!(1, 1)"), "{prompt}");
+        assert!(!prompt.contains("UNRELATED_SOURCE"), "{prompt}");
+        assert!(!prompt.contains("fn sibling"), "{prompt}");
+    }
+
+    // {test}`requirements.references.anchors`
+    // {test}`requirements.authoring.read_denial.mandatory`
+    #[test]
+    fn outside_test_anchors_follow_explicit_allow_and_disallow_rules() {
+        let root = project();
+        let outside = tempfile::tempdir().unwrap();
+        let path = outside.path().join("check.txt");
+        fs::write(&path, "CHECK_OUTSIDE_SOURCE\n").unwrap();
+        let relative = format!(
+            "../{}/check.txt",
+            outside.path().file_name().unwrap().to_str().unwrap()
+        );
+        for anchor in [path.to_string_lossy().into_owned(), relative] {
+            fs::write(
+                root.path().join("md/requirements.md"),
+                format!(":::{{req}} ready\n:test: {anchor}\nThe project MUST be ready.\n:::\n"),
+            )
+            .unwrap();
+            let config = root.path().join("habeas.toml");
+            fs::write(&config, "version = 1\n").unwrap();
+            let error = AssessmentSources::prepare(root.path(), "requirements.ready")
+                .err()
+                .unwrap();
+            assert_eq!(error.kind(), io::ErrorKind::PermissionDenied, "{error}");
+            assert!(error.to_string().contains("outside the project"), "{error}");
+            fs::write(
+                &config,
+                format!("version = 1\n[evidence]\nallow = ['{}']\n", path.display()),
+            )
+            .unwrap();
+            let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+            assert!(
+                super::super::initial_prompt(&sources)
+                    .unwrap()
+                    .joined()
+                    .contains("CHECK_OUTSIDE_SOURCE")
+            );
+            fs::write(
+                &config,
+                format!(
+                    "version = 1\n[evidence]\nallow = ['{}']\ndisallow = ['{}']\n",
+                    path.display(),
+                    path.display()
+                ),
+            )
+            .unwrap();
+            let error = AssessmentSources::prepare(root.path(), "requirements.ready")
+                .err()
+                .unwrap();
+            assert_eq!(error.kind(), io::ErrorKind::PermissionDenied, "{error}");
+            assert!(error.to_string().contains("disallowed"), "{error}");
+        }
+    }
+
+    // {test}`requirements.authoring.fixme_inputs`
+    #[test]
+    fn acknowledgment_metadata_is_ordered_and_deduplicates_issue_options() {
+        let root = project();
+        let acknowledgment = |issues: &str, body: &str| {
+            format!(":::{{fixme}} requirements.ready\n{issues}{body}\n:::\n")
+        };
+        let first = acknowledgment(
+            ":github: o/r#2\n:github: o/r#1\n:github: o/r#2\n",
+            "First gap.",
+        );
+        let second = acknowledgment("", "Second gap.");
+        fs::write(root.path().join("a.txt"), format!("{first}\n{second}")).unwrap();
+        fs::write(root.path().join("z.txt"), acknowledgment("", "Last gap.")).unwrap();
+        let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        let metadata = sources.model_acknowledgments();
+        assert_eq!(metadata.len(), 3, "{metadata:?}");
+        assert_eq!(
+            metadata
+                .iter()
+                .map(|m| m["file"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["a.txt", "a.txt", "z.txt"]
+        );
+        assert!(metadata[0]["body"].as_str().unwrap().contains("First gap."));
+        assert!(
+            metadata[1]["body"]
+                .as_str()
+                .unwrap()
+                .contains("Second gap.")
+        );
+        assert!(metadata[2]["body"].as_str().unwrap().contains("Last gap."));
+        assert_eq!(metadata[0]["item"], "<root>");
+        assert_eq!(
+            metadata[0]["issues"],
+            json!([
+                {"reference":"o/r#2","state":"open"}, {"reference":"o/r#1","state":"open"}
+            ])
+        );
+        assert!(
+            sources
+                .mandatory_inputs()
+                .iter()
+                .all(|input| input.get("file").is_none()),
+            "{:?}",
+            sources.mandatory_inputs()
+        );
+    }
+
+    // {test}`requirements.authoring.fixme_inputs`
+    #[cfg(unix)]
+    #[test]
+    fn inaccessible_acknowledgment_source_aborts_preparation() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = project();
+        let path = root.path().join("src/gap.rs");
+        fs::write(
+            &path,
+            "// :::{fixme} requirements.ready\n// Untested.\n// :::\nfn gap() {}\n",
+        )
+        .unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
+        if fs::read(&path).is_ok() {
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+            return;
+        }
+        let result = AssessmentSources::prepare(root.path(), "requirements.ready");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        let error = result.err().unwrap();
+        assert!(error.to_string().contains("gap.rs"), "{error}");
+        assert!(error.to_string().contains("Permission denied"), "{error}");
+    }
     // {test}`requirements.references.anchors`
     // {test}`requirements.authoring.read_denial`
     // {test}`requirements.authoring.read_denial.mandatory`
@@ -1457,6 +1623,7 @@ pub(super) mod tests {
     // {test}`requirements.references.builtin_definitions`
     // {test}`requirements.references.site_review`
     // {test}`requirements.authoring.adaptive`
+    // {test}`requirements.authoring.fixme_inputs`
     #[test]
     fn cited_built_ins_contribute_their_text_and_fixmes_in_own_sites_do_not() {
         let project = crate::authoring::tests::citing_site_project();
@@ -1486,6 +1653,15 @@ pub(super) mod tests {
         )
         .unwrap();
         assert!(own_site.has_applicable_fixme);
+        let clean_site = AssessmentSources::prepare_site(
+            root,
+            "requirements.rule",
+            "src/lib.rs",
+            "fn[check_one]",
+        )
+        .unwrap();
+        assert!(!clean_site.has_applicable_fixme);
+        assert!(clean_site.model_acknowledgments().is_empty());
         let only_site = source.replace(&fixme("2"), "");
         fs::write(root.join("src/lib.rs"), only_site).unwrap();
         assert!(
@@ -1527,6 +1703,7 @@ pub(super) mod tests {
     // {test}`requirements.references.outline_comments`
     // {test}`requirements.references.anchors`
     // {test}`requirements.authoring.mandatory_inputs`
+    // {test}`requirements.authoring.fixme_inputs`
     #[test]
     fn references_contribute_their_owning_outline_nodes() {
         let root = project();
@@ -1694,23 +1871,34 @@ pub(super) mod tests {
         fs::create_dir_all(root.path().join("evidence")).unwrap();
         fs::write(
             root.path().join("evidence/notes.md"),
-            format!("# Notes\n\n{}\n", role("impl", "requirements.ready")),
+            format!("# Notes\n\n{}\n", role("test", "requirements.ready")),
         )
         .unwrap();
         fs::write(
             root.path().join("src/literal.rs"),
             format!(
                 "const REFERENCE: &str = {:?};\n",
-                role("impl", "requirements.ready")
+                role("test", "requirements.ready")
             ),
         )
         .unwrap();
         fs::write(
             root.path().join("evidence/copy.json"),
-            json!({"rationale":role("impl", "requirements.ready")}).to_string(),
+            json!({"rationale":role("test", "requirements.ready")}).to_string(),
+        )
+        .unwrap();
+        fs::write(
+            root.path().join("notes.txt"),
+            role("test", "requirements.ready"),
         )
         .unwrap();
         let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        assert!(
+            sources
+                .mandatory_inputs()
+                .iter()
+                .any(|input| input["file"] == "notes.txt")
+        );
         assert!(
             !sources
                 .mandatory_inputs()
@@ -1727,5 +1915,25 @@ pub(super) mod tests {
                     .any(|input| input["file"] == excluded)
             );
         }
+        fs::write(
+            root.path().join("habeas.toml"),
+            "version = 1\n[evidence]\nallow = ['evidence/notes.md']\n",
+        )
+        .unwrap();
+        let allowed = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        // Reference discovery has fixed exclusions under references.discovery.
+        // Explicit allowances permit an anchor or requested read into evidence/,
+        // as the anchor test checks; they do not discover references there.
+        assert!(
+            !allowed
+                .mandatory_inputs()
+                .iter()
+                .any(|input| input["file"] == "evidence/notes.md"),
+            "{:#?}",
+            allowed.mandatory_inputs()
+        );
+        assert!(!allowed.mandatory_inputs().iter().any(|input| input["file"]
+            == "evidence/copy.json"
+            || input["file"] == "src/literal.rs"));
     }
 }
