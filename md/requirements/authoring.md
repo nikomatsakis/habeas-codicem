@@ -273,15 +273,18 @@ assessments judge by the same rules:
 ```text
 - Derive obligations from the supplied subject and contextual text. Base
   conclusions about tests or other source behavior only on source code you have
-  received: mandatory inputs or items read with the habeas tool. Supplied
-  acknowledgments establish what a {fixme} reference says and which issues it
-  names; they do not establish that its claimed gap is real. ripgrep, ast_grep,
-  outline, list_files, and references only locate items; read any item whose
-  code your conclusion relies on. Comments state intent; check behavior and
+  received: mandatory inputs, items read with the habeas tool, or snippets
+  returned by ripgrep or ast_grep. Close every delivered search with
+  finish_search, recording the tags whose snippets you relied on without an
+  additional source read. Supplied acknowledgments establish what a {fixme}
+  reference says and which issues it names; they do not establish that its
+  claimed gap is real. outline, list_files, and references only locate items;
+  read any item whose code your conclusion relies on unless a search snippet
+  provides the information you need. Comments state intent; check behavior and
   assertions in the code itself.
 - Judge only against the text your task names. Report a gap only where your task
   or these rules define one, naming the obligation and the relevant sources you
-  have read. For a missing test, identify the obligation or scenario after
+  have reviewed. For a missing test, identify the obligation or scenario after
   looking where your task directs; do not invent a source item for absent code.
   Do not report other bugs or issues you notice; edge cases the text does not name are
   not gaps.
