@@ -10,7 +10,7 @@ noted. Don't re-raise those. The drafts are uncommitted edits in the book:
 every requirement the group cites or overlaps. Don't edit files; make your
 changes in the revised text you return.
 
-Each requirement gets its own model assessment of whether code and tests satisfy
+Each requirement gets its own model assessment of whether tests adequately check
 it, and editing a requirement makes its evidence stale. So a requirement should
 be as small as it can be while still standing on its own: it costs less to
 assess, and editing it makes only its own evidence stale.

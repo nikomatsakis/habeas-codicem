@@ -1412,8 +1412,7 @@ no_match: ["struct S;"]
             .iter()
             .filter(|error| error.contains("no input covers {fixme}"))
             .collect::<Vec<_>>();
-        assert_eq!(coverage.len(), 1, "{errors:#?}");
-        assert!(coverage[0].ends_with("src/lib.rs:9"), "{coverage:?}");
+        assert!(coverage.is_empty(), "{errors:#?}");
         let two = review_errors(&errors, "fn[check_two]").join("\n");
         assert!(
             two.contains("{fixme} references to requirements.rule inside src/lib.rs fn[check_two] changed: recorded [], now [{\"item\":\"fn[check_two]\",\"commentary\":\":github: o/r#1\\n Panics instead of reporting.\"}]"),

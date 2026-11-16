@@ -269,6 +269,73 @@ fn reply(calls: Vec<Value>) -> Value {
         "done":true,"done_reason":"stop","prompt_eval_count":11,"eval_count":7})
 }
 
+// {test}`requirements.authoring.mandatory_inputs`
+// {test}`requirements.authoring.reference_index`
+// {test}`requirements.authoring.delivered_inputs`
+// {test}`requirements.authoring.fixme_inputs`
+#[test]
+fn implementation_discovery_has_no_text_or_evidence_until_the_model_requests_a_read() {
+    let server = Server::start(vec![
+        reply(vec![call(
+            "locate",
+            "references",
+            json!({"selection": SUBJECT, "roles": ["impl"]}),
+        )]),
+        reply(vec![call(
+            "read",
+            "habeas",
+            json!({"file": "src/lib.rs", "item": "fn[ready]"}),
+        )]),
+        reply(vec![call(
+            "submit",
+            "submit_judgment",
+            json!({"determination": true, "rationale": "The tests check the requirement."}),
+        )]),
+    ]);
+    let fixture = Fixture::new(&server.endpoint);
+    let output = fixture.run(&["author", SUBJECT]);
+    assert!(output.status.success(), "{output:?}");
+    let requests = server.finish();
+    assert_eq!(requests.len(), 3);
+    let prompt = prompt_text(&requests[0].body);
+    assert!(prompt.contains("fn ready_test()"));
+    assert!(prompt.contains("One acknowledged gap."));
+    assert!(!prompt.contains("pub fn ready()"));
+    let tool_result = |request: &Request| -> Value {
+        let message = request.body["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .rev()
+            .find(|message| message["role"] == "tool")
+            .unwrap();
+        serde_json::from_str(message["content"].as_str().unwrap()).unwrap()
+    };
+    let locations = tool_result(&requests[1]);
+    assert!(locations.to_string().contains("fn[ready]"), "{locations:#}");
+    for text in [
+        REQUIREMENT,
+        "One acknowledged gap.",
+        "pub fn ready()",
+        "\"input\"",
+        "\"inputs\"",
+    ] {
+        assert!(!locations.to_string().contains(text), "{locations:#}");
+    }
+    let read = tool_result(&requests[2]);
+    assert!(read["input"]["text"].to_string().contains("pub fn ready()"));
+    let record: Value = serde_json::from_slice(&fs::read(&fixture.evidence).unwrap()).unwrap();
+    let inputs = record["inputs"].as_array().unwrap();
+    assert_eq!(
+        inputs
+            .iter()
+            .filter(|input| input["file"] == "src/lib.rs" && input["item"] == "fn[ready]")
+            .count(),
+        1
+    );
+    assert!(!fixture.usage()["inputs"].to_string().contains("references"));
+}
+
 // {test}`requirements.authoring.complete_initial_bundle`
 // {test}`requirements.authoring.invocation`
 // {test}`requirements.authoring.additional_read`
@@ -349,15 +416,15 @@ fn ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free() {
     }
     let prompt = prompt_text(&requests[0].body);
     for text in [
-        "Assess whether a project's source code and tests satisfy one requirement.",
+        "Assess whether a project's tests adequately check one requirement.",
         REQUIREMENT,
         "SECRET_DEFINITION_TEXT",
-        "fn ready()",
         "fn ready_test()",
         "You MUST end by calling submit_judgment",
     ] {
         assert!(prompt.contains(text), "prompt missing {text}");
     }
+    assert!(!prompt.contains("pub fn ready()"), "{prompt}");
     assert!(!prompt.contains("OLD_RATIONALE_MUST_NOT_REACH_MODEL"));
     let mut tools = requests[0].body["tools"]
         .as_array()
@@ -410,22 +477,21 @@ fn ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free() {
     );
     assert_eq!(evidence["requirement"], REQUIREMENT);
     let inputs = evidence["inputs"].as_array().unwrap();
-    // The `{fixme}` reached the model and is covered by the recorded input
-    // for the function it belongs to.
-    assert!(prompt.contains("// :github: example/app#125"));
-    assert!(prompt.contains("// One acknowledged gap."));
+    // The acknowledgment reaches the model as metadata, without the
+    // containing implementation. Its body is protected by the reference set.
+    assert!(prompt.contains(":github: example/app#125"));
+    assert!(prompt.contains("One acknowledged gap."));
     // GitHub is unreachable, so the issue is supplied as open, but the state
     // is not recorded.
     assert!(
-        prompt.contains(
-            "\"github_issues\": [\n      {\n        \"issue\": \"example/app#125\",\n        \"state\": \"open\"\n      }\n    ]"
-        ),
+        prompt.contains("\"reference\": \"example/app#125\"")
+            && prompt.contains("\"state\": \"open\""),
         "{prompt}"
     );
     assert!(!evidence.to_string().contains("github_issues"));
     assert!(!fixture.usage().to_string().contains("github_issues"));
     assert!(
-        inputs
+        !inputs
             .iter()
             .any(|input| input["file"] == "src/lib.rs" && input["item"] == "fn[ready]"),
         "{inputs:#?}"
@@ -573,7 +639,7 @@ fn ollama_cli_delivers_sources_records_fixme_and_keeps_usage_content_free() {
 // {test}`requirements.authoring.acknowledged_gap`
 #[test]
 fn acknowledged_empty_input_boundary_is_explained_and_accepted() {
-    let rationale = "`src/lib.rs#fn[ready]` accepts nonempty input but rejects the empty-string boundary. The adjacent acknowledgment tracks that gap as example/app#125.";
+    let rationale = "`src/lib.rs#fn[ready_test]` checks nonempty input but omits the required empty-string boundary. The acknowledgment tracks that test gap as example/app#125.";
     let server = Server::start(vec![reply(vec![call(
         "submit",
         "submit_judgment",
@@ -581,14 +647,16 @@ fn acknowledged_empty_input_boundary_is_explained_and_accepted() {
     )])]);
     let fixture = Fixture::new(&server.endpoint);
     fs::write(fixture.project.join("md/requirements.md"), ":::{req} ready\nThe readiness check MUST accept every string, including the empty string.\n:::\n").unwrap();
-    fs::write(fixture.project.join("src/lib.rs"), "// {impl}`requirements.ready`\n// :::{fixme} requirements.ready\n// :github: example/app#125\n// Empty input is incorrectly rejected.\n// :::\npub fn ready(input: &str) -> bool { !input.is_empty() }\n// {test}`requirements.ready`\nfn ready_test() { assert!(ready(\"nonempty\")); }\n").unwrap();
+    fs::write(fixture.project.join("src/lib.rs"), "// {impl}`requirements.ready`\n// :::{fixme} requirements.ready\n// :github: example/app#125\n// The empty-string boundary is not tested.\n// :::\npub fn ready(input: &str) -> bool { !input.is_empty() }\n// {test}`requirements.ready`\nfn ready_test() { assert!(ready(\"nonempty\")); }\n").unwrap();
     let output = fixture.run(&["author", SUBJECT]);
     assert!(output.status.success(), "{output:?}");
     let requests = server.finish();
     assert_eq!(requests.len(), 1);
     let prompt = prompt_text(&requests[0].body);
-    assert!(prompt.contains("Empty input is incorrectly rejected."));
-    assert!(prompt.contains("!input.is_empty()"));
+    assert!(prompt.contains("The empty-string boundary is not tested."));
+    assert!(prompt.contains("fn ready_test()"));
+    assert!(prompt.contains("example/app#125"));
+    assert!(!prompt.contains("!input.is_empty()"));
     let record: Value = serde_json::from_slice(&fs::read(&fixture.evidence).unwrap()).unwrap();
     assert_eq!(
         record["determination"],
@@ -597,6 +665,13 @@ fn acknowledged_empty_input_boundary_is_explained_and_accepted() {
     assert_eq!(record["rationale"], rationale);
     assert!(
         record["inputs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|input| input["file"] == "src/lib.rs" && input["item"] == "fn[ready_test]")
+    );
+    assert!(
+        !record["inputs"]
             .as_array()
             .unwrap()
             .iter()
@@ -761,11 +836,11 @@ fn false_is_a_completed_assessment() {
     let server = Server::start(vec![reply(vec![call(
         "submit",
         "submit_judgment",
-        json!({"determination":false,"rationale":"src/lib.rs documents the zero-capacity gap as FIXME(#125), but push also overwrites a full positive-capacity queue without acknowledging that defect."}),
+        json!({"determination":false,"rationale":"The test checks refusal for a full positive-capacity queue, without acknowledging missing checks for preservation and zero capacity."}),
     )])]);
     let fixture = Fixture::new(&server.endpoint);
     fs::write(fixture.project.join("md/requirements.md"), ":::{req} ready\nInserting into a full queue MUST return false without overwriting its entries, including at zero capacity.\n:::\n").unwrap();
-    fs::write(fixture.project.join("src/lib.rs"), "// {impl}`requirements.ready`\n// FIXME(#125): zero-capacity insertion panics.\npub fn push(queue: &mut [u8], value: u8) -> bool {\n    queue[0] = value;\n    true\n}\n").unwrap();
+    fs::write(fixture.project.join("src/lib.rs"), "// {impl}`requirements.ready`\n// FIXME(#125): zero-capacity insertion panics.\npub fn push(queue: &mut [u8], value: u8) -> bool {\n    queue[0] = value;\n    true\n}\n\n// {test}`requirements.ready`\n#[test]\nfn full_queue() { let mut queue = [1]; assert!(!push(&mut queue, 2)); }\n").unwrap();
     let output = fixture.run(&["author-evidence", SUBJECT, "--config", "mock"]);
     assert!(
         output.status.success(),
@@ -775,8 +850,9 @@ fn false_is_a_completed_assessment() {
     let requests = server.finish();
     let prompt = prompt_text(&requests[0].body);
     assert!(prompt.contains("and false otherwise."));
-    assert!(prompt.contains("FIXME(#125): zero-capacity insertion panics"));
-    assert!(prompt.contains("queue[0] = value"));
+    assert!(!prompt.contains("FIXME(#125): zero-capacity insertion panics"));
+    assert!(!prompt.contains("queue[0] = value"));
+    assert!(prompt.contains("fn full_queue()"));
     let evidence: Value = serde_json::from_slice(&fs::read(&fixture.evidence).unwrap()).unwrap();
     assert_eq!(evidence["determination"], false);
     assert!(!evidence["inputs"].as_array().unwrap().is_empty());
@@ -944,12 +1020,39 @@ fn initial_prompt_substitutes_subject_and_mandatory_inputs_into_the_template() {
         assert!(!expected.contains("{{"), "{expected}");
         assert_eq!(system, expected);
         assert!(!system.contains(subject), "{system}");
+        let acknowledgments: Value = serde_json::from_str(
+            prompt
+                .split_once("# Acknowledgments\n\n")
+                .unwrap()
+                .1
+                .split_once("\n\n# Mandatory inputs")
+                .unwrap()
+                .0,
+        )
+        .unwrap();
+        if kind == "requirement" {
+            assert_eq!(
+                acknowledgments,
+                json!([{
+                    "body": ":github: example/app#125\n One acknowledged gap.",
+                    "file": "src/lib.rs",
+                    "issues": [{"reference": "example/app#125", "state": "open"}],
+                    "item": "fn[ready]",
+                }])
+            );
+        } else {
+            assert_eq!(acknowledgments, json!([]));
+        }
         let (before, after) = subject_template.split_once("{{mandatory_inputs}}").unwrap();
         // The subject is not distributed, so its distributed task is empty.
         let before = before
             .replace("{{subject_kind}}", kind)
             .replace("{{subject_name}}", subject)
-            .replace("{{distributed_task}}", "");
+            .replace("{{distributed_task}}", "")
+            .replace(
+                "{{acknowledgments}}",
+                &serde_json::to_string_pretty(&acknowledgments).unwrap(),
+            );
         assert!(
             before.contains(&format!("\nSubject: {kind} {subject}\n")),
             "{before}"
@@ -1592,7 +1695,7 @@ fn bedrock_cli_uses_selected_profile_region_and_converse_tools() {
         assert_eq!(body["additionalModelRequestFields"], json!({"top_k":12}));
         let prompt = prompt_text(body);
         assert!(
-            prompt.contains("Assess whether a project's source code")
+            prompt.contains("Assess whether a project's tests adequately check")
                 && prompt.contains(REQUIREMENT)
         );
         let tool_specs = body["toolConfig"]["tools"].as_array().unwrap();
@@ -2981,7 +3084,10 @@ fn the_requirements_skill_is_home_of_drafting_review_references_and_criteria() {
     assert_text(
         "what the review checks",
         &section(raw, "## What the review checks"),
-        &["an obligation the `{impl}` code does not implement completely and exactly as stated"],
+        &[
+            "obligations, boundaries, and failure cases no test runs and asserts",
+            "The supervising agent must still check that the code fulfills each applicable requirement",
+        ],
     );
     assert_text(
         "requirement review criteria",
@@ -4220,7 +4326,7 @@ fn bundled_skills_direct_behavior_review_against_requirements() {
         "habeas-evidence",
         &[
             "A judgment is one of three outcomes",
-            "`true`: the code and tests satisfy the definition, with no gap",
+            "`true`: the reviewed tests adequately check the definition, with no gap under",
             "`false`: there is a gap that no `{fixme}` reference acknowledges",
             "FIXME: `{fixme}` references acknowledge every remaining gap",
         ],
@@ -4249,9 +4355,9 @@ fn bundled_skills_direct_behavior_review_against_requirements() {
         "what the review checks",
         &section(skill_md("habeas-requirements"), "## What the review checks"),
         &[
-            "an obligation the `{impl}` code does not implement completely and exactly as stated",
-            "code that carries out part of the requirement but is not reachable from its `{impl}` items, including code that only cites it, and a test that verifies it without `{test}`",
-            "observable behavior in `{impl}` code that no requirement implemented there specifies",
+            "assertions whose expected results contradict the requirement",
+            "a standalone test designed to verify the subject without `{test}`",
+            "The supervising agent must still check that the code fulfills each applicable requirement",
             "obligations, boundaries, and failure cases no test runs and asserts",
             "A test may be omitted only for code with no logic of its own, or code that needs network services, real time, or process-wide state no project test sets up",
             "an obligation that a value stays unchanged, distinct, or present always needs a test",
@@ -4359,7 +4465,7 @@ fn bundled_skills_mark_roots_and_handle_uncovered_items() {
         "habeas-evidence",
         &[
             "except uncovered Rust items: leave those until after step 3, because an assessment that reads an item covers it",
-            "| rationale names code the reviewer found only by searching | add `{impl}` to the item it names, making it a root",
+            "| rationale identifies an unmarked standalone test | add `{test}` for the requirement or example it verifies",
         ],
     );
     assert_phrases(

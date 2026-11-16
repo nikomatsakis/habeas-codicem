@@ -1112,7 +1112,7 @@ mod tests {
         fs::write(temp.path().join("md/requirements/core.md"), &source).unwrap();
         fs::write(
             temp.path().join("src/main.rs"),
-            "// {impl}`requirements.core.uncovered`\n",
+            "// {test}`requirements.core.uncovered`\n",
         )
         .unwrap();
         for (name, body, determination) in [
@@ -1762,7 +1762,7 @@ mod tests {
         fs::write(root.join("md/rules.md"), &source).unwrap();
         fs::write(
             root.join("src/lib.rs"),
-            "// {impl}`rules.false_uncovered`\nfn uncovered() {}\n\n// :::{fixme} rules.fixme_clean\n// :github: example/rules#9\n// The gap.\n// :::\nfn gap() {}\n",
+            "// {test}`rules.false_uncovered`\nfn uncovered() {}\n\n// :::{fixme} rules.fixme_clean\n// :github: example/rules#9\n// The gap.\n// :::\nfn gap() {}\n",
         )
         .unwrap();
         let gap = crate::inputs::outline_input(root, "src/lib.rs", "fn[gap]").unwrap();

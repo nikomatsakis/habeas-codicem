@@ -49,6 +49,9 @@ pub(crate) struct AssessmentSources {
     pub(crate) outlines: OutlineCache,
     /// Digest of the subject's reference set, recorded with the judgment.
     pub(crate) reference_set: String,
+    /// Comment metadata, protected by the reference set without reading the
+    /// containing implementation into the model conversation.
+    acknowledgments: Vec<Value>,
     mandatory: Vec<Value>,
     /// The state of each issue a `{fixme}` in each mandatory input names,
     /// supplied to the model with the input but never recorded.
@@ -143,31 +146,24 @@ impl AssessmentSources {
             &references,
             &sites,
         );
-        // `{impl}`, `{test}`, and `{fixme}` point from the subject to their
-        // sources; `{cite}` sites point into the subject and are discoverable
-        // with `references`. A `{fixme}` inside one of the subject's sites
-        // belongs to that site's review instead.
-        let mut has_applicable_fixme = false;
+        // Tests contribute source. Refining declarations contribute their text;
+        // implementation references outside declarations only locate code.
         for reference in references.iter().filter(|reference| {
             reference.name == subject_name
-                && !crate::sites::in_own_site(&root, &sites, reference)
-                && reference.is_fixme_edge()
-                && matches!(
-                    reference.kind,
-                    ReferenceKind::Impl | ReferenceKind::Test | ReferenceKind::Fixme
-                )
+                && matches!(reference.kind, ReferenceKind::Impl | ReferenceKind::Test)
         }) {
             // Generated evidence, including symlink aliases, is omitted by
             // default rather than denied.
             if access.omit_generated_evidence(&root, &reference.file) {
                 continue;
             }
-            access.file(&root, &reference.file)?;
-            has_applicable_fixme |= reference.kind == ReferenceKind::Fixme;
-            insert_selector(
-                &mut selectors,
-                reference_selector(&root, &definitions, &outlines, reference)?,
-            );
+            let selector = reference_selector(&root, &definitions, &outlines, reference)?;
+            if reference.kind == ReferenceKind::Test
+                || matches!(selector, InputSelector::Requirements { .. })
+            {
+                access.file(&root, &reference.file)?;
+                insert_selector(&mut selectors, selector);
+            }
         }
 
         // {impl}`requirements.references.anchors`
@@ -193,7 +189,24 @@ impl AssessmentSources {
                         ),
                     )
                 })?;
-            insert_selector(&mut selectors, selector);
+            if anchor.kind == ReferenceKind::Test {
+                insert_selector(&mut selectors, selector);
+            }
+        }
+
+        // {impl}`requirements.authoring.fixme_inputs`
+        let mut acknowledgments = crate::evidence::fixme_acknowledgments(
+            &root,
+            &outlines,
+            references.iter().filter(|reference| {
+                reference.name == subject_name
+                    && !crate::sites::in_own_site(&root, &sites, reference)
+                    && !access.omit_generated_evidence(&root, &reference.file)
+            }),
+        )
+        .map_err(io::Error::other)?;
+        for acknowledgment in &acknowledgments {
+            access.file(&root, Path::new(acknowledgment["file"].as_str().unwrap()))?;
         }
 
         // Existing evidence only decides whether to reassess; its inputs are
@@ -210,15 +223,26 @@ impl AssessmentSources {
                 )?);
             }
         }
-        let dependencies = definition_inputs(
+        // The dependency collector receives bodies separately so Markdown and
+        // non-Markdown reference-literal rules keep their source semantics.
+        let dependencies = crate::terms::dependencies(
             &root,
-            &access,
             &definitions,
             &outlines,
-            &mandatory,
+            json!({"inputs": mandatory, "acknowledgments": acknowledgments})
+                .as_object()
+                .unwrap(),
             Some(&subject.text),
-        )?;
-        for input in dependencies {
+        )
+        .map_err(io::Error::other)?;
+        for definition in dependencies {
+            let input = source_input(
+                &root,
+                &access,
+                &definitions,
+                &outlines,
+                &InputSelector::Definition { definition },
+            )?;
             if !mandatory.contains(&input) {
                 mandatory.push(input);
             }
@@ -232,11 +256,30 @@ impl AssessmentSources {
             &definitions,
             &mandatory,
         );
+        let issue_names = acknowledgments.iter().flat_map(|acknowledgment| {
+            crate::fixme::FixmeBody::parse(acknowledgment["body"].as_str().unwrap()).issues
+        });
+        let issues = github.read_all(issue_names);
+        for acknowledgment in &mut acknowledgments {
+            let parsed = crate::fixme::FixmeBody::parse(acknowledgment["body"].as_str().unwrap());
+            let mut seen = std::collections::BTreeSet::new();
+            acknowledgment["issues"] = parsed
+                .issues
+                .into_iter()
+                .filter(|issue| seen.insert(issue.clone()))
+                .map(|reference| {
+                    let state = issues
+                        .get(&reference)
+                        .map_or("open", crate::github::IssueRead::state);
+                    json!({"reference": reference, "state": state})
+                })
+                .collect();
+        }
         Ok(Self {
             root,
             access,
             subject_name: subject_name.to_owned(),
-            has_applicable_fixme,
+            has_applicable_fixme: !acknowledgments.is_empty(),
             subject_kind: AssessmentKind::Definition(
                 subject.kind,
                 crate::structural::has_query_directive(subject),
@@ -244,6 +287,7 @@ impl AssessmentSources {
             subject_text: subject.text.clone(),
             outlines,
             reference_set,
+            acknowledgments,
             mandatory,
             issue_states,
             github,
@@ -338,6 +382,7 @@ impl AssessmentSources {
             subject_text: String::new(),
             outlines,
             reference_set: String::new(),
+            acknowledgments: Vec::new(),
             mandatory,
             issue_states,
             github,
@@ -454,6 +499,7 @@ impl AssessmentSources {
             subject_text: String::new(),
             outlines,
             reference_set: String::new(),
+            acknowledgments: Vec::new(),
             mandatory,
             issue_states,
             github,
@@ -466,6 +512,21 @@ impl AssessmentSources {
         &self.mandatory
     }
 
+    // {impl}`requirements.authoring.fixme_inputs`
+    // {impl}`requirements.authoring.redaction`
+    pub(crate) fn model_acknowledgments(&self) -> Vec<Value> {
+        self.acknowledgments
+            .iter()
+            .map(|acknowledgment| {
+                let mut acknowledgment = acknowledgment.clone();
+                acknowledgment["body"] = Value::String(
+                    crate::redaction::redact_text(acknowledgment["body"].as_str().unwrap())
+                        .into_owned(),
+                );
+                acknowledgment
+            })
+            .collect()
+    }
     /// The mandatory inputs as supplied to the model: each input containing
     /// a `{fixme}` that names issues also lists their states, `open` or
     /// `closed`, under `github_issues`.
@@ -813,6 +874,79 @@ pub(super) mod tests {
         root
     }
 
+    // {test}`requirements.authoring.fixme_inputs`
+    // {test}`requirements.definitions.dependencies`
+    // {test}`requirements.ci.reference_set`
+    #[test]
+    fn acknowledgment_only_terms_are_supplied_and_validated_without_implementation_reads() {
+        let root = project();
+        fs::create_dir(root.path().join("evidence")).unwrap();
+        let terms = ":::{definition} unit\n:phrase: unit\nA unit.\n:::\n\n:::{definition} boundary\n:phrase: boundary\nA {term}`terms.unit` at the limit.\n:::\n";
+        fs::write(root.path().join("md/terms.md"), terms).unwrap();
+        let source = "// :::{fixme} requirements.ready\n// The {term}`terms.boundary` is untested.\n// :::\nfn gap() { panic!(\"IMPLEMENTATION_BODY\"); }\n";
+        fs::write(root.path().join("src/lib.rs"), source).unwrap();
+        let mut sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        let prompt = super::super::initial_prompt(&sources).unwrap().joined();
+        assert!(prompt.contains("A unit."));
+        assert!(prompt.contains("at the limit."));
+        assert!(prompt.contains("is untested."));
+        assert!(!prompt.contains("IMPLEMENTATION_BODY"));
+        assert!(
+            !sources
+                .mandatory_inputs()
+                .iter()
+                .any(|input| input.get("item").is_some())
+        );
+        sources.record_inputs(&sources.mandatory_inputs().to_vec());
+        let record = json!({
+            "requirement": "The project MUST be ready.",
+            "determination": {"FIXME": ["The {term}`terms.boundary` is untested."]},
+            "rationale": "The boundary test is acknowledged as missing.",
+            "references": sources.reference_set,
+            "inputs": sources.recorded_inputs(),
+        });
+        let path = root.path().join("evidence/requirements.ready.json");
+        fs::write(&path, record.to_string()).unwrap();
+        let check = || {
+            crate::evidence::validate_repository(root.path())
+                .unwrap()
+                .errors
+        };
+        assert!(check().is_empty(), "{:?}", check());
+
+        // An unread body can change without changing the judgment's inputs.
+        fs::write(
+            root.path().join("src/lib.rs"),
+            source.replace("panic!(\"IMPLEMENTATION_BODY\")", "let _value = 1"),
+        )
+        .unwrap();
+        assert!(check().is_empty(), "{:?}", check());
+
+        // The acknowledgment introduces a real, transitive term dependency.
+        fs::write(
+            root.path().join("md/terms.md"),
+            terms.replace("A unit.", "A changed unit."),
+        )
+        .unwrap();
+        let errors = check().join("\n");
+        assert!(
+            errors.contains("input text changed for Definition { definition: \"terms.unit\" }"),
+            "{errors}"
+        );
+        fs::write(root.path().join("md/terms.md"), terms).unwrap();
+        let mut missing = record.clone();
+        missing["inputs"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|input| input["definition"] != "terms.boundary");
+        fs::write(&path, missing.to_string()).unwrap();
+        let errors = check().join("\n");
+        assert!(
+            errors.contains("expected exactly one definition input for terms.boundary, found 0"),
+            "{errors}"
+        );
+    }
+
     // {test}`requirements.authoring.complete_initial_bundle`
     // {test}`requirements.authoring.mandatory_inputs`
     // {test}`requirements.authoring_input`
@@ -860,7 +994,7 @@ pub(super) mod tests {
         let inputs = sources.mandatory_inputs();
         assert!(sources.recorded_inputs().is_empty());
         assert!(
-            inputs
+            !inputs
                 .iter()
                 .any(|input| input["item"] == "impl[Thing]/fn[run]")
         );
@@ -1003,7 +1137,7 @@ pub(super) mod tests {
             root.path().join("src/lib.rs"),
             format!(
                 "// {}\nfn ready() {{}}\n",
-                role("impl", "requirements.ready")
+                role("test", "requirements.ready")
             ),
         )
         .unwrap();
@@ -1025,7 +1159,7 @@ pub(super) mod tests {
             root.path().join("src/lib.rs"),
             format!(
                 "// {} {}\nfn ready() {{}}\n",
-                role("impl", "requirements.ready"),
+                role("test", "requirements.ready"),
                 role("term", "terms.ready")
             ),
         )
@@ -1189,7 +1323,7 @@ pub(super) mod tests {
         assert!(has_requirements("requirements.ready"));
         assert!(has_requirements("requirements.base"), "{inputs:#?}");
         assert!(has_requirements("requirements.tester"), "{inputs:#?}");
-        assert!(has_item("fn[run]"), "{inputs:#?}");
+        assert!(!has_item("fn[run]"), "{inputs:#?}");
         assert!(has_item("fn[check]"), "{inputs:#?}");
         assert!(!has_item("fn[helper]"), "{inputs:#?}");
         assert!(!has_requirements("requirements.citer"), "{inputs:#?}");
@@ -1365,9 +1499,13 @@ pub(super) mod tests {
             .iter()
             .filter_map(|input| input["item"].as_str())
             .collect::<Vec<_>>();
-        // The `{fixme}` outside every site contributes its node; the one
-        // inside the subject's own site belongs to that site's review.
-        assert_eq!(items, ["fn[other]"], "{mandatory:#?}");
+        // Only the acknowledgment outside the subject's own sites belongs to
+        // this assessment, and it contributes no containing source.
+        assert!(items.is_empty(), "{mandatory:#?}");
+        let acknowledgments = sources.model_acknowledgments();
+        assert_eq!(acknowledgments.len(), 1, "{acknowledgments:#?}");
+        assert_eq!(acknowledgments[0]["item"], "fn[other]");
+        assert_eq!(acknowledgments[0]["issues"][0]["reference"], "o/r#2");
         // A cited built-in contributes its fixed text once, and a cited
         // declaration its own declaration.
         assert_eq!(
@@ -1398,8 +1536,8 @@ pub(super) mod tests {
             ":::{req} ready\n:impl: src/lib.rs#mod[inner]\nThe project MUST be ready.\n:::\n",
         )
         .unwrap();
-        // A `{fixme}` contributes the node its comment belongs to; an
-        // unnamed one is not an edge and contributes nothing.
+        // A `{fixme}` contributes metadata for the node its comment belongs to;
+        // an unnamed one is not an acknowledgment edge.
         fs::write(
             root.path().join("src/lib.rs"),
             "mod inner {\n    fn unrelated() {}\n}\n\n// :::{fixme} requirements.ready\n// The gap.\n// :::\nfn gap() {}\n\n// :::{fixme}\n// :github: example/app#1\n// :::\nfn tracked() {}\n",
@@ -1409,7 +1547,7 @@ pub(super) mod tests {
             root.path().join("docs/guide.md"),
             format!(
                 "# Intro\n\nText.\n\n# Usage\n\nSee {}.\n",
-                role("impl", "requirements.ready")
+                role("test", "requirements.ready")
             ),
         )
         .unwrap();
@@ -1436,10 +1574,13 @@ pub(super) mod tests {
                 ("docs/guide.md", "section[Usage]"),
                 // A plain-text file contributes the complete file.
                 ("notes.txt", ""),
-                ("src/lib.rs", "fn[gap]"),
-                ("src/lib.rs", "mod[inner]"),
             ]
         );
+        let acknowledgments = sources.model_acknowledgments();
+        assert_eq!(acknowledgments.len(), 1, "{acknowledgments:#?}");
+        assert_eq!(acknowledgments[0]["file"], "src/lib.rs");
+        assert_eq!(acknowledgments[0]["item"], "fn[gap]");
+        assert_eq!(acknowledgments[0]["body"], "The gap.");
     }
 
     // {test}`requirements.references.authoring_inputs`
@@ -1484,7 +1625,7 @@ pub(super) mod tests {
         let declaration = |anchor: &str| {
             fs::write(
                 root.path().join("md/requirements.md"),
-                format!(":::{{req}} ready\n:impl: {anchor}\nThe project MUST be ready.\n:::\n"),
+                format!(":::{{req}} ready\n:test: {anchor}\nThe project MUST be ready.\n:::\n"),
             )
             .unwrap();
         };

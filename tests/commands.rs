@@ -43,7 +43,7 @@ fn fixture() -> TempDir {
         temp.path().join("src/main.rs"),
         // No outline node follows the comment, so it belongs to the root and
         // `main` stays uncited.
-        "fn main() {}\n// {impl}`requirements.uncovered`\n",
+        "fn main() {}\n// {test}`requirements.uncovered`\n",
     )
     .unwrap();
     for (name, text, determination) in [

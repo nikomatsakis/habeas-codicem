@@ -399,7 +399,7 @@ fn fixme_does_not_hide_stale_inputs_or_uncovered_references() {
     assert!(status.contains("outline input changed"), "{status}");
     fs::write(
         temp.path().join("other.txt"),
-        "{impl}`requirements.timeout`",
+        "{test}`requirements.timeout`",
     )
     .unwrap();
     let report = habeas::validate_repository(temp.path()).unwrap();
@@ -472,7 +472,7 @@ fn valid_fixme_remains_visible_in_status_info_and_book() {
 // {test}`requirements.ci.reference_set`
 // {test}`requirements.references.evidence_coverage`
 #[test]
-fn editing_or_adding_a_fixme_makes_evidence_stale_or_uncovered() {
+fn editing_or_adding_a_fixme_makes_evidence_stale_without_requiring_source_reads() {
     let temp = fixture();
     let observed = temp.path().join("observed.rs");
     let source = fs::read_to_string(&observed).unwrap();
@@ -500,8 +500,15 @@ fn editing_or_adding_a_fixme_makes_evidence_stale_or_uncovered() {
     .unwrap();
     let errors = habeas::validate_repository(temp.path()).unwrap().errors;
     assert!(
-        errors.iter().any(|error| error
-            == "evidence/requirements.timeout.json: no input covers {fixme}`requirements.timeout` at other.rs:1"),
+        errors.iter().any(
+            |error| error.contains("evidence/requirements.timeout.json: reference set changed")
+        ),
+        "{errors:?}"
+    );
+    assert!(
+        !errors
+            .iter()
+            .any(|error| error.contains("no input covers {fixme}")),
         "{errors:?}"
     );
 }

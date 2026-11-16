@@ -542,9 +542,12 @@ fn batch_fills_evidence_preserves_current_records_and_reauthors_only_changed_inp
     let source = fixture.project.join("src/lib.rs");
     fs::write(
         &source,
-        fs::read_to_string(&source).unwrap().replace(
-            "pub fn beta()",
-            "// :::{fixme} requirements.beta\n// :github: example/app#123\n// Beta has no test yet.\n// :::\npub fn beta()",
+        format!(
+            "{}\n// {{test}}`requirements.alpha`\n#[test]\nfn alpha_requirement() {{ assert_eq!(alpha(), 1); }}\n",
+            fs::read_to_string(&source).unwrap().replace(
+                "pub fn beta()",
+                "// :::{fixme} requirements.beta\n// :github: example/app#123\n// Beta has no test yet.\n// :::\npub fn beta()",
+            )
         ),
     )
     .unwrap();
@@ -623,7 +626,18 @@ fn batch_fills_evidence_preserves_current_records_and_reauthors_only_changed_inp
     let changed = fs::read_to_string(&source)
         .unwrap()
         .replace("-> u8 { 1 }", "-> u8 { 1_u8 }");
-    fs::write(source, changed).unwrap();
+    fs::write(&source, changed).unwrap();
+    let unread_change = fixture.run(&["author", "--all"]);
+    assert!(unread_change.status.success(), "{unread_change:?}");
+    assert_eq!(server.subjects().len(), 6);
+    fs::write(
+        &source,
+        fs::read_to_string(&source).unwrap().replace(
+            "fn alpha_requirement() { assert_eq!(alpha(), 1); }",
+            "fn alpha_requirement() { assert_eq!(alpha(), 1_u8); }",
+        ),
+    )
+    .unwrap();
     let updated = fixture.run(&["author", "--all"]);
     assert!(
         updated.status.success(),
@@ -1240,6 +1254,15 @@ fn an_untracked_mandatory_input_is_reported_with_how_to_stage_it() {
 fn batch_preserves_current_false_judgments_and_reauthors_stale_ones() {
     let server = Server::start(false, None);
     let fixture = Fixture::new(&server.endpoint, Some(2));
+    let source = fixture.project.join("src/lib.rs");
+    let original = fs::read_to_string(&source).unwrap();
+    fs::write(
+        &source,
+        format!(
+            "{original}\n// {{test}}`requirements.gamma`\n#[test]\nfn gamma_requirement() {{ assert_eq!(gamma(), 3); }}\n"
+        ),
+    )
+    .unwrap();
     let output = fixture.run(&["author", "--all"]);
     assert!(
         output.status.success(),
@@ -1251,7 +1274,7 @@ fn batch_preserves_current_false_judgments_and_reauthors_stale_ones() {
         let path = fixture.project.join(format!("evidence/{name}.json"));
         let mut record = fixture.evidence(name);
         record["determination"] = json!(false);
-        record["rationale"] = json!("The implementation omits a boundary case.");
+        record["rationale"] = json!("The tests omit a boundary case.");
         fs::write(&path, serde_json::to_vec_pretty(&record).unwrap()).unwrap();
         fs::read(path).unwrap()
     };
@@ -1278,12 +1301,12 @@ fn batch_preserves_current_false_judgments_and_reauthors_stale_ones() {
         false
     );
 
-    let source = fixture.project.join("src/lib.rs");
     fs::write(
         &source,
-        fs::read_to_string(&source)
-            .unwrap()
-            .replace("-> u8 { 3 }", "-> u8 { 3_u8 }"),
+        fs::read_to_string(&source).unwrap().replace(
+            "fn gamma_requirement() { assert_eq!(gamma(), 3); }",
+            "fn gamma_requirement() { assert_eq!(gamma(), 3_u8); }",
+        ),
     )
     .unwrap();
     let stale = fixture.run(&["author", "--all"]);
@@ -1316,8 +1339,8 @@ fn batch_preserves_current_false_judgments_and_reauthors_stale_ones() {
     );
 }
 
-/// A new reference inside a node already among a record's inputs changes no
-/// recorded hash, but changes the reference set, so the record is stale.
+/// A new test reference changes the reference set and requires its source
+/// to be supplied on reassessment, even when the old assessment read no code.
 // {test}`requirements.authoring.batch`
 // {test}`requirements.ci.reference_set`
 // {test}`requirements.authoring.refresh`
@@ -1356,12 +1379,13 @@ fn batch_reauthors_a_false_judgment_when_its_reference_set_changes() {
     let errors = habeas::validate_repository(&fixture.project)
         .unwrap()
         .errors;
-    assert_eq!(errors.len(), 2, "{errors:?}");
+    assert_eq!(errors.len(), 3, "{errors:?}");
     assert!(
         errors[0].starts_with("evidence/requirements.delta.json: determination is false")
             && errors[1].starts_with("evidence/requirements.delta.json: reference set changed"),
         "{errors:?}"
     );
+    assert!(errors[2].contains("no input covers {test}"), "{errors:?}");
 
     let stale = fixture.run(&["author", "--all"]);
     assert!(

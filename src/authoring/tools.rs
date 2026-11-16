@@ -59,8 +59,11 @@ pub(crate) fn definitions() -> Vec<Value> {
             "parameters":{"type":"object","properties":{"language":{"type":"string","enum":crate::structural::QueryLanguage::names()},"rule":{"type":"object"},"path":{"type":"string","default":"."},"referencing":reference_scope_schema(),"query":{"type":"string"}},"additionalProperties":false}
         }),
         json!({
-            "name":"references", "description":"List definitions and the sources that reference them. Without selection, return every requirement and named example name with its kind. With selection (a full requirement or example name, or a glob where * matches any characters including dots, e.g. requirements.cli.*), return the selected definitions plus every {impl}, {cite}, and {test} reference to them: definition name, role, file, and item, the selector of the smallest enclosing outline node (a line node in a plain-text file), in source order and without line numbers. An :impl: or :test: anchor on a definition names a complete file, or one node as path#selector, and is reported with item null or that selector. {impl} and {test} mark sources that implement or verify the definition; {cite} marks sources that only rely on or refer to it. Results contain no source text and are not evidence inputs; read the sources you rely on with habeas.",
-            "parameters":{"type":"object","properties":{"selection":{"type":"string"}},"additionalProperties":false}
+            "name":"references", "description":"Locate definitions and reference sites without reading their text. Without selection, return every requirement and named example name with its kind and empty sites. With selection (a full name or a glob where * matches any characters including dots), return the selected names/kinds plus reference sites: definition name, role, file, and item selector, without line numbers. roles filters sites and anchors by impl, cite, or test (default all three); {impl} marks implementations, {cite} related sources, and {test} tests. For example {\"selection\":\"requirements.cli.status\",\"roles\":[\"impl\"]} locates only implementations. Repeated roles have no effect; [] returns names/kinds only. An :impl: or :test: anchor is reported with item null for a whole file or its selector for a node. Results contain no requirement text, example text, commentary, or source text and are not evidence inputs. Request needed source with habeas to read and record it.",
+            "parameters":{"type":"object","properties":{
+                "selection":{"type":"string"},
+                "roles":{"type":"array","items":{"type":"string","enum":["impl","cite","test"]},"default":["impl","cite","test"]}
+            },"additionalProperties":false}
         }),
         crate::github::tool_definition(),
         json!({
@@ -468,7 +471,30 @@ const REFERENCE_ARRAYS: &[&str] = &["definitions", "sites"];
 // {impl}`requirements.authoring.no_line_numbers`
 // {impl}`requirements.references.authoring_inputs`
 fn references(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Result<Listing> {
-    check_keys(args, &["selection"])?;
+    check_keys(args, &["selection", "roles"])?;
+    let roles = match args.get("roles") {
+        None => vec![
+            crate::ReferenceKind::Impl,
+            crate::ReferenceKind::Cite,
+            crate::ReferenceKind::Test,
+        ],
+        Some(Value::Array(roles)) => roles
+            .iter()
+            .map(|role| match role.as_str() {
+                Some("impl") => Ok(crate::ReferenceKind::Impl),
+                Some("cite") => Ok(crate::ReferenceKind::Cite),
+                Some("test") => Ok(crate::ReferenceKind::Test),
+                _ => Err(io::Error::other(format!(
+                    "invalid reference role {role}; expected impl, cite, or test"
+                ))),
+            })
+            .collect::<io::Result<Vec<_>>>()?,
+        Some(_) => {
+            return Err(io::Error::other(
+                "roles must be an array of impl, cite, or test",
+            ));
+        }
+    };
     let selection = if args.contains_key("selection") {
         let selection = string(args, "selection")?;
         crate::definition_glob::validate(selection).map_err(io::Error::other)?;
@@ -509,10 +535,7 @@ fn references(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Res
     found.retain(|reference| {
         // Only `{impl}`, `{cite}`, and `{test}` references are sites; a
         // `{fixme}` acknowledges a gap rather than locating the definition.
-        matches!(
-            reference.kind,
-            crate::ReferenceKind::Impl | crate::ReferenceKind::Cite | crate::ReferenceKind::Test
-        )
+        roles.contains(&reference.kind)
             // A fence that never closes is a validation error, not a site.
             && reference.closed
             && crate::definition_glob::matches(selection, &reference.name)
@@ -548,6 +571,9 @@ fn references(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Res
             continue;
         }
         for anchor in &definition.anchors {
+            if !roles.contains(&anchor.kind) {
+                continue;
+            }
             // Discovery omits excluded sources rather than aborting.
             let Ok(path) = sources.access.file(&sources.root, Path::new(&anchor.file)) else {
                 continue;
@@ -1535,6 +1561,7 @@ mod tests {
     // {test}`requirements.authoring.text_search`
     // {test}`requirements.authoring.mandatory_inputs`
     // {test}`requirements.authoring.citation_prompt`
+    // {test}`requirements.authoring.fixme_inputs`
     #[test]
     fn model_inputs_reads_searches_and_citation_prompts_are_redacted() {
         let root = project();
@@ -1547,8 +1574,8 @@ mod tests {
         fs::write(
             root.path().join("src/lib.rs"),
             format!(
-                "// {}\nfn client() -> &'static str {{\n    \"{token}\"\n}}\n\n// :::{} requirements.ready\n// Defaults to {token}.\n// :::\nfn helper() {{}}\n",
-                role("impl", "requirements.ready"),
+                "// {}\nfn client() -> &'static str {{\n    \"{token}\"\n}}\n\n// :::{} requirements.ready\n// Defaults to {token}.\n// :::\nfn helper() {{}}\n\n// :::{{fixme}} requirements.ready\n// Missing check for {token}.\n// :::\nfn gap() {{}}\n",
+                role("test", "requirements.ready"),
                 "{cite}"
             ),
         )
@@ -1566,6 +1593,11 @@ mod tests {
         assert!(mandatory.to_string().contains("[REDACTED:GitHub Token]"));
         let prompt = super::super::initial_prompt(&sources).unwrap().joined();
         assert!(!prompt.contains(&token), "{prompt}");
+        assert!(
+            prompt.contains("Missing check for [REDACTED:GitHub Token]."),
+            "{prompt}"
+        );
+        assert!(!prompt.contains("fn gap()"), "{prompt}");
         // A habeas read of the configuration file and a line range.
         let read = dispatch(&sources, "habeas", &json!({"file":"habeas.toml","item":""})).unwrap();
         assert!(!leaks(&read.result), "{:#}", read.result);
@@ -2544,6 +2576,39 @@ mod tests {
             ]})
         );
         assert!(ready.inputs.is_empty());
+        let implementations = dispatch(
+            &sources,
+            "references",
+            &json!({"selection":"requirements.ready", "roles":["impl", "impl"]}),
+        )
+        .unwrap();
+        assert_eq!(
+            implementations.result,
+            json!({"definitions":[{"name":"requirements.ready","kind":"requirement"}],
+                "sites":[{"name":"requirements.ready","role":"impl","file":"src/lib.rs","item":"fn[work]"}]})
+        );
+        assert!(implementations.inputs.is_empty());
+        let names = dispatch(
+            &sources,
+            "references",
+            &json!({"selection":"requirements.ready", "roles":[]}),
+        )
+        .unwrap();
+        assert_eq!(names.result["definitions"], ready.result["definitions"]);
+        assert_eq!(names.result["sites"], json!([]));
+        assert!(names.inputs.is_empty());
+        assert_eq!(
+            dispatch(&sources, "references", &json!({"roles":["impl"]}))
+                .unwrap()
+                .result,
+            all.result
+        );
+        for roles in [json!(null), json!("impl"), json!(["fixme"]), json!([1])] {
+            assert!(
+                dispatch(&sources, "references", &json!({"roles":roles})).is_err(),
+                "accepted invalid role filter {roles}"
+            );
+        }
 
         let flattened = dispatch(
             &sources,
@@ -2700,6 +2765,17 @@ mod tests {
             ])
         );
         assert!(result.inputs.is_empty());
+        let filtered = dispatch(
+            &sources,
+            "references",
+            &json!({"selection":"requirements.*", "roles":["impl"]}),
+        )
+        .unwrap();
+        assert_eq!(
+            filtered.result["sites"],
+            json!([{"name":"requirements.ready","role":"impl","file":"skills/ready.md","item":"section[Skill]"}])
+        );
+        assert!(filtered.inputs.is_empty());
     }
 
     // {test}`requirements.authoring.reference_index`
@@ -3010,7 +3086,10 @@ mod tests {
             references["parameters"],
             json!({
                 "type": "object",
-                "properties": {"selection": {"type": "string"}},
+                "properties": {
+                    "selection": {"type": "string"},
+                    "roles": {"type":"array","items":{"type":"string","enum":["impl","cite","test"]},"default":["impl","cite","test"]}
+                },
                 "additionalProperties": false
             })
         );

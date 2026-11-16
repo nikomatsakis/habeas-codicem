@@ -884,6 +884,7 @@ fn initial_prompt(sources: &AssessmentSources) -> io::Result<Prompt> {
     values.push(("mandatory_inputs", &mandatory));
     Ok(match &sources.subject_kind {
         AssessmentKind::Definition(kind, distributed) => {
+            let acknowledgments = serde_json::to_string_pretty(&sources.model_acknowledgments())?;
             let task = subject_task(kind);
             let distributed = distributed_task(kind, *distributed);
             values.extend([
@@ -891,6 +892,7 @@ fn initial_prompt(sources: &AssessmentSources) -> io::Result<Prompt> {
                 ("subject_name", &sources.subject_name),
                 ("subject_task", &task),
                 ("distributed_task", &distributed),
+                ("acknowledgments", &acknowledgments),
             ]);
             Prompt::filled("initial_prompt", &values)
         }
@@ -1897,11 +1899,8 @@ mod tests {
             approved_text("judgment_rules", 0),
             approved_text("requirement_task", 0),
             approved_text("testing_bar", 0),
-            "List each MUST, MUST NOT, and SHOULD clause as an obligation.",
-            "Look for unreached implementations among the sources that",
-            "reference the subject and by targeted search for what its obligations",
-            "produce; do not survey unrelated code.",
-            "5. Testing:",
+            "Derive testable obligations and expected outcomes from each MUST, MUST NOT,",
+            "Testing criteria:",
             "The project MUST be ready.",
         ] {
             assert!(
@@ -1909,7 +1908,7 @@ mod tests {
                 "missing {criterion:?} in:\n{prompt}"
             );
         }
-        // Step 5 continues the requirement task's numbered steps.
+        // The testing criteria follow the requirement task.
         assert!(prompt.contains(&format!(
             "{}\n{}",
             approved_text("requirement_task", 0),
@@ -2285,7 +2284,7 @@ mod tests {
             "A gap is acknowledged only by a {fixme} reference",
             "a {fixme} naming a\n  closed issue no longer acknowledges its gap",
             "including\n  any acknowledged gaps",
-            "A {fixme} describing a gap that no longer exists is\n  itself a gap.",
+            "A {fixme} describing a gap that your review establishes\n  no longer exists within its task's scope is itself a gap.",
         ] {
             assert!(
                 prompt.contains(guidance),
@@ -2937,7 +2936,7 @@ mod tests {
         let prompts = provider.prompts();
         assert_eq!(prompts.len(), 2);
         assert!(prompts.iter().all(|(text, tools)| {
-            text.contains("Assess whether a project's source code")
+            text.contains("Assess whether a project's tests adequately check")
                 && tools.contains(&"submit_judgment".to_owned())
         }));
         assert_eq!(logs.len(), 2);
@@ -3057,7 +3056,7 @@ mod tests {
                 text.contains("Judge against: the subject's text."),
                 "{text}"
             );
-            assert!(text.contains("List each MUST, MUST NOT"), "{text}");
+            assert!(text.contains("Derive testable obligations"), "{text}");
             assert!(text.contains("# Mandatory inputs"), "{text}");
             // The verifier of a requirement carries both background texts,
             // the judgment rules, and the subject's mandatory input.
@@ -3401,7 +3400,7 @@ mod tests {
         assert!(!prompt.system.contains(&task), "{}", prompt.system);
         assert!(
             prompt.subject.contains(&format!(
-                "Judge against: the subject's text.\n\n{task}\n\n# Mandatory inputs"
+                "Judge against: the subject's text.\n\n{task}\n\n# Acknowledgments\n\n[]\n\n# Mandatory inputs"
             )),
             "{}",
             prompt.subject
