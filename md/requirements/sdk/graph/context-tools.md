@@ -15,9 +15,9 @@ that its contents have been examined.
 
 ## Agent tools call the same context as ordinary code
 
-In the requirement example, the procedure invokes an agent with the requirement
-text and the implementation and test functions selected by the graph edges.
-Suppose the implementation calls a helper. The agent can request that helper
+In the requirement example, the procedure explicitly inserts the requirement
+text and test functions into its ask builder. Implementation references remain
+available for discovery. Suppose a test calls a helper. The agent can request that helper
 through a tool; the tool calls back into the validation context to read the
 helper's node contents. Once delivered, those contents are recorded as an
 additional input to this judgment.
@@ -29,7 +29,7 @@ sequenceDiagram
     participant T as Model tool adapter
     participant C as Validation context
     participant G as Application graph
-    P->>A: Requirement text and root inputs
+    P->>A: Context prefix and explicitly inserted node contents
     A->>T: Read helper node
     T->>C: Read node contents
     C->>G: node_content(helper)
@@ -65,7 +65,7 @@ policy rather than requiring every SDK graph to contain requirements.
 | Inspect an outline (`outline`) | A resource identity; returns selectable items, kinds, names, and ancestry. | Discovery. Read a selected item to make its contents an input. |
 | Text search (`ripgrep`) | A regex, search scope, and context-window options; returns matching nodes and excerpts. | Locates candidate nodes. Excerpts do not count as a full read of a matching node. |
 | Structural search (`ast_grep`) | A structural pattern or configured query and resource/language scope; returns matching nodes and excerpts. | Locates syntax-related candidates. Read the nodes on which the conclusion relies. |
-| Discover relationships (`references`) | In Habeas, a definition selection and reference roles; returns matching references and source selectors. Generic graph relationships come from `outgoing_edges`. | Discovery results do not read target contents. Root-edge selection is separately recorded by the SDK. |
+| Discover relationships (`references`) | In Habeas, a definition selection and reference roles; returns matching references and source selectors. Generic graph relationships come from `outgoing_edges`. | Discovery results do not read target contents. Explicit context successor selections record the outgoing-edge snapshot. |
 | Inspect an external issue (`github`) | Habeas accepts a GitHub issue identity and returns issue data. | This supplementary Habeas tool does not record evidence inputs. When an issue state supports a judgment, expose it as a graph node and read it through the tracked context; see [Habeas external nodes](../habeas.md#nodes-can-refer-to-external-state). |
 | Continue a paged result (`next_page`) | An opaque continuation token; returns another page of the original operation. | Keeps the underlying operation's semantics. Only delivered content pages contribute node reads. |
 
@@ -74,20 +74,24 @@ to. Those filters are application policy; they do not change the distinction
 between finding a node and reading it. The exact Habeas argument forms are
 specified in [Authoring evidence](../../authoring.md).
 
-`submit_result` is also supplied to each agent call, but is not an inspection
-tool. It ends the call with the typed result described in [Agent calls](agent-calls.md).
-Likewise, `ask().context(...).prompt(...)` starts an agent interaction; it does
-not replace node-content reads.
+A structured submission tool is also supplied to each agent call, but is not an
+inspection tool. Its SDK default name is `submit_result`; Habeas retains the
+submission names and acceptance checks of its existing harness. It ends the
+call with the typed result described in [Agent calls](agent-calls.md).
+Awaiting an ask builder starts an agent interaction. Its
+`current_node_contents()` and `successors_content(label)` calls explicitly
+insert tracked contents after the reusable context prefix.
 
-## Search observations and source reads answer different questions
+## Search tools use a fixed dependency policy
 
-Habeas's discovery tools locate nodes and do not claim to have read every
-matching node. A tracked search result can separately support a claim about the
-search itself—for example, that a complete search found no matching calls.
-[The source-provider contract](../sources.md#inspection-runs-through-the-tracked-context)
-defines recording for that observation, including query scope and completeness.
-It does not make unread matching nodes into source-content inputs. A truncated
-result cannot establish the absence of other matches.
+Text search and structural search call shared SDK operations through the
+source-exploration interface to find resources and parse their contents.
+The tools treat search result sets as discovery, without recording them as
+assessment dependencies. A hook to customize that policy is deferred.
+Habeas separately records the enclosing source nodes of excerpts selected
+through `finish_search`; it does not track changes to the search result set.
+Search results still report completeness: a truncated result cannot establish
+the absence of other matches.
 
 ## Stay inside the tracked interface
 

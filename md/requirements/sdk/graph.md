@@ -71,7 +71,8 @@ supplies serialization for any node IDs stored inside an evidence record.
 
 The SDK defines an edge's shape. The application supplies its label, including
 any relationship metadata. Its source is implicit in the outgoing-edge lookup;
-its target identifies another node whose contents are inputs to validation.
+its target identifies another node whose contents can be selected as inputs to
+validation.
 
 :::{req} edges
 `habeas_sdk::graph` MUST expose the following edge structure:
@@ -115,8 +116,8 @@ caller-supplied starting nodes and per-node outgoing-edge lookup, without
 requiring enumeration or materialization of all graph nodes or edges.
 Every returned edge MUST be interpreted as originating at the requested node.
 The returned snapshot MUST fingerprint the complete outgoing-edge selection,
-including an empty selection, target identities, and the labels and
-metadata supplied to validation.
+including an empty selection, edge order and multiplicity, target identities,
+and the labels and metadata available to validation.
 :::
 
 

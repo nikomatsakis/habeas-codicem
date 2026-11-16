@@ -9,11 +9,17 @@ Every JSON file directly under `evidence/` MUST correspond to a declared require
 :::
 
 :::{req} schema
-A requirement or example evidence file at `evidence/<full-name>.json` MUST be a JSON object with exactly `requirement` or `example`, `determination`, `rationale`, `references`, and `inputs`. `references` MUST be the reference-set digest defined by {cite}`requirements.ci.reference_set`. The definition text and rationale MUST be nonempty strings, `determination` MUST use one of the outcomes defined by {cite}`requirements.ci.outcomes`, and `inputs` MUST be an array. Every evidence input MUST have exactly one of three forms: an outline input with `file`, `item`, and `hash`; a requirements input with `requirements`, `matches`, and `text`; or a definition input with `definition` and `text`. File paths MUST resolve to permitted inputs under {cite}`requirements.ci.input_containment`. Project-local paths SHOULD be recorded relative to the project for portability; absolute and parent-relative paths MAY be used when their resolved targets are permitted. `matches` MUST be an array of distinct full definition names, `hash` MUST be a lowercase hexadecimal SHA-256 digest, and `text` MUST be a nonempty array of strings. Evidence MUST NOT store source text for outline inputs.
+An unversioned requirement or example evidence file at `evidence/<full-name>.json` MUST be a JSON object with exactly `requirement` or `example`, `determination`, `rationale`, `references`, and `inputs`. `references` MUST be the reference-set digest defined by {cite}`requirements.ci.reference_set`. The definition text and rationale MUST be nonempty strings, `determination` MUST use one of the outcomes defined by {cite}`requirements.ci.outcomes`, and `inputs` MUST be an array. In the unversioned representation, every evidence input MUST have exactly one of three forms: an outline input with `file`, `item`, and `hash`; a requirements input with `requirements`, `matches`, and `text`; or a definition input with `definition` and `text`. File paths MUST resolve to permitted inputs under {cite}`requirements.ci.input_containment`. Project-local paths SHOULD be recorded relative to the project for portability; absolute and parent-relative paths MAY be used when their resolved targets are permitted. `matches` MUST be an array of distinct full definition names, `hash` MUST be a lowercase hexadecimal SHA-256 digest, and `text` MUST be a nonempty array of strings. Evidence MUST NOT store source text for outline inputs.
+
+Versioned SDK-backed evidence MAY use the alternative representation under
+{cite}`requirements.sdk.habeas.evidence_format`. Equivalent fields in that
+representation MUST satisfy the same subject, determination, rationale,
+reference-set, input-containment, and input-freshness checks. Versioned evidence
+MUST NOT store source text for outline inputs.
 :::
 
 :::{req} requirement_text
-The `requirement` string in each evidence file MUST match all Markdown inside its fenced `{req}` directive, excluding leading and trailing whitespace and the header option lines of {cite}`requirements.references.anchors`. Habeas MUST report changed requirement text.
+The recorded requirement text in each evidence representation MUST match all Markdown inside its fenced `{req}` directive, excluding leading and trailing whitespace and the header option lines of {cite}`requirements.references.anchors`. Habeas MUST report changed requirement text.
 :::
 
 :::{req} determination

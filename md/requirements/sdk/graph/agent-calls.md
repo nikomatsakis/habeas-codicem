@@ -1,10 +1,11 @@
 # Agent calls
 
 
-A validation asks an agent through its context. It builds a stable prefix from
-application-defined context values, then supplies the question and selected
-inputs when sending the prompt. Each value implements `Context`, which provides
-its text. A value can borrow a stored `String` or produce an owned one:
+A validation asks an agent through its context. It first supplies reusable
+context, including the question, then explicitly inserts the node contents
+needed for this call. Awaiting the builder executes the request. Each reusable
+value implements `Context`, which provides its text. A value can borrow a stored
+`String` or produce an owned one:
 
 :::{req} agent_context
 `habeas_sdk::procedure` MUST expose the following trait:
@@ -38,7 +39,7 @@ text of that rendered prefix using a versioned hashing scheme. It MUST NOT
 hash Rust object addresses or type identities. The fingerprint MUST describe
 the same prefix delivered to the agent. Ordering and repetitions MUST be
 preserved; contexts MUST NOT be treated as an unordered or deduplicated set.
-This fingerprint identifies the prefix, not the varying prompt, node inputs,
+This fingerprint identifies the prefix, including the question, not node inputs,
 result schema, or the complete agent request.
 :::
 
@@ -56,8 +57,8 @@ impl Context for Instructions {
 }
 ```
 
-With `review_policy` and `project_conventions` holding `Instructions` values,
-a tuple combines both in one call:
+With `review_policy`, `project_conventions`, and `question` holding `Instructions`
+values, a tuple combines the first two in one call:
 
 ```rust,ignore
 #[derive(serde::Deserialize, schemars::JsonSchema)]
@@ -68,35 +69,108 @@ struct ExpirationAssessment {
 
 let answer: ExpirationAssessment = ctx.ask()
     .context((&review_policy, &project_conventions))
-    .prompt("Does this implementation reject expired tokens?", &agent_inputs)
+    .context(&question)
+    .current_node_contents()
+    .successors_content(HabeasEdgeLabel::Tests)
     .await?;
 ```
 
 The same prefix can be built with `.context(&review_policy)` followed by
 `.context(&project_conventions)`. A slice or vector handles a variable number
 of contexts of one type; tuples combine different types. Context values can
-include their own headings when those help the agent. The prefix precedes the varying
-prompt and inputs, allowing the provider adapter to use supported prompt
-caching. The final `prompt` call starts the agent interaction. The application
-chooses the result type independently for each call; it need not be `Judgment`.
+include their own headings when those help the agent. The question is another
+context value, independent of the particular nodes being reviewed. The prefix
+precedes node contents, allowing the provider adapter to use supported prompt
+caching. There is no separate prompt argument or send method. The application
+chooses the result type independently for each builder; it need not be
+`Judgment`, and can be inferred from the receiving variable or supplied as
+`ctx.ask::<ExpirationAssessment>()`.
 
 `AgentInput` is a borrowed view of a node identity and its already-read contents,
-selected for one agent call. Unlike `RootInput`, it carries no edge: an agent
-can be shown a node that was discovered later or the source node itself.
+supplied by the SDK to the application's renderer. The callback chooses inputs
+through the builder rather than assembling a slice of these views.
 
 `NodeContent` is application-defined and may be a parsed structure rather than
 text. The renderer answers one narrow question: how should that particular
 value be presented to the agent? For example, Habeas can render a requirement
 as its text and a parsed function as its source code. The SDK retains the node
 identity and fingerprints the supplied contents for tracking; the renderer only
-provides the agent-readable presentation. A validation
-normally selects them from its subject and root inputs, but can provide another
-selection or an empty slice. The agent also receives the SDK's tracked inspection
-tools. Selecting fewer inputs for a particular call does not remove observations
-already recorded for the enclosing validation.
+provides the agent-readable presentation. A validation chooses the current node
+and labeled successors for each call, or awaits without inserting any node
+contents. The agent also receives the SDK's tracked inspection tools. Making a
+different selection for a later call does not remove observations already
+recorded for the enclosing validation.
 
 :::{req} judge
-`habeas_sdk::procedure` MUST expose the following agent input type:
+`habeas_sdk::procedure` MUST expose an `Ask` builder with two public state types,
+`ContextPhase` and `NodePhase`. `ValidationContext<'d, D>` MUST expose:
+
+```rust,ignore
+pub fn ask<R>(&self) -> Ask<'_, 'd, D, R, ContextPhase>
+where
+    R: serde::de::DeserializeOwned + schemars::JsonSchema + Send;
+```
+
+For `D: Validation`, the builder MUST expose the following operations:
+
+```rust,ignore
+impl<'a, 'd, D: Validation, R> Ask<'a, 'd, D, R, ContextPhase> {
+    pub fn context(self, value: impl Context) -> Self;
+}
+
+impl<'a, 'd, D: Validation, R, P> Ask<'a, 'd, D, R, P> {
+    pub fn current_node_contents(self) -> Ask<'a, 'd, D, R, NodePhase>;
+
+    pub fn successors_content(
+        self,
+        label: D::EdgeLabel,
+    ) -> Ask<'a, 'd, D, R, NodePhase>
+    where
+        D::EdgeLabel: PartialEq;
+}
+```
+
+Each `ask()` MUST create an independent builder borrowing the validation context
+through a shared reference. Both supported states MUST implement
+`std::future::IntoFuture` with `Output = Result<R, ValidationError<D::Error>>`
+and a `Send` future, for
+`R: serde::de::DeserializeOwned + schemars::JsonSchema + Send`. Awaiting either
+state MUST execute the assembled request, including a request with no contexts
+or node insertions. Building the request MUST NOT invoke an agent.
+:::
+
+:::{req} judge.phases
+An ask builder MUST begin in `ContextPhase`. Only that state MUST expose
+`context`, composing the reusable prefix under
+{cite}`requirements.sdk.graph.agent-calls.agent_context`. The first
+`current_node_contents` or `successors_content` call MUST transition to
+`NodePhase`, even when the successor selection is empty. That state MUST permit
+further node insertions and awaiting, but MUST NOT expose `context` or a
+transition back to `ContextPhase`. The SDK MUST enforce this restriction through
+the builder's types.
+:::
+
+:::{req} judge.node_contents
+Builder node-insertion methods MUST queue their selections without resolving
+node contents or outgoing edges, rendering node inputs, or recording
+observations. When an ask builder with a configured agent is awaited,
+`current_node_contents` MUST insert the contents
+of the node identified by `ValidationContext::node_id`. `successors_content(label)`
+MUST inspect that node's outgoing edges and insert the target contents of every
+edge whose label compares equal to the supplied label. Insertions MUST follow
+builder-call order; successors within an insertion MUST retain the returned
+edge order and one entry per matching edge, including duplicate targets.
+
+Each successful successor selection MUST record the complete outgoing-edge
+snapshot, including when no edge matches. Target contents MUST be resolved only
+for matching edges. Each node actually delivered MUST be recorded with the
+fingerprint of the supplied snapshot under
+{cite}`requirements.sdk.graph.agent-calls.author_procedure`. Input resolution
+failures MUST be reported as `ValidationError::Graph`.
+:::
+
+:::{req} judge.rendering
+`habeas_sdk::procedure` MUST expose:
 
 ```rust,ignore
 pub struct AgentInput<'i, D: Graph> {
@@ -110,56 +184,43 @@ pub trait AgentInputRenderer<D: Graph>: Send + Sync {
 ```
 
 The application MUST supply an `AgentInputRenderer<D>` through agent context
-configuration to render the identified node contents for the agent. Rendering
-MUST use the supplied contents without fetching replacement contents. The SDK
-MUST report rendering errors as `ValidationError::Graph` and MUST NOT impose
-serialization or display bounds on `Graph::NodeContent` or `Graph::NodeId`.
-
-`ValidationContext<'d, D>` MUST provide `ask` with this signature:
-
-```rust,ignore
-pub fn ask(&self) -> Ask<'_, 'd, D>;
-```
-
-The returned builder `Ask` MUST provide the following methods:
-
-```rust,ignore
-pub fn context(self, value: impl Context) -> Self;
-
-pub fn prompt<'a, R>(
-    self,
-    prompt: &'a str,
-    inputs: &'a [AgentInput<'a, D>],
-) -> impl Future<Output = Result<R, ValidationError<D::Error>>> + Send + 'a
-where
-    Self: 'a,
-    R: serde::de::DeserializeOwned + schemars::JsonSchema + Send + 'a;
-```
-
-Each `ask()` MUST create an independent builder borrowing the context through
-a shared reference. Repeated `context` calls MUST compose values according to
-{cite}`requirements.sdk.graph.agent-calls.agent_context` and place the resulting prefix
-before the per-call prompt and inputs.
-Building the request MUST NOT invoke the agent. `prompt` MUST execute the
-request with the supplied selection, including an empty slice. The provider
-adapter MUST make this stable prefix available to its supported prompt-caching
-mechanism; a cache hit is not guaranteed.
-
-The SDK MUST automatically provide a `submit_result` tool with a JSON schema
-derived from `R` using `schemars`, and instruct the agent to finish by submitting
-its structured result through that tool. A successful call MUST return the
-submitted value deserialized into `R`. Ordinary assistant text MUST NOT count
-as a submitted result. An invocation ending without a valid submission MUST
-return an error. Provider failures and invalid terminal submissions MUST be
-reported as `ValidationError::Agent`, not as a node judgment.
+configuration. Rendering MUST use the supplied contents without fetching
+replacement contents. The SDK MUST report rendering errors as
+`ValidationError::Graph` and MUST NOT impose serialization or display bounds on
+`Graph::NodeContent` or `Graph::NodeId`.
 :::
 
-The prefix can hold instructions shared by many nodes, while the prompt varies
-per node. Rendered context values and prompt text are explicit application-supplied
-text; the SDK does not infer node identities from arbitrary strings. Node data
-whose freshness matters should be supplied as identified inputs or read through
-the tracked tools. Changes to validation instructions belong in the procedure
-version used for evidence freshness.
+:::{req} judge.caching
+The provider adapter MUST make the rendered context prefix available to its
+supported prompt-caching mechanism. The prefix MUST include all supplied context,
+including the question, and precede inserted node contents. A cache hit is not
+guaranteed. The context-prefix fingerprint MUST follow
+{cite}`requirements.sdk.graph.agent-calls.agent_context`.
+:::
+
+:::{req} judge.submission
+The SDK MUST provide a structured submission tool with a JSON schema
+derived from `R` using `schemars`, and instruct the agent to finish by submitting
+its structured result through that tool. The default tool name MUST be
+`submit_result`; the configured harness MAY retain an application's existing
+submission names and acceptance rules. A successful call MUST return exactly
+one accepted submitted value deserialized into `R`. Ordinary assistant text
+MUST NOT count as a submitted result. An invocation ending without a valid
+accepted submission MUST return an error. Provider failures and invalid terminal
+submissions MUST be reported as `ValidationError::Agent`, not as a node judgment.
+:::
+
+The SDK generalizes Habeas's existing conversation harness. Its source tools,
+paging, retries, and search-accounting gates can be reused with different typed
+results. Habeas's assessment and verification calls have different result
+schemas and currently use `submit_judgment` and `submit_verification`,
+respectively. Both use the same harness; submission naming is configuration,
+not a second SDK validation interface.
+
+Rendered context values are explicit application-supplied text; the SDK does not
+infer node identities from arbitrary strings. Node data whose freshness matters
+belongs in explicit node insertions or tracked reads. Changes to validation
+instructions belong in the procedure version used for evidence freshness.
 
 :::{req} author_procedure
 `habeas_sdk::procedure` MUST provide a `Send + Sync` per-validation
@@ -174,9 +235,10 @@ agent interactions behind a context-wide lock.
 
 The SDK MUST record identified inputs actually delivered to an agent using the
 fingerprints of their supplied contents, together with delivered tool reads.
-Choosing a subset or empty slice for an agent call MUST NOT discard dependencies
-already captured for the validation, including its initial roots.
-The callback MUST receive the subject and prepared inputs specified by
+Awaiting a builder with fewer or no node insertions MUST NOT discard dependencies
+already captured for the validation. Preparing an unawaited builder MUST NOT
+create agent-delivery dependencies. The callback MUST receive only the context
+specified by
 {cite}`requirements.sdk.graph.validation.check_procedure` and MUST NOT require
 evidence-storage access. The SDK MUST use this single validation interface for
 callbacks with and without agent calls.
@@ -196,9 +258,10 @@ propagates that error, the runner records no completed judgment. A callback can
 also handle the error and reach a judgment by other means.
 
 :::{req} model_capability
-When no agent is configured, executing an ask builder's `prompt`
+When no agent is configured, awaiting an ask builder
 MUST return `ValidationError::NoAgentConfigured`. It MUST NOT invoke a provider
-or fabricate an agent response. If the validation callback propagates that
+or resolve or render queued node insertions or fabricate an agent response.
+If the validation callback propagates that
 error, the runner MUST report the error and MUST NOT store a completed judgment.
 This runtime behavior MUST NOT require a separate callback trait for
 validations that do not call an agent.

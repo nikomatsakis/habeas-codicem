@@ -171,6 +171,9 @@ MUST author the review of the one item it names, under
 {cite}`requirements.authoring.refresh`, where omitting `#<selector>`
 names the file's root node. A citation in a requirement or example
 declaration is reviewed as part of that definition's own assessment instead.
+Storage MAY use the versioned representation under
+{cite}`requirements.sdk.habeas.evidence_format`, retaining the same review
+information and validation rules.
 :::
 
 :::{req} anchors
@@ -561,6 +564,9 @@ the review of the one site it names, under
 file's root node. `habeas status` MUST report missing, stale, invalid, and false
 site reviews with their requirement, file, and selector, and `habeas info` MUST
 list each selected requirement's sites with their determinations.
+Storage MAY use the versioned representation under
+{cite}`requirements.sdk.habeas.evidence_format`, retaining the same review
+information and validation rules.
 :::
 
 ## References as authoring inputs

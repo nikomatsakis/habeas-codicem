@@ -14,15 +14,17 @@ The uncommitted SDK contracts now live under `requirements.sdk.graph` and
 | `references.structural_hash` | Structural fingerprints and identity | Which fingerprint each evidence input uses |
 | `references.outline_comments` | Comment classification and attachment hooks | Reference discovery and ownership |
 | `authoring.delivered_inputs` | Record observations actually supplied to a procedure | Evidence input fields and source coverage |
-| `authoring.text_search`, `authoring.structural_search` | Typed inspection operations and query observations, including empty results | Model tool schemas, reference filters, and discovery-only policy |
-| `ci.reference_set` | Query-result changes invalidate saved judgments | Which reference roles form a requirement's root set |
+| `authoring.text_search`, `authoring.structural_search` | Typed inspection operations, result completeness, and fixed discovery policy for search result sets | Model tool schemas, reference filters, and selected-excerpt accounting |
+| `ci.reference_set` | Outgoing-edge selection changes invalidate saved judgments | Which reference roles form a requirement's root set |
 | `ci.outline_inputs` | Re-read observations and compare fingerprints | JSON schema, diagnostics, and evidence lookup |
 | `authoring.deterministic_validation` | Checking saved results without an agent capability | CI acceptance policy and reported errors |
 
 The identifiers in this table are abbreviated: each begins with `requirements.`.
 A mixed requirement needs splitting, rather than moving its entire current body
-into the SDK. In particular, recording a search result as a dependency is distinct
-from claiming that all matching source nodes were examined.
+into the SDK. The SDK search tools use a fixed discovery policy for search
+result sets; a hook to customize that policy is deferred. Recording selected
+source nodes as inputs is distinct from tracking changes to the search result
+set.
 
 ## Individual outline definitions
 

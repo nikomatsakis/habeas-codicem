@@ -53,6 +53,9 @@ procedure name in the lookup key.
 The record retains the version of the validation logic in its `procedure`
 field. This lets a change to that logic invalidate saved evidence even when
 node contents are unchanged; it does not select a second record for the node.
+The stored value `*` represents a legacy record that did not capture its
+procedure version. It matches any requested version while retaining the
+record's dependency checks.
 The application chooses how to encode a node identity as a filename or database
 key. Storage uses the SDK's `Record` directly so the runner can construct and
 inspect it without an application-specific conversion.
@@ -85,7 +88,7 @@ validation callback MUST NOT be required to return a dependency list.
 For example, the application can identify its recipe as `requirement-review-v1`:
 
 ```rust,ignore
-let verdict = graph.validate(&inputs, &context).await?;
+let verdict = graph.validate(&context).await?;
 let record = context.finish("requirement-review-v1".into(), verdict);
 ```
 
@@ -102,7 +105,9 @@ let implementation = ctx.read(&implementation_id)?;
 
 The procedure receives the content, while the context remembers the node
 identity and its fingerprint, computed through `Fingerprinting::fingerprint`.
-The runner also records the outgoing-edge snapshot used to prepare root inputs.
+The context records an outgoing-edge snapshot when the callback or an awaited
+agent builder explicitly requests that selection. Merely creating a context
+does not read the subject or all its successors.
 A failed read returns an error without inventing a successful observation.
 Repeating an identical observation adds no information. Reading the same identity with two different
 fingerprints preserves both observations: CI must not silently forget one.
@@ -147,10 +152,12 @@ let current = record_is_current(&current_graph, "requirement-review-v1", &record
 The SDK owns this comparison; there is no application freshness callback.
 The application supplies contents, edges, fingerprints, and stored records.
 The SDK resolves each saved node or outgoing-edge
-dependency and compares its fingerprint with the saved one. A different procedure identity also makes the
-record stale. An unresolvable dependency produces an error; it cannot establish
-that the record is current. The current graph must observe the state that CI
-intends to check; reusing yesterday's cached source snapshots would not do that.
+dependency and compares its fingerprint with the saved one. A different
+concrete procedure identity also makes the record stale; the stored identity
+`*` matches any requested version. An unresolvable dependency produces an error;
+it cannot establish that the record is current. The current graph must observe
+the state that CI intends to check; reusing yesterday's cached source snapshots
+would not do that.
 
 :::{req} checking_records
 The SDK MUST implement the freshness comparison using graph operations and
@@ -158,8 +165,18 @@ fingerprints, without requiring an application freshness callback.
 Checking a stored assessment record’s freshness MUST NOT execute its assessment
 procedure or invoke a model. The SDK MUST compare the requested procedure
 identity and the record’s captured dependencies with their current state. A
-procedure-identity mismatch or a fingerprint mismatch MUST make the record not
-current; an error resolving a dependency MUST be returned as an error.
+procedure-identity mismatch under
+{cite}`requirements.sdk.graph.evidence.checking_records.procedure_match` or a
+fingerprint mismatch MUST make the record not current; an error resolving a
+dependency MUST be returned as an error.
+:::
+
+:::{req} checking_records.procedure_match
+The SDK MUST consider the procedure identity to match when the stored
+`Record::procedure` is `*` or equals the requested identity exactly. Only the
+complete stored value `*` is a wildcard; other values MUST be compared
+literally, without glob matching. A stored wildcard MUST NOT suppress recorded
+dependency comparison or change the saved judgment.
 :::
 
 A current record is not necessarily a favorable one. The model may have found

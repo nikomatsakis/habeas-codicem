@@ -31,9 +31,11 @@ or interpreting its application-specific metadata.
 :::
 
 Traversal is defined against the outgoing-edge snapshots collected for this
-invocation. The runner retains each discovered selection and uses that same
-snapshot when preparing the node's callback inputs and recording dependencies.
-This avoids scheduling against one set of edges and validating against another.
+invocation. The runner retains each discovered selection. If a node's callback
+or agent builder explicitly requests its successors, the context uses and
+records that same selection snapshot. Discovery alone does not create an
+assessment dependency or read target contents. This avoids scheduling against
+one set of edges and supplying a different selection to the callback.
 It does not promise an atomic snapshot of all node contents; later changes can
 make the resulting evidence stale.
 

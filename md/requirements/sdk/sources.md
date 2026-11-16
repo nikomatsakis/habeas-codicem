@@ -281,29 +281,31 @@ flowchart TD
     Provider --> Custom["Provider override"]
     Default --> Result["Observation returned to context"]
     Custom --> Result
-    Result --> Record["Record dependency; supply result"]
+    Result --> Return["Supply result"]
+    Return --> Record["Record delivered source-node reads"]
 ```
 
 The graph's [input-recording contracts](graph/evidence.md#remember-what-a-procedure-actually-reads)
-cover node reads and outgoing-edge selections. Source inspection additionally
-tracks search observations under the following contract. Providers execute
-operations; the inspection context records their observations. An override cannot bypass
-recording merely because it answered from a cache or database.
+cover node reads and outgoing-edge selections. Providers execute operations;
+the inspection context records source-node reads delivered to the procedure.
+An override cannot bypass recording a delivered read merely because it answered
+from a cache or database.
 
 :::{req} provider_observations
-The SDK's tracked inspection context MUST record successful source reads and
-search queries, including empty search results, as dependencies of the
-assessment. Recording MUST apply whether the provider uses SDK defaults or
-overrides. Recorded fingerprints MUST describe the observations returned to
-the caller, including whether a search result is complete.
+The SDK's tracked inspection context MUST record successful source-node reads
+delivered to the validation procedure as dependencies of the assessment.
+Recording MUST apply whether the provider uses SDK defaults or overrides.
+Recorded fingerprints MUST describe the source-node contents delivered to
+the caller.
 :::
 
-A search observation and a full source read are different inputs. For example,
-a procedure may establish that no calls to a forbidden function exist from a
-complete empty search result. It must retain that query dependency even though it read
-no matching nodes. Adding a matching call changes the result and makes the
-saved judgment stale. In contrast, locating a function does not establish that
-its full contents were examined.
+The SDK search tools use the shared source-provider and parsing operations to
+locate sources. They do not record search result sets, including empty results,
+as assessment dependencies. This tool policy is fixed for now; a hook to
+customize it is deferred. Provider overrides change how an operation executes,
+not this dependency policy. A subsequent tracked source-node read records that
+node as an input. Locating a function does not establish that its full contents
+were examined.
 
 ## Each language defines its outline
 

@@ -38,12 +38,13 @@ fn expired_token_is_rejected() {
 }
 ```
 
-The `{impl}` comment selects `check_token` as an implementation input. The
+The `{impl}` comment identifies `check_token` as an implementation reference. The
 `{test}` comment selects `expired_token_is_rejected` as a test input.
 
-To assess this requirement, Habeas starts an agent with the requirement text,
-the implementation function, and the test function. The agent judges whether
-the implementation and test satisfy the requirement.
+To assess this requirement, Habeas starts an agent with the requirement text
+and the test function. The agent judges whether the tests adequately check the
+requirement, and can request implementation source to answer a specific
+question.
 
 ## SDK Perspective: obligations as a graph
 
@@ -58,7 +59,14 @@ flowchart TD
     R -->|tested by| T["expired_token_is_rejected"]
 ```
 
-Edges indicate *(root) inputs* to the validation process. So the validation procedure for `requirements.auth.expiration` will be given the `check_token` and `expired_token_is_rejected` nodes as inputs. If a relevant part of an input changes, the saved validation becomes stale. CI reports the stale result; authoring can re-execute the validation. Fingerprints, introduced in the Fingerprinting chapter, determine which changes count as relevant. Note that these are the *root* inputs: the validation procedure may fetch additional inputs in which case they too are added to the input set.
+Edges make related nodes available to the validation process. The callback
+receives a context identifying `requirements.auth.expiration`; it explicitly
+chooses which contents to read or insert into each agent call. Habeas can insert
+the requirement and `Tests` successors while leaving implementation source to
+later requests. The SDK records those reads and the outgoing selections the
+procedure observes. If a relevant part of a recorded input changes, the saved
+validation becomes stale. CI reports the stale result; authoring can rerun the
+validation. Fingerprints determine which changes count as relevant.
 
 ## Defining the application domain
 
