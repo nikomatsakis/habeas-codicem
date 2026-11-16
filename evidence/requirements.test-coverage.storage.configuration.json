@@ -1,7 +1,7 @@
 {
   "requirement": "Each coverage record MUST identify the recorded toolchain, compilation target,\nCargo build profile, enabled features, and instrumentation-affecting compiler\nsettings. These settings MUST determine build-configuration compatibility for\nthe combined view. A nextest scheduling profile alone MUST NOT make otherwise\ncompatible build configurations incompatible.",
   "determination": true,
-  "rationale": "I found no gaps. Each obligation has code that reaches it from an {impl} item and a test that asserts its outcome.\n\n**Obligations**\n1. Each coverage record MUST identify the toolchain, compilation target, Cargo build profile, enabled features and instrumentation-affecting compiler settings.\n2. Those settings MUST determine build-configuration compatibility for the combined view.\n3. A nextest scheduling profile alone MUST NOT make otherwise compatible builds incompatible.\n\n**Implementation**\n- **Recording (obligation 1).** `src/execution_coverage/runner.rs#fn[run]` calls `build_configuration` and stores the result in the `Run` struct (`src/execution_coverage.rs#struct[Run]`) as `configuration_inputs`, with a digest in `configuration`.\n  - `build_configuration` records `rustc` (version and LLVM), `target`, `cargo-profile`, `features`, `all-features`, `no-default-features` and `instrumentation` (`-C instrument-coverage`).\n  - It also records `--config` overrides, the RUSTFLAGS, RUSTC, `CARGO_PROFILE_*`, `CARGO_TARGET_*` and `RUSTUP_TOOLCHAIN` environment variables, and the `build`, `target`, `profile` and `env` sections of the Cargo config files.\n  - After the build, `run` adds the actually enabled features, read from the ledger that `compile_process` writes from the rustc `--cfg feature=` arguments. It then recomputes the digest.\n  - `compile_process` also applies `-C instrument-coverage`.\n- **Compatibility (obligation 2).** `src/execution_coverage/book.rs#fn[populate_in]`, reached from `populate`, takes the newest record's `configuration` as the active one. Only attempts with that configuration are selected for the union. Others are labelled \"excluded: historical build configuration\". The configuration inputs are shown in the provenance output.\n- **Scheduling profile (obligation 3).** `build_configuration` reads the Cargo profile only from `--cargo-profile`, `--release` or `-r`. Nextest's `--profile` is never read, so it cannot change the digest.\n\n**Tests**\n- `src/execution_coverage/runner.rs#mod[tests]/fn[compiler_inputs_determine_compatibility_and_scheduling_does_not]` covers the recorded fields and the compatibility key. It asserts the values for rustc, target, cargo-profile and instrumentation.\n  - It asserts that changing the target, `--release`, `-r`, `--cargo-profile`, `--all-features`, `--no-default-features`, the rustc version, Cargo config rustflags or env, or the RUSTFLAGS, `CARGO_PROFILE_*` and `CARGO_TARGET_*` environment variables (via a child process) changes the key.\n  - It asserts that `--profile focused` leaves the key equal to the baseline.\n- `tests/execution_coverage.rs#fn[real_parallel_processes_retries_child_profiles_and_filtered_reruns]` is an end-to-end test.\n  - It asserts the persisted `configuration_inputs` for rustc, target, cargo-profile and instrumentation.\n  - It asserts that a nextest `--profile focused` run keeps the same `configuration` digest as the earlier runs.\n  - It asserts that `--features alpha -Fbeta` produces a different digest and records `enabled-features` containing both features.\n- `src/execution_coverage/book.rs#mod[tests]/fn[filtered_runs_union_latest_attempts_and_invalidate_with_saved_source]` checks the combined view. Records with the same configuration are unioned, and a record with a different configuration is excluded as \"historical build configuration\".\n\nNo unspecified behavior needs flagging. The extra recorded inputs, such as Cargo config and overrides, are build-configuration settings that affect instrumentation.",
+  "rationale": "The three marked tests together check each obligation in `requirements.test-coverage.storage.configuration`.\n\n**Recorded settings identify the toolchain, target, profile, features and instrumentation.**\n- `src/execution_coverage/runner.rs#mod[tests]/fn[compiler_inputs_determine_compatibility_and_scheduling_does_not]` calls `build_configuration` directly. It asserts the recorded `rustc` text (with its LLVM version), `target`, `cargo-profile`, and an `instrumentation` entry containing `-C instrument-coverage`.\n- It then varies the target, `--release`, `-r`, `--cargo-profile`, `--all-features` and `--no-default-features`. Each variation must record the expected field value and produce a different digest key from the baseline.\n- A different rustc version also changes the key.\n- The same test covers other compiler-affecting inputs. Changed `.cargo/config.toml` rustflags and `[env]` change the key, and so does a second edit of that file. A child process sets `RUSTFLAGS`, `CARGO_PROFILE_TEST_DEBUG` and `CARGO_TARGET_TEST_HOST_LINKER`. It asserts that each is recorded and that the key differs from the parent's baseline.\n- `tests/execution_coverage.rs#fn[real_parallel_processes_retries_child_profiles_and_filtered_reruns]` checks the real saved run. Its `configuration_inputs` hold `rustc` with LLVM, a non-empty `target`, `cargo-profile` `test`, and the instrumentation string. A rerun with `--features alpha -Fbeta` records `enabled-features` containing both features and changes the `configuration` key.\n\n**The recorded settings determine compatibility in the combined view.**\n- `src/execution_coverage/book.rs#mod[tests]/fn[filtered_runs_union_latest_attempts_and_invalidate_with_saved_source]` first unions two runs with the same build configuration (`build-a`). It then records a run under `build-b` and asserts the view shows \"historical build configuration\" and counts only the new configuration (`1/1`).\n- The runner test and the integration test show that differing settings change the key that this view compares.\n\n**A nextest scheduling profile alone must not make compatible builds incompatible.**\n- The runner test builds with `--profile focused` and asserts its key equals the baseline key.\n- The integration test adds a `focused` nextest profile and reruns with `--profile focused`. It asserts the saved `configuration` equals the earlier run's, and that the earlier run's attempts are retained.\n\n**Possible weakness, not a gap.** `build_configuration` can also take the target from `CARGO_BUILD_TARGET`, a Cargo config `build.target`, or a `--config` target override. The tests exercise `--target` and the host default, but not those sources. The requirement does not distinguish them as separate cases, and the whole Cargo config `[build]` table is hashed into the key anyway. I did not treat this as a gap.\n\nAll obligations have tests that exercise the behavior and assert its outcome.",
   "references": "fcadfe232c44610f081d60ae2e7a0e27f1fdbb9046b7052222147835cad55e54",
   "inputs": [
     {
@@ -21,33 +21,13 @@
     },
     {
       "file": "src/execution_coverage/book.rs",
-      "item": "fn[populate]",
-      "hash": "1ad439b7525ab6f34b9af5e39a0c375186869031e12f873681289cc3ff967179"
-    },
-    {
-      "file": "src/execution_coverage/book.rs",
       "item": "mod[tests]/fn[filtered_runs_union_latest_attempts_and_invalidate_with_saved_source]",
-      "hash": "22edbb3f0d7f0d5820f1e8b09958a40aa5f2f6b46b3c90aab74bf5b453b99c4d"
-    },
-    {
-      "file": "src/execution_coverage/runner.rs",
-      "item": "fn[compile_process]",
-      "hash": "d1b9908e2b02e55fcad6c1271adf41ced7943b6f408c88fc719890dd4ae5b391"
-    },
-    {
-      "file": "src/execution_coverage/runner.rs",
-      "item": "fn[run]",
-      "hash": "adf91e32adef47b58756af272696c8bc1a817f75f794a08fc40f88b98cb03a1a"
+      "hash": "050b6697d04922fb4f597dd599e8749bc30309995d1fba632c16ad990d688b75"
     },
     {
       "file": "src/execution_coverage/runner.rs",
       "item": "mod[tests]/fn[compiler_inputs_determine_compatibility_and_scheduling_does_not]",
       "hash": "9a9901bd9246d99058ee63772d916c5270503b863a4836dffebe8eedc1c27d14"
-    },
-    {
-      "file": "src/execution_coverage.rs",
-      "item": "struct[Run]",
-      "hash": "1ec871ccc717845cafb788414a5ef98517f70c01530663dcaaa7d43481abdeb9"
     },
     {
       "file": "tests/execution_coverage.rs",
@@ -56,13 +36,8 @@
     },
     {
       "file": "src/execution_coverage/runner.rs",
-      "item": "fn[build_configuration]",
-      "hash": "e47594a936406e97d6ee4453cbdd88f76b8325f82b2db9fd4871132f7972c789"
-    },
-    {
-      "file": "src/execution_coverage/book.rs",
-      "item": "fn[populate_in]",
-      "hash": "b7b09ec404dfa58a604cd2d8980383f00b4b8d01e0ea30f0a25037f4788de6b1"
+      "item": "fn[compile_process]",
+      "hash": "d1b9908e2b02e55fcad6c1271adf41ced7943b6f408c88fc719890dd4ae5b391"
     }
   ]
 }

@@ -446,7 +446,7 @@ fn populate_in(book: &mut Book, project: &Path, target: Option<PathBuf>) -> io::
         ));
     }
     if !selected.is_empty() {
-        summary.push_str("<label for=\"habeas-coverage-test\">View a test's coverage map</label>\n<select id=\"habeas-coverage-test\" class=\"habeas-coverage-picker\" onchange=\"if(this.value) window.location.href=this.value\"><option value=\"\">Combined coverage</option>\n");
+        summary.push_str("<div>\n<label for=\"habeas-coverage-test\">View a test's coverage map</label>\n<select id=\"habeas-coverage-test\" class=\"habeas-coverage-picker\" onchange=\"if(this.value) window.location.href=this.value\"><option value=\"\">Combined coverage</option>\n");
         let mut choices: Vec<_> = selected.iter().map(|&index| &records[index]).collect();
         choices.sort_by_key(|record| (&record.attempt.binary, &record.attempt.test));
         for record in choices {
@@ -457,7 +457,7 @@ fn populate_in(book: &mut Book, project: &Path, target: Option<PathBuf>) -> io::
                 escaped(&record.attempt.test),
             ));
         }
-        summary.push_str("</select>\n\n");
+        summary.push_str("</select>\n</div>\n\n");
     }
     let availability = if discovery_failed
         || uncertain_history
@@ -663,12 +663,15 @@ mod tests {
     // {test}`requirements.test-coverage.index`
     #[test]
     fn directive_fences_and_markdown_examples() {
-        assert_eq!(
-            marker_ranges("```text\n:::{coverage-index}\n:::\n```\n")
-                .unwrap()
-                .len(),
-            0
-        );
+        for example in [
+            "```text\n:::{coverage-index}\n:::\n```\n",
+            "~~~text\n:::{coverage-index}\n:::\n~~~\n",
+            "    :::{coverage-index}\n    :::\n",
+            "`:::{coverage-index}`\n",
+            "`\n:::{coverage-index}\n:::\n`\n",
+        ] {
+            assert!(marker_ranges(example).unwrap().is_empty(), "{example}");
+        }
         assert_eq!(
             marker_ranges("::::{coverage-index}\n\n:::::\n")
                 .unwrap()
@@ -677,8 +680,12 @@ mod tests {
         );
         for source in [
             ":::{coverage-index}\n",
+            "::::{coverage-index}\n:::\n",
             ":::{coverage-index}\nbody\n:::\n",
             ":::{coverage-index} args\n:::\n",
+            "::::{req} outer\n:::{coverage-index}\n:::\n::::\n",
+            "::::{example} outer\n:::{coverage-index}\n:::\n::::\n",
+            "::::{definition} outer\n:::{coverage-index}\n:::\n::::\n",
         ] {
             assert!(marker_ranges(source).is_err(), "{source}");
         }
@@ -801,13 +808,14 @@ mod tests {
     // {test}`requirements.test-coverage.index.file_map`
     // {test}`requirements.test-coverage.index.file_map.combined`
     // {test}`requirements.test-coverage.index.file_map.test`
+    // {test}`requirements.test-coverage.index.summary`
     #[test]
     fn file_maps_union_process_locations_and_filter_unexecuted_test_files() {
         let (temp, mut book) = fixture();
         let root = temp.path();
         fs::write(
             root.join("code.rs"),
-            "fn one() {}\nfn two() {}\nfn three() {}\n",
+            "fn one() {}\nfn two() {}\nfn three() {}\n// not instrumented\n",
         )
         .unwrap();
         fs::write(root.join("zero.rs"), "fn zero() {}\n").unwrap();
@@ -834,6 +842,7 @@ mod tests {
         save(&path.join("attempt.json"), &attempt).unwrap();
         populate(&mut book, root).unwrap();
         let index = &book.chapters().next().unwrap().content;
+        assert!(index.contains("Line coverage: **2/4 (50.0%)**"));
         let map = map_html(index);
         assert!(file_card(map, "code.rs").contains("2/3 instrumented lines covered"));
         assert!(file_card(map, "code.rs").contains("66.7%"));
@@ -842,6 +851,27 @@ mod tests {
         assert!(unmeasured.contains("not measured"));
         assert!(!unmeasured.contains('%'));
         assert!(index.contains("View a test's coverage map"));
+        // mdBook closes inline HTML tags at paragraph boundaries. Keep the
+        // complete selector in a raw HTML block so its options stay inside it.
+        let mut paragraph = false;
+        let mut picker = false;
+        for event in pulldown_cmark::Parser::new_ext(index, pulldown_cmark::Options::all()) {
+            match event {
+                pulldown_cmark::Event::Start(pulldown_cmark::Tag::Paragraph) => paragraph = true,
+                pulldown_cmark::Event::End(pulldown_cmark::TagEnd::Paragraph) => paragraph = false,
+                pulldown_cmark::Event::Html(text) | pulldown_cmark::Event::InlineHtml(text)
+                    if text.contains("<select id=\"habeas-coverage-test\"") =>
+                {
+                    assert!(
+                        !paragraph,
+                        "the test selector must survive mdBook rendering"
+                    );
+                    picker = true;
+                }
+                _ => {}
+            }
+        }
+        assert!(picker);
         let mut html = String::new();
         pulldown_cmark::html::push_html(
             &mut html,
@@ -850,6 +880,17 @@ mod tests {
         assert!(html.contains("<details class=\"habeas-coverage-details\">"));
         assert!(!html.contains("<details class=\"habeas-coverage-details\" open"));
         assert!(html.contains("<table>"));
+        let select = html
+            .split("<select id=\"habeas-coverage-test\"")
+            .nth(1)
+            .unwrap()
+            .split("</select>")
+            .next()
+            .unwrap();
+        assert_eq!(
+            select.matches("<option value=\"coverage-reports/").count(),
+            1
+        );
         let detail = &book.chapters().nth(1).unwrap().content;
         let map = map_html(detail);
         assert!(file_card(map, "code.rs").contains("2/3 instrumented lines covered"));
@@ -858,6 +899,10 @@ mod tests {
         assert!(detail.contains("Source lines and individual processes"));
         assert!(!detail.contains("class=\"habeas-coverage-details\" open"));
         assert!(detail.contains("\"kind\":\"Child\""));
+        assert!(
+            detail.find("habeas-coverage-map").unwrap()
+                < detail.find("Run and attempt details").unwrap()
+        );
     }
 
     // {test}`requirements.test-coverage.index.file_map`
@@ -893,6 +938,42 @@ mod tests {
             .get_mut("code.rs")
             .unwrap()
             .insert(1, 1);
+        for failure in [
+            "no processes",
+            "attempt diagnostic",
+            "process diagnostic",
+            "missing source",
+            "empty profile",
+        ] {
+            let mut missing = attempt.clone();
+            match failure {
+                "no processes" => missing.processes.clear(),
+                "attempt diagnostic" => missing.diagnostics.push("export incomplete".into()),
+                "process diagnostic" => {
+                    missing.processes[0].diagnostic = Some("unreadable profile".into());
+                }
+                "missing source" => {
+                    missing.processes[0]
+                        .lines
+                        .insert("uncaptured.rs".into(), BTreeMap::from([(1, 1)]));
+                }
+                "empty profile" => fs::write(path.join("1-1.profraw"), "").unwrap(),
+                _ => unreachable!(),
+            }
+            save(&path.join("attempt.json"), &missing).unwrap();
+            let mut unavailable = book.clone();
+            populate(&mut unavailable, root).unwrap();
+            let detail = &unavailable.chapters().nth(1).unwrap().content;
+            assert!(detail.contains("**Coverage unavailable:**"), "{failure}");
+            assert!(!detail.contains("habeas-coverage-map"), "{failure}");
+            assert!(!detail.contains("instrumented lines covered"), "{failure}");
+            assert!(
+                !detail.contains("No files covered by this test"),
+                "{failure}"
+            );
+            assert!(detail.contains("Run and attempt details"), "{failure}");
+            fs::write(path.join("1-1.profraw"), "retained profile fixture").unwrap();
+        }
         save(&path.join("attempt.json"), &attempt).unwrap();
         fs::write(root.join("code.rs"), "changed source\n").unwrap();
         fs::write(root.join("new.rs"), "fn newly_added() {}\n").unwrap();
@@ -947,6 +1028,7 @@ mod tests {
 
     // {test}`requirements.test-coverage.index.file_map`
     // {test}`requirements.test-coverage.index.file_map.combined`
+    // {test}`requirements.test-coverage.index.freshness`
     #[test]
     fn incomplete_attempts_do_not_label_their_files_as_unmeasured_in_a_partial_map() {
         let (temp, book) = fixture();
@@ -1004,6 +1086,22 @@ mod tests {
         assert!(!map.contains("<strong>0.0%</strong>"));
         assert!(map.contains("background:hsl("));
         assert!(map.contains("role=\"meter\""));
+        let levels = file_map(
+            ["zero.rs", "half.rs", "full.rs"].map(String::from),
+            &BTreeMap::from([
+                (("zero.rs".into(), 1), 0),
+                (("half.rs".into(), 1), 1),
+                (("half.rs".into(), 2), 0),
+                (("full.rs".into(), 1), 1),
+            ]),
+            MapAvailability::Complete,
+            false,
+        );
+        for (file, percentage) in [("zero.rs", 0.0), ("half.rs", 50.0), ("full.rs", 100.0)] {
+            let card = file_card(&levels, file);
+            assert!(card.contains(&format!("aria-valuenow=\"{percentage:.6}\"")));
+            assert!(card.contains(&format!("style=\"width:{percentage:.6}%")));
+        }
         let empty = file_map(
             Vec::new(),
             &BTreeMap::new(),
@@ -1072,6 +1170,73 @@ mod tests {
         }
     }
 
+    // {test}`requirements.test-coverage.index.selection`
+    #[test]
+    fn selection_distinguishes_binaries_and_selects_latest_attempts_within_the_active_build() {
+        let (temp, mut book) = fixture();
+        for (binary, started, counts) in [
+            ("first", 1, [(1, 1), (2, 0)]),
+            ("second", 2, [(1, 0), (2, 1)]),
+        ] {
+            let dir = record(temp.path(), "same", started, "build-a", &counts);
+            let path = dir.join("attempt.json");
+            let mut attempt: Attempt = load(&path).unwrap();
+            attempt.binary = binary.into();
+            save(&path, &attempt).unwrap();
+        }
+        populate(&mut book, temp.path()).unwrap();
+        let index = &book.chapters().next().unwrap().content;
+        assert!(index.contains("2/2 (100.0%)"));
+        assert!(index.contains("first / same"));
+        assert!(index.contains("second / same"));
+
+        let (temp, mut book) = fixture();
+        // Write newest first; run-start and UUID ordering deliberately disagree
+        // with attempt-start ordering.
+        for (test, start, config, counts) in [
+            ("two", 40, "build-a", [(2, 1)]),
+            ("one", 30, "build-a", [(1, 1)]),
+            ("one", 20, "build-b", [(1, 0)]),
+            ("two", 10, "build-a", [(2, 0)]),
+        ] {
+            let attempt = record(temp.path(), test, start, config, &counts);
+            let dir = attempt.parent().unwrap().parent().unwrap();
+            let path = dir.join("run.json");
+            let mut run: Run = load(&path).unwrap();
+            run.started = if config == "build-b" { 1000 } else { start };
+            run.id = uuid::Uuid::from_u128(100 - start).to_string();
+            save(&path, &run).unwrap();
+            fs::rename(dir, dir.parent().unwrap().join(&run.id)).unwrap();
+        }
+        populate(&mut book, temp.path()).unwrap();
+        let index = &book.chapters().next().unwrap().content;
+        assert!(index.contains("2/2 (100.0%)"));
+        assert!(index.contains("binary / one"));
+        assert!(index.contains("binary / two"));
+        assert!(index.contains("excluded: historical build configuration"));
+
+        // A retry in the same run must also use attempt-start ordering.
+        let (temp, mut book) = fixture();
+        let newest = record(temp.path(), "one", 20, "build-a", &[(1, 1)]);
+        let mut older: Attempt = load(&newest.join("attempt.json")).unwrap();
+        older.started = 10;
+        older.id = uuid::Uuid::from_u128(u128::MAX).to_string();
+        older.attempt = "older".into();
+        older.processes[0].lines = BTreeMap::from([("code.rs".into(), BTreeMap::from([(1, 0)]))]);
+        let older_dir = newest.parent().unwrap().join(&older.id);
+        fs::create_dir(&older_dir).unwrap();
+        fs::copy(newest.join("1-1.profraw"), older_dir.join("1-1.profraw")).unwrap();
+        save(&older_dir.join("attempt.json"), &older).unwrap();
+        populate(&mut book, temp.path()).unwrap();
+        assert!(
+            book.chapters()
+                .next()
+                .unwrap()
+                .content
+                .contains("1/1 (100.0%)")
+        );
+    }
+
     // {test}`requirements.test-coverage.index`
     // {test}`requirements.test-coverage.processes.reports`
     // {test}`requirements.test-coverage.storage.configuration`
@@ -1107,27 +1272,29 @@ mod tests {
         // A failing newest attempt replaces the earlier success, even with no data.
         let newest = record(root, "one", 3, "build-a", &[]);
         let mut attempt: Attempt = load(&newest.join("attempt.json")).unwrap();
-        attempt.outcome = "failed".into();
         attempt.diagnostics.push("profile missing".into());
-        save(&newest.join("attempt.json"), &attempt).unwrap();
-        let mut combined = book.clone();
-        populate(&mut combined, root).unwrap();
-        assert!(
-            combined
-                .chapters()
-                .next()
-                .unwrap()
-                .content
-                .contains("1/2 (50.0%)")
-        );
-        assert!(
-            combined
-                .chapters()
-                .next()
-                .unwrap()
-                .content
-                .contains("unavailable: incomplete")
-        );
+        for outcome in ["failed", "interrupted"] {
+            attempt.outcome = outcome.into();
+            save(&newest.join("attempt.json"), &attempt).unwrap();
+            let mut combined = book.clone();
+            populate(&mut combined, root).unwrap();
+            assert!(
+                combined
+                    .chapters()
+                    .next()
+                    .unwrap()
+                    .content
+                    .contains("1/2 (50.0%)")
+            );
+            assert!(
+                combined
+                    .chapters()
+                    .next()
+                    .unwrap()
+                    .content
+                    .contains("unavailable: incomplete")
+            );
+        }
         fs::write(root.join("code.rs"), "changed source\n").unwrap();
         let mut stale = book.clone();
         populate(&mut stale, root).unwrap();

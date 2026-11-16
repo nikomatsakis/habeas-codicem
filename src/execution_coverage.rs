@@ -376,6 +376,14 @@ mod tests {
             ("code.rs", "fn dirty() {}\n"),
             ("added.rs", "fn added() {}\n"),
             ("Cargo.lock", "different lock"),
+            (
+                "Cargo.toml",
+                "[workspace]\n[workspace.package]\nversion = '2.0.0'\n",
+            ),
+            (
+                "member/Cargo.toml",
+                "[package]\nname = 'other'\nversion = '1.0.0'\n",
+            ),
             ("rust-toolchain.toml", "[toolchain]\nchannel = 'stable'\n"),
             ("generated-inputs/new", "new watched input"),
             (
@@ -386,12 +394,21 @@ mod tests {
         ] {
             let path = root.join(path);
             let previous = fs::read(&path).ok();
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
             fs::write(&path, content).unwrap();
             assert!(!fresh(&run, root, &target).unwrap(), "{}", path.display());
             match previous {
                 Some(previous) => fs::write(path, previous).unwrap(),
                 None => fs::remove_file(path).unwrap(),
             }
+            assert!(fresh(&run, root, &target).unwrap());
+        }
+        for name in ["Cargo.toml", "Cargo.lock"] {
+            let path = root.join(name);
+            let original = fs::read(&path).unwrap();
+            fs::remove_file(&path).unwrap();
+            assert!(!fresh(&run, root, &target).unwrap(), "{name}");
+            fs::write(path, original).unwrap();
             assert!(fresh(&run, root, &target).unwrap());
         }
         fs::remove_file(root.join("code.rs")).unwrap();

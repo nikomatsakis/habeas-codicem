@@ -105,6 +105,252 @@ fn assert_success(output: &Output) {
     );
 }
 
+// {cite}`habeas:util`
+fn retained_files(root: &Path) -> std::collections::BTreeMap<std::path::PathBuf, Vec<u8>> {
+    let mut files = std::collections::BTreeMap::new();
+    let mut pending = vec![root.to_owned()];
+    while let Some(dir) = pending.pop() {
+        for entry in fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                pending.push(path);
+            } else {
+                files.insert(
+                    path.strip_prefix(root).unwrap().to_owned(),
+                    fs::read(path).unwrap(),
+                );
+            }
+        }
+    }
+    files
+}
+
+// {test}`requirements.test-coverage.index.render_only`
+// {test}`requirements.test-coverage.index.selection`
+#[cfg(unix)]
+#[test]
+fn book_rendering_preserves_retained_coverage_and_never_launches_tests() {
+    use mdbook_preprocessor::book::{Book, Chapter};
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+    use std::process::Stdio;
+    let temp = fixture();
+    let root = temp.path();
+    let marker = root.join("test-executed");
+    let source = root.join("src/lib.rs");
+    fs::write(
+        &source,
+        fs::read_to_string(&source).unwrap().replace(
+            "fn second() {",
+            &format!("fn second() {{ std::fs::write({marker:?}, b\"executed\").unwrap();"),
+        ),
+    )
+    .unwrap();
+    assert_success(&coverage(root, &["-E", "test(second)"]));
+    assert!(
+        marker.exists(),
+        "the captured test must exercise the execution sentinel"
+    );
+    fs::remove_file(&marker).unwrap();
+    let storage = root.join("target/habeas/coverage");
+    let before = retained_files(&storage);
+    let bin = root.join("read-only-tools");
+    fs::create_dir(&bin).unwrap();
+    let forbidden = root.join("forbidden-command");
+    let calls = root.join("metadata-calls");
+    fs::write(&calls, "").unwrap();
+    let cargo = bin.join("cargo");
+    fs::write(&cargo, "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$HABEAS_CARGO_CALL_LOG\"\nif [ \"$1\" != metadata ]; then\n  printf '%s\\n' \"$*\" >> \"$HABEAS_FORBIDDEN_COMMAND\"\n  exit 99\nfi\nexec \"$HABEAS_REAL_CARGO\" \"$@\"\n").unwrap();
+    fs::set_permissions(&cargo, fs::Permissions::from_mode(0o755)).unwrap();
+    let mut paths = vec![bin];
+    paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
+    let mut book = Book::new();
+    book.push_item(Chapter::new(
+        "Coverage",
+        ":::{coverage-index}\n:::\n".into(),
+        "coverage.md",
+        vec![],
+    ));
+    let input = serde_json::json!([{
+        "root": root, "config": {"book":{"src":"md"}}, "renderer":"html", "mdbook_version":"0.5.3"
+    }, book]);
+    let mut child = Command::new(env!("CARGO_BIN_EXE_habeas"))
+        .arg("mdbook")
+        .current_dir(root)
+        .env("PATH", std::env::join_paths(paths).unwrap())
+        .env("HABEAS_REAL_CARGO", env!("CARGO"))
+        .env("HABEAS_CARGO_CALL_LOG", &calls)
+        .env("HABEAS_FORBIDDEN_COMMAND", &forbidden)
+        .env("CARGO_NET_OFFLINE", "true")
+        .env_remove("CARGO_TARGET_DIR")
+        .env_remove("CARGO_BUILD_TARGET_DIR")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(input.to_string().as_bytes())
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert_success(&output);
+    let rendered: Book = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(
+        rendered
+            .chapters()
+            .next()
+            .unwrap()
+            .content
+            .contains("File coverage map")
+    );
+    assert!(
+        fs::read_to_string(calls)
+            .unwrap()
+            .lines()
+            .all(|line| line.starts_with("metadata "))
+    );
+    assert!(
+        !forbidden.exists(),
+        "rendering invoked a test or coverage command"
+    );
+    assert!(!marker.exists(), "rendering ran a captured test binary");
+    assert_eq!(
+        retained_files(&storage),
+        before,
+        "rendering modified collected coverage"
+    );
+}
+
+// {test}`requirements.test-coverage.storage.provenance`
+// {test}`requirements.test-coverage.index.freshness`
+#[test]
+fn real_build_captures_dependency_files_and_environment_for_read_only_freshness_checks() {
+    use mdbook_preprocessor::book::{Book, Chapter};
+    use std::io::Write;
+    use std::process::Stdio;
+    let temp = fixture();
+    let root = temp.path();
+    fs::write(root.join("included data.txt"), "included").unwrap();
+    fs::write(root.join("build-input.data"), "build input").unwrap();
+    fs::write(
+        root.join("build.rs"),
+        "fn main() {\nprintln!(\"cargo:rerun-if-changed=build-input.data\");\nprintln!(\"cargo:rerun-if-env-changed=HABEAS_FIXTURE_BUILD_ENV\");\n}\n",
+    )
+    .unwrap();
+    let source = root.join("src/lib.rs");
+    fs::write(
+        &source,
+        fs::read_to_string(&source).unwrap().replace(
+            "fn second() {",
+            "fn second() { assert_eq!(include_str!(\"../included data.txt\"), \"included\"); assert_eq!(env!(\"HABEAS_FIXTURE_RUST_ENV\"), \"compiler-value\");",
+        ),
+    )
+    .unwrap();
+    assert_success(
+        &Command::new(env!("CARGO_BIN_EXE_habeas"))
+            .args(["coverage", "--", "-E", "test(second)"])
+            .current_dir(root)
+            .env("HABEAS_FIXTURE_RUST_ENV", "compiler-value")
+            .env("HABEAS_FIXTURE_BUILD_ENV", "build-value")
+            .env("CARGO_NET_OFFLINE", "true")
+            .env_remove("CARGO_TARGET_DIR")
+            .env_remove("CARGO_BUILD_TARGET_DIR")
+            .env_remove("RUSTC_WORKSPACE_WRAPPER")
+            .env_remove("HABEAS_PREVIOUS_WORKSPACE_WRAPPER")
+            .env_remove("HABEAS_COVERAGE_RUN")
+            .env_remove("HABEAS_COVERAGE_FEATURE_LEDGER")
+            .output()
+            .unwrap(),
+    );
+    let saved = runs(root);
+    assert_eq!(saved.len(), 1);
+    let recorded_inputs = saved[0].1["inputs"].as_object().unwrap();
+    for file in [
+        "included data.txt",
+        "build-input.data",
+        "build.rs",
+        "Cargo.lock",
+    ] {
+        assert!(
+            recorded_inputs.keys().any(|path| {
+                fs::canonicalize(path).ok() == Some(fs::canonicalize(root.join(file)).unwrap())
+            }),
+            "capture omitted {file}: {:?}",
+            recorded_inputs.keys().collect::<Vec<_>>()
+        );
+    }
+    assert_eq!(
+        saved[0].1["environment_inputs"]["HABEAS_FIXTURE_RUST_ENV"],
+        "compiler-value"
+    );
+    assert_eq!(
+        saved[0].1["environment_inputs"]["HABEAS_FIXTURE_BUILD_ENV"],
+        "build-value"
+    );
+    let render = |compiler: &str, build: &str| {
+        let mut book = Book::new();
+        book.push_item(Chapter::new(
+            "Coverage",
+            ":::{coverage-index}\n:::\n".into(),
+            "coverage.md",
+            vec![],
+        ));
+        let input = serde_json::json!([{
+            "root": root, "config": {"book":{"src":"md"}}, "renderer":"html", "mdbook_version":"0.5.3"
+        }, book]);
+        let mut child = Command::new(env!("CARGO_BIN_EXE_habeas"))
+            .arg("mdbook")
+            .current_dir(root)
+            .env("HABEAS_FIXTURE_RUST_ENV", compiler)
+            .env("HABEAS_FIXTURE_BUILD_ENV", build)
+            .env("CARGO_NET_OFFLINE", "true")
+            .env_remove("CARGO_TARGET_DIR")
+            .env_remove("CARGO_BUILD_TARGET_DIR")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(input.to_string().as_bytes())
+            .unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert_success(&output);
+        serde_json::from_slice::<Book>(&output.stdout)
+            .unwrap()
+            .chapters()
+            .next()
+            .unwrap()
+            .content
+            .clone()
+    };
+    let storage = root.join("target/habeas/coverage");
+    let before = retained_files(&storage);
+    assert!(!render("compiler-value", "build-value").contains("stale:"));
+    for file in ["included data.txt", "build-input.data"] {
+        let path = root.join(file);
+        let original = fs::read(&path).unwrap();
+        fs::write(&path, "changed").unwrap();
+        assert!(
+            render("compiler-value", "build-value")
+                .contains("stale: source inputs changed or unavailable"),
+            "{file}"
+        );
+        fs::write(path, original).unwrap();
+        assert!(!render("compiler-value", "build-value").contains("stale:"));
+    }
+    for (compiler, build) in [("changed", "build-value"), ("compiler-value", "changed")] {
+        assert!(render(compiler, build).contains("stale: source inputs changed or unavailable"));
+    }
+    assert_eq!(retained_files(&storage), before);
+}
+
 // {test}`requirements.test-coverage.run`
 // {test}`requirements.test-coverage.processes`
 // {test}`requirements.test-coverage.processes.reports`

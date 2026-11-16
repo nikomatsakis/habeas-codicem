@@ -1,8 +1,8 @@
 {
   "requirement": "Each coverage record MUST identify its instrumented build configuration and\ncapture enough source-input identity to determine whether its coverage remains\ncompatible with the project's current source. Source identity MUST account for\nuncommitted content changes rather than rely only on the Git revision.\n\nSource identity MUST include the paths and contents of the workspace's\nfirst-party Rust sources and the recorded source and build inputs that affect\nthe instrumented program, including manifests and the dependency lockfile when\npresent. Adding, removing, or changing an included input MUST invalidate the\nworkspace's collected coverage for the combined view. Freshness checking MUST\nNOT require rebuilding the project.",
   "determination": true,
-  "rationale": "I found no gap against `requirements.test-coverage.storage.provenance`.\n\n**Build configuration identity**\n- `src/execution_coverage/runner.rs#fn[run]` builds the build configuration with `build_configuration`. It stores it in the `Run` record as `configuration_inputs` plus a `configuration` digest. After the instrumented build it adds the `enabled-features` ledger and recomputes the digest. `src/execution_coverage.rs#struct[Run]` carries these fields.\n- `tests/execution_coverage.rs#fn[real_parallel_processes_retries_child_profiles_and_filtered_reruns]` asserts the rustc, target, cargo-profile and instrumentation inputs. It also asserts that the features input changes `configuration` and that a scheduling profile does not.\n\n**Source identity: paths and contents of Rust sources, manifests and lockfile**\n- `workspace_inputs` selects `.rs` files, `Cargo.toml`, `Cargo.lock`, `rust-toolchain(.toml)` and `.cargo` configuration. `run` stores their path-to-digest map in `run.inputs` through `input_hashes` and `input_digest`.\n- `capture_inputs` adds the dep-info and build-script (`rerun-if-changed`) inputs and the build-script environment inputs. It also stores the text of the first-party Rust sources in `run.sources`.\n- `run` records the Git revision and dirty flag, but freshness does not depend on them.\n\n**Invalidation on add, remove or change, without a rebuild**\n- `src/execution_coverage.rs#fn[fresh]` re-walks `workspace_inputs` and compares digests, so an added, changed or removed input makes it return false. It also re-digests every recorded input, which catches removal and change of dependency files. It also compares recorded environment inputs. It only reads files and the environment, so it needs no rebuild.\n- `src/execution_coverage/book.rs#fn[populate_in]` acts on the result by marking those records stale and excluding them from the combined view. That caller carries the `index.freshness` reference. Returning the outcome from `fresh` is what this requirement asks of the implementation.\n- `src/execution_coverage.rs#fn[source_and_build_inputs_invalidate_on_addition_removal_and_dirty_content]` tests this directly. It uses an unchanged revision and `dirty: true`. It checks a changed Rust source, an added `.rs`, a changed lockfile, an added `rust-toolchain.toml`, new files in a watched directory (including under `node_modules`), and a watched path that did not exist before. It then removes a source file. Every case turns `fresh` false, and restoring the original content turns it true again.\n- `src/execution_coverage/book.rs#fn[cargo_launch_metadata_does_not_invalidate_but_caller_build_environment_does]` tests the combined view. Cargo-derived environment values leave coverage fresh, and changed build-environment inputs render it stale.\n- `tests/execution_coverage.rs#fn[unreadable_build_inputs_fail_preparation_before_any_tests_start]` covers recording build-script inputs. `tests/execution_coverage.rs#fn[no_arguments_selects_all_workspace_members_with_configured_parallelism_and_git_metadata]` covers the revision and dirty state.\n\n**Notes**\n- Manifest changes use the same filter branch as the tested `Cargo.lock` case, so I treated them as needing no separate test.\n- `walk` skips directories named `book` and `node_modules`. Compiled files under them still enter `run.inputs` through dep-info. The requirement does not name this edge case, so I did not count it as a gap.\n- I found no unspecified observable behavior and no unreached implementation.",
-  "references": "4a57a5a9172fbd287d9362da169a667cb2105c60351a995f7d9515e185f71076",
+  "rationale": "I judge the tests adequate for `requirements.test-coverage.storage.provenance`. I did not request implementation source. The reviewed tests were enough to map each obligation to a scenario and an assertion.\n\n**Build configuration identity.**\n- `tests/execution_coverage.rs#fn[real_parallel_processes_retries_child_profiles_and_filtered_reruns]` asserts that the saved run records `configuration_inputs`. It checks `rustc` (contains the LLVM version), `target`, `cargo-profile` and `instrumentation` (contains `-C instrument-coverage`).\n- The same test asserts that `configuration` is equal across runs that differ only by a scheduling profile. It asserts that `configuration` differs when features change.\n- `src/execution_coverage/book.rs#mod[tests]/fn[cargo_launch_metadata_does_not_invalidate_but_caller_build_environment_does]` checks build-affecting environment values such as `RUSTFLAGS`, `CC` and `CARGO_PROFILE_TEST_DEBUG`. Changing any of them yields \"stale: source inputs changed or unavailable\". Package-specific `CARGO_*` values do not invalidate.\n- `src/execution_coverage.rs#mod[tests]/fn[source_and_build_inputs_invalidate_on_addition_removal_and_dirty_content]` and the real-build test cover recorded compiler and build-script environment inputs. The real-build test asserts `HABEAS_FIXTURE_RUST_ENV` and `HABEAS_FIXTURE_BUILD_ENV` are recorded, and that changing either one makes the view stale.\n\n**Uncommitted content, not only the Git revision.**\n- In `source_and_build_inputs_invalidate_on_addition_removal_and_dirty_content`, the `Run` keeps `revision` fixed at \"unchanged revision\" and `dirty` as `Some(true)`. Rewriting `code.rs` still makes `fresh` return false, and restoring it makes `fresh` return true again.\n- `no_arguments_selects_all_workspace_members_with_configured_parallelism_and_git_metadata` checks that the recorded revision and `dirty == true` are captured for a dirty tree.\n\n**Source identity contents (paths and contents).**\n- The real-parallel test asserts that `inputs` has an entry for the absolute `src/lib.rs` path and that `sources` holds its content.\n- The real-build test asserts that the recorded inputs include `included data.txt` (reached by `include_str!`), `build-input.data` (reached by `rerun-if-changed`), `build.rs` and `Cargo.lock`.\n- The unit test covers manifests (root `Cargo.toml`, a member `Cargo.toml`), `Cargo.lock`, `rust-toolchain.toml`, watched directories (including a nested `node_modules` file) and a watched path that does not exist yet.\n\n**Add, remove and change each invalidate.**\n- The unit test loops over added or changed files: `code.rs` changed, `added.rs` added, lock and manifest changed, a new member manifest, a toolchain file, and new files in watched directories. Each case asserts `!fresh`, then restores the file and asserts `fresh` again.\n- It also removes `Cargo.toml`, `Cargo.lock` and `code.rs`, asserting stale each time.\n- The real-build test changes the included data and the build input, asserts stale, then restores and asserts not stale.\n- The book test asserts the rendered combined view shows \"stale: source inputs changed or unavailable\", and that it shows \"1/2 (50.0%)\" when fresh.\n\n**Unreadable inputs.** `unreadable_build_inputs_fail_preparation_before_any_tests_start` asserts that an unreadable build input fails preparation. The run is recorded as failed, with no attempts, and the diagnostic says \"before test startup\".\n\n**Freshness checking must not require rebuilding.** The real-build test renders through `habeas mdbook` after changing inputs. It asserts `retained_files(&storage)` is unchanged afterwards, and the view reports staleness without rerunning the build. The unit test calls `fresh` directly on a hand-built `Run`, so it needs no build.\n\nI found no obligation without a test that exercises it and asserts the outcome.",
+  "references": "5052f5c2abbe6497b6e855013325d4ec954fe46fd7218f82fa969313f7aa7a6e",
   "inputs": [
     {
       "requirements": "requirements.test-coverage.storage.provenance",
@@ -31,34 +31,14 @@
       "hash": "2c256fb55cb4a1349a48bea0233424fd2e501fa773d7c76192260900e47639fc"
     },
     {
-      "file": "src/execution_coverage/runner.rs",
-      "item": "fn[run]",
-      "hash": "adf91e32adef47b58756af272696c8bc1a817f75f794a08fc40f88b98cb03a1a"
-    },
-    {
-      "file": "src/execution_coverage/runner.rs",
-      "item": "fn[capture_inputs]",
-      "hash": "01ce8bdceddb8606b4e9da777e9fd8c97dd82977abf6392beae7374adb6a6ab7"
-    },
-    {
-      "file": "src/execution_coverage/runner.rs",
-      "item": "fn[finish]",
-      "hash": "dc292d665fc523ca5b37cb908ddbcec68c4a1da7236e72d9cb9672e7d9111faa"
-    },
-    {
-      "file": "src/execution_coverage.rs",
-      "item": "struct[Run]",
-      "hash": "1ec871ccc717845cafb788414a5ef98517f70c01530663dcaaa7d43481abdeb9"
-    },
-    {
-      "file": "src/execution_coverage.rs",
-      "item": "fn[fresh]",
-      "hash": "361e076b8c682451c66aaf9bdc97e56966eb5b16961f65494e51b47c9f1deeca"
-    },
-    {
       "file": "src/execution_coverage.rs",
       "item": "mod[tests]/fn[source_and_build_inputs_invalidate_on_addition_removal_and_dirty_content]",
-      "hash": "5556d813943dda19b8176d653b50bc6c9be10bf2cbf76b6fc4d3223c55f803f1"
+      "hash": "b7a8a4b0a2cc493c8d7f0285b90efa9996fc37732f4feb387c8e0fb372db77ee"
+    },
+    {
+      "file": "tests/execution_coverage.rs",
+      "item": "fn[real_build_captures_dependency_files_and_environment_for_read_only_freshness_checks]",
+      "hash": "92e973e7e50f5d7a79630c6a868f0a65213acd5f12b513f0d18bf9d792c56b89"
     },
     {
       "file": "tests/execution_coverage.rs",
@@ -74,41 +54,6 @@
       "file": "tests/execution_coverage.rs",
       "item": "fn[unreadable_build_inputs_fail_preparation_before_any_tests_start]",
       "hash": "294ecaa6c7b3109ff55aa21ca4008a5e306ba054d49474ac1f03c2aba5a33aad"
-    },
-    {
-      "file": "src/execution_coverage.rs",
-      "item": "fn[workspace_inputs]",
-      "hash": "ce6a87f0bf98d2b2ffed6008bdb1c74fff8b6b575ee34b7c4e3eec85f7b348c3"
-    },
-    {
-      "file": "src/execution_coverage.rs",
-      "item": "fn[input_digest]",
-      "hash": "a8db84fe590c0d2bec3987111463c81cd2f0e3b25d768352d2b8e807907ee9b2"
-    },
-    {
-      "file": "src/execution_coverage/runner.rs",
-      "item": "fn[dependency_inputs]",
-      "hash": "44162d333f68f628410e4a19c244e308dc4a6d065fd5d055d21ccc0a26185494"
-    },
-    {
-      "file": "src/execution_coverage.rs",
-      "item": "fn[input_hashes]",
-      "hash": "84a84dce4ab66c9b86c898f0bde77267b858af4a0c9548b7278fdd9df5e6a2ac"
-    },
-    {
-      "file": "src/execution_coverage/book.rs",
-      "item": "fn[populate_in]",
-      "hash": "b7b09ec404dfa58a604cd2d8980383f00b4b8d01e0ea30f0a25037f4788de6b1"
-    },
-    {
-      "file": "src/execution_coverage.rs",
-      "item": "fn[walk]",
-      "hash": "2179e976130b1af01117d1ee3adb4c544b7e5bf89ad1d5854a5ea2450be1efe0"
-    },
-    {
-      "file": "src/execution_coverage.rs",
-      "item": "fn[watched_files]",
-      "hash": "d94fc1eabc521f8690a4f2800cb072f4f8e1832759c96980f1ab5a82b6f7534d"
     }
   ]
 }

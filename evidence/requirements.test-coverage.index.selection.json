@@ -1,8 +1,8 @@
 {
   "requirement": "The coverage index MUST combine the most recent recorded test attempt for each\nnextest binary and test name among the retained runs. \"Most recent\" MUST refer\nto when the attempt started, including failed or interrupted attempts. A newer\nfiltered run MUST update only the tests it executes, leaving other compatible\ntest records available to the combined view. A newer attempt with missing or\nunreadable coverage MUST be shown as unavailable rather than replaced with an\nolder successful attempt. Results from incompatible instrumented build\nconfigurations MUST NOT be combined under\n{cite}`requirements.test-coverage.storage.configuration`.\n\nThe main combined view MUST use the instrumented build configuration of the\nmost recently started recorded test attempt. Latest-per-test selection MUST\noccur within that configuration. Records from other configurations MUST be\nidentified as excluded historical coverage. Configuration selection MUST use\nrecorded metadata without building or executing tests.",
   "determination": true,
-  "rationale": "`requirements.test-coverage.index.selection` is met: `populate` (which calls `populate_in`) implements every obligation, and the two marked tests assert the key outcomes. I read `populate_in`, `readable` and `union` in `src/execution_coverage/book.rs` and the two marked tests. I did not read the `record` and `fixture` test helpers or `fresh`.\n\n**Code, obligation by obligation**\n- **Latest attempt per binary and test name:** `populate_in` sorts `records` by `attempt.started`. A map keyed by `(attempt.binary, attempt.test)` then keeps the last record for each key. Failed and interrupted attempts are not filtered out, so they count as most recent.\n- **Filtered runs update only the tests they run:** the selection works per test key, and `union` combines the selected records across runs. A newer filtered run therefore leaves other tests' records in the combined view.\n- **Missing or unreadable newest attempt shown as unavailable:** an attempt is chosen as the latest before `readable(record)` is checked. If it is not readable, its row is labelled \"unavailable: incomplete coverage\" and it adds nothing to the totals. An older success is never substituted. Unreadable run or attempt metadata sets `uncertain_history`, which makes combined totals unavailable and the table state \"unavailable: latest attempt history cannot be established\".\n- **Incompatible configurations not combined:** `active` is the `run.configuration` of the most recently started record. Only records with that configuration enter the selection map, so latest-per-test selection happens within the active configuration. The compatibility notion itself is `requirements.test-coverage.storage.configuration`, which I treated as cited context and did not reassess.\n- **Other configurations identified as excluded historical coverage:** the provenance table labels them \"excluded: historical build configuration\". Records that lost to a newer attempt get \"excluded: superseded attempt\".\n- **Selection uses recorded metadata only:** `populate_in` reads `run.json` and `attempt.json` from storage. It does not build or run tests.\n\n**Tests**\n- `filtered_runs_union_latest_attempts_and_invalidate_with_saved_source` records two filtered runs in the same build. It asserts the union (`2/2`), then a newer failed attempt with no data (`1/2` and \"unavailable: incomplete\"). Finally it records a newer attempt under a different build (`build-b`) and asserts \"historical build configuration\" and `1/1`. That `1/1` shows the old build's records are not combined.\n- `unreadable_history_cannot_reintroduce_an_older_success` makes the newest attempt's metadata unreadable. It asserts the older success is not reintroduced (no `1/1 (100.0%)`) and that the \"cannot establish latest-per-test selection\" diagnostic appears. It also covers unsupported schema metadata and a missing raw profile, which are shown as unavailable.\n\nI found no unspecified behavior and no untested obligation.",
-  "references": "2e40c8121223f6fbfd42f7989e39c1749729ad68dfcc7c67a8e124f108ad1226",
+  "rationale": "The reviewed tests cover each obligation in `requirements.test-coverage.index.selection`. I did not request implementation source; I judged only from the supplied test text.\n\n- **Per-binary and per-test-name selection:** In `selection_distinguishes_binaries_and_selects_latest_attempts_within_the_active_build`, two binaries each have a test named `same`. The test expects `2/2 (100.0%)` and both `first / same` and `second / same` rows. A selection keyed on test name alone would keep only the newer record and give 1/2.\n- **\"Most recent\" means attempt start:** The same test writes records newest first. It sets run start and UUID ordering to disagree with attempt-start ordering, and it expects `2/2`. A third scenario adds a retry inside one run, where the older attempt has the largest UUID and a zero line count. It expects `1/1 (100.0%)`, so only attempt-start ordering passes.\n- **Filtered runs update only their tests:** `filtered_runs_union_latest_attempts_and_invalidate_with_saved_source` records `one` and then `two`, each covering a different line. It expects the combined `2/2 (100.0%)`, so the older records for tests the newer run did not execute stay available.\n- **Failed and interrupted attempts count:** The same test adds a newer attempt for `one` with no data and a diagnostic. It runs this once with outcome `failed` and once with `interrupted`. It expects `1/2 (50.0%)` and `unavailable: incomplete`, so the older success is not reused.\n- **Unreadable or missing coverage is unavailable:** `unreadable_history_cannot_reintroduce_an_older_success` covers four cases.\n  - A newer `attempt.json` that is not valid JSON, over an older success. The test expects \"cannot establish latest-per-test selection\" and no `1/1`.\n  - A missing captured source, which is reported as unavailable incomplete coverage.\n  - An unsupported run schema, reported as \"latest attempt history cannot be established\".\n  - A missing raw profile, reported as unavailable incomplete coverage.\n- **Incompatible configurations are not combined:** The second scenario in the first test and the last part of the `filtered_runs_union…` test both exclude other configurations.\n  - In the first test, the active configuration is build-a, whose latest attempt started at 40. The build-b record has a run start of 1000 but an attempt start of 20, so run-start ordering would pick the wrong configuration. The test expects `2/2 (100.0%)` and the text \"excluded: historical build configuration\".\n  - In the `filtered_runs_union…` test, a newer build-b attempt becomes the active configuration. The test expects `1/1 (100.0%)`, so the build-a `two` record is not merged in, and it expects \"historical build configuration\".\n- **Selection by recorded metadata, with no building or execution:** `book_rendering_preserves_retained_coverage_and_never_launches_tests` in `tests/execution_coverage.rs` runs the preprocessor with a `cargo` shim. It asserts that only `metadata` calls occur, that no forbidden command ran, that the test-binary sentinel was not written, and that retained files are unchanged.\n\nI found no unexercised obligation. One case is not tested directly: a failed attempt in another configuration deciding which configuration is active. The text does not call it out beyond \"most recently started recorded test attempt\", and the ordering by attempt start is tested. The compatibility rules themselves belong to the cited `requirements.test-coverage.storage.configuration`, which I did not reassess.",
+  "references": "3a1f8f0e5c9c6370dbf00799bc52ebb35490e438332eb49ac4b2574094f29e0e",
   "inputs": [
     {
       "requirements": "requirements.test-coverage.index.selection",
@@ -46,13 +46,13 @@
     },
     {
       "file": "src/execution_coverage/book.rs",
-      "item": "fn[populate]",
-      "hash": "1ad439b7525ab6f34b9af5e39a0c375186869031e12f873681289cc3ff967179"
+      "item": "mod[tests]/fn[selection_distinguishes_binaries_and_selects_latest_attempts_within_the_active_build]",
+      "hash": "ce4df0f7a92107c051abeaafe842d04f396b57a89be3a81ec6e8a332ab7de757"
     },
     {
       "file": "src/execution_coverage/book.rs",
       "item": "mod[tests]/fn[filtered_runs_union_latest_attempts_and_invalidate_with_saved_source]",
-      "hash": "22edbb3f0d7f0d5820f1e8b09958a40aa5f2f6b46b3c90aab74bf5b453b99c4d"
+      "hash": "050b6697d04922fb4f597dd599e8749bc30309995d1fba632c16ad990d688b75"
     },
     {
       "file": "src/execution_coverage/book.rs",
@@ -60,19 +60,9 @@
       "hash": "fc68b10af4c5caa14905897a4c27dae54e7f60c554a47107cd1d28f38ed55b24"
     },
     {
-      "file": "src/execution_coverage/book.rs",
-      "item": "fn[populate_in]",
-      "hash": "b7b09ec404dfa58a604cd2d8980383f00b4b8d01e0ea30f0a25037f4788de6b1"
-    },
-    {
-      "file": "src/execution_coverage/book.rs",
-      "item": "fn[readable]",
-      "hash": "18a5738e8932f086f94bfb84ba096271155cd3d6de66cd3f4da2433bc343857b"
-    },
-    {
-      "file": "src/execution_coverage/book.rs",
-      "item": "fn[union]",
-      "hash": "0ca71162a0cb61d822bf7cb45feb9d0b3d66f3ad10765434cb2e36df2f6c14af"
+      "file": "tests/execution_coverage.rs",
+      "item": "fn[book_rendering_preserves_retained_coverage_and_never_launches_tests]",
+      "hash": "add1610b88d76b2c2cc36a16210922bc4fcfd3cb3cb68124149b4ce436ec2ff3"
     }
   ]
 }

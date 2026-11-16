@@ -1125,7 +1125,10 @@ fn capture_inputs(
     instrumented: &Path,
     run: &mut Run,
 ) -> io::Result<()> {
-    let (dependencies, environment) = dependency_inputs(instrumented, root, target)?;
+    let (mut dependencies, environment) = dependency_inputs(instrumented, root, target)?;
+    // The first compilation can create Cargo.lock. Keep pre-build identities
+    // for existing inputs, and capture workspace inputs newly created by Cargo.
+    dependencies.extend(workspace_inputs(root, target)?);
     let mut failures = Vec::new();
     let discovered = crate::evidence::discovered_files(root, &mut failures);
     if !failures.is_empty() {
