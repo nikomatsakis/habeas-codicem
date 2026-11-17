@@ -6,9 +6,10 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, AtomicU32, Ordering},
+    atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering},
 };
 
+use super::progress::Progress;
 use super::{
     Attempt, FunctionExecution, Process, Run, configuration, digest, input_hashes, load, now, save,
     walk, workspace_inputs,
@@ -465,6 +466,7 @@ fn preparation_args(args: &[OsString]) -> Vec<OsString> {
 // {impl}`requirements.test-coverage.run`
 // {impl}`requirements.test-coverage.storage`
 // {impl}`requirements.test-coverage.processes.reports`
+// {impl}`requirements.test-coverage.processes.progress.preparation`
 // {impl}`requirements.test-coverage.storage.provenance`
 // {impl}`requirements.test-coverage.storage.configuration`
 // {impl}`requirements.test-coverage.storage.outcomes`
@@ -727,6 +729,7 @@ pub fn run(project: &Path, supplied: &[String]) -> io::Result<i32> {
         return Ok(code(build_status));
     }
     let preparation: io::Result<()> = (|| {
+        let progress = Progress::preparation();
         capture_inputs(&root, &target, &instrumented, &mut run)?;
         let mut features = BTreeMap::new();
         for path in walk(&instrumented.join("features"), &[])? {
@@ -736,6 +739,7 @@ pub fn run(project: &Path, supplied: &[String]) -> io::Result<i32> {
         run.configuration_inputs
             .insert("enabled-features".into(), serde_json::to_string(&features)?);
         run.configuration = digest(&serde_json::to_vec(&run.configuration_inputs)?);
+        progress.stage("Preparing coverage: capturing maps");
         snapshot_maps(&instrumented, &dir, &cov)
     })();
     if let Err(error) = preparation {
@@ -1157,102 +1161,36 @@ fn capture_inputs(
 
 // {impl}`requirements.test-coverage.processes.reports`
 // {impl}`requirements.test-coverage.storage.provenance`
+// {impl}`requirements.test-coverage.processes.progress`
 fn finish(root: &Path, dir: &Path, cov: &Path, profdata: &Path, run: &mut Run) -> io::Result<()> {
     let maps: Vec<Map> = load(&dir.join("maps.json"))?;
+    let mut attempts = fs::read_dir(dir.join("attempts"))?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<io::Result<Vec<_>>>()?;
+    attempts.sort();
+    let progress = Progress::conversion(attempts.len());
+    // LLVM exports can use substantial memory. Limit concurrent conversions
+    // independently of nextest's test concurrency.
+    let workers = std::thread::available_parallelism()
+        .map(usize::from)
+        .unwrap_or(1)
+        .min(4);
+    let results = parallel_collect(
+        &attempts,
+        workers,
+        |attempt| finish_attempt(attempt, dir, &maps, cov, profdata, root, &run.sources),
+        |_| progress.completed(),
+    );
     let mut failed = false;
-    for entry in fs::read_dir(dir.join("attempts"))? {
-        let attempt_dir = entry?.path();
-        let mut attempt: Attempt = match load(&attempt_dir.join("attempt.json")) {
-            Ok(attempt) => attempt,
+    for (attempt_dir, result) in attempts.iter().zip(results) {
+        match result {
+            Ok(complete) => failed |= !complete,
             Err(error) => {
                 run.diagnostics
                     .push(format!("{}: {error}", attempt_dir.display()));
                 failed = true;
-                continue;
-            }
-        };
-        let mut profiles: BTreeMap<u32, Vec<PathBuf>> = BTreeMap::new();
-        for path in walk(&attempt_dir, &[])? {
-            if path
-                .extension()
-                .is_some_and(|extension| extension == "profraw")
-                && let Some(pid) = path
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .and_then(|name| name.split('-').next())
-                    .and_then(|pid| pid.parse().ok())
-            {
-                profiles.entry(pid).or_default().push(path);
             }
         }
-        if profiles.is_empty() {
-            attempt.diagnostics.push(
-                "No LLVM profile was written; this attempt's coverage is unavailable.".into(),
-            );
-            failed = true;
-        }
-        for (pid, paths) in profiles {
-            let merged = attempt_dir.join(format!("{pid}.profdata"));
-            let result = output(
-                Command::new(profdata)
-                    .args(["merge", "-sparse"])
-                    .args(&paths)
-                    .arg("-o")
-                    .arg(&merged),
-            )
-            .and_then(|_| {
-                let info = output(
-                    Command::new(profdata)
-                        .args(["show", "--binary-ids"])
-                        .arg(&merged),
-                )?;
-                let ids = info
-                    .split("Binary IDs:")
-                    .nth(1)
-                    .unwrap_or("")
-                    .split_whitespace()
-                    .collect::<Vec<_>>();
-                let objects = maps
-                    .iter()
-                    .filter(|map| {
-                        ids.is_empty()
-                            || map.binary_ids.is_empty()
-                            || map.binary_ids.iter().any(|id| ids.contains(&id.as_str()))
-                    })
-                    .map(|map| dir.join(&map.path))
-                    .collect::<Vec<_>>();
-                export(cov, &merged, &objects, root, &run.sources)
-            });
-            let (lines, functions, diagnostic) = match result {
-                Ok((lines, functions)) => (lines, Some(functions), None),
-                Err(error) => {
-                    failed = true;
-                    (BTreeMap::new(), None, Some(error.to_string()))
-                }
-            };
-            attempt.processes.push(Process {
-                pid,
-                profiles: paths
-                    .iter()
-                    .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
-                    .collect(),
-                lines,
-                functions,
-                diagnostic,
-            });
-        }
-        if attempt
-            .processes
-            .iter()
-            .all(|process| process.pid != attempt.pid)
-        {
-            attempt.diagnostics.push(
-                "The test process's own profile is missing; child profiles do not replace it."
-                    .into(),
-            );
-            failed = true;
-        }
-        save(&attempt_dir.join("attempt.json"), &attempt)?;
     }
     if failed {
         return Err(io::Error::other(
@@ -1260,6 +1198,142 @@ fn finish(root: &Path, dir: &Path, cov: &Path, profdata: &Path, run: &mut Run) -
         ));
     }
     Ok(())
+}
+
+// {cite}`habeas:util`
+fn parallel_collect<T: Sync, R: Send>(
+    items: &[T],
+    workers: usize,
+    work: impl Fn(&T) -> R + Sync,
+    mut completed: impl FnMut(usize),
+) -> Vec<R> {
+    let next = AtomicUsize::new(0);
+    std::thread::scope(|scope| {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        for _ in 0..workers.max(1).min(items.len()) {
+            let sender = sender.clone();
+            let next = &next;
+            let work = &work;
+            scope.spawn(move || {
+                loop {
+                    let index = next.fetch_add(1, Ordering::Relaxed);
+                    let Some(item) = items.get(index) else {
+                        break;
+                    };
+                    if sender.send((index, work(item))).is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+        drop(sender);
+        let mut results: Vec<Option<R>> =
+            std::iter::repeat_with(|| None).take(items.len()).collect();
+        for (index, result) in receiver {
+            results[index] = Some(result);
+            completed(index);
+        }
+        results
+            .into_iter()
+            .map(|result| result.expect("every conversion returned a result"))
+            .collect()
+    })
+}
+
+// {cite}`habeas:util`
+fn finish_attempt(
+    attempt_dir: &Path,
+    dir: &Path,
+    maps: &[Map],
+    cov: &Path,
+    profdata: &Path,
+    root: &Path,
+    sources: &BTreeMap<String, String>,
+) -> io::Result<bool> {
+    let mut attempt: Attempt = load(&attempt_dir.join("attempt.json"))?;
+    let mut failed = false;
+    let mut profiles: BTreeMap<u32, Vec<PathBuf>> = BTreeMap::new();
+    for path in walk(attempt_dir, &[])? {
+        if path
+            .extension()
+            .is_some_and(|extension| extension == "profraw")
+            && let Some(pid) = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .and_then(|name| name.split('-').next())
+                .and_then(|pid| pid.parse().ok())
+        {
+            profiles.entry(pid).or_default().push(path);
+        }
+    }
+    if profiles.is_empty() {
+        attempt
+            .diagnostics
+            .push("No LLVM profile was written; this attempt's coverage is unavailable.".into());
+        failed = true;
+    }
+    for (pid, paths) in profiles {
+        let merged = attempt_dir.join(format!("{pid}.profdata"));
+        let result = output(
+            Command::new(profdata)
+                .args(["merge", "-sparse"])
+                .args(&paths)
+                .arg("-o")
+                .arg(&merged),
+        )
+        .and_then(|_| {
+            let info = output(
+                Command::new(profdata)
+                    .args(["show", "--binary-ids"])
+                    .arg(&merged),
+            )?;
+            let ids = info
+                .split("Binary IDs:")
+                .nth(1)
+                .unwrap_or("")
+                .split_whitespace()
+                .collect::<Vec<_>>();
+            let objects = maps
+                .iter()
+                .filter(|map| {
+                    ids.is_empty()
+                        || map.binary_ids.is_empty()
+                        || map.binary_ids.iter().any(|id| ids.contains(&id.as_str()))
+                })
+                .map(|map| dir.join(&map.path))
+                .collect::<Vec<_>>();
+            export(cov, &merged, &objects, root, sources)
+        });
+        let (lines, functions, diagnostic) = match result {
+            Ok((lines, functions)) => (lines, Some(functions), None),
+            Err(error) => {
+                failed = true;
+                (BTreeMap::new(), None, Some(error.to_string()))
+            }
+        };
+        attempt.processes.push(Process {
+            pid,
+            profiles: paths
+                .iter()
+                .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
+                .collect(),
+            lines,
+            functions,
+            diagnostic,
+        });
+    }
+    if attempt
+        .processes
+        .iter()
+        .all(|process| process.pid != attempt.pid)
+    {
+        attempt.diagnostics.push(
+            "The test process's own profile is missing; child profiles do not replace it.".into(),
+        );
+        failed = true;
+    }
+    save(&attempt_dir.join("attempt.json"), &attempt)?;
+    Ok(!failed)
 }
 
 // {cite}`habeas:util`
@@ -1402,6 +1476,83 @@ fn function_counts(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // {test}`requirements.test-coverage.processes`
+    // {test}`requirements.test-coverage.processes.reports`
+    // {test}`requirements.test-coverage.failures`
+    // {test}`requirements.test-coverage.processes.progress`
+    #[test]
+    fn parallel_conversion_is_bounded_and_retains_every_result_in_order() {
+        use std::sync::{Condvar, Mutex};
+        use std::time::Duration;
+
+        let active = AtomicUsize::new(0);
+        let peak = AtomicUsize::new(0);
+        let visits: Vec<_> = (0..8).map(|_| AtomicUsize::new(0)).collect();
+        let finished: Vec<_> = (0..8).map(|_| AtomicBool::new(false)).collect();
+        let rendezvous = (Mutex::new(false), Condvar::new());
+        let mut completed = 0;
+        let results = parallel_collect(
+            &(0..8).collect::<Vec<_>>(),
+            2,
+            |&index| {
+                visits[index].fetch_add(1, Ordering::SeqCst);
+                let concurrent = active.fetch_add(1, Ordering::SeqCst) + 1;
+                peak.fetch_max(concurrent, Ordering::SeqCst);
+                if index < 2 {
+                    let mut met = rendezvous.0.lock().unwrap();
+                    if concurrent == 2 {
+                        *met = true;
+                        rendezvous.1.notify_all();
+                    }
+                    let (met, timeout) = rendezvous
+                        .1
+                        .wait_timeout_while(met, Duration::from_secs(5), |met| !*met)
+                        .unwrap();
+                    assert!(
+                        *met && !timeout.timed_out(),
+                        "conversion was not concurrent"
+                    );
+                }
+                active.fetch_sub(1, Ordering::SeqCst);
+                finished[index].store(true, Ordering::SeqCst);
+                if index == 3 {
+                    Err("unreadable profile")
+                } else {
+                    Ok(index)
+                }
+            },
+            |index| {
+                assert!(
+                    finished[index].load(Ordering::SeqCst),
+                    "progress advanced before conversion finished"
+                );
+                completed += 1;
+            },
+        );
+        assert_eq!(peak.load(Ordering::SeqCst), 2);
+        assert!(visits.iter().all(|count| count.load(Ordering::SeqCst) == 1));
+        assert_eq!(completed, 8, "failed work also completes a conversion");
+        assert_eq!(
+            results,
+            (0..8)
+                .map(|index| if index == 3 {
+                    Err("unreadable profile")
+                } else {
+                    Ok(index)
+                })
+                .collect::<Vec<_>>()
+        );
+    }
+
+    // {test}`requirements.test-coverage.storage.outcomes`
+    #[test]
+    fn empty_conversion_starts_no_work_and_reports_no_completions() {
+        let results: Vec<()> =
+            parallel_collect::<(), _>(&[], 4, |_| panic!("no work"), |_| panic!("no completions"));
+        assert!(results.is_empty());
+        assert_eq!(parallel_collect(&[7], 0, |value| *value, |_| {}), vec![7]);
+    }
 
     // {test}`requirements.test-coverage.storage.configuration`
     #[test]

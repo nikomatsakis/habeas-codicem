@@ -106,6 +106,199 @@ fn assert_success(output: &Output) {
     );
 }
 
+// {test}`requirements.test-coverage.processes.progress`
+// {test}`requirements.test-coverage.processes.progress.preparation`
+// {test}`requirements.test-coverage.processes.progress.terminal`
+#[cfg(target_os = "linux")]
+#[test]
+fn coverage_progress_on_a_pty_preserves_reports_and_plain_output_policy() {
+    use std::io::Read;
+    use std::os::fd::FromRawFd;
+
+    #[link(name = "util")]
+    unsafe extern "C" {
+        fn openpty(
+            master: *mut std::ffi::c_int,
+            slave: *mut std::ffi::c_int,
+            name: *mut std::ffi::c_char,
+            termios: *const std::ffi::c_void,
+            winsize: *const std::ffi::c_void,
+        ) -> std::ffi::c_int;
+    }
+
+    let temp = fixture();
+    let root = temp.path();
+    let source = fs::read_to_string(root.join("src/lib.rs")).unwrap();
+    fs::write(root.join("src/lib.rs"), format!("{source}\n#[test] fn deliberate_failure() {{ panic!(\"fixture failure\"); }}\nunsafe extern \"C\" {{ fn _exit(status: i32) -> !; }}\n#[test] fn missing_profile() {{ unsafe {{ _exit(0) }} }}\n")).unwrap();
+    let run_on_pty = |term: &str, filter: &str| {
+        let mut master = -1;
+        let mut slave = -1;
+        // The returned descriptors are owned by this test and transferred
+        // exactly once into File. Default terminal settings are sufficient.
+        assert_eq!(
+            unsafe {
+                openpty(
+                    &mut master,
+                    &mut slave,
+                    std::ptr::null_mut(),
+                    std::ptr::null(),
+                    std::ptr::null(),
+                )
+            },
+            0
+        );
+        let mut master = unsafe { fs::File::from_raw_fd(master) };
+        let slave = unsafe { fs::File::from_raw_fd(slave) };
+        let reader = std::thread::spawn(move || {
+            let mut output = Vec::new();
+            if let Err(error) = master.read_to_end(&mut output) {
+                // Linux returns EIO when the last slave descriptor closes.
+                assert_eq!(error.raw_os_error(), Some(5));
+            }
+            output
+        });
+        let child = Command::new(env!("CARGO_BIN_EXE_habeas"))
+            .args(["coverage", "--", "-E", filter, "--color=never"])
+            .current_dir(root)
+            .env("CARGO_NET_OFFLINE", "true")
+            .env("TERM", term)
+            .env("NO_COLOR", "1")
+            .env_remove("CARGO_TARGET_DIR")
+            .env_remove("CARGO_BUILD_TARGET_DIR")
+            .env_remove("RUSTC_WORKSPACE_WRAPPER")
+            .env_remove("HABEAS_PREVIOUS_WORKSPACE_WRAPPER")
+            .env_remove("HABEAS_COVERAGE_RUN")
+            .env_remove("HABEAS_COVERAGE_FEATURE_LEDGER")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(slave)
+            .spawn()
+            .unwrap();
+        let mut output = child.wait_with_output().unwrap();
+        output.stderr = reader.join().unwrap();
+        output
+    };
+    let assert_conversion_cleared = |text: &str| {
+        let count = text.rfind("1/1 attempts").unwrap();
+        let location = text.find("Coverage retained in ").unwrap();
+        assert!(text[count..location].contains("\x1b[2K"), "{text}");
+        assert!(
+            !text[location..].contains("\x1b["),
+            "final reports must remain plain and readable: {text}"
+        );
+    };
+    for term in ["xterm", "dumb"] {
+        let output = run_on_pty(term, "test(second)");
+        assert_success(&output);
+        let text = String::from_utf8_lossy(&output.stderr);
+        if term == "xterm" {
+            assert!(
+                text.contains("Preparing coverage: recording inputs"),
+                "{text}"
+            );
+            assert!(
+                text.contains("Preparing coverage: capturing maps"),
+                "{text}"
+            );
+            assert!(text.contains("Converting coverage"), "{text}");
+            assert!(text.contains("1/1 attempts"), "{text}");
+            assert!(text.contains("[00:"), "{text}");
+            assert!(
+                text.contains("\x1b["),
+                "PTY progress should update in place"
+            );
+            assert!(!text.contains("\x1b[3"), "NO_COLOR must suppress color");
+            assert_conversion_cleared(&text);
+        } else {
+            assert!(!text.contains("Converting coverage"), "{text}");
+            assert!(!text.contains("\x1b["), "{text}");
+        }
+        assert!(text.contains("Coverage retained in "), "{text}");
+        let saved = runs(root);
+        let records = attempts(&saved.last().unwrap().0);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0]["outcome"], "success");
+        assert_eq!(records[0]["processes"].as_array().unwrap().len(), 1);
+        assert!(
+            !records[0]["processes"][0]["lines"]
+                .as_object()
+                .unwrap()
+                .is_empty()
+        );
+    }
+    let output = coverage(root, &["-E", "test(second)", "--color=never"]);
+    assert_success(&output);
+    let text = String::from_utf8_lossy(&output.stderr);
+    assert!(!text.contains("Converting coverage"), "{text}");
+    assert!(!text.contains("\x1b["), "{text}");
+    let saved = runs(root);
+    let first = attempts(&saved[0].0);
+    for (run, _) in &saved[1..] {
+        let records = attempts(run);
+        assert_eq!(
+            records[0]["processes"][0]["lines"],
+            first[0]["processes"][0]["lines"]
+        );
+        assert_eq!(
+            records[0]["processes"][0]["functions"],
+            first[0]["processes"][0]["functions"]
+        );
+    }
+    for (filter, succeeds, outcome, processes) in [
+        ("test(child_process)", true, "success", 2),
+        ("test(deliberate_failure)", false, "failed", 1),
+        ("test(missing_profile)", false, "success", 0),
+    ] {
+        let output = run_on_pty("xterm", filter);
+        assert_eq!(
+            output.status.success(),
+            succeeds,
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let text = String::from_utf8_lossy(&output.stderr);
+        assert_conversion_cleared(&text);
+        if processes == 0 {
+            assert!(text.contains("coverage: "), "{text}");
+            assert!(
+                text.contains("partial profiles and reports have been retained"),
+                "{text}"
+            );
+        }
+        let saved = runs(root);
+        let records = attempts(&saved.last().unwrap().0);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0]["outcome"], outcome);
+        assert_eq!(records[0]["processes"].as_array().unwrap().len(), processes);
+        for process in records[0]["processes"].as_array().unwrap() {
+            assert!(!process["lines"].as_object().unwrap().is_empty());
+            assert!(process["functions"].is_array());
+        }
+    }
+    // An error during preparation must also clear the stage before the CLI
+    // prints its diagnostic, without manufacturing test attempts.
+    use std::os::unix::fs::PermissionsExt;
+    fs::write(
+        root.join("build.rs"),
+        "fn main() { println!(\"cargo::rerun-if-changed=input.data\"); }\n",
+    )
+    .unwrap();
+    let input = root.join("input.data");
+    fs::write(&input, "unreadable input").unwrap();
+    fs::set_permissions(&input, fs::Permissions::from_mode(0o000)).unwrap();
+    let output = run_on_pty("xterm", "test(second)");
+    fs::set_permissions(input, fs::Permissions::from_mode(0o600)).unwrap();
+    assert!(!output.status.success());
+    let text = String::from_utf8_lossy(&output.stderr);
+    let stage = text.rfind("Preparing coverage: recording inputs").unwrap();
+    let diagnostic = text.find("Coverage preparation failed").unwrap();
+    assert!(text[stage..diagnostic].contains("\x1b[2K"), "{text}");
+    assert!(!text[diagnostic..].contains("\x1b["), "{text}");
+    let saved = runs(root);
+    assert_eq!(saved.last().unwrap().1["outcome"], "failed");
+    assert!(attempts(&saved.last().unwrap().0).is_empty());
+}
+
 // {cite}`habeas:util`
 fn full_flow(root: &Path) -> Output {
     Command::new(env!("CARGO_BIN_EXE_habeas"))
@@ -1000,7 +1193,7 @@ fn rendezvous(own: &str, other: &str) {
     assert_success(&coverage(root, &[]));
     assert!(!root.join("target/habeas/coverage").exists());
     let storage = root.join("custom-target/habeas/coverage");
-    let run_path = fs::read_dir(storage)
+    let run_path = fs::read_dir(&storage)
         .unwrap()
         .next()
         .unwrap()
@@ -1022,6 +1215,20 @@ fn rendezvous(own: &str, other: &str) {
             .iter()
             .all(|attempt| attempt["outcome"] == "success")
     );
+    fs::write(root.join("src/lib.rs"), source).unwrap();
+    assert_success(&coverage(root, &["--workspace", "-E", "test(member_runs)"]));
+    let clean_run = fs::read_dir(&storage)
+        .unwrap()
+        .map(|entry| {
+            serde_json::from_slice::<Value>(
+                &fs::read(entry.unwrap().path().join("run.json")).unwrap(),
+            )
+            .unwrap()
+        })
+        .max_by_key(|run| run["started"].as_u64().unwrap())
+        .unwrap();
+    assert_eq!(clean_run["revision"], revision.to_string());
+    assert_eq!(clean_run["dirty"], false);
 }
 
 // {test}`requirements.test-coverage.failures`
@@ -1316,8 +1523,7 @@ fn invalid_effective_collector_fails_before_any_tests_or_coverage_run() {
     habeas::execution_coverage::validate_setup(root).unwrap(); // no completed run required
     let path = root.join(".config/nextest.toml");
     let mut source = fs::read_to_string(&path).unwrap();
-    source
-        .push_str("\n[[profile.fast.scripts]]\nfilter = 'test(second)'\nrun-wrapper = 'custom'\n");
+    source.push_str("\n[scripts.wrapper.custom]\ncommand = ['false']\ntarget-runner = 'within-wrapper'\n\n[[profile.fast.scripts]]\nfilter = 'test(second)'\nrun-wrapper = 'custom'\n");
     fs::write(&path, &source).unwrap();
     let failed = coverage(root, &["--profile", "fast"]);
     assert!(!failed.status.success());
@@ -1336,6 +1542,19 @@ fn invalid_effective_collector_fails_before_any_tests_or_coverage_run() {
         .arg("coverage")
         .current_dir(root)
         .env("NEXTEST_PROFILE", "fast")
+        .output()
+        .unwrap();
+    assert!(!selected.status.success());
+    assert!(String::from_utf8_lossy(&selected.stderr).contains("profile.fast.scripts"));
+    for args in [vec!["--profile=fast"], vec!["-Pfast"], vec!["-P", "fast"]] {
+        let selected = coverage(root, &args);
+        assert!(!selected.status.success());
+        assert!(String::from_utf8_lossy(&selected.stderr).contains("profile.fast.scripts"));
+    }
+    let selected = Command::new(env!("CARGO_BIN_EXE_habeas"))
+        .args(["coverage", "--", "--profile", "fast"])
+        .current_dir(root)
+        .env("NEXTEST_PROFILE", "default")
         .output()
         .unwrap();
     assert!(!selected.status.success());
@@ -1359,6 +1578,18 @@ fn invalid_effective_collector_fails_before_any_tests_or_coverage_run() {
     assert!(!root.join("target/habeas/coverage").exists());
     // The default integration remains valid, while the effective fast profile is not.
     habeas::execution_coverage::validate_setup(root).unwrap();
+    let selected = Command::new(env!("CARGO_BIN_EXE_habeas"))
+        .args(["coverage", "--", "--profile", "default", "--no-run"])
+        .current_dir(root)
+        .env("NEXTEST_PROFILE", "fast")
+        .env("CARGO_NET_OFFLINE", "true")
+        .env_remove("CARGO_TARGET_DIR")
+        .env_remove("CARGO_BUILD_TARGET_DIR")
+        .env_remove("RUSTC_WORKSPACE_WRAPPER")
+        .output()
+        .unwrap();
+    assert_success(&selected);
+    assert!(String::from_utf8_lossy(&selected.stderr).contains("Compilation-only run"));
     fs::write(&path, source.replace("coverage-process", "wrong-command")).unwrap();
     let errors = habeas::validate_repository(root).unwrap().errors.join("\n");
     assert!(
@@ -1398,6 +1629,20 @@ fn missing_unreadable_malformed_or_disabled_collector_is_a_shared_validation_err
             .replace("experimental = [\"wrapper-scripts\"]", "experimental = []"),
     )
     .unwrap();
+    assert_error();
+    let mut missing_wrapper = source.parse::<toml::Table>().unwrap();
+    missing_wrapper["scripts"]["wrapper"]
+        .as_table_mut()
+        .unwrap()
+        .remove("habeas-coverage");
+    fs::write(&path, toml::to_string(&missing_wrapper).unwrap()).unwrap();
+    assert_error();
+    let mut missing_rule = source.parse::<toml::Table>().unwrap();
+    missing_rule["profile"]["default"]
+        .as_table_mut()
+        .unwrap()
+        .remove("scripts");
+    fs::write(&path, toml::to_string(&missing_rule).unwrap()).unwrap();
     assert_error();
     fs::write(&path, source).unwrap();
     habeas::execution_coverage::validate_setup(root).unwrap();

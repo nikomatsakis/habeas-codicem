@@ -303,6 +303,19 @@ mod tests {
             "{source}\n[profile.fast]\ninherits = 'ci'\ntest-threads = 3\n[profile.local]\ninherits = 'fast'\n"
         );
         check(&inherited, &path, "local").unwrap();
+        let inherited_conflict = format!(
+            "{inherited}\n[[profile.fast.scripts]]\nfilter = 'all()'\nrun-wrapper = 'other'\n"
+        );
+        assert!(
+            check(&inherited_conflict, &path, "local")
+                .unwrap_err()
+                .to_string()
+                .contains("profile.fast.scripts")
+        );
+        let child_override = format!(
+            "{inherited_conflict}\n[[profile.local.scripts]]\nfilter = 'all()'\nrun-wrapper = 'habeas-coverage'\n"
+        );
+        check(&child_override, &path, "local").unwrap();
         for extra in [
             "\n[[profile.local.scripts]]\nfilter = 'test(x)'\nrun-wrapper = 'other'\n",
             "\n[[profile.local.scripts]]\nfilter = 'all()'\nplatform = 'cfg(unix)'\nrun-wrapper = 'habeas-coverage'\n",

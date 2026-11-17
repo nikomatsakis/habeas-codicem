@@ -1,7 +1,7 @@
 {
   "requirement": "The coverage workflow MUST verify that the effective nextest profile and\nconfiguration selected for the invocation route every selected test attempt\nthrough Habeas's per-process collector, accounting for profile inheritance and\nwrapper-rule precedence. If that cannot be established, it MUST fail before\nexecuting tests with a diagnostic identifying the conflicting profile or\nsetting, rather than silently collecting incomplete coverage.",
   "determination": true,
-  "rationale": "**Obligations**\n1. Verify that the effective nextest profile and configuration route every selected test attempt through the collector.\n2. Account for profile inheritance.\n3. Account for wrapper-rule precedence.\n4. If routing cannot be established, fail before executing tests.\n5. The failure must carry a diagnostic that identifies the conflicting profile or setting.\n\n**Code**\n- `src/execution_coverage/runner.rs#fn[run]` calls `verify_configuration` first, before any `cargo` metadata, build or test execution. This carries out the ordering in obligation 4.\n- `src/execution_coverage/runner.rs#fn[verify_configuration]` selects the effective profile and config file, so the check applies to the invocation's own selection. It takes the profile from `--profile`, `-P` or `NEXTEST_PROFILE`, falling back to `default`. It takes the config file from `--config-file`, falling back to `.config/nextest.toml`. It rejects options it cannot prove are routed through the collector: `--tool-config-file`, `--archive-file`, `--binaries-metadata`, `--cargo-metadata`, `--target-dir-remap` and `--build-dir-remap`. Each rejection names the flag. This is within \"cannot be established → fail\".\n- `src/execution_coverage/configuration.rs#fn[check]` does the substantive verification.\n  - It requires the `wrapper-scripts` experimental feature.\n  - It requires `scripts.wrapper.habeas-coverage` to use the `habeas coverage-process` command with `target-runner = \"within-wrapper\"`.\n  - It walks the profile's `inherits` chain, down to `default`. It rejects cycles, undefined profiles, non-string `inherits`, and a `default` profile that inherits.\n  - It then walks the chain from the selected profile toward `default`. The first `run-wrapper` rule found, which is the one that takes precedence, must name `habeas-coverage` with `filter = \"all()\"` and no `platform`. If it does not, the check fails.\n  - If no run-wrapper rule exists anywhere in the chain, it fails.\n  - Each error message names the profile and setting, for example `profile.fast.scripts: …`, `scripts.wrapper.habeas-coverage …`, or the config path.\n\n**Tests**\n- `tests/execution_coverage.rs#fn[invalid_effective_collector_fails_before_any_tests_or_coverage_run]` covers the end-to-end failure cases.\n  - A conflicting `fast` profile selected through `--profile` fails with `profile.fast.scripts` in the diagnostic.\n  - The same profile selected through `NEXTEST_PROFILE` fails the same way.\n  - A bad wrapper command in an alternate `--config-file` fails with that file's name in the diagnostic.\n  - Every unprovable flag fails and is named in the diagnostic.\n  - `target/habeas/coverage` is never created, which shows the failure happens before tests run.\n- `src/execution_coverage/configuration.rs#mod[tests]/fn[native_settings_inheritance_and_precedence]` covers inheritance through `fast` to `local` to `ci`. It also covers a non-matching first rule, a platform-limited rule, an inheritance cycle, a wrong command, and a wrong `target-runner`.\n\nI found no unspecified behavior and no untested obligation. The rejections of unprovable flags and the missing-config error are within \"cannot be established → fail\". No {fixme} references are involved.",
+  "rationale": "The two {test} items cover each obligation in `requirements.test-coverage.run.configuration`. I found no adequacy gap.\n\n**Obligations derived from the requirement**\n1. Verify that the effective profile and configuration for the invocation route every test attempt through the collector.\n2. Account for profile inheritance.\n3. Account for wrapper-rule precedence.\n4. If that cannot be established, fail before executing tests.\n5. The failure diagnostic must identify the conflicting profile or setting.\n\n**Unit test `src/execution_coverage/configuration.rs#mod[tests]/fn[native_settings_inheritance_and_precedence]`**\n- It exercises `check` directly.\n- **Inheritance:** the valid `ci` profile passes. A `local` profile that inherits `fast`, which inherits `ci`, also passes.\n- **Inherited conflict:** a conflicting `run-wrapper = 'other'` on the inherited `fast` profile fails for `local`. The error contains `profile.fast.scripts`, so it names the profile and setting.\n- **Precedence:** a child `local` rule selecting `habeas-coverage` overrides the parent's conflict and passes.\n- **Rejected rule shapes:** the loop over `extra` cases requires an error for each of these:\n  - a filtered conflicting wrapper rule (`test(x)`);\n  - a platform-conditioned collector rule;\n  - a self-inheriting cycle.\n- **Wrapper definition:** a wrong collector command and a wrong `target-runner` both fail.\n- **Setup conflict:** a conflicting existing wrapper rule makes `configure` fail with a \"conflict\" message.\n\n**Integration test `tests/execution_coverage.rs#fn[invalid_effective_collector_fails_before_any_tests_or_coverage_run]`**\n- It runs the real `habeas coverage` binary on a fixture with real tests.\n- **Profile selection:** the invalid `fast` profile is selected in each of these ways, and each run fails with a diagnostic containing `profile.fast.scripts`:\n  - `--profile fast`;\n  - `--profile=fast`;\n  - `-Pfast`;\n  - `-P fast`;\n  - the `NEXTEST_PROFILE=fast` environment variable;\n  - a `--profile fast` passed after `--`, with the environment set to `default`.\n- **Selection precedence:** a command-line `--profile default` beats the environment's `fast`. That run succeeds, shown by a compilation-only `--no-run` run.\n- **Config file:** `--config-file` is honoured, and the diagnostic names `alternate-nextest.toml`.\n- **Unprovable inputs:** these flags fail with a message naming the flag and \"cannot be proven\":\n  - `--tool-config-file`;\n  - `--archive-file`;\n  - `--binaries-metadata`;\n  - `--cargo-metadata`;\n  - `--target-dir-remap`;\n  - `--build-dir-remap`.\n- **Before executing tests:** each failing run is followed by an assertion that `target/habeas/coverage` does not exist, which shows that no instrumented run happened.\n- **Repository validation:** a broken wrapper definition is reported with `.config/nextest.toml`, `habeas setup` and `scripts.wrapper.habeas-coverage`.\n\n**Result**\n- Inheritance, precedence, selection by flag, environment and config file, unprovable settings, fail-before-run and the identifying diagnostic each have a test with assertions on the outcome.\n- The \"before executing tests\" check uses the absence of the coverage output directory as a proxy. That is a reasonable observable, because that directory is created by an instrumented run.\n- I found no requirement-violating behavior that these tests would accept.",
   "references": "fc2d1bd9de1ae9be4c6490a6b71a51d3c93299f088be4f9d6752e5e20b112018",
   "inputs": [
     {
@@ -22,13 +22,83 @@
     },
     {
       "file": "src/execution_coverage/configuration.rs",
+      "item": "mod[tests]/fn[native_settings_inheritance_and_precedence]",
+      "hash": "eb16c2593a94a98746e367ff123878d75efba009123d018f7803292efc0c2169"
+    },
+    {
+      "file": "tests/execution_coverage.rs",
+      "item": "fn[invalid_effective_collector_fails_before_any_tests_or_coverage_run]",
+      "hash": "46a0d7e2783f377c811ea637ba9d529536f843ed81ff5bad826af36aef9c58a5"
+    },
+    {
+      "file": "src/execution_coverage/configuration.rs",
+      "item": "use@e1f72b0ff927",
+      "hash": "e1f72b0ff927b84b9330bf2862b7f33ee8526b4ced8475735c2d0d791d89280f"
+    },
+    {
+      "file": "src/execution_coverage/configuration.rs",
+      "item": "use@0aa5aad345a4",
+      "hash": "0aa5aad345a497ea8555581d02720ca86969e0aff012fce65b6f20d384262fb4"
+    },
+    {
+      "file": "src/execution_coverage/configuration.rs",
+      "item": "use@95d18074761c",
+      "hash": "95d18074761c14b8220fb84209e9962ff3574d980745386a08bdf70bbe55d61e"
+    },
+    {
+      "file": "src/execution_coverage/configuration.rs",
+      "item": "use@3970e6901143",
+      "hash": "3970e6901143920563d8805f9c3cc3a00f3047d12ba98064de8508cf8fd075f2"
+    },
+    {
+      "file": "src/execution_coverage/configuration.rs",
+      "item": "use@10e078eeae33",
+      "hash": "10e078eeae339e1a5f3ed879f50731dcaa628959461fc135f5374f88f0a8ba9d"
+    },
+    {
+      "file": "src/execution_coverage/configuration.rs",
+      "item": "const[WRAPPER]",
+      "hash": "11b11b43f613041b78e697298901f957d5f5d82bdef776f8704d6858e7e95da7"
+    },
+    {
+      "file": "src/execution_coverage/configuration.rs",
+      "item": "fn[workspace_root]",
+      "hash": "c93b9e9384fa923829d8fa5ebeba02f15e1927cde75d180d0d3fe0c9d0e16554"
+    },
+    {
+      "file": "src/execution_coverage/configuration.rs",
+      "item": "fn[invalid]",
+      "hash": "d2588aae8353003859ebbec6cfaaf2e3a38bc16e4837b9e4cc377662c3b8d18f"
+    },
+    {
+      "file": "src/execution_coverage/configuration.rs",
+      "item": "fn[command_is_collector]",
+      "hash": "3461ca7d953f2bf82d5a90d35c1cba91333074e1fc8f8af9b7dbbf78f9358bfd"
+    },
+    {
+      "file": "src/execution_coverage/configuration.rs",
+      "item": "fn[table]",
+      "hash": "98a038ff8e6315fe13bd6d5ad77cbe09f28c7e25e8ce207a03c4600fd3b59d66"
+    },
+    {
+      "file": "src/execution_coverage/configuration.rs",
       "item": "fn[check]",
       "hash": "dd32d812fbbe0fb1598aa70e612cf278c32799f3dd40e04c4cbb270975319e94"
     },
     {
       "file": "src/execution_coverage/configuration.rs",
-      "item": "mod[tests]/fn[native_settings_inheritance_and_precedence]",
-      "hash": "937b8dd85b75a308883a0a785d2a2e3f2d4f322c34e79a4d499960d56328e129"
+      "item": "fn[validate_setup]",
+      "hash": "bbaa9affef470a2e272027a8793d2ae15d82e33099ce8dd859e97b00cd26d5e8"
+    },
+    {
+      "file": "src/execution_coverage/configuration.rs",
+      "item": "fn[configure]",
+      "hash": "3d65f9964831105d784c1c527d6683061406c8a8a41aa0db1a50ba89753f6b27"
+    },
+    {
+      "file": "src/execution_coverage/configuration.rs",
+      "item": "mod[tests]",
+      "hash": "dd43e027fa6112748abda541db18058fd69f575d312ce859d5ba79190f41b988"
     },
     {
       "file": "src/execution_coverage/runner.rs",
@@ -37,18 +107,13 @@
     },
     {
       "file": "tests/execution_coverage.rs",
-      "item": "fn[invalid_effective_collector_fails_before_any_tests_or_coverage_run]",
-      "hash": "38a0dd6a27d8454f493ec95ed0999c1e9c1c0ffc079a09d716f33eacf58f3301"
+      "item": "fn[fixture]",
+      "hash": "069b00f1c923c4f6e0c3ef8508e6cf45537e7bc785e75f10cdb33de01063a19f"
     },
     {
-      "file": "src/execution_coverage/runner.rs",
-      "item": "fn[options]",
-      "hash": "0286329950c6a8fbd6ba922a84ed55be738b2b6f5cd764c92f1fd4d9785b77c7"
-    },
-    {
-      "file": "src/execution_coverage/runner.rs",
-      "item": "fn[run]",
-      "hash": "adf91e32adef47b58756af272696c8bc1a817f75f794a08fc40f88b98cb03a1a"
+      "file": "tests/execution_coverage.rs",
+      "item": "fn[coverage]",
+      "hash": "8a6885e57de5bb03e0587d042c43c9b9a87e1128f5ad82f5e9c6773ef2fd4080"
     }
   ]
 }
