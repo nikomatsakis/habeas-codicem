@@ -122,12 +122,146 @@ enum MapAvailability {
     Unavailable,
 }
 
+// {cite}`habeas:util`
+struct FileCoverage {
+    file: String,
+    covered: usize,
+    total: usize,
+    state: &'static str,
+}
+
+#[derive(Default)]
+// {cite}`habeas:util`
+struct DirectoryCoverage {
+    files: Vec<FileCoverage>,
+    directories: BTreeMap<String, DirectoryCoverage>,
+}
+
+#[derive(Default)]
+// {cite}`habeas:util`
+struct DirectorySummary {
+    minimum: Option<(usize, usize)>,
+    files: usize,
+    not_measured: usize,
+    unavailable: usize,
+}
+
+impl DirectorySummary {
+    // {cite}`habeas:util`
+    fn include(&mut self, other: Self) {
+        self.files += other.files;
+        self.not_measured += other.not_measured;
+        self.unavailable += other.unavailable;
+        if let Some((covered, total)) = other.minimum
+            && self.minimum.is_none_or(|(current, denominator)| {
+                (covered as u128) * (denominator as u128) < (current as u128) * (total as u128)
+            })
+        {
+            self.minimum = Some((covered, total));
+        }
+    }
+}
+
+impl DirectoryCoverage {
+    fn summary(&self) -> DirectorySummary {
+        let mut result = DirectorySummary::default();
+        for file in &self.files {
+            result.include(DirectorySummary {
+                minimum: (file.state == "measured").then_some((file.covered, file.total)),
+                files: 1,
+                not_measured: usize::from(file.state == "not measured"),
+                unavailable: usize::from(file.state == "unavailable"),
+            });
+        }
+        for directory in self.directories.values() {
+            result.include(directory.summary());
+        }
+        result
+    }
+
+    fn render(&self, result: &mut String, folder: &str, page: &Path, index: &Path) {
+        if !self.files.is_empty() {
+            result.push_str("<table class=\"habeas-coverage-table\"><thead><tr><th scope=\"col\">File</th><th scope=\"col\">Coverage</th><th scope=\"col\">Covered / instrumented lines</th></tr></thead><tbody>\n");
+            let mut files: Vec<_> = self.files.iter().collect();
+            files.sort_by_key(|file| &file.file);
+            for file in files {
+                let href = crate::chapter_href(page, &super::notes::path(index, &file.file), None);
+                result.push_str(&format!(
+                    "<tr class=\"habeas-coverage-file\" data-file=\"{}\" data-status=\"{}\"><td><a href=\"{}\"><code>{}</code></a></td>",
+                    escaped(&file.file), file.state, escaped(&href), escaped(&file.file),
+                ));
+                if file.state == "measured" {
+                    let percentage = 100.0 * file.covered as f64 / file.total as f64;
+                    result.push_str(&format!(
+                        "<td class=\"habeas-coverage-value\"><span class=\"habeas-coverage-bar\" role=\"meter\" aria-label=\"{} line coverage\" aria-valuemin=\"0\" aria-valuemax=\"100\" aria-valuenow=\"{percentage:.6}\"><span class=\"habeas-coverage-fill\" style=\"width:{percentage:.6}%;background:hsl({:.1},55%,45%)\"></span></span><strong>{}</strong></td><td aria-label=\"{}/{} instrumented lines covered\">{}/{}</td>",
+                        escaped(&file.file), percentage * 1.2,
+                        percentage_label(file.covered, file.total),
+                        file.covered, file.total, file.covered, file.total,
+                    ));
+                } else {
+                    result.push_str(&format!("<td>{}</td><td>—</td>", file.state));
+                }
+                result.push_str("</tr>\n");
+            }
+            result.push_str("</tbody></table>\n");
+        }
+        for (name, directory) in &self.directories {
+            let path = if folder.is_empty() {
+                name.clone()
+            } else {
+                format!("{folder}/{name}")
+            };
+            let summary = directory.summary();
+            result.push_str(&format!(
+                "<details class=\"habeas-coverage-directory\" data-directory=\"{}\"><summary><code>{}/</code><span>",
+                escaped(&path), escaped(&path),
+            ));
+            if let Some((covered, total)) = summary.minimum {
+                result.push_str(&format!(
+                    "Minimum measured file coverage: <strong data-min-covered=\"{covered}\" data-min-instrumented=\"{total}\">{}</strong>",
+                    percentage_label(covered, total),
+                ));
+            } else {
+                result.push_str("No measured files");
+            }
+            result.push_str(&format!("</span><small>{} files", summary.files));
+            if summary.not_measured > 0 {
+                result.push_str(&format!(" · {} not measured", summary.not_measured));
+            }
+            if summary.unavailable > 0 {
+                result.push_str(&format!(" · {} unavailable", summary.unavailable));
+            }
+            result.push_str("</small></summary><div class=\"habeas-coverage-directory-body\">\n");
+            directory.render(result, &path, page, index);
+            result.push_str("</div></details>\n");
+        }
+    }
+}
+
+// {cite}`habeas:util`
+fn percentage_label(covered: usize, total: usize) -> String {
+    let percentage = 100.0 * covered as f64 / total as f64;
+    if covered > 0 && percentage < 0.1 {
+        "&lt;0.1%".to_owned()
+    } else {
+        format!("{percentage:.1}%")
+    }
+}
+
 // {impl}`requirements.test-coverage.index.file_map`
+// {impl}`requirements.test-coverage.index.file_map.table`
+// {impl}`requirements.test-coverage.index.file_map.directories`
+// {impl}`requirements.test-coverage.index.file_map.directories.initial`
+// {impl}`requirements.test-coverage.index.file_map.directories.data`
+// {impl}`requirements.test-coverage.index.file_map.minimum`
+// {impl}`requirements.test-coverage.index.file_map.minimum.statuses`
 fn file_map(
     files: impl IntoIterator<Item = String>,
     totals: &BTreeMap<(String, u32), u64>,
     availability: MapAvailability,
     positive_only: bool,
+    page: &Path,
+    index: &Path,
 ) -> String {
     let mut counts = BTreeMap::<&str, (usize, usize)>::new();
     for ((file, _), count) in totals {
@@ -135,73 +269,57 @@ fn file_map(
         *total += 1;
         *covered += usize::from(*count > 0);
     }
-    let mut folders = BTreeMap::<String, Vec<(String, usize, usize)>>::new();
+    let mut root = DirectoryCoverage::default();
     for file in files {
         let (covered, total) = counts.get(file.as_str()).copied().unwrap_or_default();
         if positive_only && covered == 0 {
             continue;
         }
-        let folder = file.rsplit_once('/').map_or(".", |(folder, _)| folder);
-        folders
-            .entry(folder.to_owned())
-            .or_default()
-            .push((file, covered, total));
+        let state = match (availability, total) {
+            (MapAvailability::Unavailable, _) | (MapAvailability::Partial, 0) => "unavailable",
+            (_, 0) => "not measured",
+            _ => "measured",
+        };
+        let mut directory = &mut root;
+        if let Some((folder, _)) = file.rsplit_once('/') {
+            for name in folder.split('/') {
+                directory = directory.directories.entry(name.to_owned()).or_default();
+            }
+        }
+        directory.files.push(FileCoverage {
+            file,
+            covered,
+            total,
+            state,
+        });
     }
     let mut result = String::from(
         "<style>\n\
         .habeas-coverage-map { margin: 1.5em 0; }\n\
-        .habeas-coverage-files { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); gap: .7em; }\n\
-        .habeas-coverage-file { border: 1px solid var(--table-border, #888); border-radius: 6px; padding: .8em; min-width: 0; }\n\
-        .habeas-coverage-file header { display: flex; gap: .8em; justify-content: space-between; align-items: baseline; }\n\
-        .habeas-coverage-file code { overflow-wrap: anywhere; background: transparent; padding: 0; }\n\
-        .habeas-coverage-file strong { white-space: nowrap; }\n\
-        .habeas-coverage-bar { height: 8px; border-radius: 4px; background: var(--table-border, #ddd); overflow: hidden; margin: .7em 0 .4em; }\n\
-        .habeas-coverage-fill { height: 100%; }\n\
-        .habeas-coverage-file small { opacity: .8; }\n\
+        .habeas-coverage-table { width: 100%; margin: .4em 0; }\n\
+        .habeas-coverage-table td, .habeas-coverage-table th { padding: .3em .6em; text-align: left; }\n\
+        .habeas-coverage-table td:first-child { width: 60%; overflow-wrap: anywhere; }\n\
+        .habeas-coverage-table td:not(:first-child) { white-space: nowrap; }\n\
+        .habeas-coverage-map code { background: transparent; padding: 0; overflow-wrap: anywhere; }\n\
+        .habeas-coverage-value strong { display: inline-block; min-width: 4.5em; text-align: right; }\n\
+        .habeas-coverage-bar { display: inline-block; vertical-align: middle; width: 48px; height: 6px; border-radius: 3px; background: var(--table-border, #ddd); overflow: hidden; margin-right: .5em; }\n\
+        .habeas-coverage-fill { display: block; height: 100%; }\n\
+        .habeas-coverage-directory { border-bottom: 1px solid var(--table-border, #888); }\n\
+        .habeas-coverage-directory > summary { cursor: pointer; padding: .5em 0; }\n\
+        .habeas-coverage-directory > summary > code { font-weight: bold; }\n\
+        .habeas-coverage-directory > summary > span { margin-left: 1em; }\n\
+        .habeas-coverage-directory > summary > small { margin-left: 1em; opacity: .8; }\n\
+        .habeas-coverage-directory-body { padding-left: 1em; overflow-x: auto; }\n\
         .habeas-coverage-picker { width: 100%; padding: .5em; margin: .5em 0; color: var(--fg, inherit); background: var(--bg, inherit); }\n\
         .habeas-coverage-details > summary { cursor: pointer; font-weight: bold; padding: .7em 0; }\n\
         </style>\n\
         <section class=\"habeas-coverage-map\" aria-label=\"File coverage map\">\n",
     );
-    result.push_str("<p>Percentages measure recorded instrumented lines. Color and bar length indicate the fraction executed.</p>\n");
-    if folders.is_empty() && positive_only {
+    result.push_str("<p>Percentages measure recorded instrumented lines. Expand a directory to browse files; select a file to read its current coverage explanations.</p>\n");
+    if root.files.is_empty() && root.directories.is_empty() && positive_only {
         result.push_str("<p>No files covered by this test</p>\n");
     }
-    for (folder, files) in folders {
-        result.push_str(&format!(
-            "<h3><code>{}</code></h3><div class=\"habeas-coverage-files\">\n",
-            escaped(&folder)
-        ));
-        for (file, covered, total) in files {
-            let state = match (availability, total) {
-                (MapAvailability::Unavailable, _) | (MapAvailability::Partial, 0) => "unavailable",
-                (_, 0) => "not measured",
-                _ => "measured",
-            };
-            result.push_str(&format!(
-                "<article class=\"habeas-coverage-file\" data-file=\"{}\" data-status=\"{state}\"><header><code>{}</code>",
-                escaped(&file), escaped(&file),
-            ));
-            if state == "measured" {
-                let percentage = 100.0 * covered as f64 / total as f64;
-                let label = if covered > 0 && percentage < 0.1 {
-                    "&lt;0.1%".to_owned()
-                } else {
-                    format!("{percentage:.1}%")
-                };
-                result.push_str(&format!(
-                    "<strong>{label}</strong></header><div class=\"habeas-coverage-bar\" role=\"meter\" aria-label=\"{} line coverage\" aria-valuemin=\"0\" aria-valuemax=\"100\" aria-valuenow=\"{percentage:.6}\"><div class=\"habeas-coverage-fill\" style=\"width:{percentage:.6}%;background:hsl({:.1},55%,45%)\"></div></div><small>{covered}/{total} instrumented lines covered</small>",
-                    escaped(&file), percentage * 1.2,
-                ));
-            } else {
-                result.push_str(&format!(
-                    "<strong>{state}</strong></header><p>Coverage {state}.</p>"
-                ));
-            }
-            result.push_str("</article>\n");
-        }
-        result.push_str("</div>\n");
-    }
+    root.render(&mut result, "", page, index);
     result.push_str("</section>\n\n");
     result
 }
@@ -462,6 +580,12 @@ fn populate_in(book: &mut Book, project: &Path, target: Option<PathBuf>) -> io::
         current_files,
         discovery_failed,
     } = load_saved(project, target, &index_path);
+    let note_files = current_files
+        .iter()
+        .chain(records.iter().flat_map(|record| record.run.sources.keys()))
+        .filter(|file| file.ends_with(".rs"))
+        .cloned()
+        .collect::<BTreeSet<_>>();
     let usable: Vec<_> = selected
         .iter()
         .map(|&index| &records[index])
@@ -521,7 +645,14 @@ fn populate_in(book: &mut Book, project: &Path, target: Option<PathBuf>) -> io::
     } else {
         MapAvailability::Complete
     };
-    summary.push_str(&file_map(current_files, &totals, availability, false));
+    summary.push_str(&file_map(
+        current_files,
+        &totals,
+        availability,
+        false,
+        &index_path,
+        &index_path,
+    ));
     if !records.is_empty() {
         summary.push_str("<details class=\"habeas-coverage-details\"><summary>Test runs and provenance</summary>\n\n");
         let configuration = &records.last().unwrap().run.configuration_inputs;
@@ -605,6 +736,20 @@ fn populate_in(book: &mut Book, project: &Path, target: Option<PathBuf>) -> io::
         chapter.source_path = None;
         details.push(BookItem::Chapter(chapter));
     }
+    let notes_root = workspace_root(project).unwrap_or_else(|_| project.to_path_buf());
+    for chapter in super::notes::pages(&notes_root, &note_files, &index_path) {
+        let path = chapter
+            .path
+            .as_ref()
+            .expect("file notes have a render path");
+        if existing.contains(path) || !generated.insert(path.clone()) {
+            return Err(io::Error::other(format!(
+                "coverage report path conflicts with an existing chapter: {}",
+                path.display()
+            )));
+        }
+        details.push(BookItem::Chapter(chapter));
+    }
     book.for_each_chapter_mut(|chapter| {
         if chapter.path.as_ref() == Some(&index_path) {
             chapter.content.replace_range(range.clone(), &summary);
@@ -653,6 +798,8 @@ fn detail(record: &Record, index: &Path) -> String {
             &union(std::iter::once(record)),
             MapAvailability::Complete,
             true,
+            &record.detail,
+            index,
         ));
     } else {
         result.push_str("**Coverage unavailable:** this test's coverage is missing, unreadable or incomplete.\n\n");
@@ -875,7 +1022,7 @@ mod tests {
             .split(&format!("data-file=\"{}\"", escaped(file)))
             .nth(1)
             .unwrap()
-            .split("</article>")
+            .split("</tr>")
             .next()
             .unwrap()
     }
@@ -910,7 +1057,7 @@ mod tests {
             };
             assert_eq!(index.number, number);
             assert_eq!(index.sub_items[0], BookItem::Chapter(child));
-            assert_eq!(index.sub_items.len(), 5);
+            assert_eq!(index.sub_items.len(), 6);
             for (offset, item) in index.sub_items[1..].iter().enumerate() {
                 let BookItem::Chapter(page) = item else {
                     unreachable!();
@@ -927,6 +1074,7 @@ mod tests {
     }
 
     // {test}`requirements.test-coverage.index.file_map`
+    // {test}`requirements.test-coverage.index.file_map.table`
     // {test}`requirements.test-coverage.index.file_map.combined`
     // {test}`requirements.test-coverage.index.file_map.test`
     // {test}`requirements.test-coverage.index.summary`
@@ -1028,6 +1176,7 @@ mod tests {
     }
 
     // {test}`requirements.test-coverage.index.file_map`
+    // {test}`requirements.test-coverage.index.file_map.table`
     // {test}`requirements.test-coverage.index.file_map.combined`
     // {test}`requirements.test-coverage.index.file_map.test`
     #[test]
@@ -1150,6 +1299,7 @@ mod tests {
     }
 
     // {test}`requirements.test-coverage.index.file_map`
+    // {test}`requirements.test-coverage.index.file_map.table`
     // {test}`requirements.test-coverage.index.file_map.combined`
     // {test}`requirements.test-coverage.index.freshness`
     #[test]
@@ -1195,13 +1345,21 @@ mod tests {
     }
 
     // {test}`requirements.test-coverage.index.file_map`
+    // {test}`requirements.test-coverage.index.file_map.table`
     #[test]
     fn file_map_escapes_paths_and_does_not_round_positive_coverage_to_zero() {
         let file = "src/<unsafe>\".rs".to_owned();
         let totals = (1..=2000)
             .map(|line| ((file.clone(), line), u64::from(line == 1)))
             .collect();
-        let map = file_map([file], &totals, MapAvailability::Complete, true);
+        let map = file_map(
+            [file],
+            &totals,
+            MapAvailability::Complete,
+            true,
+            Path::new("coverage.md"),
+            Path::new("coverage.md"),
+        );
         assert!(map.contains("src/&lt;unsafe&gt;&quot;.rs"));
         assert!(!map.contains("<unsafe>"));
         assert!(map.contains("&lt;0.1%"));
@@ -1219,6 +1377,8 @@ mod tests {
             ]),
             MapAvailability::Complete,
             false,
+            Path::new("coverage.md"),
+            Path::new("coverage.md"),
         );
         for (file, percentage) in [("zero.rs", 0.0), ("half.rs", 50.0), ("full.rs", 100.0)] {
             let card = file_card(&levels, file);
@@ -1230,8 +1390,285 @@ mod tests {
             &BTreeMap::new(),
             MapAvailability::Complete,
             false,
+            Path::new("coverage.md"),
+            Path::new("coverage.md"),
         );
         assert!(!empty.contains("data-file="));
+    }
+
+    fn directory_summary<'a>(map: &'a str, directory: &str) -> &'a str {
+        map.split(&format!("data-directory=\"{directory}\""))
+            .nth(1)
+            .unwrap()
+            .split("</summary>")
+            .next()
+            .unwrap()
+    }
+
+    // {test}`requirements.test-coverage.index.file_map.table`
+    // {test}`requirements.test-coverage.index.file_map.directories`
+    // {test}`requirements.test-coverage.index.file_map.directories.initial`
+    // {test}`requirements.test-coverage.index.file_map.directories.data`
+    // {test}`requirements.test-coverage.index.file_map.minimum`
+    // {test}`requirements.test-coverage.index.file_map.minimum.statuses`
+    // {test}`requirements.test-coverage.index.file_map.minimum.descendants`
+    #[test]
+    fn directory_tables_preserve_rows_inside_independent_initially_closed_controls() {
+        let files = ["root.rs", "src/a.rs", "src/nested/b.rs", "src/nested/c.rs"];
+        let totals = BTreeMap::from([
+            (("root.rs".into(), 1), 1),
+            (("src/a.rs".into(), 1), 1),
+            (("src/a.rs".into(), 2), 0),
+            (("src/nested/b.rs".into(), 1), 1),
+            (("src/nested/b.rs".into(), 2), 0),
+            (("src/nested/b.rs".into(), 3), 0),
+            (("src/nested/b.rs".into(), 4), 0),
+        ]);
+        let map = file_map(
+            files.map(String::from),
+            &totals,
+            MapAvailability::Complete,
+            false,
+            Path::new("coverage.md"),
+            Path::new("coverage.md"),
+        );
+        for directory in ["src", "src/nested"] {
+            let summary = directory_summary(&map, directory);
+            assert!(summary.contains(&format!("<code>{directory}/</code>")));
+            assert!(summary.contains("Minimum measured file coverage:"));
+            assert!(summary.contains("25.0%"));
+            assert!(summary.contains("1 not measured"));
+            assert!(!summary.contains("unavailable"));
+        }
+        assert!(directory_summary(&map, "src").contains("3 files"));
+        assert!(directory_summary(&map, "src/nested").contains("2 files"));
+
+        // Native disclosures hide their body, retaining all table data. Check
+        // semantic nesting rather than relying on directory text order alone.
+        let tags = regex::Regex::new(r"<[^>]+>").unwrap();
+        let mut parents = Vec::new();
+        let mut rows = BTreeMap::new();
+        for tag in tags.find_iter(map_html(&map)).map(|tag| tag.as_str()) {
+            if tag.starts_with("<details ") {
+                assert!(!tag.contains(" open"), "directory must start collapsed");
+                let directory = tag
+                    .split("data-directory=\"")
+                    .nth(1)
+                    .unwrap()
+                    .split('"')
+                    .next()
+                    .unwrap();
+                parents.push(directory);
+            } else if tag == "</details>" {
+                parents.pop().unwrap();
+            } else if tag.starts_with("<tr class=\"habeas-coverage-file\"") {
+                let file = tag
+                    .split("data-file=\"")
+                    .nth(1)
+                    .unwrap()
+                    .split('"')
+                    .next()
+                    .unwrap();
+                assert!(rows.insert(file, parents.clone()).is_none());
+            }
+        }
+        assert!(parents.is_empty());
+        assert_eq!(rows["root.rs"], Vec::<&str>::new());
+        assert_eq!(rows["src/a.rs"], ["src"]);
+        for file in ["src/nested/b.rs", "src/nested/c.rs"] {
+            assert_eq!(rows[file], ["src", "src/nested"]);
+        }
+        assert_eq!(rows.len(), files.len());
+        for file in files {
+            assert!(file_card(&map, file).contains(&format!("<code>{file}</code>")));
+        }
+        assert!(!map.contains("<script")); // toggling has no data-mutating handler
+        for heading in ["File", "Coverage", "Covered / instrumented lines"] {
+            assert!(map.contains(&format!("<th scope=\"col\">{heading}</th>")));
+        }
+        assert!(file_card(&map, "src/a.rs").contains(">1/2</td>"));
+        assert!(file_card(&map, "src/nested/b.rs").contains(">1/4</td>"));
+        let unknown = file_card(&map, "src/nested/c.rs");
+        assert!(unknown.contains("not measured"));
+        assert!(!unknown.contains('%'));
+    }
+
+    // {test}`requirements.test-coverage.index.file_map.directories`
+    // {test}`requirements.test-coverage.index.file_map.directories.initial`
+    #[test]
+    fn directories_with_only_descendant_files_keep_distinct_full_path_controls() {
+        let files = ["a/shared/deep/one.rs", "b/shared/two.rs"];
+        let totals = files
+            .iter()
+            .map(|file| (((*file).to_owned(), 1), 1))
+            .collect();
+        let map = file_map(
+            files.map(String::from),
+            &totals,
+            MapAvailability::Complete,
+            false,
+            Path::new("coverage.md"),
+            Path::new("coverage.md"),
+        );
+        assert_eq!(map.matches("<details ").count(), 5);
+        for directory in ["a", "a/shared", "a/shared/deep", "b", "b/shared"] {
+            assert!(map.contains(&format!("data-directory=\"{directory}\"><summary>")));
+            let summary = directory_summary(&map, directory);
+            assert!(summary.contains(&format!("<code>{directory}/</code>")));
+            assert!(summary.contains("100.0%"));
+            assert!(!summary.contains(" open"));
+        }
+        assert_eq!(map.matches("data-file=").count(), 2);
+    }
+
+    // {test}`requirements.test-coverage.index.file_map.minimum`
+    // {test}`requirements.test-coverage.index.file_map.minimum.statuses`
+    #[test]
+    fn directory_minima_use_exact_fractions_and_only_listed_measured_files() {
+        let files = [
+            "src/higher.rs",
+            "src/lower.rs",
+            "src/zero.rs",
+            "src/unknown.rs",
+        ];
+        let totals = files[..3]
+            .iter()
+            .flat_map(|file| {
+                let (covered, total) = match *file {
+                    "src/higher.rs" => (501, 1000),
+                    "src/lower.rs" => (1001, 2000),
+                    _ => (0, 10),
+                };
+                (1..=total)
+                    .map(move |line| (((*file).to_owned(), line), u64::from(line <= covered)))
+            })
+            .collect();
+        let render = |availability, positive_only| {
+            file_map(
+                files.map(String::from),
+                &totals,
+                availability,
+                positive_only,
+                Path::new("coverage.md"),
+                Path::new("coverage.md"),
+            )
+        };
+        let positive = render(MapAvailability::Complete, true);
+        let summary = directory_summary(&positive, "src");
+        assert!(summary.contains("data-min-covered=\"1001\" data-min-instrumented=\"2000\""));
+        assert!(summary.contains("2 files"));
+        assert!(!positive.contains("data-file=\"src/zero.rs\""));
+        assert!(!positive.contains("data-file=\"src/unknown.rs\""));
+        assert!(!summary.contains("not measured"));
+        let complete = render(MapAvailability::Complete, false);
+        assert!(directory_summary(&complete, "src").contains("0.0%"));
+        assert!(directory_summary(&complete, "src").contains("1 not measured"));
+        let partial = render(MapAvailability::Partial, false);
+        assert!(directory_summary(&partial, "src").contains("0.0%"));
+        assert!(directory_summary(&partial, "src").contains("1 unavailable"));
+        let unavailable = render(MapAvailability::Unavailable, false);
+        let summary = directory_summary(&unavailable, "src");
+        assert!(summary.contains("4 unavailable"));
+        assert!(summary.contains("No measured files"));
+        assert!(!summary.contains('%'));
+        assert!(!summary.contains("data-min-"));
+        let unknown = file_map(
+            ["src/unknown.rs".into()],
+            &BTreeMap::new(),
+            MapAvailability::Complete,
+            false,
+            Path::new("coverage.md"),
+            Path::new("coverage.md"),
+        );
+        let summary = directory_summary(&unknown, "src");
+        assert!(summary.contains("1 not measured"));
+        assert!(!summary.contains('%'));
+    }
+
+    // {test}`requirements.test-coverage.index.file_map.notes`
+    // {test}`requirements.test-coverage.index.file_map.notes.current`
+    // {test}`requirements.test-coverage.index.file_map.notes.render_only`
+    #[test]
+    fn combined_and_historical_file_links_share_current_source_notes_without_collecting() {
+        let (temp, mut book) = fixture();
+        let root = temp.path();
+        fs::create_dir(root.join("md")).unwrap();
+        fs::write(root.join("book.toml"), "[book]\nsrc='md'\n").unwrap();
+        fs::write(root.join("md/SUMMARY.md"), "# Summary\n").unwrap();
+        fs::create_dir_all(root.join("src/nested")).unwrap();
+        for file in ["src/a.rs", "src/nested/a.rs"] {
+            fs::write(root.join(file), "fn another() {}\n").unwrap();
+        }
+        let attempt = record(root, "one", 1, "a", &[(1, 1)]);
+        let run_path = attempt.parent().unwrap().parent().unwrap().join("run.json");
+        let mut run: Run = load(&run_path).unwrap();
+        let mut process: Attempt = load(&attempt.join("attempt.json")).unwrap();
+        for file in ["src/a.rs", "src/nested/a.rs"] {
+            run.sources
+                .insert(file.into(), fs::read_to_string(root.join(file)).unwrap());
+            process.processes[0]
+                .lines
+                .insert(file.into(), BTreeMap::from([(1, 1)]));
+        }
+        save(&run_path, &run).unwrap();
+        save(&attempt.join("attempt.json"), &process).unwrap();
+        let captured = fs::read(attempt.join("attempt.json")).unwrap();
+        fs::write(root.join("code.rs"),
+            "// :::{cite} habeas:coverage\n// Current explanation, added after capture.\n// :::\nfn current() {}\n").unwrap();
+        populate(&mut book, root).unwrap();
+        let index = book.chapters().next().unwrap();
+        let notes_path = super::super::notes::path(index.path.as_ref().unwrap(), "code.rs");
+        let notes = book
+            .chapters()
+            .find(|chapter| chapter.path.as_ref() == Some(&notes_path))
+            .unwrap();
+        assert!(
+            notes
+                .content
+                .contains("Current explanation, added after capture.")
+        );
+        assert!(notes.content.contains("Current workspace source notes"));
+        assert!(notes.content.contains("code.rs"));
+        assert_eq!(
+            book.chapters()
+                .filter(|chapter| chapter.path.as_ref() == Some(&notes_path))
+                .count(),
+            1
+        );
+        let historical = book
+            .chapters()
+            .find(|chapter| chapter.content.starts_with("# Test process coverage"))
+            .unwrap();
+        let mut distinct = BTreeSet::new();
+        for file in ["code.rs", "src/a.rs", "src/nested/a.rs"] {
+            let path = super::super::notes::path(index.path.as_ref().unwrap(), file);
+            assert!(
+                distinct.insert(path.clone()),
+                "files must have distinct views"
+            );
+            let notes = book
+                .chapters()
+                .find(|chapter| chapter.path.as_ref() == Some(&path))
+                .unwrap();
+            assert!(
+                notes
+                    .content
+                    .contains(&format!("File: <code>{file}</code>"))
+            );
+            for chapter in [index, historical] {
+                let href = crate::chapter_href(chapter.path.as_ref().unwrap(), &path, None);
+                assert!(
+                    file_card(map_html(&chapter.content), file)
+                        .contains(&format!("href=\"{href}\""))
+                );
+            }
+        }
+        assert_eq!(fs::read(attempt.join("attempt.json")).unwrap(), captured);
+        assert_eq!(
+            fs::read_to_string(attempt.join("1-1.profraw")).unwrap(),
+            "retained profile fixture"
+        );
+        assert!(!root.join("evidence").exists());
     }
 
     // {test}`requirements.test-coverage.storage.provenance`
@@ -1491,7 +1928,7 @@ mod tests {
         let mut combined = book.clone();
         populate(&mut combined, root).unwrap();
         let index = combined.chapters().next().unwrap();
-        assert_eq!(index.sub_items.len(), 4); // two attempts and their source chapters
+        assert_eq!(index.sub_items.len(), 5); // attempts, captured sources and current file notes
         for required in [
             "2/2 (100.0%)",
             "binary / one",
@@ -1621,6 +2058,20 @@ mod tests {
             "Source collision",
             "".into(),
             source_path(Path::new("reports/coverage.md"), &run.id),
+            vec![],
+        ));
+        assert!(
+            populate(&mut book, temp.path())
+                .unwrap_err()
+                .to_string()
+                .contains("conflicts")
+        );
+        // Current file-note pages are generated reports too, even without runs.
+        let (temp, mut book) = fixture();
+        book.push_item(Chapter::new(
+            "Notes collision",
+            "".into(),
+            super::super::notes::path(Path::new("reports/coverage.md"), "code.rs"),
             vec![],
         ));
         assert!(

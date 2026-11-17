@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 mod book;
 mod check;
 mod configuration;
+mod notes;
 mod progress;
 mod runner;
 
