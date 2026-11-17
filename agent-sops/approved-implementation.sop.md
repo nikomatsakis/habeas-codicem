@@ -21,6 +21,7 @@ Apply the shared one-PR protocol. Start in **🛠 Author code**.
    transition protocol: restore this run's code changes, propose requirements
    in a separate requirements-only commit, and wait for approval on this PR.
 3. For code changes, run `git diff --check`, `cargo habeas coverage -- --locked --workspace`,
+   followed only on success by `cargo habeas coverage-check`,
    `cargo test --doc --workspace`, `mdbook test`, and `mdbook build`. Inspect `cargo habeas status` (or installed
    `habeas status`). Fix failures caused by your changes. Report checks that
    could not run or unrelated failures that remain. For a requirements
@@ -36,3 +37,10 @@ processes through `cargo nextest` and retains coverage for each process. Coverag
 profiles, reports, and source snapshots under the Cargo target directory are
 disposable build output: never stage or commit them to Git.
 Run doctests separately with `cargo test --doc --workspace`.
+
+For full local verification, `cargo habeas test` collects workspace coverage and
+then enforces the coverage policy. Recommend separate collection and
+`habeas coverage-check` steps in project CI, as shown in the bundled Habeas
+[CI example](../assets/skills/habeas/references/ci.md). Collection alone does
+not enforce the coverage policy.
+{impl}`requirements.test-coverage.check.guidance`

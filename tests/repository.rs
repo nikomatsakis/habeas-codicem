@@ -115,6 +115,26 @@ fn shared_agent_guidance_documents_post_suite_checks_and_standard_explanations()
     ] {
         assert!(reference.contains(phrase), "reference omits {phrase}");
     }
+    let example = repository_file("assets/skills/habeas/references/ci.md");
+    let yaml = example
+        .split_once("```yaml\n")
+        .unwrap()
+        .1
+        .split_once("\n```")
+        .unwrap()
+        .0;
+    let example: serde_json::Value = serde_saphyr::from_str(yaml).unwrap();
+    let steps = example["steps"].as_array().unwrap();
+    assert_eq!(steps[0]["run"], "habeas coverage -- --locked --workspace");
+    assert_eq!(steps[1]["run"], "habeas coverage-check");
+    assert_eq!(steps[2]["run"], "cargo test --locked --doc --workspace");
+    for step in &steps[..2] {
+        assert!(step.get("if").is_none(), "use the normal success condition");
+        assert!(
+            step.get("continue-on-error").is_none(),
+            "a failed gate must fail CI"
+        );
+    }
 }
 
 /// The lines of one top-level job in a GitHub Actions workflow, from its
@@ -293,6 +313,7 @@ fn book_links_to_the_repository_and_main_branch_edit_pages() {
 }
 
 // {test}`requirements.integration.ci`
+// {test}`requirements.test-coverage.check.guidance`
 #[test]
 fn ci_tests_pull_requests_and_main_then_deploys_the_book_from_main() {
     let workflow = repository_file(".github/workflows/ci.yml");
@@ -306,6 +327,7 @@ fn ci_tests_pull_requests_and_main_then_deploys_the_book_from_main() {
         "run: node --test .github/scripts/autofix.test.mjs",
         "cargo build --release --locked -p habeas",
         "cargo habeas coverage -- --locked --workspace",
+        "run: cargo habeas coverage-check",
         "run: cargo test --locked --doc --workspace",
         "run: mdbook test",
         "run: mdbook build",
@@ -317,6 +339,21 @@ fn ci_tests_pull_requests_and_main_then_deploys_the_book_from_main() {
         .collect();
     assert!(positions.is_sorted(), "{test}");
     assert!(test.contains("with:\n          path: book\n"), "{test}");
+    let workflow_yaml: serde_json::Value = serde_saphyr::from_str(&workflow).unwrap();
+    let gate = workflow_yaml["jobs"]["test-and-build"]["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|step| step["run"] == "cargo habeas coverage-check")
+        .unwrap();
+    assert!(
+        gate.get("if").is_none(),
+        "check only after successful collection"
+    );
+    assert!(
+        gate.get("continue-on-error").is_none(),
+        "enforce coverage failures"
+    );
 
     let hook = workflow_job(&workflow, "symposium-hook");
     assert!(
@@ -384,6 +421,47 @@ fn release_workflow_runs_release_plz_with_secret_token_and_trusted_publishing() 
 
     let config = repository_toml("release-plz.toml");
     assert_eq!(config["workspace"]["release_always"].as_bool(), Some(false));
+}
+
+// {test}`requirements.integration.symposium`
+// {test}`requirements.test-coverage.check.guidance`
+#[test]
+fn published_package_contains_the_bundled_skills_and_ci_example() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let output = Command::new("cargo")
+        .args(["package", "--list", "--allow-dirty", "--offline"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let packaged = String::from_utf8(output.stdout).unwrap();
+    let manifest = repository_toml("Cargo.toml");
+    let source = manifest["package"]["metadata"]["symposium"]["skills"][0]["source"]["path"]
+        .as_str()
+        .unwrap();
+    let mut skills = 0;
+    for entry in fs::read_dir(root.join(source)).unwrap() {
+        let entry = entry.unwrap();
+        if entry.path().join("SKILL.md").is_file() {
+            let path = format!("{source}/{}/SKILL.md", entry.file_name().to_str().unwrap());
+            assert!(
+                packaged.lines().any(|file| file == path),
+                "package omits {path}"
+            );
+            skills += 1;
+        }
+    }
+    assert!(skills > 0, "the plugin's source directory contains skills");
+    assert!(
+        packaged
+            .lines()
+            .any(|file| file == format!("{source}/habeas/references/ci.md")),
+        "the CI reference must ship with the skill that links to it"
+    );
 }
 
 // {test}`requirements.integration.symposium_cli`

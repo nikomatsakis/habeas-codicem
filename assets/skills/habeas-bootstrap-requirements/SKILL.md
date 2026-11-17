@@ -65,8 +65,14 @@ to a subagent to keep it out of your context.
             Full validation can pass only after the last area.
 - [ ] 8. Have a fresh subagent recount both inventories from the source and tests
       without your lists, and reconcile any differences.
-- [ ] 9. Report (below). Next: for gap-list items the user decides, follow the
+- [ ] 9. Run `habeas test` for full-workspace collection and post-suite coverage
+      checking. Include remaining execution-coverage gaps in the report,
+      separately from unmapped items and evidence findings. Recommend separate
+      successful collection and `habeas coverage-check` steps in project CI,
+      using the Habeas [CI example](../habeas/references/ci.md). Collection alone
+      does not enforce the coverage policy. Report (below). Next: for gap-list items the user decides, follow the
       habeas-requirements skill.
+      {impl}`requirements.test-coverage.check.guidance`
 
 ## Inventories
 

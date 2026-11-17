@@ -60,6 +60,12 @@ It collects coverage for the full workspace, then checks it. In CI, recommend
 static `habeas::validate()` test requires no prior execution coverage.
 {impl}`requirements.test-coverage.check.guidance`
 
+When setting up or reviewing project CI, check that it runs both collection and
+the post-suite check. Collection alone does not enforce the coverage policy.
+Use the [CI example](references/ci.md) when adding these steps to an existing
+workflow; setup configures the collector and static validation test, while CI
+integration belongs in the project's workflow.
+
 Each first-party Rust file needs 80% instrumented-line coverage. Each completely
 unexecuted or not-measured function, including functions excluded by the build
 configuration, needs an independently assessed explanation. Partly covered

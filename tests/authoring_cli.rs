@@ -2832,6 +2832,10 @@ fn skill_files(name: &str) -> &'static [(&'static str, &'static str)] {
         "habeas" => &[
             ("SKILL.md", include_str!("../assets/skills/habeas/SKILL.md")),
             (
+                "references/ci.md",
+                include_str!("../assets/skills/habeas/references/ci.md"),
+            ),
+            (
                 "references/distributed-requirements.md",
                 include_str!("../assets/skills/habeas/references/distributed-requirements.md"),
             ),
@@ -3637,6 +3641,11 @@ fn bundled_skill_workflows_end_by_naming_the_skill_for_the_next_task() {
 #[test]
 fn bundled_skills_say_when_to_read_each_reference_file() {
     let links = [
+        (
+            "habeas",
+            "references/ci.md",
+            "Use the [CI example](references/ci.md) when adding these steps to an existing workflow; setup configures the collector and static validation test, while CI integration belongs in the project's workflow",
+        ),
         (
             "habeas",
             "references/distributed-requirements.md",

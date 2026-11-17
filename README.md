@@ -24,7 +24,7 @@ Run `cargo agents sync` in your terminal and choose **Enable** when it offers Ha
 
 To configure the project before starting an agent session, or if the hook is unavailable in your agent, run `cargo install habeas` and `habeas setup` yourself. For development from a checkout, use `cargo install --path .`.
 
-`habeas setup` adds Habeas as a dev dependency, configures `[preprocessor.habeas]` to run `habeas mdbook`, adds the badge stylesheet, creates `tests/habeas.rs`, configures nextest's per-process collector, and adds the coverage chapter. Setup can be run again without duplicating configuration or overwriting differing files.
+`habeas setup` adds Habeas as a dev dependency, configures `[preprocessor.habeas]` to run `habeas mdbook`, adds the badge stylesheet, creates `tests/habeas.rs`, configures nextest's per-process collector, and enables the generated coverage report under the requirements index. Setup can be run again without duplicating configuration or overwriting differing files.
 
 Add a `{test}` reference to an appropriate project requirement or named example on the generated test, and give the rest of your Rust functions references before expecting validation to pass. Mark code with `{impl}` where it implements part of a definition, tests with `{test}` where they are designed to verify one, and use `{cite}` only for related code that does neither; see [References](md/reference.md#references).
 
@@ -174,3 +174,9 @@ zero execution or no measurement. Use an ordinary `habeas:coverage` citation
 with a prose rationale and author its independent citation review with
 `habeas author`. File exceptions do not waive individual functions or increase
 coverage figures. Checking saved coverage calls no model and runs no tests.
+
+Collection alone does not enforce coverage. Add both steps to project CI using
+the bundled [CI example](assets/skills/habeas/references/ci.md).
+`habeas setup` configures collection and static validation; it does not install
+a CI workflow. After updating Habeas, run `cargo agents sync` to refresh the
+bundled skills and their CI example.

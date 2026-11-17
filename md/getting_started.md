@@ -42,7 +42,7 @@ Configure an authoring model using the [Bedrock or Ollama examples](./reference.
 
 ```sh
 habeas author --all
-habeas coverage
+habeas test
 cargo test --doc --workspace
 ```
 
@@ -57,3 +57,18 @@ Use `habeas coverage -- <nextest arguments>` for filtered runs as well as full
 suite runs. Raw profiles, per-process reports and captured sources stay under
 the Cargo target directory (`target/habeas/coverage/` by default), are never
 committed, and disappear with `cargo clean`.
+
+For full verification, `habeas test` collects workspace coverage and then
+enforces the coverage policy. In CI, run these as separate steps, with the
+second command running only after the first succeeds:
+
+```sh
+habeas coverage -- --locked --workspace
+habeas coverage-check
+```
+
+Collection alone does not enforce coverage. Add both steps to the project's
+workflow after installing its Habeas CLI and coverage prerequisites. Setup
+configures the collector and static validation test; it does not install a CI
+workflow. The bundled skills include a CI example, delivered with
+`cargo agents sync` after updating Habeas.

@@ -52,6 +52,10 @@ its independent citation review. Neither `habeas:util` nor `{fixme}` excuses
 execution coverage. Use `habeas test` for full verification after the changes.
 The habeas skill's "Testing and coverage artifacts" gives the per-file target
 and function obligations.
+For CI integration, recommend the separate collection and check steps in the
+Habeas [CI example](../habeas/references/ci.md); collection alone does not enforce
+the policy.
+{impl}`requirements.test-coverage.check.guidance`
 
 ## Judgments
 
