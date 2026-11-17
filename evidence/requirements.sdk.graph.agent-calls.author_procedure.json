@@ -1,8 +1,8 @@
 {
   "requirement": "`habeas_sdk::procedure` MUST provide a `Send + Sync` per-validation\n`ValidationContext<'d, D>` for `D: Validation`. The context MUST expose tracked\ninspection through `inspection(&self)` and the `ask(&self)` builder specified by\n{cite}`requirements.sdk.graph.agent-calls.judge`. Inspection operations MUST be callable\nthrough shared references. Concurrent calls MUST retain independent builder,\nconversation, and submission state while recording their observations in the\nsame synchronized dependency trace for the enclosing validation. They MUST NOT\nrequire an exclusive context borrow across an agent call or serialize complete\nagent interactions behind a context-wide lock.\n\nThe SDK MUST record identified inputs actually delivered to an agent using the\nfingerprints of their supplied contents, together with delivered tool reads.\nAwaiting a builder with fewer or no node insertions MUST NOT discard dependencies\nalready captured for the validation. Preparing an unawaited builder MUST NOT\ncreate agent-delivery dependencies. The callback MUST receive only the context\nspecified by\n{cite}`requirements.sdk.graph.validation.check_procedure` and MUST NOT require\nevidence-storage access. The SDK MUST use this single validation interface for\ncallbacks with and without agent calls.",
   "determination": true,
-  "rationale": "The reviewed tests cover every obligation in `requirements.sdk.graph.agent-calls.author_procedure`. I did not request implementation source. I judged each obligation from the supplied test text.\n\n- **`Send + Sync` context, `inspection(&self)` and `ask(&self)`:**\n  - `validation.rs#fn[later_lighter_agent_calls_preserve_the_contexts_existing_trace]` compiles `assert_send_sync(&ctx)`.\n  - Every test uses `ctx.ask()` and `ctx.inspection()` through a shared reference.\n- **Concurrent calls keep independent state and share one trace:**\n  - `agent.rs#fn[concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads]` runs two asks with `futures::join!` on one `&ctx`, under a 2-second timeout and a 2-party `Barrier` in the provider.\n  - The barrier only releases if both interactions are in flight at once. A context-wide lock or an exclusive borrow would therefore time out.\n  - It asserts per-conversation call counts and each ask's own result.\n  - It asserts that the shared trace holds the union of the observations: outgoing edges, node 1 and node 2.\n  - It asserts that `finish` returns the same dependencies.\n  - `validation.rs#fn[shared_context_allows_independent_concurrent_agent_calls]` does the same with a barrier and a timeout. It asserts the two distinct results and the single recorded node dependency.\n- **Delivered inputs recorded by content fingerprint, plus delivered tool reads:**\n  - `agent.rs#fn[graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery]` asserts `OutgoingEdges` and `Node` dependencies whose fingerprints equal the supplied contents. This includes an 18,000-character node read through `read_node`. The `get_node_page` call adds no extra dependency.\n  - `validation.rs#fn[queued_reads_selection_and_rendering_fail_before_agent_invocation]` asserts the edge-snapshot fingerprint for empty and non-matching edge sets. It asserts that failed reads, selection or rendering leave no delivery dependency and make no agent call.\n  - `src/authoring/sdk.rs#mod[tests]/fn[confirmed_evidence_retains_reads_from_both_assessments_and_the_verifier]` asserts that tool reads from several assessments end up in the final record with their fingerprints.\n- **A lighter or empty later builder does not discard captured dependencies:** `later_lighter_agent_calls_preserve_the_contexts_existing_trace` first awaits a call with `current_node_contents` and `successors_content`. It then awaits a context-only ask and asserts the dependencies are unchanged, including through `finish`.\n- **Preparing an unawaited builder creates no delivery dependency:**\n  - `validation.rs#fn[dropped_builders_and_missing_agents_do_not_resolve_queued_inputs]` drops a builder with queued insertions. It asserts empty dependencies, no reads and no selections. It also checks the `NoAgentConfigured` case.\n  - `queued_reads_selection_and_rendering_fail_before_agent_invocation` drops a builder and asserts no agent request.\n- **Callback receives only the context, with no evidence-storage requirement; single validation interface:** `agent.rs#fn[validation_is_usable_without_any_evidence_storage]` calls `graph.validate(&ctx)` with a plain `ValidationContext::new` and no agent or storage. It asserts the result and that a dependency is recorded. The same context type and `Validation` trait serve the agent-backed tests, so no separate interface exists to test.\n\nI found no obligation without a test, and no assertion that contradicts the text. All the tests carry `{test}` references to the subject.",
-  "references": "caacb6f6d53e68952b14994cf9dce3020357fe820794c20889f9298f61de9747",
+  "rationale": "I judged this from the supplied test source only. I did not request any implementation source. Each obligation in `requirements.sdk.graph.agent-calls.author_procedure` maps to at least one marked test that asserts the outcome.\n\n- **`Send + Sync` context.** `later_lighter_agent_calls_preserve_the_contexts_existing_trace` in `tests/validation.rs` asserts `assert_send_sync(&ctx)` on a `ValidationContext`.\n- **Shared-reference `inspection()` and `ask()`.** Every listed test calls `ctx.ask()` and `ctx.inspection()` through `&ctx`. The concurrent tests use the same `ctx` in two simultaneous calls.\n- **Concurrency.**\n  - `concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads` in `tests/agent.rs` joins two asks on one context behind a 2-party barrier inside a timeout. A context-wide lock or exclusive borrow would deadlock or time out.\n  - The same test asserts per-conversation call counts (`alpha` 3 and `beta` 3), and each result comes back as its own context string. That covers independent conversation and submission state.\n  - It also asserts that the shared trace holds the union of both calls' observations (3 dependencies), and that `finish` returns the same dependencies.\n  - `shared_context_allows_independent_concurrent_agent_calls` in `tests/validation.rs` repeats the barrier check with a different agent. Its results are distinct per call, and the shared trace holds the node read.\n- **Delivered inputs recorded by fingerprint.**\n  - `graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery` asserts the exact `OutgoingEdges` and `Node` fingerprints for tool reads.\n  - `queued_reads_selection_and_rendering_fail_before_agent_invocation` asserts the `OutgoingEdges` and `Node` dependencies for queued reads.\n  - `confirmed_evidence_retains_reads_from_both_assessments_and_the_verifier` in `src/authoring/sdk.rs` covers the delivered tool reads that end up in the evidence record.\n- **Reads not delivered are not recorded.** In `graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery`, a `read_node` followed by an agent failure leaves the trace empty. In the node-contents variant, only the one queued read is recorded.\n- **Fewer or no insertions keep earlier dependencies.** `later_lighter_agent_calls_preserve_the_contexts_existing_trace` makes a heavy ask and then a lighter ask with only a context. It asserts the trace equals the earlier one and the finished record's dependencies are unchanged.\n- **Unawaited builders create no dependencies.**\n  - `dropped_builders_and_missing_agents_do_not_resolve_queued_inputs` drops a builder and asserts the trace is empty. It also asserts that a missing agent triggers no graph reads or selections.\n  - `queued_reads_selection_and_rendering_fail_before_agent_invocation` drops a builder and asserts no agent request was made.\n- **Callback gets only the context, with no evidence-storage access; one interface.** `validation_is_usable_without_any_evidence_storage` runs `graph.validate(&ctx)` with a plain `ValidationContext::new`, so there is no agent and no storage. It asserts the result and the recorded dependency. All the agent tests use the same `ValidationContext` type and `ask` builder, so the single interface is exercised with and without agent calls.\n\nI found no unacknowledged gap, and there are no `{fixme}` acknowledgments to account for.",
+  "references": "73ba66943e906cc860538bfe6a12776a9c82e0a7e59bdbea0f582ec18e1b4461",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.agent-calls.author_procedure",
@@ -131,6 +131,11 @@
       "hash": "a2c7a03819c323a4cb71676aabd39b26b8b7eba83f4cf519f9661336990ed257"
     },
     {
+      "file": "crates/habeas-sdk/tests/agent.rs",
+      "item": "fn[generic_conversations_can_use_default_telemetry_through_retry_and_continuation]",
+      "hash": "ab4bf35d290902df50652e3dfc850baf437f549235d834c7b4c843e233509692"
+    },
+    {
       "file": "crates/habeas-sdk/tests/validation.rs",
       "item": "fn[dropped_builders_and_missing_agents_do_not_resolve_queued_inputs]",
       "hash": "fbf8834a52c0582d32ea3ce5e786c95b49b0bfe96240a6213deb32f22f66bac8"
@@ -171,7 +176,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "caacb6f6d53e68952b14994cf9dce3020357fe820794c20889f9298f61de9747"
+          "value": "73ba66943e906cc860538bfe6a12776a9c82e0a7e59bdbea0f582ec18e1b4461"
         }
       ]
     },
@@ -256,6 +261,23 @@
         {
           "scheme": "habeas-input-v1",
           "value": "38e8e458c58d5bce3a637d9f7986e42370cb11fa7ab01127b51beefe0f00de8c"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/tests/agent.rs"
+            },
+            "selector": "fn[generic_conversations_can_use_default_telemetry_through_retry_and_continuation]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "87bb37d18d5edb89c04d66daa8a8ef1b6a69319a5e537faa230abff7d12fc752"
         }
       ]
     },

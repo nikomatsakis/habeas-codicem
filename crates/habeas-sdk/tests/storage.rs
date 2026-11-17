@@ -80,16 +80,19 @@ async fn records_round_trip_and_malformed_or_incompatible_data_is_an_error() {
         Err(FileStorageError::Json(_))
     ));
     std::fs::write(store.record_path(&path), b"not JSON").unwrap();
-    assert!(matches!(
-        store.load::<String, Value>(&path).await,
-        Err(FileStorageError::Json(_))
-    ));
+    let error = store.load::<String, Value>(&path).await.err().unwrap();
+    let FileStorageError::Json(cause) = &error else {
+        panic!("expected JSON error")
+    };
+    assert!(!error.to_string().is_empty());
+    assert_eq!(error.to_string(), cause.to_string());
     std::fs::remove_file(store.record_path(&path)).unwrap();
     std::fs::create_dir(store.record_path(&path)).unwrap();
-    assert!(matches!(
-        store.load::<String, Value>(&path).await,
-        Err(FileStorageError::Io(_))
-    ));
+    let error = store.load::<String, Value>(&path).await.err().unwrap();
+    let FileStorageError::Io(cause) = &error else {
+        panic!("expected I/O error")
+    };
+    assert_eq!(error.to_string(), cause.to_string());
 }
 
 // {test}`requirements.sdk.filesystem-storage.interface`
@@ -232,22 +235,28 @@ impl Graph for StoredGraph {
     type EdgeLabel = ();
     type JudgmentMetadata = Value;
     type Error = FileStorageError;
+    // :::{cite} habeas:coverage
+    // This storage-only consumer must delegate load/store using node_path
+    // without resolving contents. Graph requires the callback, but invoking
+    // this guard would violate the no-content-read invariant of the test.
+    // Other graph fixtures exercise content resolution.
+    // :::
     fn node_content(&self, _: &String) -> Result<(), Self::Error> {
-        Ok(())
+        panic!("storage operations must not read graph contents")
     }
     fn node_path(&self, node: &String) -> NodePath {
         NodePath {
             segments: vec!["consumer".into(), node.clone()],
         }
     }
+    // :::{cite} habeas:coverage
+    // Graph requires this callback even for a storage-only consumer. The
+    // delegation test must use only node_path; discovering edges would be
+    // an unwanted graph access, which this guard rejects. Traversal fixtures
+    // separately exercise edge discovery.
+    // :::
     fn outgoing_edges(&self, _: &String) -> Result<Snapshot<Vec<Edge<String, ()>>>, Self::Error> {
-        Ok(Snapshot {
-            content: vec![],
-            fingerprint: Fingerprint {
-                scheme: "empty".into(),
-                value: String::new(),
-            },
-        })
+        panic!("storage operations must not discover graph edges")
     }
 }
 impl EvidenceStorage for StoredGraph {

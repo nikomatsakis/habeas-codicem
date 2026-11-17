@@ -1,7 +1,7 @@
 {
   "requirement": "`habeas_sdk::storage` MUST expose the following helper:\n\n```rust,ignore\nuse std::path::PathBuf;\nuse serde::{Serialize, de::DeserializeOwned};\nuse habeas_sdk::graph::{NodePath, Record};\n\npub struct FileEvidenceStorage { /* private fields */ }\n\npub enum FileStorageError {\n    Io(std::io::Error),\n    Json(serde_json::Error),\n}\n\nimpl FileEvidenceStorage {\n    pub fn new(root: impl Into<PathBuf>) -> Self;\n\n    pub async fn load<N, M>(\n        &self,\n        path: &NodePath,\n    ) -> Result<Option<Record<N, M>>, FileStorageError>\n    where\n        N: DeserializeOwned + Send,\n        M: DeserializeOwned + Send;\n\n    pub async fn store<N, M>(\n        &self,\n        path: &NodePath,\n        record: &Record<N, M>,\n    ) -> Result<(), FileStorageError>\n    where\n        N: Serialize + Sync,\n        M: Serialize + Sync;\n}\n```\n\nThe helper MUST be `Send + Sync`, and its load and store futures MUST be `Send`.\nConstruction MUST retain the supplied root without performing filesystem I/O.\nThe SDK's `Record`, `Dependency`, `Fingerprint`, and `Judgment` types MUST\nsupport Serde serialization and deserialization when their type parameters do.\nThese bounds MUST NOT be imposed on `Graph` or `EvidenceStorage` themselves.",
   "determination": true,
-  "rationale": "The reviewed tests cover every obligation in `requirements.sdk.filesystem-storage.interface`.\n\n- **Exposed API.** The tests in `crates/habeas-sdk/tests/storage.rs` call `FileEvidenceStorage::new`, `load` and `store` with the specified signatures. They also match on both `FileStorageError::Io` and `FileStorageError::Json`.\n  - `records_round_trip_and_malformed_or_incompatible_data_is_an_error` gets `Json` from a type mismatch (`load::<u8, _>`) and from corrupt content. It gets `Io` when the record path is a directory.\n  - `send_futures_create_missing_roots_and_nested_paths_without_shortening_keys` gets `Io` from an over-long key segment.\n- **Send + Sync helper.** `concurrent_readers_only_observe_complete_records_from_competing_writes` shares an `Arc<FileEvidenceStorage>` across scoped threads. That only compiles if the type is `Send + Sync`.\n- **Send futures.** `send_futures_create_missing_roots_and_nested_paths_without_shortening_keys` wraps both `store(...)` and `load(...)` in a `send<T: Send>` helper. `checker_needs_no_validation_and_storage_preserves_nonserializable_metadata` does the same for the graph's own storage futures.\n- **Construction keeps the root and does no I/O.** `paths_are_injective_and_loading_missing_records_has_no_side_effects` builds a store on a non-existent root. It asserts that `record_path` equals `root.join(expected)` for several paths, and that the root still does not exist after `new` and the loads.\n- **Serde support for `Record`, `Dependency`, `Fingerprint` and `Judgment`.** The `record(...)` helper builds a `Record<String, Value>` with both `Dependency::Node` and `Dependency::OutgoingEdges`, each with a `Fingerprint`, and a `Judgment`. The tests store it, load it back, and assert equal `procedure`, `dependencies` and `output`. In `src/graph.rs`, `Record`, `Dependency`, `Fingerprint` and `Judgment` all derive Serialize and Deserialize, with bounds only on their type parameters.\n- **No Serde bounds on `Graph` or `EvidenceStorage`.** `checker_needs_no_validation_and_storage_preserves_nonserializable_metadata` uses `Node` and `Metadata` types that explicitly have no Hash, Serde or Display impls. It stores and loads evidence through the graph and `EvidenceStorage` traits. The test would not compile if those traits required Serde.\n\nI found no plausible violation that these tests would accept.",
+  "rationale": "I found no adequacy gap. The tests cover each obligation of `requirements.sdk.filesystem-storage.interface`. I did not read the implementation.\n\n- **Exposed API.** `FileEvidenceStorage::new`, `load` and `store` are called with the stated generic bounds throughout `crates/habeas-sdk/tests/storage.rs`. Both `FileStorageError::Io` and `FileStorageError::Json` are matched. In `records_round_trip_and_malformed_or_incompatible_data_is_an_error`, `Json` comes from malformed content and from loading as `u8`. `Io` comes from a directory sitting at the record path. In `send_futures_create_missing_roots_and_nested_paths_without_shortening_keys`, `Io` also comes from an over-long key.\n- **`Send + Sync` helper and `Send` futures.**\n  - `send_futures_create_missing_roots_and_nested_paths_without_shortening_keys` wraps `store.store(..)` and `store.load(..)` in `send<T: Send>`. The compiler therefore checks that both futures are `Send`.\n  - `concurrent_readers_only_observe_complete_records_from_competing_writes` shares an `Arc<FileEvidenceStorage>` across `std::thread::scope` threads. That compiles only if the helper is `Send + Sync`.\n  - `checker_needs_no_validation_and_storage_preserves_nonserializable_metadata` in `crates/habeas-sdk/tests/contracts.rs` also uses `send(..)` on the graph storage futures.\n- **Construction retains the root and does no I/O.**\n  - `paths_are_injective_and_loading_missing_records_has_no_side_effects` builds a store on a nonexistent root. It asserts that `record_path` equals `root.join(expected)` for several paths, which shows the root is retained. It asserts that the root still does not exist after the loads.\n  - `send_futures_create_missing_roots_and_nested_paths_without_shortening_keys` asserts `!root.exists()` right after construction.\n- **Serde support for `Record`, `Dependency`, `Fingerprint` and `Judgment`.**\n  - The `record()` helper builds both `Dependency::Node` and `Dependency::OutgoingEdges` variants, each with a `Fingerprint`, plus a `Judgment` with metadata.\n  - The round-trip test stores that record, loads it back, and asserts equality of `procedure`, `dependencies` and `output`. That is a real serialize and deserialize check.\n  - Loading with `N = u8` yields a `Json` error. This shows the node type parameter takes part in deserialization.\n- **No Serde bounds on `Graph` or `EvidenceStorage`.** `checker_needs_no_validation_and_storage_preserves_nonserializable_metadata` uses `Node` and `Metadata` types that deliberately have no Hash, Serde or Display bounds. It implements the graph and evidence storage over them and runs store, load and check. That compiling and passing demonstrates the bounds are absent from those traits.\n\nEach test carries a `{test}` reference to the subject. The behaviors it names are exercised and asserted.",
   "references": "6de22a4662b3b56e1ca0c5c967c7bc2bffab534cc735b328c21e2f366f729613",
   "inputs": [
     {
@@ -68,7 +68,7 @@
     {
       "file": "crates/habeas-sdk/tests/storage.rs",
       "item": "fn[records_round_trip_and_malformed_or_incompatible_data_is_an_error]",
-      "hash": "6c1327ca3ab7994f8709e0fa24fc90e8c4195d73d53ee715f8983753f146642e"
+      "hash": "063257d8721236c229292a42413b25a2095f471fcbb662f4ea542b846a3a5ca3"
     },
     {
       "file": "crates/habeas-sdk/tests/storage.rs",
@@ -117,11 +117,6 @@
     },
     {
       "file": "crates/habeas-sdk/tests/contracts.rs",
-      "item": "struct[Metadata]",
-      "hash": "85f74ea28b165e91ba98c5a3c0f077f23846a5bd6107b9f60023de40d817d56c"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/contracts.rs",
       "item": "struct[GraphOnly]",
       "hash": "23e7ab91b76886fe379b7c1690655fb8b2d15530d229b18e52b578562331082d"
     },
@@ -131,39 +126,14 @@
       "hash": "4d6f003d2e931e38cd1985ea7702d2f2bfc35e9ac5af8c4ea04df3029d5b9988"
     },
     {
-      "file": "crates/habeas-sdk/src/graph.rs",
-      "item": "struct[Fingerprint]",
-      "hash": "335a00ca02e922c87420676faa366e69c30fd86f753cb2001f3eaa4cee7b01a7"
-    },
-    {
-      "file": "crates/habeas-sdk/src/graph.rs",
-      "item": "struct[Judgment]",
-      "hash": "83278fbf3e4dd01252665db6256b9fcdede1056b85c5ce6fd4eb7aa76e695add"
-    },
-    {
-      "file": "crates/habeas-sdk/src/graph.rs",
-      "item": "enum[Dependency]",
-      "hash": "94a6d43c85eb6918fe51ab94247470c4c074a1fdd9695eb8d81e46fb9ed89a2b"
-    },
-    {
-      "file": "crates/habeas-sdk/src/graph.rs",
-      "item": "struct[Record]",
-      "hash": "c9b5a35a59999b46b6f73791d65051ce79defadd9ec3573962132adb464db22b"
-    },
-    {
-      "file": "crates/habeas-sdk/src/storage.rs",
-      "item": "impl[FileEvidenceStorage]/fn[load]",
-      "hash": "8e3ab2509ed0a5336a5c0de88836b6f95c27b874ea886eec8276aba6b827b7a4"
-    },
-    {
-      "file": "crates/habeas-sdk/src/storage.rs",
-      "item": "impl[FileEvidenceStorage]/fn[store]",
-      "hash": "9ec393c6c0b2c423efde7931299b265784efa7ec63f324c4025c441e56e74097"
-    },
-    {
       "file": "crates/habeas-sdk/tests/storage.rs",
       "item": "struct[StoredGraph]",
       "hash": "2a2851b04e940765b016904831fd947138452f35a0f6d8701e3bcb46bb49951e"
+    },
+    {
+      "file": "crates/habeas-sdk/tests/storage.rs",
+      "item": "impl[StoredGraph/EvidenceStorage]",
+      "hash": "f2cc836a73d200322bd7b20ef8b1331f2fe725bf51dff9292df328154f9defed"
     }
   ],
   "format_version": 1,
@@ -238,7 +208,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "6df61b07c0d4439bfcaf50d4015c791f5cbd46a30dff75a5bb2d7e026a5e480f"
+          "value": "2b806f64608c8fd773b8e606946244f925403e81d513ff8a96befa39bd947997"
         }
       ]
     },
@@ -403,23 +373,6 @@
               "scheme": "repo",
               "location": "crates/habeas-sdk/tests/contracts.rs"
             },
-            "selector": "struct[Metadata]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "9bf1eb0050fb3d22f47c9900473be63c106b122201485d91dea3ac2ac9e18e1e"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/contracts.rs"
-            },
             "selector": "struct[GraphOnly]"
           }
         },
@@ -452,99 +405,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/habeas-sdk/src/graph.rs"
+              "location": "crates/habeas-sdk/tests/storage.rs"
             },
-            "selector": "struct[Fingerprint]"
+            "selector": "struct[StoredGraph]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "bfff1b7f491860eb9fc23f3255cab4ab051e63586d03369ea8498630eb736750"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/src/graph.rs"
-            },
-            "selector": "struct[Judgment]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "c0b328128470ef0b6139db7c65dd002224ff6f3a2384941af4b5f52cc5ad7c72"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/src/graph.rs"
-            },
-            "selector": "enum[Dependency]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "73d9315708ef84c30e95bdf8d40c4105d675fca748beaa56738acec68e724c4a"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/src/graph.rs"
-            },
-            "selector": "struct[Record]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "922dc109372ba5e4380fc6c793deefcdbdff0de5b71f262509a54e66c7cdf332"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/src/storage.rs"
-            },
-            "selector": "impl[FileEvidenceStorage]/fn[load]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "af1e7f9a9f6efbf01dd642e700b0062e429727b2e79226eba877b0fed631297a"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/src/storage.rs"
-            },
-            "selector": "impl[FileEvidenceStorage]/fn[store]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "9dc22420fcde41dd35b46e5f5ba9827e6800062bab0a24299c1f9dd31cbfa6e5"
+          "value": "c4e04ed488cf7c1552068505681e4bbd00a78bb480c48280c7d11b61292d3d01"
         }
       ]
     },
@@ -556,12 +424,12 @@
               "scheme": "repo",
               "location": "crates/habeas-sdk/tests/storage.rs"
             },
-            "selector": "struct[StoredGraph]"
+            "selector": "impl[StoredGraph/EvidenceStorage]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "c4e04ed488cf7c1552068505681e4bbd00a78bb480c48280c7d11b61292d3d01"
+          "value": "3bc6c25e6c3e0e14608a13e3f7e9626f0ee79013089e80b913c2644734746a32"
         }
       ]
     }

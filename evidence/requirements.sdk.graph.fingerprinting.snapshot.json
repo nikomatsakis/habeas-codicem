@@ -1,7 +1,7 @@
 {
   "requirement": "`habeas_sdk::graph` MUST define `Snapshot` as follows:\n\n```rust,ignore\n#[derive(Clone, Debug)]\npub struct Snapshot<T> {\n    pub content: T,\n    pub fingerprint: Fingerprint,\n}\n```\n\nFor node reads, the SDK MUST construct the snapshot by calling\n`Fingerprinting::fingerprint` with the node identity and contents returned by `Graph::node_content`, without\nreading the node again to compute its fingerprint. Graph operations returning\nsnapshots directly MUST supply fingerprints of the results from those same\nobservations. The SDK MUST NOT require `T` to carry a filesystem path or source\nspan.",
   "determination": true,
-  "rationale": "The reviewed tests adequately cover `requirements.sdk.graph.fingerprinting.snapshot`. I did not run them. I mapped each clause to the tests as follows.\n\n**Definition of `Snapshot`** (`pub content`, `pub fingerprint`, `Clone`, `Debug`).\n- This is a declarative type. The derive attributes have no conditionals or transformation, so they need no test of their own.\n- External test crates build `Snapshot { content, fingerprint }` directly. `GraphWithChangingEdges::outgoing_edges` in `tests/agent.rs` does this, which exercises the public fields.\n- `Clone` is exercised by the retained-edge path in `prepare_edges`. The traversal and agent tests reach that path.\n\n**Node reads: fingerprint is built from `Fingerprinting::fingerprint`, the node identity and the contents returned by `node_content`, with no second read.**\n- `tests/contracts.rs#fn[identities_remain_stable_and_fingerprinting_uses_the_supplied_node_snapshot]` reads a snapshot with `read_snapshot`, then mutates the graph.\n  - It asserts that the snapshot fingerprint equals the one computed from the supplied content (\"1:before\"), not from the mutated \"after\" state.\n  - It asserts that fingerprinting the same content under `Node(2)` differs, so the node identity is passed through.\n- `tests/validation.rs#fn[snapshots_record_exact_reads_and_retain_distinct_versions]` asserts `reads == [1,1,1,2]`. That is exactly one `node_content` call per read, so there is no extra read to compute the fingerprint.\n  - It also checks that the recorded dependencies carry the fingerprints of what was actually read (\"before\" and \"after\" as separate entries).\n- `tests/agent.rs#fn[graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery]` checks that recorded `Dependency::Node` fingerprints equal the content that was delivered. That covers the `prepare_read` path.\n- `src/sdk.rs#mod[tests]/fn[requirement_edges_and_input_freshness_use_the_sdk]` fingerprints retained content separately from current content with the real `HabeasDomain`. Fingerprinting the retained content stays stable after the source changes, and fingerprinting the new content differs.\n\n**Operations returning snapshots directly supply fingerprints from the same observation.**\n- `tests/agent.rs#fn[agent_edge_tools_use_traversals_retained_selection_without_relisting]` has a graph that errors on a second `outgoing_edges` lookup. It asserts exactly one lookup and that the recorded `Dependency::OutgoingEdges` carries the originally returned fingerprint (\"retained 1\"). The fingerprint is therefore the one from the observation that was delivered, not a re-listing.\n- `tests/validation.rs#fn[traversal_keeps_discovered_edges_and_reuse_does_not_skip_children]` checks that the recorded dependency fingerprint is the one from the discovered edges.\n- `tests/validation.rs#fn[labeled_selection_records_all_edges_without_reading_targets]` checks that the edge-list fingerprint changes under edge mutation, reordering and removal, and that no node content is read.\n- `tests/validation.rs#fn[explicit_insertions_preserve_order_repetition_and_selection_snapshots]` checks the recorded edge and node dependency fingerprints.\n\n**`T` need not carry a path or span.** The tests instantiate `Snapshot<String>`, `Snapshot<Vec<Edge<..>>>` and the `u8`/`HabeasNode` domains, none of which carries a path or span. A requirement that `T` carry one would fail to compile.\n\nI found no unmarked relevant tests, no gaps, and no acknowledgments to check.",
+  "rationale": "The reviewed tests adequately cover `requirements.sdk.graph.fingerprinting.snapshot`.\n\n**Obligations and their tests**\n\n1. **Shape of `Snapshot<T>`.**\n   - The struct has public `content` and `fingerprint` fields and derives `Clone` and `Debug`.\n   - Tests construct `Snapshot { content, fingerprint }` directly in `Graph::outgoing_edges` impls. Examples are the `Memory` graphs in `tests/validation.rs` and `tests/agent.rs`, and `GraphWithChangingEdges` in `agent_edge_tools_use_traversals_retained_selection_without_relisting`.\n   - The tests read `.content` and `.fingerprint`, for example in `identities_remain_stable_and_fingerprinting_uses_the_supplied_node_snapshot` and `labeled_selection_records_all_edges_without_reading_targets`.\n   - `Clone` is exercised by the SDK itself. `InspectionContext::prepare_edges` clones the retained snapshot, and `agent_edge_tools_use_traversals_retained_selection_without_relisting` goes through that path.\n   - I found no test that exercises `Debug` on `Snapshot`. It is a derive with no conditional or transformation, so I do not count it as a gap.\n\n2. **Node reads call `Fingerprinting::fingerprint` with the node identity and the contents returned by `node_content`.**\n   - In `identities_remain_stable_and_fingerprinting_uses_the_supplied_node_snapshot`, `read_snapshot(&Node(1))` returns a snapshot whose fingerprint is `fingerprint(\"1:before\")`. That value includes the node identity.\n   - The same test then mutates the graph. It asserts that `graph.fingerprint(&Node(1), &snapshot.content)` still gives the \"before\" fingerprint. It also asserts that fingerprinting the same contents under `Node(2)` differs from `snapshot.fingerprint`.\n   - In `requirement_edges_and_input_freshness_use_the_sdk` (`src/sdk.rs`), the retained contents of a source node are fingerprinted with `HabeasDomain::fingerprint`. After the file changes, the retained contents still give the old fingerprint and fresh contents give a different one.\n   - In `graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery`, the dependency fingerprint from the agent `read_node` path equals the `Memory` fingerprint of the content.\n\n3. **No second read to compute the fingerprint.**\n   - In `snapshots_record_exact_reads_and_retain_distinct_versions`, the test calls `read`, `read_snapshot`, `read`, then `read(&2)`. It asserts `reads == [1, 1, 1, 2]`, so each snapshot costs exactly one `node_content` call.\n   - The recorded dependencies are `Node(1, fp(\"before\"))` and `Node(1, fp(\"after\"))`, so each fingerprint matches the content that was read.\n   - `explicit_insertions_preserve_order_repetition_and_selection_snapshots` asserts `reads == [1, 3, 2, 3, 1]`. These match the five delivered contents, with no extra reads.\n\n4. **Graph operations returning snapshots directly supply fingerprints from the same observations.**\n   - `labeled_selection_records_all_edges_without_reading_targets` checks that the edge fingerprint changes when an edge label or target changes, when an edge is removed, and when edges are reordered. It also checks that the recorded selection dependency stays current only while the observed edges are unchanged.\n   - `traversal_keeps_discovered_edges_and_reuse_does_not_skip_children` and `explicit_insertions_preserve_order_repetition_and_selection_snapshots` assert that the recorded `Dependency::OutgoingEdges` fingerprint equals the snapshot fingerprint, for example `fp(\"[(1, 2)]\")`.\n   - `agent_edge_tools_use_traversals_retained_selection_without_relisting` records the retained snapshot's fingerprint, `\"retained 1\"`, without relisting or fingerprinting contents. Its `node_content` and `fingerprint` callbacks panic if called, which confirms no content read or fingerprint occurs.\n\n5. **The SDK MUST NOT require `T` to carry a filesystem path or source span.** The tests use `String`, `Vec<Edge<..>>`, and the habeas domain's content types with `Snapshot`. None of these carries a path or span, so the tests compile and pass without such a requirement.\n\n**Gaps:** none established. No `{fixme}` acknowledgments apply, and none are needed.",
   "references": "3f42012c7c93776ac767bee25e175bbe42c19128953d6494c28fe1b0ab013b9a",
   "inputs": [
     {
@@ -33,7 +33,7 @@
     {
       "file": "crates/habeas-sdk/tests/agent.rs",
       "item": "fn[agent_edge_tools_use_traversals_retained_selection_without_relisting]",
-      "hash": "814554c5dd4ec483f0141fb01f2f69680c8226e5a62d7644502c768b704651f9"
+      "hash": "9c3f4ee55a10aa4dc9af8753b199ef5fe582e05da0d3881ce2be3715d94c4ee5"
     },
     {
       "file": "crates/habeas-sdk/tests/agent.rs",
@@ -91,19 +91,14 @@
       "hash": "8c6140487b0d5337e5e20172f23a37d73b8b86e899d29838c386de46ff866c75"
     },
     {
-      "file": "crates/habeas-sdk/src/graph.rs",
-      "item": "impl[InspectionContext<'d,%20D>]/fn[prepare_edges]",
-      "hash": "ae090ca5d6f6986703c1229d5bb45122e019656d01d3b8c56e318edbd84d13e7"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/contracts.rs",
-      "item": "macro[graph]",
-      "hash": "f807b6b06a29d4d72adf2af3d32f7659e2740487a11619b928c658e888b154df"
+      "file": "crates/habeas-sdk/tests/validation.rs",
+      "item": "impl[Memory/Graph]/fn[node_content]",
+      "hash": "b99fe314226c1bd430444e257d9a056bfe97b98ed1a36baa792e7dc9a2771bd7"
     },
     {
       "file": "crates/habeas-sdk/tests/validation.rs",
-      "item": "impl[Memory/Fingerprinting]/fn[fingerprint]",
-      "hash": "27a00d5535bfcf3dae2006424addb3440aa18b66d5ebc1ab39c559406da55712"
+      "item": "impl[Memory/Graph]/fn[outgoing_edges]",
+      "hash": "c72571c5c333ba349e01fe81e83ebd61482e1ecf6c592147f0f895750f19dfbd"
     }
   ],
   "format_version": 1,
@@ -144,7 +139,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "94a3d3af32354ecfca8d244af1eb649d3b54d04b34bda7f1cf4960b45acac169"
+          "value": "b8c2159f3ea2e1bcec6ec72b18aefdbef4fd9c845f59ca1d6b66410044df8463"
         }
       ]
     },
@@ -341,31 +336,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/habeas-sdk/src/graph.rs"
+              "location": "crates/habeas-sdk/tests/validation.rs"
             },
-            "selector": "impl[InspectionContext<'d,%20D>]/fn[prepare_edges]"
+            "selector": "impl[Memory/Graph]/fn[node_content]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "432a2a2b72627693350d63451f3d2c83655a136ee2ec23c56fc1d489dbd6f046"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/contracts.rs"
-            },
-            "selector": "macro[graph]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "59e5f0bba0d74f9965e0fb0cb4d1c6aced61b621366fc908b60ab4a14da203a7"
+          "value": "7ba192d96886d9fd7aea92bd40304ffaa89c33bc6a0f479f8da72f2ac95bb261"
         }
       ]
     },
@@ -377,12 +355,12 @@
               "scheme": "repo",
               "location": "crates/habeas-sdk/tests/validation.rs"
             },
-            "selector": "impl[Memory/Fingerprinting]/fn[fingerprint]"
+            "selector": "impl[Memory/Graph]/fn[outgoing_edges]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "da964d5bc11b68593748d32d79b49b08a54cef340cbbd0259af93f6121781035"
+          "value": "7fbb37b7802ffcf9a46aa9ab73fc9e470f42815f3c3bbaf370cf68eb3e21c601"
         }
       ]
     }

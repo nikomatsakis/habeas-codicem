@@ -465,6 +465,68 @@ mod tests {
     };
     use std::collections::VecDeque;
 
+    // {test}`requirements.sdk.graph.node_path`
+    // {test}`requirements.sdk.graph.domain_types`
+    // {test}`requirements.sdk.graph.context-tools.tracked_inspection`
+    #[test]
+    fn review_graph_delegates_unprepared_sources_and_paths_to_the_domain() {
+        let root = inputs::tests::project();
+        fs::write(root.path().join("src/lib.rs"), "fn helper() { call(); }\n").unwrap();
+        let subject =
+            HabeasNode::Requirement(crate::sdk::RequirementId("requirements.ready".into()));
+        let graph = ReviewGraph {
+            root: root.path().into(),
+            node: subject.clone(),
+            definitions: crate::evidence::load_definitions(root.path()).unwrap(),
+            outlines: OutlineCache::default(),
+            mandatory: vec![],
+            reference_set: "fixture".into(),
+            system: "fixture".into(),
+            operation: Operation::Assess,
+            conversation: Mutex::new(None),
+            agent_failure: Mutex::new(None),
+        };
+        assert_eq!(
+            graph.node_path(&subject).segments,
+            ["requirement", "requirements.ready"]
+        );
+        let selector = InputSelector::Outline {
+            file: "src/lib.rs".into(),
+            item: "fn[helper]".into(),
+        };
+        let source = HabeasNode::from(&selector);
+        assert_eq!(
+            graph.node_path(&source).segments,
+            ["source", "repo", "src/lib.rs", "fn[helper]"]
+        );
+        let inspection = InspectionContext::new(&graph);
+        assert!(inspection.dependencies().is_empty());
+        let delivered = inspection.read(&source).unwrap();
+        assert_eq!(
+            delivered,
+            selector.to_model_input(&graph.domain().node_content(&source).unwrap())
+        );
+        assert!(
+            serde_json::to_string(&delivered)
+                .unwrap()
+                .contains("call();")
+        );
+        assert_eq!(
+            inspection.dependencies(),
+            vec![habeas_sdk::graph::Dependency::Node(
+                source.clone(),
+                graph.fingerprint(&source, &delivered)
+            )]
+        );
+        assert!(graph.outgoing_edges(&source).unwrap().content.is_empty());
+        let missing = HabeasNode::from(&InputSelector::Outline {
+            file: "src/lib.rs".into(),
+            item: "fn[missing]".into(),
+        });
+        assert!(inspection.read(&missing).is_err());
+        assert_eq!(inspection.dependencies().len(), 1);
+    }
+
     struct Script {
         turns: Mutex<VecDeque<(&'static str, Value)>>,
         requests: Mutex<Vec<CompletionRequest>>,

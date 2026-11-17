@@ -69,6 +69,12 @@ impl Graph for Memory {
         }
         state.contents.get(node).cloned().ok_or("missing")
     }
+    // :::{cite} habeas:coverage
+    // This validation fixture stores records directly by opaque u8 node ID.
+    // Its in-memory EvidenceStorage does not translate IDs into filesystem
+    // paths; Graph still requires the addressing callback. Filesystem storage
+    // and its consumer delegation tests exercise path-based storage separately.
+    // :::
     fn node_path(&self, node: &u8) -> NodePath {
         NodePath {
             segments: vec![node.to_string()],

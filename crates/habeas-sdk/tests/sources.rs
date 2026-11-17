@@ -233,6 +233,7 @@ async fn completeness_is_false_only_when_a_match_is_omitted_and_errors_propagate
 
 // {test}`requirements.sdk.sources.local_provider`
 // {test}`requirements.sdk.sources.source_addresses`
+// {test}`requirements.sdk.sources.provider_results.parse_snapshot`
 #[tokio::test]
 async fn local_provider_scopes_paths_and_rejects_resources_outside_its_root() {
     let root = tempfile::tempdir().unwrap();
@@ -269,10 +270,36 @@ async fn local_provider_scopes_paths_and_rejects_resources_outside_its_root() {
         .await
         .unwrap();
     assert_eq!(matches.matches.len(), 1);
+    let retained = sources.parse_sync(&selected[0], &registry()).unwrap();
+    let asynchronous = sources.parse(&selected[0], &registry()).await.unwrap();
+    assert_eq!(retained.source.bytes, asynchronous.source.bytes);
+    std::fs::write(root.path().join("src/one.txt"), "changed\n").unwrap();
+    let fresh = sources.parse_sync(&selected[0], &registry()).unwrap();
+    assert_eq!(fresh.source.text().unwrap(), "changed\n");
+    assert_eq!(retained.source.text().unwrap(), "hit\n");
+    assert_eq!(
+        retained
+            .outline
+            .node_lines(retained.source.text().unwrap(), 0)
+            .concat(),
+        "hit"
+    );
     assert!(sources.read(&id("src/one.txt")).await.is_err());
+    assert!(sources.parse_sync(&id("src/one.txt"), &registry()).is_err());
     let outside = tempfile::tempdir().unwrap();
     let secret = outside.path().join("secret.txt");
     std::fs::write(&secret, "secret").unwrap();
+    assert!(
+        sources
+            .parse_sync(
+                &ResourceId {
+                    scheme: "repo".into(),
+                    location: secret.to_string_lossy().into()
+                },
+                &registry()
+            )
+            .is_err()
+    );
     assert!(
         sources
             .read(&ResourceId {
@@ -308,6 +335,12 @@ impl SourceProvider for CachedParse {
     async fn list(&self, _: &SourceScope) -> Result<Vec<ResourceId>, SourceError> {
         Ok(vec![id("src/one.rs"), id("other/two.rs")])
     }
+    // :::{cite} habeas:coverage
+    // This required SourceProvider callback is an error guard: the fixture
+    // supplies cached snapshots by overriding parse. Structural search must
+    // use those snapshots without refetching. Calling read would fail the
+    // contract tested below; primitive reads are exercised by other providers.
+    // :::
     async fn read(&self, _: &ResourceId) -> Result<SourceFile, SourceError> {
         Err(SourceError::Invalid(
             "cached parser must not refetch".into(),
@@ -327,6 +360,40 @@ impl SourceProvider for CachedParse {
             },
             languages,
         )
+    }
+}
+
+// {test}`requirements.sdk.sources.language_provider`
+#[cfg(feature = "default-languages")]
+#[test]
+fn registered_grammars_match_their_profiles_and_parse_the_selected_language() {
+    let languages = registry();
+    for (name, extension, text) in [
+        ("rust", "rs", "fn kept() {}\n"),
+        ("python", "py", "def kept():\n    pass\n"),
+        ("typescript", "ts", "function kept() {}\n"),
+        ("tsx", "tsx", "const element = <div />;\n"),
+        ("css", "css", "a { color: red; }\n"),
+        ("markdown", "md", "# Heading\n\nText.\n"),
+        ("toml", "toml", "key = \"value\"\n"),
+        ("yaml", "yaml", "key: value\n"),
+    ] {
+        let provider = languages.named(name).unwrap();
+        assert_eq!(
+            languages
+                .for_path(std::path::Path::new(&format!("sample.{extension}")))
+                .unwrap()
+                .profile()
+                .name,
+            name
+        );
+        let grammar = (provider.grammar())();
+        assert_eq!(grammar, (provider.profile().language.unwrap())());
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&grammar).unwrap();
+        let tree = parser.parse(text, None).unwrap();
+        assert!(!tree.root_node().has_error(), "{name}");
+        assert!(tree.root_node().named_child_count() > 0, "{name}");
     }
 }
 

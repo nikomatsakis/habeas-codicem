@@ -1,6 +1,6 @@
 use habeas_sdk::{agent::*, graph::*, procedure::*, resource::*, sources::*};
 use rig_core::{
-    completion::{CompletionRequest, CompletionResponse, FinishReason, Usage},
+    completion::{CompletionRequest, CompletionResponse, FinishReason, ToolDefinition, Usage},
     message::{AssistantContent, Message, Origin, ToolCall, ToolFunction, ToolName},
 };
 use schemars::JsonSchema;
@@ -331,8 +331,14 @@ async fn agent_edge_tools_use_traversals_retained_selection_without_relisting() 
         type EdgeLabel = ();
         type JudgmentMetadata = ();
         type Error = io::Error;
-        fn node_content(&self, node: &u8) -> io::Result<String> {
-            Ok(format!("node {node}"))
+        // :::{cite} habeas:coverage
+        // This edge-only traversal regression deliberately supplies no node
+        // contents. Its records assert selection dependencies only. Graph
+        // requires this callback, but reaching it would introduce an unwanted
+        // content read and fail this guard.
+        // :::
+        fn node_content(&self, _: &u8) -> io::Result<String> {
+            panic!("edge discovery must not read node contents")
         }
         fn node_path(&self, node: &u8) -> NodePath {
             NodePath {
@@ -360,11 +366,14 @@ async fn agent_edge_tools_use_traversals_retained_selection_without_relisting() 
         }
     }
     impl Fingerprinting for GraphWithChangingEdges {
-        fn fingerprint(&self, _: &u8, contents: &String) -> Fingerprint {
-            Fingerprint {
-                scheme: "content".into(),
-                value: contents.clone(),
-            }
+        // :::{cite} habeas:coverage
+        // Fingerprinting is required by validation, but this regression
+        // observes only the retained outgoing-edge snapshot. No node contents
+        // are read, so producing a content fingerprint would violate the
+        // asserted selection-only dependencies.
+        // :::
+        fn fingerprint(&self, _: &u8, _: &String) -> Fingerprint {
+            panic!("edge discovery must not fingerprint node contents")
         }
     }
     impl EvidenceStorage for GraphWithChangingEdges {
@@ -398,8 +407,14 @@ async fn agent_edge_tools_use_traversals_retained_selection_without_relisting() 
     }
     struct Render;
     impl AgentInputRenderer<GraphWithChangingEdges> for Render {
-        fn render(&self, input: &AgentInput<'_, GraphWithChangingEdges>) -> io::Result<String> {
-            Ok(input.contents.clone())
+        // :::{cite} habeas:coverage
+        // The agent asks only for outgoing edges and submits without reading
+        // contents. Its renderer is required by the agent interface, but any
+        // rendering would imply an unwanted content input. Other agent tests
+        // exercise rendering with explicitly requested contents.
+        // :::
+        fn render(&self, _: &AgentInput<'_, GraphWithChangingEdges>) -> io::Result<String> {
+            panic!("edge-only conversation must not render contents")
         }
     }
     let graph = GraphWithChangingEdges {
@@ -740,6 +755,12 @@ impl SourceProvider for CachedProvider {
             location: "cached".into(),
         }])
     }
+    // :::{cite} habeas:coverage
+    // The provider overrides parse with a cached snapshot. Selected-source
+    // reads must deliver and fingerprint that snapshot without fetching again;
+    // this trait-required callback rejects a refetch. Primitive provider reads
+    // are covered separately, and executing this guard would fail this test.
+    // :::
     async fn read(&self, _: &ResourceId) -> Result<SourceFile, SourceError> {
         Err(SourceError::Invalid("must not refetch".into()))
     }
@@ -757,6 +778,225 @@ impl SourceProvider for CachedProvider {
             languages,
         )
     }
+}
+
+// {cite}`habeas:util`
+struct Scenario {
+    turns: Mutex<VecDeque<io::Result<CompletionResponse>>>,
+    requests: Mutex<Vec<CompletionRequest>>,
+}
+impl Scenario {
+    // {cite}`habeas:util`
+    fn new(turns: Vec<io::Result<CompletionResponse>>) -> Self {
+        Self {
+            turns: Mutex::new(turns.into()),
+            requests: Mutex::default(),
+        }
+    }
+}
+impl CompletionProvider for Scenario {
+    async fn complete(&self, request: CompletionRequest) -> io::Result<CompletionResponse> {
+        self.requests.lock().unwrap().push(request);
+        self.turns
+            .lock()
+            .unwrap()
+            .pop_front()
+            .expect("extra provider request")
+    }
+    fn output_limit(&self) -> Option<u64> {
+        Some(32)
+    }
+}
+
+// {cite}`habeas:util`
+fn tool_turn(reason: FinishReason, calls: Vec<(&str, Value)>) -> CompletionResponse {
+    CompletionResponse::new(
+        calls
+            .into_iter()
+            .enumerate()
+            .map(|(index, (name, args))| {
+                AssistantContent::ToolCall(ToolCall::from_wire(
+                    format!("call-{index}"),
+                    ToolFunction::new(ToolName::new(name).unwrap(), args),
+                ))
+            })
+            .collect(),
+        Usage::default(),
+        Origin::new("test", "test", "test"),
+        Value::Null,
+    )
+    .with_finish_reason(reason)
+}
+
+// {cite}`habeas:util`
+fn throttled() -> io::Error {
+    io::Error::other(
+        rig_core::error::ProviderError::from_provider_body("retry this request")
+            .with_provider_status(Some(429.try_into().unwrap()))
+            .with_provider_code(Some("ThrottlingException".into())),
+    )
+}
+
+// {test}`requirements.sdk.graph.agent-calls.judge.submission`
+// {test}`requirements.sdk.graph.context-tools.tracked_inspection`
+#[tokio::test]
+async fn unknown_tools_return_errors_without_creating_inputs_or_preventing_submission() {
+    let graph = Memory(Arc::new(Mutex::new("source".into())));
+    let agent = ToolAgent::new(
+        Script::new(vec![
+            Some(vec![("invented", json!({}))]),
+            Some(vec![("submit_result", json!({"result":true}))]),
+        ]),
+        Renderer,
+    );
+    let ctx = ValidationContext::with_agent(&graph, Node(1), &agent, &agent.renderer);
+    assert!(ctx.ask::<bool>().await.unwrap());
+    assert!(ctx.inspection().dependencies().is_empty());
+    let requests = agent.provider.requests.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    let delivered = serde_json::to_string(requests[1].chat_history.last().unwrap()).unwrap();
+    assert!(delivered.contains("invented") && delivered.contains("unknown tool"));
+}
+
+// {test}`requirements.authoring.output_limit`
+// {test}`requirements.authoring.provider_backoff`
+// {test}`requirements.authoring.submission_count`
+// {test}`requirements.sdk.graph.context-tools.tracked_inspection`
+#[tokio::test(start_paused = true)]
+async fn retries_and_cut_off_tools_preserve_inputs_and_submission_skips_other_reads() {
+    let graph = Memory(Arc::new(Mutex::new("source".into())));
+    let calls = || {
+        vec![
+            ("read_node", json!({"path":{"segments":["2"]}})),
+            ("submit_result", json!({"result":false})),
+        ]
+    };
+    let agent = ToolAgent::new(
+        Scenario::new(vec![
+            Err(throttled()),
+            Ok(tool_turn(FinishReason::Length, calls())),
+            Ok(tool_turn(
+                FinishReason::ToolCalls,
+                vec![
+                    ("read_node", json!({"path":{"segments":["2"]}})),
+                    ("submit_result", json!({"result":true})),
+                ],
+            )),
+        ]),
+        Renderer,
+    );
+    let ctx = ValidationContext::with_agent(&graph, Node(1), &agent, &agent.renderer);
+    assert!(
+        ctx.ask::<bool>()
+            .context("review".to_owned())
+            .current_node_contents()
+            .await
+            .unwrap()
+    );
+    assert!(matches!(&ctx.inspection().dependencies()[..],
+        [Dependency::Node(Node(1), fingerprint)] if fingerprint.value == "source"));
+    let requests = agent.provider.requests.lock().unwrap();
+    assert_eq!(requests.len(), 3);
+    assert_eq!(
+        serde_json::to_value(&requests[0]).unwrap(),
+        serde_json::to_value(&requests[1]).unwrap()
+    );
+    assert_eq!(
+        &requests[2].chat_history[..requests[0].chat_history.len()],
+        requests[0].chat_history
+    );
+    let continuation = serde_json::to_string(&requests[2].chat_history).unwrap();
+    assert_eq!(
+        continuation
+            .matches("not run: the call was cut off")
+            .count(),
+        2
+    );
+    assert!(continuation.contains("32 tokens"));
+    assert!(agent.provider.turns.lock().unwrap().is_empty());
+}
+
+// {cite}`habeas:util`
+#[derive(Default)]
+struct MinimalConversation {
+    dispatched: usize,
+}
+impl Conversation for MinimalConversation {
+    type Output = bool;
+    fn tools(&self) -> io::Result<Vec<ToolDefinition>> {
+        serde_json::from_value(json!([
+            {"name":"lookup","description":"fixture lookup","parameters":{"type":"object"}},
+            {"name":"submit_result","description":"submit","parameters":{"type":"object"}}
+        ]))
+        .map_err(io::Error::other)
+    }
+    fn submit(&mut self, name: &str, arguments: &Value) -> io::Result<Submission<bool>> {
+        assert_eq!(name, "submit_result");
+        Ok(Submission::Accepted(arguments["result"].as_bool().unwrap()))
+    }
+    async fn dispatch(&mut self, name: &str, arguments: &Value) -> io::Result<String> {
+        assert_eq!(name, "lookup");
+        assert_eq!(arguments, &json!({"key":"value"}));
+        self.dispatched += 1;
+        Ok("fixture answer".into())
+    }
+    fn cut_off(&mut self, response: &CompletionResponse, limit: u64) -> Vec<Message> {
+        assert_eq!(response.finish_reason(), Some(FinishReason::Length));
+        vec![
+            response.message().unwrap(),
+            Message::user(format!("continue within {limit} tokens")),
+        ]
+    }
+}
+
+// {test}`requirements.sdk.graph.agent-calls.author_procedure`
+// {test}`requirements.authoring.provider_backoff`
+// {test}`requirements.authoring.output_limit`
+// {test}`requirements.authoring.submission_count`
+#[tokio::test(start_paused = true)]
+async fn generic_conversations_can_use_default_telemetry_through_retry_and_continuation() {
+    let provider = Scenario::new(vec![
+        Err(throttled()),
+        Ok(tool_turn(
+            FinishReason::ToolCalls,
+            vec![("lookup", json!({"key":"value"}))],
+        )),
+        Ok(CompletionResponse::new(
+            vec![AssistantContent::text("unfinished")],
+            Usage::default(),
+            Origin::new("test", "test", "test"),
+            Value::Null,
+        )
+        .with_finish_reason(FinishReason::Length)),
+        Ok(tool_turn(
+            FinishReason::ToolCalls,
+            vec![
+                ("lookup", json!({"key":"must not be read"})),
+                ("submit_result", json!({"result":true})),
+            ],
+        )),
+    ]);
+    let mut session = MinimalConversation::default();
+    assert!(
+        converse(
+            &provider,
+            &mut session,
+            CompletionRequest::new("review"),
+            "submit_result"
+        )
+        .await
+        .unwrap()
+    );
+    assert_eq!(session.dispatched, 1);
+    let requests = provider.requests.lock().unwrap();
+    assert_eq!(requests.len(), 4);
+    assert_eq!(
+        serde_json::to_value(&requests[0]).unwrap(),
+        serde_json::to_value(&requests[1]).unwrap()
+    );
+    let history = serde_json::to_string(&requests[3].chat_history).unwrap();
+    assert!(history.contains("fixture answer"));
+    assert!(history.contains("continue within 32 tokens"));
 }
 
 // {test}`requirements.sdk.sources.provider_observations`

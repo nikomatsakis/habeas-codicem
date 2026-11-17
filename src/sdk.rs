@@ -344,7 +344,201 @@ pub(crate) fn resolve_input(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use habeas_sdk::graph::{Dependency, EvidenceStorage, Judgment, Record};
     use std::fs;
+
+    // {test}`requirements.sdk.graph.node_path`
+    // {test}`requirements.sdk.graph.domain_types`
+    #[test]
+    fn habeas_paths_preserve_opaque_segments_and_separate_all_node_kinds() {
+        let root = tempfile::tempdir().unwrap();
+        let definitions = BTreeMap::new();
+        let outlines = OutlineCache::default();
+        let domain = HabeasDomain {
+            root: root.path(),
+            definitions: &definitions,
+            outlines: &outlines,
+        };
+        let source = OutlineId {
+            resource: ResourceId {
+                scheme: "generated".into(),
+                location: "opaque/../é".into(),
+            },
+            selector: "".into(),
+        };
+        let cases = [
+            (
+                HabeasNode::Requirement(RequirementId("same".into())),
+                vec!["requirement", "same"],
+            ),
+            (
+                HabeasNode::RequirementSelection("same".into()),
+                vec!["selection", "same"],
+            ),
+            (
+                HabeasNode::Definition("same".into()),
+                vec!["definition", "same"],
+            ),
+            (
+                HabeasNode::Source(source.clone()),
+                vec!["source", "generated", "opaque/../é", ""],
+            ),
+            (
+                HabeasNode::CitationReview(source.clone()),
+                vec!["citation", "generated", "opaque/../é", ""],
+            ),
+            (
+                HabeasNode::SiteReview {
+                    requirement: "same".into(),
+                    source: source.clone(),
+                },
+                vec!["site", "same", "generated", "opaque/../é", ""],
+            ),
+        ];
+        let mut paths = std::collections::HashSet::new();
+        for (node, expected) in cases {
+            let path = domain.node_path(&node);
+            assert_eq!(path.segments, expected);
+            assert!(paths.insert(path.clone()));
+            let fresh_outlines = OutlineCache::default();
+            let reconstructed = HabeasDomain {
+                outlines: &fresh_outlines,
+                ..domain
+            };
+            assert_eq!(reconstructed.node_path(&node), path);
+        }
+        for changed in [
+            OutlineId {
+                resource: ResourceId {
+                    scheme: "repo".into(),
+                    ..source.resource.clone()
+                },
+                ..source.clone()
+            },
+            OutlineId {
+                resource: ResourceId {
+                    location: "other".into(),
+                    ..source.resource.clone()
+                },
+                ..source.clone()
+            },
+            OutlineId {
+                selector: "fn[kept]".into(),
+                ..source
+            },
+        ] {
+            assert!(paths.insert(domain.node_path(&HabeasNode::Source(changed))));
+        }
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 0);
+    }
+
+    // {test}`requirements.sdk.graph.evidence.evidence_storage`
+    // {test}`requirements.sdk.habeas.evidence_format`
+    // {test}`requirements.sdk.habeas.evidence_format.loading`
+    // {test}`requirements.sdk.habeas.evidence_format.errors`
+    // {test}`requirements.sdk.habeas.evidence_conversion.atomic`
+    #[tokio::test]
+    async fn domain_storage_round_trips_each_review_kind_and_preserves_records_on_errors() {
+        let root = tempfile::tempdir().unwrap();
+        let definitions = BTreeMap::new();
+        let outlines = OutlineCache::default();
+        let domain = HabeasDomain {
+            root: root.path(),
+            definitions: &definitions,
+            outlines: &outlines,
+        };
+        let source = OutlineId {
+            resource: ResourceId {
+                scheme: "repo".into(),
+                location: "src/lib.rs".into(),
+            },
+            selector: "fn[kept]".into(),
+        };
+        let requirement = HabeasNode::Requirement(RequirementId("requirements.ready".into()));
+        let cases = [
+            (
+                requirement.clone(),
+                serde_json::json!({
+                    "requirement":"The project MUST be ready.", "references":"0".repeat(64), "inputs":[]
+                }),
+            ),
+            (
+                HabeasNode::CitationReview(source.clone()),
+                serde_json::json!({
+                    "file":"src/lib.rs", "item":"fn[kept]", "citations":[], "inputs":[]
+                }),
+            ),
+            (
+                HabeasNode::SiteReview {
+                    requirement: "requirements.ready".into(),
+                    source: source.clone(),
+                },
+                serde_json::json!({
+                    "requirement":"The project MUST be ready.", "file":"src/lib.rs", "item":"fn[kept]",
+                    "queries":[], "applies":true, "fixmes":[], "inputs":[]
+                }),
+            ),
+        ];
+        for (node, mut metadata) in cases {
+            assert!(domain.load_evidence(&node).await.unwrap().is_none());
+            for result in [false, true] {
+                metadata["determination"] = serde_json::json!(result);
+                metadata["rationale"] = serde_json::json!("fixture review");
+                let record = Record {
+                    procedure: "test-review-v2".into(),
+                    dependencies: vec![Dependency::Node(
+                        requirement.clone(),
+                        Fingerprint {
+                            scheme: "fixture".into(),
+                            value: "retained".into(),
+                        },
+                    )],
+                    output: Judgment {
+                        result,
+                        rationale: "fixture review".into(),
+                        metadata: metadata.clone(),
+                    },
+                };
+                domain.store_evidence(&node, &record).await.unwrap();
+                let loaded = domain.load_evidence(&node).await.unwrap().unwrap();
+                assert_eq!(loaded.procedure, record.procedure);
+                assert_eq!(loaded.dependencies, record.dependencies);
+                assert_eq!(loaded.output, record.output);
+                let path = node.evidence_path(root.path()).unwrap();
+                let original = fs::read(&path).unwrap();
+                let mut inconsistent = record.clone();
+                inconsistent.output.result = !result;
+                assert!(domain.store_evidence(&node, &inconsistent).await.is_err());
+                assert_eq!(fs::read(&path).unwrap(), original);
+                for no_record in [
+                    HabeasNode::Source(source.clone()),
+                    HabeasNode::Definition("term".into()),
+                    HabeasNode::RequirementSelection("*".into()),
+                ] {
+                    assert!(domain.store_evidence(&no_record, &record).await.is_err());
+                    assert!(domain.load_evidence(&no_record).await.unwrap().is_none());
+                }
+            }
+        }
+        let path = requirement.evidence_path(root.path()).unwrap();
+        fs::remove_file(&path).unwrap();
+        fs::create_dir(&path).unwrap();
+        let record = Record {
+            procedure: "test-review-v2".into(),
+            dependencies: vec![],
+            output: Judgment {
+                result: true,
+                rationale: "fixture review".into(),
+                metadata: serde_json::json!({
+                    "requirement":"ready", "references":"0".repeat(64), "inputs":[],
+                    "determination":true, "rationale":"fixture review"
+                }),
+            },
+        };
+        assert!(domain.store_evidence(&requirement, &record).await.is_err());
+        assert!(path.is_dir());
+        assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 3);
+    }
 
     // {test}`requirements.sdk.graph.evidence.checking_records`
     // {test}`requirements.sdk.graph.domain_types`

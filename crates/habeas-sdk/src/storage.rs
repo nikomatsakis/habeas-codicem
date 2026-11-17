@@ -151,8 +151,15 @@ mod tests {
                 Ok(bytes.len())
             }
         }
+        // :::{cite} habeas:coverage
+        // Write requires flush, but this unbuffered fault-injection fixture
+        // tests write_all, replacement, and cleanup. write_and_replace does
+        // not request flushing or durability; real temporary files are
+        // unbuffered too. A flush call would change the tested operation
+        // sequence, so the unused callback is an explicit guard.
+        // :::
         fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
+            panic!("replacement must not request a fixture flush")
         }
     }
     impl TemporaryRecord for FaultyTemporary {
