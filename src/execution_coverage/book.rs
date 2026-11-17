@@ -5,7 +5,7 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use mdbook_preprocessor::book::{Book, BookItem, Chapter};
+use mdbook_preprocessor::book::{Book, BookItem, Chapter, SectionNumber};
 
 use super::{Attempt, Run, fresh, load, target_directory, workspace_root};
 use crate::{colon_fence, definition_blocks, overlaps_protected, protected_ranges};
@@ -608,6 +608,29 @@ fn populate_in(book: &mut Book, project: &Path, target: Option<PathBuf>) -> io::
     book.for_each_chapter_mut(|chapter| {
         if chapter.path.as_ref() == Some(&index_path) {
             chapter.content.replace_range(range.clone(), &summary);
+            let mut parent_names = chapter.parent_names.clone();
+            parent_names.push(chapter.name.clone());
+            let first_number = chapter
+                .sub_items
+                .iter()
+                .filter_map(|item| match item {
+                    BookItem::Chapter(child) => child.number.as_ref()?.last().copied(),
+                    _ => None,
+                })
+                .max()
+                .unwrap_or(0)
+                + 1;
+            for (offset, item) in details.iter_mut().enumerate() {
+                let BookItem::Chapter(page) = item else {
+                    unreachable!("generated coverage reports are chapters");
+                };
+                page.parent_names = parent_names.clone();
+                page.number = chapter.number.as_ref().map(|number| {
+                    let mut number = number.to_vec();
+                    number.push(first_number + offset as u32);
+                    SectionNumber::new(number)
+                });
+            }
             chapter.sub_items.append(&mut details);
         }
     });
@@ -855,6 +878,52 @@ mod tests {
             .split("</article>")
             .next()
             .unwrap()
+    }
+
+    // {test}`requirements.test-coverage.index.details`
+    #[test]
+    fn generated_reports_inherit_the_index_hierarchy_after_existing_children() {
+        for number in [Some(SectionNumber::new(vec![3, 2])), None] {
+            let (temp, mut book) = fixture();
+            let BookItem::Chapter(index) = &mut book.items[0] else {
+                unreachable!();
+            };
+            index.parent_names = vec!["Reports".into()];
+            index.number = number.clone();
+            let mut child = Chapter::new(
+                "Guide",
+                "# Guide\n".into(),
+                "reports/guide.md",
+                vec!["Reports".into(), "Coverage".into()],
+            );
+            child.number = number.as_ref().map(|number| {
+                let mut number = number.to_vec();
+                number.push(4);
+                SectionNumber::new(number)
+            });
+            index.sub_items.push(BookItem::Chapter(child.clone()));
+            record(temp.path(), "one", 1, "a", &[(1, 1)]);
+            record(temp.path(), "two", 2, "a", &[(2, 1)]);
+            populate(&mut book, temp.path()).unwrap();
+            let BookItem::Chapter(index) = &book.items[0] else {
+                unreachable!();
+            };
+            assert_eq!(index.number, number);
+            assert_eq!(index.sub_items[0], BookItem::Chapter(child));
+            assert_eq!(index.sub_items.len(), 5);
+            for (offset, item) in index.sub_items[1..].iter().enumerate() {
+                let BookItem::Chapter(page) = item else {
+                    unreachable!();
+                };
+                assert_eq!(page.parent_names, ["Reports", "Coverage"]);
+                let expected = number
+                    .as_ref()
+                    .map(|_| SectionNumber::new(vec![3, 2, 5 + offset as u32]));
+                assert_eq!(page.number, expected);
+                assert!(page.source_path.is_none());
+                assert!(page.content.contains("../coverage.html"));
+            }
+        }
     }
 
     // {test}`requirements.test-coverage.index.file_map`
