@@ -63,6 +63,35 @@ sufficient to display those reports using the matching captured source after
 the project is rebuilt or its source changes.
 :::
 
+:::{req} processes.progress
+During report conversion, on a terminal enabled under
+{cite}`requirements.test-coverage.processes.progress.terminal`, Habeas MUST
+display updating progress with elapsed time and completed and total
+test-attempt counts. The total MUST count the recorded attempts selected for
+conversion. An attempt MUST advance the completed count only after its
+conversion has finished or reported a collection failure, including processing
+its associated child-process profiles. These counts MUST measure conversion
+work regardless of the attempt's test outcome.
+:::
+
+:::{req} processes.progress.preparation
+During coverage-data preparation, on a terminal enabled under
+{cite}`requirements.test-coverage.processes.progress.terminal`, Habeas MUST
+display updating activity and identify the current preparation stage.
+:::
+
+:::{req} processes.progress.terminal
+Habeas coverage progress MUST be displayed when stderr is an interactive
+terminal and `TERM` is not `dumb`. `NO_COLOR` MUST disable color without
+disabling progress. When stderr is redirected or `TERM=dumb`, Habeas coverage
+progress MUST NOT emit animation or terminal control sequences.
+
+Temporary progress displays MUST be cleared when their stage ends, including
+empty work and early collection failures. Final diagnostics and the coverage
+artifact location MUST remain readable. Progress reporting MUST NOT change
+coverage results, retained profiles, or command exit status.
+:::
+
 :::{req} storage
 Coverage runs MUST be stored as disposable build artifacts under
 `habeas/coverage/` in the project's Cargo target directory
