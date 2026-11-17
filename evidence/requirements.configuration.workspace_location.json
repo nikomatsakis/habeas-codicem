@@ -1,8 +1,8 @@
 {
   "requirement": "Habeas MUST search from its invocation directory upward for the nearest enclosing\n`habeas.toml`. It MUST use that file alone, without merging ancestor workspace\nfiles. A library operation given a project root MUST search from that root unless\nits current directory is inside the project, in which case it MUST start there.\nThe directory containing the selected file defines the base for its relative\npaths; it does not replace the Cargo and mdBook project root. A missing file MUST\nmean absent workspace settings. Discovery MUST report unreadable candidate files\nrather than silently selecting an ancestor. Loading MUST NOT create the file.",
   "determination": true,
-  "rationale": "I found no gap against `requirements.configuration.workspace_location`.\n\n**Code**\n- **Nearest file, searched upward.** `src/config.rs#fn[workspace_document]` starts at the current directory when it is inside the canonical root. Otherwise it starts at the root. It then walks `ancestors()` and takes the first `habeas.toml`. That covers both the invocation-directory search and the library rule for a given project root. `src/main.rs#fn[main]/use@118842506675` calls `load_workspace_evidence(&current_dir)` for the commands that load settings up front.\n- **Single file, no merging.** `workspace_document` returns the first match immediately, and the loaders decode only that table.\n- **Base for relative paths.** `LoadedWorkspaceConfig` and `WorkspaceEvidenceConfig` set `root` to the selected file's parent. `src/authoring/access.rs#impl[PathPolicy]/fn[load]` joins evidence paths onto that `config.root`. `src/evidence.rs#fn[inspect_repository_with_progress]` keeps its own project root for the book and evidence directories, so the workspace file does not replace it.\n- **Missing file.** `NotFound` is skipped, and if no candidate exists the function returns `None`, which callers treat as absent settings.\n- **Unreadable candidates.** Any `symlink_metadata` error other than `NotFound`, or a read or parse failure, returns an error that names the path. It never falls through to an ancestor.\n- **No creation.** The loader only reads and never writes.\n\n**Tests**\n- **Nearest file and no merging.** `tests/configuration.rs#fn[workspace_discovery_uses_nearest_file_without_merging_or_rewriting_it]` covers inheriting an outer file, selecting the nested file, not merging the two, leaving the file unchanged, an invalid-TOML error, and `None` when all files are removed. It also exercises the library-root case with the current directory outside the project.\n- **Current directory inside the project.** `tests/commands.rs#fn[status_loads_nearest_workspace_file_without_validating_authoring]` runs `status` from a nested directory with an invalid nested file and a valid outer file. The output names the nested path, so the search started at the current directory. `tests/authoring_cli.rs#fn[authoring_uses_nearest_workspace_configuration_without_a_user_file]` runs `author` from a nested directory. The nested file's model is used, and the parent's invalid default is ignored.\n- **Relative-path base.** `src/authoring/access.rs#mod[tests]/fn[evidence_rules_are_relative_to_the_selected_workspace_file]` puts the file in the parent of the project root. It shows that evidence rules resolve against the file's directory, not the project root.\n- **Unreadable candidates and no creation.** `tests/configuration.rs#fn[unreadable_configuration_files_are_reported_instead_of_skipped]` makes `habeas.toml` a directory with a valid ancestor file present. Both loaders return an error naming that path. It also loads from an empty directory, gets `None`, and checks that no file was created.\n- **Validation and project root.** `tests/evidence_boundaries.rs#fn[validation_checks_workspace_common_config_without_loading_unused_authoring_settings]` covers validation with a project-root workspace file.\n\nThe extra behavior in the loaders (the credentials flag and dropping `[coverage]`) is specified by other requirements that the same code marks with `{impl}`.",
-  "references": "b29be59ee097b834e9e8c682100133d5f5c70d3068d23ff7ca7a7dd26f7bbcb3",
+  "rationale": "The reviewed tests cover every obligation in `requirements.configuration.workspace_location`, and their assertions enforce the expected outcomes. I read `src/config.rs#fn[workspace_document]` only to see which start-directory branches exist. Expected behavior comes from the requirement text.\n\n- **Nearest enclosing file, searched upward.**\n  - `tests/configuration.rs#fn[workspace_discovery_uses_nearest_file_without_merging_or_rewriting_it]` first finds only an outer file from a nested project. It then adds a closer file and asserts the closer one is chosen.\n  - `tests/commands.rs#fn[status_loads_nearest_workspace_file_without_validating_authoring]` runs the CLI from a nested directory. An invalid outer `version = 99` file sits above a valid nested file, and the command succeeds, so the nearest file was used.\n  - `tests/authoring_cli.rs#fn[authoring_uses_nearest_workspace_configuration_without_a_user_file]` runs `author` from a nested directory. The nested file's model reaches the server, and the parent file's missing default choice is ignored.\n\n- **No merging of ancestor files.**\n  - The `workspace_discovery_…` test gives the outer file `allow = ['outer']` and the closer file only `disallow`. It asserts that the closest config's `allow` is empty and that its authoring `configs` is empty.\n  - The authoring CLI test has a parent file whose default names a missing config. That the run succeeds with the nested file's settings shows nothing was merged.\n\n- **Library operation given a project root.**\n  - `workspace_document` has two branches: start at the current directory if it is inside the project, otherwise start at the root.\n  - The \"root, not inside project\" branch is covered by `src/authoring/access.rs#mod[tests]/fn[evidence_rules_are_relative_to_the_selected_workspace_file]`. It calls `load_source_access(&root)` with the workspace file in the parent of the root, and the test process's working directory is outside the temporary project. It is also covered by `tests/evidence_boundaries.rs#fn[validation_checks_workspace_common_config_without_loading_unused_authoring_settings]` and by the `load_workspace_config` calls in `tests/configuration.rs`.\n  - The \"current directory inside project\" branch is covered by the CLI tests above. They run with `current_dir` set to a nested directory inside the project. The nested file is selected rather than the project-root or ancestor file, and the invalid `version = 99` file at the project root would otherwise make `status` fail.\n\n- **Base directory for relative paths, distinct from the project root.**\n  - The access test places `habeas.toml` in the parent of the project root. `allow = ['allowed.txt']` resolves to the file beside the workspace file, reached through `../allowed.txt`.\n  - `disallow = ['project/denied.txt']` blocks `denied.txt` under the project root, and the project's own `allowed.txt` is not matched.\n  - The `workspace_discovery_…` test asserts `closest.root` equals the selected file's parent directory.\n\n- **Missing file means absent settings.** The `workspace_discovery_…` test asserts `load_workspace_config(&nested)` is `None` after both files are removed. `tests/configuration.rs#fn[unreadable_configuration_files_are_reported_instead_of_skipped]` asserts `None` for both `load_workspace_config` and `load_workspace_evidence` in an empty directory.\n\n- **Unreadable candidates are reported, not skipped.** The unreadable-files test makes the nearest `habeas.toml` a directory while a valid ancestor file exists. Both `load_workspace_config` and `load_workspace_evidence` return an error naming that path, so the ancestor is not silently chosen. A malformed nearest file also produces an error naming that file in the `workspace_discovery_…` test and in the `status` test.\n\n- **Loading does not create the file.** The unreadable-files test asserts no `habeas.toml` appears and the empty directory's entry count stays 0. The `workspace_discovery_…` test and the authoring CLI test assert that existing files are byte-for-byte unchanged.\n\nI found no uncovered obligation, no wrong expected result and no marking gap.",
+  "references": "096b49b6af2d9929ebeb6ea9b500f8515ad7899a6c955b46698c73ac461e3eb7",
   "inputs": [
     {
       "requirements": "requirements.configuration.workspace_location",
@@ -24,48 +24,8 @@
     },
     {
       "file": "src/authoring/access.rs",
-      "item": "impl[PathPolicy]/fn[load]",
-      "hash": "5950faed829db1612f97208c49aeb78c93701c73e400754bf51198366e39fd31"
-    },
-    {
-      "file": "src/authoring/access.rs",
       "item": "mod[tests]/fn[evidence_rules_are_relative_to_the_selected_workspace_file]",
-      "hash": "6c6f2f4ea3de427c893d8019e3f2d0e348628eb613ef45d1c47ae21aba23ff7c"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "struct[LoadedWorkspaceConfig]",
-      "hash": "4b8838291dc0d39b581ee5dfc82764501ab9e0f8357cc1a89d4fde699d081959"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "fn[load_workspace_config]",
-      "hash": "90e4a7bd6bdeb8d8be248203ce26c8d8805d22d7955899c541e84260f6b82b1f"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "fn[load_workspace_evidence]",
-      "hash": "55a4844bf88c98810c76d5486185af127d895626d83a9de141ce59be82bbd93d"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "fn[workspace_document]",
-      "hash": "d298d9e7fb995bd5faa02227f14616fde1089e738f3c1d6e06c702f393fcc234"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[inspect_repository]",
-      "hash": "099721be82616919a987c094e264cf3a95e050f1e0d8ad30feef44c43a4e3e32"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[inspect_repository_with_progress]",
-      "hash": "942aec34a5ae01793fbc22717e0cc1a7adfd88921d561d9283d23a87fc9262e2"
-    },
-    {
-      "file": "src/main.rs",
-      "item": "fn[main]/use@118842506675",
-      "hash": "1188425066753adbc843c210d52e91685623838c7019aff619a61ce6f920a749"
+      "hash": "f3d375f7d3f090fa966313cba8ce7c80a4a791d44173606ee1ad5fce59765046"
     },
     {
       "file": "tests/authoring_cli.rs",
@@ -91,6 +51,178 @@
       "file": "tests/evidence_boundaries.rs",
       "item": "fn[validation_checks_workspace_common_config_without_loading_unused_authoring_settings]",
       "hash": "ef6d907936f39ecf4c5d86b96a84c9519988f9370c0b695ec10d690c785f4a98"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "fn[workspace_document]",
+      "hash": "d298d9e7fb995bd5faa02227f14616fde1089e738f3c1d6e06c702f393fcc234"
+    },
+    {
+      "file": "src/main.rs",
+      "item": "fn[main]",
+      "hash": "d09ff004d829ade6bf41bba625608efd538395b52baa42f448a9b61d49a60832"
+    }
+  ],
+  "format_version": 1,
+  "review_version": "habeas-review-v1",
+  "dependencies": [
+    {
+      "OutgoingEdges": [
+        {
+          "Requirement": "requirements.configuration.workspace_location"
+        },
+        {
+          "scheme": "habeas-reference-set-v1",
+          "value": "096b49b6af2d9929ebeb6ea9b500f8515ad7899a6c955b46698c73ac461e3eb7"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Requirement": "requirements.configuration.workspace_location"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "ce3d1ea0f972caa4f02303d0378c6503bd82abb1ea9fb32d4875ebd8406eacf0"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/access.rs"
+            },
+            "selector": "mod[tests]/fn[evidence_rules_are_relative_to_the_selected_workspace_file]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "5f546664f9e5d0441f70bfe34d98ae6f6adcb1422bbb0c15505ca55bec423e41"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "tests/authoring_cli.rs"
+            },
+            "selector": "fn[authoring_uses_nearest_workspace_configuration_without_a_user_file]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "21c4ad12d0884ac5b9b5f2146259c8c8b367acabe3a1244ecae216337cb5d1b7"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "tests/commands.rs"
+            },
+            "selector": "fn[status_loads_nearest_workspace_file_without_validating_authoring]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "19974df458d921be4c081cbdc3b67acd7f547254d4056557b31bba8e32360a99"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "tests/configuration.rs"
+            },
+            "selector": "fn[workspace_discovery_uses_nearest_file_without_merging_or_rewriting_it]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "2df9ce951dd50efc286df70db28f4dfe58e4ae1ebd384188b028eaa9aa810dad"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "tests/configuration.rs"
+            },
+            "selector": "fn[unreadable_configuration_files_are_reported_instead_of_skipped]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "89c191a0d3c389435ad81aeabc38f88696be08794af42623e07e554b2e45150f"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "tests/evidence_boundaries.rs"
+            },
+            "selector": "fn[validation_checks_workspace_common_config_without_loading_unused_authoring_settings]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "d48ecd5b4a54f8a4ffdfb4d6439654dcd7d56a1748f451d4326b4fad8a34d9a5"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/config.rs"
+            },
+            "selector": "fn[workspace_document]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "53c62cf789dc6a53c83749ae98ea42b1e188a8edb1eb35e3ad9fcc32898f06d5"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/main.rs"
+            },
+            "selector": "fn[main]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "a5474cbd8fe1643361f27547d4f26bddf6e574b3cedcdfec5ffa129fbcfa252f"
+        }
+      ]
     }
   ]
 }

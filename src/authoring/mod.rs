@@ -1649,10 +1649,10 @@ mod tests {
     // {test}`requirements.authoring.output_limit`
     #[tokio::test]
     async fn a_cut_off_response_without_a_known_output_limit_fails_without_continuing() {
-        struct CutOffProvider(std::cell::Cell<usize>);
+        struct CutOffProvider(std::sync::atomic::AtomicUsize);
         impl CompletionProvider for CutOffProvider {
             async fn complete(&self, request: CompletionRequest) -> io::Result<CompletionResponse> {
-                self.0.set(self.0.get() + 1);
+                self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 Ok(JudgmentProvider(json!(true))
                     .complete(request)
                     .await?
@@ -1664,7 +1664,7 @@ mod tests {
         let mut sources = AssessmentSources::prepare(project.path(), "requirements.ready").unwrap();
         let mut usage =
             UsageLog::start(state.path(), project.path(), &sources.subject_name).unwrap();
-        let provider = CutOffProvider(std::cell::Cell::new(0));
+        let provider = CutOffProvider(std::sync::atomic::AtomicUsize::new(0));
         let error = assess(&provider, &mut sources, &mut usage)
             .await
             .unwrap_err();
@@ -1675,7 +1675,7 @@ mod tests {
             "{message}"
         );
         assert_eq!(
-            provider.0.get(),
+            provider.0.load(std::sync::atomic::Ordering::Relaxed),
             1,
             "an unknown limit must not start a continuation"
         );

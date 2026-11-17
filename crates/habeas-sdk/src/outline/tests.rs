@@ -28,7 +28,7 @@ fn profile_rules_map_only_matching_contexts_and_keep_other_nodes_transparent() {
     ];
     let profile = Box::leak(Box::new(Profile {
         kinds: Box::leak(rules.into_boxed_slice()),
-        ..super::rust::PROFILE
+        ..super::RUST_PROFILE
     }));
     // A function indented by two spaces is not mapped, but its descendants
     // still appear under the nearest mapped ancestor, here the file root.
