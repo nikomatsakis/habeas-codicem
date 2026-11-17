@@ -111,19 +111,41 @@ mod tests {
         fn move_cursor_up(&self, _lines: usize) -> io::Result<()> {
             Ok(())
         }
+        // :::{cite} habeas:coverage
+        // This adapter is compiled only for unit tests. TermLike requires this
+        // callback, but our fixed-width, single-line displays do not move down.
+        // It is a no-op with no application behavior or untrusted-input path.
+        // Real terminal drawing is exercised by the PTY integration test.
+        // :::
         fn move_cursor_down(&self, _lines: usize) -> io::Result<()> {
             Ok(())
         }
+        // :::{cite} habeas:coverage
+        // This unit-test-only adapter must implement TermLike's horizontal
+        // movement callback. Indicatif's single-line renderer never calls it;
+        // the no-op does not participate in application behavior. The PTY
+        // integration test exercises the actual terminal implementation.
+        // :::
         fn move_cursor_right(&self, _chars: usize) -> io::Result<()> {
             Ok(())
         }
+        // :::{cite} habeas:coverage
+        // TermLike requires this callback on the unit-test-only adapter.
+        // The fixed-width display tests request no horizontal cursor movement,
+        // so this no-op has no application behavior to test. Real terminal
+        // movement remains exercised through the PTY integration test.
+        // :::
         fn move_cursor_left(&self, _chars: usize) -> io::Result<()> {
             Ok(())
         }
+        // :::{cite} habeas:coverage
+        // Indicatif renders through write_str on this unit-test-only adapter.
+        // TermLike also requires write_line, whose only behavior delegates to
+        // that covered recording path. No application input can select this
+        // unused adapter callback; actual terminal output is tested on a PTY.
+        // :::
         fn write_line(&self, text: &str) -> io::Result<()> {
-            self.text.lock().unwrap().push_str(&format!("{text}\n"));
-            self.frames.lock().unwrap().push(text.to_owned());
-            Ok(())
+            self.write_str(&format!("{text}\n"))
         }
         fn write_str(&self, text: &str) -> io::Result<()> {
             self.text.lock().unwrap().push_str(text);
