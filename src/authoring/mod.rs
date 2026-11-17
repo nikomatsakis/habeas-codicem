@@ -1626,6 +1626,161 @@ mod tests {
 
     use super::*;
 
+    // {test}`requirements.authoring.refresh`
+    #[tokio::test]
+    async fn default_authoring_apis_preserve_current_records_without_configuration() {
+        let project = inputs::tests::project();
+        let state = tempfile::tempdir().unwrap();
+        let subject = "requirements.ready";
+        let mut sources = AssessmentSources::prepare(project.path(), subject).unwrap();
+        let mut usage = UsageLog::start(state.path(), project.path(), subject).unwrap();
+        let (_, record) = assess(&JudgmentProvider(json!(true)), &mut sources, &mut usage)
+            .await
+            .unwrap();
+        let path = project.path().join("evidence/requirements.ready.json");
+        let bytes = serde_json::to_vec_pretty(&record).unwrap();
+        fs::create_dir(path.parent().unwrap()).unwrap();
+        fs::write(&path, &bytes).unwrap();
+        let before_usage = fs::read(&usage.path).unwrap();
+        // An invalid selection would fail if any API resolved model configuration.
+        let selection = Some("unconfigured-fixture-backend");
+        let outcome = author_all(project.path(), selection).await.unwrap();
+        assert_eq!(outcome.unchanged, 1);
+        assert!(outcome.completed.is_empty());
+        assert!(outcome.failures.is_empty());
+        assert!(outcome.deleted.is_empty());
+        assert!(outcome.policy.is_none());
+        assert!(!outcome.cancelled);
+        assert!(
+            author_evidence(project.path(), subject, selection)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            author_evidence_with_output(project.path(), subject, selection, EvidenceOutput::File)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            fs::read(path).unwrap(),
+            bytes,
+            "current evidence is preserved byte for byte"
+        );
+        assert_eq!(fs::read(&usage.path).unwrap(), before_usage);
+        assert_eq!(
+            fs::read_dir(state.path().join("authoring/usage"))
+                .unwrap()
+                .count(),
+            1,
+            "skipped assessments start no usage records"
+        );
+    }
+
+    // {test}`requirements.authoring.usage_storage`
+    #[test]
+    fn failed_persistence_records_failure_or_cancellation_and_retains_the_cause() {
+        let project = inputs::tests::project();
+        let state = tempfile::tempdir().unwrap();
+        for (kind, expected, block_usage) in [
+            (io::ErrorKind::PermissionDenied, "failed", false),
+            (io::ErrorKind::Interrupted, "cancelled", false),
+            (io::ErrorKind::PermissionDenied, "failed", true),
+            (io::ErrorKind::Interrupted, "cancelled", true),
+        ] {
+            let subject = AuthoringSubject::Definition("requirements.ready".into());
+            let usage = UsageLog::start(state.path(), project.path(), &subject.label()).unwrap();
+            let path = usage.path.clone();
+            let pending = PendingAssessment {
+                subject,
+                record: json!({}),
+                outcome: AuthoringOutcome {
+                    subject: "requirements.ready".into(),
+                    backend: "fixture".into(),
+                    model: "fixture".into(),
+                    evidence_path: None,
+                    usage_path: path.clone(),
+                    determination: Judgment::True,
+                    rationale: "Fixture assessment.".into(),
+                    policy: AssessmentPolicy::Once,
+                },
+                usage,
+            };
+            if block_usage {
+                fs::remove_file(&path).unwrap();
+                fs::create_dir(&path).unwrap();
+            }
+            let error = pending.failed(io::Error::new(kind, "cannot persist fixture evidence"));
+            assert_eq!(error.kind(), kind, "retain the original failure kind");
+            let message = error.to_string();
+            assert!(
+                message.contains("cannot persist fixture evidence"),
+                "{message}"
+            );
+            assert!(message.contains(path.to_str().unwrap()), "{message}");
+            if block_usage {
+                assert!(message.contains("cannot record failed usage"), "{message}");
+                assert!(
+                    path.is_dir(),
+                    "failed usage writes do not replace the obstruction"
+                );
+            } else {
+                let record: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+                assert_eq!(record["outcome"], expected);
+                assert_eq!(record["evidence_written"], false);
+                assert!(!record["end_time_ms"].is_null());
+                assert!(record["determination"].is_null());
+                assert!(!message.contains("cannot record failed usage"));
+            }
+            assert!(
+                !project
+                    .path()
+                    .join("evidence/requirements.ready.json")
+                    .exists()
+            );
+        }
+    }
+
+    // {test}`requirements.authoring.output_limit`
+    #[tokio::test]
+    async fn a_cut_off_response_without_a_known_output_limit_fails_without_continuing() {
+        struct CutOffProvider(std::cell::Cell<usize>);
+        impl CompletionProvider for CutOffProvider {
+            async fn complete(&self, request: CompletionRequest) -> io::Result<CompletionResponse> {
+                self.0.set(self.0.get() + 1);
+                Ok(JudgmentProvider(json!(true))
+                    .complete(request)
+                    .await?
+                    .with_finish_reason(FinishReason::Length))
+            }
+        }
+        let project = inputs::tests::project();
+        let state = tempfile::tempdir().unwrap();
+        let mut sources = AssessmentSources::prepare(project.path(), "requirements.ready").unwrap();
+        let mut usage =
+            UsageLog::start(state.path(), project.path(), &sources.subject_name).unwrap();
+        let provider = CutOffProvider(std::cell::Cell::new(0));
+        let error = assess(&provider, &mut sources, &mut usage)
+            .await
+            .unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("response was incomplete"), "{message}");
+        assert!(
+            message.contains("output limit the configuration does not set"),
+            "{message}"
+        );
+        assert_eq!(
+            provider.0.get(),
+            1,
+            "an unknown limit must not start a continuation"
+        );
+        assert!(
+            usage.record.determination.is_none(),
+            "the cut-off judgment is not accepted"
+        );
+    }
+
     // {test}`requirements.authoring.submission`
     struct JudgmentProvider(Value);
 

@@ -1477,6 +1477,162 @@ fn function_counts(
 mod tests {
     use super::*;
 
+    // {test}`requirements.test-coverage.run`
+    // {test}`requirements.test-coverage.storage.configuration`
+    #[cfg(unix)]
+    #[test]
+    fn compiler_wrapper_preserves_arguments_status_and_prior_wrapper_and_records_features() {
+        use std::os::unix::fs::PermissionsExt;
+
+        const TEST_NAME: &str = "execution_coverage::runner::tests::compiler_wrapper_preserves_arguments_status_and_prior_wrapper_and_records_features";
+        if let Ok(arguments) = std::env::var("HABEAS_COMPILER_TEST_ARGUMENTS") {
+            let arguments: Vec<String> = serde_json::from_str(&arguments).unwrap();
+            let arguments = arguments
+                .into_iter()
+                .map(OsString::from)
+                .collect::<Vec<_>>();
+            assert_eq!(
+                compile_process(&arguments).unwrap(),
+                std::env::var("HABEAS_COMPILER_TEST_STATUS")
+                    .unwrap()
+                    .parse::<i32>()
+                    .unwrap()
+            );
+            return;
+        }
+        assert_eq!(
+            compile_process(&[]).unwrap_err().to_string(),
+            "missing rustc invocation"
+        );
+        let root = tempfile::tempdir().unwrap();
+        let compiler = root.path().join("fixture rustc");
+        let wrapper = root.path().join("prior wrapper");
+        fs::write(
+            &compiler,
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$HABEAS_COMPILER_TEST_CAPTURE\"\nif [ \"${LLVM_PROFILE_FILE+x}\" = x ]; then exit 99; fi\nexit \"$HABEAS_COMPILER_TEST_STATUS\"\n",
+        )
+        .unwrap();
+        fs::write(
+            &wrapper,
+            "#!/bin/sh\nprintf '%s\\n' \"$1\" > \"$HABEAS_COMPILER_TEST_WRAPPER_CAPTURE\"\nexec \"$@\"\n",
+        )
+        .unwrap();
+        for path in [&compiler, &wrapper] {
+            fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        for (name, wrapped, args, status, expected_features) in [
+            ("query", false, vec!["--print", "sysroot"], 0, None),
+            (
+                "compile",
+                false,
+                vec![
+                    "--crate-name",
+                    "fixture",
+                    "--cfg",
+                    "feature=\"zeta\"",
+                    "--cfg",
+                    "feature=\"alpha\"",
+                    "--cfg",
+                    "feature=\"zeta\"",
+                    "--cfg",
+                    "test",
+                    "--target",
+                    "fixture-target",
+                    "source with spaces.rs",
+                ],
+                0,
+                Some(vec!["alpha", "zeta"]),
+            ),
+            (
+                "wrapped",
+                true,
+                vec!["--crate-name", "fixture", "-C", "opt-level=2"],
+                17,
+                Some(vec![]),
+            ),
+        ] {
+            let capture = root.path().join(format!("{name}.args"));
+            let wrapper_capture = root.path().join(format!("{name}.wrapper"));
+            let ledger = root.path().join(format!("{name}.ledger"));
+            let mut arguments = vec![compiler.to_string_lossy().into_owned()];
+            arguments.extend(args.iter().map(|arg| (*arg).to_owned()));
+            let mut child = Command::new(std::env::current_exe().unwrap());
+            child
+                .args(["--exact", TEST_NAME])
+                .env(
+                    "HABEAS_COMPILER_TEST_ARGUMENTS",
+                    serde_json::to_string(&arguments).unwrap(),
+                )
+                .env("HABEAS_COMPILER_TEST_STATUS", status.to_string())
+                .env("HABEAS_COMPILER_TEST_CAPTURE", &capture)
+                .env("HABEAS_COMPILER_TEST_WRAPPER_CAPTURE", &wrapper_capture)
+                .env("HABEAS_COVERAGE_FEATURE_LEDGER", &ledger)
+                .env("CARGO_MANIFEST_DIR", root.path())
+                .env_remove("HABEAS_PREVIOUS_WORKSPACE_WRAPPER");
+            if wrapped {
+                child.env("HABEAS_PREVIOUS_WORKSPACE_WRAPPER", &wrapper);
+            }
+            let result = child.output().unwrap();
+            assert!(
+                result.status.success(),
+                "{name}: {}\n{}",
+                String::from_utf8_lossy(&result.stdout),
+                String::from_utf8_lossy(&result.stderr)
+            );
+            assert!(String::from_utf8_lossy(&result.stdout).contains("1 passed"));
+            let mut expected = args.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>();
+            if let Some(features) = expected_features {
+                expected.extend(["-C".into(), "instrument-coverage".into()]);
+                let records = fs::read_dir(&ledger)
+                    .unwrap()
+                    .collect::<Result<Vec<_>, _>>()
+                    .unwrap();
+                assert_eq!(
+                    records.len(),
+                    1,
+                    "one feature record per package and target"
+                );
+                let record: (String, Vec<String>) = load(&records[0].path()).unwrap();
+                let target = if name == "compile" {
+                    "fixture-target"
+                } else {
+                    "host"
+                };
+                assert_eq!(record.0, format!("{} [{target}]", root.path().display()));
+                assert_eq!(
+                    record.1, features,
+                    "features are unique, sorted, and omit non-feature cfgs"
+                );
+            } else {
+                assert!(
+                    !ledger.exists(),
+                    "compiler queries create no feature records"
+                );
+            }
+            assert_eq!(
+                fs::read_to_string(capture)
+                    .unwrap()
+                    .lines()
+                    .collect::<Vec<_>>(),
+                expected
+            );
+            if wrapped {
+                assert_eq!(
+                    fs::read_to_string(wrapper_capture).unwrap().trim(),
+                    compiler.to_str().unwrap()
+                );
+            } else {
+                assert!(!wrapper_capture.exists());
+            }
+        }
+        assert_eq!(
+            compile_process(&[root.path().join("missing-rustc").into_os_string()])
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::NotFound
+        );
+    }
+
     // {test}`requirements.test-coverage.processes`
     // {test}`requirements.test-coverage.processes.reports`
     // {test}`requirements.test-coverage.failures`

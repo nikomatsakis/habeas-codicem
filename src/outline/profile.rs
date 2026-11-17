@@ -103,6 +103,13 @@ pub(crate) fn never(_node: Node<'_>, _source: &str) -> bool {
 }
 
 /// Comment prose for profiles that hash no comments: the whole text.
+// :::{cite} habeas:coverage
+// This callback fills the Profile interface for every non-Rust profile.
+// Those profiles all set hashes_comment to never, so Builder::encode skips
+// comment_prose for every source input; plain text does not use the grammar
+// encoder at all. Rust hashes doc comments through its separate doc_prose.
+// The fallback therefore has no reachable behavior in the supported profiles.
+// :::
 pub(crate) fn whole_comment(_node: Node<'_>, body: &str) -> (&'static str, String) {
     ("comment", body.to_owned())
 }

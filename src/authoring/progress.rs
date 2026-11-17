@@ -212,12 +212,22 @@ mod tests {
             Ok(())
         }
 
-        // {test}`requirements.authoring.progress`
+        // :::{cite} habeas:coverage
+        // This unit-test-only TermLike adapter records whole rendered lines.
+        // Indicatif's authoring renderer does not request horizontal movement,
+        // so this required no-op callback has no application input path.
+        // The authoring PTY tests exercise the real terminal implementation.
+        // :::
         fn move_cursor_right(&self, _chars: usize) -> io::Result<()> {
             Ok(())
         }
 
-        // {test}`requirements.authoring.progress`
+        // :::{cite} habeas:coverage
+        // TermLike requires this callback on the unit-test-only recorder.
+        // The authoring renderer rewrites whole lines rather than moving
+        // horizontally; no application input can select this no-op callback.
+        // Real terminal output remains covered by the authoring PTY tests.
+        // :::
         fn move_cursor_left(&self, _chars: usize) -> io::Result<()> {
             Ok(())
         }

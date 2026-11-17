@@ -13,6 +13,45 @@ fn selectors(outline: &Outline) -> Vec<String> {
         .collect()
 }
 
+// {test}`requirements.references.outlines`
+// {test}`requirements.references.outline_selectors`
+#[test]
+fn profile_rules_map_only_matching_contexts_and_keep_other_nodes_transparent() {
+    use super::profile::{KindRule, NameRule, Profile};
+
+    let rules = vec![
+        KindRule::new("function_item", "fn", NameRule::Field("name")).when(|node| {
+            node.child_by_field_name("name")
+                .is_some_and(|name| name.start_position().column == 3)
+        }),
+        KindRule::new("struct_item", "struct", NameRule::Field("name")),
+    ];
+    let profile = Box::leak(Box::new(Profile {
+        kinds: Box::leak(rules.into_boxed_slice()),
+        ..super::rust::PROFILE
+    }));
+    // A function indented by two spaces is not mapped, but its descendants
+    // still appear under the nearest mapped ancestor, here the file root.
+    let source = "fn selected() {}\n  fn skipped() {\nfn nested() {}\n}\nstruct Packet;\n";
+    let outline = super::parse_with(profile, source).unwrap();
+    assert_eq!(
+        selectors(&outline),
+        ["fn[selected]", "fn[nested]", "struct[Packet]"]
+    );
+    assert!(outline.nodes[1..].iter().all(|node| node.parent == Some(0)));
+    assert_eq!(format!("{outline:?}").matches("profile: rust").count(), 1);
+    let missing = outline.resolve("fn[skipped]").unwrap_err();
+    assert_eq!(
+        missing.to_string(),
+        "no outline node matches \"fn[skipped]\""
+    );
+    let malformed = outline.resolve("fn[bad%ZZ]").unwrap_err();
+    assert!(matches!(malformed, super::ResolveError::Invalid(_)));
+    let message = malformed.to_string();
+    assert!(message.contains("invalid outline selector"), "{message}");
+    assert!(message.contains("malformed percent escape"), "{message}");
+}
+
 // {test}`requirements.references.structural_hash`
 #[test]
 fn hashes_include_grammar_kinds_nesting_and_sha256_digests() {
