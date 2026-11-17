@@ -1,6 +1,6 @@
 ---
 name: habeas-evidence
-description: Use when Habeas evidence needs creating or refreshing, or when `cargo test` or `habeas status` reports Habeas findings such as missing, stale, or false evidence, uncovered `{test}` lines, uncovered Rust items, FIXME judgments, citation or site reviews, or disagreeing assessments, even if the user only says "the habeas test is failing". Covers running `habeas author` and fixing what it flags. If evidence went stale because code or requirements moved, use habeas-refactor first.
+description: Use when Habeas evidence needs creating or refreshing, or when `habeas coverage` or `habeas status` reports Habeas findings such as missing, stale, or false evidence, uncovered `{test}` lines, uncovered Rust items, FIXME judgments, citation or site reviews, or disagreeing assessments, even if the user only says "the habeas test is failing". Covers running `habeas author` and fixing what it flags. If evidence went stale because code or requirements moved, use habeas-refactor first.
 ---
 
 # Habeas evidence
@@ -19,7 +19,7 @@ Run commands from the project root, the directory with `book.toml` and
 - [ ] 3. `habeas author --all` assesses every definition whose evidence is
       missing, stale, or invalid and skips current ones; `-v` prints each false
       judgment's rationale. `habeas author <name>` does one.
-- [ ] 4. `cargo test --workspace`, then handle the coverage warnings of
+- [ ] 4. `habeas coverage`, then handle the coverage warnings of
       `habeas status` as "Uncovered Rust items" says. While findings remain
       that you can fix, return to step 2.
 - [ ] 5. Check the "Disagreements" section of `habeas status`. Validation
@@ -37,10 +37,30 @@ Run commands from the project root, the directory with `book.toml` and
 - [ ] 8. Next: for findings that need code or tests, or requirement text that
       must change, return to the habeas-requirements skill.
 
+## Testing and coverage findings
+
+Follow the habeas skill's "Testing and coverage artifacts": default to
+`habeas coverage` for unit, integration and focused runs through `cargo nextest`;
+run doctests separately with `cargo test --doc --workspace`, and never stage or
+commit disposable coverage artifacts in the Cargo target directory.
+
+For post-suite `habeas coverage-check` failures, first distinguish missing or
+stale measurement from actual coverage gaps. Recollect measurement failures;
+no explanation can waive them. Add tests for coverage gaps, or give a
+substantive explanation through a standard `habeas:coverage` citation and author
+its independent citation review. Neither `habeas:util` nor `{fixme}` excuses
+execution coverage. Use `habeas test` for full verification after the changes.
+The habeas skill's "Testing and coverage artifacts" gives the per-file target
+and function obligations.
+For CI integration, recommend the separate collection and check steps in the
+Habeas [CI example](../habeas/references/ci.md); collection alone does not enforce
+the policy.
+{impl}`requirements.test-coverage.check.guidance`
+
 ## Judgments
 
 `habeas author` records, for each requirement and example, a model's judgment
-of whether the reviewed tests adequately check it; `cargo test --workspace` validates
+of whether the reviewed tests adequately check it; `habeas coverage` validates
 those records without calling a model. A judgment is one of three outcomes:
 
 - `true`: the reviewed tests adequately check the definition, with no gap under

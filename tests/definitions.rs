@@ -1,3 +1,5 @@
+mod common;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -24,6 +26,7 @@ fn fixture() -> TempDir {
     )
     .unwrap();
     fs::write(temp.path().join("md/glossary.md"), ":::{definition} a\n:phrase: alpha\n\nSee {term}`glossary.b`.\n:::\n\n:::{definition} b\n:phrase: beta\n\nSee {term}`glossary.a`.\n:::\n").unwrap();
+    common::coverage_setup(temp.path());
     temp
 }
 
@@ -99,6 +102,65 @@ fn capture(root: &Path) {
             definition(root, "glossary.b"),
         ],
     );
+}
+
+// {test}`requirements.definitions.dependencies`
+#[test]
+fn subjects_require_their_terms_without_a_requirements_input() {
+    for subject in ["rules.ready", "rules.case"] {
+        let temp = fixture();
+        let root = temp.path();
+        // A noncyclic chain requires repeated expansion beyond the first hop.
+        fs::write(
+            root.join("md/glossary.md"),
+            ":::{definition} a\n:phrase: alpha\nSee {term}`glossary.b`.\n:::\n\n:::{definition} b\n:phrase: beta\nSee {term}`glossary.c`.\n:::\n\n:::{definition} c\n:phrase: gamma\nSee {term}`glossary.d`.\n:::\n\n:::{definition} d\n:phrase: delta\nThe leaf.\n:::\n",
+        ).unwrap();
+        let rules = root.join("md/rules.md");
+        fs::write(
+            &rules,
+            format!(
+                "{}\n:::{{example}} case\nUse {{term}}`glossary.a`. {{cite}}`rules.ready`\n:::\n",
+                fs::read_to_string(&rules).unwrap()
+            ),
+        )
+        .unwrap();
+        fs::write(
+            root.join("src/lib.rs"),
+            "// {test}`rules.case`\n#[test]\nfn test_case() { assert!(true); }\n",
+        )
+        .unwrap();
+        let input = outline_input(root, "src/lib.rs", "fn[test_case]").unwrap();
+        for name in ["rules.ready", "rules.case"] {
+            let path = record(
+                root,
+                name,
+                vec![
+                    input.clone(),
+                    definition(root, "glossary.a"),
+                    definition(root, "glossary.b"),
+                    definition(root, "glossary.c"),
+                    definition(root, "glossary.d"),
+                ],
+            );
+            approve(&path);
+        }
+        let errors = validate_repository(root).unwrap().errors;
+        assert!(errors.is_empty(), "{errors:?}");
+        let path = record(root, subject, vec![input.clone()]);
+        approve(&path);
+        let before = fs::read(&path).unwrap();
+        let errors = validate_repository(root).unwrap().errors;
+        for term in ["glossary.a", "glossary.b", "glossary.c", "glossary.d"] {
+            assert!(
+                errors.iter().any(
+                    |error| error.starts_with(&format!("evidence/{subject}.json"))
+                        && error.contains(&format!("{term}, found 0"))
+                ),
+                "{subject}: {errors:?}"
+            );
+        }
+        assert_eq!(fs::read(&path).unwrap(), before);
+    }
 }
 
 fn approve(path: &Path) {
@@ -240,6 +302,25 @@ fn globs_exclude_terms_but_capture_referenced_terms_outside_the_glob() {
         errors
             .iter()
             .all(|error| !error.contains("rules.unrelated")),
+        "{errors:?}"
+    );
+
+    // A directly referenced definition outside the glob is also mandatory.
+    record(
+        root,
+        "rules.ready",
+        vec![
+            requirements(root, "rules.*", &["rules.ready"]),
+            definition(root, "glossary.b"),
+            definition(root, "rules.used"),
+        ],
+    );
+    approve(&path);
+    let errors = validate_repository(root).unwrap().errors;
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.contains("glossary.a, found 0")),
         "{errors:?}"
     );
 
@@ -511,6 +592,7 @@ fn references_to_a_definition_of_another_kind_are_reported() {
 // {test}`requirements.definitions.declaration`
 #[test]
 fn phrases_are_plain_links_and_markdown_literals_are_preserved() {
+    let temp = fixture();
     let mut book = Book::new();
     book.push_item(Chapter::new(
         "Glossary",
@@ -520,7 +602,7 @@ fn phrases_are_plain_links_and_markdown_literals_are_preserved() {
     ));
     let source = "Use {term}`glossary.a`.\n\n`{term}`glossary.a``\n\n```text\n{term}`glossary.a`\n```\n\n\\{term}`glossary.a`".to_owned();
     book.push_item(Chapter::new("Guide", source, "guide/deep.md", Vec::new()));
-    habeas::preprocess_book(&mut book, Path::new(".")).unwrap();
+    habeas::preprocess_book(&mut book, temp.path()).unwrap();
     let chapters: Vec<_> = book.chapters().collect();
     assert!(
         chapters[0]
@@ -553,6 +635,7 @@ fn phrases_are_plain_links_and_markdown_literals_are_preserved() {
 // {test}`requirements.definitions.phrase_rendering`
 #[test]
 fn a_term_reference_renders_only_its_phrase_as_a_plain_link() {
+    let temp = fixture();
     let mut book = Book::new();
     book.push_item(Chapter::new(
         "Glossary",
@@ -566,7 +649,7 @@ fn a_term_reference_renders_only_its_phrase_as_a_plain_link() {
         "guide.md",
         Vec::new(),
     ));
-    habeas::preprocess_book(&mut book, Path::new(".")).unwrap();
+    habeas::preprocess_book(&mut book, temp.path()).unwrap();
     let chapters: Vec<_> = book.chapters().collect();
     let guide = &chapters[1].content;
     // The whole reference becomes exactly one ordinary hyperlink: no class,
@@ -639,6 +722,32 @@ fn changed_definition_snapshots_show_a_compact_diff_and_text_is_required() {
                 .any(|error| error.starts_with("evidence/rules.ready.json")
                     && error.contains("text")),
             "{text:?}: {errors:?}"
+        );
+    }
+    let rules = root.join("md/rules.md");
+    fs::write(
+        &rules,
+        format!(
+            "{}\n:::{{example}} case\nAn example. {{cite}}`rules.ready`\n:::\n",
+            fs::read_to_string(&rules).unwrap()
+        ),
+    )
+    .unwrap();
+    for name in ["rules.ready", "rules.case"] {
+        let mut broken = record.clone();
+        broken["inputs"]
+            .as_array_mut()
+            .unwrap()
+            .push(definition(root, name));
+        fs::write(&path, broken.to_string()).unwrap();
+        let errors = validate_repository(root).unwrap().errors;
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.starts_with("evidence/rules.ready.json")
+                    && error.contains(name)
+                    && error.contains("no matching named definition")),
+            "{name}: {errors:?}"
         );
     }
 }

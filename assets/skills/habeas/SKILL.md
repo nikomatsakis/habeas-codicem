@@ -8,7 +8,9 @@ description: Use at the start of any work in a project that tracks requirements 
 Habeas traces requirements, written in a project's mdBook, to the code and tests
 that implement and verify them. `habeas author` has a model assess whether tests
 adequately check each requirement and records the result as evidence under `evidence/`;
-`cargo test --workspace` validates that evidence without calling a model.
+`habeas::validate()` validates that evidence without calling a model.
+`habeas test` runs instrumented workspace tests and checks their saved execution
+coverage.
 
 ## Workflow
 
@@ -18,7 +20,7 @@ adequately check each requirement and records the result as evidence under `evid
       | --- | --- |
       | A design session, or any change to behavior, code, tests, or requirement text, including renaming code in place | habeas-requirements |
       | Moving code, tests, or requirements to another file, chapter, or outline node, or renaming a requirement, without changing them | habeas-refactor |
-      | Creating or refreshing evidence; `cargo test` or `habeas status` reports Habeas findings | habeas-evidence |
+      | Creating or refreshing evidence; `habeas coverage` or `habeas status` reports Habeas findings | habeas-evidence |
       | Adopting Habeas in an existing codebase, or most of the code has no references | habeas-bootstrap-requirements |
 
       If Habeas is not configured yet (no `tests/habeas.rs` calling
@@ -34,6 +36,53 @@ adequately check each requirement and records the result as evidence under `evid
 
 Run commands from the project root, the directory with `book.toml` and
 `Cargo.toml`.
+
+## Testing and coverage artifacts
+
+Use `habeas coverage` by default for every Rust unit and integration test run,
+including focused runs (`habeas coverage -- -E 'test(name)'`). The workflow uses
+`cargo nextest` for parallel process runs and retains independent process
+coverage. In this repository use the local alias, `cargo habeas coverage`.
+Run doctests separately with `cargo test --doc --workspace`. Install prerequisites
+with `cargo install cargo-nextest --locked` (>= 0.9.116) and
+`rustup component add llvm-tools-preview` when needed.
+
+Profiles, reports, and captured source under the Cargo target directory
+(`target/habeas/coverage/` by default) are disposable build artifacts. Never stage
+or commit them to Git. The book combines each test's latest compatible attempt;
+source changes invalidate the combined coverage, while saved reports remain
+inspectable. Building the book does not run tests.
+
+For final verification, run `habeas test` (`cargo habeas test` in this repository).
+It collects coverage for the full workspace, then checks it. In CI, recommend
+`habeas coverage -- --workspace` followed, only on success, by
+`habeas coverage-check`. The check reads saved data and calls no model; the
+static `habeas::validate()` test requires no prior execution coverage.
+{impl}`requirements.test-coverage.check.guidance`
+
+When setting up or reviewing project CI, check that it runs both collection and
+the post-suite check. Collection alone does not enforce the coverage policy.
+Use the [CI example](references/ci.md) when adding these steps to an existing
+workflow; setup configures the collector and static validation test, while CI
+integration belongs in the project's workflow.
+
+Each first-party Rust file needs 80% instrumented-line coverage. Each completely
+unexecuted or not-measured function, including functions excluded by the build
+configuration, needs an independently assessed explanation. Partly covered
+functions need no exception when their file meets its target. Write a standard
+`{cite}` of `habeas:coverage`, with the rationale in fenced commentary or a Rust
+doc comment, and author its citation review with `habeas author`. A file-root
+citation excuses only the file threshold; a function citation excuses only that
+function. Only current accepted review evidence permits the exception. No
+project declaration or extra configuration is needed. The citation applies
+across build configurations and may remain when coverage is sufficient.
+Exceptions never increase reported percentages.
+{impl}`requirements.test-coverage.check.exceptions.setup`
+
+The requirements index automatically includes a Coverage gaps subchapter.
+Do not add a coverage source chapter or coverage-index directive. Use its CI
+verdict and expandable file gaps to find missing tests or coverage explanations;
+accepted documented gaps are separate. Per-test maps remain available on demand.
 
 ## Inspecting
 

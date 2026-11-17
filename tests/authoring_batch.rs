@@ -1,3 +1,5 @@
+mod common;
+
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -372,6 +374,7 @@ impl Fixture {
         )
         .unwrap();
         fs::write(project.join("book.toml"), "[book]\nsrc = 'md'\n").unwrap();
+        common::coverage_setup(&project);
         fs::write(
             project.join("md/SUMMARY.md"),
             "# Summary\n\n- [Requirements](requirements.md)\n",
@@ -1955,6 +1958,55 @@ fn confirm_with_all_runs_a_second_assessment_for_each_batch_subject() {
         .count();
     assert_eq!(seconds * 2, subjects.len(), "{usage:?}");
     assert_eq!(usage.len(), subjects.len(), "{usage:?}");
+}
+
+// {test}`requirements.authoring.refresh`
+#[test]
+fn a_single_missing_or_stale_subject_is_assessed_under_default_or_explicit_missing() {
+    let server = Server::start(false, None);
+    let fixture = Fixture::new(&server.endpoint, None);
+    let output = fixture.run(&["author", "requirements.alpha"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(server.subjects(), ["requirement requirements.alpha"]);
+    let before = fixture.evidence("requirements.alpha");
+    // Changing the supplied subject text makes its assessment stale.
+    let source = fixture.project.join("md/requirements.md");
+    let changed = fs::read_to_string(&source)
+        .unwrap()
+        .replace("alpha MUST return one.", "alpha MUST return exactly one.");
+    fs::write(source, changed).unwrap();
+    let output = fixture.run(&["author", "requirements.alpha", "--missing"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        server.subjects(),
+        [
+            "requirement requirements.alpha",
+            "requirement requirements.alpha"
+        ]
+    );
+    assert_ne!(
+        fixture.evidence("requirements.alpha")["inputs"],
+        before["inputs"]
+    );
+    let output = fixture.run(&["author", "requirements.alpha"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        server.subjects().len(),
+        2,
+        "the refreshed subject is skipped"
+    );
 }
 
 /// Under `--missing`, the default, a named subject or `--all` keeps current

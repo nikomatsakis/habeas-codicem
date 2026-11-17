@@ -208,6 +208,11 @@ pub(crate) fn inspect_repository_with_progress(
     let md_root = book_source_dir(&root, &mut errors);
     let definitions = collect_definitions(&root, &md_root, &mut errors);
     let mut discovery_errors = errors.clone();
+    // {impl}`requirements.test-coverage.setup.validation`
+    // {impl}`requirements.test-coverage.setup.validation.static`
+    if let Err(error) = crate::execution_coverage::validate_setup(&root) {
+        errors.push(error.to_string());
+    }
     // Only the coverage report uses `[coverage]`, so an invalid table is a
     // finding but not a discovery failure, and authoring still proceeds.
     if let Some(error) = crate::config::coverage_error(&root) {
@@ -1145,6 +1150,7 @@ impl SourceReference {
     /// Whether a `{fixme}` can be an edge: named, fenced, and outside the
     /// book. Other placements are validation errors, and an unnamed
     /// `{fixme}` is never an edge. Every other role can be.
+    // {cite}`habeas:util`
     pub(crate) fn is_fixme_edge(&self) -> bool {
         self.kind != ReferenceKind::Fixme
             || (!self.name.is_empty() && self.commentary.is_some() && !self.in_book)
@@ -2251,6 +2257,10 @@ pub(crate) mod tests {
         fs::create_dir_all(temp.path().join("evidence")).unwrap();
         fs::create_dir_all(temp.path().join("src")).unwrap();
         fs::write(temp.path().join("book.toml"), "[book]\nsrc = \"md\"\n").unwrap();
+        fs::write(temp.path().join("Cargo.toml"), "[workspace]\n").unwrap();
+        let (path, source) = crate::execution_coverage::configure(temp.path()).unwrap();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, source).unwrap();
         fs::write(
             temp.path().join("src/main.rs"),
             "// first line\n// second line\n",
@@ -2379,7 +2389,7 @@ pub(crate) mod tests {
             }));
             let expected_counts = [
                 ("evidence files", if invalid { 2 } else { 1 }),
-                ("reference source files", if invalid { 6 } else { 3 }),
+                ("reference source files", if invalid { 8 } else { 5 }),
                 ("reference coverage", 1),
             ];
             for (stage, total) in expected_counts {
@@ -2444,7 +2454,11 @@ pub(crate) mod tests {
     fn inspection_progress_reports_empty_phases_as_complete() {
         let temp = TempDir::new().unwrap();
         fs::create_dir(temp.path().join("md")).unwrap();
+        fs::write(temp.path().join("Cargo.toml"), "[workspace]\n").unwrap();
         fs::write(temp.path().join("book.toml"), "[book]\nsrc = 'md'\n").unwrap();
+        let (path, source) = crate::execution_coverage::configure(temp.path()).unwrap();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, source).unwrap();
         let mut updates = Vec::new();
         let inspected =
             super::inspect_repository_with_progress(temp.path(), |update| updates.push(update))
@@ -3009,6 +3023,48 @@ pub(crate) mod tests {
         ] {
             assert!(errors.contains(&detail), "missing {detail:?} in:\n{errors}");
         }
+
+        assert_eq!(
+            errors
+                .matches("habeas.toml: version: expected version = 1")
+                .count(),
+            1,
+            "{errors}"
+        );
+        assert_eq!(
+            errors.matches("book.toml: invalid TOML").count(),
+            1,
+            "{errors}"
+        );
+
+        // Coverage setup and coverage-history configuration failures must
+        // also leave independent later evidence and reference checks running.
+        fs::write(temp.path().join("book.toml"), "[book]\nsrc = 'md'\n").unwrap();
+        let (path, valid) = crate::execution_coverage::configure(temp.path()).unwrap();
+        for (configuration, nextest, expected) in [
+            ("version = 1\n", "[", ".config/nextest.toml"),
+            (
+                "version = 1\n[coverage]\nreauthorings = 0\n",
+                "",
+                "coverage.reauthorings",
+            ),
+        ] {
+            fs::write(temp.path().join("habeas.toml"), configuration).unwrap();
+            fs::write(&path, if nextest.is_empty() { &valid } else { nextest }).unwrap();
+            let errors = validate_repository(temp.path()).unwrap().errors;
+            for detail in [
+                expected.to_owned(),
+                "evidence/ghost.json: invalid JSON".to_owned(),
+                format!("src/main.rs:1: {unknown} has no matching requirement"),
+            ] {
+                assert!(
+                    errors.iter().any(|error| error.contains(&detail)),
+                    "missing {detail:?} in:\n{errors:?}"
+                );
+            }
+            let unique = errors.iter().collect::<std::collections::BTreeSet<_>>();
+            assert_eq!(errors.len(), unique.len(), "{errors:?}");
+        }
     }
 
     // {test}`requirements.ci.errors`
@@ -3445,6 +3501,7 @@ pub(crate) mod tests {
     // {test}`requirements.ci.schema`
     // {test}`requirements.references.evidence_coverage`
     // {test}`requirements.ci.requirements_inputs`
+    // {test}`requirements.ci.orphans`
     #[test]
     fn cited_example_with_a_test_and_matching_evidence_validates() {
         let temp = fixture();

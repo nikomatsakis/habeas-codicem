@@ -1,6 +1,8 @@
 //! Fenced references, built-in definitions, and citation reviews, checked
 //! through repository validation and `habeas status`.
 
+mod common;
+
 use std::fs;
 use std::path::Path;
 
@@ -25,6 +27,7 @@ fn project() -> TempDir {
     fs::write(root.join("Cargo.toml"), "[package]\nname = \"fixture\"\n").unwrap();
     fs::write(root.join("book.toml"), "[book]\nsrc = \"md\"\n").unwrap();
     fs::write(root.join("md/rules.md"), ":::{req} ready\nReady.\n:::\n").unwrap();
+    common::coverage_setup(root);
     temp
 }
 
@@ -70,6 +73,7 @@ fn unclosed_fences_still_report_unknown_names() {
 // {test}`requirements.references.builtin_definitions`
 // {test}`requirements.references.rust_item_coverage`
 // {test}`requirements.references.procedure`
+// {test}`requirements.references.util`
 #[test]
 fn fenced_references_in_comments_and_built_in_rules_are_validated() {
     let temp = project();
@@ -465,6 +469,7 @@ fn review(root: &Path, citations: Value, determination: Value) -> Value {
 // {test}`requirements.references.citation_review`
 // {test}`requirements.ci.outcomes`
 // {test}`requirements.ci.orphans`
+// {test}`requirements.ci.errors`
 #[test]
 fn citation_reviews_are_required_current_and_not_orphaned() {
     let temp = project();
@@ -515,6 +520,28 @@ fn citation_reviews_are_required_current_and_not_orphaned() {
     let write = |record: Value| fs::write(root.join(path), record.to_string()).unwrap();
     write(review(root, citations.clone(), json!(true)));
     assert_eq!(errors_for(path), Vec::<String>::new());
+    write(review(
+        root,
+        json!([null, {"role": "broken", "name": 7, "commentary": 8}]),
+        json!(true),
+    ));
+    let malformed = errors_for(path);
+    assert!(
+        has(&malformed, "citations[0]: expected a JSON object"),
+        "{malformed:?}"
+    );
+    assert!(
+        has(&malformed, "citations[1]: unknown role"),
+        "{malformed:?}"
+    );
+    assert!(
+        has(&malformed, "citations[1]: name must be a string"),
+        "{malformed:?}"
+    );
+    assert!(
+        has(&malformed, "citations[1]: commentary must be a string"),
+        "{malformed:?}"
+    );
 
     // A citation review cannot accept a `{fixme}`, so FIXME is reported; a
     // false review is reported with its rationale.

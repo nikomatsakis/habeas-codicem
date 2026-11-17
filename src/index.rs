@@ -345,6 +345,10 @@ impl DetailPlan {
         })
     }
 
+    pub(crate) fn index_path(&self) -> &Path {
+        &self.index_path
+    }
+
     pub(crate) fn detail_path(&self, name: &str) -> Option<&Path> {
         self.detail_paths.get(name).map(PathBuf::as_path)
     }
@@ -1101,6 +1105,7 @@ mod tests {
     // {test}`requirements.cli.shared_status_rendering`
     // {test}`requirements.index.detail_format`
     // {test}`requirements.index.invalid_detail`
+    // {test}`requirements.test-coverage.index`
     // {test}`requirements.index.detail_pages`
     #[test]
     fn index_shows_evidence_states_and_links_generated_chapters() {
@@ -1214,7 +1219,26 @@ mod tests {
             assert_eq!(pipes[column + 1] - pipes[column] - 3, widest);
         }
         assert!(definition.sub_items.is_empty());
-        assert_eq!(index.sub_items.len(), 5);
+        assert_eq!(index.sub_items.len(), 6);
+        let coverage = index
+            .sub_items
+            .iter()
+            .filter_map(|item| match item {
+                BookItem::Chapter(chapter) if chapter.name == "Coverage gaps" => Some(chapter),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(coverage.len(), 1);
+        assert_eq!(
+            coverage[0].path.as_deref(),
+            Some(Path::new("appendix/requirements-index/coverage.md"))
+        );
+        assert_eq!(coverage[0].parent_names, ["Requirements index"]);
+        assert!(
+            index
+                .content
+                .contains("[Coverage gaps](requirements-index/coverage.html)")
+        );
         let ready = index
             .sub_items
             .iter()
@@ -1231,7 +1255,7 @@ mod tests {
         );
         assert_eq!(
             ready.number.as_deref().map(Vec::as_slice),
-            Some(&[4, 1][..])
+            Some(&[4, 2][..])
         );
         assert_eq!(
             ready.path.as_deref(),

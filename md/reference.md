@@ -1,6 +1,6 @@
 # How it works
 
-Habeas reads requirements from an mdBook and evidence from JSON files in the same repository. `cargo test --workspace` checks the evidence; `mdbook build` renders links to it.
+Habeas reads requirements from an mdBook and evidence from JSON files in the same repository. `habeas coverage` checks the evidence; `mdbook build` renders links to it.
 
 ## Requirements
 
@@ -553,7 +553,7 @@ rerunning for a different determination.
 
 ### Live Bedrock tests
 
-`cargo test` includes a live Bedrock integration test. It skips with a visible
+`habeas coverage` includes a live Bedrock integration test. It skips with a visible
 warning in CI or when the AWS SDK cannot load credentials. Outside CI, a missing
 Bedrock authoring configuration fails the test. A skip returns successfully, so
 Cargo displays `ok` rather than `ignored`. Once credentials load, provider and
@@ -563,7 +563,7 @@ requests and retain their usage records in the usual user state directory.
 Run just these tests with:
 
 ```sh
-cargo test --test live_bedrock
+cargo habeas coverage -- --test live_bedrock
 ```
 
 The live test uses the project's or user's selected Bedrock configuration,
@@ -571,13 +571,13 @@ falling back to the first named Bedrock configuration in name order. To select
 one explicitly:
 
 ```sh
-HABEAS_LIVE_CONFIG=sonnet cargo test --test live_bedrock
+HABEAS_LIVE_CONFIG=sonnet cargo habeas coverage -- --test live_bedrock
 ```
 
 The test uses a temporary project and stdout evidence output, leaving the
 checkout's evidence unchanged. Any set `CI` environment variable disables live
 testing before configuration or credential lookup, even if credentials are
-available. For example, `CI=1 cargo test` runs the suite without live inference.
+available. For example, `CI=1 cargo habeas coverage` runs the suite without live inference.
 {cite}`requirements.integration.live_bedrock_test`
 
 ## References
@@ -653,7 +653,7 @@ For an `{impl}` or `{test}` reference in a source outside the book, the words of
 
 Built-in definitions are named `habeas:<name>` and are available in every project without a declaration. Each has fixed text and permits only certain roles. Built-ins have no evidence files and do not appear in the requirements index or `habeas status`. Project definitions cannot use names beginning with `habeas:`. In the book, a reference to a built-in renders as a badge without a link; hovering over it shows the built-in's text.
 
-There is one built-in, `habeas:util`. The built-in `habeas:util` has this text:
+The built-in `habeas:util` has this text:
 
 > Cite this on an item that serves other code, including code outside the
 > project such as a library calling a trait implementation it requires, and
@@ -672,6 +672,48 @@ fn split_lines(text: &str) -> Vec<&str> {
 
 A `habeas:util` citation counts as a reference for Rust item coverage. An item whose only citations are of `habeas:util` needs no citation review; the reviews of the roots that reach it judge what it does.
 {cite}`requirements.references.builtin_definitions` {cite}`requirements.references.util`
+
+The built-in `habeas:coverage` has this text:
+
+> Cite this on a source file or explicitly declared function to propose a
+> coverage exception. Explain in prose why the item's incomplete execution
+> coverage is acceptable. Put the explanation in fenced citation commentary
+> or Rust doc comments included in the source item's assessed input. An ordinary
+> non-doc comment alone does not supply a tracked justification. The reason
+> must be substantive; difficulty alone is not a justification.
+> On a file's root item, the exception excuses only
+> that file's 80% instrumented-line threshold, including absent measurement
+> of its executable code. On an explicit function with a body, it excuses
+> that function's recorded zero execution or absence from otherwise usable
+> measurement, without excusing the file's threshold.
+> The explanation must agree with the current source and any callers or
+> configuration assumptions on which it relies. Only a current accepted
+> independent assessment permits the exception. A file exception does not
+> excuse unexecuted or not-measured functions in that file.
+> The citation applies to its source item without conditional build matching
+> and may remain when measured coverage satisfies the item's obligations.
+
+Use an ordinary citation with a prose explanation. For a file threshold, attach
+it to the root with Rust inner doc comments (`//!`); for a function, attach it to
+that function. For example:
+
+```rust
+// :::{cite} habeas:coverage
+// This defensive abort handles an invariant violation that public APIs
+// cannot construct; the reviewed callers establish that invariant.
+// :::
+fn invariant_failure() { std::process::abort(); }
+```
+
+An inline citation can instead put its explanation in a Rust doc comment.
+Only a current accepted independent citation review permits an exception.
+A file exception does not excuse individual functions; a function exception
+does not excuse its file's threshold or nested functions. A citation may remain
+when coverage improves, and applies across build configurations without parsing
+conditions in the explanation. The explanation and evidence belong in Git;
+runtime profiles and reports do not. Exceptions never inflate coverage figures.
+{impl}`requirements.test-coverage.check.exceptions.setup`
+{cite}`requirements.test-coverage.check.exceptions.anchor`
 
 ### Citation reviews
 
@@ -795,7 +837,7 @@ in one step leaves its evidence stale, so commit the move first.
 
 ## Checking and viewing
 
-The test created by `habeas setup` calls `habeas::validate()`. Run `cargo test --workspace` to find missing evidence, false determinations, changed lines, changed reference sets, uncovered `{test}` references, misplaced or malformed `{fixme}` references, missing or stale citation reviews, and uncovered Rust items. Validation accepts true and FIXME judgments when all other evidence checks pass. FIXME remains visible in status and the book with its recorded references and rationale. These checks are deterministic: they verify the saved evidence without inference or reassessing the reviewer's judgment about documented gaps. The check reports all the errors it finds, with diffs for changed text. Run `mdbook build` to render the book. {cite}`requirements.ci.determination`
+The test created by `habeas setup` calls `habeas::validate()`. Run `habeas coverage` to find missing evidence, false determinations, changed lines, changed reference sets, uncovered `{test}` references, misplaced or malformed `{fixme}` references, missing or stale citation reviews, and uncovered Rust items. Validation accepts true and FIXME judgments when all other evidence checks pass. FIXME remains visible in status and the book with its recorded references and rationale. These checks are deterministic: they verify the saved evidence without inference or reassessing the reviewer's judgment about documented gaps. The check reports all the errors it finds, with diffs for changed text. Run `mdbook build` to render the book. {cite}`requirements.ci.determination`
 
 Run `habeas status [<selection>]` from within the project to list requirements and named
 examples needing attention and their validation findings. FIXME judgments are
@@ -895,3 +937,81 @@ requirements and examples. Their referenced definitions are captured regardless 
 Changing a definition's phrase or body invalidates its snapshots. Validation reports missing or stale
 snapshots without modifying them. A term link does not replace a function's required
 requirement or example reference.
+
+## Test execution coverage
+
+{impl}`requirements.test-coverage.run`
+{impl}`requirements.test-coverage.index`
+
+`habeas coverage [-- <nextest arguments>]` runs instrumented Rust unit and
+integration tests with nextest. With no arguments it selects the workspace.
+It preserves nextest concurrency, filters, retries and test failures. Run
+`cargo test --doc --workspace` separately for doctests.
+
+Install `cargo-nextest` >= 0.9.116 and the active Rust toolchain's matching LLVM
+tools (`rustup component add llvm-tools-preview`). `habeas setup` configures
+`.config/nextest.toml` at the workspace root, preserving unrelated settings and
+reporting wrapper conflicts. Both `habeas status` and the validation test check
+this setup without running tests or requiring earlier coverage. Effective
+profile inheritance and wrapper precedence are checked before each coverage run.
+
+The requirements index automatically links to a generated **Coverage gaps**
+subchapter. No coverage source chapter or directive is needed. The compact
+overview focuses on unsatisfied file and function obligations: click a file to
+expand its gaps, and expand the documented-gaps section to read accepted
+explanations. Directory summaries show the minimum measured coverage across
+all their current first-party Rust files, including passing files hidden from
+the gaps overview. The CI verdict uses the same evaluator as
+`habeas coverage-check`; unavailable measurements and invalid reviews remain
+visible failures. Per-test maps and run provenance remain available on demand.
+
+The index combines each test's latest started attempt within the most recently
+used instrumented configuration. Filtered runs update only their selected tests.
+Failed and interrupted attempts remain visible; missing profiles cannot fall
+back to older successful attempts. Source and build-input changes invalidate the
+workspace's combined coverage. Other build configurations and older attempts
+remain inspectable as historical reports, with the captured source. Coverage
+percentages count unique instrumented file-and-line locations, including child
+processes; process percentages are not averaged. The view does not establish
+that all current tests were measured.
+
+Profiles, normalized reports, source snapshots and matching coverage maps live
+under `habeas/coverage/` in Cargo's target directory and are disposable build
+output. Do not commit them. `cargo clean` removes them. Building the book reads
+these records and never runs tests or collects profiles.
+
+Instrumented compilation uses a separate cache under
+`habeas/instrumented/` in that target directory, including when Cargo normally
+uses a custom build directory. Test processes retain the caller's Cargo build
+environment. When overriding the target directory for a run, use the same
+`CARGO_TARGET_DIR` when building the book.
+
+### Checking coverage after the suite
+
+Run `habeas test` for the complete flow: collect instrumented coverage for the
+whole workspace, then check the saved results. It fails if testing, collection,
+or the coverage check fails, and never calls a model. In CI, the two steps can
+be separate:
+
+```sh
+habeas coverage -- --workspace
+habeas coverage-check
+```
+
+Run the second command only after the first succeeds. The standalone checker
+never builds or executes tests. It requires at least 80% instrumented-line
+coverage in each first-party Rust file and an accepted explanation for every
+function with zero execution or no measurement, including feature- or
+platform-excluded functions. A partly covered function needs no exception when
+its file meets its target. The comparison uses exact counts, not rounded
+percentages, averages across files, or an 80% target in each function.
+
+The checker uses the book's combined latest-per-test selection in the active
+configuration, including child processes. Missing, stale, corrupt, or old
+line-only captures fail with guidance to recollect; citations cannot waive
+measurement failures or restore superseded successes. Files proved to have no
+executable obligations are reported separately. The output lists measured
+coverage, unmet function obligations, and accepted exceptions separately.
+Static `habeas::validate()` checks setup and saved assessment evidence without
+requiring runtime coverage; it need not run last.
+{impl}`requirements.test-coverage.check.guidance`

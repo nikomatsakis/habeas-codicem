@@ -20,15 +20,15 @@ cargo add --dev habeas
 cargo agents sync
 ```
 
-Run `cargo agents sync` in your terminal and choose **Enable** when it offers Habeas's plugin. The plugin provides Habeas's bundled skills. Its session-start hook tells the agent that the project tracks requirements with Habeas and to load the `habeas` skill before starting any work. The hook also checks the project and advises the agent to run `habeas setup` when configuration is incomplete.
+Run `cargo agents sync` in your terminal and choose **Enable** when it offers Habeas's plugin. The default **Ask me later** choice leaves the plugin disabled. The plugin provides Habeas's bundled skills. Its session-start hook tells the agent that the project tracks requirements with Habeas and to load the `habeas` skill before starting any work. The hook also checks the project and advises the agent to run `habeas setup` when configuration is incomplete.
 
 To configure the project before starting an agent session, or if the hook is unavailable in your agent, run `cargo install habeas` and `habeas setup` yourself. For development from a checkout, use `cargo install --path .`.
 
-`habeas setup` adds Habeas as a dev dependency, configures `[preprocessor.habeas]` to run `habeas mdbook`, adds the badge stylesheet, and creates `tests/habeas.rs`. Setup can be run again without duplicating configuration or overwriting differing files.
+`habeas setup` adds Habeas as a dev dependency, configures `[preprocessor.habeas]` to run `habeas mdbook`, adds the badge stylesheet, creates `tests/habeas.rs`, configures nextest's per-process collector, and enables the generated coverage report under the requirements index. Setup can be run again without duplicating configuration or overwriting differing files.
 
 Add a `{test}` reference to an appropriate project requirement or named example on the generated test, and give the rest of your Rust functions references before expecting validation to pass. Mark code with `{impl}` where it implements part of a definition, tests with `{test}` where they are designed to verify one, and use `{cite}` only for related code that does neither; see [References](md/reference.md#references).
 
-Configure a Bedrock or Ollama model using the [authoring examples](md/reference.md#authoring-evidence-with-a-model), then run `habeas author --all` to create or refresh requirement and example evidence. The harness gives each assessment its own model conversation; the supervising agent fixes reported gaps instead of writing evidence itself. Current records are preserved, including false judgments whose subject and inputs are unchanged. Run `cargo test --workspace` afterward to validate the saved evidence without inference.
+Configure a Bedrock or Ollama model using the [authoring examples](md/reference.md#authoring-evidence-with-a-model), then run `habeas author --all` to create or refresh requirement and example evidence. The harness gives each assessment its own model conversation; the supervising agent fixes reported gaps instead of writing evidence itself. Current records are preserved, including false judgments whose subject and inputs are unchanged. Run `habeas coverage` afterward to validate the saved evidence without inference.
 
 Bedrock authoring defaults to the available logical CPU count in simultaneous
 assessments; Ollama defaults to one. Set a positive `concurrency` in the named
@@ -40,7 +40,7 @@ If Habeas previously copied skills into `.agents/skills/habeas-*`, review them f
 
 During local development, `habeas setup --path /path/to/habeas-codicem` uses a local crate in place of the registry dependency.
 
-Run `mdbook build` to render requirement badges and linked references. The badge images load from Shields.io when the book is viewed. Run `cargo test --workspace` for validation; there is no separate CI command.
+Run `mdbook build` to render requirement badges and linked references. The badge images load from Shields.io when the book is viewed. Run `habeas test` for workspace tests, coverage collection, and post-suite coverage checking. CI can separate `habeas coverage -- --workspace` and `habeas coverage-check`.
 
 Use `habeas status` to list requirements with missing, false, or invalid evidence, including changed requirement text or changed source inputs. Use `habeas status --all` to list every requirement. To inspect the current requirement, validation findings, rationale, and inputs as Markdown, use a definition selection: an exact full name, or a glob where `*` matches any characters including dots:
 
@@ -151,3 +151,32 @@ Review each generated release PR before merging it. The normal pull-request CI r
 ## License
 
 Habeas Codicem is licensed under either of [MIT](LICENSE-MIT) or [Apache 2.0](LICENSE-APACHE), at your option.
+
+## Execution coverage
+
+Install `cargo-nextest` (>= 0.9.116) and `rustup component add llvm-tools-preview`.
+Use `habeas coverage` for unit and integration tests, including focused runs
+(`habeas coverage -- -E 'test(name)'`), and `cargo test --doc --workspace` for
+doctests. In this repository use `cargo habeas coverage`.
+
+The mdBook coverage index combines the latest attempt per test for the latest
+build configuration. Source or build-input changes exclude old contributions.
+Each process retains its own raw LLVM profile and captured-source report under
+`target/habeas/coverage/` (or the configured Cargo target directory). These are
+disposable build artifacts: never commit them. Building the book only reads saved
+coverage.
+
+For full verification, run `habeas test` to collect workspace coverage and then
+check it. In CI, run `habeas coverage -- --workspace`, followed on success by
+`habeas coverage-check`. The checker requires 80% instrumented-line coverage per
+first-party Rust file and a current accepted explanation for each function with
+zero execution or no measurement. Use an ordinary `habeas:coverage` citation
+with a prose rationale and author its independent citation review with
+`habeas author`. File exceptions do not waive individual functions or increase
+coverage figures. Checking saved coverage calls no model and runs no tests.
+
+Collection alone does not enforce coverage. Add both steps to project CI using
+the bundled [CI example](assets/skills/habeas/references/ci.md).
+`habeas setup` configures collection and static validation; it does not install
+a CI workflow. After updating Habeas, run `cargo agents sync` to refresh the
+bundled skills and their CI example.

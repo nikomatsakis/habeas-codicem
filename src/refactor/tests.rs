@@ -28,6 +28,37 @@ fn mappings(entries: &[(&str, &str, &str)]) -> Mappings {
     mappings
 }
 
+// {test}`requirements.refactor.invalid_mappings`
+#[test]
+fn library_errors_preserve_usage_messages_and_filesystem_failure_kinds() {
+    let root = tempfile::tempdir().unwrap();
+    fs::create_dir(root.path().join("md")).unwrap();
+    fs::write(root.path().join("book.toml"), "[book]\nsrc = 'md'\n").unwrap();
+    fs::write(
+        root.path().join("md/rules.md"),
+        ":::{req} ready\nReady.\n:::\n",
+    )
+    .unwrap();
+    let error = refactor(root.path(), &["bad-mapping".into()], false).unwrap_err();
+    assert!(matches!(error, RefactorError::Usage(_)));
+    assert!(
+        error.to_string().contains("expected <old>=<new>"),
+        "{error}"
+    );
+    let missing = root.path().join("missing-project");
+    let cause = fs::canonicalize(&missing).unwrap_err();
+    let error = refactor(&missing, &["old=new".into()], false).unwrap_err();
+    assert_eq!(error.to_string(), cause.to_string());
+    match error {
+        RefactorError::Io(error) => assert_eq!(error.kind(), io::ErrorKind::NotFound),
+        RefactorError::Usage(message) => {
+            panic!("filesystem failure became a usage error: {message}")
+        }
+    }
+    assert!(!root.path().join("evidence").exists());
+    assert!(!missing.exists());
+}
+
 // {test}`requirements.refactor.mappings`
 #[test]
 fn mappings_cover_names_paths_and_nodes_beneath_them() {

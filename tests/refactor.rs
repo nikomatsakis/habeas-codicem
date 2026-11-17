@@ -1,6 +1,8 @@
 //! `habeas refactor` end to end: evidence stays valid across moves whose
 //! content is unchanged, and only those.
 
+mod common;
+
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
@@ -31,6 +33,7 @@ fn project() -> TempDir {
     .unwrap();
     fs::write(root.join("data.txt"), "checked data\n").unwrap();
     fs::write(root.join("src/config.rs"), config_source("")).unwrap();
+    common::coverage_setup(root);
     temp
 }
 
@@ -425,6 +428,8 @@ fn invalid_mappings_fail_with_a_usage_error_and_change_nothing() {
     for (args, message) in [
         (vec!["--map", "rules.load"], "expected <old>=<new>"),
         (vec!["--map", "=core.load"], "expected <old>=<new>"),
+        (vec!["--map", "rules.check="], "expected <old>=<new>"),
+        (vec!["--map", "src/config.rs="], "expected <old>=<new>"),
         (vec!["--map", "rules.check=rules.check"], "different"),
         (vec!["--map", "rules.load=core.load"], "ambiguous"),
         (

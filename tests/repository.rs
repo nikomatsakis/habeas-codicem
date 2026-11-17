@@ -20,6 +20,123 @@ fn repository_toml(path: &str) -> toml::Table {
     repository_file(path).parse().unwrap()
 }
 
+// {test}`requirements.install.symposium`
+// {test}`requirements.install.symposium.skill_hook`
+#[test]
+fn getting_started_documents_symposium_setup_and_skill_migration() {
+    for path in ["README.md", "md/getting_started.md"] {
+        let text = repository_file(path);
+        for phrase in [
+            "cargo install symposium",
+            "cargo agents init",
+            "cargo add --dev habeas",
+            "cargo agents sync",
+            "Enable",
+            "Ask me later",
+            "session",
+            "hook",
+            "`habeas` skill",
+            "habeas setup",
+            "updating",
+            "local edits",
+        ] {
+            assert!(text.contains(phrase), "{path} omits {phrase}");
+        }
+        let paragraphs = text
+            .split("\n\n")
+            .map(|paragraph| paragraph.split_whitespace().collect::<Vec<_>>().join(" "))
+            .collect::<Vec<_>>();
+        assert!(
+            paragraphs
+                .iter()
+                .any(|paragraph| paragraph.contains("hook tells")
+                    && paragraph.contains("load the `habeas` skill before starting any work")
+                    && paragraph.contains("session")),
+            "{path}: hook must direct skill loading"
+        );
+        let advice = if path == "README.md" {
+            "The hook also checks the project and advises the agent to run `habeas setup` when configuration is incomplete"
+        } else {
+            "The hook also checks setup: if configuration is missing or incompatible, it advises the agent to run `habeas setup`"
+        };
+        assert!(
+            text.contains(advice),
+            "{path}: missing conditional setup advice"
+        );
+        assert!(
+            paragraphs
+                .iter()
+                .any(|paragraph| paragraph.contains("cargo agents sync")
+                    && paragraph.contains("after updating the Habeas dependency to refresh")),
+            "{path}: missing update/sync/refresh guidance"
+        );
+        assert!(
+            paragraphs.iter().any(|paragraph| {
+                paragraph.contains(".agents/skills/habeas-*")
+                    && paragraph.contains("local edits")
+                    && paragraph.contains("different names or elsewhere")
+                    && paragraph
+                        .find("Save")
+                        .zip(paragraph.find("remove those old copies"))
+                        .is_some_and(|(save, remove)| save < remove)
+                    && paragraph
+                        .find("remove those old copies")
+                        .zip(paragraph.rfind("sync"))
+                        .is_some_and(|(remove, sync)| remove < sync)
+            }),
+            "{path}: preserve customizations before removing copies and syncing"
+        );
+    }
+}
+
+// {test}`requirements.test-coverage.check.guidance`
+// {test}`requirements.test-coverage.check.exceptions.setup`
+#[test]
+fn shared_agent_guidance_documents_post_suite_checks_and_standard_explanations() {
+    let skill = repository_file("assets/skills/habeas/SKILL.md");
+    for phrase in [
+        "It collects coverage for the full workspace, then checks it",
+        "`habeas coverage -- --workspace` followed, only on success, by\n`habeas coverage-check`",
+        "static `habeas::validate()` test requires no prior execution coverage",
+        "Partly covered\nfunctions need no exception when their file meets its target",
+        "standard\n`{cite}` of `habeas:coverage`",
+        "rationale in fenced commentary or a Rust\ndoc comment",
+        "citation review with `habeas author`",
+        "Only current accepted review evidence permits the exception",
+        "No\nproject declaration or extra configuration is needed",
+    ] {
+        assert!(skill.contains(phrase), "agent guidance omits {phrase}");
+    }
+    let reference = repository_file("md/reference.md");
+    for phrase in [
+        "whole workspace, then check the saved results",
+        "Run the second command only after the first succeeds",
+        "it need not run last",
+    ] {
+        assert!(reference.contains(phrase), "reference omits {phrase}");
+    }
+    let example = repository_file("assets/skills/habeas/references/ci.md");
+    let yaml = example
+        .split_once("```yaml\n")
+        .unwrap()
+        .1
+        .split_once("\n```")
+        .unwrap()
+        .0;
+    let example: serde_json::Value = serde_saphyr::from_str(yaml).unwrap();
+    let steps = example["steps"].as_array().unwrap();
+    assert_eq!(steps[0]["run"], "habeas coverage -- --locked --workspace");
+    assert_eq!(steps[1]["run"], "habeas coverage-check");
+    assert_eq!(steps[2]["run"], "cargo test --locked --doc --workspace");
+    for step in &steps[..2] {
+        assert!(step.get("if").is_none(), "use the normal success condition");
+        assert!(
+            step.get("continue-on-error").is_none(),
+            "a failed gate must fail CI"
+        );
+    }
+}
+
 /// The lines of one top-level job in a GitHub Actions workflow, from its
 /// `  <name>:` line to the next top-level job.
 // {cite}`habeas:util`
@@ -94,6 +211,18 @@ fn mdbook_preprocessor_renders_definitions_between_stdin_and_stdout() {
         "{}",
         chapter.content
     );
+    let badge_rows = chapter
+        .content
+        .split("<span class=\"habeas-definition-badge\">")
+        .skip(1)
+        .map(|row| row.split("</span>").next().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(badge_rows.len(), 2, "{}", chapter.content);
+    for row in badge_rows {
+        assert!(row.contains("<img "), "{row}");
+        assert!(row.contains("class=\"habeas-detail-icon\""), "{row}");
+        assert_eq!(row.matches("</a>").count(), 2, "{row}");
+    }
     assert!(chapter.sub_items.is_empty());
     assert!(
         chapter.content.contains("href=\"#habeas-req-rules.ready\""),
@@ -126,7 +255,7 @@ fn mdbook_preprocessor_renders_definitions_between_stdin_and_stdout() {
                 _ => None,
             })
             .collect::<Vec<_>>(),
-        ["rules.ready", "rules.cites"]
+        ["Coverage gaps", "rules.ready", "rules.cites"]
     );
 }
 
@@ -184,6 +313,7 @@ fn book_links_to_the_repository_and_main_branch_edit_pages() {
 }
 
 // {test}`requirements.integration.ci`
+// {test}`requirements.test-coverage.check.guidance`
 #[test]
 fn ci_tests_pull_requests_and_main_then_deploys_the_book_from_main() {
     let workflow = repository_file(".github/workflows/ci.yml");
@@ -195,7 +325,10 @@ fn ci_tests_pull_requests_and_main_then_deploys_the_book_from_main() {
     let test = workflow_job(&workflow, "test-and-build");
     let steps = [
         "run: node --test .github/scripts/autofix.test.mjs",
-        "run: cargo test --locked --workspace",
+        "cargo build --release --locked -p habeas",
+        "cargo habeas coverage -- --locked --workspace",
+        "run: cargo habeas coverage-check",
+        "run: cargo test --locked --doc --workspace",
         "run: mdbook test",
         "run: mdbook build",
         "uses: actions/upload-pages-artifact@v4",
@@ -206,6 +339,21 @@ fn ci_tests_pull_requests_and_main_then_deploys_the_book_from_main() {
         .collect();
     assert!(positions.is_sorted(), "{test}");
     assert!(test.contains("with:\n          path: book\n"), "{test}");
+    let workflow_yaml: serde_json::Value = serde_saphyr::from_str(&workflow).unwrap();
+    let gate = workflow_yaml["jobs"]["test-and-build"]["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|step| step["run"] == "cargo habeas coverage-check")
+        .unwrap();
+    assert!(
+        gate.get("if").is_none(),
+        "check only after successful collection"
+    );
+    assert!(
+        gate.get("continue-on-error").is_none(),
+        "enforce coverage failures"
+    );
 
     let hook = workflow_job(&workflow, "symposium-hook");
     assert!(
@@ -273,6 +421,47 @@ fn release_workflow_runs_release_plz_with_secret_token_and_trusted_publishing() 
 
     let config = repository_toml("release-plz.toml");
     assert_eq!(config["workspace"]["release_always"].as_bool(), Some(false));
+}
+
+// {test}`requirements.integration.symposium`
+// {test}`requirements.test-coverage.check.guidance`
+#[test]
+fn published_package_contains_the_bundled_skills_and_ci_example() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let output = Command::new("cargo")
+        .args(["package", "--list", "--allow-dirty", "--offline"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let packaged = String::from_utf8(output.stdout).unwrap();
+    let manifest = repository_toml("Cargo.toml");
+    let source = manifest["package"]["metadata"]["symposium"]["skills"][0]["source"]["path"]
+        .as_str()
+        .unwrap();
+    let mut skills = 0;
+    for entry in fs::read_dir(root.join(source)).unwrap() {
+        let entry = entry.unwrap();
+        if entry.path().join("SKILL.md").is_file() {
+            let path = format!("{source}/{}/SKILL.md", entry.file_name().to_str().unwrap());
+            assert!(
+                packaged.lines().any(|file| file == path),
+                "package omits {path}"
+            );
+            skills += 1;
+        }
+    }
+    assert!(skills > 0, "the plugin's source directory contains skills");
+    assert!(
+        packaged
+            .lines()
+            .any(|file| file == format!("{source}/habeas/references/ci.md")),
+        "the CI reference must ship with the skill that links to it"
+    );
 }
 
 // {test}`requirements.integration.symposium_cli`

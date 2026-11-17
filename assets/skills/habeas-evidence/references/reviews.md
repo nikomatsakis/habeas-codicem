@@ -3,9 +3,12 @@
 ## Citation reviews
 
 Every source item outside the book with a `{cite}` other than `habeas:util`
-gets a citation review, which checks that each citation is sensible and should
-not be `{impl}` or `{test}`. Fix a false review by changing the references or
-the item.
+gets a citation review. For project requirements and examples it checks that
+the citation should not be `{impl}` or `{test}`. For built-ins it checks their
+permitted forms and stated criteria. A `habeas:coverage` citation needs a
+substantive justification for incomplete execution coverage, in fenced
+commentary or a Rust doc comment; acknowledging a gap is insufficient.
+Fix a false review by changing the references, justification, or item.
 
 ## Site reviews
 

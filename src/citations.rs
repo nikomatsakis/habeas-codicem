@@ -268,7 +268,7 @@ pub(crate) fn validate(
 
 /// Validates one review file against its current item.
 // {impl}`requirements.ci.errors`
-fn validate_review(
+pub(crate) fn validate_review(
     root: &Path,
     label: &str,
     item: &CitationItem,
@@ -324,6 +324,8 @@ fn validate_review(
             .map(|(index, citation)| {
                 parse_citation(citation, &format!("{label}: citations[{index}]"), errors)
             })
+            .collect::<Vec<_>>()
+            .into_iter()
             .collect::<Option<Vec<_>>>();
         if let Some(parsed) = parsed
             && !same_citations(&parsed, &item.citations)

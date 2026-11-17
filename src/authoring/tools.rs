@@ -1351,6 +1351,7 @@ mod tests {
     // {test}`requirements.authoring.additional_read`
     // {test}`requirements.authoring.github_reads`
     // {test}`requirements.authoring.file_discovery`
+    // {test}`requirements.authoring.read_denial`
     #[test]
     fn additional_read_flow_searches_outlines_and_reads_a_rust_file() {
         let root = project();
@@ -1368,6 +1369,15 @@ mod tests {
         )
         .unwrap();
         let mut sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        for arguments in [json!({}), json!({"issue": 7})] {
+            let error = dispatch(&sources, "github", &arguments).err().unwrap();
+            assert!(
+                error
+                    .to_string()
+                    .contains("github expects exactly an issue field"),
+                "{error}"
+            );
+        }
         // GitHub reads return tool errors here, since unit tests never contact
         // GitHub, and are never evidence inputs.
         for (issue, message) in [
@@ -2042,43 +2052,36 @@ mod tests {
             !["evidence", "old-output", "old.json"].contains(&entry["path"].as_str().unwrap())
         }));
         for path in ["evidence/old.json", "./evidence/old.json"] {
-            assert!(
-                dispatch(&sources, "habeas", &json!({"file":path, "line_start":1}))
-                    .err()
-                    .unwrap()
-                    .to_string()
-                    .contains("generated evidence")
-            );
-        }
-        assert!(
-            dispatch(
-                &sources,
-                "habeas",
-                &json!({"file":"evidence/generated.rs", "item":"fn[generated]"})
-            )
-            .err()
-            .unwrap()
-            .to_string()
-            .contains("generated evidence")
-        );
-        assert!(
-            dispatch(&sources, "list_files", &json!({"path":"evidence"}))
+            let error = dispatch(&sources, "habeas", &json!({"file":path, "line_start":1}))
                 .err()
-                .unwrap()
-                .to_string()
-                .contains("generated evidence")
-        );
-        assert!(
-            dispatch(
-                &sources,
-                "ripgrep",
-                &json!({"path":"evidence", "pattern":"needle"})
-            )
-            .err()
-            .unwrap()
-            .to_string()
-            .contains("generated evidence")
-        );
+                .unwrap();
+            assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+            assert!(error.to_string().contains("evidence/old.json"), "{error}");
+            assert!(error.to_string().contains("generated evidence"), "{error}");
+            assert!(sources.recorded_inputs().is_empty());
+        }
+        for (name, arguments) in [
+            (
+                "habeas",
+                json!({"file":"evidence/generated.rs", "item":"fn[generated]"}),
+            ),
+            ("list_files", json!({"path":"evidence"})),
+            ("ripgrep", json!({"path":"evidence", "pattern":"needle"})),
+            (
+                "ast_grep",
+                json!({"path":"evidence", "language":"rust","rule":{"rule":{"kind":"function_item"}}}),
+            ),
+        ] {
+            let error = dispatch(&sources, name, &arguments).err().unwrap();
+            let path = arguments["file"]
+                .as_str()
+                .or_else(|| arguments["path"].as_str())
+                .unwrap();
+            assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+            assert!(error.to_string().contains(path), "{error}");
+            assert!(error.to_string().contains("generated evidence"), "{error}");
+            assert!(sources.recorded_inputs().is_empty());
+        }
         #[cfg(unix)]
         {
             for path in ["old.json", "old-output/old.json"] {
@@ -2221,6 +2224,11 @@ mod tests {
             let message = error.to_string();
             assert!(message.contains("git add"), "{message}");
             assert!(message.contains("habeas.toml allow rule"), "{message}");
+            let path = arguments["file"]
+                .as_str()
+                .or_else(|| arguments["path"].as_str())
+                .unwrap();
+            assert!(message.contains(path), "{message}");
         }
         // The harness neither stages nor permits the files itself.
         let status = std::process::Command::new("git")
@@ -2475,6 +2483,15 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(paths.contains(&"generated"));
         assert!(paths.contains(&external.path().to_str().unwrap()));
+        let generated = dispatch(&sources, "list_files", &json!({"path":"generated"})).unwrap();
+        assert_eq!(
+            generated.result,
+            json!([
+                {"path":"generated/visible.rs", "kind":"file"},
+                {"path":"generated/visible.txt", "kind":"file"}
+            ])
+        );
+        assert!(generated.inputs.is_empty());
         let external_listing =
             dispatch(&sources, "list_files", &json!({"path":external.path()})).unwrap();
         assert_eq!(
@@ -2599,6 +2616,17 @@ mod tests {
                 .any(|entry| entry["path"] == "target/debug/build/fixture-hash/out")
         );
         let search = dispatch(&sources, "ripgrep", &json!({"pattern":"generated_needle"})).unwrap();
+        let generated = dispatch(
+            &sources,
+            "list_files",
+            &json!({"path":"target/debug/build/fixture-hash/out"}),
+        )
+        .unwrap();
+        assert_eq!(
+            generated.result,
+            json!([{"path":"target/debug/build/fixture-hash/out/generated.rs","kind":"file"}])
+        );
+        assert!(generated.inputs.is_empty());
         assert_eq!(matched(&search).len(), 1);
         let structural_arguments =
             json!({"language":"rust","rule":{"rule":{"pattern":"pub fn generated_needle() {}"}}});
@@ -2666,6 +2694,11 @@ mod tests {
             let error = dispatch(&denied, name, &arguments).err().unwrap();
             assert_eq!(error.kind(), io::ErrorKind::PermissionDenied, "{error}");
             assert!(error.to_string().contains("disallowed"), "{error}");
+            let path = arguments["file"]
+                .as_str()
+                .or_else(|| arguments["path"].as_str())
+                .unwrap();
+            assert!(error.to_string().contains(path), "{error}");
         }
     }
 
@@ -2702,6 +2735,7 @@ mod tests {
     // {test}`requirements.authoring.read_denial`
     #[test]
     // {test}`requirements.references.authoring_inputs`
+    // {test}`requirements.authoring.read_denial`
     fn references_list_names_and_flattened_sites_without_recording_inputs() {
         let root = project();
         fs::write(
@@ -2847,7 +2881,13 @@ mod tests {
                 "accepted {selection:?}"
             );
         }
-        assert!(dispatch(&sources, "references", &json!({"selection": 1})).is_err());
+        let error = dispatch(&sources, "references", &json!({"selection": 1}))
+            .err()
+            .unwrap();
+        assert!(
+            error.to_string().contains("selection must be a string"),
+            "{error}"
+        );
         assert!(
             dispatch(
                 &sources,
@@ -3359,6 +3399,11 @@ mod tests {
             let error = dispatch(&sources, "outline", &arguments).err().unwrap();
             assert!(error.to_string().contains(message), "{arguments}: {error}");
         }
+        let error = dispatch(&sources, "outline", &json!({})).err().unwrap();
+        assert!(
+            error.to_string().contains("file must be a string"),
+            "{error}"
+        );
 
         fs::write(
             root.path().join("habeas.toml"),
@@ -3439,6 +3484,23 @@ mod tests {
                 .starts_with("use@")
         );
         assert_eq!(whole.result["inputs"].as_array().unwrap().len(), 3);
+        fs::write(root.path().join("notes.txt"), "alpha\nbeta\ngamma\ndelta\n").unwrap();
+        let plain = dispatch(
+            &sources,
+            "habeas",
+            &json!({"file":"notes.txt","line_start":2,"line_end":3}),
+        )
+        .unwrap();
+        let inputs = plain.result["inputs"].as_array().unwrap();
+        assert_eq!(inputs.len(), 2);
+        assert_eq!(inputs[0]["text"], json!(["beta"]));
+        assert_eq!(inputs[1]["text"], json!(["gamma"]));
+        assert_ne!(inputs[0]["item"], inputs[1]["item"]);
+        for input in inputs {
+            assert!(input["item"].as_str().unwrap().starts_with("line@"));
+            assert!(input.get("line_start").is_none());
+            assert!(input.get("line_end").is_none());
+        }
     }
 
     // {test}`requirements.authoring.text_search`
@@ -3989,6 +4051,10 @@ mod tests {
     #[test]
     fn ripgrep_referencing_searches_only_referencing_files_or_nodes() {
         let root = referencing_project();
+        fs::write(
+            root.path().join("src/gap.rs"),
+            "// :::{fixme} requirements.ready\n// This boundary needs a test.\n// :::\nfn gap() { needle(); }\n",
+        ).unwrap();
         let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
         let search = |referencing: Value, context: u64| {
             dispatch(
@@ -4007,6 +4073,18 @@ mod tests {
                 "src/lib.rs#fn[unrelated]"
             ]
         );
+        for scope in ["file", "node"] {
+            assert_eq!(
+                found(
+                    &search(
+                        json!({"selection":"requirements.ready","roles":["fixme"],"scope":scope}),
+                        0
+                    )
+                    .unwrap()
+                ),
+                ["src/gap.rs#fn[gap]"]
+            );
+        }
         // Roles narrow the references; a glob selects several definitions,
         // including declaration anchors.
         assert_eq!(

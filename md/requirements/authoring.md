@@ -352,14 +352,17 @@ careful reviewer would reach from the same text and sources.
 
 # Your task
 
-The mandatory inputs at the end contain the item and the declarations of the
-requirements and examples it cites.
+The mandatory inputs at the end contain the source item and the declarations
+or fixed built-in text of its citations.
 
-Assess only each listed citation's role. Decide whether the item implements part
-of a cited requirement, not whether it does so correctly. Do not look for
-requirements or examples the item does not cite, except as step 3 requires.
+Assess each listed citation using the rules below. For citations of project
+requirements and examples, decide whether the item implements part of a cited
+requirement, not whether it does so correctly. Do not look for requirements or
+examples the item does not cite, except as needed to assess a built-in's stated
+citation criteria.
 
-1. Apply the reference procedure to each citation, in order: if the item is a
+1. For citations of project requirements and examples, apply the reference
+   procedure in order: if the item is a
    test designed to verify the cited requirement or example, it calls for
    {test}; otherwise, if it is a root of the cited definition's
    implementation as the reference roles describe, it calls for {impl};
@@ -370,7 +373,11 @@ requirements or examples the item does not cite, except as step 3 requires.
    which this calls for a different role, or for no reference at all, is a gap.
 2. A citation of a requirement or example the item also references with {impl}
    or {test} is redundant and is a gap.
-3. For each citation, treat the commentary as context.
+3. Treat commentary as context. For a built-in citation, check its permitted
+   reference roles and forms and assess any citation-review criteria stated in
+   its fixed text using the source and commentary.
+   Read other sources when a stated reason relies on them.
+   Record a gap when the stated criteria are not met.
 
 # How to judge
 
@@ -378,8 +385,8 @@ requirements or examples the item does not cite, except as step 3 requires.
 
 # Submitting
 
-Choose true when your task finds no gap, {"FIXME": ["..."]} when every gap is
-acknowledged, and false otherwise. You MUST end by calling submit_judgment
+Choose true when your task finds no gap, and false otherwise. A citation review
+MUST NOT submit a FIXME determination. You MUST end by calling submit_judgment
 with determination and rationale until one submission is accepted.
 A rejected submission does not complete the assessment. A judgment written in your
 reply text is not accepted.
@@ -390,7 +397,7 @@ reply text is not accepted.
 
 Item under review: {{item_file}} {{item_selector}}
 Citations to check: {{citations}}
-Judge against: the text of the requirements and examples it cites.
+Judge against: the declarations or fixed built-in text it cites.
 
 # Mandatory inputs
 

@@ -1626,6 +1626,161 @@ mod tests {
 
     use super::*;
 
+    // {test}`requirements.authoring.refresh`
+    #[tokio::test]
+    async fn default_authoring_apis_preserve_current_records_without_configuration() {
+        let project = inputs::tests::project();
+        let state = tempfile::tempdir().unwrap();
+        let subject = "requirements.ready";
+        let mut sources = AssessmentSources::prepare(project.path(), subject).unwrap();
+        let mut usage = UsageLog::start(state.path(), project.path(), subject).unwrap();
+        let (_, record) = assess(&JudgmentProvider(json!(true)), &mut sources, &mut usage)
+            .await
+            .unwrap();
+        let path = project.path().join("evidence/requirements.ready.json");
+        let bytes = serde_json::to_vec_pretty(&record).unwrap();
+        fs::create_dir(path.parent().unwrap()).unwrap();
+        fs::write(&path, &bytes).unwrap();
+        let before_usage = fs::read(&usage.path).unwrap();
+        // An invalid selection would fail if any API resolved model configuration.
+        let selection = Some("unconfigured-fixture-backend");
+        let outcome = author_all(project.path(), selection).await.unwrap();
+        assert_eq!(outcome.unchanged, 1);
+        assert!(outcome.completed.is_empty());
+        assert!(outcome.failures.is_empty());
+        assert!(outcome.deleted.is_empty());
+        assert!(outcome.policy.is_none());
+        assert!(!outcome.cancelled);
+        assert!(
+            author_evidence(project.path(), subject, selection)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            author_evidence_with_output(project.path(), subject, selection, EvidenceOutput::File)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            fs::read(path).unwrap(),
+            bytes,
+            "current evidence is preserved byte for byte"
+        );
+        assert_eq!(fs::read(&usage.path).unwrap(), before_usage);
+        assert_eq!(
+            fs::read_dir(state.path().join("authoring/usage"))
+                .unwrap()
+                .count(),
+            1,
+            "skipped assessments start no usage records"
+        );
+    }
+
+    // {test}`requirements.authoring.usage_storage`
+    #[test]
+    fn failed_persistence_records_failure_or_cancellation_and_retains_the_cause() {
+        let project = inputs::tests::project();
+        let state = tempfile::tempdir().unwrap();
+        for (kind, expected, block_usage) in [
+            (io::ErrorKind::PermissionDenied, "failed", false),
+            (io::ErrorKind::Interrupted, "cancelled", false),
+            (io::ErrorKind::PermissionDenied, "failed", true),
+            (io::ErrorKind::Interrupted, "cancelled", true),
+        ] {
+            let subject = AuthoringSubject::Definition("requirements.ready".into());
+            let usage = UsageLog::start(state.path(), project.path(), &subject.label()).unwrap();
+            let path = usage.path.clone();
+            let pending = PendingAssessment {
+                subject,
+                record: json!({}),
+                outcome: AuthoringOutcome {
+                    subject: "requirements.ready".into(),
+                    backend: "fixture".into(),
+                    model: "fixture".into(),
+                    evidence_path: None,
+                    usage_path: path.clone(),
+                    determination: Judgment::True,
+                    rationale: "Fixture assessment.".into(),
+                    policy: AssessmentPolicy::Once,
+                },
+                usage,
+            };
+            if block_usage {
+                fs::remove_file(&path).unwrap();
+                fs::create_dir(&path).unwrap();
+            }
+            let error = pending.failed(io::Error::new(kind, "cannot persist fixture evidence"));
+            assert_eq!(error.kind(), kind, "retain the original failure kind");
+            let message = error.to_string();
+            assert!(
+                message.contains("cannot persist fixture evidence"),
+                "{message}"
+            );
+            assert!(message.contains(path.to_str().unwrap()), "{message}");
+            if block_usage {
+                assert!(message.contains("cannot record failed usage"), "{message}");
+                assert!(
+                    path.is_dir(),
+                    "failed usage writes do not replace the obstruction"
+                );
+            } else {
+                let record: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+                assert_eq!(record["outcome"], expected);
+                assert_eq!(record["evidence_written"], false);
+                assert!(!record["end_time_ms"].is_null());
+                assert!(record["determination"].is_null());
+                assert!(!message.contains("cannot record failed usage"));
+            }
+            assert!(
+                !project
+                    .path()
+                    .join("evidence/requirements.ready.json")
+                    .exists()
+            );
+        }
+    }
+
+    // {test}`requirements.authoring.output_limit`
+    #[tokio::test]
+    async fn a_cut_off_response_without_a_known_output_limit_fails_without_continuing() {
+        struct CutOffProvider(std::cell::Cell<usize>);
+        impl CompletionProvider for CutOffProvider {
+            async fn complete(&self, request: CompletionRequest) -> io::Result<CompletionResponse> {
+                self.0.set(self.0.get() + 1);
+                Ok(JudgmentProvider(json!(true))
+                    .complete(request)
+                    .await?
+                    .with_finish_reason(FinishReason::Length))
+            }
+        }
+        let project = inputs::tests::project();
+        let state = tempfile::tempdir().unwrap();
+        let mut sources = AssessmentSources::prepare(project.path(), "requirements.ready").unwrap();
+        let mut usage =
+            UsageLog::start(state.path(), project.path(), &sources.subject_name).unwrap();
+        let provider = CutOffProvider(std::cell::Cell::new(0));
+        let error = assess(&provider, &mut sources, &mut usage)
+            .await
+            .unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("response was incomplete"), "{message}");
+        assert!(
+            message.contains("output limit the configuration does not set"),
+            "{message}"
+        );
+        assert_eq!(
+            provider.0.get(),
+            1,
+            "an unknown limit must not start a continuation"
+        );
+        assert!(
+            usage.record.determination.is_none(),
+            "the cut-off judgment is not accepted"
+        );
+    }
+
     // {test}`requirements.authoring.submission`
     struct JudgmentProvider(Value);
 
@@ -2398,6 +2553,9 @@ mod tests {
             "a {fixme} naming a\n  closed issue no longer acknowledges its gap",
             "including\n  any acknowledged gaps",
             "A {fixme} describing a gap that your review establishes\n  no longer exists within its task's scope is itself a gap.",
+            "A plain FIXME or TODO comment is\n  not an acknowledgment.",
+            "An acknowledgment of an implementation bug alone does not establish a\n  test-adequacy gap or acknowledge a different missing-test or assertion gap.",
+            "Do not inspect implementation correctness merely to validate an out-of-scope\n  acknowledgment.",
         ] {
             assert!(
                 prompt.contains(guidance),
@@ -4006,6 +4164,97 @@ mod tests {
         assert_eq!(
             fill("{{a}} {{b}} {{c}}", &[("a", "{{b}}"), ("b", "2")]),
             "{{b}} 2 {{c}}"
+        );
+    }
+
+    // {test}`requirements.test-coverage.check.exceptions.author`
+    // {test}`requirements.references.citation_review`
+    // {test}`requirements.authoring.citation_prompt`
+    #[tokio::test]
+    async fn coverage_explanations_use_standard_citation_authoring_and_freshness() {
+        let project = inputs::tests::project();
+        let source = "// :::{cite} habeas:coverage\n// Defensive invariant abort, inaccessible through the API.\n// :::\nfn helper() {}\n";
+        fs::write(project.path().join("src/lib.rs"), source).unwrap();
+        let subject = AuthoringSubject::parse("citations:src/lib.rs#fn[helper]");
+        let mut sources = subject.sources(project.path()).unwrap();
+        let mandatory = sources.mandatory_inputs().to_vec();
+        assert_eq!(mandatory[0]["item"], "fn[helper]");
+        assert!(
+            mandatory[0]["text"].to_string().contains("fn helper() {}"),
+            "{mandatory:?}"
+        );
+        assert!(
+            mandatory[0]["hash"]
+                .as_str()
+                .is_some_and(|hash| hash.len() == 64),
+            "{mandatory:?}"
+        );
+        assert!(mandatory.iter().any(|input| {
+            input["builtin"] == "habeas:coverage"
+                && input["text"][0]
+                    .as_str()
+                    .unwrap()
+                    .contains("difficulty alone")
+        }));
+        let prompt = initial_prompt(&sources).unwrap().joined();
+        assert!(prompt.contains("Defensive invariant abort"));
+        assert!(prompt.contains("For a built-in citation"));
+        assert!(prompt.contains("MUST NOT submit a FIXME"));
+        let state = tempfile::tempdir().unwrap();
+        let mut usage = UsageLog::start(state.path(), project.path(), &subject.label()).unwrap();
+        let provider = RecordingProvider::new(vec![judgment(
+            json!(true),
+            "The supplied source and explanation support the citation.",
+        )]);
+        let (_, record) = assess(&provider, &mut sources, &mut usage).await.unwrap();
+        assert_eq!(record["determination"], true);
+        assert_eq!(record["citations"][0]["name"], "habeas:coverage");
+        assert!(
+            record["inputs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|input| input["file"] == "src/lib.rs"
+                    && input["item"] == "fn[helper]"
+                    && input["hash"] == mandatory[0]["hash"]),
+            "{record:?}"
+        );
+        assert!(
+            record["inputs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|input| input.get("builtin").is_none())
+        );
+        let path = subject.evidence_path(project.path());
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
+        fs::write(
+            project.path().join("src/lib.rs"),
+            source.replace("inaccessible", "reachable"),
+        )
+        .unwrap();
+        let definitions = crate::evidence::load_definitions(project.path()).unwrap();
+        let mut errors = Vec::new();
+        let references = crate::evidence::collect_references(project.path(), &mut errors);
+        let outlines = crate::inputs::OutlineCache::default();
+        let item =
+            crate::citations::citation_items(project.path(), &definitions, &references, &outlines)
+                .remove(&("src/lib.rs".into(), "fn[helper]".into()))
+                .unwrap();
+        crate::citations::validate_review(
+            project.path(),
+            &item.review_path(),
+            &item,
+            &definitions,
+            &outlines,
+            &mut errors,
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("citations changed")),
+            "{errors:?}"
         );
     }
 

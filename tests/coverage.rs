@@ -1,5 +1,7 @@
 //! Rust item coverage warnings from the recent history of evidence files.
 
+mod common;
+
 use std::fs;
 use std::path::Path;
 use std::process::Command;
@@ -31,6 +33,7 @@ fn project() -> TempDir {
     git(root, &["init", "--quiet"]);
     git(root, &["config", "user.email", "test@example.com"]);
     git(root, &["config", "user.name", "Test"]);
+    common::coverage_setup(root);
     temp
 }
 

@@ -1,6 +1,8 @@
 //! `habeas::validate()` reads the process's current directory, so each case
 //! runs it in a child copy of this test binary started in a fixture project.
 
+mod common;
+
 use std::fs;
 use std::path::Path;
 use std::process::{Command, Output};
@@ -39,6 +41,7 @@ fn validate_in(cwd: &Path, state: &Path) -> Output {
 }
 
 // {test}`requirements.integration.validate`
+// {test}`requirements.test-coverage.check.guidance`
 #[test]
 fn validate_fails_the_test_with_every_error_and_authoring_instructions() {
     let temp = TempDir::new().unwrap();
@@ -92,6 +95,8 @@ fn validate_fails_the_test_with_every_error_and_authoring_instructions() {
             .collect::<Vec<_>>()
     );
 
+    common::coverage_setup(&root);
+
     // Valid evidence passes.
     fs::write(root.join("md/rules.md"), ":::{req} ready\nReady.\n:::\n").unwrap();
     fs::remove_file(root.join("evidence/rules.broken.json")).unwrap();
@@ -109,6 +114,10 @@ fn validate_fails_the_test_with_every_error_and_authoring_instructions() {
     .unwrap();
     let output = validate_in(&root, &state);
     assert!(output.status.success(), "{output:?}");
+    assert!(
+        !root.join("target/habeas/coverage").exists(),
+        "static validation needs no execution data"
+    );
 }
 
 // {test}`requirements.integration.validate`

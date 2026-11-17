@@ -130,9 +130,12 @@ states its obligations and is documented in Habeas's reference documentation, an
 MUST state which reference roles may use it. References MUST resolve built-in
 names alongside project definitions. So that every book stands alone, the book
 MUST render a reference to a built-in as a badge without a link whose hover text
-gives the built-in's full text. Built-ins MUST NOT require or permit evidence
-files and MUST NOT appear in the requirements index, `habeas status`, or the
-missing-evidence check of {cite}`requirements.ci.coverage`. A project definition
+gives the built-in's full text. Built-ins themselves MUST NOT require or permit
+definition evidence files and MUST NOT appear as definitions in the requirements
+index, `habeas status`, or the missing-evidence check of
+{cite}`requirements.ci.coverage`. Per-source citation reviews under
+{cite}`requirements.references.citation_review` MAY be required for references
+to a built-in. A project definition
 MUST NOT use a full name beginning with `habeas:`; validation MUST report one,
 and the `:` character already makes such names invalid under
 {cite}`requirements.ci.identifiers`. Validation MUST report a reference to a
@@ -147,10 +150,15 @@ MUST have a citation review: an assessment of that item's citations, recorded at
 `evidence/citations/<file>/<selector>.json`, where `<file>` is the item's
 project-relative path, `<selector>` is its outline selector with every `/` and
 `%` percent-encoded, and the root node uses `_root`. The review MUST use the
-prompt defined by {cite}`requirements.authoring.citation_prompt`. The reviewer MUST assess, for each citation,
-whether the item should be re-checked or kept in sync when the cited definition
-changes, and whether the reference procedure of
-{cite}`requirements.references.procedure` calls for `{impl}` or `{test}` instead. Mandatory inputs,
+prompt defined by {cite}`requirements.authoring.citation_prompt`. For citations
+of project requirements and examples, the reviewer MUST assess whether the item
+should be re-checked or kept in sync when the cited definition changes, and
+whether the reference procedure of
+{cite}`requirements.references.procedure` calls for `{impl}` or `{test}` instead.
+For citations of built-ins, the reviewer MUST check the permitted reference
+roles and forms and any citation-review criteria stated in the built-in's fixed
+text, using the item's source and commentary. A permitted citation role alone
+MUST NOT suffice when the fixed text states additional criteria. Mandatory inputs,
 under {cite}`requirements.authoring.mandatory_inputs`, MUST be the item's outline
 node, each cited declaration or built-in text, and the citations' commentary. The record MUST contain the item's file and selector,
 its citations by role, name, and commentary, `determination`, `rationale`, and

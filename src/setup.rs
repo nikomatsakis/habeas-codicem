@@ -82,6 +82,7 @@ pub(crate) fn write_new_or_same(path: &Path, content: &str) -> Result<(), Box<dy
     Ok(())
 }
 
+// {impl}`requirements.test-coverage.setup`
 // {impl}`requirements.cli.mdbook`
 pub(crate) fn run(local_crate: Option<&Path>) -> Result<(), Box<dyn Error>> {
     let root = project_root()?;
@@ -101,6 +102,7 @@ pub(crate) fn run(local_crate: Option<&Path>) -> Result<(), Box<dyn Error>> {
     if !source_dir.join("SUMMARY.md").is_file() {
         return Err(format!("cannot find mdBook SUMMARY.md in {}", source_dir.display()).into());
     }
+    let (nextest_path, nextest_source) = habeas::execution_coverage::configure(&root)?;
 
     let css_path = source_dir.join("habeas.css");
     let test_path = root.join("tests/habeas.rs");
@@ -174,13 +176,19 @@ pub(crate) fn run(local_crate: Option<&Path>) -> Result<(), Box<dyn Error>> {
     write_new_or_same(&css_path, BADGE_CSS)?;
     write_new_or_same(&test_path, TEST_SOURCE)?;
     fs::write(&book_path, book.to_string())?;
+    fs::create_dir_all(nextest_path.parent().unwrap())?;
+    fs::write(nextest_path, nextest_source)?;
     println!("Habeas configured in {}", root.display());
     Ok(())
 }
 
 // {impl}`requirements.cli.setup_project`
+// {impl}`requirements.integration.symposium_setup_hook`
 // {cite}`requirements.cli.setup_css`
 pub(crate) fn is_configured(root: &Path) -> bool {
+    if habeas::execution_coverage::validate_setup(root).is_err() {
+        return false;
+    }
     let manifest = match fs::read_to_string(root.join("Cargo.toml"))
         .ok()
         .and_then(|source| source.parse::<DocumentMut>().ok())

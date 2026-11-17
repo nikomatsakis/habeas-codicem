@@ -1,3 +1,5 @@
+mod common;
+
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
@@ -683,6 +685,7 @@ fn acknowledged_empty_input_boundary_is_explained_and_accepted() {
         json!({"determination":{"FIXME":["example/app#125"]},"rationale":rationale}),
     )])]);
     let fixture = Fixture::new(&server.endpoint);
+    common::coverage_setup(&fixture.project);
     fs::write(fixture.project.join("md/requirements.md"), ":::{req} ready\nThe readiness check MUST accept every string, including the empty string.\n:::\n").unwrap();
     fs::write(fixture.project.join("src/lib.rs"), "// {impl}`requirements.ready`\n// :::{fixme} requirements.ready\n// :github: example/app#125\n// The empty-string boundary is not tested.\n// :::\npub fn ready(input: &str) -> bool { !input.is_empty() }\n// {test}`requirements.ready`\nfn ready_test() { assert!(ready(\"nonempty\")); }\n").unwrap();
     let output = fixture.run(&["author", SUBJECT]);
@@ -729,6 +732,7 @@ fn acknowledged_empty_input_boundary_is_explained_and_accepted() {
 // {test}`requirements.authoring.usage_storage`
 // {test}`requirements.configuration.serialization`
 #[test]
+// {test}`requirements.configuration.documentation`
 fn authoring_uses_nearest_workspace_configuration_without_a_user_file() {
     let server = Server::start(vec![reply(vec![call(
         "submit",
@@ -1398,6 +1402,7 @@ fn verbose_single_author_reports_only_false_rationale_without_source_inputs() {
             json!({"determination": determination, "rationale": rationale}),
         )])]);
         let fixture = Fixture::new(&server.endpoint);
+        common::coverage_setup(&fixture.project);
         let output = fixture.run(&["author", SUBJECT, flag]);
         assert!(output.status.success(), "{output:?}");
         assert_eq!(server.finish().len(), 1);
@@ -2827,6 +2832,10 @@ fn skill_files(name: &str) -> &'static [(&'static str, &'static str)] {
         "habeas" => &[
             ("SKILL.md", include_str!("../assets/skills/habeas/SKILL.md")),
             (
+                "references/ci.md",
+                include_str!("../assets/skills/habeas/references/ci.md"),
+            ),
+            (
                 "references/distributed-requirements.md",
                 include_str!("../assets/skills/habeas/references/distributed-requirements.md"),
             ),
@@ -3042,6 +3051,8 @@ fn home_markers(home: &str) -> &'static [&'static str] {
             "omit a leading `reqs/` and a trailing `/index` or `/README`",
             "silently defines nothing",
             "needs a longer outer fence such as `::::{req}`",
+            "Profiles, reports, and captured source under the Cargo target directory",
+            "Install prerequisites",
         ],
         "habeas-requirements" => &[
             "Write drafts from the request straight into the chapter",
@@ -3058,7 +3069,8 @@ fn home_markers(home: &str) -> &'static [&'static str] {
             "## Fixing findings",
             "An item has recent coverage when it has its own reference, or when a recent version of an existing evidence record or review read it",
             "A FIXME judgment, such as",
-            "gets a citation review, which checks that each citation is sensible",
+            "gets a citation review. For project requirements and examples it checks that",
+            "For built-ins it checks their permitted forms and stated criteria",
             "A site the requirement does not apply to is judged true",
             "The goal is that independent assessments of the same subject reach the same determination",
             "describing the change relative to the prior commit rather than the drafts that led to it",
@@ -3141,6 +3153,93 @@ fn bundled_skills_are_five_skill_directories_each_home_to_its_topics() {
     // Each topic is stated in full in exactly one skill.
     for home in SKILLS {
         assert_home(home);
+    }
+}
+
+// {test}`requirements.test-coverage.guidance`
+// {test}`requirements.test-coverage.guidance.doctests`
+// {test}`requirements.test-coverage.guidance.artifacts`
+#[test]
+fn bundled_skills_default_to_process_coverage_and_keep_artifacts_disposable() {
+    for name in ["habeas", "habeas-evidence", "habeas-bootstrap-requirements"] {
+        let text = bundled_skill(name)
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        for required in [
+            "`habeas coverage`",
+            "`cargo nextest`",
+            "focused runs",
+            "`cargo test --doc --workspace`",
+            "disposable",
+            "Cargo target directory",
+        ] {
+            assert!(text.contains(required), "{name} omits {required}");
+        }
+        assert!(
+            text.contains("by default") || text.contains("default to"),
+            "{name}"
+        );
+        assert!(
+            text.to_lowercase().contains("never stage or commit"),
+            "{name}"
+        );
+        if name != "habeas" {
+            assert!(text.contains("Follow the habeas skill's \"Testing and coverage artifacts\""));
+        }
+    }
+    let home = bundled_skill("habeas");
+    assert_text(
+        "default coverage directive",
+        &collapse(&home),
+        &[
+            "Use `habeas coverage` by default for every Rust unit and integration test run, including focused runs (`habeas coverage -- -E 'test(name)'`)",
+            "The workflow uses `cargo nextest` for parallel process runs and retains independent process coverage",
+            "Run doctests separately with `cargo test --doc --workspace`",
+        ],
+    );
+    for name in ["habeas-evidence", "habeas-bootstrap-requirements"] {
+        assert_text(
+            name,
+            &collapse(&bundled_skill(name)),
+            &[
+                "Follow the habeas skill's \"Testing and coverage artifacts\": default to `habeas coverage` for unit, integration and focused runs through `cargo nextest`",
+                "run doctests separately with `cargo test --doc --workspace`",
+            ],
+        );
+    }
+    assert_text(
+        "approved implementation SOP",
+        &collapse(include_str!("../agent-sops/approved-implementation.sop.md")),
+        &[
+            "Use `cargo habeas coverage -- <nextest arguments>` for every Rust unit and integration test run, including focused or filtered runs",
+            "It executes parallel processes through `cargo nextest` and retains coverage for each process",
+            "Run doctests separately with `cargo test --doc --workspace`",
+            "profiles, reports, and source snapshots under the Cargo target directory are disposable build output: never stage or commit them to Git",
+        ],
+    );
+    for required in [
+        "Profiles, reports, and captured source",
+        "cargo install cargo-nextest --locked",
+        "rustup component add llvm-tools-preview",
+        "target/habeas/coverage/",
+    ] {
+        assert!(home.contains(required), "coverage home omits {required}");
+    }
+}
+
+// {test}`requirements.test-coverage.setup.bootstrap`
+#[test]
+fn bootstrap_checks_and_repairs_coverage_setup_and_preserves_conflicts() {
+    let text = bundled_skill("habeas-bootstrap-requirements");
+    for required in [
+        "Before bootstrapping evidence, check coverage readiness with `habeas status`",
+        "saved `.config/nextest.toml` collector and default-profile rules",
+        "Use `habeas setup` to establish or repair",
+        "Report conflicting nextest settings for review",
+        "preserve project-specific settings",
+    ] {
+        assert!(text.contains(required), "bootstrap omits {required}");
     }
 }
 
@@ -3544,6 +3643,11 @@ fn bundled_skills_say_when_to_read_each_reference_file() {
     let links = [
         (
             "habeas",
+            "references/ci.md",
+            "Use the [CI example](references/ci.md) when adding these steps to an existing workflow; setup configures the collector and static validation test, while CI integration belongs in the project's workflow",
+        ),
+        (
+            "habeas",
             "references/distributed-requirements.md",
             "For an obligation that applies separately at each of many sites, such as a convention every validation function follows, read [references/distributed-requirements.md](references/distributed-requirements.md) before drafting it, and whenever you edit a `{req}` that contains `{sites}` or `{violations}`",
         ),
@@ -3632,7 +3736,7 @@ fn the_habeas_skill_routes_each_task_to_the_skill_that_covers_it() {
         (
             &[
                 "Creating or refreshing evidence",
-                "`cargo test` or `habeas status` reports Habeas findings",
+                "`habeas coverage` or `habeas status` reports Habeas findings",
             ][..],
             "habeas-evidence",
         ),
@@ -4506,9 +4610,10 @@ fn bundled_skills_direct_the_reference_procedure_and_report_items_without_one() 
         ] {
             assert!(!text.contains(grouping), "{name} suggests {grouping:?}");
         }
+        let reference_guidance = text.replace("no explanation can waive them", "");
         for waiver in ["may waive", "can waive", "waiver applies", "is exempt"] {
             assert!(
-                !text.to_lowercase().contains(waiver),
+                !reference_guidance.to_lowercase().contains(waiver),
                 "{name} offers a waiver"
             );
         }
@@ -4582,7 +4687,7 @@ fn bundled_skills_direct_behavior_review_against_requirements() {
     );
     assert_phrases(
         "habeas-requirements",
-        &["To defer a gap the user agrees to, use `{fixme}`"],
+        &["To defer a requirement gap the user agrees to, use `{fixme}`"],
     );
     // Roots get `{impl}`, tests `{test}`, and `{cite}` only for related code.
     assert_text(
@@ -4591,7 +4696,7 @@ fn bundled_skills_direct_behavior_review_against_requirements() {
         &[
             "1. A test designed to verify it gets `{test}`",
             "2. Otherwise a root gets `{impl}`. Leave what it reaches unmarked",
-            "`{cite}` needs no coverage and implements nothing",
+            "`{cite}` implements nothing; a citation review checks project citations' roles and built-ins' stated criteria",
         ],
     );
     assert_phrases(
@@ -4794,12 +4899,19 @@ fn bundled_skills_explain_distributed_requirements() {
             "Don't reference the distributed requirement from a site just because it is a site",
             "A site review reads its site, which covers it for Rust item coverage",
             "`habeas author --all` authors a site review for each site",
-            "`cargo test --workspace` runs every snippet",
+            "`habeas coverage` runs every snippet",
             "Query directives belong inside a requirement",
             "a single identifier",
             "invalid YAML",
             "unknown query keys",
             "a nonexistent site query",
+            "unique across both query kinds",
+            "`within` belongs only to violation queries",
+            "unsupported languages",
+            "rules that cannot compile",
+            "empty `match` or `no_match` lists",
+            "snippets that fail to parse or have the wrong match result",
+            "violation queries without a site query",
             "only matches inside that query's sites count",
             "`match` snippets for what it selects",
             "`no_match` snippets for nearby code it must not select",

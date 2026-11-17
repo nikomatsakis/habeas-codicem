@@ -74,6 +74,155 @@ fn session_start(project: &Path, cwd: &Path) -> Value {
 
 const SKILL_SENTENCE: &str = "This project tracks requirements with Habeas; load the `habeas` skill before starting any work.";
 
+// {test}`requirements.test-coverage.setup`
+// {test}`requirements.test-coverage.setup.configuration`
+// {test}`requirements.test-coverage.check.guidance`
+// {test}`requirements.test-coverage.check.exceptions.setup`
+// {test}`requirements.integration.symposium_setup_hook`
+#[test]
+fn coverage_setup_is_idempotent_and_hook_needs_no_coverage_chapter() {
+    let temp = fixture();
+    let root = temp.path();
+    let local_crate = env!("CARGO_MANIFEST_DIR");
+    let summary = fs::read_to_string(root.join("md/SUMMARY.md")).unwrap();
+    run(root, &["setup", "--path", local_crate]);
+    let config = fs::read_to_string(root.join(".config/nextest.toml")).unwrap();
+    assert!(!root.join("md/test-coverage.md").exists());
+    assert_eq!(
+        fs::read_to_string(root.join("md/SUMMARY.md")).unwrap(),
+        summary
+    );
+    assert!(config.contains("coverage-process"));
+    run(root, &["setup", "--path", local_crate]);
+    assert_eq!(
+        fs::read_to_string(root.join("md/SUMMARY.md")).unwrap(),
+        summary
+    );
+    assert_eq!(
+        fs::read_to_string(root.join(".config/nextest.toml")).unwrap(),
+        config
+    );
+    assert!(!advises_setup(&session_start(root, root)));
+    let conflicting = config.replace("all()", "test(one)");
+    fs::write(root.join(".config/nextest.toml"), &conflicting).unwrap();
+    assert!(advises_setup(&session_start(root, root)));
+    assert_eq!(
+        fs::read_to_string(root.join(".config/nextest.toml")).unwrap(),
+        conflicting
+    );
+    fs::write(root.join(".config/nextest.toml"), config).unwrap();
+    fs::write(root.join("md/SUMMARY.md"), "# Summary\n").unwrap();
+    assert!(!advises_setup(&session_start(root, root)));
+    assert_eq!(
+        fs::read_to_string(root.join("md/SUMMARY.md")).unwrap(),
+        "# Summary\n"
+    );
+    fs::write(root.join("md/test-coverage.md"), "User's coverage notes.\n").unwrap();
+    run(root, &["setup", "--path", local_crate]);
+    assert_eq!(
+        fs::read_to_string(root.join("md/test-coverage.md")).unwrap(),
+        "User's coverage notes.\n"
+    );
+    assert!(!advises_setup(&session_start(root, root)));
+    fs::remove_file(root.join(".config/nextest.toml")).unwrap();
+    assert!(advises_setup(&session_start(root, root)));
+    assert!(
+        !root.join(".config/nextest.toml").exists(),
+        "hook must not repair configuration"
+    );
+}
+
+// {test}`requirements.test-coverage.setup`
+// {test}`requirements.test-coverage.setup.configuration`
+// {test}`requirements.integration.symposium_setup_hook`
+#[test]
+fn coverage_setup_preserves_custom_index_and_preflights_conflicts() {
+    let temp = fixture();
+    let root = temp.path();
+    fs::write(
+        root.join("md/custom.md"),
+        "A custom report.\n\n:::{coverage-index}\n:::\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("md/SUMMARY.md"),
+        "# Summary\n\n- [Custom](custom.md)\n",
+    )
+    .unwrap();
+    run(root, &["setup", "--path", env!("CARGO_MANIFEST_DIR")]);
+    assert!(!root.join("md/test-coverage.md").exists());
+    assert!(
+        !advises_setup(&session_start(root, root)),
+        "setup requires no separate coverage chapter"
+    );
+    assert!(
+        fs::read_to_string(root.join("md/custom.md"))
+            .unwrap()
+            .starts_with("A custom report.")
+    );
+    let temp = fixture();
+    let root = temp.path();
+    fs::write(root.join("md/test-coverage.md"), "User content\n").unwrap();
+    let original_summary = fs::read_to_string(root.join("md/SUMMARY.md")).unwrap();
+    run(root, &["setup", "--path", env!("CARGO_MANIFEST_DIR")]);
+    assert!(root.join(".config/nextest.toml").exists());
+    assert_eq!(
+        fs::read_to_string(root.join("md/test-coverage.md")).unwrap(),
+        "User content\n"
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("md/SUMMARY.md")).unwrap(),
+        original_summary
+    );
+
+    let temp = fixture();
+    let root = temp.path();
+    fs::write(root.join("md/unlinked.md"), ":::{coverage-index}\n:::\n").unwrap();
+    fs::write(
+        root.join("md/rules.md"),
+        "```text\n:::{coverage-index}\n:::\n```\n",
+    )
+    .unwrap();
+    run(root, &["setup", "--path", env!("CARGO_MANIFEST_DIR")]);
+    assert!(!root.join("md/test-coverage.md").exists());
+    assert!(
+        !fs::read_to_string(root.join("md/SUMMARY.md"))
+            .unwrap()
+            .contains("test-coverage.md")
+    );
+}
+
+// {test}`requirements.test-coverage.setup.configuration`
+#[test]
+fn setup_reports_a_conflicting_nextest_wrapper_without_writing_project_files() {
+    let temp = fixture();
+    let root = temp.path();
+    let (path, native) = habeas::execution_coverage::configure(root).unwrap();
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let conflict = native.replace("coverage-process", "custom-command");
+    fs::write(&path, &conflict).unwrap();
+    let book = fs::read(root.join("book.toml")).unwrap();
+    let summary = fs::read(root.join("md/SUMMARY.md")).unwrap();
+    let manifest = fs::read(root.join("Cargo.toml")).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_habeas"))
+        .arg("setup")
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        error.contains(".config/nextest.toml") && error.contains("scripts.wrapper.habeas-coverage"),
+        "{error}"
+    );
+    assert_eq!(fs::read_to_string(path).unwrap(), conflict);
+    assert_eq!(fs::read(root.join("book.toml")).unwrap(), book);
+    assert_eq!(fs::read(root.join("md/SUMMARY.md")).unwrap(), summary);
+    assert_eq!(fs::read(root.join("Cargo.toml")).unwrap(), manifest);
+    assert!(!root.join("md/test-coverage.md").exists());
+    assert!(!root.join("tests/habeas.rs").exists());
+}
+
 // {cite}`habeas:util`
 /// The response for an applicable project whose setup is complete.
 fn skill_sentence_only() -> Value {
@@ -312,6 +461,10 @@ fn setup_rejects_invalid_book_configuration() {
         ("[book]\nsrc = '/outside'\n", "book.src must be a directory"),
         (
             "[book]\nsrc = \"../outside\"\n",
+            "book.src must be a directory",
+        ),
+        (
+            "[book]\nsrc = 'md/../outside'\n",
             "book.src must be a directory",
         ),
         (
@@ -629,6 +782,25 @@ fn setup_finds_the_nearest_cargo_and_mdbook_ancestor() {
             String::from_utf8_lossy(&output.stderr)
         );
     }
+
+    let split = TempDir::new().unwrap();
+    fs::write(
+        split.path().join("Cargo.toml"),
+        "[package]\nname='split'\nversion='0.1.0'\n",
+    )
+    .unwrap();
+    fs::create_dir_all(split.path().join("book/child")).unwrap();
+    fs::write(split.path().join("book/book.toml"), "[book]\nsrc='md'\n").unwrap();
+    let result = Command::new(binary)
+        .arg("setup")
+        .current_dir(split.path().join("book/child"))
+        .output()
+        .unwrap();
+    assert!(!result.status.success());
+    assert!(
+        String::from_utf8_lossy(&result.stderr)
+            .contains("cannot find a project with Cargo.toml and book.toml")
+    );
 
     let temp = fixture();
     let project = temp.path();
