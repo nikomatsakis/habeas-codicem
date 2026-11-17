@@ -74,22 +74,31 @@ The application defines its own domain by implementing `Domain`. This trait
 combines four subtraits that capture different aspects of the domain:
 
 :::{req} domain
-The SDK MUST expose the following composite trait and blanket implementation:
+The SDK MUST expose the following traits and blanket implementation. Bodies
+marked `/* ... */` omit members specified in their respective chapters:
 
 ```rust,ignore
+pub trait Fingerprinting: Graph {
+    /* ... Uses Graph's associated types. */
+}
+
+pub trait EvidenceStorage: Graph {
+    /* ... Uses Graph's associated types. */
+}
+
+pub trait Validation: Graph + Fingerprinting + Sized {
+    /* ... The application's assessment callback, usable without
+       EvidenceStorage. The SDK runner handles evidence freshness. */
+}
+
 pub trait Domain: Graph + Validation + Fingerprinting + EvidenceStorage {}
 
 impl<T: Graph + Validation + Fingerprinting + EvidenceStorage> Domain for T {}
 ```
 
 `Graph` MUST own its node, content, edge-label, and error types as specified by
-{cite}`requirements.sdk.graph.domain_types`. `Fingerprinting` and
-`EvidenceStorage` MUST extend `Graph` and use its associated types.
-`Validation` MUST extend `Graph` and `Fingerprinting`; it supplies the
-application callback, not the freshness-checking algorithm.
-`Domain` MUST add no methods or associated types. The node validation runner
-MUST require `Domain`; assessment callbacks MUST be usable without
-`EvidenceStorage`.
+{cite}`requirements.sdk.graph.domain_types`. The node validation runner MUST
+require `Domain`.
 
 The SDK MUST allow concurrent validations to share a domain by reference.
 Asynchronous storage and assessment methods MUST return `Send` futures. Each
