@@ -24,5 +24,3 @@
   - [Refactoring](./requirements/refactor.md)
   - [Test execution coverage](./requirements/test-coverage.md)
 - [Requirements index](./requirements-index.md)
-
-- [Test coverage](./test-coverage.md)

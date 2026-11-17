@@ -73,6 +73,11 @@ across build configurations and may remain when coverage is sufficient.
 Exceptions never increase reported percentages.
 {impl}`requirements.test-coverage.check.exceptions.setup`
 
+The requirements index automatically includes a Coverage gaps subchapter.
+Do not add a coverage source chapter or coverage-index directive. Use its CI
+verdict and expandable file gaps to find missing tests or coverage explanations;
+accepted documented gaps are separate. Per-test maps remain available on demand.
+
 ## Inspecting
 
 - `habeas status [<selection>]` lists definitions needing attention.

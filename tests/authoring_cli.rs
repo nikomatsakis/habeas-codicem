@@ -3232,7 +3232,7 @@ fn bootstrap_checks_and_repairs_coverage_setup_and_preserves_conflicts() {
         "Before bootstrapping evidence, check coverage readiness with `habeas status`",
         "saved `.config/nextest.toml` collector and default-profile rules",
         "Use `habeas setup` to establish or repair",
-        "Report conflicting nextest settings or chapter contents for review",
+        "Report conflicting nextest settings for review",
         "preserve project-specific settings",
     ] {
         assert!(text.contains(required), "bootstrap omits {required}");

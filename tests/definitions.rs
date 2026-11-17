@@ -592,6 +592,7 @@ fn references_to_a_definition_of_another_kind_are_reported() {
 // {test}`requirements.definitions.declaration`
 #[test]
 fn phrases_are_plain_links_and_markdown_literals_are_preserved() {
+    let temp = fixture();
     let mut book = Book::new();
     book.push_item(Chapter::new(
         "Glossary",
@@ -601,7 +602,7 @@ fn phrases_are_plain_links_and_markdown_literals_are_preserved() {
     ));
     let source = "Use {term}`glossary.a`.\n\n`{term}`glossary.a``\n\n```text\n{term}`glossary.a`\n```\n\n\\{term}`glossary.a`".to_owned();
     book.push_item(Chapter::new("Guide", source, "guide/deep.md", Vec::new()));
-    habeas::preprocess_book(&mut book, Path::new(".")).unwrap();
+    habeas::preprocess_book(&mut book, temp.path()).unwrap();
     let chapters: Vec<_> = book.chapters().collect();
     assert!(
         chapters[0]
@@ -634,6 +635,7 @@ fn phrases_are_plain_links_and_markdown_literals_are_preserved() {
 // {test}`requirements.definitions.phrase_rendering`
 #[test]
 fn a_term_reference_renders_only_its_phrase_as_a_plain_link() {
+    let temp = fixture();
     let mut book = Book::new();
     book.push_item(Chapter::new(
         "Glossary",
@@ -647,7 +649,7 @@ fn a_term_reference_renders_only_its_phrase_as_a_plain_link() {
         "guide.md",
         Vec::new(),
     ));
-    habeas::preprocess_book(&mut book, Path::new(".")).unwrap();
+    habeas::preprocess_book(&mut book, temp.path()).unwrap();
     let chapters: Vec<_> = book.chapters().collect();
     let guide = &chapters[1].content;
     // The whole reference becomes exactly one ordinary hyperlink: no class,

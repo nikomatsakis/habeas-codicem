@@ -232,7 +232,7 @@ pub fn preprocess_book(book: &mut Book, root: &Path) -> io::Result<()> {
         .collect();
     let plan = index::DetailPlan::find(book, &evidence_definitions, &order)?;
     plan.populate(book, root, &evidence_definitions)?;
-    execution_coverage::populate(book, root)?;
+    execution_coverage::populate(book, root, plan.index_path())?;
 
     // {impl}`requirements.index.source_links`
     book.for_each_chapter_mut(|chapter| {
@@ -1052,6 +1052,7 @@ mod tests {
     // {test}`requirements.index.chapter.default`
     // {test}`requirements.index.navigation`
     // {test}`requirements.examples.index`
+    // {test}`requirements.test-coverage.index`
     // {test}`requirements.references.anchors`
     #[test]
     fn definitions_without_a_marker_get_a_default_index_and_detail_pages() {
@@ -1085,7 +1086,7 @@ mod tests {
         assert_eq!(pages.len(), 1);
         assert_eq!(pages[0].name, "Child");
         assert_eq!(book.items.len(), 2);
-        assert_eq!(book.chapters().count(), 7);
+        assert_eq!(book.chapters().count(), 8);
         assert!(rules.content.contains("habeas-detail-icon"));
         assert!(!rules.content.contains("See evidence"));
         assert!(!rules.content.contains("notes.txt"));
@@ -1120,11 +1121,30 @@ mod tests {
         assert!(index.content.contains("(requirement)"));
         assert!(index.content.contains("(example)"));
         assert!(index.content.contains("Missing"));
+        let coverage = index
+            .sub_items
+            .iter()
+            .filter_map(|item| match item {
+                BookItem::Chapter(chapter) if chapter.name == "Coverage gaps" => Some(chapter),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(coverage.len(), 1);
+        assert_eq!(
+            coverage[0].path.as_deref(),
+            Some(Path::new("requirements-index/coverage.md"))
+        );
+        assert_eq!(coverage[0].parent_names, ["Requirements index"]);
+        assert!(
+            index
+                .content
+                .contains("[Coverage gaps](requirements-index/coverage.html)")
+        );
         let details = index
             .sub_items
             .iter()
             .filter_map(|item| match item {
-                BookItem::Chapter(chapter) => Some(chapter),
+                BookItem::Chapter(chapter) if chapter.name != "Coverage gaps" => Some(chapter),
                 _ => None,
             })
             .collect::<Vec<_>>();
@@ -1144,7 +1164,7 @@ mod tests {
             assert_eq!(page.parent_names, ["Requirements index"]);
             assert_eq!(
                 page.number.as_deref().map(Vec::as_slice),
-                Some(&[3, offset as u32 + 1][..])
+                Some(&[3, offset as u32 + 2][..])
             );
             assert!(
                 page.content
@@ -1200,7 +1220,12 @@ mod tests {
             );
             assert_eq!(index.number.as_deref().map(Vec::as_slice), Some(&[1][..]));
             assert!(index.source_path.is_none());
-            assert!(index.sub_items.is_empty());
+            assert_eq!(index.sub_items.len(), 1);
+            let BookItem::Chapter(coverage) = &index.sub_items[0] else {
+                unreachable!()
+            };
+            assert_eq!(coverage.name, "Coverage gaps");
+            assert!(coverage.source_path.is_none());
             assert!(index.parent_names.is_empty());
             assert!(index.content.starts_with("# Requirements index\n\n"));
             assert!(index.content.contains("| Definition | Evidence |"));
@@ -1234,7 +1259,10 @@ mod tests {
             panic!("the default index must follow the appendix");
         };
         assert_eq!(index.number.as_deref().map(Vec::as_slice), Some(&[5][..]));
-        assert!(index.sub_items.is_empty());
+        assert_eq!(index.sub_items.len(), 1);
+        assert!(
+            matches!(&index.sub_items[0], BookItem::Chapter(chapter) if chapter.name == "Coverage gaps")
+        );
     }
 
     // {test}`requirements.index.chapter`
@@ -1307,15 +1335,15 @@ mod tests {
                 .iter()
                 .map(|page| page.name.as_str())
                 .collect::<Vec<_>>(),
-            ["Existing", "rules.zeta", "more.cli.mdbook"]
+            ["Coverage gaps", "Existing", "rules.zeta", "more.cli.mdbook"]
         );
-        assert_eq!(pages[2].parent_names, ["Index"]);
+        assert_eq!(pages[3].parent_names, ["Index"]);
         assert_eq!(
-            pages[2].number.as_deref().map(Vec::as_slice),
-            Some(&[3, 3][..])
+            pages[3].number.as_deref().map(Vec::as_slice),
+            Some(&[3, 4][..])
         );
         assert!(
-            pages[2]
+            pages[3]
                 .content
                 .contains("[View definition](../../more.html#habeas-example-more.cli%2Emdbook)")
         );
@@ -1526,7 +1554,11 @@ mod tests {
         let root = book_root();
         preprocess_book(&mut book, root.path()).unwrap();
         let chapters = book.chapters().collect::<Vec<_>>();
-        assert_eq!(chapters.len(), 3, "only an empty index is generated");
+        assert_eq!(
+            chapters.len(),
+            4,
+            "an empty index and its coverage child are generated"
+        );
         assert_eq!(chapters[0].content, ":::{req} good\nGood.\n:::");
         assert!(!chapters[0].content.contains("habeas-req-badge"));
         assert_eq!(chapters[1].content, "See {impl}`bad dir.rules.good`.");

@@ -83,7 +83,7 @@ fn diagnostic(content: &mut String, error: &str) {
     ));
 }
 
-fn doc_comments(parsed: &ParsedSource, owner: usize) -> String {
+pub(super) fn doc_comments(parsed: &ParsedSource, owner: usize) -> String {
     parsed
         .outline
         .comments

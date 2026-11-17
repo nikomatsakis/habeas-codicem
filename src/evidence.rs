@@ -3024,6 +3024,19 @@ pub(crate) mod tests {
             assert!(errors.contains(&detail), "missing {detail:?} in:\n{errors}");
         }
 
+        assert_eq!(
+            errors
+                .matches("habeas.toml: version: expected version = 1")
+                .count(),
+            1,
+            "{errors}"
+        );
+        assert_eq!(
+            errors.matches("book.toml: invalid TOML").count(),
+            1,
+            "{errors}"
+        );
+
         // Coverage setup and coverage-history configuration failures must
         // also leave independent later evidence and reference checks running.
         fs::write(temp.path().join("book.toml"), "[book]\nsrc = 'md'\n").unwrap();

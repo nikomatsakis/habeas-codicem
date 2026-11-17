@@ -14,6 +14,49 @@ pub struct CheckReport {
     pub text: String,
 }
 
+// {impl}`requirements.test-coverage.index.gaps`
+// {impl}`requirements.test-coverage.index.gaps.summary`
+pub(super) struct PolicyReport {
+    pub(super) report: CheckReport,
+    pub(super) files: Vec<FilePolicy>,
+    pub(super) counts_complete: bool,
+    pub(super) measured: bool,
+    pub(super) findings: Vec<String>,
+}
+
+// {cite}`habeas:util`
+pub(super) struct FilePolicy {
+    pub(super) file: String,
+    pub(super) covered: usize,
+    pub(super) total: usize,
+    pub(super) obligations: Vec<Obligation>,
+}
+
+// {cite}`habeas:util`
+pub(super) struct Obligation {
+    pub(super) selector: String,
+    pub(super) line: u32,
+    pub(super) measurement: String,
+    pub(super) exception: Option<Exception>,
+}
+
+impl Obligation {
+    pub(super) fn accepted(&self) -> bool {
+        self.exception
+            .as_ref()
+            .is_some_and(|exception| exception.accepted)
+    }
+}
+
+// {cite}`habeas:util`
+#[derive(Clone)]
+pub(super) struct Exception {
+    pub(super) accepted: bool,
+    pub(super) review_missing: bool,
+    pub(super) justification: String,
+    pub(super) findings: Vec<String>,
+}
+
 // {impl}`requirements.test-coverage.test`
 pub fn test(project: &Path) -> io::Result<i32> {
     let status = super::run(
@@ -134,7 +177,7 @@ fn exceptions(
     root: &Path,
     outlines: &OutlineCache,
     errors: &mut Vec<String>,
-) -> io::Result<BTreeMap<(String, String), bool>> {
+) -> io::Result<BTreeMap<(String, String), Exception>> {
     let references = crate::evidence::collect_references(root, errors);
     let definitions = match crate::evidence::load_definitions(root) {
         Ok(definitions) => definitions,
@@ -163,7 +206,42 @@ fn exceptions(
                 crate::citations::subject_label(&item.file, &item.item)
             ));
         }
-        accepted.insert(key, findings.is_empty());
+        let justification = outlines.parse(root, &item.file);
+        let docs = justification
+            .as_ref()
+            .as_ref()
+            .ok()
+            .and_then(|parsed| {
+                parsed
+                    .resolve(&item.file, &item.item)
+                    .ok()
+                    .map(|node| super::notes::doc_comments(parsed, node))
+            })
+            .unwrap_or_default();
+        let commentary = item
+            .citations
+            .iter()
+            .filter(|citation| citation.name == "habeas:coverage")
+            .map(|citation| citation.commentary.trim())
+            .filter(|text| !text.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        accepted.insert(
+            key,
+            Exception {
+                accepted: findings.is_empty(),
+                review_missing: root
+                    .join(&path)
+                    .symlink_metadata()
+                    .is_err_and(|error| error.kind() == io::ErrorKind::NotFound),
+                justification: [commentary, docs]
+                    .into_iter()
+                    .filter(|text| !text.trim().is_empty())
+                    .collect::<Vec<_>>()
+                    .join("\n\n"),
+                findings: findings.clone(),
+            },
+        );
         errors.extend(findings);
     }
     Ok(accepted)
@@ -210,6 +288,12 @@ fn gaps(lines: impl Iterator<Item = u32>) -> String {
 fn check_in(project: &Path, target: PathBuf) -> io::Result<CheckReport> {
     let root = workspace_root(project)?;
     let saved = book::load_saved(&root, Some(target), Path::new("coverage.md"));
+    Ok(check_saved(&root, &saved)?.report)
+}
+
+// {impl}`requirements.test-coverage.index.gaps`
+// {impl}`requirements.test-coverage.index.gaps.summary`
+pub(super) fn check_saved(root: &Path, saved: &book::SavedCoverage) -> io::Result<PolicyReport> {
     let mut errors = Vec::new();
     if saved.uncertain_history {
         errors.push("Coverage history is incomplete: cannot establish latest-per-test selection or active build configuration. Repair or remove corrupt build artifacts, then recollect coverage.".into());
@@ -292,29 +376,32 @@ fn check_in(project: &Path, target: PathBuf) -> io::Result<CheckReport> {
         }
     }
     let outlines = OutlineCache::default();
-    let accepted = exceptions(&root, &outlines, &mut errors)?;
-    let files = crate::evidence::discovered_files(&root, &mut errors);
+    let accepted = exceptions(root, &outlines, &mut errors)?;
+    let before_discovery = errors.len();
+    let files = crate::evidence::discovered_files(root, &mut errors);
+    let mut counts_complete =
+        measured && !saved.discovery_failed && errors.len() == before_discovery;
+    let mut policies = Vec::new();
     let mut text = String::from("File execution coverage (80% target):\n");
     let mut used = Vec::new();
-    for path in crate::rust_coverage::rust_files(&root, &files) {
+    for path in crate::rust_coverage::rust_files(root, &files) {
         let file = path
-            .strip_prefix(&root)
+            .strip_prefix(root)
             .map_err(io::Error::other)?
             .to_string_lossy()
             .into_owned();
-        let parsed = outlines.parse(&root, &file);
-        let parsed = match parsed.as_ref() {
-            Ok(parsed) => parsed,
-            Err(error) => {
-                errors.push(error.clone());
-                continue;
-            }
+        let parsed = outlines.parse(root, &file);
+        let inventory = match parsed.as_ref() {
+            Ok(parsed) => inventory(&parsed.source, &parsed.outline)
+                .map_err(|error| format!("{file}: {error}")),
+            Err(error) => Err(error.clone()),
         };
-        let (functions, no_obligations) = match inventory(&parsed.source, &parsed.outline) {
-            Ok(inventory) => inventory,
+        let inventory = match inventory {
+            Ok(inventory) => Some(inventory),
             Err(error) => {
-                errors.push(format!("{file}: {error}"));
-                continue;
+                errors.push(error);
+                counts_complete = false;
+                None
             }
         };
         if !measured {
@@ -326,9 +413,19 @@ fn check_in(project: &Path, target: PathBuf) -> io::Result<CheckReport> {
             .collect();
         let covered = lines.iter().filter(|(_, count)| *count > 0).count();
         let total = lines.len();
+        // Measured file thresholds do not depend on parsing. Inventory is
+        // needed only for function attribution and zero-line exemptions.
+        if inventory.is_none() && total == 0 {
+            continue;
+        }
+        let (functions, no_obligations) = inventory.unwrap_or_default();
         let passes = threshold(covered, total);
         let exempt = total == 0 && no_obligations;
-        let waiver = accepted.get(&(file.clone(), String::new())) == Some(&true);
+        let exception = accepted.get(&(file.clone(), String::new())).cloned();
+        let waiver = exception
+            .as_ref()
+            .is_some_and(|exception| exception.accepted);
+        let mut obligations = Vec::new();
         let label = if total == 0 {
             if exempt {
                 "no executable obligations".to_owned()
@@ -352,6 +449,20 @@ fn check_in(project: &Path, target: PathBuf) -> io::Result<CheckReport> {
             }
         ));
         if !passes && !exempt {
+            obligations.push(Obligation {
+                selector: String::new(),
+                line: 1,
+                measurement: format!(
+                    "{label}; 80% target; uncovered lines: {}",
+                    gaps(
+                        lines
+                            .iter()
+                            .filter(|(_, count)| *count == 0)
+                            .map(|(line, _)| *line)
+                    )
+                ),
+                exception,
+            });
             if waiver {
                 used.push(format!("{file}: file threshold ({label})"));
             } else {
@@ -378,12 +489,30 @@ fn check_in(project: &Path, target: PathBuf) -> io::Result<CheckReport> {
             } else {
                 "not measured"
             };
-            if accepted.get(&(file.clone(), function.selector.clone())) == Some(&true) {
+            let exception = accepted
+                .get(&(file.clone(), function.selector.clone()))
+                .cloned();
+            let waiver = exception
+                .as_ref()
+                .is_some_and(|exception| exception.accepted);
+            obligations.push(Obligation {
+                selector: function.selector.clone(),
+                line: function.line,
+                measurement: state.into(),
+                exception,
+            });
+            if waiver {
                 used.push(format!("{file}#{}: {state}", function.selector));
             } else {
                 errors.push(format!("{file}:{} #{}: {state}; requires a current accepted `habeas:coverage` citation on this function.", function.line, function.selector));
             }
         }
+        policies.push(FilePolicy {
+            file,
+            covered,
+            total,
+            obligations,
+        });
     }
     text.push_str(&format!(
         "\nSelected {} test attempts in the active build configuration.\n",
@@ -420,7 +549,13 @@ fn check_in(project: &Path, target: PathBuf) -> io::Result<CheckReport> {
     } else {
         "\nCoverage check failed.\n"
     });
-    Ok(CheckReport { passed, text })
+    Ok(PolicyReport {
+        report: CheckReport { passed, text },
+        files: policies,
+        counts_complete,
+        measured,
+        findings: errors,
+    })
 }
 
 #[cfg(test)]
@@ -560,6 +695,345 @@ mod tests {
                 "determination": determination, "rationale": "Synthetic accepted explanation for test fixture.",
                 "inputs": [{"file": item.file, "item": item.item, "hash": parsed.outline.nodes[node].structural_hash}]
             })).unwrap()).unwrap();
+        }
+    }
+
+    // Execute the handler emitted by the renderer, using its actual controls
+    // and row IDs. Node is already part of this repository's CI tooling.
+    // {cite}`habeas:util`
+    fn exercise_file_click(html: &str) {
+        let button = html
+            .split("class=\"gap-file-button\"")
+            .nth(1)
+            .unwrap()
+            .split('>')
+            .next()
+            .unwrap();
+        let attribute = |name: &str| {
+            button
+                .split(&format!("{name}=\""))
+                .nth(1)
+                .unwrap()
+                .split('"')
+                .next()
+                .unwrap()
+                .to_owned()
+        };
+        let ids = html
+            .split("class=\"gap-detail-row\" id=\"")
+            .skip(1)
+            .map(|part| part.split('"').next().unwrap().to_owned())
+            .collect::<Vec<_>>();
+        let data = json!({"handler": attribute("onclick"), "controls": attribute("aria-controls"), "ids": ids});
+        let output = std::process::Command::new("node").arg("-e").arg(r#"
+            const assert = require('node:assert/strict');
+            const vm = require('node:vm');
+            const data = JSON.parse(process.argv[1]);
+            const rows = new Map(data.ids.map(id => [id, {hidden: true}]));
+            const attributes = {'aria-controls': data.controls, 'aria-expanded': 'false'};
+            const chevron = {textContent: '▸'};
+            const button = {getAttribute: name => attributes[name],
+                setAttribute: (name, value) => {attributes[name] = value},
+                querySelector: name => {assert.equal(name, '.gap-chevron'); return chevron}};
+            const document = {getElementById: id => rows.get(id)};
+            const click = () => vm.runInNewContext('(function(){' + data.handler + '}).call(button)', {button, document});
+            assert.ok(rows.has(data.controls), 'controls must identify a generated row');
+            click();
+            assert.equal(rows.get(data.controls).hidden, false);
+            assert.equal(attributes['aria-expanded'], 'true');
+            assert.equal(chevron.textContent, '▾');
+            click();
+            assert.equal(rows.get(data.controls).hidden, true);
+            assert.equal(attributes['aria-expanded'], 'false');
+            assert.equal(chevron.textContent, '▸');
+        "#).arg(data.to_string()).output().expect("Node is required for coverage UI tests");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    // {test}`requirements.test-coverage.index.gaps`
+    // {test}`requirements.test-coverage.index.gaps.summary`
+    // {test}`requirements.test-coverage.index.gaps.details`
+    // {test}`requirements.test-coverage.index.gaps.details.initial`
+    // {test}`requirements.test-coverage.index.gaps.explanations`
+    // {test}`requirements.test-coverage.index.gaps.accepted`
+    // {test}`requirements.test-coverage.index.file_map.combined`
+    // {test}`requirements.test-coverage.index.file_map.combined.measurement`
+    // {test}`requirements.test-coverage.index.file_map.minimum`
+    #[test]
+    fn book_verdict_and_gaps_follow_the_native_policy_and_current_reviews() {
+        use mdbook_preprocessor::book::{Book, Chapter};
+        let source = "fn a() {}\n\n/// Invariant fallback, unreachable through the public API.\n// {cite}`habeas:coverage`\nfn b() {}\n";
+        let temp = fixture(source);
+        let root = temp.path();
+        let mut p = process(root, &[(1, 1), (2, 1), (3, 1), (4, 1), (5, 0)], 0);
+        p.functions.as_mut().unwrap()[0].count = 0;
+        let path = record(root, "both", 1, "same", vec![p]);
+        let render = || {
+            let mut book = Book::new();
+            book.push_item(Chapter::new(
+                "Requirements index",
+                "# Requirements index\n".into(),
+                "requirements-index.md",
+                vec![],
+            ));
+            book::populate_in(
+                &mut book,
+                root,
+                Some(root.join("target")),
+                Path::new("requirements-index.md"),
+            )
+            .unwrap();
+            book.chapters()
+                .find(|chapter| chapter.name == "Coverage gaps")
+                .unwrap()
+                .content
+                .clone()
+        };
+        let missing = render();
+        exercise_file_click(&missing);
+        let unresolved_rows = missing
+            .split("class=\"gap-obligation-table\"")
+            .nth(1)
+            .unwrap()
+            .split("</tbody></table>")
+            .next()
+            .unwrap();
+        for row in [
+            "<code>fn[a]</code><br><span class=\"gap-meta\">code.rs:1</span></td><td>zero execution</td>",
+            "<code>fn[b]</code><br><span class=\"gap-meta\">code.rs:5</span></td><td>zero execution</td>",
+        ] {
+            assert!(unresolved_rows.contains(row));
+        }
+
+        assert!(!report(root).passed);
+        assert!(missing.contains("CI would fail"));
+        assert!(missing.contains("2 unresolved gaps"));
+        assert!(missing.contains("0 file obligations · 2 function obligations"));
+        assert!(missing.contains("Missing habeas:coverage proposal"));
+        assert!(missing.contains("Review missing"));
+        assert!(missing.contains("Invariant fallback, unreachable through the public API."));
+        assert!(missing.contains("aria-expanded=\"false\""));
+        assert!(missing.contains("class=\"gap-detail-row\" id=\"habeas-gap-file-0\" hidden"));
+        assert!(missing.contains("code.rs:1"));
+        assert!(missing.contains("code.rs:5"));
+        reviews(root, json!(true));
+        let accepted = render();
+        assert!(accepted.contains("1 unresolved gaps"));
+        assert!(accepted.contains("Documented gaps — 1 accepted exceptions"));
+        assert!(!accepted.contains("class=\"gap-accepted-group\" open"));
+        assert!(accepted.contains("fn[b]"));
+        assert!(accepted.contains("current and accepted"));
+        let documented = accepted
+            .split("class=\"gap-accepted-group\"")
+            .nth(1)
+            .unwrap()
+            .split("class=\"gap-footer\"")
+            .next()
+            .unwrap();
+        for field in [
+            "fn[b]",
+            "code.rs:5",
+            "zero execution",
+            "Invariant fallback, unreachable through the public API.",
+            "current and accepted",
+            "Current workspace source notes",
+            "coverage-reports/files/",
+        ] {
+            assert!(
+                documented.contains(field),
+                "missing documented field: {field}"
+            );
+        }
+        assert!(accepted.contains("80.0%")); // Accepted exceptions add no execution.
+        reviews(root, json!(false));
+        let rejected = render();
+        assert!(rejected.contains("2 unresolved gaps"));
+        assert!(rejected.contains("Review not accepted"));
+        assert!(rejected.contains("determination is false"));
+        assert!(rejected.contains("Documented gaps — 0 accepted exceptions"));
+        reviews(root, json!(true));
+        let mut attempt: Attempt = load(&path.join("attempt.json")).unwrap();
+        for entry in attempt.processes[0].functions.as_mut().unwrap() {
+            entry.count = 1;
+        }
+        save(&path.join("attempt.json"), &attempt).unwrap();
+        let covered = render();
+        assert!(report(root).passed);
+        assert!(covered.contains("CI would pass"));
+        assert!(covered.contains("0 unresolved gaps"));
+        assert!(!covered.contains("data-file=\"code.rs\""));
+        assert!(covered.contains("Documented gaps — 0 accepted exceptions"));
+        fs::remove_file(path.join("profile.profraw")).unwrap();
+        let unavailable = render();
+        assert!(!report(root).passed);
+        assert!(unavailable.contains("CI would fail"));
+        assert!(unavailable.contains("gap counts unavailable"));
+        assert!(!unavailable.contains("0 unresolved gaps"));
+        assert!(
+            !unavailable
+                .split("</section>")
+                .next()
+                .unwrap()
+                .contains("zero execution")
+        );
+        assert!(unavailable.contains("missing or unreadable coverage"));
+        fs::write(
+            root.join("code.rs"),
+            "fn a() {}\n// {cite}`habeas:coverage`\nfn b() {}\n",
+        )
+        .unwrap();
+        record(
+            root,
+            "both",
+            2,
+            "same",
+            vec![process(root, &[(1, 1), (2, 1), (3, 1)], 0)],
+        );
+        let no_justification = render();
+        assert!(no_justification.contains("No tracked justification is present."));
+    }
+
+    // {test}`requirements.test-coverage.index.gaps`
+    // {test}`requirements.test-coverage.index.gaps.summary`
+    // {test}`requirements.test-coverage.index.file_map.combined`
+    // {test}`requirements.test-coverage.index.gaps.accepted`
+    #[test]
+    fn overview_exposes_parse_and_discovery_findings_and_used_file_exceptions() {
+        use mdbook_preprocessor::book::{Book, Chapter};
+        let source = "//! :::{cite} habeas:coverage\n//! This platform adapter is unreachable from the public interface.\n//! :::\n\n/// Same invariant protects entry to this adapter.\n// {cite}`habeas:coverage`\nfn adapter() {}\n";
+        let temp = fixture(source);
+        let root = temp.path();
+        let render = || {
+            let mut book = Book::new();
+            book.push_item(Chapter::new(
+                "Requirements index",
+                "# Requirements index\n".into(),
+                "requirements-index.md",
+                vec![],
+            ));
+            book::populate_in(
+                &mut book,
+                root,
+                Some(root.join("target")),
+                Path::new("requirements-index.md"),
+            )
+            .unwrap();
+            book.chapters()
+                .find(|chapter| chapter.name == "Coverage gaps")
+                .unwrap()
+                .content
+                .clone()
+        };
+        reviews(root, json!(true));
+        record(
+            root,
+            "adapter",
+            1,
+            "same",
+            vec![process(root, &[(7, 0)], 0)],
+        );
+        let accepted = render();
+        assert!(report(root).passed);
+        assert!(accepted.contains("CI would pass"));
+        assert!(accepted.contains("Documented gaps — 2 accepted exceptions"));
+        assert!(!accepted.contains("data-file=\"code.rs\""));
+        let documented = accepted
+            .split("class=\"gap-accepted-group\"")
+            .nth(1)
+            .unwrap()
+            .split("<p class=\"gap-footer")
+            .next()
+            .unwrap();
+        for text in [
+            "File root",
+            "code.rs:1",
+            "code.rs:7",
+            "fn[adapter]",
+            "zero execution",
+            "0/1 (0.0%)",
+            "This platform adapter is unreachable",
+            "Same invariant",
+            "current and accepted",
+            "Current workspace source notes",
+            "coverage-reports/files/",
+        ] {
+            assert!(
+                documented.contains(text),
+                "missing documented field: {text}"
+            );
+        }
+        // Measurement still succeeds when a discovered source cannot be parsed.
+        fs::write(root.join("driver.rs"), "fn broken(").unwrap();
+        let mut p = process(root, &[(7, 0)], 0);
+        p.lines.insert("driver.rs".into(), BTreeMap::from([(1, 0)]));
+        record(root, "adapter", 2, "same", vec![p]);
+        let broken = render();
+        assert!(!report(root).passed);
+        assert!(broken.contains("CI would fail"));
+        assert!(broken.contains("Gap counts incomplete"));
+        assert!(broken.to_lowercase().contains("cannot parse rust source"));
+        assert!(broken.contains("Coverage-check findings"));
+        assert!(!broken.contains("0 unresolved gaps"));
+        assert!(broken.contains("driver.rs"));
+        assert!(
+            report(root).text.contains("driver.rs: below 80%"),
+            "independent measured file threshold must still run after parse failure"
+        );
+        fs::remove_file(root.join("driver.rs")).unwrap();
+        git2::Repository::init(root).unwrap();
+        fs::write(root.join(".git/index"), "not a valid index").unwrap();
+        let discovery = render();
+        assert!(!report(root).passed);
+        assert!(discovery.contains("CI would fail"));
+        assert!(discovery.contains("cannot discover reference sources"));
+        assert!(
+            discovery.contains("Gap counts incomplete")
+                || discovery.contains("gap counts unavailable")
+        );
+        assert!(!discovery.contains("0 unresolved gaps"));
+    }
+
+    // {test}`requirements.test-coverage.check.scope`
+    #[test]
+    fn post_suite_scope_excludes_root_vendor_but_includes_source_vendor() {
+        let temp = fixture("fn main() {}\n");
+        let root = temp.path();
+        for file in ["vendor/foreign.rs", "src/vendor/first_party.rs"] {
+            fs::create_dir_all(root.join(file).parent().unwrap()).unwrap();
+            fs::write(root.join(file), "fn unmeasured() {}\n").unwrap();
+        }
+        record(root, "main", 1, "same", vec![process(root, &[(1, 1)], 1)]);
+        let result = report(root);
+        assert!(!result.passed);
+        assert!(result.text.contains("src/vendor/first_party.rs"));
+        assert!(!result.text.contains("- vendor/foreign.rs"));
+    }
+
+    // {test}`requirements.test-coverage.check.exceptions.reviews`
+    #[test]
+    fn proposals_on_modules_structs_and_impls_waive_neither_files_nor_functions() {
+        for source in [
+            "// :::{cite} habeas:coverage\n// Container commentary.\n// :::\nmod m { fn work() {} }\n",
+            "// :::{cite} habeas:coverage\n// Container commentary.\n// :::\nstruct S; impl S { fn work() {} }\n",
+            "struct S;\n// :::{cite} habeas:coverage\n// Container commentary.\n// :::\nimpl S { fn work() {} }\n",
+        ] {
+            let temp = fixture(source);
+            let root = temp.path();
+            reviews(root, json!(true));
+            record(root, "work", 1, "same", vec![process(root, &[(4, 0)], 0)]);
+            let result = report(root);
+            assert!(!result.passed);
+            assert!(result.text.contains(
+                "without a current accepted `habeas:coverage` citation on the file root"
+            ));
+            assert!(result.text.contains(
+                "requires a current accepted `habeas:coverage` citation on this function"
+            ));
+            assert!(!result.text.contains("Accepted exceptions ("));
         }
     }
 
@@ -888,7 +1362,7 @@ mod tests {
             exceptions(root, &OutlineCache::default(), &mut errors)
                 .unwrap()
                 .values()
-                .all(|accepted| *accepted)
+                .all(|exception| exception.accepted)
         );
         assert!(errors.is_empty());
         fs::write(
@@ -901,7 +1375,7 @@ mod tests {
             exceptions(root, &OutlineCache::default(), &mut errors)
                 .unwrap()
                 .values()
-                .all(|accepted| !*accepted)
+                .all(|exception| !exception.accepted)
         );
         assert!(!errors.is_empty());
         let source = "// :::{cite} habeas:coverage\n// A protected rationale.\n// :::\nfn a() {}\n";
@@ -913,7 +1387,7 @@ mod tests {
             exceptions(root, &OutlineCache::default(), &mut errors)
                 .unwrap()
                 .values()
-                .all(|accepted| !*accepted)
+                .all(|exception| !exception.accepted)
         );
         assert!(
             errors
@@ -932,7 +1406,7 @@ mod tests {
             exceptions(other.path(), &OutlineCache::default(), &mut errors)
                 .unwrap()
                 .values()
-                .all(|accepted| *accepted)
+                .all(|exception| exception.accepted)
         );
         assert!(errors.is_empty());
     }

@@ -955,12 +955,15 @@ reporting wrapper conflicts. Both `habeas status` and the validation test check
 this setup without running tests or requiring earlier coverage. Effective
 profile inheritance and wrapper precedence are checked before each coverage run.
 
-Add a chapter to `SUMMARY.md` containing:
-
-```text
-:::{coverage-index}
-:::
-```
+The requirements index automatically links to a generated **Coverage gaps**
+subchapter. No coverage source chapter or directive is needed. The compact
+overview focuses on unsatisfied file and function obligations: click a file to
+expand its gaps, and expand the documented-gaps section to read accepted
+explanations. Directory summaries show the minimum measured coverage across
+all their current first-party Rust files, including passing files hidden from
+the gaps overview. The CI verdict uses the same evaluator as
+`habeas coverage-check`; unavailable measurements and invalid reviews remain
+visible failures. Per-test maps and run provenance remain available on demand.
 
 The index combines each test's latest started attempt within the most recently
 used instrumented configuration. Filtered runs update only their selected tests.

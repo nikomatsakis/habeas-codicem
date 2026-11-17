@@ -21,12 +21,7 @@ fn fixture() -> TempDir {
     )
     .unwrap();
     fs::write(root.join("book.toml"), "[book]\nsrc = 'md'\n").unwrap();
-    fs::write(
-        root.join("md/SUMMARY.md"),
-        "# Summary\n\n- [Coverage](coverage.md)\n",
-    )
-    .unwrap();
-    fs::write(root.join("md/coverage.md"), ":::{coverage-index}\n:::\n").unwrap();
+    fs::write(root.join("md/SUMMARY.md"), "# Summary\n").unwrap();
     fs::write(
         root.join("src/lib.rs"),
         concat!(
@@ -594,10 +589,10 @@ fn book_rendering_preserves_retained_coverage_and_never_launches_tests() {
     assert!(
         rendered
             .chapters()
-            .next()
+            .find(|chapter| chapter.name == "Coverage gaps")
             .unwrap()
             .content
-            .contains("File coverage map")
+            .contains("Unresolved coverage gaps")
     );
     assert!(
         fs::read_to_string(calls)
@@ -718,7 +713,7 @@ fn real_build_captures_dependency_files_and_environment_for_read_only_freshness_
         serde_json::from_slice::<Book>(&output.stdout)
             .unwrap()
             .chapters()
-            .next()
+            .find(|chapter| chapter.name == "Coverage gaps")
             .unwrap()
             .content
             .clone()

@@ -191,6 +191,18 @@ fn mdbook_preprocessor_renders_definitions_between_stdin_and_stdout() {
         "{}",
         chapter.content
     );
+    let badge_rows = chapter
+        .content
+        .split("<span class=\"habeas-definition-badge\">")
+        .skip(1)
+        .map(|row| row.split("</span>").next().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(badge_rows.len(), 2, "{}", chapter.content);
+    for row in badge_rows {
+        assert!(row.contains("<img "), "{row}");
+        assert!(row.contains("class=\"habeas-detail-icon\""), "{row}");
+        assert_eq!(row.matches("</a>").count(), 2, "{row}");
+    }
     assert!(chapter.sub_items.is_empty());
     assert!(
         chapter.content.contains("href=\"#habeas-req-rules.ready\""),
@@ -223,7 +235,7 @@ fn mdbook_preprocessor_renders_definitions_between_stdin_and_stdout() {
                 _ => None,
             })
             .collect::<Vec<_>>(),
-        ["rules.ready", "rules.cites"]
+        ["Coverage gaps", "rules.ready", "rules.cites"]
     );
 }
 

@@ -26,7 +26,7 @@ to a subagent to keep it out of your context.
       references" and "What the review checks" sections govern tagging. Aim for
       accurate references, not a coverage number. If the project has no
       `tests/habeas.rs` calling `habeas::validate()`, Habeas is not set up: ask
-      before running `habeas setup`. Before bootstrapping evidence, check coverage readiness with `habeas status`: the validation test also checks the saved `.config/nextest.toml` collector and default-profile rules. Use `habeas setup` to establish or repair the integration under the existing setup authorization. Report conflicting nextest settings or chapter contents for review; preserve project-specific settings. If a requirement already exists, confirm
+      before running `habeas setup`. Before bootstrapping evidence, check coverage readiness with `habeas status`: the validation test also checks the saved `.config/nextest.toml` collector and default-profile rules. Use `habeas setup` to establish or repair the integration under the existing setup authorization. Report conflicting nextest settings for review; preserve project-specific settings. If a requirement already exists, confirm
       authoring works with `habeas author --stdout <full-name>`, which always
       assesses and writes no evidence. If it fails, read the habeas-evidence
       skill's `references/authoring-failures.md`.
