@@ -229,6 +229,129 @@ completeness cannot be established MUST be identified as unavailable rather
 than as 0% or "not measured".
 :::
 
+:::{req} index.file_map.table
+Each file coverage map MUST present its listed files in a compact table, with
+one row per file and columns for its workspace-relative path, coverage
+percentage or measurement status, and covered and instrumented line counts
+when measured. The counts, statuses, and visual distinction of coverage levels
+MUST follow {cite}`requirements.test-coverage.index.file_map`.
+:::
+
+:::{req} index.file_map.directories
+The table of {cite}`requirements.test-coverage.index.file_map.table` MUST group
+its listed files by their directory hierarchy. Each non-root directory
+containing a listed file, directly or through descendants, MUST have a group.
+Each group MUST be independently expandable and collapsible.
+
+A collapsed group MUST show its workspace-relative path and the summaries
+required by {cite}`requirements.test-coverage.index.file_map.minimum` and
+{cite}`requirements.test-coverage.index.file_map.minimum.statuses`, while
+hiding its file rows and descendant groups.
+:::
+
+:::{req} index.file_map.directories.initial
+Directory groups under
+{cite}`requirements.test-coverage.index.file_map.directories` MUST be collapsed
+initially. File rows at the workspace root MUST remain visible.
+:::
+
+:::{req} index.file_map.directories.data
+Expanding or collapsing a directory group under
+{cite}`requirements.test-coverage.index.file_map.directories` MUST NOT change
+the files, coverage counts, or measurement statuses represented by the map.
+:::
+
+:::{req} index.file_map.minimum
+Each directory group under
+{cite}`requirements.test-coverage.index.file_map.directories` MUST display the
+minimum file coverage percentage among its measured listed files, including
+files in descendant groups. This minimum MUST use the file coverage fractions
+of {cite}`requirements.test-coverage.index.file_map` before rounding for
+display, regardless of which groups are expanded. Its label MUST identify it
+as the minimum measured file coverage.
+
+Not-measured and unavailable files MUST NOT contribute a percentage to the
+minimum. A group with no measured files MUST show no numerical minimum.
+The minimum MUST describe only the files listed by the map, including the
+omission rule of {cite}`requirements.test-coverage.index.file_map.test` for a
+per-test map.
+:::
+
+:::{req} index.file_map.minimum.statuses
+Each directory group under
+{cite}`requirements.test-coverage.index.file_map.directories` MUST separately
+display the number of its listed files, including descendants, that are
+not measured and the number that are unavailable whenever the corresponding
+count is nonzero. These statuses MUST follow
+{cite}`requirements.test-coverage.index.file_map`. The counts MUST describe
+only files listed by the map, regardless of which groups are expanded.
+:::
+
+:::{example} index.file_map.minimum.descendants
+A map lists `src/a.rs` with 1 of 2 instrumented lines covered,
+`src/nested/b.rs` with 1 of 4 covered, and `src/nested/c.rs` as not measured.
+Both the `src` and `src/nested` groups show a minimum measured file coverage
+of 25% and one not-measured file, including while collapsed.
+{test}`requirements.test-coverage.index.file_map.minimum`
+{test}`requirements.test-coverage.index.file_map.minimum.statuses`
+:::
+
+:::{req} index.file_map.notes
+Each listed first-party Rust file path in a combined or per-test file coverage
+map MUST link to a file-notes view identifying its workspace-relative path.
+:::
+
+:::{req} index.file_map.notes.justifications
+The view of {cite}`requirements.test-coverage.index.file_map.notes` MUST show
+each `habeas:coverage` citation attached to the file root or an explicitly
+declared function or method. Each entry MUST identify its source item and
+source location and show the fenced citation commentary and Rust doc comments
+supplying its tracked justification under
+{cite}`requirements.test-coverage.check.exceptions.anchor`.
+When no tracked justification is present, the entry MUST say so.
+
+File-root citations MUST be labelled as file-threshold exception proposals;
+function and method citations MUST be labelled as function exception proposals,
+following {cite}`requirements.test-coverage.check.exceptions.anchor`.
+:::
+
+:::{req} index.file_map.notes.current
+The view of {cite}`requirements.test-coverage.index.file_map.notes` MUST use
+the current workspace source at book-render time and explicitly identify its
+contents as current workspace source notes. This MUST also hold when the link
+originates in a historical test report.
+:::
+
+:::{req} index.file_map.notes.availability
+The view of {cite}`requirements.test-coverage.index.file_map.notes` MUST show
+a readable statement when successfully read and parsed current source contains
+no citations within the scope of
+{cite}`requirements.test-coverage.index.file_map.notes.justifications`.
+
+Missing, unreadable, or unparseable current source MUST instead produce a
+visible diagnostic, without preventing the rest of the book from rendering.
+These failures MUST NOT be presented as an absence of coverage explanations.
+:::
+
+:::{req} index.file_map.notes.reviews
+Each citation entry under
+{cite}`requirements.test-coverage.index.file_map.notes.justifications` MUST
+show whether its source item's citation review is current and accepted under
+{cite}`requirements.test-coverage.check.exceptions.reviews`.
+
+Missing, unreadable, stale, invalid, or rejected reviews MUST NOT be presented
+as accepted. The view MUST distinguish a missing review from a present review
+that is not accepted and expose the validation findings explaining
+non-acceptance.
+:::
+
+:::{req} index.file_map.notes.render_only
+Rendering the view of
+{cite}`requirements.test-coverage.index.file_map.notes` MUST NOT invoke an
+assessment model. It MUST follow
+{cite}`requirements.test-coverage.index.render_only`.
+:::
+
 :::{req} index.file_map.combined
 The coverage index MUST present a file coverage map of all current first-party
 Rust files under {cite}`requirements.references.rust_item_coverage` as its
