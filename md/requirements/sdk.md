@@ -131,7 +131,6 @@ functionality. The linked chapters describe each one:
 | [Structural fingerprints](sdk/graph/fingerprinting.md#fingerprint-the-structure-and-version-the-rules) | Change detection based on source structure. |
 | [Agent calls](sdk/graph/agent-calls.md) | Prompt construction, tracked tools, and typed results. |
 | [Evidence storage helpers](sdk/filesystem-storage.md) | Filesystem persistence for SDK evidence records. |
-| [Graph traversal](sdk/graph/traversal.md) | Validation scheduling across connected nodes, including cycles and parallel work. |
 
 
 ## Putting it all together

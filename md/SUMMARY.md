@@ -15,7 +15,6 @@
     - [Validation](./requirements/sdk/graph/validation.md)
       - [Agent calls](./requirements/sdk/graph/agent-calls.md)
       - [Context tools](./requirements/sdk/graph/context-tools.md)
-      - [Graph traversal](./requirements/sdk/graph/traversal.md)
     - [Fingerprinting](./requirements/sdk/graph/fingerprinting.md)
     - [Evidence storage](./requirements/sdk/graph/evidence.md)
     - [Filesystem evidence storage](./requirements/sdk/filesystem-storage.md)

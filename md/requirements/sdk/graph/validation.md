@@ -4,7 +4,7 @@ Implement `Validation` to decide whether a node meets your application's
 criterion. The SDK supplies a shared context for explicit input selection, captures
 dependencies, and stores the judgment you return.
 
-## Choose whether to check, validate, or traverse
+## Choose whether to check or validate
 
 ```rust,ignore
 // Check saved evidence without invoking application validation.
@@ -12,14 +12,10 @@ let state = checker.check_node(&expiration).await?;
 
 // Reuse current evidence, or validate and save a new record.
 let judgment = validator.validate_node(&expiration).await?;
-
-// Apply that lifecycle to every reachable node.
-let results = validator.validate_transitive(&expiration, options).await?;
 ```
 
 The SDK handles freshness, dependency tracking, and persistence. The application
-callback decides validity. The sections below follow their interaction; the
-[traversal chapter](traversal.md) adds scheduling across connected nodes.
+callback decides validity. The sections below follow their interaction.
 
 ## Let the SDK create the validation context
 
@@ -276,7 +272,7 @@ let judgment = validator.validate_node(&expiration).await?;
 ```
 
 `validate_node` concerns this node's judgment. Reading the implementation as an
-input does not recursively validate the implementation. The [traversal chapter](traversal.md) adds that traversal explicitly.
+input does not recursively validate the implementation.
 
 :::{req} validate_node
 The configured SDK validator MUST expose the following method:
@@ -335,6 +331,3 @@ A current negative judgment is a successful freshness check but may fail
 Habeas's CI policy. Running `validate_node` without an agent can also produce
 a new judgment if the callback does not need one. Checking evidence and
 producing evidence remain distinct SDK operations.
-
-[Graph traversal](traversal.md) extends this lifecycle to connected nodes,
-including cycles and concurrent validations.
