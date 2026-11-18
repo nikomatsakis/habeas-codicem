@@ -24,7 +24,7 @@ Run `cargo agents sync` in your terminal and choose **Enable** when it offers Ha
 
 To configure the project before starting an agent session, or if the hook is unavailable in your agent, run `cargo install habeas` and `habeas setup` yourself. For development from a checkout, use `cargo install --path .`.
 
-`habeas setup` adds Habeas as a dev dependency, configures `[preprocessor.habeas]` to run `habeas mdbook`, adds the badge stylesheet, creates `tests/habeas.rs`, configures nextest's per-process collector, and enables the generated coverage report under the requirements index. Setup can be run again without duplicating configuration or overwriting differing files.
+`habeas setup` adds Habeas as a dev dependency, configures `[preprocessor.habeas]` to run `habeas mdbook`, adds the badge stylesheet, creates `tests/habeas.rs`, configures nextest's per-process collector, and enables the generated documented coverage gaps chapter under the requirements index. Setup can be run again without duplicating configuration or overwriting differing files.
 
 Add a `{test}` reference to an appropriate project requirement or named example on the generated test, and give the rest of your Rust functions references before expecting validation to pass. Mark code with `{impl}` where it implements part of a definition, tests with `{test}` where they are designed to verify one, and use `{cite}` only for related code that does neither; see [References](md/reference.md#references).
 
@@ -192,14 +192,17 @@ doctests. In this repository use `cargo habeas coverage`.
 Coverage conversion runs one attempt per available CPU, with each LLVM
 subprocess using one thread.
 
-The mdBook coverage index combines the latest attempt per test for the latest
+`habeas coverage-check` combines the latest attempt per test for the latest
 build configuration. Source or build-input changes exclude old contributions.
 Each process retains its own raw LLVM profile and captured-source report under
 `target/habeas/coverage/` (or the configured Cargo target directory). These are
-disposable build artifacts: never commit them. Building the book only reads saved
-coverage. Its Coverage gaps page shows insufficient file and function coverage,
-accepted explanations, and measurement diagnostics. Per-test reports and
-captured source remain in the build artifacts.
+disposable build artifacts: never commit them.
+
+The book's Documented coverage gaps page connects all `habeas:coverage`
+annotations to current source explanations and last recorded reviews. It trusts
+these records without checking freshness or acceptance. Building the book does
+not read saved execution measurements. Use `habeas status` and `habeas author`
+to check annotations and reviews, and `habeas coverage-check` to enforce coverage.
 
 For full verification, run `habeas test` to collect workspace coverage and then
 check it. In CI, run `habeas coverage -- --workspace`, followed on success by

@@ -296,7 +296,7 @@ impl DiscoverySources {
     /// Whether a project file outside the fixed exclusions is permitted by the
     /// workspace rules: not disallowed.
     // {impl}`requirements.configuration.evidence_paths`
-    fn considers(&self, path: &Path, directory: bool) -> bool {
+    pub fn considers(&self, path: &Path, directory: bool) -> bool {
         if excluded_from_discovery(&self.root, path, directory) {
             return false;
         }

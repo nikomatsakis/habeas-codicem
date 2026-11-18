@@ -177,6 +177,7 @@ pub(crate) struct ReferenceMatch<'a> {
 // {impl}`requirements.references.anchors`
 // {impl}`requirements.ci.identifiers`
 // {impl}`requirements.references.builtin_definitions`
+// {impl}`requirements.index.render_only`
 pub fn preprocess_book(book: &mut Book, root: &Path) -> io::Result<()> {
     let mut definitions = BTreeMap::new();
     let mut order = Vec::new();
@@ -1056,6 +1057,7 @@ mod tests {
         assert!(rendered.contains(":test: later.md"), "{rendered}");
     }
 
+    // {test}`requirements.test-coverage.index.navigation`
     // {test}`requirements.index.detail_pages`
     // {test}`requirements.index.chapter`
     // {test}`requirements.index.chapter.default`
@@ -1134,7 +1136,9 @@ mod tests {
             .sub_items
             .iter()
             .filter_map(|item| match item {
-                BookItem::Chapter(chapter) if chapter.name == "Coverage gaps" => Some(chapter),
+                BookItem::Chapter(chapter) if chapter.name == "Documented coverage gaps" => {
+                    Some(chapter)
+                }
                 _ => None,
             })
             .collect::<Vec<_>>();
@@ -1147,13 +1151,15 @@ mod tests {
         assert!(
             index
                 .content
-                .contains("[Coverage gaps](requirements-index/coverage.html)")
+                .contains("[Documented coverage gaps](requirements-index/coverage.html)")
         );
         let details = index
             .sub_items
             .iter()
             .filter_map(|item| match item {
-                BookItem::Chapter(chapter) if chapter.name != "Coverage gaps" => Some(chapter),
+                BookItem::Chapter(chapter) if chapter.name != "Documented coverage gaps" => {
+                    Some(chapter)
+                }
                 _ => None,
             })
             .collect::<Vec<_>>();
@@ -1233,7 +1239,7 @@ mod tests {
             let BookItem::Chapter(coverage) = &index.sub_items[0] else {
                 unreachable!()
             };
-            assert_eq!(coverage.name, "Coverage gaps");
+            assert_eq!(coverage.name, "Documented coverage gaps");
             assert!(coverage.source_path.is_none());
             assert!(index.parent_names.is_empty());
             assert!(index.content.starts_with("# Requirements index\n\n"));
@@ -1276,7 +1282,7 @@ mod tests {
         assert_eq!(index.number.as_deref().map(Vec::as_slice), Some(&[5][..]));
         assert_eq!(index.sub_items.len(), 1);
         assert!(
-            matches!(&index.sub_items[0], BookItem::Chapter(chapter) if chapter.name == "Coverage gaps")
+            matches!(&index.sub_items[0], BookItem::Chapter(chapter) if chapter.name == "Documented coverage gaps")
         );
     }
 
@@ -1350,7 +1356,12 @@ mod tests {
                 .iter()
                 .map(|page| page.name.as_str())
                 .collect::<Vec<_>>(),
-            ["Coverage gaps", "Existing", "rules.zeta", "more.cli.mdbook"]
+            [
+                "Documented coverage gaps",
+                "Existing",
+                "rules.zeta",
+                "more.cli.mdbook"
+            ]
         );
         assert_eq!(pages[3].parent_names, ["Index"]);
         assert_eq!(

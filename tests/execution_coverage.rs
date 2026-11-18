@@ -589,10 +589,10 @@ fn book_rendering_preserves_retained_coverage_and_never_launches_tests() {
     assert!(
         rendered
             .chapters()
-            .find(|chapter| chapter.name == "Coverage gaps")
+            .find(|chapter| chapter.name == "Documented coverage gaps")
             .unwrap()
             .content
-            .contains("Unresolved coverage gaps")
+            .contains("No documented coverage gaps are present.")
     );
     assert!(
         fs::read_to_string(calls)
@@ -616,9 +616,6 @@ fn book_rendering_preserves_retained_coverage_and_never_launches_tests() {
 // {test}`requirements.test-coverage.index.freshness`
 #[test]
 fn real_build_captures_dependency_files_and_environment_for_read_only_freshness_checks() {
-    use mdbook_preprocessor::book::{Book, Chapter};
-    use std::io::Write;
-    use std::process::Stdio;
     let temp = fixture();
     let root = temp.path();
     fs::write(root.join("included data.txt"), "included").unwrap();
@@ -678,62 +675,40 @@ fn real_build_captures_dependency_files_and_environment_for_read_only_freshness_
         saved[0].1["environment_inputs"]["HABEAS_FIXTURE_BUILD_ENV"],
         "build-value"
     );
-    let render = |compiler: &str, build: &str| {
-        let mut book = Book::new();
-        book.push_item(Chapter::new(
-            "Coverage",
-            ":::{coverage-index}\n:::\n".into(),
-            "coverage.md",
-            vec![],
-        ));
-        let input = serde_json::json!([{
-            "root": root, "config": {"book":{"src":"md"}}, "renderer":"html", "mdbook_version":"0.5.3"
-        }, book]);
-        let mut child = Command::new(env!("CARGO_BIN_EXE_habeas"))
-            .arg("mdbook")
+    let check = |compiler: &str, build: &str| {
+        let output = Command::new(env!("CARGO_BIN_EXE_habeas"))
+            .arg("coverage-check")
             .current_dir(root)
             .env("HABEAS_FIXTURE_RUST_ENV", compiler)
             .env("HABEAS_FIXTURE_BUILD_ENV", build)
             .env("CARGO_NET_OFFLINE", "true")
             .env_remove("CARGO_TARGET_DIR")
             .env_remove("CARGO_BUILD_TARGET_DIR")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
+            .output()
             .unwrap();
-        child
-            .stdin
-            .take()
-            .unwrap()
-            .write_all(input.to_string().as_bytes())
-            .unwrap();
-        let output = child.wait_with_output().unwrap();
-        assert_success(&output);
-        serde_json::from_slice::<Book>(&output.stdout)
-            .unwrap()
-            .chapters()
-            .find(|chapter| chapter.name == "Coverage gaps")
-            .unwrap()
-            .content
-            .clone()
+        assert!(
+            output.stderr.is_empty(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).unwrap()
     };
     let storage = root.join("target/habeas/coverage");
     let before = retained_files(&storage);
-    assert!(!render("compiler-value", "build-value").contains("stale test attempts"));
+    assert!(!check("compiler-value", "build-value").contains("stale coverage"));
     for file in ["included data.txt", "build-input.data"] {
         let path = root.join(file);
         let original = fs::read(&path).unwrap();
         fs::write(&path, "changed").unwrap();
         assert!(
-            render("compiler-value", "build-value").contains("1 stale test attempts"),
+            check("compiler-value", "build-value").contains("stale coverage"),
             "{file}"
         );
         fs::write(path, original).unwrap();
-        assert!(!render("compiler-value", "build-value").contains("stale test attempts"));
+        assert!(!check("compiler-value", "build-value").contains("stale coverage"));
     }
     for (compiler, build) in [("changed", "build-value"), ("compiler-value", "changed")] {
-        assert!(render(compiler, build).contains("1 stale test attempts"));
+        assert!(check(compiler, build).contains("stale coverage"));
     }
     assert_eq!(retained_files(&storage), before);
 }

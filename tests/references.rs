@@ -186,7 +186,7 @@ fn habeas_util_citations_cover_their_item_without_a_citation_review() {
 
 // {test}`requirements.references.builtin_definitions`
 #[test]
-fn built_ins_have_no_evidence_index_entry_or_status_and_are_validated_in_the_book() {
+fn built_ins_have_no_evidence_index_entry_and_are_checked_by_validation() {
     let temp = project();
     let root = temp.path();
     let cr = role("cite");

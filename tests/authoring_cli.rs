@@ -3170,6 +3170,7 @@ fn bundled_skills_are_five_skill_directories_each_home_to_its_topics() {
 // {test}`requirements.test-coverage.guidance`
 // {test}`requirements.test-coverage.guidance.doctests`
 // {test}`requirements.test-coverage.guidance.artifacts`
+// {test}`requirements.test-coverage.check.guidance`
 #[test]
 fn bundled_skills_default_to_process_coverage_and_keep_artifacts_disposable() {
     for name in ["habeas", "habeas-evidence", "habeas-bootstrap-requirements"] {
@@ -3220,6 +3221,26 @@ fn bundled_skills_default_to_process_coverage_and_keep_artifacts_disposable() {
         );
     }
     assert_text(
+        "evidence check guidance",
+        &collapse(&bundled_skill("habeas-evidence")),
+        &[
+            "Use `habeas test` for full verification after the changes.",
+            "recommend the separate collection and check steps",
+            "[CI example](../habeas/references/ci.md)",
+            "collection alone does not enforce the policy",
+        ],
+    );
+    assert_text(
+        "bootstrap check guidance",
+        &collapse(&bundled_skill("habeas-bootstrap-requirements")),
+        &[
+            "Run `habeas test` for full-workspace collection and post-suite coverage checking",
+            "Recommend separate successful collection and `habeas coverage-check` steps in project CI",
+            "[CI example](../habeas/references/ci.md)",
+            "Collection alone does not enforce the coverage policy",
+        ],
+    );
+    assert_text(
         "approved implementation SOP",
         &collapse(include_str!("../agent-sops/approved-implementation.sop.md")),
         &[
@@ -3227,6 +3248,10 @@ fn bundled_skills_default_to_process_coverage_and_keep_artifacts_disposable() {
             "It executes parallel processes through `cargo nextest` and retains coverage for each process",
             "Run doctests separately with `cargo test --doc --workspace`",
             "profiles, reports, and source snapshots under the Cargo target directory are disposable build output: never stage or commit them to Git",
+            "`cargo habeas test` collects workspace coverage and then enforces the coverage policy",
+            "Recommend separate collection and `habeas coverage-check` steps in project CI",
+            "[CI example](../assets/skills/habeas/references/ci.md)",
+            "Collection alone does not enforce the coverage policy",
         ],
     );
     for required in [

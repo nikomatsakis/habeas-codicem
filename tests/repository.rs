@@ -294,7 +294,7 @@ fn mdbook_preprocessor_renders_definitions_between_stdin_and_stdout() {
                 _ => None,
             })
             .collect::<Vec<_>>(),
-        ["Coverage gaps", "rules.ready", "rules.cites"]
+        ["Documented coverage gaps", "rules.ready", "rules.cites"]
     );
 }
 

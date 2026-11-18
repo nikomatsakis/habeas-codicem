@@ -256,7 +256,6 @@ pub(super) fn readable(record: &Record) -> bool {
 }
 
 // {impl}`requirements.test-coverage.index.summary`
-// {impl}`requirements.test-coverage.index.file_map`
 pub(super) fn union<'a>(records: impl Iterator<Item = &'a Record>) -> BTreeMap<(String, u32), u64> {
     let mut files: BTreeMap<&str, BTreeMap<u32, u64>> = BTreeMap::new();
     for record in records {
@@ -282,20 +281,10 @@ pub(super) fn union<'a>(records: impl Iterator<Item = &'a Record>) -> BTreeMap<(
         .collect()
 }
 
-// {cite}`habeas:util`
-fn percentage_label(covered: usize, total: usize) -> String {
-    let percentage = 100.0 * covered as f64 / total as f64;
-    if covered > 0 && percentage < 0.1 {
-        "&lt;0.1%".to_owned()
-    } else {
-        format!("{percentage:.1}%")
-    }
-}
-
-// {cite}`habeas:util`
+// {impl}`requirements.test-coverage.index.file_map.directories`
 #[derive(Default)]
 struct GapDirectory<'a> {
-    files: Vec<&'a super::check::FilePolicy>,
+    files: Vec<&'a super::notes::DocumentedFile>,
     directories: BTreeMap<String, GapDirectory<'a>>,
 }
 
@@ -304,65 +293,30 @@ impl GapDirectory<'_> {
     fn count(&self) -> usize {
         self.files
             .iter()
-            .flat_map(|file| &file.obligations)
-            .filter(|gap| !gap.accepted())
-            .count()
+            .map(|file| file.items.len())
+            .sum::<usize>()
             + self.directories.values().map(Self::count).sum::<usize>()
     }
 
-    fn render(
-        &self,
-        html: &mut String,
-        folder: &str,
-        policy: &super::check::PolicyReport,
-        index: &Path,
-        next: &mut usize,
-    ) {
+    // {impl}`requirements.test-coverage.index.gaps.details`
+    // {impl}`requirements.test-coverage.index.gaps.details.initial`
+    // {impl}`requirements.test-coverage.index.gaps.explanations`
+    fn render(&self, html: &mut String, folder: &str, index: &Path, next: &mut usize) {
         if !self.files.is_empty() {
-            html.push_str("<table class=\"gap-file-table\"><colgroup><col><col><col><col></colgroup><thead><tr><th>File</th><th>Coverage</th><th>Uncovered obligations</th><th>Explanation</th></tr></thead><tbody>\n");
+            html.push_str("<table class=\"gap-file-table\"><colgroup><col><col><col></colgroup><thead><tr><th>File</th><th>Documented source items</th><th>Notes</th></tr></thead><tbody>\n");
             for file in &self.files {
                 let id = format!("habeas-gap-file-{}", *next);
                 *next += 1;
-                let gaps: Vec<_> = file
-                    .obligations
-                    .iter()
-                    .filter(|gap| !gap.accepted())
-                    .collect();
-                let threshold = gaps.iter().any(|gap| gap.selector.is_empty());
-                let functions = gaps.len() - usize::from(threshold);
-                let undocumented = gaps.iter().filter(|gap| gap.exception.is_none()).count();
-                let description = match (threshold, functions) {
-                    (true, 0) => "file below target".to_owned(),
-                    (true, n) => format!("file + {n} functions"),
-                    (false, 1) => "1 function".to_owned(),
-                    (false, n) => format!("{n} functions"),
-                };
-                let explanation = if undocumented == gaps.len() {
-                    "Missing"
-                } else {
-                    "Review needed"
-                };
-                let percentage = if file.total == 0 {
-                    "not measured".to_owned()
-                } else {
-                    percentage_label(file.covered, file.total)
-                };
-                let indicator = if file.total == 0 {
-                    String::new()
-                } else {
-                    format!(
-                        "<span class=\"gap-coverage-bar\" aria-hidden=\"true\" style=\"--gap-covered: {:.6}%\"></span>",
-                        100.0 * file.covered as f64 / file.total as f64
-                    )
-                };
-                html.push_str(&format!("<tr class=\"gap-file-row habeas-coverage-file\" data-file=\"{}\" data-status=\"{}\"><td><button class=\"gap-file-button\" aria-expanded=\"false\" aria-controls=\"{id}\" onclick=\"const row=document.getElementById(this.getAttribute('aria-controls'));row.hidden=!row.hidden;this.setAttribute('aria-expanded',String(!row.hidden));this.querySelector('.gap-chevron').textContent=row.hidden?'▸':'▾'\"><span class=\"gap-chevron\" aria-hidden=\"true\">▸</span><code>{}</code></button></td><td class=\"gap-percentage\">{percentage}{indicator}</td><td>{description}</td><td class=\"gap-unresolved\">{explanation}</td></tr>\n", escaped(&file.file), if file.total == 0 { "not measured" } else { "measured" }, escaped(&file.file)));
                 let notes =
                     crate::chapter_href(index, &super::notes::path(index, &file.file), None);
-                html.push_str(&format!("<tr class=\"gap-detail-row\" id=\"{id}\" hidden><td colspan=\"4\"><p class=\"gap-detail-title\"><code>{}</code> · {}/{} instrumented lines covered · <a href=\"{}\">Current source notes</a></p><table class=\"gap-obligation-table\"><thead><tr><th>Source item</th><th>Measurement</th><th>Explanation</th></tr></thead><tbody>", escaped(&file.file), file.covered, file.total, escaped(&notes)));
-                for gap in gaps {
-                    html.push_str(&format!("<tr><td><code>{}</code><br><span class=\"gap-meta\">{}:{}</span></td><td>{}</td><td>{}</td></tr>\n", escaped(if gap.selector.is_empty() { "File root" } else { &gap.selector }), escaped(&file.file), gap.line, escaped(&gap.measurement), explanation_html(gap)));
+                html.push_str(&format!("<tr class=\"gap-file-row habeas-coverage-file\" data-file=\"{}\"><td><button class=\"gap-file-button\" aria-expanded=\"false\" aria-controls=\"{id}\" onclick=\"const row=document.getElementById(this.getAttribute('aria-controls'));row.hidden=!row.hidden;this.setAttribute('aria-expanded',String(!row.hidden));this.querySelector('.gap-chevron').textContent=row.hidden?'▸':'▾'\"><span class=\"gap-chevron\" aria-hidden=\"true\">▸</span><code>{}</code></button></td><td>{}</td><td><a href=\"{}\">Current source notes</a></td></tr>\n", escaped(&file.file), escaped(&file.file), file.items.len(), escaped(&notes)));
+                html.push_str(&format!(
+                    "<tr class=\"gap-detail-row\" id=\"{id}\" hidden><td colspan=\"3\">"
+                ));
+                for (offset, item) in file.items.iter().enumerate() {
+                    html.push_str(&format!("<div class=\"gap-explanation\"><p><a href=\"{}#coverage-note-{}\"><code>{}:{} #{}</code></a></p>{}</div>\n", escaped(&notes), offset + 1, escaped(&file.file), item.line, escaped(if item.selector.is_empty() { "File root" } else { &item.selector }), item.html.replace('\n', "&#10;")));
                 }
-                html.push_str("</tbody></table></td></tr>\n");
+                html.push_str("</td></tr>\n");
             }
             html.push_str("</tbody></table>\n");
         }
@@ -372,171 +326,46 @@ impl GapDirectory<'_> {
             } else {
                 format!("{folder}/{name}")
             };
-            let prefix = format!("{path}/");
-            let minimum = policy
-                .files
-                .iter()
-                .filter(|file| file.file.starts_with(&prefix) && file.total > 0)
-                .min_by(|a, b| {
-                    ((a.covered as u128) * (b.total as u128))
-                        .cmp(&((b.covered as u128) * (a.total as u128)))
-                });
-            let min = minimum.map_or_else(|| "No measured files".to_owned(), |file| format!("Minimum measured file coverage: <strong data-min-covered=\"{}\" data-min-instrumented=\"{}\">{}</strong>", file.covered, file.total, percentage_label(file.covered, file.total)));
-            let not_measured = policy
-                .files
-                .iter()
-                .filter(|file| {
-                    file.file.starts_with(&prefix)
-                        && file.total == 0
-                        && file.obligations.iter().any(|gap| !gap.accepted())
-                })
-                .count();
-            let counts = if policy.counts_complete {
-                format!("{} uncovered obligations", directory.count())
-            } else if policy.measured {
-                format!(
-                    "Gap counts incomplete: {} established uncovered obligations",
-                    directory.count()
-                )
-            } else {
-                "Gap counts unavailable".to_owned()
-            };
-            html.push_str(&format!("<details class=\"gap-directory\" data-directory=\"{}\" open><summary><code>{}/</code><span class=\"gap-meta\">{min} · {counts}{} </span></summary>\n", escaped(&path), escaped(&path), if not_measured > 0 { format!(" · {not_measured} not measured") } else { String::new() }));
-            directory.render(html, &path, policy, index, next);
+            html.push_str(&format!("<details class=\"gap-directory\" data-directory=\"{}\" open><summary><code>{}/</code><span class=\"gap-meta\">{} documented source items</span></summary>\n", escaped(&path), escaped(&path), directory.count()));
+            directory.render(html, &path, index, next);
             html.push_str("</details>\n");
         }
     }
 }
 
-// {impl}`requirements.test-coverage.index.gaps.explanations`
-fn explanation_html(gap: &super::check::Obligation) -> String {
-    let Some(exception) = &gap.exception else {
-        return "<span class=\"gap-unresolved\">Missing habeas:coverage proposal</span>".into();
-    };
-    let state = if exception.accepted {
-        "Current and accepted"
-    } else if exception.review_missing {
-        "Review missing"
-    } else {
-        "Review not accepted"
-    };
-    let mut html = format!("<details class=\"gap-explanation\"><summary>{state}</summary>");
-    if exception.justification.trim().is_empty() {
-        html.push_str("<p>No tracked justification is present.</p>");
-    } else {
-        html.push_str(&format!(
-            "<pre>{}</pre>",
-            escaped(&crate::redaction::redact_text(&exception.justification))
-        ));
-    }
-    for finding in &exception.findings {
-        html.push_str(&format!("<p>{}</p>", escaped(finding)));
-    }
-    html.push_str("</details>");
-    html
-}
-
 // {impl}`requirements.test-coverage.index.file_map.combined`
-// {impl}`requirements.test-coverage.index.file_map.combined.measurement`
 // {impl}`requirements.test-coverage.index.file_map.table`
-// {impl}`requirements.test-coverage.index.file_map.directories`
 // {impl}`requirements.test-coverage.index.file_map.directories.initial`
 // {impl}`requirements.test-coverage.index.file_map.directories.data`
-// {impl}`requirements.test-coverage.index.file_map.minimum`
-// {impl}`requirements.test-coverage.index.file_map.minimum.statuses`
 // {impl}`requirements.test-coverage.index.gaps`
 // {impl}`requirements.test-coverage.index.gaps.summary`
-// {impl}`requirements.test-coverage.index.gaps.details`
-// {impl}`requirements.test-coverage.index.gaps.details.initial`
 // {impl}`requirements.test-coverage.index.gaps.accepted`
 // {impl}`requirements.test-coverage.index.file_map.notes`
-fn gaps_map(policy: &super::check::PolicyReport, index: &Path, attempts: usize) -> String {
+fn gaps_map(files: &[super::notes::DocumentedFile], index: &Path) -> String {
+    let mut tree = GapDirectory::default();
+    for file in files.iter().filter(|file| !file.items.is_empty()) {
+        let mut directory = &mut tree;
+        let parts: Vec<_> = file.file.split('/').collect();
+        for part in &parts[..parts.len() - 1] {
+            directory = directory.directories.entry((*part).to_owned()).or_default();
+        }
+        directory.files.push(file);
+    }
+    let count = tree.count();
     let mut html = format!(
-        "<style>{}</style>\n<section class=\"habeas-coverage-map habeas-coverage-gaps\" aria-label=\"Coverage gaps\">\n<p class=\"gap-meta\">Combined coverage · {attempts} selected test attempts</p><p class=\"gap-policy gap-meta\">File target: 80% of instrumented lines. Every function needs execution or an accepted explanation.</p>\n",
+        "<style>{}</style>\n<section class=\"habeas-coverage-map habeas-coverage-gaps\" aria-label=\"Documented coverage gaps\">\n<p class=\"gap-meta\">{count} documented source items carrying coverage annotations</p>\n",
         include_str!("../../assets/coverage-gaps.css")
     );
-    let unresolved: Vec<_> = policy
-        .files
-        .iter()
-        .flat_map(|file| &file.obligations)
-        .filter(|gap| !gap.accepted())
-        .collect();
-    let files = unresolved
-        .iter()
-        .filter(|gap| gap.selector.is_empty())
-        .count();
-    let functions = unresolved.len() - files;
-    html.push_str(&format!(
-        "<div class=\"gap-verdict\" role=\"status\"><strong>CI would {}</strong>",
-        if policy.report.passed { "pass" } else { "fail" }
-    ));
-    if policy.counts_complete {
-        html.push_str(&format!("<span>{} unresolved gaps</span><span class=\"gap-meta\">{files} file obligations · {functions} function obligations</span>", unresolved.len()));
-    } else if policy.measured {
-        html.push_str(&format!(
-            "<span>Gap counts incomplete: {} established unresolved gaps</span>",
-            unresolved.len()
-        ));
-    } else {
-        html.push_str("<span>Coverage unavailable · gap counts unavailable</span>");
-    }
-    html.push_str("</div><p class=\"gap-section-label\">Unresolved coverage gaps</p>\n");
-    let mut directory = GapDirectory::default();
-    for file in &policy.files {
-        if !file.obligations.iter().any(|gap| !gap.accepted()) {
-            continue;
-        }
-        let mut dir = &mut directory;
-        if let Some((folder, _)) = file.file.rsplit_once('/') {
-            for part in folder.split('/') {
-                dir = dir.directories.entry(part.into()).or_default();
-            }
-        }
-        dir.files.push(file);
-    }
-    directory.render(&mut html, "", policy, index, &mut 0);
-    if unresolved.is_empty() && policy.counts_complete {
-        html.push_str("<p>No unsatisfied file or function obligations.</p>\n");
-    }
-    let accepted = policy
-        .files
-        .iter()
-        .flat_map(|file| {
-            file.obligations
-                .iter()
-                .filter(|gap| gap.accepted())
-                .map(move |gap| (file, gap))
-        })
-        .collect::<Vec<_>>();
-    html.push_str(&format!("<details class=\"gap-accepted-group\"><summary>Documented gaps — {} accepted exceptions</summary><p class=\"gap-meta\">Current workspace source notes. Accepted exceptions do not increase measured percentages.</p>\n", accepted.len()));
-    for (file, gap) in accepted {
-        let notes = crate::chapter_href(index, &super::notes::path(index, &file.file), None);
-        html.push_str(&format!("<div class=\"gap-accepted-item\"><p><a href=\"{}\"><code>{}:{} #{}</code></a> · {} · <span class=\"gap-accepted-state\">current and accepted</span></p>{}</div>\n", escaped(&notes), escaped(&file.file), gap.line, escaped(if gap.selector.is_empty() { "File root" } else { &gap.selector }), escaped(&gap.measurement), explanation_html(gap)));
-    }
-    html.push_str("</details>\n");
-    if !policy.findings.is_empty() {
-        html.push_str(
-            "<details class=\"gap-footer\"><summary>Coverage-check findings</summary><ul>",
-        );
-        for finding in &policy.findings {
-            html.push_str(&format!("<li>{}</li>", escaped(finding)));
-        }
-        html.push_str("</ul></details>\n");
-    }
-    html.push_str("<p class=\"gap-footer gap-meta\">Coverage uses the latest compatible attempt for each test, including filtered runs. This does not establish that all current tests were measured. Saved measurements and current exception reviews determine the CI verdict.</p>\n</section>\n\n");
+    tree.render(&mut html, "", index, &mut 0);
+    html.push_str("</section>\n\n");
     html
 }
 
 // {impl}`requirements.test-coverage.index`
-// {impl}`requirements.test-coverage.index.selection`
-// {impl}`requirements.test-coverage.index.freshness`
-// {impl}`requirements.test-coverage.index.summary`
 // {impl}`requirements.test-coverage.index.paths`
 // {impl}`requirements.test-coverage.index.unavailable`
 // {impl}`requirements.test-coverage.index.render_only`
 // {impl}`requirements.test-coverage.index.details`
-// {impl}`requirements.test-coverage.processes.reports`
-// {impl}`requirements.test-coverage.storage.configuration`
 // {impl}`requirements.test-coverage.index.file_map`
 // {impl}`requirements.test-coverage.index.file_map.combined.details`
 pub(crate) fn populate(book: &mut Book, project: &Path, parent: &Path) -> io::Result<()> {
@@ -565,8 +394,6 @@ pub(super) struct SavedCoverage {
     pub(super) selected: BTreeSet<usize>,
     pub(super) diagnostics: Vec<String>,
     pub(super) uncertain_history: bool,
-    current_files: BTreeSet<String>,
-    pub(super) discovery_failed: bool,
 }
 
 // {impl}`requirements.test-coverage.index.selection`
@@ -575,24 +402,12 @@ pub(super) struct SavedCoverage {
 pub(super) fn load_saved(project: &Path, target: Option<PathBuf>) -> SavedCoverage {
     let mut diagnostics = Vec::new();
     let mut uncertain_history = false;
-    let mut current_files = BTreeSet::new();
-    let mut discovery_failed = false;
     let mut records = Vec::new();
     let workspace = workspace_root(project);
     if let Ok(root) = &workspace {
         let mut errors = Vec::new();
-        let discovered = crate::evidence::discovered_files(root, &mut errors);
-        discovery_failed = !errors.is_empty();
+        let _ = crate::evidence::discovered_files(root, &mut errors);
         diagnostics.extend(errors);
-        current_files.extend(
-            crate::rust_coverage::rust_files(root, &discovered)
-                .into_iter()
-                .filter_map(|file| {
-                    file.strip_prefix(root)
-                        .ok()
-                        .map(|relative| relative.to_string_lossy().into_owned())
-                }),
-        );
     }
     let root_and_target = workspace.and_then(|root| {
         Ok((
@@ -751,82 +566,65 @@ pub(super) fn load_saved(project: &Path, target: Option<PathBuf>) -> SavedCovera
         selected,
         diagnostics,
         uncertain_history,
-        current_files,
-        discovery_failed,
     }
 }
 
 // {impl}`requirements.test-coverage.index.navigation`
 // {impl}`requirements.test-coverage.index.source`
 // {impl}`requirements.test-coverage.index.guidance`
-// {impl}`requirements.test-coverage.index.summary`
 // {impl}`requirements.test-coverage.index.details`
 // {impl}`requirements.test-coverage.index.file_map.test`
 // {impl}`requirements.test-coverage.index.file_map.combined.details`
 pub(super) fn populate_in(
     book: &mut Book,
     project: &Path,
-    target: Option<PathBuf>,
+    _target: Option<PathBuf>,
     parent: &Path,
 ) -> io::Result<()> {
     let index_path = parent.with_extension("").join("coverage.md");
-    let saved = load_saved(project, target);
     let root = workspace_root(project).unwrap_or_else(|_| project.to_path_buf());
-    let policy = super::check::check_saved(&root, &saved)?;
-    let SavedCoverage {
-        records,
-        selected,
-        diagnostics,
-        uncertain_history,
-        current_files,
-        discovery_failed: _,
-    } = saved;
-    let note_files = if policy.measured {
-        policy
-            .files
-            .iter()
-            .filter(|file| !file.obligations.is_empty())
-            .map(|file| file.file.clone())
-            .collect()
-    } else {
-        current_files
-    };
-    let mut summary = String::from("# Coverage gaps\n\n");
-    summary.push_str(&gaps_map(&policy, &index_path, selected.len()));
-    if policy.measured {
-        let totals = union(selected.iter().map(|&index| &records[index]));
-        let covered = totals.values().filter(|&&count| count > 0).count();
-        summary.push_str(&format!("Line coverage: **{covered}/{} ({:.1}%)** from the union of instrumented file-and-line locations.\n\n", totals.len(), 100.0 * covered as f64 / totals.len() as f64));
+    let mut diagnostics = Vec::new();
+    let discovered = crate::evidence::discovered_files(&root, &mut diagnostics);
+    // Deleted indexed sources cannot reveal their annotations. Report them
+    // here without changing the discovery used by status and author.
+    if let Ok(sources) = crate::authoring::access::load_discovery_sources(&root) {
+        for file in sources.indexed().into_iter().flatten() {
+            if sources.considers(file, false)
+                && fs::symlink_metadata(file)
+                    .is_err_and(|error| error.kind() == io::ErrorKind::NotFound)
+            {
+                diagnostics.push(format!(
+                    "{}: current source is missing",
+                    file.strip_prefix(&root).unwrap_or(file).display()
+                ));
+            }
+        }
     }
-    if uncertain_history {
-        summary.push_str("Coverage history is incomplete: cannot establish latest-per-test selection. Combined totals are unavailable until the affected build artifacts are repaired or removed.\n\n");
+    let note_files = discovered
+        .into_iter()
+        .filter_map(|file| {
+            file.strip_prefix(&root)
+                .ok()
+                .map(|path| path.to_string_lossy().into_owned())
+        })
+        .collect();
+    let notes = super::notes::pages(&root, &note_files, &index_path);
+    for file in &notes {
+        diagnostics.extend(file.diagnostics.iter().cloned());
     }
-    if records.is_empty() {
-        summary.push_str("No test coverage is available. Run `habeas coverage` (or `cargo habeas coverage` in this repository), then rebuild the book.\n\n");
-    }
-    let stale = selected
-        .iter()
-        .filter(|&&index| !records[index].fresh)
-        .count();
-    let incomplete = selected
-        .iter()
-        .filter(|&&index| records[index].fresh && !readable(&records[index]))
-        .count();
-    let historical = records.last().map_or(0, |latest| {
-        records
-            .iter()
-            .filter(|record| record.run.configuration != latest.run.configuration)
-            .count()
-    });
-    if stale > 0 || incomplete > 0 || historical > 0 {
-        summary.push_str(&format!(
-            "**Excluded coverage:** {stale} stale test attempts; {incomplete} unavailable test attempts; {historical} attempts from a historical build configuration.\n\n"
-        ));
+    diagnostics.sort();
+    diagnostics.dedup();
+    let mut summary = String::from(
+        "# Documented coverage gaps\n\nThese annotations explain deliberate coverage gaps. `habeas status` and `habeas author` check annotations and reviews; `habeas coverage-check` enforces measured coverage. Reviews below show recorded results.\n\n",
+    );
+    summary.push_str(&gaps_map(&notes, &index_path));
+    if notes.iter().all(|file| file.items.is_empty()) && diagnostics.is_empty() {
+        summary.push_str("No documented coverage gaps are present.\n\n");
     }
     for diagnostic in diagnostics {
         summary.push_str(&format!(
-            "**Coverage diagnostic:** {}\n\n",
-            escaped(&diagnostic)
+            "**Source notes unavailable:** {}\n\n",
+            escaped(&crate::redaction::redact_text(&diagnostic))
         ));
     }
     let existing: BTreeSet<_> = book
@@ -836,8 +634,11 @@ pub(super) fn populate_in(
     let mut generated = BTreeSet::new();
     reserve_path(&existing, &mut generated, &index_path, "index")?;
     let mut details = Vec::new();
-    let notes_root = workspace_root(project).unwrap_or_else(|_| project.to_path_buf());
-    for chapter in super::notes::pages(&notes_root, &note_files, &index_path) {
+    for file in notes
+        .into_iter()
+        .filter(|file| !file.items.is_empty() || !file.diagnostics.is_empty())
+    {
+        let chapter = file.chapter;
         let path = chapter
             .path
             .as_ref()
@@ -848,13 +649,18 @@ pub(super) fn populate_in(
     summary.push_str("## Collect coverage and check CI policy\n\n");
     summary.push_str(super::GUIDANCE);
     summary.push('\n');
-    let mut coverage = Some(Chapter::new("Coverage gaps", summary, &index_path, vec![]));
+    let mut coverage = Some(Chapter::new(
+        "Documented coverage gaps",
+        summary,
+        &index_path,
+        vec![],
+    ));
     let mut found = false;
     book.for_each_chapter_mut(|chapter| {
         if chapter.path.as_deref() == Some(parent) {
             found = true;
             chapter.content.push_str(&format!(
-                "\n\n[Coverage gaps]({}) — uncovered obligations and their explanations.\n",
+                "\n\n[Documented coverage gaps]({}) — source annotations and recorded reviews.\n",
                 crate::chapter_href(parent, &index_path, None)
             ));
             let mut page = coverage.take().expect("requirements index occurs once");
@@ -956,6 +762,11 @@ mod tests {
             vec![],
         ));
         (temp, book)
+    }
+
+    // {cite}`habeas:util`
+    fn saved_coverage(root: &Path) -> SavedCoverage {
+        load_saved(root, Some(root.join("target")))
     }
 
     fn record(
@@ -1115,7 +926,11 @@ mod tests {
                 "reports/guide.md",
                 vec![],
             )));
-            record(temp.path(), "one", 1, "a", &[(1, 1)]);
+            fs::write(
+                temp.path().join("code.rs"),
+                "// {cite}`habeas:coverage`\nfn one() {}\n",
+            )
+            .unwrap();
             // Build fixture configuration before invoking the production path.
             fs::create_dir(temp.path().join("md")).unwrap();
             fs::write(temp.path().join("book.toml"), "[book]\nsrc='md'\n").unwrap();
@@ -1133,7 +948,7 @@ mod tests {
             assert!(
                 parent
                     .content
-                    .contains("[Coverage gaps](reports/coverage.html)")
+                    .contains("[Documented coverage gaps](reports/coverage.html)")
             );
             assert_eq!(parent.number, number);
             let BookItem::Chapter(coverage) = &parent.sub_items[0] else {
@@ -1156,7 +971,7 @@ mod tests {
                 };
                 assert_eq!(
                     page.parent_names,
-                    ["Reports", "Requirements index", "Coverage gaps"]
+                    ["Reports", "Requirements index", "Documented coverage gaps"]
                 );
                 assert_eq!(
                     page.number,
@@ -1226,7 +1041,7 @@ mod tests {
             .unwrap();
             let coverage = book
                 .chapters()
-                .filter(|chapter| chapter.name == "Coverage gaps")
+                .filter(|chapter| chapter.name == "Documented coverage gaps")
                 .collect::<Vec<_>>();
             assert_eq!(coverage.len(), 1);
             assert_eq!(
@@ -1240,7 +1055,7 @@ mod tests {
                 unreachable!()
             };
             assert!(
-                matches!(&parent.sub_items[0], BookItem::Chapter(child) if child.name == "Coverage gaps")
+                matches!(&parent.sub_items[0], BookItem::Chapter(child) if child.name == "Documented coverage gaps")
             );
             let BookItem::Chapter(authored) = &book.items[1] else {
                 unreachable!()
@@ -1248,93 +1063,6 @@ mod tests {
             assert_eq!(authored.content, content);
             assert!(authored.sub_items.is_empty());
         }
-    }
-
-    // {test}`requirements.test-coverage.index.file_map.combined`
-    // {test}`requirements.test-coverage.index.file_map.directories.initial`
-    // {test}`requirements.test-coverage.index.file_map.directories.data`
-    // {test}`requirements.test-coverage.index.file_map.minimum`
-    // {test}`requirements.test-coverage.index.file_map.test`
-    // {test}`requirements.test-coverage.index.gaps.summary`
-    // {test}`requirements.test-coverage.index.file_map.directories`
-    #[test]
-    fn combined_directory_minimum_includes_hidden_passing_files() {
-        let (temp, mut book) = fixture();
-        let root = temp.path();
-        fs::create_dir_all(root.join("src/nested/deep")).unwrap();
-        fs::write(
-            root.join("src/gap.rs"),
-            format!("fn gap() {{\n{}}}\n", " let value = 1;\n".repeat(18)),
-        )
-        .unwrap();
-        fs::write(
-            root.join("src/nested/passing.rs"),
-            "fn passing() {\n let a = 1;\n let b = 2;\n let c = 3;\n}\n",
-        )
-        .unwrap();
-        fs::write(root.join("src/nested/deep/gap.rs"), "fn nested_gap() {}\n").unwrap();
-        let path = record(root, "all", 1, "same", &[(1, 0), (2, 1)]);
-        let run_path = path.parent().unwrap().parent().unwrap().join("run.json");
-        let mut run: Run = load(&run_path).unwrap();
-        let mut attempt: Attempt = load(&path.join("attempt.json")).unwrap();
-        for (file, total, covered, count) in [
-            ("src/gap.rs", 20, 19, 0),
-            ("src/nested/passing.rs", 5, 4, 1),
-            ("src/nested/deep/gap.rs", 1, 1, 0),
-        ] {
-            run.sources
-                .insert(file.into(), fs::read_to_string(root.join(file)).unwrap());
-            attempt.processes[0].lines.insert(
-                file.into(),
-                (1..=total)
-                    .map(|line| (line, u64::from(line <= covered)))
-                    .collect(),
-            );
-            attempt.processes[0].functions.as_mut().unwrap().push(
-                super::super::FunctionExecution {
-                    file: file.into(),
-                    line: 1,
-                    column: 1,
-                    count,
-                },
-            );
-        }
-        save(&run_path, &run).unwrap();
-        save(&path.join("attempt.json"), &attempt).unwrap();
-        populate(&mut book, root).unwrap();
-        let overview = &book.chapters().next().unwrap().content;
-        let map = map_html(overview);
-        assert!(map.contains("data-directory=\"src\" open"));
-        assert!(map.contains("data-min-covered=\"4\" data-min-instrumented=\"5\">80.0%"));
-        assert!(map.contains("2 uncovered obligations"));
-        for (directory, expected) in [("src", 2), ("src/nested", 1), ("src/nested/deep", 1)] {
-            let summary = directory_summary(map, directory);
-            assert!(summary.contains(&format!("{expected} uncovered obligations")));
-            assert!(summary.contains("Minimum measured file coverage:"));
-        }
-        assert_directory_contents(map, "src", &["src/nested"], &["src/gap.rs"]);
-        assert_directory_contents(map, "src/nested", &["src/nested/deep"], &[]);
-        assert_directory_contents(map, "src/nested/deep", &[], &["src/nested/deep/gap.rs"]);
-        for directory in ["src", "src/nested", "src/nested/deep"] {
-            assert!(map.contains(&format!("data-directory=\"{directory}\" open")));
-        }
-        assert!(map.contains("data-file=\"code.rs\""));
-        assert!(
-            map.find("data-file=\"code.rs\"").unwrap()
-                < map.find("<details class=\"gap-directory\"").unwrap(),
-            "root file rows are outside directory controls"
-        );
-        assert_eq!(map.matches("data-file=").count(), 3);
-        assert!(map.contains("data-file=\"src/gap.rs\""));
-        assert!(map.contains("95.0%"));
-        assert!(file_card(map, "src/gap.rs").contains("<code>src/gap.rs</code>"));
-        assert!(map.contains("zero execution"));
-        assert!(!map.contains("data-file=\"src/nested/passing.rs\""));
-        assert!(
-            book.chapters()
-                .all(|chapter| chapter.name != "File notes: src/nested/passing.rs")
-        );
-        assert!(overview.contains("1 file obligations · 3 function obligations"));
     }
 
     // {test}`requirements.test-coverage.index.paths`
@@ -1368,623 +1096,11 @@ mod tests {
         );
     }
 
-    // {test}`requirements.test-coverage.index.paths`
-    // {test}`requirements.test-coverage.index.file_map`
-    // {test}`requirements.test-coverage.index.file_map.table`
-    // {test}`requirements.test-coverage.index.file_map.combined`
-    // {test}`requirements.test-coverage.index.file_map.test`
-    // {test}`requirements.test-coverage.index.summary`
-    // {test}`requirements.test-coverage.index.file_map.combined.details`
-    // {test}`requirements.test-coverage.index.file_map.notes`
-    // {test}`requirements.test-coverage.index.details`
-    #[test]
-    fn gaps_union_process_locations_and_omit_per_test_reports() {
-        let (temp, mut book) = fixture();
-        let root = temp.path();
-        fs::write(
-            root.join("code.rs"),
-            "fn one() {}\nfn two() {}\nfn three() {}\n// not instrumented\n",
-        )
-        .unwrap();
-        fs::write(root.join("zero.rs"), "fn zero() {}\n").unwrap();
-        fs::write(root.join("unmeasured.rs"), "// no instrumentation\n").unwrap();
-        fs::write(root.join("executable.rs"), "fn unmeasured() {}\n").unwrap();
-        let path = record(root, "one", 1, "a", &[(1, 2), (2, 0)]);
-        let run_path = path.parent().unwrap().parent().unwrap().join("run.json");
-        let mut run: Run = load(&run_path).unwrap();
-        for file in ["zero.rs", "unmeasured.rs", "executable.rs"] {
-            run.sources
-                .insert(file.into(), fs::read_to_string(root.join(file)).unwrap());
-        }
-        save(&run_path, &run).unwrap();
-        let mut attempt: Attempt = load(&path.join("attempt.json")).unwrap();
-        attempt.processes[0]
-            .lines
-            .insert("zero.rs".into(), BTreeMap::from([(1, 0)]));
-        fs::write(path.join("2-child.profraw"), "child profile fixture").unwrap();
-        attempt.processes.push(Process {
-            functions: Some(vec![]),
-            pid: 2,
-            profiles: vec!["2-child.profraw".into()],
-            diagnostic: None,
-            lines: BTreeMap::from([("code.rs".into(), BTreeMap::from([(1, 0), (3, u64::MAX)]))]),
-        });
-        save(&path.join("attempt.json"), &attempt).unwrap();
-        populate(&mut book, root).unwrap();
-        let index = &book.chapters().next().unwrap().content;
-        assert!(index.contains("Line coverage: **2/4 (50.0%)**"));
-        let map = map_html(index);
-        assert!(file_card(map, "code.rs").contains("2/3 instrumented lines covered"));
-        assert!(file_card(map, "code.rs").contains("66.7%"));
-        assert!(file_card(map, "code.rs").contains("--gap-covered: 66.666667%"));
-        let notes_path = super::super::notes::path(Path::new("reports/coverage.md"), "code.rs");
-        let href = crate::chapter_href(Path::new("reports/coverage.md"), &notes_path, None);
-        assert!(file_card(map, "code.rs").contains(&format!("href=\"{href}\"")));
-        let notes = book
-            .chapters()
-            .find(|chapter| chapter.path.as_ref() == Some(&notes_path))
-            .unwrap();
-        assert!(notes.content.contains("File: <code>code.rs</code>"));
-        assert!(file_card(map, "zero.rs").contains("0.0%"));
-        assert!(file_card(map, "zero.rs").contains("--gap-covered: 0.000000%"));
-        assert!(
-            !map.contains("data-file=\"unmeasured.rs\""),
-            "a non-executable file has no gap"
-        );
-        let unmeasured = file_card(map, "executable.rs")
-            .split("</tr>")
-            .next()
-            .unwrap();
-        assert!(unmeasured.contains("not measured"));
-        assert!(!unmeasured.contains('%'));
-        assert!(!unmeasured.contains("gap-coverage-bar"));
-        assert!(map.contains("<th>File</th><th>Coverage</th>"));
-        assert_eq!(
-            map.matches("class=\"gap-file-row habeas-coverage-file\"")
-                .count(),
-            3
-        );
-        let mut html = String::new();
-        pulldown_cmark::html::push_html(
-            &mut html,
-            pulldown_cmark::Parser::new_ext(index, pulldown_cmark::Options::all()),
-        );
-        assert!(html.contains("Unresolved coverage gaps"));
-        assert!(!html.contains("habeas-coverage-test"));
-        assert!(!html.contains("Test runs and provenance"));
-        assert!(!html.contains("binary / one"));
-        assert!(!html.contains("<select"));
-        assert!(
-            book.chapters()
-                .skip(1)
-                .all(|chapter| chapter.name.starts_with("File notes:"))
-        );
-    }
-
-    // {test}`requirements.test-coverage.index.file_map`
-    // {test}`requirements.test-coverage.index.file_map.table`
-    // {test}`requirements.test-coverage.index.file_map.combined`
-    // {test}`requirements.test-coverage.index.file_map.test`
-    // {test}`requirements.test-coverage.index.file_map.combined.measurement`
-    // {test}`requirements.test-coverage.index.summary`
-    #[test]
-    fn maps_distinguish_no_runs_zero_hits_stale_and_incomplete_coverage() {
-        let (temp, book) = fixture();
-        let root = temp.path();
-        let mut no_runs = book.clone();
-        populate(&mut no_runs, root).unwrap();
-        let index = &no_runs.chapters().next().unwrap().content;
-        assert!(index.contains("Coverage unavailable"));
-        assert!(index.contains("gap counts unavailable"));
-        assert!(!map_html(index).contains("data-file="));
-        assert!(index.contains("Run `habeas coverage`"));
-
-        let empty_path = record(root, "empty", 0, "empty", &[]);
-        let mut empty = book.clone();
-        populate(&mut empty, root).unwrap();
-        let empty_index = &empty.chapters().next().unwrap().content;
-        assert!(empty_index.contains("Coverage unavailable"));
-        assert!(!empty_index.contains("Line coverage:"));
-        assert!(!empty_index.contains("NaN"));
-        assert!(!map_html(empty_index).contains("data-file="));
-        assert!(empty_index.contains("No usable instrumented lines"));
-        fs::remove_dir_all(empty_path.parent().unwrap().parent().unwrap()).unwrap();
-        let path = record(root, "zero", 1, "a", &[(1, 0), (2, 0)]);
-        let mut zero = book.clone();
-        populate(&mut zero, root).unwrap();
-        assert!(
-            file_card(
-                map_html(&zero.chapters().next().unwrap().content),
-                "code.rs"
-            )
-            .contains("0.0%")
-        );
-
-        let mut attempt: Attempt = load(&path.join("attempt.json")).unwrap();
-        attempt.processes[0]
-            .lines
-            .get_mut("code.rs")
-            .unwrap()
-            .insert(1, 1);
-        for failure in [
-            "no processes",
-            "attempt diagnostic",
-            "process diagnostic",
-            "missing source",
-            "empty profile",
-        ] {
-            let mut missing = attempt.clone();
-            match failure {
-                "no processes" => missing.processes.clear(),
-                "attempt diagnostic" => missing.diagnostics.push("export incomplete".into()),
-                "process diagnostic" => {
-                    missing.processes[0].diagnostic = Some("unreadable profile".into());
-                }
-                "missing source" => {
-                    missing.processes[0]
-                        .lines
-                        .insert("uncaptured.rs".into(), BTreeMap::from([(1, 1)]));
-                }
-                "empty profile" => fs::write(path.join("1-1.profraw"), "").unwrap(),
-                _ => unreachable!(),
-            }
-            save(&path.join("attempt.json"), &missing).unwrap();
-            let mut unavailable = book.clone();
-            populate(&mut unavailable, root).unwrap();
-            let index = &unavailable.chapters().next().unwrap().content;
-            assert!(index.contains("Coverage unavailable"), "{failure}");
-            assert!(!map_html(index).contains("data-file="), "{failure}");
-            assert!(
-                index.contains("missing or unreadable coverage"),
-                "{failure}"
-            );
-            fs::write(path.join("1-1.profraw"), "retained profile fixture").unwrap();
-        }
-        save(&path.join("attempt.json"), &attempt).unwrap();
-        fs::write(root.join("code.rs"), "changed source\n").unwrap();
-        fs::write(root.join("new.rs"), "fn newly_added() {}\n").unwrap();
-        let mut stale = book.clone();
-        populate(&mut stale, root).unwrap();
-        let index = &stale.chapters().next().unwrap().content;
-        assert!(index.contains("Coverage unavailable"));
-        assert!(!map_html(index).contains("data-file="));
-        assert!(index.contains("1 stale test attempts"));
-        attempt.processes.push(Process {
-            functions: Some(vec![]),
-            pid: 2,
-            profiles: vec!["missing-child.profraw".into()],
-            diagnostic: None,
-            lines: BTreeMap::from([("code.rs".into(), BTreeMap::from([(2, 1)]))]),
-        });
-        save(&path.join("attempt.json"), &attempt).unwrap();
-        let mut incomplete = book.clone();
-        populate(&mut incomplete, root).unwrap();
-        let index = &incomplete.chapters().next().unwrap().content;
-        assert!(index.contains("Coverage unavailable"));
-        assert!(!map_html(index).contains("data-file="));
-        assert!(index.contains("missing or unreadable coverage"));
-
-        fs::write(root.join("code.rs"), "fn one() {}\nfn two() {}\n").unwrap();
-        fs::remove_file(root.join("new.rs")).unwrap();
-        let mut unreadable = book.clone();
-        populate(&mut unreadable, root).unwrap();
-        let index = &unreadable.chapters().next().unwrap().content;
-        assert!(index.contains("1 unavailable test attempts"));
-        assert!(index.contains("Coverage unavailable"));
-        assert!(!map_html(index).contains("data-file="));
-        // Unreadable metadata cannot establish latest-per-test selection.
-        fs::write(path.join("attempt.json"), "not JSON").unwrap();
-        let mut uncertain = book;
-        populate(&mut uncertain, root).unwrap();
-        let index = &uncertain.chapters().next().unwrap().content;
-        assert!(index.contains("Coverage history is incomplete"));
-        assert!(index.contains("gap counts unavailable"));
-        assert!(!map_html(index).contains("data-file="));
-    }
-
-    // {test}`requirements.test-coverage.index.file_map`
-    // {test}`requirements.test-coverage.index.file_map.table`
-    // {test}`requirements.test-coverage.index.file_map.combined`
-    // {test}`requirements.test-coverage.index.file_map.combined.measurement`
-    // {test}`requirements.test-coverage.index.freshness`
-    // {test}`requirements.test-coverage.index.file_map.minimum`
-    // {test}`requirements.test-coverage.index.file_map.minimum.statuses`
-    #[test]
-    fn incomplete_attempts_do_not_label_their_files_as_unmeasured_in_a_partial_map() {
-        let (temp, book) = fixture();
-        let root = temp.path();
-        fs::create_dir_all(root.join("src/nested")).unwrap();
-        fs::write(root.join("src/nested/other.rs"), "fn other() {}\n").unwrap();
-        let good = record(root, "good", 1, "a", &[(1, 1)]);
-        let bad = record(root, "bad", 2, "a", &[]);
-        let mut attempt: Attempt = load(&bad.join("attempt.json")).unwrap();
-        attempt.processes[0].lines =
-            BTreeMap::from([("src/nested/other.rs".into(), BTreeMap::from([(1, 1)]))]);
-        save(&bad.join("attempt.json"), &attempt).unwrap();
-        for path in [&good, &bad] {
-            let run_path = path.parent().unwrap().parent().unwrap().join("run.json");
-            let mut run: Run = load(&run_path).unwrap();
-            run.sources
-                .insert("src/nested/other.rs".into(), "fn other() {}\n".into());
-            save(&run_path, &run).unwrap();
-        }
-        fs::remove_file(bad.join("1-1.profraw")).unwrap();
-        let mut partial = book.clone();
-        populate(&mut partial, root).unwrap();
-        let index = &partial.chapters().next().unwrap().content;
-        assert!(index.contains("Coverage unavailable"));
-        assert!(!map_html(index).contains("data-file="));
-        assert!(!map_html(index).contains("not measured"));
-        assert!(!map_html(index).contains("class=\"gap-directory\""));
-        assert!(!map_html(index).contains("data-min-covered="));
-        assert!(!map_html(index).contains("gap-coverage-bar\""));
-        assert!(index.contains("1 unavailable test attempts"));
-        // A stale selected attempt leaves the same unknown per-file state.
-        let run_path = bad.parent().unwrap().parent().unwrap().join("run.json");
-        let mut run: Run = load(&run_path).unwrap();
-        run.inputs
-            .insert("missing-build-input".into(), "old-hash".into());
-        save(&run_path, &run).unwrap();
-        let mut stale = book;
-        populate(&mut stale, root).unwrap();
-        let index = &stale.chapters().next().unwrap().content;
-        assert!(index.contains("Coverage unavailable"));
-        assert!(!map_html(index).contains("data-file="));
-        assert!(!map_html(index).contains("class=\"gap-directory\""));
-        assert!(!map_html(index).contains("data-min-covered="));
-        assert!(!map_html(index).contains("not measured"));
-        assert!(index.contains("1 stale test attempts"));
-    }
-
-    // {test}`requirements.test-coverage.index.file_map`
-    // {test}`requirements.test-coverage.index.file_map.table`
-    #[test]
-    fn gaps_escape_paths_and_do_not_round_positive_coverage_to_zero() {
-        let policy = super::super::check::PolicyReport {
-            report: super::super::check::CheckReport {
-                passed: false,
-                text: String::new(),
-            },
-            files: vec![super::super::check::FilePolicy {
-                file: "src/<unsafe>\".rs".into(),
-                covered: 1,
-                total: 2000,
-                obligations: vec![super::super::check::Obligation {
-                    selector: String::new(),
-                    line: 1,
-                    measurement: "below target".into(),
-                    exception: None,
-                }],
-            }],
-            counts_complete: true,
-            measured: true,
-            findings: vec![],
-        };
-        let map = gaps_map(&policy, Path::new("coverage.md"), 1);
-        assert!(map.contains("src/&lt;unsafe&gt;&quot;.rs"));
-        assert!(!map.contains("<unsafe>"));
-        assert!(map.contains("&lt;0.1%"));
-        assert!(map.contains("1/2000 instrumented lines covered"));
-        assert!(!map.contains(">0.0%<"));
-    }
-
-    // {test}`requirements.test-coverage.index.file_map`
-    // {test}`requirements.test-coverage.index.file_map.table`
-    #[test]
-    fn coverage_bars_distinguish_measured_levels_alongside_percentage_text() {
-        let mut policy = super::super::check::PolicyReport {
-            report: super::super::check::CheckReport {
-                passed: false,
-                text: String::new(),
-            },
-            files: vec![],
-            counts_complete: true,
-            measured: true,
-            findings: vec![],
-        };
-        for covered in [0, 1, 25, 75, 100] {
-            policy.files.push(super::super::check::FilePolicy {
-                file: format!("src/level-{covered}.rs"),
-                covered,
-                total: 100,
-                obligations: vec![super::super::check::Obligation {
-                    selector: "fn[unexecuted]".into(),
-                    line: 1,
-                    measurement: "zero execution".into(),
-                    exception: None,
-                }],
-            });
-        }
-        let map = gaps_map(&policy, Path::new("coverage.md"), 1);
-        for covered in [0, 1, 25, 75, 100] {
-            let file = format!("src/level-{covered}.rs");
-            let row = file_card(&map, &file).split("</tr>").next().unwrap();
-            assert!(row.contains(&format!("<code>{file}</code>")));
-            assert!(row.contains(&format!(">{covered}.0%")));
-            assert!(row.contains(&format!("--gap-covered: {covered}.000000%")));
-            assert!(row.contains("class=\"gap-coverage-bar\" aria-hidden=\"true\""));
-            assert_eq!(map.matches(&format!("data-file=\"{file}\"")).count(), 1);
-        }
-        let css = include_str!("../../assets/coverage-gaps.css");
-        assert!(css.contains(".gap-coverage-bar::before"));
-        assert!(css.contains("width: var(--gap-covered)"));
-        assert!(css.contains("background: var(--gap-link)"));
-    }
-
-    fn directory_summary<'a>(map: &'a str, directory: &str) -> &'a str {
-        map.split(&format!("data-directory=\"{directory}\""))
-            .nth(1)
-            .unwrap()
-            .split("</summary>")
-            .next()
-            .unwrap()
-    }
-
-    // {test}`requirements.test-coverage.index.file_map.minimum`
-    // {test}`requirements.test-coverage.index.file_map.minimum.statuses`
-    // {test}`requirements.test-coverage.index.file_map.minimum.descendants`
-    // {test}`requirements.test-coverage.index.file_map.directories`
-    // {test}`requirements.test-coverage.index.file_map.directories.data`
-    #[test]
-    fn directory_minima_use_exact_fractions_and_count_unmeasured_descendants() {
-        let render = |files: &[(&str, usize, usize)]| {
-            let mut policy = super::super::check::PolicyReport {
-                report: super::super::check::CheckReport {
-                    passed: false,
-                    text: String::new(),
-                },
-                files: files
-                    .iter()
-                    .map(|&(file, covered, total)| super::super::check::FilePolicy {
-                        file: file.into(),
-                        covered,
-                        total,
-                        obligations: vec![super::super::check::Obligation {
-                            selector: String::new(),
-                            line: 1,
-                            measurement: "below target".into(),
-                            exception: None,
-                        }],
-                    })
-                    .collect(),
-                counts_complete: true,
-                measured: true,
-                findings: vec![],
-            };
-            // Unlisted files with no obligations or accepted exceptions must
-            // not inflate the directory's not-measured count.
-            for (file, accepted) in [
-                ("src/nested/hidden-empty.rs", false),
-                ("src/nested/hidden-accepted.rs", true),
-            ] {
-                policy.files.push(super::super::check::FilePolicy {
-                    file: file.into(),
-                    covered: 0,
-                    total: 0,
-                    obligations: if accepted {
-                        vec![super::super::check::Obligation {
-                            selector: String::new(),
-                            line: 1,
-                            measurement: "not measured".into(),
-                            exception: Some(super::super::check::Exception {
-                                accepted: true,
-                                review_missing: false,
-                                justification: "No instrumented obligations.".into(),
-                                findings: vec![],
-                            }),
-                        }]
-                    } else {
-                        vec![]
-                    },
-                });
-            }
-            gaps_map(&policy, Path::new("coverage.md"), 1)
-        };
-        let map = render(&[("src/higher.rs", 501, 1000), ("src/lower.rs", 1001, 2000)]);
-        assert!(
-            directory_summary(&map, "src")
-                .contains("data-min-covered=\"1001\" data-min-instrumented=\"2000\"")
-        );
-        let map = render(&[
-            ("src/a.rs", 1, 2),
-            ("src/nested/b.rs", 1, 4),
-            ("src/nested/c.rs", 0, 0),
-        ]);
-        for directory in ["src", "src/nested"] {
-            let summary = directory_summary(&map, directory);
-            assert!(summary.contains("Minimum measured file coverage:"));
-            assert!(summary.contains("25.0%"));
-            assert!(summary.contains("1 not measured"));
-            assert!(!summary.contains("0 unavailable"));
-            assert!(!summary.contains("2 not measured"));
-        }
-        assert_directory_contents(&map, "src", &["src/nested"], &["src/a.rs"]);
-        assert_directory_contents(
-            &map,
-            "src/nested",
-            &[],
-            &["src/nested/b.rs", "src/nested/c.rs"],
-        );
-        // Changing one native details control only changes its open attribute;
-        // all file identities, measurements, summaries and sibling state remain.
-        let opening = "<details class=\"gap-directory\" data-directory=\"src/nested\" open>";
-        let closed_opening = opening.replace(" open>", ">");
-        let closed = map.replace(opening, &closed_opening);
-        assert_ne!(closed, map);
-        assert!(closed.contains("data-directory=\"src\" open>"));
-        assert!(closed.contains("data-directory=\"src/nested\">"));
-        assert_eq!(
-            directory_group(&closed, "src/nested")
-                .split_once('>')
-                .unwrap()
-                .1,
-            directory_group(&map, "src/nested")
-                .split_once('>')
-                .unwrap()
-                .1
-        );
-        for file in ["src/a.rs", "src/nested/b.rs", "src/nested/c.rs"] {
-            assert_eq!(file_card(&map, file), file_card(&closed, file));
-        }
-        assert_eq!(closed.replace(&closed_opening, opening), map);
-        let map = render(&[("src/unknown.rs", 0, 0)]);
-        let summary = directory_summary(&map, "src");
-        assert!(summary.contains("No measured files"));
-        assert!(summary.contains("1 not measured"));
-        assert!(!summary.contains('%'));
-        let map = render(&[
-            ("src/measured-zero.rs", 0, 4),
-            ("src/nested/unmeasured.rs", 0, 0),
-        ]);
-        let summary = directory_summary(&map, "src");
-        assert!(summary.contains("Minimum measured file coverage:"));
-        assert!(summary.contains("0.0%"));
-        assert!(summary.contains("1 not measured"));
-        assert!(!summary.contains("2 not measured"));
-        let zero = file_card(&map, "src/measured-zero.rs");
-        assert!(zero.contains("data-status=\"measured\""));
-        assert!(zero.contains("0.0%"));
-        assert!(zero.contains("0/4 instrumented lines covered"));
-        assert!(!zero.contains("not measured"));
-        let nested = directory_summary(&map, "src/nested");
-        assert!(nested.contains("No measured files"));
-        assert!(nested.contains("1 not measured"));
-        assert!(!nested.contains('%'));
-        let map = render(&[
-            ("src/direct.rs", 0, 0),
-            ("src/nested/a.rs", 0, 0),
-            ("src/nested/deep/b.rs", 0, 0),
-            ("src/nested/deep/c.rs", 0, 0),
-            ("src/sibling/d.rs", 0, 0),
-            ("src/measured-zero.rs", 0, 4),
-            ("src/positive.rs", 1, 4),
-            ("src-other/outside.rs", 0, 0),
-        ]);
-        for (directory, count) in [
-            ("src", 5),
-            ("src/nested", 3),
-            ("src/nested/deep", 2),
-            ("src/sibling", 1),
-            ("src-other", 1),
-        ] {
-            let summary = directory_summary(&map, directory);
-            assert!(
-                summary.contains(&format!(" · {count} not measured")),
-                "{summary}"
-            );
-        }
-        assert!(directory_summary(&map, "src").contains("0.0%"));
-        let closed = map.replace(
-            "<details class=\"gap-directory\" data-directory=\"src/nested\" open>",
-            "<details class=\"gap-directory\" data-directory=\"src/nested\">",
-        );
-        for directory in [
-            "src",
-            "src/nested",
-            "src/nested/deep",
-            "src/sibling",
-            "src-other",
-        ] {
-            assert_eq!(
-                directory_summary(&closed, directory)
-                    .split_once('>')
-                    .unwrap()
-                    .1,
-                directory_summary(&map, directory)
-                    .split_once('>')
-                    .unwrap()
-                    .1
-            );
-        }
-    }
-
-    // {test}`requirements.test-coverage.index.file_map.notes`
-    // {test}`requirements.test-coverage.index.file_map.notes.current`
-    // {test}`requirements.test-coverage.index.file_map.notes.render_only`
-    // {test}`requirements.test-coverage.index.paths`
-    #[test]
-    fn gap_notes_use_current_source_without_collecting() {
-        let (temp, mut book) = fixture();
-        let root = temp.path();
-        fs::create_dir(root.join("md")).unwrap();
-        fs::write(root.join("book.toml"), "[book]\nsrc='md'\n").unwrap();
-        fs::write(root.join("md/SUMMARY.md"), "# Summary\n").unwrap();
-        fs::create_dir_all(root.join("src/nested")).unwrap();
-        for file in ["src/a.rs", "src/nested/a.rs"] {
-            fs::write(root.join(file), "fn another() {}\n").unwrap();
-        }
-        let attempt = record(root, "one", 1, "a", &[(1, 1)]);
-        let run_path = attempt.parent().unwrap().parent().unwrap().join("run.json");
-        let mut run: Run = load(&run_path).unwrap();
-        let mut process: Attempt = load(&attempt.join("attempt.json")).unwrap();
-        for file in ["src/a.rs", "src/nested/a.rs"] {
-            run.sources
-                .insert(file.into(), fs::read_to_string(root.join(file)).unwrap());
-            process.processes[0]
-                .lines
-                .insert(file.into(), BTreeMap::from([(1, 1)]));
-        }
-        save(&run_path, &run).unwrap();
-        save(&attempt.join("attempt.json"), &process).unwrap();
-        let captured = fs::read(attempt.join("attempt.json")).unwrap();
-        fs::write(root.join("code.rs"),
-            "// :::{cite} habeas:coverage\n// Current explanation, added after capture.\n// :::\nfn current() {}\n").unwrap();
-        populate(&mut book, root).unwrap();
-        let index = book.chapters().next().unwrap();
-        let notes_path = super::super::notes::path(index.path.as_ref().unwrap(), "code.rs");
-        let notes = book
-            .chapters()
-            .find(|chapter| chapter.path.as_ref() == Some(&notes_path))
-            .unwrap();
-        assert!(
-            notes
-                .content
-                .contains("Current explanation, added after capture.")
-        );
-        assert!(notes.content.contains("Current workspace source notes"));
-        assert!(notes.content.contains("code.rs"));
-        assert_eq!(
-            book.chapters()
-                .filter(|chapter| chapter.path.as_ref() == Some(&notes_path))
-                .count(),
-            1
-        );
-        let mut distinct = BTreeSet::new();
-        for file in ["code.rs", "src/a.rs", "src/nested/a.rs"] {
-            let path = super::super::notes::path(index.path.as_ref().unwrap(), file);
-            assert_ne!(
-                path,
-                *index.path.as_ref().unwrap(),
-                "report and index paths must differ"
-            );
-            assert!(
-                distinct.insert(path.clone()),
-                "files must have distinct views"
-            );
-            let notes = book
-                .chapters()
-                .find(|chapter| chapter.path.as_ref() == Some(&path))
-                .unwrap();
-            assert!(
-                notes
-                    .content
-                    .contains(&format!("File: <code>{file}</code>"))
-            );
-            assert!(index.content.contains("Coverage unavailable"));
-        }
-        assert_eq!(fs::read(attempt.join("attempt.json")).unwrap(), captured);
-        assert_eq!(
-            fs::read_to_string(attempt.join("1-1.profraw")).unwrap(),
-            "retained profile fixture"
-        );
-        assert!(!root.join("evidence").exists());
-    }
-
     // {test}`requirements.test-coverage.storage.provenance`
     // {test}`requirements.test-coverage.index.freshness`
     #[test]
     fn cargo_launch_metadata_does_not_invalidate_but_caller_build_environment_does() {
-        let (temp, book) = fixture();
+        let (temp, _) = fixture();
         let root = temp.path();
         let attempt = record(root, "one", 1, "build-a", &[(1, 1), (2, 0)]);
         let path = attempt.parent().unwrap().parent().unwrap().join("run.json");
@@ -2003,15 +1119,11 @@ mod tests {
                 .insert(name.into(), Some("different compiled package".into()));
         }
         save(&path, &run).unwrap();
-        let mut rendered = book.clone();
-        populate(&mut rendered, root).unwrap();
         assert!(
-            rendered
-                .chapters()
-                .next()
-                .unwrap()
-                .content
-                .contains("1/2 (50.0%)")
+            saved_coverage(root)
+                .records
+                .iter()
+                .all(|record| record.fresh)
         );
         for name in [
             "CC",
@@ -2024,15 +1136,11 @@ mod tests {
             assert_ne!(std::env::var(name).ok().as_deref(), Some(changed.as_str()));
             run.environment_inputs.insert(name.into(), Some(changed));
             save(&path, &run).unwrap();
-            let mut rendered = book.clone();
-            populate(&mut rendered, root).unwrap();
             assert!(
-                rendered
-                    .chapters()
-                    .next()
-                    .unwrap()
-                    .content
-                    .contains("stale coverage; recollect"),
+                saved_coverage(root)
+                    .records
+                    .iter()
+                    .all(|record| !record.fresh),
                 "{name}"
             );
             run.environment_inputs.remove(name);
@@ -2247,7 +1355,7 @@ mod tests {
     // {test}`requirements.test-coverage.index.selection`
     #[test]
     fn selection_distinguishes_binaries_and_selects_latest_attempts_within_the_active_build() {
-        let (temp, mut book) = fixture();
+        let (temp, _) = fixture();
         for (binary, started, counts) in [
             ("first", 1, [(1, 1), (2, 0)]),
             ("second", 2, [(1, 0), (2, 1)]),
@@ -2258,9 +1366,6 @@ mod tests {
             attempt.binary = binary.into();
             save(&path, &attempt).unwrap();
         }
-        populate(&mut book, temp.path()).unwrap();
-        let index = &book.chapters().next().unwrap().content;
-        assert!(index.contains("2/2 (100.0%)"));
         let saved = load_saved(temp.path(), Some(temp.path().join("target")));
         assert_eq!(saved.selected.len(), 2);
         let binaries = saved
@@ -2270,7 +1375,7 @@ mod tests {
             .collect::<BTreeSet<_>>();
         assert_eq!(binaries, BTreeSet::from(["first", "second"]));
 
-        let (temp, mut book) = fixture();
+        let (temp, _) = fixture();
         // Write newest first; run-start and UUID ordering deliberately disagree
         // with attempt-start ordering.
         for (test, start, config, counts) in [
@@ -2288,10 +1393,6 @@ mod tests {
             save(&path, &run).unwrap();
             fs::rename(dir, dir.parent().unwrap().join(&run.id)).unwrap();
         }
-        populate(&mut book, temp.path()).unwrap();
-        let index = &book.chapters().next().unwrap().content;
-        assert!(index.contains("2/2 (100.0%)"));
-        assert!(index.contains("1 attempts from a historical build configuration"));
         let saved = load_saved(temp.path(), Some(temp.path().join("target")));
         let tests = saved
             .selected
@@ -2301,7 +1402,7 @@ mod tests {
         assert_eq!(tests, BTreeSet::from(["one", "two"]));
 
         // A retry in the same run must also use attempt-start ordering.
-        let (temp, mut book) = fixture();
+        let (temp, _) = fixture();
         let newest = record(temp.path(), "one", 20, "build-a", &[(1, 1)]);
         let mut older: Attempt = load(&newest.join("attempt.json")).unwrap();
         older.started = 10;
@@ -2312,152 +1413,79 @@ mod tests {
         fs::create_dir(&older_dir).unwrap();
         fs::copy(newest.join("1-1.profraw"), older_dir.join("1-1.profraw")).unwrap();
         save(&older_dir.join("attempt.json"), &older).unwrap();
-        populate(&mut book, temp.path()).unwrap();
-        assert!(
-            book.chapters()
-                .next()
-                .unwrap()
-                .content
-                .contains("1/1 (100.0%)")
+        let saved = saved_coverage(temp.path());
+        assert_eq!(
+            union(saved.selected.iter().map(|&index| &saved.records[index])),
+            BTreeMap::from([(("code.rs".into(), 1), 1)])
         );
     }
 
-    // {test}`requirements.test-coverage.index`
-    // {test}`requirements.test-coverage.processes.reports`
-    // {test}`requirements.test-coverage.storage.configuration`
     // {test}`requirements.test-coverage.index.selection`
-    // {test}`requirements.test-coverage.index.summary`
-    // {test}`requirements.test-coverage.index.details`
     // {test}`requirements.test-coverage.index.freshness`
-    // {test}`requirements.test-coverage.index.render_only`
-    // {test}`requirements.test-coverage.index.file_map.combined.measurement`
+    // {test}`requirements.test-coverage.index.summary`
+    // {test}`requirements.test-coverage.check.measurement`
     #[test]
     fn filtered_runs_union_latest_attempts_and_invalidate_with_saved_source() {
-        let (temp, book) = fixture();
+        let (temp, _) = fixture();
         let root = temp.path();
         record(root, "one", 1, "build-a", &[(1, 1), (2, 0)]);
         record(root, "two", 2, "build-a", &[(1, 0), (2, 1)]);
-        let mut combined = book.clone();
-        populate(&mut combined, root).unwrap();
-        assert!(
-            combined
-                .chapters()
-                .next()
-                .unwrap()
-                .content
-                .contains("2/2 (100.0%)")
+        let selected = saved_coverage(root);
+        assert_eq!(selected.selected.len(), 2);
+        let counts = union(
+            selected
+                .selected
+                .iter()
+                .map(|&index| &selected.records[index]),
         );
-        assert!(
-            combined
-                .chapters()
-                .next()
-                .unwrap()
-                .content
-                .contains("2 selected test attempts")
+        assert_eq!(
+            counts,
+            BTreeMap::from([(("code.rs".into(), 1), 1), (("code.rs".into(), 2), 1)])
         );
-        assert!(
-            !combined
-                .chapters()
-                .next()
-                .unwrap()
-                .content
-                .contains("{coverage-index}")
-        );
-        // A failing newest attempt replaces the earlier success, even with no data.
         let newest = record(root, "one", 3, "build-a", &[]);
         let mut attempt: Attempt = load(&newest.join("attempt.json")).unwrap();
         attempt.diagnostics.push("profile missing".into());
         for outcome in ["failed", "interrupted"] {
             attempt.outcome = outcome.into();
             save(&newest.join("attempt.json"), &attempt).unwrap();
-            let mut combined = book.clone();
-            populate(&mut combined, root).unwrap();
-            assert!(
-                combined
-                    .chapters()
-                    .next()
-                    .unwrap()
-                    .content
-                    .contains("gap counts unavailable")
-            );
-            assert!(
-                combined
-                    .chapters()
-                    .next()
-                    .unwrap()
-                    .content
-                    .contains("missing or unreadable coverage")
-            );
-            assert!(
-                combined
-                    .chapters()
-                    .next()
-                    .unwrap()
-                    .content
-                    .contains("2 selected test attempts")
-            );
+            let selected = saved_coverage(root);
+            assert_eq!(selected.selected.len(), 2);
+            let report = super::super::check::check_saved(root, &selected).unwrap();
+            assert!(!report.passed);
+            assert!(report.text.contains("missing or unreadable coverage"));
         }
         fs::write(root.join("code.rs"), "changed source\n").unwrap();
-        let mut stale = book.clone();
-        populate(&mut stale, root).unwrap();
+        let selected = saved_coverage(root);
+        assert!(selected.records.iter().all(|record| !record.fresh));
         assert!(
-            stale
-                .chapters()
-                .next()
+            super::super::check::check_saved(root, &selected)
                 .unwrap()
-                .content
-                .contains("gap counts unavailable")
+                .text
+                .contains("stale coverage")
         );
         assert!(
-            stale
-                .chapters()
-                .next()
-                .unwrap()
-                .content
-                .contains("stale coverage; recollect")
-        );
-        let saved = load_saved(root, Some(root.join("target")));
-        assert!(
-            saved
+            selected
                 .records
                 .iter()
                 .all(|record| record.run.sources["code.rs"].contains("fn one() {}"))
         );
+        fs::write(root.join("code.rs"), "fn one() {}\nfn two() {}\n").unwrap();
         record(root, "one", 4, "build-b", &[(1, 1)]);
-        let mut other = book;
-        populate(&mut other, root).unwrap();
+        let selected = saved_coverage(root);
+        assert_eq!(selected.selected.len(), 1);
         assert!(
-            other
-                .chapters()
-                .next()
-                .unwrap()
-                .content
-                .contains("historical build configuration")
-        );
-        assert!(
-            other
-                .chapters()
-                .next()
-                .unwrap()
-                .content
-                .contains("1/1 (100.0%)")
-        );
-        assert!(
-            other
-                .chapters()
-                .next()
-                .unwrap()
-                .content
-                .contains("1 selected test attempts")
+            selected
+                .selected
+                .iter()
+                .all(|&index| selected.records[index].run.configuration == "build-b")
         );
     }
 
     // {test}`requirements.test-coverage.index.summary`
-    // {test}`requirements.test-coverage.index.details`
     // {test}`requirements.test-coverage.processes.reports`
     #[test]
-    fn gaps_omit_test_data_and_preserve_saved_profiles_and_sources() {
-        let (temp, book) = fixture();
+    fn saved_reports_preserve_profiles_sources_and_child_union() {
+        let (temp, _) = fixture();
         let root = temp.path();
         fs::write(root.join("passing.rs"), "fn passing() {}\n").unwrap();
         let first = record(root, "one", 100, "a", &[(1, 1), (2, 0)]);
@@ -2493,60 +1521,16 @@ mod tests {
         record(root, "two", 200, "a", &[(1, 1), (2, 0)]);
         let captured_attempt = fs::read(first.join("attempt.json")).unwrap();
         let captured_run = fs::read(&run_path).unwrap();
-        let mut combined = book.clone();
-        populate(&mut combined, root).unwrap();
-        let index = combined.chapters().next().unwrap();
-        assert!(index.content.contains("3/3 (100.0%)"));
-        assert!(
-            index
-                .content
-                .contains("not establish that all current tests were measured")
+        let selected = saved_coverage(root);
+        let counts = union(
+            selected
+                .selected
+                .iter()
+                .map(|&index| &selected.records[index]),
         );
-        assert!(!map_html(&index.content).contains("data-file=\"passing.rs\""));
-        assert!(
-            combined
-                .chapters()
-                .all(|chapter| chapter.name != "File notes: passing.rs")
-        );
-        for chapter in combined.chapters() {
-            for omitted in [
-                "Test process coverage",
-                "Captured source",
-                "habeas-coverage-test",
-                "Test runs and provenance",
-                "application/json",
-                "habeasRenderCoverage",
-                "binary / one",
-                "binary / two",
-                "fn passing() {}",
-            ] {
-                assert!(
-                    !chapter.content.contains(omitted),
-                    "report includes {omitted}"
-                );
-            }
-            assert!(!chapter.name.starts_with("binary /"));
-            assert!(
-                !chapter
-                    .path
-                    .as_ref()
-                    .unwrap()
-                    .to_string_lossy()
-                    .ends_with("-source.md")
-            );
-            assert!(chapter.name == "Coverage gaps" || chapter.name.starts_with("File notes:"));
-        }
+        assert_eq!(counts.len(), 3);
+        assert!(counts.values().all(|&count| count > 0));
         fs::write(root.join("code.rs"), "rebuilt source\n").unwrap();
-        let mut historical = book;
-        populate(&mut historical, root).unwrap();
-        assert!(
-            historical
-                .chapters()
-                .next()
-                .unwrap()
-                .content
-                .contains("Coverage unavailable")
-        );
         assert_eq!(
             fs::read(first.join("attempt.json")).unwrap(),
             captured_attempt
@@ -2612,134 +1596,69 @@ mod tests {
         );
     }
 
-    // {test}`requirements.test-coverage.index.paths`
-    // {test}`requirements.test-coverage.index.unavailable`
-    #[test]
-    fn unavailable_runs_are_readable_and_generated_paths_cannot_collide() {
-        let (temp, mut collision) = fixture();
-        collision.push_item(Chapter::new(
-            "Authored",
-            "Keep me".into(),
-            "reports/coverage.md",
-            vec![],
-        ));
-        assert!(
-            populate(&mut collision, temp.path())
-                .unwrap_err()
-                .to_string()
-                .contains("coverage index path conflicts")
-        );
-        let (temp, mut book) = fixture();
-        populate(&mut book, temp.path()).unwrap();
-        assert!(
-            book.chapters()
-                .next()
-                .unwrap()
-                .content
-                .contains("Run `habeas coverage`")
-        );
-        // Current file-note pages are generated reports too, even without runs.
-        let (temp, mut book) = fixture();
-        book.push_item(Chapter::new(
-            "Notes collision",
-            "".into(),
-            super::super::notes::path(Path::new("reports/coverage.md"), "code.rs"),
-            vec![],
-        ));
-        assert!(
-            populate(&mut book, temp.path())
-                .unwrap_err()
-                .to_string()
-                .contains("conflicts")
-        );
-    }
-
-    // {test}`requirements.test-coverage.index.selection`
-    // {test}`requirements.test-coverage.index.unavailable`
     // {test}`requirements.test-coverage.index.freshness`
-    // {test}`requirements.test-coverage.storage.outcomes`
-    // {test}`requirements.test-coverage.index.file_map.combined.measurement`
+    // {test}`requirements.test-coverage.index.selection`
+    // {test}`requirements.test-coverage.check.measurement`
     #[test]
     fn unreadable_history_cannot_reintroduce_an_older_success() {
-        let (temp, mut book) = fixture();
-        record(temp.path(), "one", 1, "a", &[(1, 1)]);
-        let newest = record(temp.path(), "one", 2, "a", &[(1, 0)]);
-        fs::write(newest.join("attempt.json"), "not JSON").unwrap();
-        populate(&mut book, temp.path()).unwrap();
-        let index = &book.chapters().next().unwrap().content;
-        assert!(index.contains("cannot establish latest-per-test selection"));
-        assert!(index.contains("gap counts unavailable"));
-        assert!(!index.contains("1/1 (100.0%)"));
-        let (temp, mut book) = fixture();
-        let newest = record(temp.path(), "one", 1, "a", &[(1, 1)]);
-        let path = newest.parent().unwrap().parent().unwrap().join("run.json");
-        let mut run: Run = load(&path).unwrap();
-        run.sources.clear();
-        save(&path, &run).unwrap();
-        populate(&mut book, temp.path()).unwrap();
-        assert!(
-            book.chapters()
-                .next()
-                .unwrap()
-                .content
-                .contains("missing or unreadable coverage")
-        );
-        assert!(
-            book.chapters()
-                .next()
-                .unwrap()
-                .content
-                .contains("Matching captured source is missing")
-        );
-        // Unsupported metadata cannot establish compatibility for combined totals.
-        let (temp, mut book) = fixture();
-        let attempt = record(temp.path(), "one", 1, "a", &[(1, 1)]);
-        let path = attempt.parent().unwrap().parent().unwrap().join("run.json");
-        let mut run: Run = load(&path).unwrap();
-        run.schema = 99;
-        save(&path, &run).unwrap();
-        populate(&mut book, temp.path()).unwrap();
-        let index = &book.chapters().next().unwrap().content;
-        assert!(index.contains("Coverage history is incomplete"));
-        assert!(index.contains("gap counts unavailable"));
-        // A retained result with an unreadable/missing raw profile is unavailable.
-        let (temp, mut book) = fixture();
-        let attempt = record(temp.path(), "one", 1, "a", &[(1, 1)]);
-        fs::remove_file(attempt.join("1-1.profraw")).unwrap();
-        populate(&mut book, temp.path()).unwrap();
-        assert!(
-            book.chapters()
-                .next()
-                .unwrap()
-                .content
-                .contains("missing or unreadable coverage")
-        );
-        assert!(
-            book.chapters()
-                .next()
-                .unwrap()
-                .content
-                .contains("gap counts unavailable")
-        );
-        assert!(
-            book.chapters()
-                .next()
-                .unwrap()
-                .content
-                .contains("A retained raw profile is missing")
-        );
+        for failure in [
+            "invalid metadata",
+            "missing source",
+            "unsupported schema",
+            "missing profile",
+        ] {
+            let (temp, _) = fixture();
+            let root = temp.path();
+            record(root, "one", 1, "same", &[(1, 1)]);
+            let newest = record(root, "one", 2, "same", &[(1, 0)]);
+            match failure {
+                "invalid metadata" => fs::write(newest.join("attempt.json"), "not JSON").unwrap(),
+                "missing source" => {
+                    let run_path = newest.parent().unwrap().parent().unwrap().join("run.json");
+                    let mut run: Run = load(&run_path).unwrap();
+                    run.sources.clear();
+                    save(&run_path, &run).unwrap();
+                }
+                "unsupported schema" => {
+                    let run_path = newest.parent().unwrap().parent().unwrap().join("run.json");
+                    let mut run: Run = load(&run_path).unwrap();
+                    run.schema = 99;
+                    save(&run_path, &run).unwrap();
+                }
+                _ => fs::remove_file(newest.join("1-1.profraw")).unwrap(),
+            }
+            let selected = saved_coverage(root);
+            assert!(
+                !super::super::check::check_saved(root, &selected)
+                    .unwrap()
+                    .passed,
+                "{failure}"
+            );
+            assert!(
+                selected.uncertain_history
+                    || !union(
+                        selected
+                            .selected
+                            .iter()
+                            .map(|&index| &selected.records[index])
+                    )
+                    .values()
+                    .any(|&count| count > 0),
+                "{failure}"
+            );
+        }
     }
 
-    // {test}`requirements.test-coverage.index.unavailable`
+    // {test}`requirements.test-coverage.check.measurement`
     #[test]
-    fn run_data_failures_render_diagnostics_and_leave_other_chapters_readable() {
+    fn saved_run_data_failures_produce_cli_diagnostics() {
         for case in [
             "missing run",
             "corrupt run",
             "missing attempts",
             "run diagnostic",
         ] {
-            let (temp, mut book) = fixture();
+            let (temp, _) = fixture();
             let attempt = record(temp.path(), "one", 1, "a", &[(1, 1)]);
             let run_dir = attempt.parent().unwrap().parent().unwrap();
             match case {
@@ -2754,18 +1673,9 @@ mod tests {
                 }
                 _ => unreachable!(),
             }
-            book.push_item(Chapter::new(
-                "Other chapter",
-                "Unrelated content survives.".into(),
-                "other.md",
-                vec![],
-            ));
-            populate(&mut book, temp.path()).unwrap();
-            let index = &book.chapters().next().unwrap().content;
-            assert!(
-                index.contains("**Coverage diagnostic:**"),
-                "{case}: {index}"
-            );
+            let saved = saved_coverage(temp.path());
+            let index = saved.diagnostics.join("\n");
+            assert!(!index.is_empty(), "{case}");
             if case == "missing run" || case == "corrupt run" {
                 assert!(index.contains("unavailable run data"), "{case}");
             } else if case == "missing attempts" {
@@ -2773,27 +1683,682 @@ mod tests {
             } else {
                 assert!(index.contains("(interrupted): collection was interrupted"));
             }
+        }
+    }
+
+    // {test}`requirements.test-coverage.check.measurement`
+    #[cfg(unix)]
+    #[test]
+    fn unreadable_storage_is_a_cli_diagnostic() {
+        use std::os::unix::fs::PermissionsExt;
+        let (temp, _) = fixture();
+        record(temp.path(), "one", 1, "a", &[(1, 1)]);
+        let storage = temp.path().join("target/habeas/coverage");
+        fs::set_permissions(&storage, fs::Permissions::from_mode(0o000)).unwrap();
+        let selected = saved_coverage(temp.path());
+        fs::set_permissions(storage, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(
+            selected
+                .diagnostics
+                .iter()
+                .any(|error| error.contains("Coverage storage is unreadable"))
+        );
+        assert!(
+            !super::super::check::check_saved(temp.path(), &selected)
+                .unwrap()
+                .passed
+        );
+    }
+    // {test}`requirements.test-coverage.index.file_map`
+    // {test}`requirements.test-coverage.index.file_map.table`
+    // {test}`requirements.test-coverage.index.file_map.combined`
+    // {test}`requirements.test-coverage.index.file_map.directories`
+    // {test}`requirements.test-coverage.index.file_map.directories.initial`
+    // {test}`requirements.test-coverage.index.file_map.directories.data`
+    // {test}`requirements.test-coverage.index.gaps.summary`
+    // {test}`requirements.test-coverage.index.gaps.details`
+    // {test}`requirements.test-coverage.index.gaps.details.initial`
+    // {test}`requirements.test-coverage.index.gaps.explanations`
+    // {test}`requirements.test-coverage.index.details`
+    // {test}`requirements.test-coverage.index.file_map.notes`
+    #[test]
+    fn documented_items_are_counted_once_with_browsable_directory_and_file_groups() {
+        let (temp, mut book) = fixture();
+        let root = temp.path();
+        for (file, source) in [
+            (
+                "code.rs",
+                "//! :::{cite} habeas:coverage\n//! Root explanation.\n//! :::\n// :::{cite} habeas:coverage\n// First explanation.\n// :::\n// :::{cite} habeas:coverage\n// Second explanation.\n// :::\nfn one() {}\n",
+            ),
+            (
+                "src/direct.rs",
+                "/// Function explanation.\n// {cite}`habeas:coverage`\nfn direct() {}\n// {cite}`habeas:coverage`\nfn second() {}\n",
+            ),
+            (
+                "src/deep/nested.rs",
+                "// {cite}`habeas:coverage`\nfn unexplained() {}\n",
+            ),
+            ("src/pass.rs", "fn passing() {}\n"),
+            (
+                "vendor/foreign.rs",
+                "// {cite}`habeas:coverage`\nfn foreign() {}\n",
+            ),
+            (
+                "docs_only/deep/item.rs",
+                "// {cite}`habeas:coverage`\nfn nested() {}\n",
+            ),
+        ] {
+            fs::create_dir_all(root.join(file).parent().unwrap()).unwrap();
+            fs::write(root.join(file), source).unwrap();
+        }
+        populate(&mut book, root).unwrap();
+        let html = map_html(&book.chapters().next().unwrap().content);
+        assert!(!html.contains("\n\n"));
+        assert!(html.contains("7 documented source items carrying coverage annotations"));
+        for (directory, count) in [
+            ("src", 3),
+            ("src/deep", 1),
+            ("vendor", 1),
+            ("docs_only", 1),
+            ("docs_only/deep", 1),
+        ] {
+            let group = directory_group(html, directory);
+            assert!(group.starts_with(&format!(
+                "<details class=\"gap-directory\" data-directory=\"{directory}\" open>"
+            )));
             assert!(
-                book.chapters()
-                    .any(|chapter| chapter.content == "Unrelated content survives.")
+                group
+                    .split("</summary>")
+                    .next()
+                    .unwrap()
+                    .contains(&format!("{count} documented source items"))
             );
+        }
+        assert_directory_contents(html, "src", &["src/deep"], &["src/direct.rs"]);
+        assert_directory_contents(html, "src/deep", &[], &["src/deep/nested.rs"]);
+        assert_directory_contents(html, "vendor", &[], &["vendor/foreign.rs"]);
+        assert_directory_contents(html, "docs_only", &["docs_only/deep"], &[]);
+        assert_directory_contents(html, "docs_only/deep", &[], &["docs_only/deep/item.rs"]);
+        let ancestor = directory_group(html, "docs_only");
+        assert_eq!(
+            ancestor
+                .split("<details class=\"gap-directory\" data-directory=\"docs_only/deep\"")
+                .next()
+                .unwrap()
+                .matches("data-file=")
+                .count(),
+            0
+        );
+        assert!(
+            html.find("data-file=\"code.rs\"").unwrap() < html.find("data-directory=").unwrap()
+        );
+        let root_file = html.find("data-file=\"code.rs\"").unwrap();
+        let root_row = html[..root_file].rfind("<tr").unwrap();
+        let root_opening = html[root_row..].split('>').next().unwrap();
+        assert!(!root_opening.contains(" hidden"), "{root_opening}");
+        assert!(!html[..root_row].contains("<details"));
+        assert!(!html[..root_row].contains(" hidden"));
+        for file in ["code.rs", "src/direct.rs", "src/deep/nested.rs"] {
+            let card = file_card(html, file);
+            assert!(card.contains("aria-expanded=\"false\""));
+            assert!(card.contains(" hidden>"));
+            let note_path = super::super::notes::path(Path::new("reports/coverage.md"), file);
+            let expected_link =
+                crate::chapter_href(Path::new("reports/coverage.md"), &note_path, None);
+            assert!(card.contains(&format!("href=\"{expected_link}\"")));
+            let expected_count = if file == "src/deep/nested.rs" { 1 } else { 2 };
+            assert!(card.contains(&format!("</button></td><td>{expected_count}</td>")));
+            let notes = book
+                .chapters()
+                .find(|chapter| chapter.name == format!("File notes: {file}"))
+                .unwrap();
+            assert_eq!(notes.path.as_ref(), Some(&note_path));
+            assert!(
+                notes
+                    .content
+                    .contains(&format!("File: <code>{file}</code>"))
+            );
+            for ordinal in 1..=expected_count {
+                assert!(
+                    card.contains(&format!("href=\"{expected_link}#coverage-note-{ordinal}\""))
+                );
+                assert!(
+                    notes
+                        .content
+                        .contains(&format!("id=\"coverage-note-{ordinal}\""))
+                );
+            }
+            let explanation = match file {
+                "code.rs" => "Root explanation.",
+                "src/direct.rs" => "Function explanation.",
+                _ => "No tracked justification is present.",
+            };
+            assert!(card.contains(explanation));
+            let locations: &[(&str, usize)] = match file {
+                "code.rs" => &[("File root", 1), ("fn[one]", 4)],
+                "src/direct.rs" => &[("fn[direct]", 1), ("fn[second]", 4)],
+                _ => &[("fn[unexplained]", 1)],
+            };
+            for (selector, line) in locations {
+                assert!(
+                    card.contains(&format!("<code>{file}:{line} #{selector}</code>")),
+                    "{file}: {card}"
+                );
+            }
+        }
+        for explanation in [
+            "Root explanation.",
+            "First explanation.",
+            "Second explanation.",
+            "Function explanation.",
+            "No tracked justification is present.",
+            "Recorded review:",
+        ] {
+            assert!(html.contains(explanation), "{explanation}");
+        }
+        assert!(!html.contains("data-file=\"src/pass.rs\""));
+        for absent in [
+            "CI would",
+            "instrumented lines covered",
+            "gap-percentage",
+            "gap-verdict",
+            "data-status=",
+        ] {
+            assert!(!html.contains(absent));
+        }
+
+        assert!(html.contains("vendor/foreign.rs"));
+        assert_eq!(
+            book.chapters()
+                .filter(|page| page.name.starts_with("File notes:"))
+                .count(),
+            5
+        );
+    }
+
+    // {test}`requirements.test-coverage.index.file_map`
+    // {test}`requirements.test-coverage.index.unavailable`
+    // {test}`requirements.test-coverage.index.file_map.notes.render_only`
+    // {test}`requirements.index.render_only`
+    // {test}`requirements.test-coverage.index.render_only`
+    // {test}`requirements.test-coverage.index.gaps`
+    // {test}`requirements.test-coverage.index.gaps.accepted`
+    // {test}`requirements.test-coverage.index.file_map.test`
+    // {test}`requirements.test-coverage.index.file_map.combined.details`
+    // {test}`requirements.test-coverage.index.details`
+    #[test]
+    fn book_ignores_saved_measurements_and_preserves_artifacts() {
+        let (temp, book) = fixture();
+        let root = temp.path();
+        fs::write(
+            root.join("code.rs"),
+            "/// Documented platform gap.\n// {cite}`habeas:coverage`\nfn other() {}\n",
+        )
+        .unwrap();
+        let mut empty = book.clone();
+        populate(&mut empty, root).unwrap();
+        let original: Vec<_> = empty
+            .chapters()
+            .map(|chapter| (chapter.path.clone(), chapter.content.clone()))
+            .collect();
+        assert!(!root.join("target").exists());
+        let attempt = record(
+            root,
+            "saved-test-name-should-never-appear",
+            1,
+            "same",
+            &[(3, 1)],
+        );
+        let mut valid = book.clone();
+        populate(&mut valid, root).unwrap();
+        assert_eq!(
+            valid
+                .chapters()
+                .map(|chapter| (chapter.path.clone(), chapter.content.clone()))
+                .collect::<Vec<_>>(),
+            original
+        );
+        assert_eq!(
+            valid
+                .chapters()
+                .map(|chapter| chapter.name.as_str())
+                .collect::<Vec<_>>(),
+            ["Documented coverage gaps", "File notes: code.rs"]
+        );
+        for chapter in valid.chapters() {
+            assert!(
+                !chapter
+                    .content
+                    .contains("saved-test-name-should-never-appear")
+            );
+            assert!(!chapter.content.contains("<select"));
+            assert!(
+                !chapter
+                    .path
+                    .as_ref()
+                    .unwrap()
+                    .to_string_lossy()
+                    .contains("-source")
+            );
+        }
+        for contents in ["invalid metadata", "{}"] {
+            fs::write(attempt.join("attempt.json"), contents).unwrap();
+            let mut rendered = book.clone();
+            populate(&mut rendered, root).unwrap();
+            assert_eq!(
+                rendered
+                    .chapters()
+                    .map(|chapter| (chapter.path.clone(), chapter.content.clone()))
+                    .collect::<Vec<_>>(),
+                original
+            );
+            assert_eq!(
+                fs::read_to_string(attempt.join("attempt.json")).unwrap(),
+                contents
+            );
+            assert!(attempt.join("1-1.profraw").exists());
+            assert!(
+                !root
+                    .join("target/habeas/coverage/selection-cache.json")
+                    .exists()
+            );
+        }
+        let overview = &empty.chapters().next().unwrap().content;
+        assert!(overview.starts_with("# Documented coverage gaps"));
+        assert!(
+            overview.contains("`habeas status` and `habeas author` check annotations and reviews")
+        );
+        assert!(overview.contains("`habeas coverage-check` enforces measured coverage"));
+
+        for omitted in [
+            "CI would",
+            "selected test attempts",
+            "Line coverage:",
+            "Captured source",
+            "Test runs and provenance",
+            "habeas-coverage-test",
+            "0 unresolved gaps",
+        ] {
+            assert!(!overview.contains(omitted), "{omitted}");
         }
     }
 
     // {test}`requirements.test-coverage.index.unavailable`
-    #[cfg(unix)]
+    // {test}`requirements.test-coverage.index.gaps.summary`
     #[test]
-    fn unreadable_storage_is_a_diagnostic_and_does_not_stop_book_rendering() {
-        use std::os::unix::fs::PermissionsExt;
+    fn empty_documentation_and_source_failures_are_distinct() {
+        let (temp, book) = fixture();
+        let root = temp.path();
+        let mut empty = book.clone();
+        populate(&mut empty, root).unwrap();
+        assert!(
+            empty
+                .chapters()
+                .next()
+                .unwrap()
+                .content
+                .contains("No documented coverage gaps are present.")
+        );
+        fs::write(root.join("broken.rs"), "fn broken(").unwrap();
+        let mut broken = book.clone();
+        populate(&mut broken, root).unwrap();
+        let content = &broken.chapters().next().unwrap().content;
+        assert!(content.contains("Source notes unavailable"));
+        assert!(content.contains("broken.rs"));
+        assert!(!content.contains("No documented coverage gaps are present."));
+        assert!(
+            broken
+                .chapters()
+                .any(|chapter| chapter.name == "File notes: broken.rs")
+        );
+        fs::remove_file(root.join("broken.rs")).unwrap();
+        git2::Repository::init(root).unwrap();
+        fs::write(root.join(".git/index"), "not an index").unwrap();
+        let mut failure = book;
+        populate(&mut failure, root).unwrap();
+        let content = &failure.chapters().next().unwrap().content;
+        assert!(content.contains("cannot discover reference sources"));
+        assert!(!content.contains("No documented coverage gaps are present."));
+    }
+
+    // {test}`requirements.test-coverage.index.file_map.table`
+    #[test]
+    fn documented_paths_and_explanations_escape_html() {
         let (temp, mut book) = fixture();
-        record(temp.path(), "one", 1, "a", &[(1, 1)]);
-        let storage = temp.path().join("target/habeas/coverage");
-        fs::set_permissions(&storage, fs::Permissions::from_mode(0o000)).unwrap();
-        let result = populate(&mut book, temp.path());
-        fs::set_permissions(storage, fs::Permissions::from_mode(0o755)).unwrap();
-        result.unwrap();
-        let index = &book.chapters().next().unwrap().content;
-        assert!(index.contains("**Coverage diagnostic:** Coverage storage is unreadable"));
-        assert!(index.contains("No test coverage is available"));
+        fs::write(
+            temp.path().join("a<&>.rs"),
+            "/// Explanation with <unsafe> text.\n// {cite}`habeas:coverage`\nfn other() {}\n",
+        )
+        .unwrap();
+        populate(&mut book, temp.path()).unwrap();
+        let html = map_html(&book.chapters().next().unwrap().content);
+        assert!(html.contains("a&lt;&amp;&gt;.rs"));
+        assert!(html.contains("&lt;unsafe&gt;"));
+        assert!(!html.contains("<unsafe>"));
+    }
+
+    // {test}`requirements.test-coverage.check.measurement`
+    // {test}`requirements.test-coverage.index.summary`
+    #[test]
+    fn saved_measurement_failures_remain_unavailable_to_cli_checks() {
+        let (temp, _) = fixture();
+        let root = temp.path();
+        assert!(
+            !super::super::check::check_saved(root, &saved_coverage(root))
+                .unwrap()
+                .passed
+        );
+        let dir = record(root, "one", 1, "same", &[(1, 0), (2, 0)]);
+        let original: Attempt = load(&dir.join("attempt.json")).unwrap();
+        assert_eq!(
+            union(saved_coverage(root).records.iter())
+                .values()
+                .filter(|&&count| count > 0)
+                .count(),
+            0
+        );
+        for failure in [
+            "no processes",
+            "attempt diagnostic",
+            "process diagnostic",
+            "missing source",
+            "empty profile",
+            "missing child",
+        ] {
+            let mut attempt = original.clone();
+            match failure {
+                "no processes" => attempt.processes.clear(),
+                "attempt diagnostic" => attempt.diagnostics.push("incomplete export".into()),
+                "process diagnostic" => {
+                    attempt.processes[0].diagnostic = Some("incomplete export".into())
+                }
+                "missing source" => {
+                    attempt.processes[0]
+                        .lines
+                        .insert("uncaptured.rs".into(), BTreeMap::from([(1, 1)]));
+                }
+                "empty profile" => fs::write(dir.join("1-1.profraw"), "").unwrap(),
+                _ => {
+                    let mut child = attempt.processes[0].clone();
+                    child.profiles = vec!["missing-child.profraw".into()];
+                    attempt.processes.push(child);
+                }
+            }
+            save(&dir.join("attempt.json"), &attempt).unwrap();
+            let report = super::super::check::check_saved(root, &saved_coverage(root)).unwrap();
+            assert!(!report.passed, "{failure}");
+            assert!(
+                report.text.contains("missing or unreadable coverage"),
+                "{failure}: {}",
+                report.text
+            );
+            fs::write(dir.join("1-1.profraw"), "profile fixture").unwrap();
+        }
+        save(&dir.join("attempt.json"), &original).unwrap();
+        let empty = record(root, "one", 2, "same", &[]);
+        assert!(
+            super::super::check::check_saved(root, &saved_coverage(root))
+                .unwrap()
+                .text
+                .contains("No usable instrumented lines")
+        );
+        fs::remove_file(empty.join("attempt.json")).unwrap();
+    }
+    // {test}`requirements.test-coverage.index.file_map.combined`
+    // {test}`requirements.test-coverage.index.file_map.notes.justifications`
+    #[test]
+    fn documentation_includes_non_rust_functions_methods_and_plain_file_roots() {
+        let (temp, mut book) = fixture();
+        let root = temp.path();
+        for (file, source) in [
+            (
+                "worker.py",
+                "# :::{cite} habeas:coverage\n# Python platform explanation.\n# :::\ndef work():\n    pass\n",
+            ),
+            (
+                "worker.ts",
+                "// :::{cite} habeas:coverage\n// TypeScript platform explanation.\n// :::\nfunction work() {}\nclass Worker {\n// {cite}`habeas:coverage`\nwork() {}\n}\n",
+            ),
+            (
+                "notes.txt",
+                ":::{cite} habeas:coverage\nPlain-file explanation.\n:::\n",
+            ),
+        ] {
+            fs::write(root.join(file), source).unwrap();
+        }
+        populate(&mut book, root).unwrap();
+        let content = &book.chapters().next().unwrap().content;
+        for expected in [
+            "worker.py",
+            "worker.ts",
+            "notes.txt",
+            "def[work]",
+            "function[work]",
+            "method[work]",
+            "Python platform explanation.",
+            "TypeScript platform explanation.",
+            "Plain-file explanation.",
+            "4 documented source items",
+        ] {
+            assert!(content.contains(expected), "{expected}: {content}");
+        }
+    }
+    // {test}`requirements.test-coverage.index.paths`
+    #[test]
+    fn coverage_generation_rejects_authored_index_and_notes_path_collisions() {
+        for collision in [
+            PathBuf::from("reports/coverage.md"),
+            super::super::notes::path(Path::new("reports/coverage.md"), "code.rs"),
+        ] {
+            let (temp, mut book) = fixture();
+            fs::write(
+                temp.path().join("code.rs"),
+                "// {cite}`habeas:coverage`\nfn work() {}\n",
+            )
+            .unwrap();
+            book.push_item(Chapter::new(
+                "Authored",
+                "Preserve this chapter.".into(),
+                &collision,
+                vec![],
+            ));
+            if let BookItem::Chapter(parent) = &mut book.items[0] {
+                parent.path = Some("reports.md".into());
+            }
+            let before = serde_json::to_value(&book).unwrap();
+            let error = populate(&mut book, temp.path()).unwrap_err();
+            assert!(
+                error.to_string().contains("coverage")
+                    && error.to_string().contains("path conflicts")
+            );
+            assert_eq!(serde_json::to_value(book).unwrap(), before);
+        }
+    }
+
+    // {test}`requirements.test-coverage.index.gaps.explanations`
+    // {test}`requirements.test-coverage.index.gaps.accepted`
+    // {test}`requirements.test-coverage.index.file_map.notes.reviews`
+    // {test}`requirements.test-coverage.index.render_only`
+    // {test}`requirements.test-coverage.index.file_map.notes.render_only`
+    #[test]
+    fn overview_shows_missing_unreadable_and_recorded_reviews_with_current_justifications() {
+        let (temp, book) = fixture();
+        let root = temp.path();
+        fs::write(
+            root.join("code.rs"),
+            "/// Original platform explanation.\n// {cite}`habeas:coverage`\nfn other() {}\n",
+        )
+        .unwrap();
+        let review = root.join(crate::citations::review_path("code.rs", "fn[other]"));
+        fs::create_dir_all(review.parent().unwrap()).unwrap();
+        for (state, value, label) in [
+            ("missing", None, "Missing"),
+            ("true", Some(serde_json::json!(true)), "Recorded true"),
+            ("false", Some(serde_json::json!(false)), "Recorded false"),
+            (
+                "fixme",
+                Some(serde_json::json!({"FIXME": ["platform-only path"]})),
+                "Recorded FIXME",
+            ),
+            ("invalid", None, "Unreadable"),
+            ("unreadable", None, "Unreadable"),
+        ] {
+            if review.is_dir() {
+                fs::remove_dir(&review).unwrap();
+            }
+            if review.is_file() {
+                fs::remove_file(&review).unwrap();
+            }
+            if let Some(determination) = value {
+                fs::write(&review, serde_json::json!({"determination": determination, "rationale": "Saved overview rationale.", "inputs": [], "hash": "old hash"}).to_string()).unwrap();
+            } else if state == "invalid" {
+                fs::write(&review, "not JSON").unwrap();
+            } else if state == "unreadable" {
+                fs::create_dir(&review).unwrap();
+            }
+            let mut rendered = book.clone();
+            populate(&mut rendered, root).unwrap();
+            let html = map_html(&rendered.chapters().next().unwrap().content);
+            assert!(
+                html.contains(&format!("Recorded review: <strong>{label}</strong>")),
+                "{state}: {html}"
+            );
+            assert!(html.contains("Original platform explanation."));
+            assert!(html.contains("1 documented source items"));
+            if matches!(state, "true" | "false" | "fixme") {
+                assert!(html.contains("Saved overview rationale."));
+            }
+            if state == "fixme" {
+                assert!(html.contains("platform-only path"));
+            }
+            if state == "invalid" {
+                assert!(html.contains("invalid JSON"));
+            }
+            if state == "unreadable" {
+                assert!(html.contains("cannot read evidence"));
+            }
+            assert!(!html.contains("current and accepted"));
+            assert!(!html.contains("input is stale"));
+        }
+        fs::remove_dir(&review).unwrap();
+        fs::write(
+            &review,
+            "{\"determination\":true,\"rationale\":\"Saved overview rationale.\"}",
+        )
+        .unwrap();
+        let before = fs::read(&review).unwrap();
+        for source in [
+            "/// Updated platform explanation.\n// {cite}`habeas:coverage`\nfn other() { let new = 1; }\n",
+            "// {cite}`habeas:coverage`\nfn other() {}\n",
+        ] {
+            fs::write(root.join("code.rs"), source).unwrap();
+            let mut rendered = book.clone();
+            populate(&mut rendered, root).unwrap();
+            let html = map_html(&rendered.chapters().next().unwrap().content);
+            assert!(html.contains("Recorded true"));
+            assert!(html.contains("Saved overview rationale."));
+            assert!(!html.contains("Original platform explanation."));
+            assert!(html.contains(if source.starts_with("///") {
+                "Updated platform explanation."
+            } else {
+                "No tracked justification is present."
+            }));
+            assert_eq!(fs::read(&review).unwrap(), before);
+        }
+        assert!(!root.join("target").exists());
+    }
+
+    // {test}`requirements.test-coverage.index.unavailable`
+    // {test}`requirements.test-coverage.index.gaps.summary`
+    // {test}`requirements.configuration.evidence_paths`
+    #[test]
+    #[cfg(unix)]
+    fn missing_and_unreadable_sources_produce_overview_diagnostics() {
+        use std::os::unix::fs::PermissionsExt;
+        let (temp, book) = fixture();
+        let root = temp.path();
+        let repo = git2::Repository::init(root).unwrap();
+        let source = root.join("code.rs");
+        fs::write(&source, "// {cite}`habeas:coverage`\nfn other() {}\n").unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(Path::new("code.rs")).unwrap();
+        index.write().unwrap();
+        fs::set_permissions(&source, fs::Permissions::from_mode(0o000)).unwrap();
+        let mut rendered = book.clone();
+        populate(&mut rendered, root).unwrap();
+        fs::set_permissions(&source, fs::Permissions::from_mode(0o644)).unwrap();
+        let overview = &rendered.chapters().next().unwrap().content;
+        assert!(overview.contains("Source notes unavailable"), "{overview}");
+        assert!(overview.contains("code.rs"));
+        assert!(!overview.contains("No documented coverage gaps are present."));
+        fs::remove_file(&source).unwrap();
+        let mut rendered = book.clone();
+        populate(&mut rendered, root).unwrap();
+        let overview = &rendered.chapters().next().unwrap().content;
+        assert!(overview.contains("Source notes unavailable"), "{overview}");
+        assert!(overview.contains("code.rs: current source is missing"));
+        assert!(!overview.contains("No documented coverage gaps are present."));
+
+        // Missing excluded or explicitly disallowed files reveal no source
+        // annotations and must remain outside this documentation view.
+        fs::write(&source, "fn ordinary() {}\n").unwrap();
+        fs::write(
+            root.join("habeas.toml"),
+            "version=1\n[evidence]\ndisallow=['denied.rs']\n",
+        )
+        .unwrap();
+        for file in [
+            "book/ignored.rs",
+            "target/ignored.rs",
+            "evidence/ignored.rs",
+            "denied.rs",
+        ] {
+            let path = root.join(file);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, "// {cite}`habeas:coverage`\nfn hidden() {}\n").unwrap();
+            index.add_path(Path::new(file)).unwrap();
+            fs::remove_file(path).unwrap();
+        }
+        index.write().unwrap();
+        let mut rendered = book;
+        populate(&mut rendered, root).unwrap();
+        let overview = &rendered.chapters().next().unwrap().content;
+        assert!(overview.contains("No documented coverage gaps are present."));
+        assert!(!overview.contains("Source notes unavailable"), "{overview}");
+    }
+    // {test}`requirements.test-coverage.index.freshness`
+    #[test]
+    fn stale_or_unknown_records_publish_no_current_file_totals() {
+        let (temp, _) = fixture();
+        let root = temp.path();
+        fs::create_dir(root.join("md")).unwrap();
+        fs::write(root.join("book.toml"), "[book]\nsrc='md'\n").unwrap();
+        fs::write(root.join("md/SUMMARY.md"), "# Summary\n").unwrap();
+        let attempt = record(root, "both", 1, "same", &[(1, 1), (2, 1)]);
+        let run_path = attempt.parent().unwrap().parent().unwrap().join("run.json");
+        let fresh = super::super::check::check_saved(root, &saved_coverage(root)).unwrap();
+        assert!(fresh.passed, "{}", fresh.text);
+        assert!(fresh.text.contains("code.rs: 2/2 (100.0%) — pass"));
+        fs::write(
+            root.join("code.rs"),
+            "fn one() { let changed = 1; }\nfn two() {}\n",
+        )
+        .unwrap();
+        let stale = super::super::check::check_saved(root, &saved_coverage(root)).unwrap();
+        assert!(!stale.passed);
+        assert!(stale.text.contains("stale coverage"));
+        assert!(!stale.text.contains("- code.rs:"));
+        assert!(!stale.text.contains("100.0%"));
+        fs::write(root.join("code.rs"), "fn one() {}\nfn two() {}\n").unwrap();
+        let mut run: Run = load(&run_path).unwrap();
+        run.schema = 99;
+        save(&run_path, &run).unwrap();
+        let unknown = super::super::check::check_saved(root, &saved_coverage(root)).unwrap();
+        assert!(!unknown.passed);
+        assert!(unknown.text.contains("cannot establish latest-per-test"));
+        assert!(!unknown.text.contains("- code.rs:"));
+        assert!(!unknown.text.contains("100.0%"));
+        assert!(run_path.exists());
+        assert!(attempt.join("1-1.profraw").exists());
     }
 }

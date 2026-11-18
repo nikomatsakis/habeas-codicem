@@ -506,6 +506,15 @@ fn status_preserves_repository_wide_rust_findings_in_every_form() {
                     !text.contains("function main has no recent coverage"),
                     "{args:?}: {text}"
                 );
+                assert!(
+                    text.contains("evidence/requirements.malformed.json: invalid JSON"),
+                    "{args:?}: {text}"
+                );
+                assert!(
+                    text.contains("## Validation findings")
+                        || text.contains("## Other validation findings"),
+                    "{args:?}: {text}"
+                );
                 assert!(!text.contains("attestation"), "{args:?}: {text}");
             }
         }
@@ -569,6 +578,14 @@ fn info_renders_exact_and_glob_matches_as_markdown_without_an_index() {
         assert!(text.contains(&format!("evidence-{state}")), "{text}");
         assert!(text.contains("## Validation findings"), "{text}");
         assert!(text.contains(finding), "{text}");
+        if name == "stale_input" {
+            assert!(
+                text.contains(
+                    "The recorded hash no longer matches this source; the input is stale."
+                ),
+                "{text}"
+            );
+        }
     }
 
     let missing = habeas(temp.path(), &["info", "requirements.absent"]);

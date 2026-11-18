@@ -50,9 +50,10 @@ with `cargo install cargo-nextest --locked` (>= 0.9.116) and
 
 Profiles, reports, and captured source under the Cargo target directory
 (`target/habeas/coverage/` by default) are disposable build artifacts. Never stage
-or commit them to Git. The book combines each test's latest compatible attempt;
-source changes invalidate the combined coverage, while saved reports remain
-inspectable. Building the book does not run tests.
+or commit them to Git. `habeas coverage-check` combines each test's latest
+compatible attempt; source changes invalidate combined coverage, while saved
+reports remain inspectable. Building the book does not read execution
+measurements or run tests.
 
 For final verification, run `habeas test` (`cargo habeas test` in this repository).
 It collects coverage for the full workspace, then checks it. In CI, recommend
@@ -80,11 +81,12 @@ across build configurations and may remain when coverage is sufficient.
 Exceptions never increase reported percentages.
 {impl}`requirements.test-coverage.check.exceptions.setup`
 
-The requirements index automatically includes a Coverage gaps subchapter.
-Do not add a coverage source chapter or coverage-index directive. Use its CI
-verdict and expandable file gaps to find missing tests or coverage explanations;
-accepted documented gaps are separate. The book shows coverage gaps without
-per-test maps or captured-source reports.
+The requirements index automatically includes a Documented coverage gaps
+subchapter. Do not add a coverage source chapter or coverage-index directive.
+It connects all `habeas:coverage` annotations to their source explanations and
+last recorded reviews, including missing or rejected reviews. Use `habeas status`
+and `habeas author` to check annotations and reviews, and `habeas coverage-check`
+to enforce measured coverage.
 
 ## Inspecting
 

@@ -387,7 +387,6 @@ pub fn info_markdown(root: &Path, selector: &str) -> io::Result<String> {
     let inspection = inspect_repository(root)?;
     definition_glob::validate(selector)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
-    let outlines = crate::inputs::OutlineCache::default();
     let mut pages = Vec::new();
     for (name, definition) in &inspection.definitions {
         if definition.kind == crate::DefinitionKind::Term {
@@ -404,11 +403,12 @@ pub fn info_markdown(root: &Path, selector: &str) -> io::Result<String> {
             definition.kind,
             &evidence,
             &RenderSources {
+                check_hashes: true,
                 root,
                 definitions: &inspection.definitions,
                 references: &inspection.references,
                 source_links: None,
-                outlines: &outlines,
+                outlines: &inspection.outlines,
             },
         );
         if let Some(sites) = inspection.sites.get(name) {

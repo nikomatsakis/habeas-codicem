@@ -8,7 +8,7 @@ use mdbook_preprocessor::book::{Book, BookItem, Chapter, SectionNumber};
 use mdbook_preprocessor::config::Config;
 use serde_json::Value;
 
-use crate::evidence::{Declaration, SourceReference, inspect_repository};
+use crate::evidence::{Declaration, SourceReference, collect_references, load_definitions};
 use crate::inputs::{InputSelector, OutlineCache, ResolvedInput, SourceRange};
 use crate::markdown::render_evidence_table;
 use crate::{
@@ -34,6 +34,8 @@ pub(crate) struct SourceLinks {
 
 // {impl}`requirements.index.detail_format`
 pub(crate) struct RenderSources<'a> {
+    /// CLI inspection compares input hashes; the book only displays source.
+    pub(crate) check_hashes: bool,
     pub(crate) root: &'a Path,
     pub(crate) definitions: &'a BTreeMap<String, Declaration>,
     /// Current `{impl}`, `{cite}`, and `{test}` references in project sources.
@@ -132,6 +134,10 @@ pub(crate) enum EvidenceState {
     DeterminationFalse,
     Fixme,
     Invalid,
+    RecordedTrue,
+    RecordedFalse,
+    RecordedFixme,
+    Unreadable,
 }
 
 // {impl}`requirements.index.detail_format`
@@ -219,6 +225,73 @@ impl LoadedDetailEvidence {
         }
     }
 
+    // {impl}`requirements.index.state`
+    // {impl}`requirements.index.render_only`
+    // {impl}`requirements.index.invalid_detail`
+    pub(crate) fn load_record_path(root: &Path, relative: &str) -> Self {
+        let mut errors = Vec::new();
+        let record = match fs::read_to_string(root.join(relative)) {
+            Ok(record) => Some(record),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                return Self {
+                    state: EvidenceState::Missing,
+                    record: None,
+                    errors,
+                    fixme_entries: Vec::new(),
+                };
+            }
+            Err(error) => {
+                errors.push(format!("{relative}: cannot read evidence: {error}"));
+                None
+            }
+        };
+        let judgment = record.as_deref().and_then(|record| {
+            let parsed: Value = match serde_json::from_str(record) {
+                Ok(parsed) => parsed,
+                Err(error) => {
+                    errors.push(format!("{relative}: invalid JSON: {error}"));
+                    return None;
+                }
+            };
+            match parsed
+                .get("determination")
+                .ok_or_else(|| "missing determination".to_owned())
+                .and_then(crate::judgment::Judgment::from_value)
+            {
+                Ok(judgment) => Some(judgment),
+                Err(error) => {
+                    errors.push(format!("{relative}: unreadable determination: {error}"));
+                    None
+                }
+            }
+        });
+        let fixme_entries = judgment
+            .as_ref()
+            .map(|judgment| judgment.fixme_entries().to_vec())
+            .unwrap_or_default();
+        let state = match judgment {
+            Some(crate::judgment::Judgment::True) => EvidenceState::RecordedTrue,
+            Some(crate::judgment::Judgment::False) => EvidenceState::RecordedFalse,
+            Some(crate::judgment::Judgment::Fixme(_)) => EvidenceState::RecordedFixme,
+            None => EvidenceState::Unreadable,
+        };
+        Self {
+            state,
+            record,
+            errors,
+            fixme_entries,
+        }
+    }
+
+    // {cite}`habeas:util`
+    pub(crate) fn rationale(&self) -> Option<String> {
+        serde_json::from_str::<Value>(self.record.as_deref()?)
+            .ok()?
+            .get("rationale")?
+            .as_str()
+            .map(str::to_owned)
+    }
+
     // {cite}`habeas:util`
     pub(crate) fn state(&self) -> EvidenceState {
         self.state
@@ -268,17 +341,21 @@ impl EvidenceState {
             Self::DeterminationFalse => "Determination false",
             Self::Fixme => "FIXME",
             Self::Invalid => "Invalid",
+            Self::RecordedTrue => "Recorded true",
+            Self::RecordedFalse => "Recorded false",
+            Self::RecordedFixme => "Recorded FIXME",
+            Self::Unreadable => "Unreadable",
         }
     }
 
     // {impl}`requirements.index.state`
     fn color(self) -> &'static str {
         match self {
-            Self::Valid => "237346",
+            Self::Valid | Self::RecordedTrue => "237346",
             Self::Missing => "5f6670",
-            Self::DeterminationFalse => "ae5d14",
-            Self::Fixme => "ae5d14",
-            Self::Invalid => "ad3028",
+            Self::DeterminationFalse | Self::RecordedFalse => "ae5d14",
+            Self::Fixme | Self::RecordedFixme => "ae5d14",
+            Self::Invalid | Self::Unreadable => "ad3028",
         }
     }
 }
@@ -371,20 +448,28 @@ impl DetailPlan {
     ) -> io::Result<()> {
         let config = Config::from_disk(root.join("book.toml")).map_err(io::Error::other)?;
         let source_links = SourceLinks::from_config(&config)?;
-        let inspection = inspect_repository(root)?;
-        let report = &inspection.report;
+        let mut diagnostics = Vec::new();
+        let declarations = load_definitions(root).unwrap_or_else(|error| {
+            diagnostics.push(error.to_string());
+            BTreeMap::new()
+        });
+        let references = collect_references(root, &mut diagnostics);
+        let outlines = OutlineCache::default();
         let sources = RenderSources {
+            check_hashes: false,
             root,
-            definitions: &inspection.definitions,
-            references: &inspection.references,
+            definitions: &declarations,
+            references: &references,
             source_links: source_links.as_ref(),
-            outlines: &inspection.outlines,
+            outlines: &outlines,
         };
         let mut rows = Vec::new();
         let mut pages = BTreeMap::new();
         for (name, detail_path) in &self.detail_paths {
             let evidence_path = root.join("evidence").join(format!("{name}.json"));
-            let evidence = LoadedDetailEvidence::load(root, name, report);
+            let mut evidence =
+                LoadedDetailEvidence::load_record_path(root, &format!("evidence/{name}.json"));
+            evidence.errors.extend(diagnostics.iter().cloned());
             let definition = definitions
                 .get(name)
                 .expect("every detail page has a definition");
@@ -735,7 +820,11 @@ fn render_detail_sections(
     }
 
     if !detail_evidence.errors.is_empty() {
-        content.push_str("\n## Validation findings\n\n<pre><code>");
+        content.push_str(if sources.check_hashes {
+            "\n## Validation findings\n\n<pre><code>"
+        } else {
+            "\n## Rendering diagnostics\n\n<pre><code>"
+        });
         content.push_str(&escape_html(&crate::redaction::redact_text(
             &detail_evidence.errors.join("\n\n"),
         )));
@@ -885,7 +974,9 @@ fn render_input(
             }
             content.push('\n');
             if let Some(node) = &resolved.node {
-                if input.get("hash").and_then(Value::as_str) != Some(node.hash.as_str()) {
+                if sources.check_hashes
+                    && input.get("hash").and_then(Value::as_str) != Some(node.hash.as_str())
+                {
                     content.push_str(
                         "**The recorded hash no longer matches this source; the input is stale.**\n\n",
                     );
@@ -1097,6 +1188,7 @@ mod tests {
         );
     }
 
+    // {test}`requirements.test-coverage.index.navigation`
     // {test}`requirements.index.chapter`
     // {test}`requirements.index.state`
     // {test}`requirements.index.navigation`
@@ -1176,11 +1268,11 @@ mod tests {
             .unwrap();
         assert!(!index.content.contains("{requirements-index}"));
         for (name, state) in [
-            ("ready", "Valid"),
-            ("pending", "Determination false"),
-            ("changed", "Invalid"),
+            ("ready", "Recorded true"),
+            ("pending", "Recorded false"),
+            ("changed", "Recorded true"),
             ("absent", "Missing"),
-            ("uncovered", "Invalid"),
+            ("uncovered", "Recorded true"),
         ] {
             let link = format!(
                 "| [`requirements.core.{name}`](requirements-index/requirements.core.{name}.html)"
@@ -1223,7 +1315,9 @@ mod tests {
             .sub_items
             .iter()
             .filter_map(|item| match item {
-                BookItem::Chapter(chapter) if chapter.name == "Coverage gaps" => Some(chapter),
+                BookItem::Chapter(chapter) if chapter.name == "Documented coverage gaps" => {
+                    Some(chapter)
+                }
                 _ => None,
             })
             .collect::<Vec<_>>();
@@ -1236,7 +1330,7 @@ mod tests {
         assert!(
             index
                 .content
-                .contains("[Coverage gaps](requirements-index/coverage.html)")
+                .contains("[Documented coverage gaps](requirements-index/coverage.html)")
         );
         let ready = index
             .sub_items
@@ -1273,7 +1367,7 @@ mod tests {
         assert!(
             ready
                 .content
-                .contains("img.shields.io/badge/evidence-Valid-237346")
+                .contains("img.shields.io/badge/evidence-Recorded_true-237346")
         );
         assert!(ready.content.contains("> Ready MUST work."));
         assert!(!ready.content.contains("## Evidence record"));
@@ -1287,7 +1381,8 @@ mod tests {
                 _ => None,
             })
             .unwrap();
-        assert!(changed.content.contains("requirement text changed"));
+        assert!(!changed.content.contains("requirement text changed"));
+        assert!(changed.content.contains("Recorded true"));
         let absent = index
             .sub_items
             .iter()
@@ -1397,6 +1492,7 @@ mod tests {
                 fixme_entries: &[],
             },
             &RenderSources {
+                check_hashes: true,
                 root,
                 definitions: &BTreeMap::new(),
                 references: &[],
@@ -1446,6 +1542,7 @@ mod tests {
                     fixme_entries: &[],
                 },
                 &RenderSources {
+                    check_hashes: true,
                     root,
                     definitions: &BTreeMap::new(),
                     references: &[],
@@ -1507,6 +1604,7 @@ mod tests {
                 fixme_entries: &[],
             },
             &RenderSources {
+                check_hashes: true,
                 root,
                 definitions: &BTreeMap::new(),
                 references: &[],
@@ -1602,6 +1700,7 @@ mod tests {
                 fixme_entries: &[],
             },
             &RenderSources {
+                check_hashes: true,
                 root: temp.path(),
                 definitions: &BTreeMap::new(),
                 references: &[],
@@ -1746,6 +1845,7 @@ mod tests {
                 fixme_entries: &[],
             },
             &RenderSources {
+                check_hashes: true,
                 root: Path::new("."),
                 definitions: &BTreeMap::new(),
                 references: &[],
@@ -1773,6 +1873,7 @@ mod tests {
                 fixme_entries: &[],
             },
             &RenderSources {
+                check_hashes: true,
                 root: Path::new("."),
                 definitions: &BTreeMap::new(),
                 references: &[],
@@ -1796,6 +1897,7 @@ mod tests {
                     fixme_entries: &[],
                 },
                 &RenderSources {
+                    check_hashes: true,
                     root: Path::new("."),
                     definitions: &BTreeMap::new(),
                     references: &[],
@@ -1813,7 +1915,7 @@ mod tests {
 
     // {test}`requirements.index.state`
     #[test]
-    fn findings_make_false_and_fixme_records_invalid() {
+    fn book_records_false_and_fixme_without_auditing_dependencies() {
         let temp = TempDir::new().unwrap();
         let root = temp.path();
         for dir in ["md", "evidence", "src"] {
@@ -1881,12 +1983,12 @@ mod tests {
             .find(|chapter| chapter.name == "Index")
             .unwrap();
         for (name, state) in [
-            ("false_clean", "Determination false"),
-            ("false_stale", "Invalid"),
-            ("false_malformed", "Invalid"),
-            ("false_uncovered", "Invalid"),
-            ("fixme_clean", "FIXME"),
-            ("fixme_stale", "Invalid"),
+            ("false_clean", "Recorded false"),
+            ("false_stale", "Recorded false"),
+            ("false_malformed", "Recorded false"),
+            ("false_uncovered", "Recorded false"),
+            ("fixme_clean", "Recorded FIXME"),
+            ("fixme_stale", "Recorded FIXME"),
         ] {
             let link = format!("| [`rules.{name}`](requirements-index/rules.{name}.html)");
             let row = index
@@ -1905,16 +2007,18 @@ mod tests {
                     _ => None,
                 })
                 .unwrap();
-            // Every page with findings shows them, whatever the determination.
+            assert!(page.content.contains(&format!("alt=\"evidence {state}\"")));
+            // Rendering does not report repository validation findings.
             assert_eq!(
                 page.content.contains("Validation findings"),
-                state != "FIXME",
+                false,
                 "{name}: {}",
                 page.content
             );
         }
     }
 
+    // {test}`requirements.index.state`
     // {test}`requirements.examples.index`
     #[test]
     fn index_and_detail_pages_show_each_example_evidence_state() {
@@ -1984,10 +2088,10 @@ mod tests {
             .find(|chapter| chapter.name == "Index")
             .unwrap();
         for (name, state) in [
-            ("valid", "Valid"),
-            ("pending", "Determination false"),
-            ("fixme", "FIXME"),
-            ("changed", "Invalid"),
+            ("valid", "Recorded true"),
+            ("pending", "Recorded false"),
+            ("fixme", "Recorded FIXME"),
+            ("changed", "Recorded true"),
             ("missing", "Missing"),
         ] {
             let link =
@@ -2105,8 +2209,8 @@ mod tests {
             })
             .unwrap();
         assert!(missing.content.contains("## Example\n\n> Missing case."));
-        assert!(missing.content.contains("## Validation findings"));
-        assert!(missing.content.contains("missing for example"));
+        assert!(!missing.content.contains("## Validation findings"));
+        assert!(missing.content.contains("alt=\"evidence Missing\""));
         assert!(missing.content.contains("No rationale recorded."));
     }
 
@@ -2120,7 +2224,7 @@ mod tests {
             fs::create_dir_all(root.join(dir)).unwrap();
         }
         fs::write(root.join("book.toml"), "[book]\nsrc = \"md\"\n").unwrap();
-        let source = ":::{req} ready\n:impl: skills/ready.md\n:test: skills/test.md\nReady relies on {cite}`rules.base`.\n:::\n\n:::{req} base\nBase.\n:::\n\n:::{example} case\nA case. {test}`rules.ready`\n:::\n".to_owned();
+        let source = ":::{req} ready\n:impl: skills/ready.md\n:test: skills/test.md\nReady relies on {cite}`rules.base`.\n:::\n\n:::{req} base\nBase.\n:::\n\n:::{example} case\nA case. {test}`rules.ready`\n:::\n\n:::{req} blank\nUncited definition.\n:::\n".to_owned();
         fs::write(root.join("md/rules.md"), &source).unwrap();
         fs::write(root.join("skills/ready.md"), "# Skill\n").unwrap();
         fs::write(root.join("skills/test.md"), "# Test\n").unwrap();
@@ -2141,6 +2245,7 @@ mod tests {
             {"requirements": "rules.case", "matches": ["rules.case"], "text": ["case"]},
             outline("src/lib.rs", "fn[run]"),
             outline("skills/test.md", ""),
+            {"requirements": "rules.b*", "matches": ["rules.base", "rules.blank"], "text": ["mixed citations"]},
         ]);
         fs::write(
             root.join("evidence/rules.ready.json"),
@@ -2177,7 +2282,7 @@ mod tests {
             ("Implementation", [5, 7].as_slice()),
             ("Tests", &[2, 6, 8]),
             ("Referenced definitions", &[4]),
-            ("Other sources", &[1, 3]),
+            ("Other sources", &[1, 3, 9]),
         ];
         let starts = groups
             .iter()
@@ -2199,9 +2304,9 @@ mod tests {
         );
         assert_eq!(
             content.matches("<details class=\"habeas-input\">").count(),
-            8
+            9
         );
-        assert_eq!(content.matches("</details>").count(), 12);
+        assert_eq!(content.matches("</details>").count(), 13);
         assert!(content.contains("<code>requirements selection rules.base</code>"));
         assert!(content.contains("[Requirements index](../requirements-index.html)"));
     }
@@ -2267,7 +2372,7 @@ mod tests {
         let badge =
             position("<img class=\"habeas-shield\" src=\"https://img.shields.io/badge/evidence-");
         assert!(
-            content[badge..].contains("alt=\"evidence Invalid\""),
+            content[badge..].contains("alt=\"evidence Recorded true\""),
             "{content}"
         );
 
@@ -2310,5 +2415,295 @@ mod tests {
             1,
             "{content}"
         );
+    }
+    // {test}`requirements.index.render_only`
+    #[test]
+    fn book_does_not_assess_missing_or_malformed_citation_and_site_reviews() {
+        let source = format!(
+            "// {{cite}}`requirements.rule`\n{}",
+            crate::sites::tests::SOURCE
+        );
+        let chapter = crate::sites::tests::RULE;
+        let temp = crate::sites::tests::project(chapter, &source);
+        let root = temp.path();
+        fs::write(
+            root.join("evidence/requirements.rule.json"),
+            json!({"determination": true, "rationale": "Recorded assessment."}).to_string(),
+        )
+        .unwrap();
+        let citation = crate::citations::review_path("src/lib.rs", "fn[check_one]");
+        let site = crate::sites::review_path("requirements.rule", "src/lib.rs", "fn[check_one]");
+        let absent = crate::evidence::validate_repository(root).unwrap();
+        assert!(
+            absent
+                .errors
+                .iter()
+                .any(|error| error.contains("missing citation review"))
+        );
+        assert!(
+            absent
+                .errors
+                .iter()
+                .any(|error| error.contains("missing site review"))
+        );
+        let render = || {
+            let mut book = Book::new();
+            book.push_item(Chapter::new(
+                "Rules",
+                chapter.into(),
+                "requirements.md",
+                vec![],
+            ));
+            preprocess_book(&mut book, root).unwrap();
+            let detail = book
+                .chapters()
+                .find(|chapter| chapter.name == "requirements.rule")
+                .unwrap();
+            assert!(detail.content.contains("Recorded true"));
+            assert!(detail.content.contains("Recorded assessment."));
+            for omitted in [
+                "Validation findings",
+                "missing citation review",
+                "missing site review",
+                "invalid JSON",
+            ] {
+                assert!(!detail.content.contains(omitted), "{}", detail.content);
+            }
+            serde_json::to_value(&book).unwrap()
+        };
+        let missing = render();
+        assert!(!root.join(&citation).exists());
+        assert!(!root.join(&site).exists());
+        for review in [&citation, &site] {
+            let path = root.join(review);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, "not JSON").unwrap();
+        }
+        let malformed = crate::evidence::validate_repository(root).unwrap();
+        for review in [&citation, &site] {
+            assert!(
+                malformed
+                    .errors
+                    .iter()
+                    .any(|error| { error.starts_with(review) && error.contains("invalid JSON") }),
+                "{:?}",
+                malformed.errors
+            );
+        }
+        assert_eq!(render(), missing);
+        for review in [&citation, &site] {
+            assert_eq!(fs::read_to_string(root.join(review)).unwrap(), "not JSON");
+        }
+        assert!(!root.join("target").exists());
+    }
+
+    // {test}`requirements.index.render_only`
+    // {test}`requirements.index.state`
+    // {test}`requirements.index.detail_format`
+    #[test]
+    fn book_keeps_recorded_assessments_and_displays_current_source_without_hash_checks() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path();
+        for dir in ["md", "evidence", "src"] {
+            fs::create_dir_all(root.join(dir)).unwrap();
+        }
+        fs::write(root.join("book.toml"), "[book]\nsrc='md'\n").unwrap();
+        let requirements = ":::{req} ready\nA current requirement.\n:::\n";
+        fs::write(root.join("md/rules.md"), requirements).unwrap();
+        fs::write(
+            root.join("src/lib.rs"),
+            "// {impl}`rules.ready`\nfn work() { let current = 42; }\n",
+        )
+        .unwrap();
+        let record = json!({
+            "requirement": "An old requirement.", "determination": true,
+            "rationale": "An old assessment.", "format_version": 99,
+            "review_version": "unknown version", "dependencies": "not a dependency list",
+            "inputs": [{"file": "src/lib.rs", "item": "fn[work]", "hash": "old hash"}]
+        });
+        let path = root.join("evidence/rules.ready.json");
+        fs::write(&path, record.to_string()).unwrap();
+        let before = fs::read(&path).unwrap();
+        let mut book = Book::new();
+        book.push_item(Chapter::new(
+            "Rules",
+            requirements.into(),
+            "rules.md",
+            vec![],
+        ));
+        preprocess_book(&mut book, root).unwrap();
+        let detail = book
+            .chapters()
+            .find(|chapter| chapter.name == "rules.ready")
+            .unwrap();
+        for text in [
+            "Recorded true",
+            "A current requirement.",
+            "An old assessment.",
+            "let current = 42;",
+        ] {
+            assert!(detail.content.contains(text), "{text}: {}", detail.content);
+        }
+        for absent in [
+            "input is stale",
+            "recorded hash no longer matches",
+            "Validation findings",
+            "invalid evidence format",
+        ] {
+            assert!(!detail.content.contains(absent), "{absent}");
+        }
+        assert_eq!(fs::read(&path).unwrap(), before);
+        assert!(
+            !crate::evidence::validate_repository(root)
+                .unwrap()
+                .errors
+                .is_empty()
+        );
+    }
+
+    // {test}`requirements.index.render_only`
+    // {test}`requirements.index.state`
+    // {test}`requirements.index.invalid_detail`
+    #[test]
+    fn stored_records_distinguish_missing_and_unreadable_without_validating_dependencies() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path();
+        let missing = super::LoadedDetailEvidence::load_record_path(root, "absent.json");
+        assert_eq!(missing.state().label(), "Missing");
+        for (record, diagnostic) in [
+            ("invalid JSON", "invalid JSON"),
+            ("{}", "missing determination"),
+            ("{\"determination\": 42}", "unreadable determination"),
+        ] {
+            fs::write(root.join("record.json"), record).unwrap();
+            let loaded = super::LoadedDetailEvidence::load_record_path(root, "record.json");
+            assert_eq!(loaded.state().label(), "Unreadable");
+            assert!(
+                loaded
+                    .errors()
+                    .iter()
+                    .any(|error| error.contains(diagnostic))
+            );
+            assert_eq!(loaded.record.as_deref(), Some(record));
+        }
+        fs::create_dir(root.join("unreadable.json")).unwrap();
+        let unreadable = super::LoadedDetailEvidence::load_record_path(root, "unreadable.json");
+        assert_eq!(unreadable.state().label(), "Unreadable");
+        assert!(
+            unreadable
+                .errors()
+                .iter()
+                .any(|error| error.contains("cannot read evidence"))
+        );
+    }
+    // {test}`requirements.index.invalid_detail`
+    // {test}`requirements.index.render_only`
+    #[test]
+    fn broken_source_inputs_leave_the_recorded_review_and_other_inputs_browsable() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path();
+        for dir in ["md", "evidence", "src", "src/directory.rs"] {
+            fs::create_dir_all(root.join(dir)).unwrap();
+        }
+        fs::write(root.join("book.toml"), "[book]\nsrc='md'\n").unwrap();
+        let source = ":::{req} ready\nCurrent requirement.\n:::\n";
+        fs::write(root.join("md/rules.md"), source).unwrap();
+        fs::write(
+            root.join("src/good.rs"),
+            "fn good() { let visible = 42; }\n",
+        )
+        .unwrap();
+        fs::write(root.join("src/broken.rs"), "fn broken( {").unwrap();
+        let inputs = serde_json::json!([
+            {"file":"src/missing.rs","item":"fn[missing]","hash":"old"},
+            {"file":"src/directory.rs","item":"","hash":"old"},
+            {"file":"src/broken.rs","item":"fn[broken]","hash":"old"},
+            {"file":"src/good.rs","item":"fn[missing]","hash":"old"},
+            {"file":"src/good.rs","item":"fn[good]","hash":"old"}
+        ]);
+        fs::write(root.join("evidence/rules.ready.json"), serde_json::json!({"determination":true,"rationale":"Recorded rationale survives.","inputs":inputs}).to_string()).unwrap();
+        let mut book = Book::new();
+        book.push_item(Chapter::new("Rules", source.into(), "rules.md", vec![]));
+        preprocess_book(&mut book, root).unwrap();
+        let page = book
+            .chapters()
+            .find(|chapter| chapter.name == "rules.ready")
+            .unwrap();
+        assert!(page.content.contains("Current requirement."));
+        assert!(page.content.contains("Recorded rationale survives."));
+        assert!(page.content.contains("let visible = 42;"));
+        assert_eq!(page.content.matches("Unresolved selector:").count(), 4);
+        for (input, diagnostic) in [
+            (1, "src/missing.rs"),
+            (2, "src/directory.rs"),
+            (3, "syntax error"),
+            (4, "no outline node matches"),
+        ] {
+            let detail = page
+                .content
+                .split(&format!("id=\"habeas-input-{input}\""))
+                .nth(1)
+                .unwrap()
+                .split("</details>")
+                .next()
+                .unwrap();
+            assert!(detail.contains(diagnostic), "Input {input}: {detail}");
+        }
+        assert!(!page.content.contains("Validation findings"));
+        assert!(!page.content.contains("input is stale"));
+    }
+
+    // {test}`requirements.index.state`
+    // {test}`requirements.index.invalid_detail`
+    // {test}`requirements.index.render_only`
+    #[test]
+    fn unreadable_record_states_reach_the_index_badges_and_rendering_diagnostics() {
+        for (record, diagnostic) in [
+            (Some("not JSON"), "invalid JSON"),
+            (Some("{\"determination\":42}"), "unreadable determination"),
+            (None, "cannot read evidence"),
+        ] {
+            let temp = TempDir::new().unwrap();
+            let root = temp.path();
+            for dir in ["md", "evidence"] {
+                fs::create_dir_all(root.join(dir)).unwrap();
+            }
+            fs::write(root.join("book.toml"), "[book]\nsrc='md'\n").unwrap();
+            let source = ":::{req} ready\nCurrent requirement.\n:::\n";
+            fs::write(root.join("md/rules.md"), source).unwrap();
+            let path = root.join("evidence/rules.ready.json");
+            if let Some(record) = record {
+                fs::write(&path, record).unwrap();
+            } else {
+                fs::create_dir(&path).unwrap();
+            }
+            let mut book = Book::new();
+            book.push_item(Chapter::new("Rules", source.into(), "rules.md", vec![]));
+            preprocess_book(&mut book, root).unwrap();
+            let index = book
+                .chapters()
+                .find(|chapter| chapter.name == "Requirements index")
+                .unwrap();
+            let row = index
+                .content
+                .lines()
+                .find(|line| line.contains("[`rules.ready`]"))
+                .unwrap();
+            assert_eq!(row.split('|').nth(2).unwrap().trim(), "Unreadable");
+            let page = book
+                .chapters()
+                .find(|chapter| chapter.name == "rules.ready")
+                .unwrap();
+            assert!(page.content.contains("alt=\"evidence Unreadable\""));
+            assert!(page.content.contains("Current requirement."));
+            assert!(page.content.contains("## Rendering diagnostics"));
+            assert!(page.content.contains(diagnostic));
+            assert!(page.content.contains("No rationale recorded."));
+            assert!(page.content.contains("No inputs recorded."));
+            assert!(!page.content.contains("Validation findings"));
+            if record == Some("not JSON") {
+                assert!(page.content.contains("```json\nnot JSON\n```"));
+            }
+        }
     }
 }

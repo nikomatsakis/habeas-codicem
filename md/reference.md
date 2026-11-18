@@ -958,37 +958,33 @@ reporting wrapper conflicts. Both `habeas status` and the validation test check
 this setup without running tests or requiring earlier coverage. Effective
 profile inheritance and wrapper precedence are checked before each coverage run.
 
-The requirements index automatically links to a generated **Coverage gaps**
-subchapter. No coverage source chapter or directive is needed. The compact
-overview focuses on unsatisfied file and function obligations: click a file to
-expand its gaps, and expand the documented-gaps section to read accepted
-explanations. Directory summaries show the minimum measured coverage across
-all their current first-party Rust files, including passing files hidden from
-the gaps overview. The CI verdict uses the same evaluator as
-`habeas coverage-check`; unavailable measurements and invalid reviews remain
-visible failures. Saved artifacts retain individual process measurements and
-run provenance; the generated pages show coverage gaps and their source notes.
+The requirements index automatically links to a generated **Documented coverage
+gaps** subchapter. No coverage source chapter or directive is needed. Browse the
+source annotations by directory and click a file to expand its explanations and
+last recorded reviews. All proposals are included, even when a review is missing
+or rejected, or measured coverage already passes. The book trusts these records;
+`habeas status` and `habeas author` check annotations and reviews.
 
-The index combines each test's latest started attempt within the most recently
+`habeas coverage-check` combines each test's latest started attempt within the most recently
 used instrumented configuration. Filtered runs update only their selected tests.
 Failed and interrupted attempts remain visible; missing profiles cannot fall
 back to older successful attempts. Source and build-input changes invalidate the
 workspace's combined coverage. Other build configurations and older attempts
 remain saved with their captured source for historical report reconstruction. Coverage
 percentages count unique instrumented file-and-line locations, including child
-processes; process percentages are not averaged. The view does not establish
+processes; process percentages are not averaged. Saved selection does not establish
 that all current tests were measured.
 
 Profiles, normalized reports, source snapshots and matching coverage maps live
 under `habeas/coverage/` in Cargo's target directory and are disposable build
-output. Do not commit them. `cargo clean` removes them. Building the book reads
-these records and never runs tests or collects profiles.
+output. Do not commit them. `cargo clean` removes them. Building the book does not read
+these records, run tests, or collect profiles.
 
 Instrumented compilation uses a separate cache under
 `habeas/instrumented/` in that target directory, including when Cargo normally
 uses a custom build directory. Test processes retain the caller's Cargo build
 environment. When overriding the target directory for a run, use the same
-`CARGO_TARGET_DIR` when building the book.
+`CARGO_TARGET_DIR` when checking saved coverage.
 
 ### Checking coverage after the suite
 

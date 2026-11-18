@@ -471,6 +471,7 @@ fn fixme_does_not_hide_stale_inputs_or_uncovered_references() {
 // {test}`requirements.cli.status`
 // {test}`requirements.cli.fixme_summary`
 // {test}`requirements.cli.info`
+// {test}`requirements.cli.shared_status_rendering`
 // {test}`requirements.index.state`
 // {test}`requirements.index.detail_format`
 // {test}`requirements.index.detail_pages`
@@ -486,10 +487,22 @@ fn valid_fixme_remains_visible_in_status_info_and_book() {
         assert!(status.contains("rust-lang/rust#123"));
         assert!(status.contains("affects 1 judgment"), "{status}");
         assert!(!status.contains("## Validation findings"));
+        if all {
+            let row = status
+                .lines()
+                .find(|line| line.starts_with("| `requirements.timeout`"))
+                .unwrap();
+            assert_eq!(row.split('|').nth(2).unwrap().trim(), "FIXME");
+        }
     }
     let verbose = habeas::status_markdown_with_options(temp.path(), false, None, true).unwrap();
     assert!(verbose.contains("requirements.timeout"), "{verbose}");
     assert!(verbose.contains("example"), "{verbose}");
+    let row = verbose
+        .lines()
+        .find(|line| line.starts_with("| `requirements.timeout`"))
+        .unwrap();
+    assert_eq!(row.split('|').nth(2).unwrap().trim(), "FIXME");
     let info = habeas::info_markdown(temp.path(), "requirements.timeout").unwrap();
     assert!(info.contains("## FIXME references"));
     assert!(info.contains("rust-lang/rust#123"));
@@ -521,7 +534,9 @@ fn valid_fixme_remains_visible_in_status_info_and_book() {
             _ => None,
         })
         .unwrap();
-    assert!(detail.content.contains("evidence-FIXME"));
+    assert!(detail.content.contains("evidence-Recorded_FIXME"));
+    assert!(detail.content.contains("alt=\"evidence Recorded FIXME\""));
+    assert!(detail.content.contains("example/io#125"));
     assert!(detail.content.contains("## FIXME references"));
     assert!(detail.content.contains("rust-lang/rust#123"));
 }
