@@ -65,7 +65,7 @@ policy rather than requiring every SDK graph to contain requirements.
 | Inspect an outline (`outline`) | A resource identity; returns selectable items, kinds, names, and ancestry. | Discovery. Read a selected item to make its contents an input. |
 | Text search (`ripgrep`) | A regex, search scope, and context-window options; returns matching nodes and excerpts. | Locates candidate nodes. Excerpts do not count as a full read of a matching node. |
 | Structural search (`ast_grep`) | A structural pattern or configured query and resource/language scope; returns matching nodes and excerpts. | Locates syntax-related candidates. Read the nodes on which the conclusion relies. |
-| Discover relationships (`references`) | In Habeas, a definition selection and reference roles; returns matching references and source selectors. Generic graph relationships come from `outgoing_edges`. | Discovery results do not read target contents. Explicit context successor selections record the outgoing-edge snapshot. |
+| Discover relationships (`references`) | In Habeas, a definition selection and reference roles; returns matching references and source selectors. Generic graph relationships come from `outgoing_edges`. | Discovery results do not read target contents. Explicit context successor selections record the source, requested label, and target-set fingerprint. |
 | Inspect an external issue (`github`) | Habeas accepts a GitHub issue identity and returns issue data. | This supplementary Habeas tool does not record evidence inputs. When an issue state supports a judgment, expose it as a graph node and read it through the tracked context; see [Habeas external nodes](../habeas.md#nodes-can-refer-to-external-state). |
 | Continue a paged result (`next_page`) | An opaque continuation token; returns another page of the original operation. | Keeps the underlying operation's semantics. Only delivered content pages contribute node reads. |
 
@@ -73,6 +73,12 @@ Habeas can constrain searches by the definitions and reference roles they relate
 to. Those filters are application policy; they do not change the distinction
 between finding a node and reading it. The exact Habeas argument forms are
 specified in [Authoring evidence](../../authoring.md).
+
+The SDK's optional `ToolAgent` adapter exposes `outgoing_edges` with a typed
+label argument. Its edge labels implement `DeserializeOwned`, `JsonSchema`,
+and `PartialEq` so that the adapter can describe, decode, and track that
+argument. These bounds belong to the adapter; ordinary graphs keep their
+application-defined label types.
 
 A structured submission tool is also supplied to each agent call, but is not an
 inspection tool. Its SDK default name is `submit_result`; Habeas retains the

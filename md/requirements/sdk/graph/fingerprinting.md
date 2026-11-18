@@ -89,9 +89,12 @@ The fingerprint describes the observation the procedure examines, even if the
 underlying resource changes immediately afterward. Hashing a second read could
 associate one observation's contents with another observation's fingerprint.
 
-`Graph::outgoing_edges` returns a snapshot directly because its edge selection
-has a different type and fingerprinting rules from `Self::NodeContent`. Its
-implementation computes the selection fingerprint from the returned edges; `fingerprint` is specifically for node contents.
+For `Graph::outgoing_edges(source, label)`, the SDK pairs the returned target IDs
+with a fingerprint of their set of `NodePath`s. It sorts and deduplicates the
+paths and hashes an unambiguous encoding under a versioned scheme, including
+when the set is empty. Changing order, duplicate edges, or another label's
+relationships leaves this fingerprint unchanged. Reading target contents is a
+separate observation; `fingerprint` is specifically for node contents.
 
 :::{req} snapshot
 ```rust,ignore
@@ -105,8 +108,9 @@ pub struct Snapshot<T> {
 
 This type lives in `habeas_sdk::graph`. For node reads, the SDK constructs it by
 passing the identity and the contents returned by `Graph::node_content` to
-`Fingerprinting::fingerprint`, without another read. An operation returning a
-snapshot directly supplies the fingerprint of its returned observation.
+`Fingerprinting::fingerprint`, without another read. For a label-specific edge
+query, the SDK constructs the snapshot from the returned targets and their
+target-set fingerprint, without another query.
 `T` needs no filesystem path or source span.
 :::
 

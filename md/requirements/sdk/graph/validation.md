@@ -96,17 +96,17 @@ let test_edges = ctx.successors(&HabeasEdgeLabel::Tests)?;
 pub fn node_id(&self) -> &D::NodeId;
 
 /// Select outgoing edges by label, preserving their order and duplicates.
-/// Record the complete outgoing-edge snapshot even when nothing matches.
+/// Record this label's target-set fingerprint even when nothing matches.
 /// Selecting edges does not read or validate their targets.
 pub fn successors(
     &self,
     label: &D::EdgeLabel,
-) -> Result<Vec<Edge<D::NodeId, D::EdgeLabel>>, D::Error>
+) -> Result<Vec<D::NodeId>, D::Error>
 where
     D::EdgeLabel: PartialEq;
 ```
 
-Labels match by equality. A change to the recorded selection makes prior
+Labels match by equality. A change to the recorded target set makes prior
 evidence stale, including adding an edge to an empty selection. Target contents
 become dependencies only through explicit tracked reads or agent insertions.
 An edge neither supplies nor requires a positive validation judgment for its target.

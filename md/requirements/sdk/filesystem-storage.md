@@ -27,22 +27,24 @@ impl FileEvidenceStorage {
     pub fn new(root: impl Into<PathBuf>) -> Self;
 
     /// Deserialize a record, or return None if its file is missing.
-    pub async fn load<N, M>(
+    pub async fn load<N, M, L>(
         &self,
         path: &NodePath,
-    ) -> Result<Option<Record<N, M>>, FileStorageError>
+    ) -> Result<Option<Record<N, M, L>>, FileStorageError>
     where
         N: DeserializeOwned + Send,
+        L: DeserializeOwned + Send,
         M: DeserializeOwned + Send;
 
     /// Atomically replace the record at this node path.
-    pub async fn store<N, M>(
+    pub async fn store<N, M, L>(
         &self,
         path: &NodePath,
-        record: &Record<N, M>,
+        record: &Record<N, M, L>,
     ) -> Result<(), FileStorageError>
     where
         N: Serialize + Sync,
+        L: Serialize + Sync,
         M: Serialize + Sync;
 }
 ```
@@ -88,9 +90,9 @@ does not enumerate records or apply an evidence-retention policy.
 ## Load and replace records
 
 :::{req} load
-`load` deserializes the selected JSON file as `Record<N, M>`, preserving
-SDK-owned fields. Node identities and application metadata round-trip through
-their Serde implementations.
+`load` deserializes the selected JSON file as `Record<N, M, L>`, preserving
+SDK-owned fields. Node identities, edge labels, and application metadata
+round-trip through their Serde implementations.
 
 | File state | Result |
 | --- | --- |

@@ -160,8 +160,8 @@ Awaiting with a configured agent resolves these selections in call order:
 | `current_node_contents()` | The node identified by `ValidationContext::node_id`. |
 | `successors_content(label)` | Targets of edges whose labels equal `label`, in returned edge order, including duplicate targets. |
 
-Each successful successor selection records the complete outgoing-edge
-snapshot, even when nothing matches. Only matching targets have their contents
+Each successful successor selection records its source, label, and target-set
+fingerprint, even when nothing matches. Only selected targets have their contents
 resolved. Each delivered node is recorded with its supplied snapshot's
 fingerprint under {cite}`requirements.sdk.graph.agent-calls.author_procedure`.
 Input-resolution failures return `ValidationError::Graph`.

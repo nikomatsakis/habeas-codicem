@@ -17,7 +17,7 @@ pub trait EvidenceStorage: Graph {
         &'a self,
         node: &'a Self::NodeId,
     ) -> impl Future<Output = Result<
-        Option<Record<Self::NodeId, Self::JudgmentMetadata>>,
+        Option<Record<Self::NodeId, Self::JudgmentMetadata, Self::EdgeLabel>>,
         Self::Error,
     >> + Send + 'a;
 
@@ -26,7 +26,7 @@ pub trait EvidenceStorage: Graph {
     fn store_evidence<'a>(
         &'a self,
         node: &'a Self::NodeId,
-        record: &'a Record<Self::NodeId, Self::JudgmentMetadata>,
+        record: &'a Record<Self::NodeId, Self::JudgmentMetadata, Self::EdgeLabel>,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send + 'a;
 }
 ```
@@ -64,11 +64,11 @@ we change the question the procedure asks.
 :::{req} record
 ```rust,ignore
 /// The completed validation of one node, defined in habeas_sdk::graph.
-pub struct Record<N, M> {
+pub struct Record<N, M, L = ()> {
     /// Application-chosen version of the validation rules.
     pub procedure: String,
     /// Observations captured by the SDK; the callback need not assemble these.
-    pub dependencies: Vec<Dependency<N>>,
+    pub dependencies: Vec<Dependency<N, L>>,
     /// Preserve the result, rationale, and application metadata as returned.
     pub output: Judgment<M>,
 }
@@ -98,8 +98,8 @@ let implementation = ctx.read(&implementation_id)?;
 
 The procedure receives the content, while the context remembers the node
 identity and its fingerprint, computed through `Fingerprinting::fingerprint`.
-The context records an outgoing-edge snapshot when the callback or an awaited
-agent builder explicitly requests that selection. Merely creating a context
+The context records the source, label, and target-set fingerprint when the
+callback or an awaited agent builder explicitly requests that selection. Merely creating a context
 does not read the subject or all its successors.
 A failed read returns an error without inventing a successful observation.
 Repeating an identical observation adds no information. Reading the same identity with two different
@@ -109,9 +109,9 @@ fingerprints preserves both observations: CI must not silently forget one.
 ```rust,ignore
 /// Observations supporting a judgment, defined in habeas_sdk::graph.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Dependency<N> {
+pub enum Dependency<N, L = ()> {
     Node(N, Fingerprint),
-    OutgoingEdges(N, Fingerprint),
+    OutgoingEdges(N, L, Fingerprint),
 }
 ```
 :::
