@@ -24,10 +24,10 @@ hi
 The section is named `section[Authentication]`. Its paragraph and fenced blocks
 need their own outline identities so that a review can select one explanation
 without selecting the entire section. Paragraphs are anonymous children, as are
-the fenced blocks in this proposal. Each uses the shared content-derived
+the fenced blocks. Each uses the shared content-derived
 identity scheme rather than a line number.
 
-The proposed outline has this shape; the letters stand in for hash prefixes:
+The outline has this shape; the letters stand in for hash prefixes:
 
 ```text
 section[Authentication]
@@ -39,10 +39,8 @@ section[Authentication]
   block@f                     ```text ... ```
 ```
 
-The `habeas-language-markdown` crate currently outlines sections only. The
-paragraph and block contracts below describe the extension being reviewed;
-they are not yet implemented. The default registry selects this language for
-`.md` and `.markdown` resources.
+The default registry selects `habeas-language-markdown` for `.md` and
+`.markdown` resources.
 
 ## Paragraphs are selectable inputs
 
@@ -76,6 +74,8 @@ Colon-fenced directives and fenced code blocks have anonymous `block` nodes
 with selectors under {cite}`requirements.references.outline_selectors`.
 A block contains its opening fence, body, and closing fence when present.
 Its parent is the nearest enclosing outline container.
+An unclosed colon fence retains its block through the end of the enclosing
+file or directive body, excluding the enclosing directive's closing fence.
 :::
 
 :::{req} fenced_blocks.contents
@@ -121,14 +121,15 @@ The existing requirements for sections and comment handling live in
 [References and Rust items](../../references.md) pending the
 [requirements reorganization](../requirements-map.md).
 
-## Fence behavior to settle before implementation
+## Incomplete fences and directive syntax
 
-For an unclosed colon fence, the proposed behavior is to retain a block through
-the end of its enclosing parsing context. Habeas can still diagnose a missing
-requirement terminator independently. The alternative is to reject the outline
-entirely; the requirements do not yet settle this choice.
+An unfinished directive remains selectable while editing. At file scope, its
+block extends through the end of the file; inside another directive, it extends
+through that directive's body, stopping before the outer closing fence. A
+heading within the body does not terminate the block. Habeas can still diagnose
+a missing requirement terminator independently.
 
-This proposal uses MyST's colon nesting convention, rather than implementing
+The outline uses MyST's colon nesting convention, rather than implementing
 all MyST directive semantics. Backtick fences, including those whose info string
-starts with `{note}` or another directive name, would remain literal blocks in
-this increment. Interpreting backtick directives would be a separate extension.
+starts with `{note}` or another directive name, remain literal blocks.
+Interpreting backtick directives would be a separate extension.
