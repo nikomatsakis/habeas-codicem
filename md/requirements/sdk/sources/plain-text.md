@@ -7,9 +7,10 @@ Tokens expire.
 Reject expired tokens.
 ```
 
-Each nonblank line is an anonymous `line` item, addressed as
-`line@<identity-hash-prefix>`. The prefix is derived from its content, not its
-line number. Identical lines are interchangeable for selection.
+Each nonblank line is an anonymous `line` item. In this example, a review can
+select “Reject expired tokens.” independently of “Tokens expire.” Its address
+is `line@<identity-hash-prefix>`, with the prefix derived from contents rather
+than a line number. Identical lines are interchangeable for selection.
 
 This fallback lives in the SDK's outline module. It has no tree-sitter grammar
 and is not an implementation of the grammar-bearing `LanguageProvider` trait.

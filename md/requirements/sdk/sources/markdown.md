@@ -52,12 +52,11 @@ lists, quotations, and directive bodies. Their outline parent is the nearest
 enclosing outline container; syntax that has no outline node is transparent.
 
 :::{req} paragraphs
-The Markdown outline MUST expose each prose paragraph as an anonymous
-`paragraph` node under its nearest enclosing outline container, including
-paragraphs before the first heading and inside list items, quotations, and
-Markdown directive bodies. Paragraphs MUST use the shared anonymous-selector
-rules under {cite}`requirements.references.outline_selectors`. Heading text
-and literal code-block contents MUST NOT create paragraph nodes.
+Each prose paragraph has an anonymous `paragraph` node under its nearest
+enclosing outline container. This includes paragraphs before the first heading
+and inside list items, quotations, and directive bodies. Their selectors follow
+{cite}`requirements.references.outline_selectors`. Heading text and literal
+code-block contents create no paragraph nodes.
 :::
 
 ## Fences create containers
@@ -73,17 +72,16 @@ it does not create a paragraph node. A code example containing `:::{req}` must
 remain an example, rather than introduce a nested requirement container.
 
 :::{req} fenced_blocks
-The Markdown outline MUST expose colon-fenced directive containers and fenced
-code blocks as anonymous `block` nodes using the shared anonymous-selector
-rules under {cite}`requirements.references.outline_selectors`. A block MUST
-include its opening fence, body, and closing fence when present, and MUST be
-nested under its nearest enclosing outline container.
+Colon-fenced directives and fenced code blocks have anonymous `block` nodes
+with selectors under {cite}`requirements.references.outline_selectors`.
+A block contains its opening fence, body, and closing fence when present.
+Its parent is the nearest enclosing outline container.
 :::
 
 :::{req} fenced_blocks.contents
-Markdown content in colon-fenced directive bodies MUST be outlined
-recursively. Contents of ordinary fenced code blocks MUST remain literal
-and MUST NOT create nested paragraph or directive nodes.
+Colon-fenced directive bodies are outlined recursively as Markdown. Ordinary
+fenced code-block contents remain literal, creating no nested paragraph or
+directive nodes.
 :::
 
 Colon fences use at least three colons, including longer runs such as `::::::`.
@@ -94,12 +92,12 @@ block cannot end it, and apparent directives inside it remain literal.
 [MyST colon-fence rules](https://myst-parser.readthedocs.io/en/stable/syntax/optional.html#code-fences-using-colons).
 
 :::{req} fence_precedence
-Markdown outline parsing MUST recognize colon directive fences of three or
-more colons and support nested directives with shorter inner fences. A
-colon-only closing fence MUST have at least as many colons as the opener it
-closes. Ordinary backtick and tilde code fences MUST follow CommonMark fence
-rules and shield their contents from colon-directive recognition. Fence-like
-text in inline code or raw HTML MUST NOT introduce outline directive blocks.
+Colon directive fences use three or more colons and support nested directives
+with shorter inner fences. A colon-only closing fence has at least as many
+colons as its opener.
+Backtick and tilde code fences follow CommonMark rules and shield their contents
+from colon-directive recognition. Fence-like text in inline code or raw HTML
+introduces no outline directive blocks.
 :::
 
 These outline boundaries supply the containers needed for citation ownership.
@@ -119,7 +117,7 @@ comment blocks.
 
 The [shared source machinery](../sources.md) defines selector encoding, duplicate
 names, and the distinction between node contents and structural fingerprints.
-Existing normative contracts for sections and comment handling remain in
+The existing requirements for sections and comment handling live in
 [References and Rust items](../../references.md) pending the
 [requirements reorganization](../requirements-map.md).
 
@@ -128,7 +126,7 @@ Existing normative contracts for sections and comment handling remain in
 For an unclosed colon fence, the proposed behavior is to retain a block through
 the end of its enclosing parsing context. Habeas can still diagnose a missing
 requirement terminator independently. The alternative is to reject the outline
-entirely; this choice is not yet part of the normative contract.
+entirely; the requirements do not yet settle this choice.
 
 This proposal uses MyST's colon nesting convention, rather than implementing
 all MyST directive semantics. Backtick fences, including those whose info string

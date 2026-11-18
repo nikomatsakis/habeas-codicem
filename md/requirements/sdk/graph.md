@@ -16,111 +16,123 @@ Reading a node does not validate it.
 
 ```rust,ignore
 pub trait Graph: Send + Sync {
+    /// The *identifier* identifies a particular node in the graph.
     type NodeId: Clone + Eq + Send + Sync;
+
+    /// The *contents* of a node defines what is given to a validator
+    /// when the node is read.
     type NodeContent: Send + Sync;
+
+    /// The *label* between edges defines the kind of verification relationship
+    /// between two nodes.
     type EdgeLabel: Clone + Send + Sync;
+
+    /// User-defined errors that can occur when fetching node content or performing
+    /// other operations.
     type Error: Send;
 
-    // Outgoing edges and judgment metadata are specified separately.
+    /// Fetch the content of a node.
     fn node_content(&self, node: &Self::NodeId) -> Result<Self::NodeContent, Self::Error>;
+
+    // ... additional methods defined below ...
 }
 ```
+:::
 
-The SDK MUST leave the domain meaning of node identities, edges, and contents
-to the consumer.
+## Edges between nodes
+
+Edges in the application's verification graph define *root verification relationships* between nodes.
+
+:::{req} outgoing_edges
+The `habeas_sdk::graph::Graph` trait includes a method for obtaining a node's outgoing edges with a given label:
+
+```rust,ignore
+pub trait Graph: Send + Sync {
+    // ...
+
+    /// Returns the outgoing edges from `source_node` with the given `label`.
+    fn outgoing_edges(
+        &self,
+        source_node: &Self::NodeId,
+        label: Self::EdgeLabel,
+    ) -> Result<Vec<Self::NodeId>, Self::Error>;
+}
+```
 :::
 
 
-## Give nodes a stable path
+:::{example} habeas-test
+{cite}`requirements.sdk.graph.outgoing_edges`
 
-`NodeId` can remain an application-defined enum or other structured type.
-`Graph::node_path` gives the SDK a standard address for storage, links, and
-diagnostics without requiring it to understand that structure. For example,
-a requirement might have the path `["requirements", "auth", "expiration"]`,
-while a function has `["source", "src/auth.rs", "fn[check_token]"]`.
-These are logical segments, not filesystem path components.
-
-:::{req} node_path
-`habeas_sdk::graph` MUST expose the following path type and graph operation:
+Habeas defines edges like `Impl` and `Test` that respectively indicate the code which implements and tests a given requirement `R`. Its `EdgeLabel` type therefore might look something like:
 
 ```rust,ignore
+enum HabeasEdge {
+    Impl,
+    Test,
+    // ...
+}
+```
+
+When outgoing edges of type `Test` are requested from a given requirement `R`, the Habeas impl will look for `#[test]` functions tagged with `R`:
+
+```rust,ignore
+// {test}`R`
+#[test]
+fn test_something() {
+    /* ... */
+}
+```
+:::
+
+## Give nodes a stable path
+
+The `NodeId` type that identifies a particular node in the graph is defined by the application domain, which allows the application domain to use a precise and well-typed definition. However some parts of the SDK want to have a transparent structure that they can use for diagnostics and other purposes.
+
+:::{req} node_path_struct
+The `habeas_sdk::graph` MUST expose a `NodePath` type defined as follows
+
+```rust
+/// Defines the logical structure of a node-id.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct NodePath {
     pub segments: Vec<String>,
 }
+```
+:::
+
+The application provides a method that converts from a `NodeId` to a `NodePath`:
+
+:::{req} node_path_method
+The `habeas_sdk::graph::Graph` trait MUST include the following method:
+```rust,ignore
+
 
 pub trait Graph: Send + Sync {
     // ...
+
+    /// Convert a `NodeId` into its `NodePath`.
+    ///
+    /// The relationship between a `NodeId` and its `NodePath` must be 1:1.
+    /// That is: converting the same `NodeId` twice gives the same `NodePath` each time.
+    /// And distinct `NodeId`s get distinct `NodePath`s.
+    /// The mapping stays stable across runs and changes to node contents.
     fn node_path(&self, node: &Self::NodeId) -> NodePath;
 }
 ```
-
-Within a domain, equal node IDs MUST yield equal paths, and distinct node IDs
-MUST yield distinct paths. The mapping MUST remain stable across runs and
-changes to node contents. Path equality MUST compare the ordered sequence of
-segments exactly, preserving empty segments, segment boundaries, and Unicode
-text without normalization. An empty sequence MUST be a valid path.
-The SDK MUST NOT require conversion from `NodePath` back to `NodeId`.
 :::
 
-For example, `["source", "src/auth.rs"]` and `["source", "src", "auth.rs"]`
-are different paths. The [filesystem storage helper](filesystem-storage.md)
-encodes these segments into safe filesystem components. The application still
-supplies serialization for any node IDs stored inside an evidence record.
+:::{example} hierarchical-paths
+{cite}`requirements.sdk.graph.node_path_method`
 
+For example, in the Habeas domain, one type of `NodeId` is a *requirement*, identified by a dotted path like `a.b.c`. Habeas might define its `NodeId` types as an enum like so:
 
-The SDK defines an edge's shape. The application supplies its label, including
-any relationship metadata. Its source is implicit in the outgoing-edge lookup;
-its target identifies another node whose contents can be selected as inputs to
-validation.
-
-:::{req} edges
-`habeas_sdk::graph` MUST expose the following edge structure:
-
-```rust,ignore
-#[derive(Clone, Debug)]
-pub struct Edge<N, L> {
-    pub label: L,
-    pub target: N,
+```rust
+pub enum HabeasNodeId {
+    Requirement(Vec<String>),
+    // ... additional variants for functions, etc ...
 }
 ```
 
-Graph edges MUST use `Edge<Self::NodeId, Self::EdgeLabel>`. The source MUST be
-implicit in the node supplied to `outgoing_edges`; the target MUST be available
-directly in `edge.target`. The graph MUST NOT require a separate endpoint
-resolution operation. The consumer MUST define the edge label type and its
-meaning, including any label metadata.
+and then define `node_path` to convert that into a path like `["requirement", "a", "b", "c"]`.
 :::
-
-
-For our expiration requirement, the outgoing edges select `check_token` with
-an `Implements` label and `expired_token_is_rejected` with a `Tests` label.
-The graph answers this lookup without enumerating unrelated nodes.
-
-:::{req} outgoing_edges
-`habeas_sdk::graph` MUST expose the following interface:
-
-```rust,ignore
-pub trait Graph: Send + Sync {
-    // ...
-
-    fn outgoing_edges(
-        &self,
-        node: &Self::NodeId,
-    ) -> Result<Snapshot<Vec<Edge<Self::NodeId, Self::EdgeLabel>>>, Self::Error>;
-}
-```
-
-The SDK MUST support node validation and reachable-node traversal using
-caller-supplied starting nodes and per-node outgoing-edge lookup, without
-requiring enumeration or materialization of all graph nodes or edges.
-Every returned edge MUST be interpreted as originating at the requested node.
-The returned snapshot MUST fingerprint the complete outgoing-edge selection,
-including an empty selection, edge order and multiplicity, target identities,
-and the labels and metadata available to validation.
-:::
-
-
-A `Snapshot` pairs a returned value with its fingerprint. The
-[Fingerprinting chapter](graph/fingerprinting.md) explains how the SDK checks these
-observations and how the application implements `Fingerprinting`.

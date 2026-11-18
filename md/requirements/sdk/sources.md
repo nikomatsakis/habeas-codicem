@@ -71,24 +71,26 @@ filename or source span. When we parse text, the resulting outline spans refer
 to that particular text snapshot, wherever the text came from.
 
 :::{req} source_addresses
-`habeas_sdk::resource` MUST define the following public address types:
-
 ```rust,ignore
+// Public address types in habeas_sdk::resource.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ResourceId {
+    /// Namespace interpreted by the application, such as "repo".
     pub scheme: String,
+    /// Address within that namespace, such as "src/auth.rs".
     pub location: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OutlineId {
     pub resource: ResourceId,
+    /// Item within the resource, such as "fn[check_token]".
     pub selector: String,
 }
 ```
 
-The SDK MUST leave resource resolution to the consumer. These structures do not
-prescribe URI parsing or resource fetching.
+The application defines resource resolution, including any URI parsing or
+resource fetching.
 :::
 
 ## The application supplies a source provider
@@ -98,17 +100,20 @@ For a checkout, listing resources might return `src/auth.rs` and
 provider could expose the same logical resources without creating local files.
 The application chooses the provider and the set of resources it exposes.
 
-The `SourceProvider` interface starts with those two operations:
+The `SourceProvider` interface starts with listing and reading. This sketch
+shows their roles; names and types used only in the sketch are illustrative:
 
 ```rust,ignore
 pub trait SourceProvider {
     type Error;
 
+    /// Enumerate resources in the requested scope, including nonlocal resources.
     async fn list(
         &self,
         scope: &SourceScope,
     ) -> Result<Vec<ResourceId>, Self::Error>;
 
+    /// Read one resource's bytes. An empty resource is a successful read.
     async fn read(
         &self,
         id: &ResourceId,
@@ -119,6 +124,7 @@ pub trait SourceProvider {
 
 pub struct SourceFile {
     pub bytes: Arc<[u8]>,
+    /// Explicit language selection, or None to select by resource name.
     pub language: Option<LanguageId>,
 }
 ```
@@ -129,14 +135,14 @@ there is no explicit identifier, the registry can select a language using the
 resource name. The source provider does not need to implement a grammar.
 
 :::{req} provider
-The SDK MUST expose a source-provider interface through which an application
-can enumerate resource identities within a requested scope and read a resource's
-bytes. The interface MUST support resources that have no local filesystem path.
+The SDK exposes a source-provider interface for enumerating resource identities
+within a requested scope and reading resource bytes. Resources need no local
+filesystem path.
 :::
 
 :::{req} provider.errors
-The source-provider interface MUST distinguish listing and reading failures
-from successful empty listings and successful reads of empty resources.
+Listing and reading failures are errors, distinct from successful empty
+listings and successful reads of empty resources.
 :::
 
 The SDK also supplies a local-filesystem implementation. It uses the same
@@ -144,8 +150,8 @@ interface as an application-supplied provider, so choosing local storage does
 not change the graph model or the inspection operations available to a review.
 
 :::{req} local_provider
-The SDK MUST supply a source provider for listing and reading local filesystem
-resources within an application-selected scope.
+The SDK supplies a local-filesystem provider for listing and reading resources
+within an application-selected scope.
 :::
 
 ## Register the languages that interpret those resources
@@ -176,18 +182,21 @@ parsing and outline interpretation; a source provider supplies resources and
 inspection operations. Neither defines what makes a requirement valid.
 
 :::{req} language_provider
-`habeas-language` MUST expose the following provider interface, where `Profile`
-describes outline interpretation and `Language` is `tree_sitter::Language`:
+The language interface lives in `habeas-language`:
 
 ```rust,ignore
+use tree_sitter::Language;
+
 pub trait LanguageProvider: Sync {
+    /// Rules mapping syntax to named outline items.
     fn profile(&'static self) -> &'static Profile;
+    /// The tree-sitter grammar used to parse the resource.
     fn grammar(&self) -> fn() -> Language;
 }
 ```
 :::
 
-
+`Profile` describes outline interpretation; `Language` is `tree_sitter::Language`.
 
 ## Providers can specialize parsing and search
 
@@ -230,17 +239,19 @@ parsing operation. A provider that overrides parsing can therefore reuse the
 shared structural-search implementation.
 
 :::{req} provider_defaults
-The source-provider interface MUST expose overridable parsing, text-search,
-and structural-search operations. The SDK MUST supply default implementations
-so a provider can support these operations by implementing resource listing
-and reading and using a supplied language registry.
+Source providers can override parsing, text search, and structural search.
+The SDK supplies defaults for all three, so listing, reading, and a supplied
+language registry suffice to support them.
 :::
 
 :::{req} provider_defaults.composition
-Default parsing MUST read through the provider and use the selected language
-definition. Default text search MUST use provider listing and reading.
-Default structural search MUST use provider listing and parsing, including
-a provider's override of parsing.
+The defaults compose through the provider's operations:
+
+| Default operation | Uses |
+| --- | --- |
+| Parsing | Provider reading and the selected language definition |
+| Text search | Provider listing and reading |
+| Structural search | Provider listing and parsing, including any parsing override |
 :::
 
 An override changes how an operation is executed. A database index still needs
@@ -250,18 +261,18 @@ paired with the source bytes it describes. Reading the file again to attach
 newer bytes would produce an inconsistent result.
 
 :::{req} provider_results
-Provider overrides MUST preserve the requested operation's scope and semantics,
-including the selected language definition for parsing and structural search.
+An override preserves the requested scope and semantics, including the selected
+language definition for parsing and structural search.
 :::
 
 :::{req} provider_results.parse_snapshot
-A parse result MUST retain the source snapshot it describes. Cached parsing
-MUST NOT be paired with bytes from a different source snapshot.
+A parse result retains the source snapshot it describes. A cached parse stays
+paired with those bytes, rather than bytes from a different source snapshot.
 :::
 
 :::{req} provider_results.search_completeness
-Search results MUST distinguish complete results from truncated or incomplete
-results. An operation failure MUST NOT be reported as a complete empty result.
+Search results distinguish complete results from truncated or incomplete
+ones. An operation failure is an error, rather than a complete empty result.
 :::
 
 ## Inspection runs through the tracked context
@@ -292,11 +303,9 @@ An override cannot bypass recording a delivered read merely because it answered
 from a cache or database.
 
 :::{req} provider_observations
-The SDK's tracked inspection context MUST record successful source-node reads
-delivered to the validation procedure as dependencies of the assessment.
-Recording MUST apply whether the provider uses SDK defaults or overrides.
-Recorded fingerprints MUST describe the source-node contents delivered to
-the caller.
+The tracked inspection context records successful source-node reads delivered
+to the procedure as assessment dependencies, whether the provider uses defaults
+or overrides. Each fingerprint describes the contents delivered to the caller.
 :::
 
 The SDK search tools use the shared source-provider and parsing operations to

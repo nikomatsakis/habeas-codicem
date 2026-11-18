@@ -48,9 +48,8 @@ subject's identity without reading its contents, inspect its outgoing edges, and
 choose the contents needed for each computation or agent call.
 
 :::{req} check_procedure
-`habeas_sdk::graph` MUST expose the following validation capability:
-
 ```rust,ignore
+// Defined in habeas_sdk::graph.
 pub enum ValidationError<E> {
     Graph(E),
     NoAgentConfigured,
@@ -58,6 +57,12 @@ pub enum ValidationError<E> {
 }
 
 pub trait Validation: Graph + Fingerprinting + Sized {
+    /// Decide whether ctx.node_id() is valid.
+    ///
+    /// The runner supplies only this shared context. It reads no subject or
+    /// target contents to prepare the callback; select inputs through ctx.
+    /// No prepared NodeInputs bundle, extra application request, or
+    /// EvidenceStorage capability is required.
     fn validate<'a, 'd>(
         &'a self,
         ctx: &'a ValidationContext<'d, Self>,
@@ -70,11 +75,8 @@ pub trait Validation: Graph + Fingerprinting + Sized {
 }
 ```
 
-The runner MUST pass a context identifying the requested node and MUST NOT
-require a prepared `NodeInputs` bundle or automatically read its subject or
-target contents for callback preparation. The callback MUST NOT require an
-additional application-defined request or evidence-storage capability.
-The procedure MUST remain usable without an `EvidenceStorage` bound.
+The context identifies the node requested by the caller. The callback remains
+usable without `EvidenceStorage`; persistence belongs to the runner.
 :::
 
 
@@ -87,11 +89,15 @@ let test_edges = ctx.successors(&HabeasEdgeLabel::Tests)?;
 ```
 
 :::{req} root_inputs
-`ValidationContext<'d, D>` MUST expose:
-
 ```rust,ignore
+// Methods on ValidationContext<'d, D>.
+
+/// The node being validated. Obtaining its identity does not read its contents.
 pub fn node_id(&self) -> &D::NodeId;
 
+/// Select outgoing edges by label, preserving their order and duplicates.
+/// Record the complete outgoing-edge snapshot even when nothing matches.
+/// Selecting edges does not read or validate their targets.
 pub fn successors(
     &self,
     label: &D::EdgeLabel,
@@ -100,15 +106,10 @@ where
     D::EdgeLabel: PartialEq;
 ```
 
-`node_id` MUST return the node being validated without reading its contents.
-`successors` MUST return the current node's outgoing edges whose labels compare
-equal to the requested label, preserving their order and duplicate edges. It
-MUST record the complete outgoing-edge snapshot, including when no edge matches,
-without reading target contents. A change to that recorded selection, including
-adding an edge to an empty selection, MUST make prior evidence stale. Target
-contents MUST become node dependencies only through explicit tracked reads or
-agent insertions. Edges MUST NOT implicitly supply or require positive
-validation judgments for their targets.
+Labels match by equality. A change to the recorded selection makes prior
+evidence stale, including adding an edge to an empty selection. Target contents
+become dependencies only through explicit tracked reads or agent insertions.
+An edge neither supplies nor requires a positive validation judgment for its target.
 :::
 
 
@@ -120,13 +121,14 @@ explanation, and application metadata; it does not implement acknowledgment
 policy or ask the callback to assemble an evidence record.
 
 :::{req} judgment
-`habeas_sdk::graph` MUST expose the following judgment structure, and `Graph`
-MUST supply its metadata type:
-
 ```rust,ignore
+/// The application's answer, defined in habeas_sdk::graph.
 pub struct Judgment<M> {
+    /// Whether the node satisfies the application-defined criterion.
     pub result: bool,
+    /// Explanation of that result.
     pub rationale: String,
+    /// Application-defined information; never an alternative result.
     pub metadata: M,
 }
 
@@ -136,14 +138,10 @@ pub trait Graph: Send + Sync {
 }
 ```
 
-A node validation procedure MUST return `Judgment<D::JudgmentMetadata>`.
-Its `result` MUST state whether the node satisfies the application's validation
-criterion. The application MUST define that criterion and the meaning of the
-metadata. Its `rationale` MUST explain the returned result. The SDK MUST
-preserve all three fields without reinterpreting metadata as
-an alternative result. A failure to execute validation MUST remain an error,
-not a `false` judgment. FIXME acknowledgment policy MUST belong to Habeas,
-not the SDK's judgment structure.
+The procedure returns `Judgment<D::JudgmentMetadata>`. The application defines
+the criterion and metadata's meaning; the SDK preserves all three fields.
+Failure to execute validation is an error, rather than a `false` judgment.
+Habeas owns FIXME acknowledgment policy.
 :::
 
 
@@ -180,9 +178,8 @@ A callback can run without a configured agent if it never awaits an ask builder.
 Awaiting one without an agent reports `NoAgentConfigured`.
 
 :::{req} deterministic_procedures
-The SDK MUST allow `Validation::validate` callbacks to run without a configured
-model provider. A callback that does not invoke the agent interface MUST NOT
-fail merely because no agent is configured.
+`Validation::validate` works without a configured model provider. A callback
+that never invokes the agent interface does not fail because no agent is configured.
 :::
 
 
@@ -197,14 +194,18 @@ The checker and validator obtain that version from a shared configured resolver,
 not by running the validation callback:
 
 :::{req} procedure_identity
-SDK checker and validator configuration MUST accept an application-supplied,
-`Send + Sync` resolver from `&D::NodeId` to `Result<String, D::Error>` for the
-current procedure identity. The same resolver MUST be usable by `check_node`
-without a `Validation` implementation or model configuration and by
-`validate_node`. The runner MUST compare the resolved identity with saved
-evidence and use that same identity when storing a new record. Resolution
-failures MUST be reported as errors without invoking validation or storing a
-completed judgment. This configuration MUST NOT require another domain trait.
+Checker and validator configuration accepts an application-supplied resolver:
+
+```rust,ignore
+// Trait bounds on the configured resolver; not a separate domain trait.
+Fn(&D::NodeId) -> Result<String, D::Error> + Send + Sync
+```
+
+Both `check_node` and `validate_node` use the same resolver. Checking needs
+neither a `Validation` implementation nor model configuration. The runner
+compares the resolved identity with saved evidence and uses that identity for
+the replacement record. A resolution failure returns an error before invoking
+validation or storing a completed judgment.
 :::
 
 Suppose we ask the SDK to validate `requirements.auth.expiration`. It first
@@ -261,45 +262,36 @@ sequenceDiagram
     end
 ```
 
-A configured SDK validator provides this lifecycle. The validator uses the graph for node access and evidence storage,
-together with the application's validation callbacks. In the method signature below, `NodeId` is its graph's node identity
-type, `JudgmentMetadata` is its metadata type, and `Error` covers graph,
-callback, and storage failures. These are associated types of the configured
-validator interface; the result uses the SDK's `Judgment` structure.
-
-```rust,ignore
-let judgment = validator.validate_node(&expiration).await?;
-```
+A configured validator combines graph access, evidence storage, and the
+application's callback. Its `Error` covers graph, callback, and storage failures.
 
 `validate_node` concerns this node's judgment. Reading the implementation as an
 input does not recursively validate the implementation.
 
 :::{req} validate_node
-The configured SDK validator MUST expose the following method:
-
 ```rust,ignore
+// Method on the configured validator; associated types come from its domain.
+
+/// Reuse current evidence, including a negative judgment.
+/// Otherwise run validation and save the completed record before returning.
 fn validate_node<'a>(
     &'a self,
     node: &'a Self::NodeId,
 ) -> impl Future<Output = Result<Judgment<Self::JudgmentMetadata>, Self::Error>> + Send + 'a;
 ```
 
-The operation MUST first look up evidence for the requested node and its
-configured validation procedure. To establish that evidence is current, it MUST
-check the procedure identity and resolve the recorded dependencies to compare
-their current fingerprints with the saved fingerprints. If the evidence
-is current under {cite}`requirements.sdk.graph.evidence.checking_records`, it MUST
-return the stored judgment without invoking the validation callback, including
-when that judgment is negative. If evidence is absent or stale, it MUST create a
-fresh context for the requested node, invoke the application callback,
-construct evidence from the returned judgment and captured dependencies, and
-store that evidence before reporting successful completion.
+The operation first looks up the requested node's evidence for the configured
+procedure. It checks the procedure identity and resolves recorded dependencies
+to compare current and saved fingerprints under
+{cite}`requirements.sdk.graph.evidence.checking_records`.
+Current evidence returns its judgment without a callback invocation.
+Missing or stale evidence starts a fresh context for that node, invokes the
+callback, and constructs a record from its judgment and captured dependencies.
 :::
 
 :::{req} validate_node.errors
-Storage or input resolution errors MUST be reported as errors rather than
-treated as absent or stale evidence. A callback error MUST NOT be stored as a
-completed judgment.
+Storage and input-resolution failures return errors, rather than missing or
+stale states. A callback error is never stored as a completed judgment.
 :::
 
 ## Check evidence in CI without invoking validation
@@ -316,15 +308,15 @@ let state = checker.check_node(&expiration).await?;
 ```
 
 :::{req} check_node
-The SDK MUST provide a `check_node` operation that returns a current stored
-judgment, a missing-evidence state, or a stale-evidence state. Storage and
-input-resolution failures MUST be returned as errors. The current procedure
-identity MUST be supplied through
-{cite}`requirements.sdk.graph.validation.procedure_identity`. This operation MUST NOT
-invoke validation callbacks, invoke a model, or write evidence, and MUST be
-available with only `Graph + Fingerprinting + EvidenceStorage`, without a
-`Validation` implementation or configured agent. The SDK MUST perform the
-evidence lookup and freshness comparison itself.
+`check_node` returns a current stored judgment, a missing-evidence state, or a
+stale-evidence state. Storage and input-resolution failures return errors.
+It gets the current procedure identity through
+{cite}`requirements.sdk.graph.validation.procedure_identity`.
+
+The SDK performs lookup and freshness comparison itself, using only
+`Graph + Fingerprinting + EvidenceStorage`. Checking invokes no validation
+callback or model and writes no evidence; it needs neither a `Validation`
+implementation nor a configured agent.
 :::
 
 A current negative judgment is a successful freshness check but may fail

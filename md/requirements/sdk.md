@@ -74,38 +74,45 @@ The application defines its own domain by implementing `Domain`. This trait
 combines four subtraits that capture different aspects of the domain:
 
 :::{req} domain
-The SDK MUST expose the following traits and blanket implementation. Bodies
-marked `/* ... */` omit members specified in their respective chapters:
+The SDK MUST expose a `Domain` trait with a blanket implementation and a number of subtraits that cover disjoint aspects of defining an application domain:
 
 ```rust,ignore
-pub trait Fingerprinting: Graph {
-    /* ... Uses Graph's associated types. */
-}
-
-pub trait EvidenceStorage: Graph {
-    /* ... Uses Graph's associated types. */
-}
-
-pub trait Validation: Graph + Fingerprinting + Sized {
-    /* ... The application's assessment callback, usable without
-       EvidenceStorage. The SDK runner handles evidence freshness. */
-}
-
+/// The node validation runner requires this combined domain.
+/// Assessment callbacks remain usable without EvidenceStorage.
+///
+/// Concurrent validations can share a domain by reference. Each validation
+/// has its own dependency trace; operations within it share that trace safely.
+/// Agent calls retain independent conversation and submission state.
+/// Observations never leak between separate validations.
 pub trait Domain: Graph + Validation + Fingerprinting + EvidenceStorage {}
 
 impl<T: Graph + Validation + Fingerprinting + EvidenceStorage> Domain for T {}
+
+pub trait Graph {
+    // Defines the verification graph, including
+    //
+    // * Nodes: verifiable constructs
+    // * Edges: inputs to verification
+    // * NodeContent: the contents of a node, determines both its verification contract and what data is given
+    /* ... members defined in the Graph chapter ... */
+}
+
+pub trait Fingerprinting: Graph {
+    // Defines which changes to input contents matter for validation.
+    /* ... members defined in the Fingerprinting chapter ... */
+}
+
+pub trait EvidenceStorage: Graph {
+    // Defines how evidence is stored and loaded.
+    /* ... members defined in the Evidence storage chapter ... */
+}
+
+pub trait Validation: Graph + Fingerprinting + Sized {
+    // Defines the evaluation function for
+    // whether a node is valid.
+    /* ... members defined in the Validation chapter ... */
+}
 ```
-
-`Graph` MUST own its node, content, edge-label, and error types as specified by
-{cite}`requirements.sdk.graph.domain_types`. The node validation runner MUST
-require `Domain`.
-
-The SDK MUST allow concurrent validations to share a domain by reference.
-Asynchronous storage and assessment methods MUST return `Send` futures. Each
-validation MUST retain its own dependency trace. Concurrent operations within
-one validation MUST safely share that trace, while each agent invocation MUST
-retain its own conversation and submission state. Observations MUST NOT leak
-between separate node validations.
 :::
 
 Each subtrait is covered in its own chapter:

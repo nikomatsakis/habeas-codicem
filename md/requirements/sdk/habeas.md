@@ -65,7 +65,7 @@ sequenceDiagram
     H->>H: Interpret result, continue or finish
 ```
 
-This is the API boundary the SDK consumer port is establishing. Habeas's
+Habeas implements this boundary in `src/authoring/sdk.rs`. Its
 `Validation::validate` callback receives only the context. For a requirement
 review, it builds a reusable context prefix from its review instructions and
 question, inserts the subject and its mandatory content inputs, then awaits
@@ -81,10 +81,8 @@ correction, `submit_judgment` and `submit_verification` names, and the
 Searches still record only the enclosing nodes of explicitly selected excerpts;
 tracking search result sets and adding a hook to change that policy are deferred.
 
-Habeas implements this review procedure in `src/authoring/sdk.rs`, using the
-SDK's `ValidationContext` and typed ask builders. Assessments and verifications
-share the conversation loop through Habeas's adapters. The saved record retains
-the SDK dependency trace, including the reads used to confirm a judgment.
+Assessments and verifications share the conversation loop through Habeas's
+adapters. The saved record retains the SDK trace, including confirmation reads.
 
 That delivery distinction matters to the SDK contract: a prepared page that the
 model never receives is not an observed input. A model tool can therefore use
@@ -127,8 +125,7 @@ SDK comparison handles those records and records with concrete versions.
 Checker and validator share the application's procedure-version resolver
 independently of model configuration.
 
-The SDK provides `Record` and model-free dependency comparison. The intended
-reusable operation is narrower than a complete Habeas CI result:
+The SDK's comparison feeds Habeas's CI policy:
 
 ```mermaid
 flowchart TD
@@ -152,65 +149,69 @@ locations. The generic filesystem helper's encoded directory layout does not
 replace Habeas's filenames.
 
 :::{req} evidence_format
-Habeas MUST support a versioned JSON evidence representation that preserves the
-SDK record's procedure identity, dependencies, and judgment, together with all
-application-owned fields needed for requirement, example, citation, and site
-validation. These fields MUST retain recorded subject identity and text, determination,
-rationale, reference-set digests, citation roles and commentary, site queries
-and applicability, and recorded input information as applicable to the review
-kind.
+Habeas uses a versioned JSON representation of the SDK record: procedure
+identity, dependencies, and judgment, together with the application-owned
+information needed for requirement, example, citation, and site reviews.
 
-The same application validation rules MUST apply to equivalent information in
-the legacy and versioned representations. Versioned fields MAY reside in
-judgment metadata and SDK dependencies rather than the legacy top-level layout.
-The versioned representation MUST NOT store source text for outline inputs.
+| Information retained | Purpose |
+| --- | --- |
+| Recorded subject identity and text, determination, and rationale | Identify the review and its answer. |
+| Reference-set digests | Detect changes to the references supporting it. |
+| Citation roles and commentary | Preserve the citation's reviewed meaning. |
+| Site queries and applicability | Preserve the scope and outcome of a site review. |
+| Recorded input information | Check the inputs applicable to that review kind. |
+
+Equivalent information receives the same application validation in both legacy
+and versioned records. Versioned fields can live in judgment metadata and SDK
+dependencies instead of the legacy top-level layout. Outline inputs retain no
+source text in the versioned representation.
 :::
 
 :::{req} evidence_format.loading
 The versioned representation under
-{cite}`requirements.sdk.habeas.evidence_format` MUST be distinguishable from the
+{cite}`requirements.sdk.habeas.evidence_format` is distinguishable from the
 unversioned legacy formats under {cite}`requirements.ci.schema`,
 {cite}`requirements.references.citation_review`, and
-{cite}`requirements.references.site_review`. Habeas MUST temporarily accept
-those legacy formats for loading as well as the supported versioned format.
+{cite}`requirements.references.site_review`. Habeas temporarily accepts those
+legacy formats for loading alongside the supported versioned format.
 :::
 
 :::{req} evidence_format.errors
-Malformed records and unsupported format versions MUST be reported as errors,
-rather than treated as absent evidence or retried as a different representation.
+Malformed records and unsupported format versions return errors. They do not
+count as absent evidence and are not retried as a different representation.
 :::
 
 :::{req} evidence_conversion
-Habeas MUST support in-place conversion of legacy evidence to the versioned
+Habeas supports in-place conversion of legacy evidence to the versioned
 representation under {cite}`requirements.sdk.habeas.evidence_format`, preserving
 the historical values of its judgments, rationales, recorded inputs, and all
 review-specific fields.
 :::
 
 :::{req} evidence_conversion.provenance
-Conversion MUST NOT invoke a model, require model configuration, reconstruct
-missing historical dependencies from current sources, or assign the current
-procedure identity to a record that did not capture one. Missing historical
-metadata MUST be identified explicitly as legacy information.
+Conversion preserves history rather than performing a new review. It invokes
+no model and needs no model configuration. It reconstructs no missing historical
+dependencies from current sources and assigns no current procedure identity
+to records lacking one. Missing historical metadata is explicitly identified
+as legacy information.
 :::
 
 :::{req} evidence_conversion.writes
-Conversion MUST occur only through a write-capable migration or authoring path.
-Loading evidence for `check_node`, CI, status inspection, or book rendering MUST
-NOT replace or convert evidence files. Authoring with `--stdout` MUST NOT perform
-in-place conversion or create or change evidence files or directories under
+Conversion writes only through a write-capable migration or authoring path.
+Loading for `check_node`, CI, status inspection, or book rendering leaves
+evidence files unchanged. Authoring with `--stdout` performs no in-place
+conversion and creates or changes no evidence files or directories under
 {cite}`requirements.authoring.persistence`.
 :::
 
 :::{req} evidence_conversion.atomic
-A write-capable conversion MUST replace the selected evidence file atomically
-at its existing location. Readers MUST observe either the original complete
-record or the converted complete record. If conversion fails before replacement,
-it MUST leave the original file unchanged.
+A write-capable conversion atomically replaces the selected file at its existing
+location. Readers observe either the original complete record or the converted
+complete record. Failure before replacement leaves the original file unchanged.
 :::
 
 :::{req} evidence_conversion.idempotent
-Repeating conversion of an already-upgraded record MUST leave the file unchanged.
+Converting an already-upgraded record leaves the file unchanged.
 :::
 
 Dropping support for the old reader can follow after migration. The legacy
@@ -219,18 +220,17 @@ format conversion alone does not establish which review rules produced it.
 
 :::{req} evidence_conversion.legacy_freshness
 When loading a supported legacy evidence record that did not capture its
-procedure version, Habeas MUST represent that missing version as the stored
-procedure identity `*`. In-place conversion MUST preserve that wildcard rather
-than assign the current procedure version. The wildcard MUST match any
+procedure version, Habeas represents that missing version as `*`.
+In-place conversion preserves this wildcard rather than assigning the current
+version. The wildcard matches any
 configured review version under
 {cite}`requirements.sdk.graph.evidence.checking_records.procedure_match`.
-The record MUST be considered current when its recorded inputs and all
-existing application freshness checks still match. This version match MUST NOT
-bypass subject, reference-set, input, determination, citation, or site checks.
+The record is current when its recorded inputs and all existing application
+freshness checks still match. Version matching leaves the subject, reference-set,
+input, determination, citation, and site checks intact.
 
-Habeas's configured procedure-version resolver MUST supply a concrete identity
-other than `*` for new assessments, and those assessments MUST record that
-identity.
+For new assessments, Habeas's configured resolver supplies a concrete identity
+other than `*`, and the assessment records it.
 :::
 
 ## Nodes can refer to external state

@@ -5,31 +5,22 @@ The SDK calls your method with the node identity and contents already read.
 You return a `Fingerprint`: a digest together with the scheme that identifies
 how it was computed.
 
+:::{req} fingerprint_content
 ```rust,ignore
 pub trait Fingerprinting: Graph {
+    /// Describe the supplied observation, without rereading the node or
+    /// querying mutable external state.
+    ///
+    /// The same node and contents under the same rules give the same
+    /// fingerprint. Everything needed is in the identity, contents, or
+    /// configured rules. When the rules change, change the scheme.
     fn fingerprint(
         &self,
         node: &Self::NodeId,
         content: &Self::NodeContent,
     ) -> Fingerprint;
 }
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Fingerprint {
-    pub scheme: String,
-    pub value: String,
-}
 ```
-
-:::{req} fingerprint_content
-`Fingerprinting` MUST provide the `fingerprint` method shown above.
-
-The method MUST compute the fingerprint of the supplied contents without
-re-reading the node or querying mutable external state. For the same node identity and contents
-under the same fingerprinting rules, it MUST return the same fingerprint.
-Changes to the interpretation of those rules MUST be distinguished by the
-fingerprint's `scheme`. The graph MUST make the information needed to apply
-its fingerprinting rules available in `NodeId`, `NodeContent`, or its configured rules.
 :::
 
 The method is infallible. Any parsing or preparation that can fail happens
@@ -43,6 +34,21 @@ contain a negative judgment. The SDK uses these fingerprints to
 [compare saved observations](evidence.md#compare-the-saved-observations).
 
 ## Fingerprint the structure, and version the rules
+
+:::{req} fingerprint
+```rust,ignore
+/// A digest and the rules used to compute it.
+/// Tracking and freshness checks compare both fields as opaque values.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Fingerprint {
+    pub scheme: String,
+    pub value: String,
+}
+```
+
+This type lives in `habeas_sdk::graph`. The graph supplies its fingerprinting
+rules, optionally using the SDK's source tooling.
+:::
 
 Habeas uses structural fingerprints: it parses a node's source text and hashes
 its structure rather than its raw bytes. The SDK supplies source-analysis
@@ -65,15 +71,6 @@ happen to match. A library update that preserves the calculation need not change
 the scheme. The current SDK detects the mismatch; it does not migrate old
 fingerprints or automatically rerun a review.
 
-:::{req} fingerprint
-`habeas_sdk::graph` MUST define `Fingerprint` as shown above.
-
-Fingerprint equality MUST compare both `scheme` and `value`. The SDK’s graph
-tracking and freshness comparison MUST treat these two fields as opaque values.
-The graph supplies the fingerprinting rules; it may use the SDK’s source
-tooling to compute fingerprints.
-:::
-
 ## Read content together with its fingerprint
 
 To read `check_token`, the SDK calls `Graph::node_content`. It then passes the returned
@@ -88,19 +85,17 @@ let fingerprint = graph.fingerprint(&check_token_id, &content);
 let snapshot = Snapshot { content, fingerprint };
 ```
 
-The fingerprint method receives the node identity and the contents already
-read. It does not fetch the node again. This makes the relationship explicit: the fingerprint describes
-the same observation that the procedure examines, even if the underlying
-resource changes immediately afterward.
+The fingerprint describes the observation the procedure examines, even if the
+underlying resource changes immediately afterward. Hashing a second read could
+associate one observation's contents with another observation's fingerprint.
 
 `Graph::outgoing_edges` returns a snapshot directly because its edge selection
 has a different type and fingerprinting rules from `Self::NodeContent`. Its
 implementation computes the selection fingerprint from the returned edges; `fingerprint` is specifically for node contents.
 
 :::{req} snapshot
-`habeas_sdk::graph` MUST define `Snapshot` as follows:
-
 ```rust,ignore
+/// Contents paired with the fingerprint of that same observation.
 #[derive(Clone, Debug)]
 pub struct Snapshot<T> {
     pub content: T,
@@ -108,12 +103,11 @@ pub struct Snapshot<T> {
 }
 ```
 
-For node reads, the SDK MUST construct the snapshot by calling
-`Fingerprinting::fingerprint` with the node identity and contents returned by `Graph::node_content`, without
-reading the node again to compute its fingerprint. Graph operations returning
-snapshots directly MUST supply fingerprints of the results from those same
-observations. The SDK MUST NOT require `T` to carry a filesystem path or source
-span.
+This type lives in `habeas_sdk::graph`. For node reads, the SDK constructs it by
+passing the identity and the contents returned by `Graph::node_content` to
+`Fingerprinting::fingerprint`, without another read. An operation returning a
+snapshot directly supplies the fingerprint of its returned observation.
+`T` needs no filesystem path or source span.
 :::
 
 ## Reuse the outline helpers

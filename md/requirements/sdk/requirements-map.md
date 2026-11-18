@@ -1,10 +1,10 @@
 # Allocating requirements to the SDK and Habeas
 
-The SDK graph and sources chapters define the core validation model. Habeas chapters should
-define how requirement reviews, citation reviews, evidence files, and CLI commands
-use that model. This page proposes the allocation; the earlier Habeas requirement IDs and their evidence have not yet moved.
-The uncommitted SDK contracts now live under `requirements.sdk.graph` and
-`requirements.sdk.sources`.
+The graph and sources chapters explain the shared validation model. Habeas
+chapters explain how requirement reviews, citation reviews, evidence files,
+and commands use it. This page proposes where the earlier shared contracts
+belong; their requirement IDs and evidence have not yet moved.
+The SDK contracts live under `requirements.sdk.graph` and `requirements.sdk.sources`.
 
 ## Core SDK contracts
 
@@ -36,7 +36,7 @@ provider's grammar mapping, naming, and comment rules its own page.
 
 The [outline pages](sources.md) currently describe the implementation and provide
 examples. They are the proposed homes for those language contracts, not duplicate
-normative declarations.
+requirement declarations.
 
 ## Habeas application contracts
 
@@ -51,5 +51,6 @@ An SDK dependency record does not itself decide whether `true`, `false`, or
 First review each shared contract and its language or application-specific
 remainder. Then move declarations and update references and evidence mappings
 together. The Rust interface definitions already in the SDK chapter remain the
-place to specify the public API; behavioral requirements should follow the
-examples that introduce each interface.
+place to specify the public API. Explain its purpose, show the declaration
+with semantic comments, then demonstrate how an application uses it. Keep
+operational guarantees with the operation they explain.

@@ -14,7 +14,14 @@ The resource address identifies the file separately from this selector.
 
 ## Outline rules
 
-Rule sets use `rule`, named by their normalized selectors. Media and supports statements use `media` and `supports`, named by their normalized preludes. Keyframes use `keyframes`, named by the animation name.
+The selector's kind describes the CSS construct; its name comes from the
+selector or prelude:
+
+| Construct | Outline kind | Name |
+| --- | --- | --- |
+| Rule set | `rule` | Normalized selector, such as `.token` |
+| Media or supports statement | `media` or `supports` | Normalized prelude |
+| Keyframes | `keyframes` | Animation name |
 
 ## Comments and fingerprints
 
@@ -22,6 +29,6 @@ CSS comments are excluded from structural fingerprints.
 
 The [shared source machinery](../sources.md) defines selector encoding, duplicate
 names, and the distinction between node contents and structural fingerprints.
-These rules describe the current provider; existing normative contracts remain
+These rules describe the current provider. Their existing requirements live
 in [References and Rust items](../../references.md) pending the
 [requirements reorganization](../requirements-map.md).
