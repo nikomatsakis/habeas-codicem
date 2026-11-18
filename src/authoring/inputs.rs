@@ -269,6 +269,7 @@ impl AssessmentSources {
         mandatory.extend(builtins.into_iter().map(builtin_input));
         let issue_states = crate::github::input_issue_states(
             &root,
+            &outlines,
             &github,
             &references,
             &definitions,
@@ -386,6 +387,7 @@ impl AssessmentSources {
         let github = GithubIssues::from_env(&root);
         let issue_states = crate::github::input_issue_states(
             &root,
+            &outlines,
             &github,
             &references,
             &definitions,
@@ -502,6 +504,7 @@ impl AssessmentSources {
         let github = GithubIssues::from_env(&root);
         let issue_states = crate::github::input_issue_states(
             &root,
+            &outlines,
             &github,
             &references,
             &definitions,

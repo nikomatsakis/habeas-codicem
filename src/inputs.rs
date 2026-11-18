@@ -103,16 +103,19 @@ mod ownership_tests {
 
 // {cite}`habeas:util`
 /// Parsed outlines, cached per file for one validation or authoring run.
+/// Clones share entries populated by any caller in that run.
 #[derive(Default)]
 pub(crate) struct OutlineCache {
-    files: Mutex<HashMap<PathBuf, Arc<Result<ParsedSource, String>>>>,
+    files: Arc<Mutex<HashMap<PathBuf, Arc<Result<ParsedSource, String>>>>>,
     /// Content to parse in place of a file's, by project-relative path.
-    overrides: HashMap<String, String>,
-    catalogs: Mutex<HashMap<PathBuf, Arc<Result<ReferenceCatalog, String>>>>,
-    access: Mutex<
-        HashMap<
-            PathBuf,
-            Result<Arc<crate::authoring::access::SourceAccess>, (std::io::ErrorKind, String)>,
+    overrides: Arc<HashMap<String, String>>,
+    catalogs: Arc<Mutex<HashMap<PathBuf, Arc<Result<ReferenceCatalog, String>>>>>,
+    access: Arc<
+        Mutex<
+            HashMap<
+                PathBuf,
+                Result<Arc<crate::authoring::access::SourceAccess>, (std::io::ErrorKind, String)>,
+            >,
         >,
     >,
 }
@@ -127,20 +130,10 @@ impl Clone for OutlineCache {
     // {cite}`habeas:util`
     fn clone(&self) -> Self {
         Self {
-            files: Mutex::new(self.files.lock().expect("outline cache lock").clone()),
+            files: self.files.clone(),
             overrides: self.overrides.clone(),
-            catalogs: Mutex::new(
-                self.catalogs
-                    .lock()
-                    .expect("reference catalog lock")
-                    .clone(),
-            ),
-            access: Mutex::new(
-                self.access
-                    .lock()
-                    .expect("source access cache lock")
-                    .clone(),
-            ),
+            catalogs: self.catalogs.clone(),
+            access: self.access.clone(),
         }
     }
 }
@@ -150,10 +143,8 @@ impl OutlineCache {
     /// A cache that parses `overrides` in place of those files' contents.
     pub(crate) fn with_overrides(overrides: HashMap<String, String>) -> Self {
         Self {
-            files: Mutex::default(),
-            overrides,
-            catalogs: Mutex::default(),
-            access: Mutex::default(),
+            overrides: Arc::new(overrides),
+            ..Self::default()
         }
     }
 
@@ -242,6 +233,68 @@ impl OutlineCache {
             .expect("outline cache lock")
             .insert(key, parsed.clone());
         parsed
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // {test}`requirements.authoring.outline_tool`
+    #[test]
+    fn clones_share_sources_loaded_after_cloning_but_new_runs_read_changes() {
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join("a.rs");
+        fs::write(&file, "fn original() {}\n").unwrap();
+        let outlines = OutlineCache::default();
+        let clone = outlines.clone();
+        let original = clone.parse(temp.path(), "a.rs");
+        assert_eq!(
+            original.as_ref().as_ref().unwrap().source,
+            "fn original() {}\n"
+        );
+
+        fs::write(&file, "fn changed() {}\n").unwrap();
+        let cached = outlines.parse(temp.path(), "a.rs");
+        assert_eq!(
+            cached.as_ref().as_ref().unwrap().source,
+            "fn original() {}\n"
+        );
+        assert!(Arc::ptr_eq(&original, &cached));
+
+        let fresh = OutlineCache::default().parse(temp.path(), "a.rs");
+        assert_eq!(fresh.as_ref().as_ref().unwrap().source, "fn changed() {}\n");
+    }
+
+    // {test}`requirements.authoring.outline_tool`
+    #[test]
+    fn clones_share_overrides_and_failed_reads() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(temp.path().join("a.rs"), "fn disk() {}\n").unwrap();
+        let outlines = OutlineCache::with_overrides(HashMap::from([(
+            "a.rs".to_owned(),
+            "fn supplied() {}\n".to_owned(),
+        )]));
+        let clone = outlines.clone();
+        let supplied = clone.parse(temp.path(), "a.rs");
+        assert_eq!(
+            supplied.as_ref().as_ref().unwrap().source,
+            "fn supplied() {}\n"
+        );
+        assert!(Arc::ptr_eq(&supplied, &outlines.parse(temp.path(), "a.rs")));
+
+        let missing = clone.parse(temp.path(), "missing.rs");
+        assert!(missing.is_err());
+        fs::write(temp.path().join("missing.rs"), "fn created() {}\n").unwrap();
+        assert!(Arc::ptr_eq(
+            &missing,
+            &outlines.parse(temp.path(), "missing.rs")
+        ));
+        assert!(
+            OutlineCache::default()
+                .parse(temp.path(), "missing.rs")
+                .is_ok()
+        );
     }
 }
 

@@ -171,14 +171,6 @@ impl Graph for HabeasDomain<'_> {
             return Ok(vec![]);
         };
         if label == HabeasEdgeLabel::Mandatory {
-            // Seed the inspection's catalog before cloning its immutable snapshots.
-            // Every mandatory-selection check can then reuse the same discovery.
-            let catalog = self.outlines.reference_catalog(self.root);
-            catalog
-                .as_ref()
-                .as_ref()
-                .map_err(|error| std::io::Error::other(error.clone()))?;
-            self.outlines.source_access(self.root)?;
             let sources = crate::authoring::inputs::AssessmentSources::prepare_with_context(
                 self.root,
                 &query.0,
