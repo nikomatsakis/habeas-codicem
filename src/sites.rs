@@ -1027,6 +1027,44 @@ no_match:
         );
     }
 
+    // {test}`requirements.references.distributed`
+    #[test]
+    fn violations_belong_to_the_innermost_containing_site() {
+        let source = "fn check_outer() {\n    fn check_inner() { panic!(\"inner\"); }\n}\n";
+        let temp = project(RULE, source);
+        let (errors, sites) = inspect(temp.path());
+        assert!(
+            !errors.iter().any(|error| error.contains("query")),
+            "{errors:?}"
+        );
+        let sites = &sites["requirements.rule"];
+        assert_eq!(sites.len(), 2, "{sites:?}");
+        let outer = sites
+            .iter()
+            .find(|site| site.item == "fn[check_outer]")
+            .unwrap();
+        assert!(
+            outer
+                .matches
+                .iter()
+                .all(|found| found.kind == QueryKind::Sites),
+            "{outer:?}"
+        );
+        let inner = sites
+            .iter()
+            .find(|site| site.item == "fn[check_outer]/fn[check_inner]")
+            .unwrap();
+        let violations = inner
+            .matches
+            .iter()
+            .filter(|found| found.kind == QueryKind::Violations)
+            .collect::<Vec<_>>();
+        assert_eq!(violations.len(), 1, "{inner:?}");
+        assert_eq!(violations[0].query, "panics");
+        assert_eq!(violations[0].item, "fn[check_outer]/fn[check_inner]");
+        assert_eq!(violations[0].text, "panic!(\"inner\")");
+    }
+
     // {test}`requirements.references.site_review`
     #[test]
     fn site_query_names_are_sorted_and_nested_review_paths_are_encoded() {

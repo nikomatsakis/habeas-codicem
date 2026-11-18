@@ -109,6 +109,12 @@ pub(crate) struct OutlineCache {
     /// Content to parse in place of a file's, by project-relative path.
     overrides: HashMap<String, String>,
     catalogs: Mutex<HashMap<PathBuf, Arc<Result<ReferenceCatalog, String>>>>,
+    access: Mutex<
+        HashMap<
+            PathBuf,
+            Result<Arc<crate::authoring::access::SourceAccess>, (std::io::ErrorKind, String)>,
+        >,
+    >,
 }
 
 pub(crate) struct ReferenceCatalog {
@@ -127,6 +133,12 @@ impl Clone for OutlineCache {
                     .expect("reference catalog lock")
                     .clone(),
             ),
+            access: Mutex::new(
+                self.access
+                    .lock()
+                    .expect("source access cache lock")
+                    .clone(),
+            ),
         }
     }
 }
@@ -139,7 +151,27 @@ impl OutlineCache {
             files: Mutex::default(),
             overrides,
             catalogs: Mutex::default(),
+            access: Mutex::default(),
         }
+    }
+
+    /// Git discovery and access rules share the inspection's source snapshot.
+    // {cite}`habeas:util`
+    pub(crate) fn source_access(
+        &self,
+        root: &Path,
+    ) -> std::io::Result<Arc<crate::authoring::access::SourceAccess>> {
+        self.access
+            .lock()
+            .expect("source access cache lock")
+            .entry(root.to_path_buf())
+            .or_insert_with(|| {
+                crate::authoring::access::load_source_access(root)
+                    .map(Arc::new)
+                    .map_err(|error| (error.kind(), error.to_string()))
+            })
+            .clone()
+            .map_err(|(kind, message)| std::io::Error::new(kind, message))
     }
 
     /// Repository relationships share one discovery snapshot per inspection.

@@ -47,7 +47,7 @@ struct Run {
 // {impl}`requirements.test-coverage.processes`
 // {impl}`requirements.test-coverage.storage.outcomes`
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct Attempt {
+struct Attempt<P = Process> {
     id: String,
     binary: String,
     test: String,
@@ -56,19 +56,20 @@ struct Attempt {
     pid: u32,
     command: Vec<String>,
     outcome: String,
-    processes: Vec<Process>,
+    processes: Vec<P>,
     diagnostics: Vec<String>,
 }
 
 // {impl}`requirements.test-coverage.processes.reports`
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct Process {
+#[serde(bound(deserialize = "L: Deserialize<'de>, F: Deserialize<'de>"))]
+struct Process<L = BTreeMap<String, BTreeMap<u32, u64>>, F = Vec<FunctionExecution>> {
     pid: u32,
     profiles: Vec<String>,
-    lines: BTreeMap<String, BTreeMap<u32, u64>>,
+    lines: L,
     /// Absent in older line-only captures, which need recollection for function checks.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    functions: Option<Vec<FunctionExecution>>,
+    functions: Option<F>,
     diagnostic: Option<String>,
 }
 

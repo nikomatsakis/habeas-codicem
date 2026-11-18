@@ -23,6 +23,224 @@ pub(super) struct Record {
     pub(super) run: Arc<Run>,
     pub(super) attempt: Attempt,
     pub(super) fresh: bool,
+    attempt_dir: PathBuf,
+}
+
+impl Record {
+    // {cite}`habeas:util`
+    fn load_measurements(&mut self) -> io::Result<()> {
+        let mut attempt: Attempt = load(&self.attempt_dir.join("attempt.json"))?;
+        // Do not substitute another attempt if a collector replaced the file
+        // between selection and loading.
+        if attempt.id != self.attempt.id
+            || attempt.binary != self.attempt.binary
+            || attempt.test != self.attempt.test
+            || attempt.started != self.attempt.started
+        {
+            return Err(io::Error::other(
+                "Attempt changed during coverage selection.",
+            ));
+        }
+        for process in &mut attempt.processes {
+            if process.profiles.is_empty()
+                || process.profiles.iter().any(|profile| {
+                    fs::File::open(self.attempt_dir.join(profile))
+                        .and_then(|file| file.metadata())
+                        .map_or(true, |metadata| metadata.len() == 0)
+                })
+            {
+                process.diagnostic =
+                    Some("A retained raw profile is missing, empty or unreadable.".into());
+            }
+            if process
+                .lines
+                .keys()
+                .any(|file| !self.run.sources.contains_key(file))
+                || process
+                    .functions
+                    .iter()
+                    .flatten()
+                    .any(|function| !self.run.sources.contains_key(&function.file))
+            {
+                process.diagnostic =
+                    Some("Matching captured source is missing; coverage is unavailable.".into());
+            }
+            if process.lines.values().any(|lines| lines.contains_key(&0))
+                || process
+                    .functions
+                    .iter()
+                    .flatten()
+                    .any(|function| function.line == 0 || function.column == 0)
+            {
+                process.diagnostic = Some("Corrupt normalized coverage locations.".into());
+            }
+        }
+        self.attempt = attempt;
+        Ok(())
+    }
+}
+
+// Validate the full JSON schema while discarding measurements during selection.
+// Unlike IgnoredAny, these visitors still reject malformed counts and locations
+// in historical attempts, without allocating a tree entry for every line.
+// {cite}`habeas:util`
+struct DiscardMap<K, V>(std::marker::PhantomData<(K, V)>);
+
+impl<'de, K: serde::Deserialize<'de>, V: serde::Deserialize<'de>> serde::Deserialize<'de>
+    for DiscardMap<K, V>
+{
+    // {cite}`habeas:util`
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct MapVisitor<K, V>(std::marker::PhantomData<(K, V)>);
+        impl<'de, K: serde::Deserialize<'de>, V: serde::Deserialize<'de>> serde::de::Visitor<'de>
+            for MapVisitor<K, V>
+        {
+            type Value = DiscardMap<K, V>;
+
+            // {cite}`habeas:util`
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("a coverage measurement map")
+            }
+
+            // {cite}`habeas:util`
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<Self::Value, A::Error> {
+                while map.next_entry::<K, V>()?.is_some() {}
+                Ok(DiscardMap(std::marker::PhantomData))
+            }
+        }
+        deserializer.deserialize_map(MapVisitor(std::marker::PhantomData))
+    }
+}
+
+// {cite}`habeas:util`
+struct DiscardSeq<T>(std::marker::PhantomData<T>);
+
+impl<'de, T: serde::Deserialize<'de>> serde::Deserialize<'de> for DiscardSeq<T> {
+    // {cite}`habeas:util`
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct SeqVisitor<T>(std::marker::PhantomData<T>);
+        impl<'de, T: serde::Deserialize<'de>> serde::de::Visitor<'de> for SeqVisitor<T> {
+            type Value = DiscardSeq<T>;
+
+            // {cite}`habeas:util`
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("a coverage function list")
+            }
+
+            // {cite}`habeas:util`
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut seq: A,
+            ) -> Result<Self::Value, A::Error> {
+                while seq.next_element::<T>()?.is_some() {}
+                Ok(DiscardSeq(std::marker::PhantomData))
+            }
+        }
+        deserializer.deserialize_seq(SeqVisitor(std::marker::PhantomData))
+    }
+}
+
+type AttemptMetadata = Attempt<
+    super::Process<DiscardMap<String, DiscardMap<u32, u64>>, DiscardSeq<super::FunctionExecution>>,
+>;
+
+impl AttemptMetadata {
+    // {cite}`habeas:util`
+    fn metadata(self) -> Attempt {
+        Attempt {
+            id: self.id,
+            binary: self.binary,
+            test: self.test,
+            attempt: self.attempt,
+            started: self.started,
+            pid: self.pid,
+            command: self.command,
+            outcome: self.outcome,
+            processes: Vec::new(),
+            diagnostics: self.diagnostics,
+        }
+    }
+}
+
+// {cite}`habeas:util`
+#[derive(serde::Serialize, serde::Deserialize)]
+struct CachedAttempt {
+    stamp: Vec<String>,
+    metadata: Result<Attempt, String>,
+}
+
+// {cite}`habeas:util`
+fn attempt_stamp(path: &Path, now: std::time::SystemTime) -> io::Result<Vec<String>> {
+    let metadata = fs::metadata(path)?;
+    // Recent writes are reread, including on filesystems whose timestamps have
+    // coarse resolution. Unix change time also detects in-place edits that
+    // restore the original modification time.
+    if now.duration_since(metadata.modified()?).unwrap_or_default()
+        < std::time::Duration::from_secs(2)
+    {
+        return Err(io::Error::other("Attempt is still being written."));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let age = now
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as i128
+            - (metadata.ctime() as i128 * 1_000_000_000 + metadata.ctime_nsec() as i128);
+        if age < 2_000_000_000 {
+            return Err(io::Error::other("Attempt was recently changed."));
+        }
+        Ok(vec![
+            metadata.dev().to_string(),
+            metadata.ino().to_string(),
+            metadata.len().to_string(),
+            metadata.mtime().to_string(),
+            metadata.mtime_nsec().to_string(),
+            metadata.ctime().to_string(),
+            metadata.ctime_nsec().to_string(),
+        ])
+    }
+    #[cfg(not(unix))]
+    {
+        Err(io::Error::other(
+            "Reliable file change stamps are unavailable.",
+        ))
+    }
+}
+
+// {cite}`habeas:util`
+fn load_metadata(
+    path: &Path,
+    cache: &mut BTreeMap<PathBuf, CachedAttempt>,
+    changed: &mut bool,
+    now: std::time::SystemTime,
+) -> io::Result<Attempt> {
+    let stamp = attempt_stamp(path, now).ok();
+    if let Some(entry) = cache.get(path)
+        && stamp.as_ref() == Some(&entry.stamp)
+    {
+        return entry.metadata.clone().map_err(io::Error::other);
+    }
+    let metadata = load::<AttemptMetadata>(path)
+        .map(AttemptMetadata::metadata)
+        .map_err(|error| error.to_string());
+    if let Some(stamp) = stamp {
+        cache.insert(
+            path.to_path_buf(),
+            CachedAttempt {
+                stamp,
+                metadata: metadata.clone(),
+            },
+        );
+        *changed = true;
+    } else if cache.remove(path).is_some() {
+        *changed = true;
+    }
+    metadata.map_err(io::Error::other)
 }
 
 pub(super) fn readable(record: &Record) -> bool {
@@ -40,20 +258,28 @@ pub(super) fn readable(record: &Record) -> bool {
 // {impl}`requirements.test-coverage.index.summary`
 // {impl}`requirements.test-coverage.index.file_map`
 pub(super) fn union<'a>(records: impl Iterator<Item = &'a Record>) -> BTreeMap<(String, u32), u64> {
-    let mut result: BTreeMap<(String, u32), u64> = BTreeMap::new();
+    let mut files: BTreeMap<&str, BTreeMap<u32, u64>> = BTreeMap::new();
     for record in records {
         for process in &record.attempt.processes {
             for (file, lines) in &process.lines {
+                let totals = files.entry(file).or_default();
                 for (&line, &count) in lines {
-                    result
-                        .entry((file.clone(), line))
+                    totals
+                        .entry(line)
                         .and_modify(|current| *current = (*current).max(count))
                         .or_insert(count);
                 }
             }
         }
     }
-    result
+    files
+        .into_iter()
+        .flat_map(|(file, lines)| {
+            lines
+                .into_iter()
+                .map(move |(line, count)| ((file.to_owned(), line), count))
+        })
+        .collect()
 }
 
 // {cite}`habeas:util`
@@ -381,7 +607,12 @@ pub(super) fn load_saved(project: &Path, target: Option<PathBuf>) -> SavedCovera
         Ok((target, root)) => {
             let storage = target.join("habeas/coverage");
             if storage.is_dir() {
-                let entries = match fs::read_dir(storage) {
+                let cache_path = storage.join("selection-cache.json");
+                let mut metadata_cache =
+                    load::<BTreeMap<PathBuf, CachedAttempt>>(&cache_path).unwrap_or_default();
+                let mut cache_changed = false;
+                let mut seen = BTreeSet::new();
+                let entries = match fs::read_dir(&storage) {
                     Ok(entries) => entries.collect::<Vec<_>>(),
                     Err(error) => {
                         uncertain_history = true;
@@ -437,7 +668,14 @@ pub(super) fn load_saved(project: &Path, target: Option<PathBuf>) -> SavedCovera
                                 continue;
                             }
                         };
-                        let mut attempt: Attempt = match load(&attempt_dir.join("attempt.json")) {
+                        let attempt_path = attempt_dir.join("attempt.json");
+                        seen.insert(attempt_path.clone());
+                        let attempt: Attempt = match load_metadata(
+                            &attempt_path,
+                            &mut metadata_cache,
+                            &mut cache_changed,
+                            std::time::SystemTime::now(),
+                        ) {
                             Ok(attempt) => attempt,
                             Err(error) => {
                                 uncertain_history = true;
@@ -448,45 +686,6 @@ pub(super) fn load_saved(project: &Path, target: Option<PathBuf>) -> SavedCovera
                                 continue;
                             }
                         };
-                        for process in &mut attempt.processes {
-                            if process.profiles.is_empty()
-                                || process.profiles.iter().any(|profile| {
-                                    fs::File::open(attempt_dir.join(profile))
-                                        .and_then(|file| file.metadata())
-                                        .map_or(true, |metadata| metadata.len() == 0)
-                                })
-                            {
-                                process.diagnostic = Some(
-                                    "A retained raw profile is missing, empty or unreadable."
-                                        .into(),
-                                );
-                            }
-                            if process
-                                .lines
-                                .keys()
-                                .any(|file| !run.sources.contains_key(file))
-                                || process
-                                    .functions
-                                    .iter()
-                                    .flatten()
-                                    .any(|function| !run.sources.contains_key(&function.file))
-                            {
-                                process.diagnostic = Some(
-                                    "Matching captured source is missing; coverage is unavailable."
-                                        .into(),
-                                );
-                            }
-                            if process.lines.values().any(|lines| lines.contains_key(&0))
-                                || process
-                                    .functions
-                                    .iter()
-                                    .flatten()
-                                    .any(|function| function.line == 0 || function.column == 0)
-                            {
-                                process.diagnostic =
-                                    Some("Corrupt normalized coverage locations.".into());
-                            }
-                        }
                         // IDs are generated by the collector, but disk data may be corrupt.
                         if ![&run.id, &attempt.id]
                             .iter()
@@ -503,8 +702,16 @@ pub(super) fn load_saved(project: &Path, target: Option<PathBuf>) -> SavedCovera
                             run: Arc::clone(&run),
                             attempt,
                             fresh: current,
+                            attempt_dir,
                         });
                     }
+                }
+                let before = metadata_cache.len();
+                metadata_cache.retain(|path, _| seen.contains(path));
+                if cache_changed || before != metadata_cache.len() {
+                    // This cache is disposable and optional: a read-only target
+                    // directory still gets the same validated coverage result.
+                    let _ = super::save(&cache_path, &metadata_cache);
                 }
             }
         }
@@ -529,6 +736,16 @@ pub(super) fn load_saved(project: &Path, target: Option<PathBuf>) -> SavedCovera
         }
     }
     let selected: BTreeSet<_> = selected.into_values().collect();
+    for &index in &selected {
+        let record = &mut records[index];
+        if let Err(error) = record.load_measurements() {
+            uncertain_history = true;
+            diagnostics.push(format!(
+                "{}: unavailable attempt data: {error}",
+                record.attempt_dir.display()
+            ));
+        }
+    }
     SavedCoverage {
         records,
         selected,
@@ -777,7 +994,7 @@ mod tests {
             diagnostics: vec![],
         };
         save(&dir.join("run.json"), &run).unwrap();
-        let attempt = Attempt {
+        let attempt: Attempt = Attempt {
             id: attempt_dir
                 .file_name()
                 .unwrap()
@@ -1824,6 +2041,211 @@ mod tests {
 
     // {test}`requirements.test-coverage.index.selection`
     #[test]
+    #[cfg(unix)]
+    fn metadata_cache_preserves_selection_and_detects_edits_with_restored_mtime() {
+        let (temp, _) = fixture();
+        let dir = record(temp.path(), "one", 1, "build-a", &[(1, 1)]);
+        let path = dir.join("attempt.json");
+        let original_mtime = fs::metadata(&path).unwrap().modified().unwrap();
+        let now = std::time::SystemTime::now() + std::time::Duration::from_secs(10);
+        let mut cache = BTreeMap::new();
+        let mut changed = false;
+        assert_eq!(
+            load_metadata(&path, &mut cache, &mut changed, now)
+                .unwrap()
+                .test,
+            "one"
+        );
+        assert!(changed);
+        changed = false;
+        assert_eq!(
+            load_metadata(&path, &mut cache, &mut changed, now)
+                .unwrap()
+                .test,
+            "one"
+        );
+        assert!(!changed, "unchanged attempts use cached metadata");
+
+        let original = fs::read_to_string(&path).unwrap();
+        let modified = original.replace("\"test\": \"one\"", "\"test\": \"two\"");
+        assert_eq!(original.len(), modified.len());
+        // The artificial clock makes fresh files eligible for caching. Wait
+        // for the filesystem's change timestamp to advance; real callers
+        // instead reread all files changed within the past two seconds.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        loop {
+            fs::write(&path, &modified).unwrap();
+            fs::File::open(&path)
+                .unwrap()
+                .set_times(std::fs::FileTimes::new().set_modified(original_mtime))
+                .unwrap();
+            if load_metadata(&path, &mut cache, &mut changed, now)
+                .unwrap()
+                .test
+                == "two"
+            {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "same-size edits with restored mtime must invalidate the cache"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(
+            changed,
+            "change time detects same-size edits with restored mtime"
+        );
+
+        fs::write(&path, "{").unwrap();
+        assert!(load_metadata(&path, &mut cache, &mut changed, now).is_err());
+        changed = false;
+        assert!(load_metadata(&path, &mut cache, &mut changed, now).is_err());
+        assert!(!changed, "cached corruption remains a selection failure");
+        fs::write(&path, original).unwrap();
+        assert_eq!(
+            load_metadata(&path, &mut cache, &mut changed, now)
+                .unwrap()
+                .test,
+            "one"
+        );
+
+        changed = false;
+        load_metadata(
+            &path,
+            &mut cache,
+            &mut changed,
+            std::time::SystemTime::now(),
+        )
+        .unwrap();
+        assert!(
+            !cache.contains_key(&path),
+            "recent writes are always reread"
+        );
+    }
+
+    // {test}`requirements.test-coverage.index.unavailable`
+    // {test}`requirements.test-coverage.index.selection`
+    #[test]
+    fn a_corrupt_optional_metadata_cache_does_not_hide_saved_measurements() {
+        let (temp, _) = fixture();
+        let root = temp.path();
+        record(root, "one", 1, "build-a", &[(1, 4)]);
+        fs::write(
+            root.join("target/habeas/coverage/selection-cache.json"),
+            "{",
+        )
+        .unwrap();
+        let saved = load_saved(root, Some(root.join("target")));
+        assert!(!saved.uncertain_history);
+        assert_eq!(
+            union(saved.selected.iter().map(|&index| &saved.records[index])),
+            BTreeMap::from([(("code.rs".into(), 1), 4)])
+        );
+    }
+
+    // {test}`requirements.test-coverage.index.selection`
+    #[test]
+    fn history_selection_loads_measurements_only_for_latest_attempts() {
+        let (temp, _) = fixture();
+        let root = temp.path();
+        record(root, "one", 1, "build-a", &[(1, 0)]);
+        record(root, "one", 2, "build-b", &[(1, 9)]);
+        record(root, "one", 3, "build-a", &[(1, 4)]);
+        record(root, "two", 4, "build-a", &[(2, 7)]);
+        let mut saved = load_saved(root, Some(root.join("target")));
+        assert!(!saved.uncertain_history);
+        assert_eq!(saved.selected.len(), 2);
+        assert_eq!(
+            union(saved.selected.iter().map(|&index| &saved.records[index])),
+            BTreeMap::from([(("code.rs".into(), 1), 4), (("code.rs".into(), 2), 7)])
+        );
+        for (index, record) in saved.records.iter().enumerate() {
+            assert_eq!(
+                record.attempt.processes.is_empty(),
+                !saved.selected.contains(&index),
+                "excluded attempts should retain metadata without their measurements"
+            );
+        }
+        let historical = &mut saved.records[1];
+        assert_eq!(historical.run.configuration, "build-b");
+        historical.load_measurements().unwrap();
+        assert_eq!(
+            union(std::iter::once(&*historical)),
+            BTreeMap::from([(("code.rs".into(), 1), 9)])
+        );
+    }
+
+    // {test}`requirements.test-coverage.check.measurement`
+    // {test}`requirements.test-coverage.index.selection`
+    #[test]
+    fn malformed_historical_measurements_make_selection_uncertain() {
+        let (temp, _) = fixture();
+        let root = temp.path();
+        let old = record(root, "one", 1, "build-a", &[(1, 1)]);
+        record(root, "one", 2, "build-a", &[(1, 2)]);
+        let path = old.join("attempt.json");
+        let original: serde_json::Value = load(&path).unwrap();
+        for (pointer, invalid) in [
+            (
+                "/processes/0/lines/code.rs/1",
+                serde_json::json!("not a count"),
+            ),
+            ("/processes/0/lines", serde_json::json!([])),
+            (
+                "/processes/0/functions",
+                serde_json::json!([{"file": "code.rs"}]),
+            ),
+            ("/processes/0/functions", serde_json::json!({})),
+            ("/processes/0/profiles", serde_json::json!(null)),
+            ("/processes", serde_json::json!(null)),
+        ] {
+            let mut broken = original.clone();
+            *broken.pointer_mut(pointer).unwrap() = invalid;
+            save(&path, &broken).unwrap();
+            let saved = load_saved(root, Some(root.join("target")));
+            assert!(saved.uncertain_history, "{pointer}");
+            assert_eq!(
+                union(saved.selected.iter().map(|&index| &saved.records[index])),
+                BTreeMap::from([(("code.rs".into(), 1), 2)])
+            );
+        }
+        save(&path, &original).unwrap();
+        assert!(!load_saved(root, Some(root.join("target"))).uncertain_history);
+    }
+
+    // {test}`requirements.test-coverage.index.selection`
+    // {test}`requirements.test-coverage.check.measurement`
+    #[test]
+    fn selected_attempt_cannot_be_replaced_between_selection_and_loading() {
+        let (temp, _) = fixture();
+        let root = temp.path();
+        let dir = record(root, "one", 1, "build-a", &[(1, 1)]);
+        let mut saved = load_saved(root, Some(root.join("target")));
+        let original: Attempt = load(&dir.join("attempt.json")).unwrap();
+        for field in ["id", "binary", "test", "started"] {
+            let mut changed = serde_json::to_value(&original).unwrap();
+            changed[field] = if field == "started" {
+                serde_json::json!(2)
+            } else {
+                serde_json::json!("replacement")
+            };
+            save(&dir.join("attempt.json"), &changed).unwrap();
+            assert!(
+                saved.records[0]
+                    .load_measurements()
+                    .unwrap_err()
+                    .to_string()
+                    .contains("changed during coverage selection"),
+                "{field}"
+            );
+        }
+        save(&dir.join("attempt.json"), &original).unwrap();
+        saved.records[0].load_measurements().unwrap();
+    }
+
+    // {test}`requirements.test-coverage.index.selection`
+    #[test]
     fn selection_distinguishes_binaries_and_selects_latest_attempts_within_the_active_build() {
         let (temp, mut book) = fixture();
         for (binary, started, counts) in [
@@ -2140,13 +2562,14 @@ mod tests {
         );
         // Archived reports use the saved source, even though freshness excludes
         // these attempts from the current workspace's gaps report.
-        let saved = load_saved(root, Some(root.join("target")));
+        let mut saved = load_saved(root, Some(root.join("target")));
         let archived = saved
             .records
-            .iter()
+            .iter_mut()
             .find(|record| record.attempt.test == "one")
             .unwrap();
         assert!(!archived.fresh);
+        archived.load_measurements().unwrap();
         let captured_lines = |locations: BTreeMap<(String, u32), u64>| {
             locations
                 .into_iter()
@@ -2174,7 +2597,7 @@ mod tests {
         };
         let parent = individual(&archived.attempt.processes[0]);
         let child = individual(&archived.attempt.processes[1]);
-        let combined = captured_lines(union(std::iter::once(archived)));
+        let combined = captured_lines(union(std::iter::once(&*archived)));
         assert_eq!(parent[&("code.rs".into(), 1)], ("fn one() {}".into(), 1));
         assert_eq!(parent[&("code.rs".into(), 2)], ("fn two() {}".into(), 0));
         assert_eq!(child[&("code.rs".into(), 1)], ("fn one() {}".into(), 0));

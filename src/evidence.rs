@@ -142,6 +142,7 @@ pub(crate) struct RepositoryInspection {
     pub(crate) evidence_listed: bool,
     pub(crate) report: EvidenceReport,
     pub(crate) discovery_errors: Vec<String>,
+    pub(crate) outlines: OutlineCache,
 }
 
 // {cite}`habeas:util`
@@ -420,6 +421,7 @@ pub(crate) fn inspect_repository_with_progress(
         evidence_files,
         evidence_listed,
         discovery_errors,
+        outlines,
     })
 }
 
@@ -2750,7 +2752,8 @@ pub(crate) mod tests {
         for detail in [
             "no matching requirement",
             "invalid JSON",
-            "missing for requirement",
+            "evidence/requirements.two.json: missing for requirement at md/requirements.md:7",
+            "evidence/requirements.empty.json: missing for requirement at md/requirements.md:19",
             "requirement text changed",
             "- Old text.",
             "+ First.",
@@ -3083,6 +3086,7 @@ pub(crate) mod tests {
 
     // {test}`requirements.ci.errors`
     // {test}`requirements.definitions.inputs`
+    // {test}`requirements.ci.coverage`
     #[test]
     fn configuration_and_dependency_failures_do_not_stop_later_checks() {
         let temp = fixture();
@@ -3175,6 +3179,7 @@ pub(crate) mod tests {
     }
 
     // {test}`requirements.ci.errors`
+    // {test}`requirements.ci.coverage`
     #[test]
     fn git_index_failure_is_reported_once_and_later_checks_still_run() {
         let temp = fixture();
@@ -3420,6 +3425,7 @@ pub(crate) mod tests {
     }
 
     // {test}`requirements.ci.identifiers`
+    // {test}`requirements.ci.coverage`
     #[test]
     fn invalid_full_names_from_chapter_paths_are_reported_and_not_defined() {
         let temp = fixture();

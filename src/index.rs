@@ -373,13 +373,12 @@ impl DetailPlan {
         let source_links = SourceLinks::from_config(&config)?;
         let inspection = inspect_repository(root)?;
         let report = &inspection.report;
-        let outlines = OutlineCache::default();
         let sources = RenderSources {
             root,
             definitions: &inspection.definitions,
             references: &inspection.references,
             source_links: source_links.as_ref(),
-            outlines: &outlines,
+            outlines: &inspection.outlines,
         };
         let mut rows = Vec::new();
         let mut pages = BTreeMap::new();

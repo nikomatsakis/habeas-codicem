@@ -763,6 +763,12 @@ fn overlaps_protected(start: usize, end: usize, ranges: &[Range<usize>]) -> bool
 }
 
 pub(crate) fn reference_roles(content: &str, markdown: bool) -> Vec<ReferenceMatch<'_>> {
+    if !["{impl}`", "{cite}`", "{test}`", "{term}`", "{fixme}`"]
+        .iter()
+        .any(|prefix| content.contains(prefix))
+    {
+        return Vec::new();
+    }
     let protected = if markdown {
         let mut ranges = protected_ranges(content);
         for block in definition_blocks(content)
@@ -1242,12 +1248,18 @@ mod tests {
     fn default_index_number_follows_top_level_chapters_across_parts_and_unnumbered_chapters() {
         let mut book = Book::new();
         book.push_item(BookItem::PartTitle("Part".into()));
+        let mut first = Chapter::new("First", "First.".into(), "first.md", vec![]);
+        first.number = Some(mdbook_preprocessor::book::SectionNumber::new(vec![2]));
+        book.push_item(first);
         let mut chapter = Chapter::new("Chapter", "Text.".into(), "chapter.md", vec![]);
         chapter.number = Some(mdbook_preprocessor::book::SectionNumber::new(vec![4]));
         let mut child = Chapter::new("Child", "Child.".into(), "child.md", vec!["Chapter".into()]);
         child.number = Some(mdbook_preprocessor::book::SectionNumber::new(vec![4, 10]));
         chapter.sub_items.push(BookItem::Chapter(child));
         book.push_item(chapter);
+        let mut last = Chapter::new("Last", "Last.".into(), "last.md", vec![]);
+        last.number = Some(mdbook_preprocessor::book::SectionNumber::new(vec![3]));
+        book.push_item(last);
         book.push_item(BookItem::Separator);
         book.push_item(Chapter::new(
             "Appendix",
@@ -1257,7 +1269,7 @@ mod tests {
         ));
         let root = book_root();
         preprocess_book(&mut book, root.path()).unwrap();
-        assert_eq!(book.items.len(), 5);
+        assert_eq!(book.items.len(), 7);
         let BookItem::Chapter(index) = book.items.last().unwrap() else {
             panic!("the default index must follow the appendix");
         };

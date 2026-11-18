@@ -829,7 +829,7 @@ pub fn collect_process(args: &[OsString]) -> io::Result<i32> {
         .join("attempts")
         .join(uuid::Uuid::new_v4().to_string());
     fs::create_dir_all(&dir)?;
-    let mut attempt = Attempt {
+    let mut attempt: Attempt = Attempt {
         id: dir.file_name().unwrap().to_string_lossy().into_owned(),
         binary: std::env::var("NEXTEST_BINARY_ID").map_err(io::Error::other)?,
         test: std::env::var("NEXTEST_TEST_NAME").map_err(io::Error::other)?,

@@ -178,11 +178,12 @@ impl Graph for HabeasDomain<'_> {
                 .as_ref()
                 .as_ref()
                 .map_err(|error| std::io::Error::other(error.clone()))?;
+            self.outlines.source_access(self.root)?;
             let sources = crate::authoring::inputs::AssessmentSources::prepare_with_context(
                 self.root,
                 &query.0,
                 crate::github::GithubIssues::offline(),
-                self.definitions.clone(),
+                self.definitions,
                 self.outlines.clone(),
             )?;
             return Ok(sources

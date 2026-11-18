@@ -40,7 +40,7 @@ impl AssessmentKind {
 // {impl}`requirements.authoring.delivered_inputs`
 pub(crate) struct AssessmentSources {
     pub(crate) root: PathBuf,
-    pub(crate) access: SourceAccess,
+    pub(crate) access: std::sync::Arc<SourceAccess>,
     pub(crate) subject_name: String,
     pub(crate) subject_kind: AssessmentKind,
     pub(crate) subject_text: String,
@@ -88,7 +88,7 @@ impl AssessmentSources {
             root,
             subject_name,
             github,
-            load_definitions(root)?,
+            &load_definitions(root)?,
             OutlineCache::default(),
         )
     }
@@ -98,11 +98,11 @@ impl AssessmentSources {
         root: &Path,
         subject_name: &str,
         github: GithubIssues,
-        definitions: BTreeMap<String, Declaration>,
+        definitions: &BTreeMap<String, Declaration>,
         outlines: OutlineCache,
     ) -> io::Result<Self> {
         let root = fs::canonicalize(root)?;
-        let access = super::access::load_source_access(&root)?;
+        let access = outlines.source_access(&root)?;
         let subject = definitions
             .get(subject_name)
             .filter(|definition| definition.kind != DefinitionKind::Term)
@@ -160,7 +160,7 @@ impl AssessmentSources {
         // The same edges determine the reference contributions below.
         let domain = crate::sdk::HabeasDomain {
             root: &root,
-            definitions: &definitions,
+            definitions,
             outlines: &outlines,
         };
         let reference_set =
@@ -295,7 +295,7 @@ impl AssessmentSources {
         }
         Ok(Self {
             root,
-            access,
+            access: access.into(),
             subject_name: subject_name.to_owned(),
             has_applicable_fixme: !acknowledgments.is_empty(),
             subject_kind: AssessmentKind::Definition(
@@ -393,7 +393,7 @@ impl AssessmentSources {
         );
         Ok(Self {
             root,
-            access,
+            access: access.into(),
             subject_name,
             subject_kind: AssessmentKind::Citation(citation),
             has_applicable_fixme: false,
@@ -510,7 +510,7 @@ impl AssessmentSources {
         let fixmes = crate::sites::site_fixmes(&root, &site, &references, &outlines);
         Ok(Self {
             root,
-            access,
+            access: access.into(),
             subject_name,
             has_applicable_fixme: !fixmes.is_empty(),
             subject_kind: AssessmentKind::Site(site, fixmes),
@@ -1513,6 +1513,13 @@ pub(super) mod tests {
         );
         let second = acknowledgment("", "Second gap.");
         fs::write(root.path().join("a.txt"), format!("{first}\n{second}")).unwrap();
+        let invalid = [
+            acknowledgment(":unsupported: option\n", "Unsupported option gap."),
+            acknowledgment(":github: not-an-issue\n", "Malformed issue gap."),
+            acknowledgment(":github: o/r#3\n", ""),
+            ":::{fixme} requirements.ready\nUnclosed gap.\n".to_owned(),
+        ];
+        fs::write(root.path().join("invalid.txt"), invalid.join("\n")).unwrap();
         fs::write(root.path().join("z.txt"), acknowledgment("", "Last gap.")).unwrap();
         let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
         let metadata = sources.model_acknowledgments();

@@ -364,12 +364,12 @@ pub(super) fn check_saved(root: &Path, saved: &book::SavedCoverage) -> io::Resul
     // Source discovery, parsing and citation checks remain independent of
     // measurement. No exception can clear a measurement failure.
     let measured = errors.is_empty();
-    let mut counters = BTreeMap::<(String, u32, u32), u64>::new();
+    let mut counters = std::collections::HashMap::<(&str, u32, u32), u64>::new();
     for record in &selected {
         for process in &record.attempt.processes {
             for function in process.functions.iter().flatten() {
                 counters
-                    .entry((function.file.clone(), function.line, function.column))
+                    .entry((&function.file, function.line, function.column))
                     .and_modify(|count| *count = (*count).max(function.count))
                     .or_insert(function.count);
             }
@@ -475,8 +475,8 @@ pub(super) fn check_saved(root: &Path, saved: &book::SavedCoverage) -> io::Resul
             // starts at the original fn keyword rather than the async token.
             // Both points belong to this declaration, never a nested body.
             let keys = [
-                (file.clone(), function.line, function.column),
-                (file.clone(), function.keyword.0, function.keyword.1),
+                (file.as_str(), function.line, function.column),
+                (file.as_str(), function.keyword.0, function.keyword.1),
             ];
             if keys
                 .iter()
