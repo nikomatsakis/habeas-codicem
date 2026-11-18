@@ -261,13 +261,19 @@ The review prompt MUST direct the reviewer not to re-raise the decisions and ope
 
 :::{req} requirements_review_skill.review_prompt.mechanical
 :impl: assets/skills/habeas-requirements/references/review-prompt.md
-The review prompt MUST count the following as mechanical changes, which the reviewer makes in the revised text and never phrases as questions:
+The review prompt treats the following as mechanical changes, which the reviewer
+makes in the revised text and never phrases as questions:
 
 - splitting a compound requirement;
-- choosing between MUST, SHOULD, and MAY when the draft's intent is clear, defaulting to MUST and keeping a SHOULD or MAY the draft already chose;
+- clarifying an obligation whose intent is clear while preserving whether the
+  behavior is required, recommended, or permitted;
 - rewording vague or inconsistent terms, or an ambiguity, where only one resolution is sensible;
 - adding an `{example}` that pins an obligation down;
 - updating other requirements that a change makes stale.
+
+Ordinary prose and commented API declarations can express obligations. The reviewer
+does not automatically convert them to RFC keywords or strengthen or weaken
+what the draft promises.
 :::
 
 :::{req} requirements_review_skill.review_prompt.names
@@ -277,17 +283,24 @@ The review prompt MUST direct the reviewer never to rename or move a committed r
 
 :::{req} requirements_review_skill.review_prompt.design
 :impl: assets/skills/habeas-requirements/references/review-prompt.md
-The review prompt MUST direct the reviewer to return the following as design questions, each with why it matters, the options, and a recommendation:
+The review prompt directs the reviewer to return the following as design
+questions, each with why it matters, the options, and a recommendation:
 
 - gaps where more than one answer is plausible;
 - conflicts with other requirements, citing them by full name;
-- MUST versus SHOULD where the choice depends on the user's intent;
+- whether behavior is required, recommended, or permitted, when the choice
+  depends on the user's intent;
 - obligations nothing could check, where any fix changes what is promised.
 :::
 
 :::{req} requirements_review_skill.review_prompt.compound
 :impl: assets/skills/habeas-requirements/references/review-prompt.md
-The review prompt's criteria MUST count as compound a requirement that lists several independent forms, checks, or outputs. They MUST count a sentence beginning "It MUST also" as a sign of a compound requirement. They MUST direct the reviewer to split a compound requirement into one requirement for each obligation that could be implemented, could change, or could fail on its own, and to move shared detail, such as a template or format, into its own requirement that the others cite.
+The review prompt's criteria count as compound a requirement that lists several
+independent forms, checks, or outputs. An additional promise introduced with
+"also" is a hint, regardless of whether the text uses RFC keywords. The reviewer
+splits independent obligations that could be implemented, change, or fail on
+their own, and moves shared detail, such as a template or format, into its own
+requirement that the others cite.
 :::
 
 :::{req} requirements_review_skill.review_prompt.criteria
@@ -296,7 +309,9 @@ The review prompt's criteria MUST direct the reviewer to find each of the follow
 
 - text that a careful reviewer could read two ways;
 - obligations that a reviewer could not judge from the requirement text, the code, and the tests, or that nothing would fail for if they were broken;
-- text that prescribes an implementation instead of an outcome.
+- text that prescribes an implementation instead of an outcome. Public API
+  declarations specify an observable interface and are appropriate contract
+  text; their accompanying comments can specify semantic guarantees.
 :::
 
 :::{req} requirements_review_skill.review_prompt.distributed
