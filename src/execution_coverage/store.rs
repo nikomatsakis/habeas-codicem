@@ -240,6 +240,12 @@ impl Store {
         connection
             .pragma_update(None, "foreign_keys", true)
             .map_err(io::Error::other)?;
+        // WAL commits stay atomic without flushing for every process-state
+        // update. Coverage is disposable: a machine power failure may lose
+        // recent results, which can be recollected.
+        connection
+            .pragma_update(None, "synchronous", "NORMAL")
+            .map_err(io::Error::other)?;
         if schema == SCHEMA {
             return Ok(Self {
                 connection,
@@ -687,10 +693,66 @@ mod tests {
         attempt
     }
 
+    // {test}`requirements.test-coverage.processes`
+    // {test}`requirements.test-coverage.storage.current`
+    // {test}`requirements.test-coverage.storage.outcomes`
+    #[test]
+    fn concurrent_writers_preserve_each_tests_state_and_measurements() {
+        use std::sync::Barrier;
+
+        let temp = tempfile::tempdir().unwrap();
+        let mut store = Store::open(temp.path()).unwrap();
+        let selected: Vec<_> = (0..64)
+            .map(|index| identity(&format!("binary-{index}"), "same_name"))
+            .collect();
+        let run = invocation("a", &selected);
+        store.replace(&run, &selected, false).unwrap();
+        let barrier = Barrier::new(selected.len());
+        let attempts: Vec<_> = std::thread::scope(|scope| {
+            let workers: Vec<_> = selected
+                .iter()
+                .enumerate()
+                .map(|(index, test)| {
+                    let barrier = &barrier;
+                    let run = &run;
+                    let storage = temp.path();
+                    scope.spawn(move || {
+                        let writer = Store::open(storage).unwrap();
+                        barrier.wait();
+                        complete(&writer, run, test, index as u64 + 1)
+                    })
+                })
+                .collect();
+            workers
+                .into_iter()
+                .map(|worker| worker.join().unwrap())
+                .collect()
+        });
+
+        let snapshot = store.snapshot(true).unwrap();
+        assert_eq!(snapshot.tests.len(), selected.len());
+        for (index, attempt) in attempts.iter().enumerate() {
+            let result = snapshot
+                .tests
+                .iter()
+                .find(|test| test.metadata.binary == selected[index].binary)
+                .unwrap();
+            assert_eq!(result.run, run.id);
+            assert_eq!(result.metadata.id, attempt.id);
+            assert_eq!(result.metadata.test, "same_name");
+            assert_eq!(result.metadata.outcome, "success");
+            let processes: Vec<Process> =
+                serde_json::from_str(result.measurements.as_ref().unwrap()).unwrap();
+            assert_eq!(processes.len(), 1);
+            assert_eq!(processes[0].lines["code.rs"][&1], index as u64 + 1);
+        }
+    }
+
     // {test}`requirements.test-coverage.storage.current`
     // {test}`requirements.test-coverage.storage.replace`
     // {test}`requirements.test-coverage.storage.cleanup`
     // {test}`requirements.test-coverage.index.selection`
+    // {test}`requirements.test-coverage.processes`
     #[test]
     fn focused_replacement_preserves_unselected_results_and_shared_artifacts() {
         let temp = tempfile::tempdir().unwrap();
