@@ -256,61 +256,74 @@ names the node, whatever its code was then. N MUST be the workspace
 `[coverage]` setting `reauthorings`, a positive integer, and 3 when it is not
 set. When the history is unavailable, such as outside Git or in a shallow clone
 missing those commits, the window MUST be the commits that are available, and
-the commands of {cite}`requirements.references.coverage.report` MUST say that
-coverage history is incomplete.
+`habeas status --coverage` MUST say that coverage history is incomplete.
 :::
 
 :::{req} coverage.report
-`habeas status`, and `habeas author` after it finishes, MUST warn about every
-item without recent coverage under
-{cite}`requirements.references.coverage.history`, naming its file, line, kind,
-and name, except items inside a module named `tests`. A warning MUST NOT fail
-validation, and repository validation MUST NOT read Git history.
+`habeas status`, and `habeas author` after it finishes, MUST report the number
+of nodes without recent coverage under
+{cite}`requirements.references.coverage.history`, except items inside a module
+named `tests`, using the following summary:
+
+```text
+N nodes have coverage warnings. Use `status --coverage` to see them.
+```
+
+The summary MUST report zero when no nodes have warnings. Default output MUST
+NOT list individual coverage warnings or coverage-history details, including
+with `status --all` or `status --verbose`.
+`habeas status --coverage` MUST list every warning, naming its file, line, kind,
+and name, and report incomplete coverage history when applicable.
+A warning MUST NOT fail validation, and repository validation MUST NOT read
+Git history.
 :::
 
 :::{example} coverage.reauthored
 Function `parse` has no reference, and the evidence of `requirements.cli.check`
 read it. The requirement is re-authored and committed twice, and neither new
 record reads `parse`. With the default window of 3, the record's third most
-recent version still names `parse`, so `habeas status` does not warn. After a
-third such commit, no version in the window names it, and `habeas status` warns
-about `parse`. {test}`requirements.references.coverage.history`
+recent version still names `parse`, so `habeas status --coverage` does not warn.
+After a third such commit, no version in the window names it, and
+`habeas status --coverage` warns about `parse`.
+{test}`requirements.references.coverage.history`
 {test}`requirements.references.coverage.report`
 :::
 
 :::{example} coverage.deleted_requirement
 Function `render` is read only by the evidence of `requirements.cli.render`.
 The requirement and its evidence file are deleted.
-Deleted files have no coverage window, so `habeas status` warns about `render`
-at once, before any further commit.
+Deleted files have no coverage window, so `habeas status --coverage` warns about
+`render` at once, before any further commit.
 {test}`requirements.references.coverage.history`
 :::
 
 :::{example} coverage.new_function
 A new function `helper` has no reference, and no evidence record has ever read
-it. `habeas status` warns about it at once; nothing in any window names it.
+it. `habeas status --coverage` warns about it at once; nothing in any window
+names it.
 {test}`requirements.references.coverage.report`
 :::
 
 :::{example} coverage.uncommitted
 The evidence of `requirements.cli.check` read `parse`. The requirement is
 re-authored but not yet committed, and the new record does not read `parse`.
-The committed versions in the window still name it, so `habeas status` does not
-warn. If the new record had read `parse`, its contents on disk would cover it
-even before the commit. {test}`requirements.references.coverage.history`
+The committed versions in the window still name it, so
+`habeas status --coverage` does not warn. If the new record had read `parse`,
+its contents on disk would cover it even before the commit.
+{test}`requirements.references.coverage.history`
 :::
 
 :::{example} coverage.shallow_clone
 In a shallow clone with no history beyond the last commit, each window holds
-only the files' contents on disk and in that commit. `habeas status` says that
-coverage history is incomplete and warns about items those contents do not
-cover. {test}`requirements.references.coverage.history`
+only the files' contents on disk and in that commit. `habeas status --coverage`
+says that coverage history is incomplete and warns about items those contents
+do not cover. {test}`requirements.references.coverage.history`
 :::
 
 :::{example} coverage.test_module
 A helper function inside `mod tests` has no reference and is read by no record.
-`habeas status` does not warn about it. A `#[test]` function in the same module
-without a `{test}` reference is still a validation error.
+`habeas status --coverage` does not warn about it. A `#[test]` function in the
+same module without a `{test}` reference is still a validation error.
 {test}`requirements.references.coverage.report`
 {test}`requirements.references.coverage.tests`
 :::

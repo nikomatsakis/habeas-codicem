@@ -82,11 +82,13 @@ Exceptions never increase reported percentages.
 The requirements index automatically includes a Coverage gaps subchapter.
 Do not add a coverage source chapter or coverage-index directive. Use its CI
 verdict and expandable file gaps to find missing tests or coverage explanations;
-accepted documented gaps are separate. Per-test maps remain available on demand.
+accepted documented gaps are separate. The book shows coverage gaps without
+per-test maps or captured-source reports.
 
 ## Inspecting
 
-- `habeas status [<selection>]` lists definitions needing attention.
+- `habeas status [<selection>]` lists definitions needing attention and a coverage-warning count.
+- `habeas status --coverage` shows individual evidence-coverage warnings and coverage-history details.
 - `habeas info <selection>` prints requirement and example text, evidence state,
   rationale, inputs, and validation findings.
 

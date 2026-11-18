@@ -159,12 +159,17 @@ Use `habeas coverage` for unit and integration tests, including focused runs
 (`habeas coverage -- -E 'test(name)'`), and `cargo test --doc --workspace` for
 doctests. In this repository use `cargo habeas coverage`.
 
+Coverage conversion runs one attempt per available CPU, with each LLVM
+subprocess using one thread.
+
 The mdBook coverage index combines the latest attempt per test for the latest
 build configuration. Source or build-input changes exclude old contributions.
 Each process retains its own raw LLVM profile and captured-source report under
 `target/habeas/coverage/` (or the configured Cargo target directory). These are
 disposable build artifacts: never commit them. Building the book only reads saved
-coverage.
+coverage. Its Coverage gaps page shows insufficient file and function coverage,
+accepted explanations, and measurement diagnostics. Per-test reports and
+captured source remain in the build artifacts.
 
 For full verification, run `habeas test` to collect workspace coverage and then
 check it. In CI, run `habeas coverage -- --workspace`, followed on success by

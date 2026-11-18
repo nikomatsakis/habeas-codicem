@@ -1,4 +1,4 @@
-//! Current source explanations, kept distinct from retained execution reports.
+//! Current source explanations for execution-coverage gaps.
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
@@ -41,7 +41,7 @@ pub(super) fn pages(root: &Path, files: &BTreeSet<String>, index: &Path) -> Vec<
         .map(|file| {
             let path = path(index, file);
             let mut content = format!(
-                "# Coverage explanations\n\n[Back to coverage index]({})\n\nFile: <code>{}</code>.\n\n**Current workspace source notes**, read at book-render time. These explanations and review states describe the current source, including when reached from a historical test report; they do not describe the captured source of that historical run.\n\n",
+                "# Coverage explanations\n\n[Back to coverage index]({})\n\nFile: <code>{}</code>.\n\n**Current workspace source notes**, read at book-render time. These explanations and review states describe the current source.\n\n",
                 crate::chapter_href(&path, index, None), escaped(file),
             );
             match outlines.parse(root, file).as_ref() {

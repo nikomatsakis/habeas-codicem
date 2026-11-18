@@ -1052,10 +1052,13 @@ fn dumb_terminal_keeps_plain_batch_diagnostics() {
         String::from_utf8_lossy(&output.stdout).trim(),
         "6 authored; 0 skipped as current; 0 failed; policy once"
     );
-    // A finished batch reports coverage; outside Git its history is
-    // incomplete.
+    // A finished batch reports only the count; history details are opt-in.
     assert!(
-        stderr.contains("coverage history is incomplete"),
+        stderr.contains("nodes have coverage warnings. Use `status --coverage` to see them."),
+        "{stderr}"
+    );
+    assert!(
+        !stderr.contains("coverage history is incomplete"),
         "{stderr}"
     );
 }
@@ -1875,10 +1878,14 @@ fn batch_authors_citation_reviews_and_preserves_current_ones() {
     );
     let printed: Value = serde_json::from_slice(&single.stdout).unwrap();
     assert_eq!(printed["item"], "fn[helper]");
-    // Coverage warnings still go to stderr; stdout holds only the record.
+    // The coverage summary stays on stderr; stdout holds only the record.
     let stderr = String::from_utf8_lossy(&single.stderr);
     assert!(
-        stderr.contains("coverage history is incomplete"),
+        stderr.contains("nodes have coverage warnings. Use `status --coverage` to see them."),
+        "{stderr}"
+    );
+    assert!(
+        !stderr.contains("coverage history is incomplete"),
         "{stderr}"
     );
     assert_eq!(server.subjects().len(), 16);
@@ -2054,8 +2061,12 @@ fn missing_keeps_current_records_and_force_reassesses_every_selected_subject() {
         );
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
-            stderr.contains("src/extra.rs:1: function orphan has no recent coverage"),
+            stderr.contains("nodes have coverage warnings. Use `status --coverage` to see them."),
             "{args:?}: {stderr}"
+        );
+        assert!(
+            !stderr.contains("function orphan has no recent coverage"),
+            "{stderr}"
         );
     }
     for args in [&["author", "--all"][..], &["author", "--all", "--missing"]] {

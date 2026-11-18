@@ -33,14 +33,28 @@ pub fn status_markdown_with_options(
 }
 
 /// Renders `habeas status`, reading the issues `{fixme}` references name
-/// through `github`. The other status functions read no issues, so every
-/// issue counts as open.
+/// through `github`. The convenience status functions use an offline issue
+/// source, so every issue counts as open.
 // {impl}`requirements.authoring.github_reads`
 pub fn status_markdown_with_github(
     root: &Path,
     all: bool,
     glob: Option<&str>,
     verbose: bool,
+    github: &GithubIssues,
+) -> io::Result<String> {
+    status_markdown_with_coverage(root, all, glob, verbose, false, github)
+}
+
+/// Renders status with coverage-warning details when `coverage` is enabled.
+// {impl}`requirements.cli.status`
+// {impl}`requirements.references.coverage.report`
+pub fn status_markdown_with_coverage(
+    root: &Path,
+    all: bool,
+    glob: Option<&str>,
+    verbose: bool,
+    coverage: bool,
     github: &GithubIssues,
 ) -> io::Result<String> {
     let mut inspection = inspect_repository(root)?;
@@ -190,7 +204,7 @@ pub fn status_markdown_with_github(
     // already a validation finding; status still reports everything else and
     // says why the warnings could not be computed.
     match inspected_coverage_warnings(&inspection) {
-        Ok(warnings) => output.push_str(&coverage_section(&warnings)),
+        Ok(warnings) => output.push_str(&coverage_section(&warnings, coverage)),
         Err(error) => output.push_str(&format!(
             "\n## Coverage warnings\n\nCoverage warnings could not be computed: {}\n",
             escape_html(&error.to_string())
@@ -209,6 +223,16 @@ pub struct CoverageWarnings {
     pub items: Vec<String>,
     /// Whether some file's coverage window may be missing commits.
     pub incomplete: bool,
+}
+
+impl CoverageWarnings {
+    // {impl}`requirements.references.coverage.report`
+    pub fn summary(&self) -> String {
+        format!(
+            "{} nodes have coverage warnings. Use `status --coverage` to see them.",
+            self.items.len()
+        )
+    }
 }
 
 /// The coverage warnings of the project at `root`, as `habeas status` shows
@@ -236,12 +260,15 @@ fn inspected_coverage_warnings(
     })
 }
 
-/// The "Coverage warnings" section of `habeas status`: items without recent
-/// coverage. These do not fail validation.
+/// The summary in `habeas status`, or detailed warnings with `--coverage`.
+/// These do not fail validation.
 // {impl}`requirements.references.coverage.report`
 // {impl}`requirements.references.coverage.history`
 // {impl}`requirements.cli.status`
-fn coverage_section(warnings: &CoverageWarnings) -> String {
+fn coverage_section(warnings: &CoverageWarnings, details: bool) -> String {
+    if !details {
+        return format!("\n{}\n", warnings.summary());
+    }
     let CoverageWarnings {
         items: warned,
         incomplete,

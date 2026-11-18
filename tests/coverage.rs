@@ -47,6 +47,19 @@ fn git(root: &Path, args: &[&str]) {
     assert!(output.status.success(), "git {args:?}: {output:?}");
 }
 
+// {cite}`habeas:util`
+fn coverage_status(root: &Path) -> String {
+    habeas::status_markdown_with_coverage(
+        root,
+        false,
+        None,
+        false,
+        true,
+        &habeas::GithubIssues::offline(),
+    )
+    .unwrap()
+}
+
 /// Writes `name`'s evidence reading `items` of `src/lib.rs`.
 // {cite}`habeas:util`
 fn record(root: &Path, name: &str, items: &[&str]) {
@@ -225,6 +238,13 @@ fn status_shows_coverage_warnings_and_says_when_history_is_incomplete() {
     record(root, "rules.check", &["fn[parse]"]);
     commit(root, "first");
     let status = habeas::status_markdown(root, false).unwrap();
+    assert!(
+        status.contains("2 nodes have coverage warnings. Use `status --coverage` to see them."),
+        "{status}"
+    );
+    assert!(!status.contains("has no recent coverage"), "{status}");
+    assert!(!status.contains("## Coverage warnings"), "{status}");
+    let status = coverage_status(root);
     assert!(status.contains("## Coverage warnings"), "{status}");
     assert!(
         status.contains("src/lib.rs:3: function render has no recent coverage"),
@@ -251,7 +271,7 @@ fn status_shows_coverage_warnings_and_says_when_history_is_incomplete() {
         .output()
         .unwrap();
     assert!(output.status.success(), "{output:?}");
-    let status = habeas::status_markdown(&target, false).unwrap();
+    let status = coverage_status(&target);
     assert!(
         status.contains("Coverage history is incomplete"),
         "{status}"
@@ -302,7 +322,7 @@ fn a_test_without_a_test_reference_fails_validation_even_in_mod_tests() {
 
 // {test}`requirements.references.coverage.report`
 #[test]
-fn habeas_author_prints_coverage_warnings_on_stderr() {
+fn habeas_author_prints_only_the_coverage_warning_count_on_stderr() {
     let temp = project();
     let root = temp.path();
     // No definitions need assessment, so authoring needs no model.
@@ -315,16 +335,18 @@ fn habeas_author_prints_coverage_warnings_on_stderr() {
         .unwrap();
     assert!(output.status.success(), "{output:?}");
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("Coverage warnings"), "{stderr}");
     assert!(
-        stderr.contains("src/lib.rs:5: function helper has no recent coverage"),
+        stderr.contains("3 nodes have coverage warnings. Use `status --coverage` to see them."),
         "{stderr}"
     );
+    assert!(!stderr.contains("has no recent coverage"), "{stderr}");
+    assert!(!stderr.contains("history is incomplete"), "{stderr}");
     assert!(!String::from_utf8_lossy(&output.stdout).contains("has no recent coverage"));
 }
 
 // {test}`requirements.references.coverage.history`
 // {test}`requirements.references.coverage.shallow_clone`
+// {test}`requirements.references.coverage.report`
 #[test]
 fn incomplete_history_is_noted_even_with_nothing_to_warn_about() {
     let temp = project();
@@ -355,6 +377,12 @@ fn incomplete_history_is_noted_even_with_nothing_to_warn_about() {
     );
     let status = habeas::status_markdown(&target, false).unwrap();
     assert!(
+        status.contains("0 nodes have coverage warnings. Use `status --coverage` to see them."),
+        "{status}"
+    );
+    assert!(!status.contains("history is incomplete"), "{status}");
+    let status = coverage_status(&target);
+    assert!(
         status.contains("Coverage history is incomplete"),
         "{status}"
     );
@@ -362,6 +390,66 @@ fn incomplete_history_is_noted_even_with_nothing_to_warn_about() {
     assert_eq!(
         habeas::coverage_warnings(root).unwrap(),
         habeas::CoverageWarnings::default()
+    );
+}
+
+// {test}`requirements.references.coverage.history`
+#[cfg(unix)]
+#[test]
+fn coverage_history_uses_the_git_library_without_launching_git() {
+    use std::os::unix::fs::PermissionsExt;
+    let temp = project();
+    let root = temp.path();
+    record(root, "rules.check", &["fn[parse]"]);
+    commit(root, "read parse");
+    record(root, "rules.check", &[]);
+    commit(root, "stop reading parse");
+    assert_eq!(warned(root), ["render", "helper"]);
+
+    let tools = tempfile::tempdir().unwrap();
+    let tripwire = tools.path().join("git-launched");
+    let executable = tools.path().join("git");
+    // Status also asks Git to discover indexed sources. Supply those metadata
+    // answers, while making every command capable of reading history fail.
+    let index = Command::new("git")
+        .args(["ls-files", "--cached", "-z", "--", "."])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(index.status.success());
+    let index_path = tools.path().join("index");
+    fs::write(&index_path, index.stdout).unwrap();
+    fs::write(
+        &executable,
+        "#!/bin/sh\ncase \"$*\" in\n  'rev-parse --is-inside-work-tree') printf 'true\\n'; exit 0;;\n  'ls-files --cached -z -- .') cat \"$HABEAS_TEST_INDEX\"; exit 0;;\n  'ls-files --others --exclude-standard -z -- .') exit 0;;\nesac\nprintf '%s\\n' \"$*\" >> \"$HABEAS_GIT_TRIPWIRE\"\nexit 97\n",
+    )
+    .unwrap();
+    fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+    let mut paths = vec![tools.path().to_path_buf()];
+    paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
+    let output = Command::new(env!("CARGO_BIN_EXE_habeas"))
+        .args(["status", "--coverage"])
+        .current_dir(root)
+        .env("PATH", std::env::join_paths(paths).unwrap())
+        .env("HABEAS_GIT_TRIPWIRE", &tripwire)
+        .env("HABEAS_TEST_INDEX", &index_path)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let status = String::from_utf8(output.stdout).unwrap();
+    for name in ["render", "helper"] {
+        assert!(
+            status.contains(&format!("function {name} has no recent coverage")),
+            "{status}"
+        );
+    }
+    assert!(
+        !status.contains("function parse has no recent coverage"),
+        "{status}"
+    );
+    assert!(
+        !tripwire.exists(),
+        "coverage history invoked a Git history command"
     );
 }
 

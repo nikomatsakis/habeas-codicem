@@ -47,6 +47,9 @@ enum Command {
         /// List the judgments and original FIXME entries within each issue group.
         #[arg(long)]
         verbose: bool,
+        /// Show individual evidence-coverage warnings and history details.
+        #[arg(long)]
+        coverage: bool,
         /// A full requirement or example name, or a definition glob.
         selection: Option<String>,
     },
@@ -203,14 +206,16 @@ fn main() -> Result<(), Box<dyn Error>> {
             all,
             selection,
             verbose,
+            coverage,
         } => {
             let root = setup::project_root()?;
             io::stdout().lock().write_all(
-                habeas::status_markdown_with_github(
+                habeas::status_markdown_with_coverage(
                     &root,
                     all,
                     selection.as_deref(),
                     verbose,
+                    coverage,
                     &habeas::GithubIssues::from_env(&root),
                 )?
                 .as_bytes(),
@@ -391,19 +396,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 fn print_coverage_warnings(root: &std::path::Path) {
     match habeas::coverage_warnings(root) {
         Ok(warnings) => {
-            if !warnings.items.is_empty() {
-                eprintln!(
-                    "Coverage warnings (these items have no recent coverage; they do not fail validation):"
-                );
-                for line in warnings.items {
-                    eprintln!("- {line}");
-                }
-            }
-            if warnings.incomplete {
-                eprintln!(
-                    "Note: coverage history is incomplete, so only the available history was used"
-                );
-            }
+            eprintln!("{}", warnings.summary());
         }
         Err(error) => eprintln!("cannot compute coverage warnings: {error}"),
     }
