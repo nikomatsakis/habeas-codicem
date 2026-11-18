@@ -297,11 +297,10 @@ minimum.
 
 :::{req} index.file_map.minimum.statuses
 Each directory group under
-{cite}`requirements.test-coverage.index.file_map.directories` MUST separately
-display the number of its listed files, including descendants, that are
-not measured and the number that are unavailable whenever the corresponding
-count is nonzero. These statuses MUST follow
-{cite}`requirements.test-coverage.index.file_map`. The counts MUST describe
+{cite}`requirements.test-coverage.index.file_map.directories` MUST display
+the number of its listed files, including descendants, that are not measured
+whenever that count is nonzero. The status MUST follow
+{cite}`requirements.test-coverage.index.file_map`. The count MUST describe
 only files listed by the map, regardless of which groups are expanded.
 :::
 
@@ -394,8 +393,12 @@ from uncovered file and function obligations. They MUST NOT be presented as
 zero execution or as absence of individual function measurement in otherwise
 usable coverage.
 
-When no usable selected coverage exists, the overview MUST show coverage as
-unavailable and retain the collection guidance of
+When the coverage check reports a measurement failure under
+{cite}`requirements.test-coverage.check.measurement`, the combined overview
+MUST show coverage as unavailable and omit file rows and directory groups.
+Measurement findings MUST remain inspectable under
+{cite}`requirements.test-coverage.index.gaps`. When no usable selected coverage
+exists, the overview MUST retain the collection guidance of
 {cite}`requirements.test-coverage.index.unavailable`. Numerical coverage MUST
 NOT be fabricated from missing or incomplete data.
 :::
