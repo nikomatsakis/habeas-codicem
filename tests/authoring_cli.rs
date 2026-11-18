@@ -4246,7 +4246,8 @@ fn the_review_prompt_lists_the_mechanical_changes() {
         &review_prompt_between("**Mechanical changes:**", "**Design questions:**"),
         &[
             "Split a compound requirement",
-            "Choose MUST, SHOULD, or MAY when the draft's intent is clear. Default to MUST; keep a SHOULD or MAY the draft already chose",
+            "Clarify an obligation whose intent is clear while preserving whether behavior is required, recommended, or permitted",
+            "Do not automatically convert ordinary prose or commented API declarations to RFC keywords, or strengthen or weaken what the draft promises",
             "Fix wording whose resolution is obvious: vague terms, inconsistent terms, an ambiguity with one sensible reading",
             "Add an `{example}` where a concrete case pins an obligation down",
             "Update other requirements a change makes stale",
@@ -4282,7 +4283,7 @@ fn the_review_prompt_lists_the_design_questions_with_options_and_recommendation(
         &[
             "A gap: a case the text says nothing about, where either answer is plausible",
             "A conflict with another requirement; cite it by full name",
-            "MUST or SHOULD when the choice depends on the user's intent",
+            "Whether behavior is required, recommended, or permitted, when the choice depends on the user's intent",
             "An obligation nothing could check, where any fix changes what is promised",
             "For each question give why it matters, the options, and your recommendation",
         ],
@@ -4297,7 +4298,7 @@ fn the_review_prompt_splits_compound_requirements() {
         &section(review_prompt(), "## Criteria"),
         &[
             "**Compound:** a requirement that lists several independent forms, checks, or outputs",
-            "A sentence beginning \"It MUST also\" is a strong hint",
+            "An additional promise introduced with \"also\" is a hint, regardless of whether the text uses RFC keywords",
             "could one part be implemented, change, or fail while another holds? Then split it",
             "Move shared detail, such as a template or a format, into its own requirement that the others cite",
         ],
@@ -4313,7 +4314,8 @@ fn the_review_prompt_criteria_find_ambiguous_uncheckable_and_prescriptive_text()
         &[
             "**Checkable:** a reviewer can judge the obligation from the requirement text, the code, and the tests, and something would fail if it were broken",
             "**One reading:** text a careful reviewer could read two ways is a finding",
-            "**Outcome, not implementation:** the text says what must hold, not how",
+            "**Outcome, not implementation:** the text says what holds",
+            "Public API declarations specify an observable interface",
         ],
     );
 }
@@ -4352,7 +4354,7 @@ fn the_review_prompt_works_a_mechanical_example_and_a_design_question() {
         &section(review_prompt(), "## Examples"),
         &[
             "Compound, with a mechanical fix:",
-            "> The `refactor` command MUST",
+            "> The `refactor` command accepts",
             "Split into",
             "Not a question",
             "A design question:",

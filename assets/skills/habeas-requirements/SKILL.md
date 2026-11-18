@@ -27,8 +27,9 @@ has the directive and reference syntax.
       compound, or incomplete. Cover each observable outcome and failure case
       of the change without committing to an implementation. Reuse existing
       requirements by full name, and propose a new one only for behavior none
-      covers; one general requirement, such as "invalid arguments MUST be
-      reported with usage", can cover many branches. Note the open product
+      covers; one general requirement, such as "invalid arguments are
+      reported with usage", can cover many branches. Follow "Writing chapters"
+      below. Note the open product
       choices; reviewers get them in step 3.
 - [ ] 3. Review. Sort the new and changed requirements into groups that one
       reviewer should see together: requirements that cite each other or
@@ -83,6 +84,32 @@ with the user and committed before its text changes. Restructuring code in
 place, including renaming an item, needs no requirement review, but references
 move with the code and the evidence is reassessed; moving code to another file
 or outline node is a habeas-refactor task.
+
+## Writing chapters
+
+Write chapters as explanations of the program, connecting its purpose and
+design to the interfaces, code, and tests. A useful progression for API chapters
+is purpose, commented API declaration, then a concrete example; adapt it to the
+reader and the subject.
+
+- Explain the whole abstraction before its parts. Introduce one concept at a
+  time and explain why it exists before detailing its constraints.
+- Let code express signatures, type relationships, and structure. Put meaning
+  and relevant semantic guarantees in comments beside the declaration; use prose
+  for motivation and connections instead of repeating facts the code expresses.
+- Use examples to show how an application maps its concepts into the API, such
+  as an application node identity becoming a path. Mark illustrative or omitted
+  code clearly so it cannot be mistaken for a promised interface.
+- Reduce conceptual overhead rather than aiming for fewer words. Keep a
+  coherent API declaration together; split independently meaningful obligations.
+  Put detailed operational guarantees in the section that explains the
+  operation, preserving guarantees that signatures cannot express.
+
+Express obligations clearly in ordinary prose or commented API declarations.
+RFC-style `MUST`, `SHOULD`, and `MAY` are optional: use them when they clarify a
+distinction or fit the project's chosen style. Do not add them just to make text
+look like a requirement. Preserve whether behavior is required, recommended,
+or permitted; prose and code can be precise without capitalized keywords.
 
 ## Choosing references
 
@@ -155,7 +182,7 @@ requirement's assessment treats as a gap:
   too weak to rule out plausible requirement-violating behavior;
 - a standalone test designed to verify the subject without `{test}`; helpers
   reached from marked tests need no reference of their own;
-- an applicable SHOULD with inadequate tests, and text with two equally
+- an applicable recommendation with inadequate tests, and text with two equally
   supported readings that lead to different testing judgments.
 
 An example's review checks that tests' setup and assertions cover its scenario

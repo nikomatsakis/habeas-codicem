@@ -5,8 +5,9 @@ description: Use at the start of any work in a project that tracks requirements 
 
 # Habeas
 
-Habeas traces requirements, written in a project's mdBook, to the code and tests
-that implement and verify them. `habeas author` has a model assess whether tests
+Habeas supports literate programming: a project's mdBook explains the program,
+and references connect its stated behavior to the code and tests that implement
+and verify it. `habeas author` has a model assess whether tests
 adequately check each requirement and records the result as evidence under `evidence/`;
 `habeas::validate()` validates that evidence without calling a model.
 `habeas test` runs instrumented workspace tests and checks their saved execution
@@ -105,12 +106,14 @@ the chapter path relative to that directory, without `.md`, with `/` changed to
 
 ```text
 :::{req} forwarding.quit
-Pressing q MUST stop managed forwards.
+Pressing q stops all managed forwards.
 :::
 ```
 
-defines `requirements.forwarding.quit`. State obligations with BCP 14 terms
-(MUST, SHOULD, MAY). Everything between the fences is the body.
+defines `requirements.forwarding.quit`. Everything between the fences is the
+body, including prose, code declarations, and their comments. For chapter style
+and expressing obligations, follow "Writing chapters" in the
+habeas-requirements skill.
 
 An `{example}` is a concrete case, named and fenced the same way. Its body must
 reference a requirement it illustrates: `{test}` when that requirement's review

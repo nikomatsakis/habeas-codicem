@@ -103,7 +103,9 @@ hides it from authoring.
 Write one requirement per obligation a user could rely on; the
 habeas-requirements review (step 3) splits compound ones. For tests of internal
 invariants, write a requirement for the invariant they check rather than
-inventing a user-facing promise. Label each proposal and act on the label:
+inventing a user-facing promise. Follow "Writing chapters" in the
+habeas-requirements skill: explain the program while deriving its obligations.
+Label each proposal and act on the label:
 
 - **Intended:** state the observed behavior.
 - **Possible bug:** ask the user what behavior is intended and write the
@@ -111,8 +113,8 @@ inventing a user-facing promise. Label each proposal and act on the label:
   asks; the resulting false judgment stays on the gap list, or gets a
   `{fixme}` reference if the user defers it (the habeas-evidence skill's
   `references/fixme.md`).
-- **Incidental:** the user chooses between a requirement, often with MAY, and
-  removing the behavior. For example, a command that also accepts an
+- **Incidental:** the user chooses between explicitly permitting the behavior
+  and removing it. For example, a command that also accepts an
   undocumented alias.
 
 When a convention applies on its own at many sites, such as how every
