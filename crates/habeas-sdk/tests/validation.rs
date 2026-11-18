@@ -13,7 +13,6 @@ use std::{
     cell::Cell,
     collections::BTreeMap,
     future::IntoFuture,
-    num::NonZeroUsize,
     rc::Rc,
     sync::{
         Arc, Mutex,
@@ -971,83 +970,49 @@ async fn later_lighter_agent_calls_preserve_the_contexts_existing_trace() {
     );
 }
 
-// {test}`requirements.sdk.graph.traversal.validation_parallelism`
-// {test}`requirements.sdk.graph.traversal.validation_cycles`
 // {test}`requirements.sdk.domain`
+// {test}`requirements.sdk.graph.validation.validate_node`
+// {test}`requirements.sdk.graph.validation.root_inputs`
+// {test}`requirements.sdk.graph.evidence.node_inputs`
 #[tokio::test]
-async fn cyclic_ready_work_is_bounded_by_each_configured_parallelism_limit() {
-    for limit in [1, 2, 3] {
-        let graph = Memory {
-            read_in_callback: true,
-            edges_in_callback: true,
-            delay: true,
-            ..Memory::default()
-        };
-        {
-            let mut state = graph.state.lock().unwrap();
-            for node in 1..=6 {
-                state.contents.insert(node, format!("node {node}"));
-                state.edges.insert(node, vec![(1, node % 6 + 1)]);
-            }
-        }
-        let validator = Validator::new(&graph, |_| Ok("v1".into()));
-        let outcome = validator
-            .validate_transitive(
-                &1,
-                TraversalOptions {
-                    concurrency: NonZeroUsize::new(limit).unwrap(),
-                },
-            )
-            .await;
-        assert!(outcome.complete);
-        assert_eq!(outcome.nodes.len(), 6);
-        assert_eq!(graph.peak.load(Ordering::SeqCst), limit);
-        let state = graph.state.lock().unwrap();
-        let mut started = state.started.clone();
-        started.sort();
-        assert_eq!(started, vec![1, 2, 3, 4, 5, 6]);
-        for (node, record) in &state.records {
-            assert_eq!(
-                record.dependencies,
-                vec![
-                    Dependency::Node(*node, fp(format!("node {node}"))),
-                    Dependency::OutgoingEdges(*node, fp(format!("{:?}", state.edges[node]))),
-                ]
-            );
-        }
-    }
-}
-
-// {test}`requirements.sdk.graph.traversal.validation_parallelism`
-// {test}`requirements.sdk.graph.traversal.validate_transitive`
-#[tokio::test]
-async fn independent_acyclic_components_share_the_validation_limit() {
+async fn concurrent_single_node_validations_keep_separate_traces() {
     let graph = Memory {
+        read_in_callback: true,
+        edges_in_callback: true,
         delay: true,
         ..Memory::default()
     };
-    graph
-        .state
-        .lock()
-        .unwrap()
-        .edges
-        .insert(1, vec![(1, 2), (1, 3), (1, 4)]);
-    let outcome = Validator::new(&graph, |_| Ok("v1".into()))
-        .validate_transitive(
-            &1,
-            TraversalOptions {
-                concurrency: NonZeroUsize::new(2).unwrap(),
-            },
-        )
-        .await;
-    assert!(outcome.complete);
-    assert_eq!(outcome.nodes.len(), 4);
-    assert_eq!(graph.peak.load(Ordering::SeqCst), 2);
+    {
+        let mut state = graph.state.lock().unwrap();
+        for node in 1..=3 {
+            state.contents.insert(node, format!("node {node}"));
+            state.edges.insert(node, vec![(1, 99)]);
+        }
+    }
+    let validator = Validator::new(&graph, |_| Ok("v1".into()));
+    let (first, second, third) = futures::join!(
+        validator.validate_node(&1),
+        validator.validate_node(&2),
+        validator.validate_node(&3),
+    );
+    assert!(first.unwrap().result);
+    assert!(second.unwrap().result);
+    assert!(third.unwrap().result);
+    assert_eq!(graph.peak.load(Ordering::SeqCst), 3);
     let state = graph.state.lock().unwrap();
-    assert_eq!(state.finished.last(), Some(&1));
-    let mut leaves = state.finished[..3].to_vec();
-    leaves.sort();
-    assert_eq!(leaves, vec![2, 3, 4]);
+    let mut started = state.started.clone();
+    started.sort();
+    assert_eq!(started, vec![1, 2, 3]);
+    assert_eq!(state.records.len(), 3);
+    for (node, record) in &state.records {
+        assert_eq!(
+            record.dependencies,
+            vec![
+                Dependency::Node(*node, fp(format!("node {node}"))),
+                Dependency::OutgoingEdges(*node, fp("[(1, 99)]")),
+            ]
+        );
+    }
 }
 
 // {test}`requirements.sdk.graph.agent-calls.judge.submission`
@@ -1063,125 +1028,6 @@ async fn invalid_typed_submission_is_an_agent_error() {
         ctx.ask::<Answer>().await,
         Err(ValidationError::Agent(_))
     ));
-}
-
-// {test}`requirements.sdk.graph.traversal.validate_transitive`
-// {test}`requirements.sdk.graph.traversal.validation_cycles`
-// {test}`requirements.sdk.graph.traversal.validation_parallelism`
-// {test}`requirements.sdk.domain`
-// {test}`requirements.sdk.graph.outgoing_edges`
-#[tokio::test]
-async fn cycles_shared_targets_negative_judgments_and_parallelism() {
-    let graph = Memory {
-        read_in_callback: true,
-        edges_in_callback: true,
-        delay: true,
-        ..Memory::default()
-    };
-    {
-        let mut state = graph.state.lock().unwrap();
-        state.edges.insert(1, vec![(1, 2), (1, 3), (1, 2)]);
-        state.edges.insert(2, vec![(1, 3), (1, 9)]);
-        state.edges.insert(3, vec![(1, 2), (1, 9)]);
-        state.edges.insert(9, vec![(1, 9)]);
-        for node in [1, 2, 3, 9] {
-            state.contents.insert(node, format!("content {node}"));
-        }
-    }
-    let validator = Validator::new(&graph, |_| Ok("v1".into()));
-    let results = validator
-        .validate_transitive(
-            &1,
-            TraversalOptions {
-                concurrency: NonZeroUsize::new(2).unwrap(),
-            },
-        )
-        .await;
-    assert!(results.complete);
-    assert_eq!(results.nodes.len(), 4);
-    assert!(
-        results
-            .nodes
-            .iter()
-            .any(|(node, judgment)| *node == 9 && !judgment.as_ref().unwrap().result)
-    );
-    let state = graph.state.lock().unwrap();
-    assert_eq!(state.started.len(), 4);
-    assert_eq!(state.finished[0], 9);
-    assert_eq!(state.finished[3], 1);
-    assert_eq!(graph.peak.load(Ordering::SeqCst), 2);
-    for (node, record) in &state.records {
-        assert_eq!(
-            record.dependencies,
-            vec![
-                Dependency::Node(*node, fp(format!("content {node}"))),
-                Dependency::OutgoingEdges(*node, fp(format!("{:?}", state.edges[node]))),
-            ]
-        );
-    }
-}
-
-// {test}`requirements.sdk.graph.traversal.validate_transitive`
-// {test}`requirements.sdk.graph.traversal.validation_cycles`
-#[tokio::test]
-async fn discovery_errors_report_incomplete_traversal_and_do_not_deadlock() {
-    let graph = Memory::default();
-    graph
-        .state
-        .lock()
-        .unwrap()
-        .edges
-        .insert(1, vec![(1, 2), (1, 3)]);
-    graph.state.lock().unwrap().fail_edges = Some(2);
-    let validator = Validator::new(&graph, |_| Ok("v1".into()));
-    let results = validator
-        .validate_transitive(
-            &1,
-            TraversalOptions {
-                concurrency: NonZeroUsize::new(1).unwrap(),
-            },
-        )
-        .await;
-    assert!(!results.complete);
-    assert_eq!(results.nodes.len(), 3);
-    assert!(
-        results
-            .nodes
-            .iter()
-            .any(|(node, result)| *node == 2
-                && matches!(result, Err(ValidationError::Graph("edges"))))
-    );
-    assert_eq!(graph.state.lock().unwrap().finished, vec![3, 1]);
-    assert_eq!(graph.peak.load(Ordering::SeqCst), 1);
-}
-
-// {test}`requirements.sdk.graph.traversal.validate_transitive`
-// {test}`requirements.sdk.graph.validation.root_inputs`
-// {test}`requirements.sdk.graph.outgoing_edges`
-// {test}`requirements.sdk.graph.fingerprinting.snapshot`
-#[tokio::test]
-async fn traversal_keeps_discovered_edges_and_reuse_does_not_skip_children() {
-    let graph = Memory {
-        edges_in_callback: true,
-        ..Memory::default()
-    };
-    graph.state.lock().unwrap().edges.insert(1, vec![(1, 2)]);
-    let validator = Validator::new(&graph, |_| Ok("v1".into()));
-    validator
-        .validate_transitive(&1, TraversalOptions::default())
-        .await;
-    assert_eq!(graph.state.lock().unwrap().selections, vec![1, 2]);
-    let record = graph.state.lock().unwrap().records[&1].clone();
-    assert_eq!(
-        record.dependencies,
-        vec![Dependency::OutgoingEdges(1, fp("[(1, 2)]"))]
-    );
-    graph.state.lock().unwrap().records.remove(&2);
-    let results = validator
-        .validate_transitive(&1, TraversalOptions::default())
-        .await;
-    assert_eq!(results.nodes.len(), 2);
-    assert_eq!(graph.state.lock().unwrap().started, vec![2, 1, 2]);
 }
 
 // {test}`requirements.sdk.graph.agent-calls.judge.caching`
@@ -1274,38 +1120,4 @@ async fn queued_reads_selection_and_rendering_fail_before_agent_invocation() {
     ));
     assert!(ctx.inspection().dependencies().is_empty());
     assert_eq!(agent.requests.lock().unwrap().len(), initial_calls);
-}
-
-// {test}`requirements.sdk.graph.traversal.validation_cycles`
-// {test}`requirements.sdk.graph.traversal.validate_transitive`
-#[tokio::test]
-async fn callback_errors_inside_cycles_release_dependents() {
-    let graph = Memory {
-        read_in_callback: true,
-        ..Memory::default()
-    };
-    {
-        let mut state = graph.state.lock().unwrap();
-        state.edges.insert(1, vec![(1, 2)]);
-        state.edges.insert(2, vec![(1, 3)]);
-        state.edges.insert(3, vec![(1, 2)]);
-        state.contents.insert(1, "source".into());
-        state.contents.insert(3, "peer".into());
-    }
-    let validator = Validator::new(&graph, |_| Ok("v1".into()));
-    let results = tokio::time::timeout(
-        std::time::Duration::from_secs(1),
-        validator.validate_transitive(&1, TraversalOptions::default()),
-    )
-    .await
-    .unwrap();
-    assert!(results.complete);
-    assert_eq!(results.nodes.len(), 3);
-    assert!(results.nodes.iter().any(
-        |(node, result)| *node == 2 && matches!(result, Err(ValidationError::Graph("missing")))
-    ));
-    let state = graph.state.lock().unwrap();
-    assert!(state.records.contains_key(&1) && state.records.contains_key(&3));
-    assert!(!state.records.contains_key(&2));
-    assert_eq!(state.finished.last(), Some(&1));
 }

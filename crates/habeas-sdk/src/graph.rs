@@ -4,10 +4,8 @@ use serde::{Deserialize, Serialize};
 use std::{future::Future, sync::Mutex};
 
 mod runtime;
-mod traversal;
 pub use crate::procedure::ValidationContext;
 pub use runtime::{Checker, EvidenceState, Validator};
-pub use traversal::{TraversalOptions, TraversalResult};
 
 // {impl}`requirements.sdk.graph.fingerprinting.fingerprint`
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -180,7 +178,6 @@ pub trait Validation: Graph + Fingerprinting + Sized {
 pub struct InspectionContext<'d, D: Graph + Fingerprinting> {
     graph: &'d D,
     observations: Mutex<Vec<Dependency<D::NodeId>>>,
-    retained: Option<(D::NodeId, Snapshot<Vec<Edge<D::NodeId, D::EdgeLabel>>>)>,
 }
 
 impl<'d, D: Graph + Fingerprinting> InspectionContext<'d, D> {
@@ -189,18 +186,6 @@ impl<'d, D: Graph + Fingerprinting> InspectionContext<'d, D> {
         Self {
             graph,
             observations: Mutex::new(Vec::new()),
-            retained: None,
-        }
-    }
-
-    // {cite}`habeas:util`
-    pub(crate) fn with_edges(
-        graph: &'d D,
-        retained: Option<(D::NodeId, Snapshot<Vec<Edge<D::NodeId, D::EdgeLabel>>>)>,
-    ) -> Self {
-        Self {
-            retained,
-            ..Self::new(graph)
         }
     }
 
@@ -244,17 +229,13 @@ impl<'d, D: Graph + Fingerprinting> InspectionContext<'d, D> {
         Ok(snapshot)
     }
 
-    /// Prepare a relationship result without claiming delivery. The current
-    /// traversal node uses its retained selection, just like direct inspection.
+    /// Prepare a relationship result without claiming delivery.
     // {cite}`habeas:util`
     pub fn prepare_edges(
         &self,
         node: &D::NodeId,
     ) -> Result<Snapshot<Vec<Edge<D::NodeId, D::EdgeLabel>>>, D::Error> {
-        match &self.retained {
-            Some((retained_node, snapshot)) if retained_node == node => Ok(snapshot.clone()),
-            _ => self.graph.outgoing_edges(node),
-        }
+        self.graph.outgoing_edges(node)
     }
 
     /// Import the fingerprint of the exact snapshot delivered to the caller.

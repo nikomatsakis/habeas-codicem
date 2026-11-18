@@ -116,7 +116,7 @@ pub struct ValidationContext<'d, D: Graph + Fingerprinting> {
 impl<'d, D: Graph + Fingerprinting> ValidationContext<'d, D> {
     // {cite}`habeas:util`
     pub fn new(graph: &'d D, node: D::NodeId) -> Self {
-        Self::configured(graph, node, None, None, None)
+        Self::configured(graph, node, None, None)
     }
 
     // {cite}`habeas:util`
@@ -126,7 +126,7 @@ impl<'d, D: Graph + Fingerprinting> ValidationContext<'d, D> {
         agent: &'d dyn Agent<D>,
         renderer: &'d dyn AgentInputRenderer<D>,
     ) -> Self {
-        Self::configured(graph, node, Some(agent), Some(renderer), None)
+        Self::configured(graph, node, Some(agent), Some(renderer))
     }
 
     // {cite}`habeas:util`
@@ -135,12 +135,10 @@ impl<'d, D: Graph + Fingerprinting> ValidationContext<'d, D> {
         node: D::NodeId,
         agent: Option<&'d dyn Agent<D>>,
         renderer: Option<&'d dyn AgentInputRenderer<D>>,
-        edges: Option<Snapshot<Vec<Edge<D::NodeId, D::EdgeLabel>>>>,
     ) -> Self {
-        let retained = edges.map(|snapshot| (node.clone(), snapshot));
         Self {
             node,
-            inspection: InspectionContext::with_edges(graph, retained),
+            inspection: InspectionContext::new(graph),
             agent,
             renderer,
         }

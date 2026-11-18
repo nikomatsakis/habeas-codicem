@@ -315,11 +315,11 @@ async fn concurrent_tool_agents_isolate_histories_pages_and_submissions_and_shar
     );
 }
 
-// {test}`requirements.sdk.graph.traversal.validate_transitive`
 // {test}`requirements.sdk.graph.context-tools.tracked_inspection`
 // {test}`requirements.sdk.graph.fingerprinting.snapshot`
+// {test}`requirements.sdk.graph.validation.validate_node`
 #[tokio::test]
-async fn agent_edge_tools_use_traversals_retained_selection_without_relisting() {
+async fn agent_edge_tools_record_selections_without_validating_targets() {
     use std::sync::atomic::{AtomicUsize, Ordering};
     struct GraphWithChangingEdges {
         lookups: AtomicUsize,
@@ -332,13 +332,13 @@ async fn agent_edge_tools_use_traversals_retained_selection_without_relisting() 
         type JudgmentMetadata = ();
         type Error = io::Error;
         // :::{cite} habeas:coverage
-        // This edge-only traversal regression deliberately supplies no node
+        // This edge-only validation regression deliberately supplies no node
         // contents. Its records assert selection dependencies only. Graph
         // requires this callback, but reaching it would introduce an unwanted
         // content read and fail this guard.
         // :::
         fn node_content(&self, _: &u8) -> io::Result<String> {
-            panic!("edge discovery must not read node contents")
+            panic!("edge inspection must not read node contents")
         }
         fn node_path(&self, node: &u8) -> NodePath {
             NodePath {
@@ -347,7 +347,7 @@ async fn agent_edge_tools_use_traversals_retained_selection_without_relisting() 
         }
         fn outgoing_edges(&self, node: &u8) -> io::Result<Snapshot<Vec<Edge<u8, ()>>>> {
             if *node == 1 && self.lookups.fetch_add(1, Ordering::SeqCst) != 0 {
-                return Err(io::Error::other("must not relist discovered edges"));
+                return Err(io::Error::other("must not relist inspected edges"));
             }
             Ok(Snapshot {
                 content: if *node == 1 {
@@ -360,7 +360,7 @@ async fn agent_edge_tools_use_traversals_retained_selection_without_relisting() 
                 },
                 fingerprint: Fingerprint {
                     scheme: "selection".into(),
-                    value: format!("retained {node}"),
+                    value: format!("selection {node}"),
                 },
             })
         }
@@ -368,12 +368,12 @@ async fn agent_edge_tools_use_traversals_retained_selection_without_relisting() 
     impl Fingerprinting for GraphWithChangingEdges {
         // :::{cite} habeas:coverage
         // Fingerprinting is required by validation, but this regression
-        // observes only the retained outgoing-edge snapshot. No node contents
+        // observes only the outgoing-edge selection. No node contents
         // are read, so producing a content fingerprint would violate the
         // asserted selection-only dependencies.
         // :::
         fn fingerprint(&self, _: &u8, _: &String) -> Fingerprint {
-            panic!("edge discovery must not fingerprint node contents")
+            panic!("edge inspection must not fingerprint node contents")
         }
     }
     impl EvidenceStorage for GraphWithChangingEdges {
@@ -430,18 +430,14 @@ async fn agent_edge_tools_use_traversals_retained_selection_without_relisting() 
     );
     let result = Validator::new(&graph, |_| Ok("v1".into()))
         .with_agent(&agent, &agent.renderer)
-        .validate_transitive(&1, TraversalOptions::default())
-        .await;
-    assert!(result.complete);
-    assert_eq!(result.nodes.len(), 2);
-    assert!(
-        result
-            .nodes
-            .iter()
-            .all(|(_, result)| result.as_ref().unwrap().result)
-    );
+        .validate_node(&1)
+        .await
+        .unwrap();
+    assert!(result.result);
     assert_eq!(graph.lookups.load(Ordering::SeqCst), 1);
     let records = graph.records.lock().unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].0, 1);
     assert_eq!(
         records
             .iter()
@@ -453,18 +449,9 @@ async fn agent_edge_tools_use_traversals_retained_selection_without_relisting() 
             1,
             Fingerprint {
                 scheme: "selection".into(),
-                value: "retained 1".into()
+                value: "selection 1".into()
             }
         )]
-    );
-    assert!(
-        records
-            .iter()
-            .find(|(id, _)| *id == 2)
-            .unwrap()
-            .1
-            .dependencies
-            .is_empty()
     );
     let requests = agent.provider.requests.lock().unwrap();
     let delivered = serde_json::to_string(requests[1].chat_history.last().unwrap()).unwrap();

@@ -234,7 +234,6 @@ async fn checker_needs_no_validation_and_storage_preserves_nonserializable_metad
 // {test}`requirements.sdk.graph.validation.root_inputs`
 // {test}`requirements.sdk.graph.evidence.record`
 // {test}`requirements.sdk.graph.evidence.evidence_storage`
-// {test}`requirements.sdk.graph.traversal.validate_transitive`
 #[tokio::test]
 async fn domain_validation_preserves_metadata_reuses_traces_and_propagates_failures() {
     fn domain<T: Domain>(_: &T) {}
@@ -291,15 +290,6 @@ async fn domain_validation_preserves_metadata_reuses_traces_and_propagates_failu
     assert_eq!(
         validator.validate_node(&Node(1)).await.unwrap().rationale,
         "reviewed changed"
-    );
-    let outcomes = validator
-        .validate_transitive(&Node(1), TraversalOptions::default())
-        .await;
-    assert!(outcomes.complete);
-    assert_eq!(outcomes.nodes.len(), 1);
-    assert_eq!(
-        outcomes.nodes[0].1.as_ref().unwrap().metadata,
-        judgment.metadata
     );
     let positive = validator.validate_node(&Node(2)).await.unwrap();
     assert!(positive.result);

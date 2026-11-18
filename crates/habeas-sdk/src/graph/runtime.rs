@@ -97,14 +97,6 @@ where
         &self,
         node: &D::NodeId,
     ) -> Result<Judgment<D::JudgmentMetadata>, ValidationError<D::Error>> {
-        self.validate_with_edges(node, None).await
-    }
-
-    pub(crate) async fn validate_with_edges(
-        &self,
-        node: &D::NodeId,
-        edges: Option<Snapshot<Vec<Edge<D::NodeId, D::EdgeLabel>>>>,
-    ) -> Result<Judgment<D::JudgmentMetadata>, ValidationError<D::Error>> {
         let graph = self.checker.graph;
         let procedure = (self.checker.procedure)(node).map_err(ValidationError::Graph)?;
         if let EvidenceState::Current(judgment) = self
@@ -115,8 +107,7 @@ where
         {
             return Ok(judgment);
         }
-        let ctx =
-            ValidationContext::configured(graph, node.clone(), self.agent, self.renderer, edges);
+        let ctx = ValidationContext::configured(graph, node.clone(), self.agent, self.renderer);
         let output = graph.validate(&ctx).await?;
         let record = ctx.inspection().finish(procedure, output);
         graph
