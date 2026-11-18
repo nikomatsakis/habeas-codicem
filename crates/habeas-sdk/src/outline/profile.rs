@@ -5,6 +5,7 @@ pub use habeas_language::*;
 pub use habeas_languages::profiles;
 
 #[cfg(feature = "default-languages")]
+// {cite}`habeas:util`
 pub fn profile_for_path(path: &std::path::Path) -> &'static Profile {
     habeas_languages::registry()
         .for_path(path)
@@ -13,6 +14,7 @@ pub fn profile_for_path(path: &std::path::Path) -> &'static Profile {
 }
 
 #[cfg(feature = "default-languages")]
+// {cite}`habeas:util`
 pub fn is_markdown_path(path: &std::path::Path) -> bool {
     profile_for_path(path).name == "markdown"
 }

@@ -4,11 +4,13 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 
+// {cite}`habeas:util`
 pub struct ProviderBackoff {
     window: Duration,
     failing: Option<(Instant, u32)>,
 }
 impl Default for ProviderBackoff {
+    // {cite}`habeas:util`
     fn default() -> Self {
         Self {
             window: Duration::from_secs(1),
@@ -19,6 +21,7 @@ impl Default for ProviderBackoff {
 
 // {impl}`requirements.authoring.provider_backoff.limit`
 pub const RETRY_LIMIT: Duration = Duration::from_secs(60);
+// {cite}`habeas:util`
 pub enum Retry {
     Wait(Duration),
     Stop(io::Error),
@@ -61,6 +64,7 @@ impl ProviderBackoff {
         Retry::Wait(delay)
     }
 
+    // {cite}`habeas:util`
     pub fn next_delay(&mut self, error: &io::Error) -> Option<Duration> {
         let provider = error
             .get_ref()
@@ -93,6 +97,7 @@ impl ProviderBackoff {
     }
 }
 
+// {cite}`habeas:util`
 pub fn retry_after(error: &ProviderError, now: SystemTime) -> Option<Duration> {
     let header = error
         .provider_response_headers()?

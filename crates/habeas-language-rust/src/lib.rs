@@ -19,6 +19,7 @@ fn impl_name(node: Node<'_>, source: &str) -> Option<(Vec<String>, usize)> {
 }
 
 /// Names an extern block by its ABI string, `Rust` when absent.
+// {cite}`habeas:util`
 fn extern_name(node: Node<'_>, source: &str) -> Option<(Vec<String>, usize)> {
     let mut cursor = node.walk();
     let modifier = node
@@ -45,12 +46,14 @@ fn extern_name(node: Node<'_>, source: &str) -> Option<(Vec<String>, usize)> {
 }
 
 /// Whether a grammar node sits directly in an item list.
+// {cite}`habeas:util`
 fn in_item_list(node: Node<'_>) -> bool {
     node.parent()
         .is_some_and(|parent| matches!(parent.kind(), "source_file" | "declaration_list"))
 }
 
 /// Whether a macro invocation is an item rather than an expression.
+// {cite}`habeas:util`
 fn item_macro(node: Node<'_>) -> bool {
     in_item_list(node)
         || node
@@ -58,11 +61,13 @@ fn item_macro(node: Node<'_>) -> bool {
             .is_some_and(|parent| parent.kind() == "expression_statement" && in_item_list(parent))
 }
 
+// {cite}`habeas:util`
 fn is_comment(node: Node<'_>, _source: &str) -> bool {
     matches!(node.kind(), "line_comment" | "block_comment")
 }
 
 /// Whether a comment has the given doc comment marker child.
+// {cite}`habeas:util`
 fn has_marker(node: Node<'_>, marker: &str) -> bool {
     let mut cursor = node.walk();
     is_comment(node, "")
@@ -72,6 +77,7 @@ fn has_marker(node: Node<'_>, marker: &str) -> bool {
 }
 
 /// Doc comments, outer and inner, are hashed.
+// {cite}`habeas:util`
 fn is_doc_comment(node: Node<'_>, _source: &str) -> bool {
     has_marker(node, "outer_doc_comment_marker") || has_marker(node, "inner_doc_comment_marker")
 }
@@ -86,6 +92,7 @@ fn is_inner_doc_comment(node: Node<'_>, _source: &str) -> bool {
 /// A doc comment's prose group, inner or outer, and its text without the
 /// `///`, `//!`, `/**`, `/*!`, and `*/` delimiters or the leading `*` of a
 /// block comment's continuation lines.
+// {cite}`habeas:util`
 fn doc_prose(node: Node<'_>, body: &str) -> (&'static str, String) {
     let group = if is_inner_doc_comment(node, body) {
         "inner_doc_comment"
@@ -157,12 +164,15 @@ pub static PROFILE: Profile = Profile {
 };
 
 /// Tree-sitter-backed rust provider.
+// {cite}`habeas:util`
 pub struct Provider;
 
 impl habeas_language::LanguageProvider for Provider {
+    // {cite}`habeas:util`
     fn profile(&'static self) -> &'static Profile {
         &PROFILE
     }
+    // {cite}`habeas:util`
     fn grammar(&self) -> fn() -> tree_sitter::Language {
         PROFILE.language.expect("language grammar")
     }

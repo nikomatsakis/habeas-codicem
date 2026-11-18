@@ -44,6 +44,7 @@ impl RegexSearch {
     }
 
     /// Search a provider's supplied bytes without requiring a local path.
+    // {cite}`habeas:util`
     pub fn search_bytes(&self, bytes: &[u8]) -> io::Result<Vec<usize>> {
         let mut searcher = grep_searcher::SearcherBuilder::new()
             .line_number(true)

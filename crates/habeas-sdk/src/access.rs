@@ -253,12 +253,14 @@ impl DiscoverySources {
 
     /// The files in the Git index, including staged and deleted ones; `None`
     /// outside Git.
+    // {cite}`habeas:util`
     pub fn indexed(&self) -> Option<&BTreeSet<PathBuf>> {
         self.tracked.as_ref()
     }
 
     /// Untracked files a Git worktree's ignore rules do not exclude, with the
     /// same exclusions as [`Self::files`]; empty outside Git.
+    // {cite}`habeas:util`
     pub fn untracked(&self) -> io::Result<Vec<PathBuf>> {
         if self.tracked.is_none() {
             return Ok(Vec::new());
@@ -575,6 +577,7 @@ fn tracked_sources(root: &Path) -> io::Result<Option<BTreeSet<PathBuf>>> {
 /// The directories holding the project's build output: the book's build
 /// directory, `book` unless `book.toml` sets `[build] build-dir`, and the
 /// project-root `target` directory.
+// {cite}`habeas:util`
 fn build_output_dirs(root: &Path) -> Vec<PathBuf> {
     let book = fs::read_to_string(root.join("book.toml"))
         .ok()

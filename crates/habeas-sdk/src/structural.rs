@@ -132,11 +132,13 @@ impl StructuralRule {
     /// Compiles a rule core: an object holding `rule` and optional `utils`
     /// and `constraints`, in the syntax of the pinned `ast-grep-config`.
     #[cfg(feature = "default-languages")]
+    // {cite}`habeas:util`
     pub fn compile(language: &str, rule: &Map<String, Value>) -> Result<Self, String> {
         Self::compile_language(QueryLanguage::named(language)?, rule)
     }
 
     /// Compile using the application's provider, without a global language list.
+    // {cite}`habeas:util`
     pub fn compile_with(
         provider: &'static dyn crate::outline::LanguageProvider,
         rule: &Map<String, Value>,
@@ -146,6 +148,7 @@ impl StructuralRule {
         Self::compile_language(QueryLanguage { profile, grammar }, rule)
     }
 
+    // {cite}`habeas:util`
     fn compile_language(
         language: QueryLanguage,
         rule: &Map<String, Value>,
@@ -168,11 +171,13 @@ impl StructuralRule {
         Ok(Self { language, core })
     }
 
+    // {cite}`habeas:util`
     pub fn language(&self) -> QueryLanguage {
         self.language
     }
 
     /// The byte ranges of every match in a source, in source order.
+    // {cite}`habeas:util`
     pub fn matches(&self, source: &str) -> Vec<Range<usize>> {
         let root = self.language.ast_grep(source);
         let mut ranges = root

@@ -86,6 +86,7 @@ pub(crate) fn definitions() -> Vec<Value> {
 }
 
 /// The parameter schema of a `referencing` argument.
+// {cite}`habeas:util`
 fn reference_scope_schema() -> Value {
     json!({"type":"object","properties":{
         "selection":{"type":"string"},
@@ -329,6 +330,7 @@ fn marked_lines<'a>(
 /// Dispatches one tool call in an assessment of its own, whose pages are
 /// dropped once the call returns.
 #[cfg(test)]
+// {cite}`habeas:util`
 pub(crate) fn dispatch(
     sources: &AssessmentSources,
     name: &str,

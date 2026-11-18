@@ -609,6 +609,7 @@ async fn validation_is_usable_without_any_evidence_storage() {
     );
 }
 
+// {cite}`habeas:util`
 struct TextOnly(Mutex<Vec<CompletionRequest>>);
 impl CompletionProvider for TextOnly {
     async fn complete(&self, request: CompletionRequest) -> io::Result<CompletionResponse> {
@@ -754,6 +755,7 @@ impl Scenario {
     }
 }
 impl CompletionProvider for Scenario {
+    // {cite}`habeas:util`
     async fn complete(&self, request: CompletionRequest) -> io::Result<CompletionResponse> {
         self.requests.lock().unwrap().push(request);
         self.turns
@@ -762,6 +764,7 @@ impl CompletionProvider for Scenario {
             .pop_front()
             .expect("extra provider request")
     }
+    // {cite}`habeas:util`
     fn output_limit(&self) -> Option<u64> {
         Some(32)
     }
@@ -882,6 +885,7 @@ struct MinimalConversation {
 }
 impl Conversation for MinimalConversation {
     type Output = bool;
+    // {cite}`habeas:util`
     fn tools(&self) -> io::Result<Vec<ToolDefinition>> {
         serde_json::from_value(json!([
             {"name":"lookup","description":"fixture lookup","parameters":{"type":"object"}},
@@ -889,16 +893,19 @@ impl Conversation for MinimalConversation {
         ]))
         .map_err(io::Error::other)
     }
+    // {cite}`habeas:util`
     fn submit(&mut self, name: &str, arguments: &Value) -> io::Result<Submission<bool>> {
         assert_eq!(name, "submit_result");
         Ok(Submission::Accepted(arguments["result"].as_bool().unwrap()))
     }
+    // {cite}`habeas:util`
     async fn dispatch(&mut self, name: &str, arguments: &Value) -> io::Result<String> {
         assert_eq!(name, "lookup");
         assert_eq!(arguments, &json!({"key":"value"}));
         self.dispatched += 1;
         Ok("fixture answer".into())
     }
+    // {cite}`habeas:util`
     fn cut_off(&mut self, response: &CompletionResponse, limit: u64) -> Vec<Message> {
         assert_eq!(response.finish_reason(), Some(FinishReason::Length));
         vec![

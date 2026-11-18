@@ -6,6 +6,7 @@ use std::fmt;
 pub const HASH_DIGITS: usize = 12;
 
 /// Percent-encodes `%`, `[`, `]`, `/`, `#`, `@`, and whitespace as UTF-8 bytes.
+// {cite}`habeas:util`
 pub fn encode_name(name: &str) -> String {
     let mut encoded = String::with_capacity(name.len());
     for character in name.chars() {
@@ -70,6 +71,7 @@ pub enum Label {
 
 /// One parsed selector segment.
 #[derive(Clone, Debug, PartialEq, Eq)]
+// {impl}`requirements.references.outline_selectors`
 pub struct Segment {
     pub kind: String,
     pub label: Label,
@@ -78,6 +80,7 @@ pub struct Segment {
 
 impl Segment {
     /// The segment without its `#N` ordinal.
+    // {cite}`habeas:util`
     pub fn base(kind: &str, label: &Label) -> String {
         match label {
             Label::Named(parts) => format!(
@@ -94,6 +97,7 @@ impl Segment {
 }
 
 impl fmt::Display for Segment {
+    // {cite}`habeas:util`
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(&Self::base(&self.kind, &self.label))?;
         if let Some(ordinal) = self.ordinal {
@@ -161,6 +165,7 @@ fn split_segments(selector: &str) -> Result<Vec<&str>, SelectorError> {
 }
 
 /// Parses one segment.
+// {cite}`habeas:util`
 fn parse_segment(selector: &str, segment: &str) -> Result<Segment, SelectorError> {
     let kind_end = segment
         .find(|character: char| !(character.is_ascii_alphanumeric() || "_-".contains(character)))
@@ -226,6 +231,7 @@ fn parse_segment(selector: &str, segment: &str) -> Result<Segment, SelectorError
 }
 
 /// Parses a selector; the empty selector has no segments and selects the root.
+// {impl}`requirements.references.outline_selectors`
 pub fn parse_selector(selector: &str) -> Result<Vec<Segment>, SelectorError> {
     if selector.is_empty() {
         return Ok(Vec::new());

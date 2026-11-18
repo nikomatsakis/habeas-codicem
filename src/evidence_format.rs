@@ -13,10 +13,12 @@ use std::{
 
 const SDK_FIELDS: [&str; 3] = ["format_version", "review_version", "dependencies"];
 
+// {cite}`habeas:util`
 pub(crate) fn is_versioned(value: &Value) -> bool {
     SDK_FIELDS.iter().any(|field| value.get(*field).is_some())
 }
 
+// {cite}`habeas:util`
 fn versioned_fields(
     value: &Value,
 ) -> io::Result<(String, Vec<Dependency<HabeasNode, HabeasEdgeLabel>>)> {
@@ -251,11 +253,13 @@ fn check_shape(value: &Value, subject: &HabeasNode) -> io::Result<()> {
     Ok(())
 }
 
+// {cite}`habeas:util`
 fn string_array(value: &Value) -> bool {
     value
         .as_array()
         .is_some_and(|values| values.iter().all(Value::is_string))
 }
+// {cite}`habeas:util`
 fn hex_digest(value: &str) -> bool {
     value.len() == 64
         && value

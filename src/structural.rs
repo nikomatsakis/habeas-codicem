@@ -154,6 +154,7 @@ pub(crate) fn parse_queries(declaration: &Declaration) -> (Vec<DeclaredQuery>, V
 }
 
 /// A query directive's opening fence: its colons, kind, and name.
+// {cite}`habeas:util`
 pub(crate) fn query_fence(line: &str) -> Option<(&str, QueryKind, &str)> {
     let colons = line.len() - line.trim_start_matches(':').len();
     if colons < 3 {
@@ -169,6 +170,7 @@ pub(crate) fn query_fence(line: &str) -> Option<(&str, QueryKind, &str)> {
 }
 
 /// The text of the one fenced `yaml` code block that makes up a query body.
+// {cite}`habeas:util`
 fn yaml_block(lines: &[&str]) -> Option<String> {
     let content = lines
         .iter()

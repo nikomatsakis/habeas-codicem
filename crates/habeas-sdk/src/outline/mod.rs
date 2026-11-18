@@ -28,6 +28,7 @@ pub use selector::{HASH_DIGITS, Label, Segment, SelectorError, parse_selector};
 
 /// One outline node. Line numbers are one-based and inclusive.
 #[derive(Clone, Debug)]
+// {impl}`requirements.references.outlines`
 pub struct OutlineNode {
     /// Short outline kind, such as `fn`; empty for the root.
     pub kind: &'static str,
@@ -69,6 +70,7 @@ impl OutlineNode {
 
 /// One comment and the outline node it belongs to.
 #[derive(Clone, Debug)]
+// {impl}`requirements.references.outline_comments`
 pub struct OutlineComment {
     pub byte_start: usize,
     pub byte_end: usize,
@@ -83,6 +85,7 @@ pub struct OutlineComment {
 
 /// A parsed outline.
 #[derive(Clone, Debug)]
+// {impl}`requirements.references.outlines`
 pub struct Outline {
     pub profile: &'static Profile,
     /// Nodes in source pre-order; index 0 is the root.
@@ -93,12 +96,14 @@ pub struct Outline {
 
 /// A source that its grammar cannot parse.
 #[derive(Clone, Debug, PartialEq, Eq)]
+// {cite}`habeas:util`
 pub struct OutlineError {
     pub line: usize,
     pub message: String,
 }
 
 impl fmt::Display for OutlineError {
+    // {cite}`habeas:util`
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(formatter, "line {}: {}", self.line, self.message)
     }
@@ -108,6 +113,7 @@ impl std::error::Error for OutlineError {}
 
 /// A selector that does not resolve.
 #[derive(Clone, Debug, PartialEq, Eq)]
+// {cite}`habeas:util`
 pub enum ResolveError {
     Invalid(SelectorError),
     NotFound(String),
@@ -175,6 +181,7 @@ fn parse_grammar(
     Ok(Builder::new(profile, source, redaction, &tree).finish(&lines))
 }
 
+// {cite}`habeas:util`
 fn parse_tree(
     profile: &'static Profile,
     language: fn() -> tree_sitter::Language,
@@ -250,12 +257,14 @@ fn check_errors(tree: &Tree, lines: &LineIndex) -> Result<(), OutlineError> {
 }
 
 /// Byte offsets of line starts.
+// {cite}`habeas:util`
 struct LineIndex {
     starts: Vec<usize>,
     count: usize,
 }
 
 impl LineIndex {
+    // {cite}`habeas:util`
     fn new(source: &str) -> Self {
         let mut starts = vec![0];
         starts.extend(
@@ -276,11 +285,13 @@ impl LineIndex {
     }
 
     /// One-based line containing a byte offset.
+    // {cite}`habeas:util`
     fn line(&self, byte: usize) -> usize {
         self.starts.partition_point(|start| *start <= byte).max(1)
     }
 
     /// Inclusive line range of a byte range.
+    // {cite}`habeas:util`
     fn range(&self, start: usize, end: usize) -> (usize, usize) {
         (
             self.line(start),
@@ -343,6 +354,7 @@ fn plain_text(
 }
 
 /// The root node for the whole file; its segment and selector are empty.
+// {cite}`habeas:util`
 fn root_node(
     source: &str,
     lines: &LineIndex,
@@ -368,6 +380,7 @@ fn root_node(
 }
 
 /// An outline node before hashing and selector assignment.
+// {cite}`habeas:util`
 struct Draft<'tree> {
     kind: &'static str,
     name: Option<Vec<String>>,
@@ -378,6 +391,7 @@ struct Draft<'tree> {
 }
 
 /// A comment before ownership is assigned.
+// {cite}`habeas:util`
 struct DraftComment {
     byte_start: usize,
     byte_end: usize,
@@ -385,6 +399,7 @@ struct DraftComment {
 }
 
 /// Walks a grammar tree into outline drafts.
+// {cite}`habeas:util`
 struct Builder<'tree, 'source> {
     profile: &'static Profile,
     source: &'source str,
@@ -396,6 +411,7 @@ struct Builder<'tree, 'source> {
 }
 
 impl<'tree, 'source> Builder<'tree, 'source> {
+    // {cite}`habeas:util`
     fn new(
         profile: &'static Profile,
         source: &'source str,
@@ -422,15 +438,18 @@ impl<'tree, 'source> Builder<'tree, 'source> {
         builder
     }
 
+    // {cite}`habeas:util`
     fn is_comment(&self, node: Node<'_>) -> bool {
         (self.profile.is_comment)(node, self.source)
     }
 
     /// Whether a grammar node maps to an outline node.
+    // {cite}`habeas:util`
     fn maps(&self, node: Node<'_>) -> bool {
         !self.is_comment(node) && self.profile.rule(node).is_some()
     }
 
+    // {cite}`habeas:util`
     fn record_comment(&mut self, node: Node<'_>) {
         self.comments.push(DraftComment {
             byte_start: node.start_byte(),
@@ -441,6 +460,7 @@ impl<'tree, 'source> Builder<'tree, 'source> {
 
     /// Records comments anywhere under a node that is not walked as outline
     /// structure, such as an attached attribute.
+    // {cite}`habeas:util`
     fn record_comments_within(&mut self, node: Node<'_>) {
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
@@ -454,6 +474,7 @@ impl<'tree, 'source> Builder<'tree, 'source> {
 
     /// Names a mapped node, returning its parts and the byte where the name
     /// is declared.
+    // {cite}`habeas:util`
     fn name(&self, rule: NameRule, node: Node<'_>) -> Option<(Vec<String>, usize)> {
         let named = |child: Node<'_>| {
             (
@@ -475,6 +496,7 @@ impl<'tree, 'source> Builder<'tree, 'source> {
         }
     }
 
+    // {cite}`habeas:util`
     fn walk(&mut self, node: Node<'tree>, parent: usize) {
         let mut cursor = node.walk();
         let children = node.children(&mut cursor).collect::<Vec<_>>();
@@ -523,6 +545,7 @@ impl<'tree, 'source> Builder<'tree, 'source> {
         }
     }
 
+    // {cite}`habeas:util`
     fn push(
         &mut self,
         kind: &'static str,
@@ -549,6 +572,7 @@ impl<'tree, 'source> Builder<'tree, 'source> {
     }
 
     /// Computes a draft's structural or identity hash.
+    // {cite}`habeas:util`
     fn hash(&self, index: usize, identity: bool) -> String {
         let draft = &self.drafts[index];
         let mut encoder = Encoder::new();
@@ -603,6 +627,7 @@ impl<'tree, 'source> Builder<'tree, 'source> {
     }
 
     /// A text piece of the source in its redacted form.
+    // {cite}`habeas:util`
     fn piece(&self, start: usize, end: usize) -> std::borrow::Cow<'source, str> {
         self.redaction.slice(self.source, start..end)
     }
@@ -669,6 +694,7 @@ impl<'tree, 'source> Builder<'tree, 'source> {
 
 /// Adds `#N` to sibling segments that would otherwise be identical, except
 /// `line` nodes, and builds full selectors.
+// {cite}`habeas:util`
 fn disambiguate(nodes: &mut [OutlineNode]) {
     for parent in 0..nodes.len() {
         let mut groups = BTreeMap::<String, Vec<usize>>::new();
@@ -698,6 +724,7 @@ fn disambiguate(nodes: &mut [OutlineNode]) {
 
 /// Groups comments into runs, assigns each run's owner under the comment
 /// rules, and widens owners' line ranges to cover their comments.
+// {cite}`habeas:util`
 fn assign_comments(
     nodes: &mut [OutlineNode],
     mut drafts: Vec<DraftComment>,
@@ -776,6 +803,7 @@ fn assign_comments(
 }
 
 /// Whether a comment follows code on its first line.
+// {cite}`habeas:util`
 fn trails_code(source: &str, byte: usize) -> bool {
     let line_start = source[..byte].rfind('\n').map_or(0, |index| index + 1);
     !source[line_start..byte].trim().is_empty()
@@ -784,6 +812,7 @@ fn trails_code(source: &str, byte: usize) -> bool {
 /// The owner of a comment that follows code on `line`: the innermost node
 /// containing that line, by the line ranges in `base`. When several sibling
 /// nodes share the line, the last one starting before the comment wins.
+// {cite}`habeas:util`
 fn trailing_owner(
     nodes: &[OutlineNode],
     base: &[(usize, usize)],
@@ -808,6 +837,7 @@ fn trailing_owner(
 
 /// The end of a node's last non-comment token, so trailing comments that a
 /// grammar folds into the node do not count as inside it.
+// {cite}`habeas:util`
 fn content_end(node: Node<'_>) -> usize {
     let mut cursor = node.walk();
     let children: Vec<Node<'_>> = node.children(&mut cursor).collect();
@@ -822,6 +852,7 @@ fn content_end(node: Node<'_>) -> usize {
 /// its line: the next child starting after it within the smallest node
 /// containing it, else that container. A run that binds to its container,
 /// such as a Rust inner doc comment, always belongs to the container.
+// {cite}`habeas:util`
 fn run_owner(nodes: &[OutlineNode], bytes: (usize, usize), binds_to_container: bool) -> usize {
     let mut container = 0;
     while let Some(child) = nodes[container]
@@ -846,6 +877,7 @@ fn run_owner(nodes: &[OutlineNode], bytes: (usize, usize), binds_to_container: b
 impl Outline {
     /// Resolves a selector to a node index; the empty selector is the root.
     /// A `line` segment resolves to the first line with that content.
+    // {impl}`requirements.references.outline_selectors`
     pub fn resolve(&self, selector: &str) -> Result<usize, ResolveError> {
         let segments = parse_selector(selector).map_err(ResolveError::Invalid)?;
         let mut current = 0;
@@ -890,6 +922,7 @@ impl Outline {
     }
 
     /// The owners of comments touching a line.
+    // {cite}`habeas:util`
     pub fn comment_owners_at_line(&self, line: usize) -> Vec<usize> {
         let mut owners = self
             .comments
@@ -904,6 +937,7 @@ impl Outline {
     /// The smallest node a line's source belongs to: the owner of a comment
     /// on that line, otherwise the smallest innermost node covering it, and
     /// the root when no other node covers it.
+    // {cite}`habeas:util`
     pub fn owner_at_line(&self, line: usize) -> usize {
         if let Some(owner) = self.comment_owners_at_line(line).first() {
             return *owner;
@@ -923,6 +957,7 @@ impl Outline {
     /// The innermost nodes for a set of lines, without nodes whose ancestor
     /// is also selected, in source order. With `comments`, a line in a
     /// comment belongs to the comment's owner.
+    // {cite}`habeas:util`
     pub fn nodes_for_lines(
         &self,
         lines: impl IntoIterator<Item = usize>,
@@ -978,6 +1013,7 @@ mod tests;
 
 /// Parse a resolved text snapshot using an explicitly selected provider. The
 /// resource may be local, remote, or generated; spans refer to `source`.
+// {cite}`habeas:util`
 pub fn parse_provider(
     provider: &'static dyn LanguageProvider,
     source: &str,

@@ -82,6 +82,7 @@ impl Record {
     }
 }
 
+// {cite}`habeas:util`
 pub(super) fn readable(record: &Record) -> bool {
     record.attempt.diagnostics.is_empty()
         && !record.attempt.processes.is_empty()

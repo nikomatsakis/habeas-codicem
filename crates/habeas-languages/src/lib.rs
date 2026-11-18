@@ -8,6 +8,7 @@ pub use habeas_language_toml as toml;
 pub use habeas_language_typescript as typescript;
 pub use habeas_language_yaml as yaml;
 
+// {cite}`habeas:util`
 pub fn registry() -> habeas_language::Registry {
     habeas_language::Registry::new([
         &rust::Provider as &dyn habeas_language::LanguageProvider,
@@ -21,6 +22,7 @@ pub fn registry() -> habeas_language::Registry {
     ])
 }
 
+// {cite}`habeas:util`
 pub fn profiles() -> [&'static habeas_language::Profile; 8] {
     [
         &rust::PROFILE,

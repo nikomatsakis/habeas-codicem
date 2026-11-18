@@ -25,12 +25,15 @@ pub static PROFILE: Profile = Profile {
 };
 
 /// Tree-sitter-backed yaml provider.
+// {cite}`habeas:util`
 pub struct Provider;
 
 impl habeas_language::LanguageProvider for Provider {
+    // {cite}`habeas:util`
     fn profile(&'static self) -> &'static Profile {
         &PROFILE
     }
+    // {cite}`habeas:util`
     fn grammar(&self) -> fn() -> tree_sitter::Language {
         PROFILE.language.expect("language grammar")
     }

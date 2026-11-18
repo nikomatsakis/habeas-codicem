@@ -117,12 +117,14 @@ pub(crate) struct OutlineCache {
     >,
 }
 
+// {cite}`habeas:util`
 pub(crate) struct ReferenceCatalog {
     pub references: Vec<crate::evidence::SourceReference>,
     pub files: Vec<PathBuf>,
 }
 
 impl Clone for OutlineCache {
+    // {cite}`habeas:util`
     fn clone(&self) -> Self {
         Self {
             files: Mutex::new(self.files.lock().expect("outline cache lock").clone()),

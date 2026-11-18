@@ -15,6 +15,7 @@ pub(super) use habeas_sdk::agent::{CompletionProvider, failure_codes};
 pub(super) use habeas_sdk::agent::{ProviderBackoff, RETRY_LIMIT, Retry, retry_after};
 
 /// Preserve the provider report for the shared harness's retry classifier.
+// {cite}`habeas:util`
 fn provider_failure(error: ProviderError) -> io::Error {
     io::Error::other(error)
 }
@@ -271,6 +272,7 @@ fn place_cache_checkpoints(request: &mut CompletionRequest) {
     request.options.cache = Some(CacheRetention::Short);
 }
 
+// {cite}`habeas:util`
 fn option_type(name: &str, expected: &str) -> io::Error {
     io::Error::new(
         io::ErrorKind::InvalidInput,

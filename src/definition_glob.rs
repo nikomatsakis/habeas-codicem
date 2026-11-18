@@ -1,3 +1,4 @@
+// {cite}`habeas:util`
 pub(crate) fn validate(pattern: &str) -> Result<(), String> {
     if pattern.is_empty() {
         return Err("definition glob must not be empty".to_owned());
@@ -12,6 +13,7 @@ pub(crate) fn validate(pattern: &str) -> Result<(), String> {
     Ok(())
 }
 
+// {cite}`habeas:util`
 pub(crate) fn matches(pattern: &str, name: &str) -> bool {
     let bytes = name.as_bytes();
     let mut previous = vec![false; bytes.len() + 1];

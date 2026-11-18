@@ -9,6 +9,7 @@ mod setup;
 
 #[derive(Parser)]
 #[command(name = "habeas")]
+// {impl}`requirements.cli.clap`
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -109,11 +110,13 @@ enum Command {
 }
 
 #[derive(Subcommand)]
+// {cite}`habeas:util`
 enum MdbookCommand {
     Supports { renderer: String },
 }
 
 #[derive(Subcommand)]
+// {cite}`habeas:util`
 enum HookCommand {
     SessionStart,
 }

@@ -140,6 +140,7 @@ pub(crate) enum ReferenceKind {
 
 // {impl}`requirements.references.book_badges`
 impl ReferenceKind {
+    // {cite}`habeas:util`
     pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Impl => "impl",
@@ -150,6 +151,7 @@ impl ReferenceKind {
         }
     }
 
+    // {cite}`habeas:util`
     fn color(self) -> &'static str {
         match self {
             Self::Impl => "237346",
@@ -547,6 +549,7 @@ pub(crate) fn shield_badge(label: &str, message: &str, color: &str) -> String {
     )
 }
 
+// {cite}`habeas:util`
 fn shield_path_component(value: &str) -> String {
     let mut encoded = String::with_capacity(value.len());
     for byte in value.bytes() {

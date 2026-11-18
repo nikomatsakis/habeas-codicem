@@ -1044,6 +1044,7 @@ fn verification_prompt_with_inputs(
     Ok(Prompt::filled("verifier_prompt", &values))
 }
 
+// {cite}`habeas:util`
 fn submission(arguments: &Value) -> io::Result<(Judgment, String)> {
     let object = arguments
         .as_object()
@@ -1381,6 +1382,7 @@ async fn converse_observed<T: Send>(
     habeas_sdk::agent::converse(provider, &mut adapter, prompt.request(), submit).await
 }
 
+// {cite}`habeas:util`
 struct HabeasConversation<'a, F> {
     sources: &'a mut AssessmentSources,
     usage: &'a mut UsageLog,
@@ -1398,6 +1400,7 @@ impl<T: Send, F: Fn(&Value) -> io::Result<T> + Send> habeas_sdk::agent::Conversa
 {
     type Output = T;
 
+    // {cite}`habeas:util`
     fn tools(&self) -> io::Result<Vec<ToolDefinition>> {
         tool_definitions_with(self.submit, self.site)
     }
@@ -1448,6 +1451,7 @@ impl<T: Send, F: Fn(&Value) -> io::Result<T> + Send> habeas_sdk::agent::Conversa
         self.usage.search_result(&delivery.result);
         Ok(delivery.result.to_string())
     }
+    // {cite}`habeas:util`
     fn delivered(&mut self) -> io::Result<()> {
         self.sources.record_inputs(&self.pending);
         if let Some(observer) = self.observer {
@@ -1456,6 +1460,7 @@ impl<T: Send, F: Fn(&Value) -> io::Result<T> + Send> habeas_sdk::agent::Conversa
         self.pending.clear();
         Ok(())
     }
+    // {cite}`habeas:util`
     fn begin_request(&mut self) -> io::Result<usize> {
         self.usage.begin_request()
     }
@@ -1472,18 +1477,23 @@ impl<T: Send, F: Fn(&Value) -> io::Result<T> + Send> habeas_sdk::agent::Conversa
             response.as_ref().err().map(providers::failure_codes),
         )
     }
+    // {cite}`habeas:util`
     fn retried(&mut self, index: usize) -> io::Result<()> {
         self.usage.retried(index)
     }
+    // {cite}`habeas:util`
     fn skipped_tool(&mut self, name: &str) {
         self.usage.skipped_tool(name);
     }
+    // {cite}`habeas:util`
     fn tool(&mut self, name: &str, failed: bool) {
         self.usage.tool(name, failed);
     }
+    // {cite}`habeas:util`
     fn save(&mut self) -> io::Result<()> {
         self.usage.save()
     }
+    // {cite}`habeas:util`
     fn cut_off(
         &mut self,
         response: &rig_core::completion::CompletionResponse,

@@ -379,6 +379,7 @@ pub(crate) fn unreferenced_items(
 
 /// The kind coverage reports for an outline node kind that must be covered:
 /// functions and methods, structs, enums, and unions.
+// {cite}`habeas:util`
 pub(crate) fn item_kind(kind: &str) -> Option<&'static str> {
     Some(match kind {
         "fn" => "function",
@@ -391,6 +392,7 @@ pub(crate) fn item_kind(kind: &str) -> Option<&'static str> {
 
 /// The first-party Rust files among the sources reference discovery
 /// considers: every `.rs` file outside the project-root `vendor` directory.
+// {cite}`habeas:util`
 pub(crate) fn rust_files(root: &Path, sources: &[PathBuf]) -> Vec<PathBuf> {
     let vendor = root.join("vendor");
     sources

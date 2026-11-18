@@ -1,10 +1,12 @@
 use super::{Outline, parse};
 use std::path::Path;
 
+// {cite}`habeas:util`
 fn outline(source: &str) -> Outline {
     parse(Path::new("a.md"), source).unwrap_or_else(|error| panic!("{source:?}: {error}"))
 }
 
+// {cite}`habeas:util`
 fn kinds(outline: &Outline) -> Vec<(&str, Option<usize>, usize, usize)> {
     outline.nodes[1..]
         .iter()

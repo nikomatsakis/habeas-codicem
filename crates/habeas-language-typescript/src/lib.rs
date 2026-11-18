@@ -62,24 +62,30 @@ pub static TSX_PROFILE: Profile = Profile {
 };
 
 /// Tree-sitter-backed typescript provider.
+// {cite}`habeas:util`
 pub struct Provider;
 
 impl habeas_language::LanguageProvider for Provider {
+    // {cite}`habeas:util`
     fn profile(&'static self) -> &'static Profile {
         &PROFILE
     }
+    // {cite}`habeas:util`
     fn grammar(&self) -> fn() -> tree_sitter::Language {
         PROFILE.language.expect("language grammar")
     }
 }
 
 /// Tree-sitter-backed typescript provider.
+// {cite}`habeas:util`
 pub struct TsxProvider;
 
 impl habeas_language::LanguageProvider for TsxProvider {
+    // {cite}`habeas:util`
     fn profile(&'static self) -> &'static Profile {
         &TSX_PROFILE
     }
+    // {cite}`habeas:util`
     fn grammar(&self) -> fn() -> tree_sitter::Language {
         TSX_PROFILE.language.expect("language grammar")
     }

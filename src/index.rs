@@ -628,6 +628,7 @@ fn render_detail_page(
     )
 }
 
+// {cite}`habeas:util`
 pub(crate) fn render_cli_detail_page(
     name: &str,
     source: &str,

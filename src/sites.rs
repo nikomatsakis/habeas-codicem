@@ -140,6 +140,7 @@ pub(crate) type Sites = BTreeMap<String, Vec<SiteItem>>;
 
 /// Whether a reference is a `{fixme}` naming a distributed requirement from
 /// inside one of its sites, so it belongs to that site's review alone.
+// {cite}`habeas:util`
 pub(crate) fn in_own_site(root: &Path, sites: &Sites, reference: &SourceReference) -> bool {
     reference.kind == ReferenceKind::Fixme
         && sites

@@ -19,6 +19,7 @@ const HEURISTIC: &str = "high-entropy-token";
 
 /// One replaced byte range of a source and the kind its marker names.
 #[derive(Clone, Debug, PartialEq, Eq)]
+// {cite}`habeas:util`
 pub struct Region {
     pub span: Range<usize>,
     pub kind: String,
@@ -26,6 +27,7 @@ pub struct Region {
 
 /// The redacted regions of one source text: sorted, disjoint, and nonempty.
 #[derive(Clone, Debug, Default)]
+// {cite}`habeas:util`
 pub struct Redaction {
     regions: Vec<Region>,
 }
@@ -34,6 +36,7 @@ pub struct Redaction {
 /// name, such as `authoring.configs.cloud.credentials.access_key_id`, and the
 /// byte range of the value's contents.
 #[derive(Clone, Debug, PartialEq, Eq)]
+// {cite}`habeas:util`
 pub struct CredentialField {
     pub setting: String,
     pub field: String,
@@ -43,6 +46,7 @@ pub struct CredentialField {
 impl Redaction {
     /// Redaction by `secretshape` rules alone, for text that is not a Habeas
     /// configuration file.
+    // {cite}`habeas:util`
     pub fn of_text(source: &str) -> Self {
         Self::merge(secret_regions(source))
     }
@@ -50,6 +54,7 @@ impl Redaction {
     /// Redaction of a file: `secretshape` rules everywhere, plus explicit
     /// credential fields in a workspace `habeas.toml`. Use
     /// [`Self::of_file_with_config`] to include a user configuration file.
+    // {cite}`habeas:util`
     pub fn of_file(path: &Path, source: &str) -> Self {
         Self::of_file_with_config(path, source, None)
     }
@@ -66,6 +71,7 @@ impl Redaction {
     }
 
     /// Sorts regions and joins overlapping ones under the first one's kind.
+    // {cite}`habeas:util`
     fn merge(mut regions: Vec<Region>) -> Self {
         regions.retain(|region| !region.span.is_empty());
         regions.sort_by_key(|region| (region.span.start, region.span.end));
@@ -81,6 +87,7 @@ impl Redaction {
         Self { regions: merged }
     }
 
+    // {cite}`habeas:util`
     pub fn is_empty(&self) -> bool {
         self.regions.is_empty()
     }
@@ -89,6 +96,7 @@ impl Redaction {
     /// to the slice containing the region's first byte and its line breaks
     /// to every slice it overlaps, so slices of adjacent ranges concatenate
     /// to the redacted form of their union.
+    // {cite}`habeas:util`
     pub fn slice<'a>(&self, source: &'a str, range: Range<usize>) -> Cow<'a, str> {
         let first = self
             .regions
@@ -121,6 +129,7 @@ impl Redaction {
     }
 
     /// The redacted form of the whole source.
+    // {cite}`habeas:util`
     pub fn apply<'a>(&self, source: &'a str) -> Cow<'a, str> {
         self.slice(source, 0..source.len())
     }
@@ -128,6 +137,7 @@ impl Redaction {
 
 /// Redacts text that is not a configuration file, such as a declaration or
 /// a citation's commentary.
+// {cite}`habeas:util`
 pub fn redact_text(text: &str) -> Cow<'_, str> {
     let redaction = Redaction::of_text(text);
     if redaction.is_empty() {
@@ -137,6 +147,7 @@ pub fn redact_text(text: &str) -> Cow<'_, str> {
 }
 
 /// Redacts each line of a line list as one text, keeping the line count.
+// {cite}`habeas:util`
 pub fn redact_lines(lines: &[String]) -> Vec<String> {
     let text = lines.join("\n");
     match redact_text(&text) {
@@ -146,6 +157,7 @@ pub fn redact_lines(lines: &[String]) -> Vec<String> {
 }
 
 /// Pushes the line breaks in `text`, keeping `\r\n` pairs.
+// {cite}`habeas:util`
 fn push_line_breaks(output: &mut String, text: &str) {
     let bytes = text.as_bytes();
     for (index, byte) in bytes.iter().enumerate() {
@@ -160,6 +172,7 @@ fn push_line_breaks(output: &mut String, text: &str) {
 
 /// Rule-only and heuristic scanners over the whole input; `secretshape`
 /// otherwise stops scanning after its default input cap.
+// {cite}`habeas:util`
 fn scanners() -> &'static (Scanner, Scanner) {
     static SCANNERS: OnceLock<(Scanner, Scanner)> = OnceLock::new();
     SCANNERS.get_or_init(|| {
@@ -175,6 +188,7 @@ fn scanners() -> &'static (Scanner, Scanner) {
 /// Regions of `secretshape` rule matches, each extended through adjacent
 /// heuristic findings separated from it only by whitespace. A heuristic
 /// finding never starts a region.
+// {cite}`habeas:util`
 fn secret_regions(source: &str) -> Vec<Region> {
     let (rules, heuristics) = scanners();
     let findings = rules.scan(source);
@@ -225,6 +239,7 @@ fn secret_regions(source: &str) -> Vec<Region> {
 }
 
 /// Whether this is a Habeas configuration file or an alias of the supplied user file.
+// {cite}`habeas:util`
 fn is_configuration_file_for(path: &Path, user: Option<&Path>) -> bool {
     if path.file_name().is_some_and(|name| name == "habeas.toml") {
         return true;
@@ -240,6 +255,7 @@ fn is_configuration_file_for(path: &Path, user: Option<&Path>) -> bool {
 /// Regions of the explicit credential fields of a configuration file. A file
 /// that does not parse as TOML cannot be searched by field, so all of it is
 /// redacted with the kind `configuration`.
+// {cite}`habeas:util`
 fn configuration_regions(source: &str) -> Vec<Region> {
     match credential_fields(source) {
         Some(fields) => fields
@@ -259,6 +275,7 @@ fn configuration_regions(source: &str) -> Vec<Region> {
 /// The explicit credential fields of a Habeas configuration document: every
 /// value under an authoring configuration's `credentials`, and its `api_key`.
 /// Returns `None` when the document is not valid TOML.
+// {cite}`habeas:util`
 pub fn credential_fields(source: &str) -> Option<Vec<CredentialField>> {
     let document = toml_edit::Document::parse(source).ok()?;
     let mut fields = Vec::new();
@@ -285,6 +302,7 @@ pub fn credential_fields(source: &str) -> Option<Vec<CredentialField>> {
 }
 
 /// Collects the leaf values under a credential item, each named by its key.
+// {cite}`habeas:util`
 fn item_fields(
     source: &str,
     item: &Item,
@@ -312,6 +330,7 @@ fn item_fields(
 
 /// Collects the leaf values of a credential value. A string is redacted
 /// inside its quotes so the replacement stays readable TOML.
+// {cite}`habeas:util`
 fn value_fields(
     source: &str,
     value: &Value,

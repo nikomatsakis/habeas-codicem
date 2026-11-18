@@ -17,12 +17,14 @@ use super::{
 /// A parsing view with a source offset for each byte boundary. Removing quote
 /// and list continuations or expanding temporary fences never changes the
 /// ranges returned to callers.
+// {cite}`habeas:util`
 struct View {
     text: String,
     offsets: Vec<usize>,
 }
 
 impl View {
+    // {cite}`habeas:util`
     fn original(source: &str) -> Self {
         Self {
             text: source.to_owned(),
@@ -30,10 +32,12 @@ impl View {
         }
     }
 
+    // {cite}`habeas:util`
     fn range(&self, range: Range<usize>) -> Range<usize> {
         self.offsets[range.start]..self.offsets[range.end]
     }
 
+    // {cite}`habeas:util`
     fn without(&self, range: Range<usize>, excluded: &[Range<usize>]) -> Self {
         let mut text = Vec::new();
         let mut offsets = Vec::new();
@@ -53,6 +57,7 @@ impl View {
 
 /// An owned grammar node, including synthetic colon containers. Ownership is
 /// recorded here so the shared identity rule can omit outline descendants.
+// {cite}`habeas:util`
 struct Syntax {
     kind: Option<String>,
     range: Range<usize>,
@@ -61,6 +66,7 @@ struct Syntax {
     comment: bool,
 }
 
+// {cite}`habeas:util`
 struct Builder<'a> {
     profile: &'static Profile,
     grammar: fn() -> tree_sitter::Language,
@@ -123,6 +129,7 @@ pub(super) fn parse(
 }
 
 impl Builder<'_> {
+    // {cite}`habeas:util`
     fn context(&mut self, mut view: View, parent: usize) -> Result<usize, OutlineError> {
         // The block grammar requires a line ending after fence info. Give it
         // a virtual one at EOF without extending any original source range.
@@ -146,6 +153,7 @@ impl Builder<'_> {
         self.copy(tree.root_node(), &view, &directives, parent)
     }
 
+    // {cite}`habeas:util`
     fn copy(
         &mut self,
         node: Node<'_>,
@@ -270,6 +278,7 @@ impl Builder<'_> {
         Ok(syntax)
     }
 
+    // {cite}`habeas:util`
     fn push(
         &mut self,
         kind: &'static str,
@@ -303,6 +312,7 @@ impl Builder<'_> {
         index
     }
 
+    // {cite}`habeas:util`
     fn encode(&self, encoder: &mut Encoder, syntax: usize, owner: usize, identity: bool) {
         let node = &self.syntax[syntax];
         if node.comment || (identity && node.owner.is_some_and(|other| other != owner)) {
@@ -333,6 +343,7 @@ impl Builder<'_> {
     }
 }
 
+// {cite}`habeas:util`
 fn continuation_ranges(node: Node<'_>, ranges: &mut Vec<Range<usize>>) {
     if node.kind() == "block_continuation" {
         ranges.push(node.byte_range());
@@ -346,6 +357,7 @@ fn continuation_ranges(node: Node<'_>, ranges: &mut Vec<Range<usize>>) {
 
 /// Rebuild original bytes, omitting repeated offsets introduced by expanded
 /// fences. Container-prefix removals remain removed.
+// {cite}`habeas:util`
 fn restore(view: View, source: &str) -> View {
     let mut text = Vec::new();
     let mut offsets = Vec::new();

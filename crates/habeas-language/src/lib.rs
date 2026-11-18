@@ -8,6 +8,7 @@ pub type CustomName = fn(Node<'_>, &str) -> Option<(Vec<String>, usize)>;
 
 /// How an outline node of a mapped kind is named.
 #[derive(Clone, Copy)]
+// {impl}`requirements.references.outlines`
 pub enum NameRule {
     /// Always anonymous: the segment is `kind@<identity hash>`.
     Anonymous,
@@ -23,6 +24,7 @@ pub enum NameRule {
 }
 
 /// One row of a profile's kind table.
+// {impl}`requirements.references.outlines`
 pub struct KindRule {
     /// Grammar node kind.
     pub grammar: &'static str,
@@ -35,6 +37,7 @@ pub struct KindRule {
 }
 
 impl KindRule {
+    // {cite}`habeas:util`
     pub const fn new(grammar: &'static str, kind: &'static str, name: NameRule) -> Self {
         Self {
             grammar,
@@ -44,6 +47,7 @@ impl KindRule {
         }
     }
 
+    // {cite}`habeas:util`
     pub const fn when(mut self, condition: fn(Node<'_>) -> bool) -> Self {
         self.when = Some(condition);
         self
@@ -51,6 +55,7 @@ impl KindRule {
 }
 
 /// A language's outline profile.
+// {impl}`requirements.references.outlines`
 pub struct Profile {
     /// Character used to parse structural-search metavariables.
     pub expando_char: char,
@@ -89,6 +94,7 @@ impl std::fmt::Debug for Profile {
 }
 
 impl Profile {
+    // {cite}`habeas:util`
     pub fn rule(&self, node: Node<'_>) -> Option<&KindRule> {
         self.kinds.iter().find(|rule| {
             rule.grammar == node.kind() && rule.when.is_none_or(|condition| condition(node))
@@ -96,10 +102,12 @@ impl Profile {
     }
 }
 
+// {cite}`habeas:util`
 pub fn kind_is_comment(node: Node<'_>, _source: &str) -> bool {
     node.kind() == "comment"
 }
 
+// {cite}`habeas:util`
 pub fn never(_node: Node<'_>, _source: &str) -> bool {
     false
 }
@@ -116,10 +124,12 @@ pub fn whole_comment(_node: Node<'_>, body: &str) -> (&'static str, String) {
     ("comment", body.to_owned())
 }
 
+// {cite}`habeas:util`
 pub fn text<'a>(node: Node<'_>, source: &'a str) -> &'a str {
     source.get(node.byte_range()).unwrap_or("")
 }
 
+// {cite}`habeas:util`
 pub fn normalized(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
@@ -135,17 +145,20 @@ pub trait LanguageProvider: Sync {
 
 /// Select providers independently of parsing. Registration order breaks ties;
 /// an application can override a default by placing its provider first.
+// {cite}`habeas:util`
 pub struct Registry {
     providers: Vec<&'static dyn LanguageProvider>,
 }
 
 impl Registry {
+    // {cite}`habeas:util`
     pub fn new(providers: impl IntoIterator<Item = &'static dyn LanguageProvider>) -> Self {
         Self {
             providers: providers.into_iter().collect(),
         }
     }
 
+    // {cite}`habeas:util`
     pub fn named(&self, name: &str) -> Option<&'static dyn LanguageProvider> {
         self.providers
             .iter()
@@ -153,6 +166,7 @@ impl Registry {
             .find(|p| p.profile().name == name)
     }
 
+    // {cite}`habeas:util`
     pub fn for_path(&self, path: &std::path::Path) -> Option<&'static dyn LanguageProvider> {
         let extension = path.extension()?.to_str()?.to_ascii_lowercase();
         self.providers
