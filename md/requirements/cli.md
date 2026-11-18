@@ -54,14 +54,28 @@ When `habeas status` or `habeas status --all` displays a Markdown table, it MUST
 :::
 
 :::{req} shared_status_rendering
-`habeas status` and the mdBook requirements index MUST generate their Definition/Evidence Markdown tables through the same renderer. That renderer MUST calculate column widths, align the columns, and display the same evidence-state labels in both outputs. Callers MAY select different definitions and supply different kind-labeled name cells so mdBook can link to detail pages.
+`habeas status` and the mdBook requirements index use the same renderer for
+their Definition/Evidence Markdown tables. The renderer calculates column
+widths and aligns the columns. Each caller supplies its state labels:
+`habeas status` reports checked evidence states, while the book reports
+recorded assessments under {cite}`requirements.index.state`. The CLI keeps
+its checked labels: Valid, Missing, Determination false, FIXME, and Invalid.
+Callers may select different definitions and supply kind-labeled name cells
+so mdBook can link to detail pages.
 :::
 
 :::{req} info
 :impl: assets/skills/habeas/SKILL.md
 :impl: assets/skills/habeas-requirements/SKILL.md
 :impl: assets/skills/habeas-evidence/SKILL.md
-`habeas info <selection>` MUST show the requirements and named examples matched by the {term}`requirements.references.definition_selection`. It MUST print matches in full-name order as Markdown with the same kind-labeled definition, Validation findings, Rationale, and Inputs structure and evidence states as mdBook detail pages, including readable output for missing or invalid evidence. It MUST work without a requirements index directive and report an invalid selection or no matches clearly. Habeas's bundled agent guidance MUST tell agents they can use this command to inspect a requirement or named example.
+`habeas info <selection>` shows the requirements and named examples matched
+by the {term}`requirements.references.definition_selection`, in full-name
+order. It uses the book detail layout for the kind-labeled definition,
+Rationale, and Inputs, while checking evidence and showing its checked state,
+Validation findings, and input hash mismatches. Missing or invalid evidence
+produces readable output. The command works without a requirements index
+directive and reports an invalid selection or no matches clearly. Bundled
+agent guidance tells agents to use it to inspect requirements and examples.
 :::
 
 :::{req} bootstrap_skill

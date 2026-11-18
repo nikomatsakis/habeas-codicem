@@ -156,15 +156,14 @@ explain how to obtain a supported version.
 :::
 
 :::{req} index
-`habeas mdbook` MUST automatically generate exactly one execution-coverage
-subchapter under the requirements index of
-{cite}`requirements.index.chapter`, whether that requirements index is
-explicitly placed or automatically generated.
+`habeas mdbook` automatically generates one documented-coverage-gaps
+subchapter under the requirements index of {cite}`requirements.index.chapter`,
+whether that index is explicitly placed or automatically generated.
 :::
 
 :::{req} index.navigation
-The requirements index MUST link to its execution-coverage subchapter under
-{cite}`requirements.test-coverage.index`.
+The requirements index links to its documented-coverage-gaps subchapter
+under {cite}`requirements.test-coverage.index`.
 :::
 
 :::{req} index.source
@@ -176,142 +175,75 @@ target.
 :::
 
 :::{req} index.selection
-The coverage index MUST combine the most recent recorded test attempt for each
-nextest binary and test name among the retained runs. "Most recent" MUST refer
-to when the attempt started, including failed or interrupted attempts. A newer
-filtered run MUST update only the tests it executes, leaving other compatible
-test records available to the combined view. A newer attempt with missing or
-unreadable coverage MUST be shown as unavailable rather than replaced with an
-older successful attempt. Results from incompatible instrumented build
-configurations MUST NOT be combined under
-{cite}`requirements.test-coverage.storage.configuration`.
-
-The main combined view MUST use the instrumented build configuration of the
-most recently started recorded test attempt. Latest-per-test selection MUST
-occur within that configuration. Records from other configurations MUST be
-identified as excluded historical coverage. Configuration selection MUST use
-recorded metadata without building or executing tests.
+Saved execution-coverage checks select the most recent recorded attempt
+for each nextest binary and test name within the instrumented configuration
+of the most recently started recorded attempt. Most recent refers to when an
+attempt started, including failed or interrupted attempts. A newer filtered
+run updates only tests it executes, leaving other compatible records available.
+A newer attempt with missing or unreadable coverage is unavailable and does
+not fall back to an older success. Incompatible configurations under
+{cite}`requirements.test-coverage.storage.configuration` are excluded.
+Selection uses recorded metadata without building or executing tests.
 :::
 
 :::{req} index.freshness
-Only records whose captured source inputs match the current project source and
-whose build configurations are compatible MAY contribute execution counts to
-the combined view of {cite}`requirements.test-coverage.index.selection`.
-Records invalidated by a source change, or whose compatibility cannot be
-established, MUST be identified as stale or unavailable and excluded from the
-combined coverage totals. Their per-process reports and matching captured source
-MUST remain retained in the build artifacts until those artifacts are removed.
+Only records whose captured source inputs match the current source and
+whose build configurations are compatible contribute counts to saved
+execution-coverage checks under
+{cite}`requirements.test-coverage.index.selection`. Invalidated records or
+records of unknown compatibility are identified as stale or unavailable and
+excluded from combined totals. Per-process reports and matching captured
+source remain retained until their build artifacts are removed.
 :::
 
 :::{req} index.summary
-The coverage index MUST display the combined view selected under
+Saved execution-coverage checks compute line coverage from the union of
+instrumented file-and-line locations in the selected fresh records under
 {cite}`requirements.test-coverage.index.selection` and
-{cite}`requirements.test-coverage.index.freshness`. It MUST show the number of
-selected test attempts and summarize coverage excluded because it is stale,
-unavailable, or from a historical build configuration. Detailed test identities,
-run provenance, and per-test execution data MUST remain in the saved coverage
-artifacts rather than being included in the generated book.
-
-For first-party Rust files under
-{cite}`requirements.references.rust_item_coverage`, the summary MUST compute
-line coverage from the union of instrumented file-and-line locations in the
-selected fresh records, including their associated child-process records.
-Each location MUST count once in the denominator and count as covered when any
-selected record has a positive execution count for it. Percentages MUST be
-computed from those union counts rather than averaged across process reports.
-A view with no instrumented lines MUST show coverage as unavailable. The index
-MUST visibly identify incomplete coverage and MUST NOT imply that every current
-test has coverage merely because all available records are valid.
+{cite}`requirements.test-coverage.index.freshness`, including child processes.
+Each location counts once in the denominator and is covered when any selected
+record has a positive execution count. Percentages use these union counts,
+rather than averaging process reports. A selection containing no instrumented
+lines, or incomplete measurements, is unavailable under
+{cite}`requirements.test-coverage.check.measurement`; otherwise absent
+file or function measurements remain subject to their coverage obligations.
 :::
 
 :::{req} index.file_map
-A file coverage map MUST identify each file by its workspace-relative path and
-show its covered and instrumented line counts and percentage. These counts MUST
-use the union rule of {cite}`requirements.test-coverage.index.summary`,
-restricted to the file and the records represented by that map, including
-associated child processes. The map MUST visually distinguish coverage levels
-while also displaying percentages as text. The percentage MUST describe the
-map's recorded instrumented lines, rather than all physical source lines.
-
-A listed file with instrumented lines but no positive execution counts MUST
-show 0%. A listed file with no recorded instrumented lines in otherwise usable
-coverage MUST show "not measured" without a percentage. Coverage whose
-completeness cannot be established MUST be identified as unavailable rather
-than as 0% or "not measured".
+The book's coverage overview identifies files by their workspace-relative
+paths and connects each file to its documented `habeas:coverage` annotations.
+It reports documentation, rather than measured execution percentages or a
+coverage-policy verdict.
 :::
 
 :::{req} index.file_map.table
-Each file coverage map MUST present its listed files in a compact table, with
-one row per file and columns for its workspace-relative path and coverage
-percentage or measurement status. Covered and instrumented line counts MUST
-remain available in each measured file's row or expanded details.
-The counts, statuses, and visual distinction of coverage levels MUST follow
-{cite}`requirements.test-coverage.index.file_map`.
+The documented coverage overview presents a compact table of source
+files with coverage annotations and links to their explanations.
 :::
 
 :::{req} index.file_map.directories
-The table of {cite}`requirements.test-coverage.index.file_map.table` MUST group
-its listed files by their directory hierarchy. Each non-root directory
-containing a listed file, directly or through descendants, MUST have a group.
-Each group MUST be independently expandable and collapsible.
-
-A collapsed group MUST show its workspace-relative path and the summaries
-required by {cite}`requirements.test-coverage.index.file_map.minimum` and
-{cite}`requirements.test-coverage.index.file_map.minimum.statuses`, while
-hiding its file rows and descendant groups.
+The overview groups its listed files by directory hierarchy. Every
+non-root directory containing a listed file, directly or through descendants,
+has an independently expandable group. A collapsed group shows its
+workspace-relative path and the number of documented source items carrying
+coverage annotations in its descendants, while hiding their file rows.
 :::
 
 :::{req} index.file_map.directories.initial
-Directory groups under
-{cite}`requirements.test-coverage.index.file_map.directories` MUST be expanded
-initially in the combined gaps overview. File rows at the workspace root MUST
-remain visible.
+Directory groups in the documented coverage overview are expanded
+initially. Files at the workspace root remain visible.
 :::
 
 :::{req} index.file_map.directories.data
-Expanding or collapsing a directory group under
-{cite}`requirements.test-coverage.index.file_map.directories` MUST NOT change
-the files, coverage counts, or measurement statuses represented by the map.
+Expanding or collapsing a directory group changes visibility without
+changing the files or documented annotations represented by the overview.
 :::
 
-:::{req} index.file_map.minimum
-Each directory group under
-{cite}`requirements.test-coverage.index.file_map.directories` MUST display the
-minimum measured file coverage percentage within its directory, including
-descendant directories.
 
-For the combined gaps overview, the minimum MUST consider all current
-first-party Rust files represented by the map within that directory,
-including files hidden because they have no unsatisfied obligations.
-The minimum MUST use the file coverage fractions of
-{cite}`requirements.test-coverage.index.file_map` before rounding for display,
-regardless of which groups are expanded. Its label MUST identify it as the
-minimum measured file coverage. Not-measured and unavailable files MUST NOT
-contribute a percentage. A group with no measured files MUST show no numerical
-minimum.
-:::
 
-:::{req} index.file_map.minimum.statuses
-Each directory group under
-{cite}`requirements.test-coverage.index.file_map.directories` MUST display
-the number of its listed files, including descendants, that are not measured
-whenever that count is nonzero. The status MUST follow
-{cite}`requirements.test-coverage.index.file_map`. The count MUST describe
-only files listed by the map, regardless of which groups are expanded.
-:::
-
-:::{example} index.file_map.minimum.descendants
-A map lists `src/a.rs` with 1 of 2 instrumented lines covered,
-`src/nested/b.rs` with 1 of 4 covered, and `src/nested/c.rs` as not measured.
-Both the `src` and `src/nested` groups show a minimum measured file coverage
-of 25% and one not-measured file, including while collapsed.
-{test}`requirements.test-coverage.index.file_map.minimum`
-{test}`requirements.test-coverage.index.file_map.minimum.statuses`
-:::
 
 :::{req} index.file_map.notes
-Each listed first-party Rust file in the combined file coverage
-map MUST provide access to a file-notes view identifying its
+Each listed file provides access to a file-notes view identifying its
 workspace-relative path.
 :::
 
@@ -347,15 +279,11 @@ These failures MUST NOT be presented as an absence of coverage explanations.
 :::
 
 :::{req} index.file_map.notes.reviews
-Each citation entry under
-{cite}`requirements.test-coverage.index.file_map.notes.justifications` MUST
-show whether its source item's citation review is current and accepted under
-{cite}`requirements.test-coverage.check.exceptions.reviews`.
-
-Missing, unreadable, stale, invalid, or rejected reviews MUST NOT be presented
-as accepted. The view MUST distinguish a missing review from a present review
-that is not accepted and expose the validation findings explaining
-non-acceptance.
+Each coverage annotation shows its last recorded citation-review
+determination and rationale when readable. It distinguishes a missing review
+from an unreadable review and explains failures to read the record.
+Recorded results are labeled as recorded reviews; rendering does not check
+whether they are current or authorize an execution-coverage exception.
 :::
 
 :::{req} index.file_map.notes.render_only
@@ -366,109 +294,69 @@ assessment model. It MUST follow
 :::
 
 :::{req} index.file_map.combined
-The coverage index MUST present a gaps-focused file coverage map representing
-all current first-party Rust files under
-{cite}`requirements.references.rust_item_coverage` as its primary overview.
-Its primary file rows MUST list only files with unsatisfied coverage
-obligations under {cite}`requirements.test-coverage.check.threshold` or
-{cite}`requirements.test-coverage.check.functions`. A file meeting its line
-target MUST still be listed when it contains an unsatisfied function obligation.
-
-Its coverage counts MUST use only records eligible for the combined view under
-{cite}`requirements.test-coverage.index.selection` and
-{cite}`requirements.test-coverage.index.freshness`, following
-{cite}`requirements.test-coverage.index.file_map`.
+The book's coverage overview lists current source files carrying
+`habeas:coverage` annotations on their file roots or explicitly declared
+functions and methods. Every such annotation is browsable, including
+annotations with missing or rejected reviews and annotations whose measured
+coverage already meets its obligations. Listing an annotation does not
+establish whether it is a currently needed or accepted exception.
 :::
 
-:::{req} index.file_map.combined.measurement
-The combined gaps overview MUST visibly identify coverage excluded because it
-is stale, missing, or unreadable. Measurement failures under
-{cite}`requirements.test-coverage.check.measurement` MUST be reported separately
-from uncovered file and function obligations. They MUST NOT be presented as
-zero execution or as absence of individual function measurement in otherwise
-usable coverage.
-
-When the coverage check reports a measurement failure under
-{cite}`requirements.test-coverage.check.measurement`, the combined overview
-MUST show coverage as unavailable and omit file rows and directory groups.
-Measurement findings MUST remain inspectable under
-{cite}`requirements.test-coverage.index.gaps`. When no usable selected coverage
-exists, the overview MUST retain the collection guidance of
-{cite}`requirements.test-coverage.index.unavailable`. Numerical coverage MUST
-NOT be fabricated from missing or incomplete data.
-:::
 
 :::{req} index.file_map.combined.details
-The combined coverage overview MUST restrict its expandable details to coverage
-gaps, explanation status, and coverage-check findings. It MUST NOT include a
-test-run provenance table or embed per-test coverage data.
+Expandable coverage details contain current annotation explanations
+and last recorded citation reviews. Test-run provenance and execution
+measurements remain in saved artifacts rather than the generated book.
 :::
 
 :::{req} index.gaps
-The combined coverage overview MUST identify whether the post-suite check of
-{cite}`requirements.test-coverage.check` would pass or fail using the same
-saved coverage and current exception evidence. Findings that cause the check
-to fail MUST remain inspectable, including measurement, source discovery,
-source parsing, and exception-review findings.
+The coverage overview identifies itself as documented coverage gaps and
+explains that `habeas status` and `habeas author` check the annotations and
+reviews, while `habeas coverage-check` enforces measured coverage.
+It presents no coverage-check pass/fail verdict.
 :::
 
 :::{req} index.gaps.summary
-The combined coverage overview MUST identify the numbers of unsatisfied file
-and function obligations and group those obligations by source file.
-Each directory summary MUST identify the number of unsatisfied obligations
-within that directory and its descendants, regardless of which groups are
-expanded.
-
-When measurement or source discovery or parsing prevents establishing those
-counts, the affected counts MUST be identified as unavailable or incomplete
-rather than presented as complete counts. An empty list of established
-unsatisfied obligations MUST NOT imply that the check passes when
-{cite}`requirements.test-coverage.index.gaps` reports other failures.
+The coverage overview counts documented source items carrying coverage
+annotations, once per source item, and groups them by source file. Directory
+summaries include these items in all descendants,
+regardless of which groups are expanded. Read or parse failures that prevent
+discovering annotations are visible and are not presented as a complete
+absence of documentation.
 :::
 
 :::{req} index.gaps.details
-In the combined gaps overview, clicking a listed file MUST expand or collapse
-its uncovered obligations in place. Each expanded file MUST show each
-obligation's source item and source location, measurement, and explanation
-status.
+Clicking a listed file expands or collapses its documented annotations
+in place. Each expanded file identifies each annotation's source item and
+source location and links to its explanation.
 :::
 
 :::{req} index.gaps.details.initial
-Per-file uncovered obligations under
-{cite}`requirements.test-coverage.index.gaps.details` MUST be collapsed
+Per-file annotation details in the coverage overview are collapsed
 initially.
 :::
 
 :::{req} index.gaps.explanations
-Each unsatisfied obligation under
-{cite}`requirements.test-coverage.index.gaps.summary` MUST distinguish a
-missing `habeas:coverage` proposal from a present proposal whose review is
-missing or is not current and accepted. When a present proposal contains no
-tracked justification, the view MUST say so.
-
-Present justification text and review validation findings MUST remain
-inspectable following
-{cite}`requirements.test-coverage.index.file_map.notes.justifications` and
+Each documented annotation exposes its current tracked justification
+under {cite}`requirements.test-coverage.index.file_map.notes.justifications`
+and its last recorded review under
 {cite}`requirements.test-coverage.index.file_map.notes.reviews`.
+Missing justification and missing or unreadable stored reviews are
+distinguished.
 :::
 
 :::{req} index.gaps.accepted
-Accepted exceptions actually used to satisfy current file or function
-coverage obligations MUST be shown separately in an initially collapsed
-documented-gaps section. Each entry MUST identify its source item and source
-location, its uncovered measurement, its tracked justification, and its current
-accepted review state, using current source notes under
+Documented annotations are browsable regardless of their last recorded
+review result. The book neither filters them by acceptance nor checks whether
+they are used to satisfy current measured coverage. Source items and locations
+remain connected to the current source notes under
 {cite}`requirements.test-coverage.index.file_map.notes.current`.
-
-Accepted exceptions MUST NOT increase reported execution-coverage percentages.
-Citations on items whose measured coverage already satisfies their obligations
-MUST NOT be listed as active gaps.
 :::
 
 :::{req} index.file_map.test
-The coverage index MUST NOT offer per-test file coverage maps or a test
-selector. Its file coverage map MUST focus on insufficient combined coverage
-under {cite}`requirements.test-coverage.index.file_map.combined`.
+The book offers no per-test coverage map or test selector. Its coverage
+overview connects the source annotations described by
+{cite}`requirements.test-coverage.index.file_map.combined`.
 :::
 
 :::{req} index.details
@@ -486,14 +374,18 @@ an existing book chapter, including another generated chapter.
 :::
 
 :::{req} index.unavailable
-When no coverage run has been recorded, the coverage index MUST show a readable
-message explaining how to collect one. Missing, unreadable, or incomplete run
-data MUST produce a visible diagnostic in the index
-without preventing the rest of the book from rendering.
+When source discovery succeeds but finds no coverage annotations, the
+coverage overview says no documented coverage gaps are present. Missing,
+unreadable, or unparseable source produces a visible rendering diagnostic
+without preventing the rest of the book from rendering. Saved coverage runs
+are not needed to browse annotations.
 :::
 
 :::{req} index.render_only
-Building the book MUST NOT run tests or collect coverage.
+Building the book follows {cite}`requirements.index.render_only`.
+Coverage documentation is rendered from source annotations and stored review
+results without reading saved execution measurements, evaluating exception
+acceptance, or auditing review freshness.
 :::
 
 :::{req} setup
