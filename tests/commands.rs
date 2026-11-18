@@ -460,6 +460,7 @@ fn status_lists_nonvalid_requirements_and_all_option_in_name_order() {
 // {test}`requirements.cli.status`
 // {test}`requirements.references.rust_item_coverage`
 // {test}`requirements.references.definition_globs`
+// {test}`requirements.references.coverage.report`
 #[test]
 fn status_preserves_repository_wide_rust_findings_in_every_form() {
     let temp = fixture();
@@ -473,24 +474,40 @@ fn status_preserves_repository_wide_rust_findings_in_every_form() {
         ["--all", "--verbose"].as_slice(),
     ] {
         for selection in [None, Some("requirements.ready")] {
-            let mut args = vec!["status"];
-            args.extend_from_slice(flags);
-            args.extend(selection);
-            let output = habeas(&nested, &args);
-            assert!(output.status.success(), "{args:?}: {output:?}");
-            let text = String::from_utf8(output.stdout).unwrap();
-            assert!(text.contains("## Coverage warnings"), "{args:?}: {text}");
-            assert!(
-                text.contains(
-                    "src/extra.rs:1: function unread has no recent coverage: it has no requirement or example reference, and no recent evidence record or review read it"
-                ),
-                "{args:?}: {text}"
-            );
-            assert!(
-                !text.contains("function main has no recent coverage"),
-                "{args:?}: {text}"
-            );
-            assert!(!text.contains("attestation"), "{args:?}: {text}");
+            for coverage in [false, true] {
+                let mut args = vec!["status"];
+                args.extend_from_slice(flags);
+                args.extend(selection);
+                if coverage {
+                    args.push("--coverage");
+                }
+                let output = habeas(&nested, &args);
+                assert!(output.status.success(), "{args:?}: {output:?}");
+                let text = String::from_utf8(output.stdout).unwrap();
+                if coverage {
+                    assert!(text.contains("## Coverage warnings"), "{args:?}: {text}");
+                    assert!(
+                    text.contains(
+                        "src/extra.rs:1: function unread has no recent coverage: it has no requirement or example reference, and no recent evidence record or review read it"
+                    ),
+                    "{args:?}: {text}"
+                );
+                } else {
+                    assert!(
+                        text.contains(
+                            "1 nodes have coverage warnings. Use `status --coverage` to see them."
+                        ),
+                        "{args:?}: {text}"
+                    );
+                    assert!(!text.contains("has no recent coverage"), "{args:?}: {text}");
+                    assert!(!text.contains("## Coverage warnings"), "{args:?}: {text}");
+                }
+                assert!(
+                    !text.contains("function main has no recent coverage"),
+                    "{args:?}: {text}"
+                );
+                assert!(!text.contains("attestation"), "{args:?}: {text}");
+            }
         }
     }
 }

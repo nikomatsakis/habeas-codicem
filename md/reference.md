@@ -745,7 +745,7 @@ The bundled skill MUST explain how to author evidence.
 
 ### Rust items
 
-For Rust, Habeas parses first-party source files, which are the `.rs` files among the sources reference discovery considers, except under the project-root `vendor` directory. Validation fails for two kinds of item: a test function, marked `#[test]` or another attribute whose path ends in `test`, without a `{test}` reference, and a Cargo example that does not `{cite}` a named example of the book. Every other explicit function or method, and every struct, enum, and union, should be covered: it has a requirement or named example reference in an attached comment or its body, or an assessment read it, meaning its outline node or one containing it is an outline input of an evidence record, a citation review, or a site review. Selected search snippets recorded by `finish_search` also count as outline inputs. A reference on an enclosing `impl` or module, in a string literal, or only in an evidence input does not count as the item's reference. An item that is not covered is a warning in `habeas status` and after `habeas author`, not a validation failure, and only when no recent version of an existing evidence file read it: the version on disk or one of the last three commits that changed it (set `[coverage] reauthorings` in `habeas.toml` to change the number). So an item that a re-authored record stopped reading stays quiet for a few re-authorings, while a new item nothing has read, or one whose only record was deleted, is warned about at once. Items inside `mod tests` are never warned about. A Rust source file that cannot be parsed is reported as an error. For an item that serves other code, including a trait implementation a library calls, cite `habeas:util`, as described under [Built-in definitions](#built-in-definitions). {cite}`requirements.references.rust_item_coverage` {cite}`requirements.references.coverage.tests` {cite}`requirements.references.coverage.examples` {cite}`requirements.references.coverage.history` {cite}`requirements.references.coverage.report` {cite}`requirements.cli.internal_detail_guidance`
+For Rust, Habeas parses first-party source files, which are the `.rs` files among the sources reference discovery considers, except under the project-root `vendor` directory. Validation fails for two kinds of item: a test function, marked `#[test]` or another attribute whose path ends in `test`, without a `{test}` reference, and a Cargo example that does not `{cite}` a named example of the book. Every other explicit function or method, and every struct, enum, and union, should be covered: it has a requirement or named example reference in an attached comment or its body, or an assessment read it, meaning its outline node or one containing it is an outline input of an evidence record, a citation review, or a site review. Selected search snippets recorded by `finish_search` also count as outline inputs. A reference on an enclosing `impl` or module, in a string literal, or only in an evidence input does not count as the item's reference. An item that is not covered contributes to the coverage-warning count in `habeas status` and after `habeas author`, not a validation failure; use `habeas status --coverage` to see individual warnings and coverage-history details. An item contributes to the count only when no recent version of an existing evidence file read it: the version on disk or one of the last three commits that changed it (set `[coverage] reauthorings` in `habeas.toml` to change the number). So an item that a re-authored record stopped reading stays quiet for a few re-authorings, while a new item nothing has read, or one whose only record was deleted, is warned about at once. Items inside `mod tests` are never warned about. A Rust source file that cannot be parsed is reported as an error. For an item that serves other code, including a trait implementation a library calls, cite `habeas:util`, as described under [Built-in definitions](#built-in-definitions). {cite}`requirements.references.rust_item_coverage` {cite}`requirements.references.coverage.tests` {cite}`requirements.references.coverage.examples` {cite}`requirements.references.coverage.history` {cite}`requirements.references.coverage.report` {cite}`requirements.cli.internal_detail_guidance`
 
 Rust selectors use syntactic ancestry within one repository-relative file, under the Rust outline profile below. Examples include `mod[local]/fn[run]`, `impl[Thing]/fn[run]`, `impl[Thing/Trait]/fn[run]`, `trait[Trait]/fn[read]`, `extern[C]/fn[puts]`, and `fn[outer]/fn[inner]`. An impl is named by its self type and optional trait as written, so `impl<T> Trait for Wrapper<T>` is `impl[Wrapper<T>/Trait]`. `use` declarations and item-position macro invocations are anonymous, such as `use@3f2a9c01b7de`. Modules are never resolved across files. {cite}`requirements.references.rust_item_selectors`
 
@@ -879,6 +879,7 @@ habeas info requirements.ci.outline_inputs
 habeas info 'requirements.cli.*'
 habeas status 'requirements.cli.*' --all
 habeas status --verbose
+habeas status --coverage
 ```
 
 Agent skills installed by Habeas point to `habeas info` for looking up definition details.
@@ -963,14 +964,15 @@ explanations. Directory summaries show the minimum measured coverage across
 all their current first-party Rust files, including passing files hidden from
 the gaps overview. The CI verdict uses the same evaluator as
 `habeas coverage-check`; unavailable measurements and invalid reviews remain
-visible failures. Per-test maps and run provenance remain available on demand.
+visible failures. Saved artifacts retain individual process measurements and
+run provenance; the generated pages show coverage gaps and their source notes.
 
 The index combines each test's latest started attempt within the most recently
 used instrumented configuration. Filtered runs update only their selected tests.
 Failed and interrupted attempts remain visible; missing profiles cannot fall
 back to older successful attempts. Source and build-input changes invalidate the
 workspace's combined coverage. Other build configurations and older attempts
-remain inspectable as historical reports, with the captured source. Coverage
+remain saved with their captured source for historical report reconstruction. Coverage
 percentages count unique instrumented file-and-line locations, including child
 processes; process percentages are not averaged. The view does not establish
 that all current tests were measured.

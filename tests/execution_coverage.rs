@@ -720,21 +720,20 @@ fn real_build_captures_dependency_files_and_environment_for_read_only_freshness_
     };
     let storage = root.join("target/habeas/coverage");
     let before = retained_files(&storage);
-    assert!(!render("compiler-value", "build-value").contains("stale:"));
+    assert!(!render("compiler-value", "build-value").contains("stale test attempts"));
     for file in ["included data.txt", "build-input.data"] {
         let path = root.join(file);
         let original = fs::read(&path).unwrap();
         fs::write(&path, "changed").unwrap();
         assert!(
-            render("compiler-value", "build-value")
-                .contains("stale: source inputs changed or unavailable"),
+            render("compiler-value", "build-value").contains("1 stale test attempts"),
             "{file}"
         );
         fs::write(path, original).unwrap();
-        assert!(!render("compiler-value", "build-value").contains("stale:"));
+        assert!(!render("compiler-value", "build-value").contains("stale test attempts"));
     }
     for (compiler, build) in [("changed", "build-value"), ("compiler-value", "changed")] {
-        assert!(render(compiler, build).contains("stale: source inputs changed or unavailable"));
+        assert!(render(compiler, build).contains("1 stale test attempts"));
     }
     assert_eq!(retained_files(&storage), before);
 }

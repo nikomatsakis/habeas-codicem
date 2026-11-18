@@ -20,7 +20,7 @@ Run commands from the project root, the directory with `book.toml` and
       missing, stale, or invalid and skips current ones; `-v` prints each false
       judgment's rationale. `habeas author <name>` does one.
 - [ ] 4. `habeas coverage`, then handle the coverage warnings of
-      `habeas status` as "Uncovered Rust items" says. While findings remain
+      `habeas status --coverage` as "Uncovered Rust items" says. While findings remain
       that you can fix, return to step 2.
 - [ ] 5. Check the "Disagreements" section of `habeas status`. Validation
       accepts a `true` or FIXME whose rationale records a disagreement, so only
@@ -118,8 +118,10 @@ Validation fails for only two kinds of uncovered item: a test function, with
 reference, and a Cargo example that does not `{cite}` a named example of the
 book. Add the reference.
 
-Every other item is a coverage warning in `habeas status` and after
-`habeas author`, and does not fail validation. An item has recent coverage
+Every other uncovered item contributes to the coverage warning count in
+`habeas status` and after `habeas author`, and does not fail validation.
+Use `habeas status --coverage` to see the individual warnings.
+An item has recent coverage
 when it has its own reference, or when a recent version of an existing
 evidence record or review read it: the version on disk or one of its last
 three commits (`[coverage] reauthorings` in `habeas.toml` changes the number).

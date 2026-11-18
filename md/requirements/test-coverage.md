@@ -199,18 +199,18 @@ whose build configurations are compatible MAY contribute execution counts to
 the combined view of {cite}`requirements.test-coverage.index.selection`.
 Records invalidated by a source change, or whose compatibility cannot be
 established, MUST be identified as stale or unavailable and excluded from the
-combined coverage totals. Their retained per-process reports MUST remain
-inspectable using their captured source until the build artifacts are removed.
+combined coverage totals. Their per-process reports and matching captured source
+MUST remain retained in the build artifacts until those artifacts are removed.
 :::
 
 :::{req} index.summary
 The coverage index MUST display the combined view selected under
 {cite}`requirements.test-coverage.index.selection` and
-{cite}`requirements.test-coverage.index.freshness`. It MUST identify the
-contributing runs and show each selected test's binary, test name, attempt,
-capture time, command, selection, and outcome, including missing or stale
-coverage. It MUST show source revisions and uncommitted-source state when
-available rather than present records from several runs as one run.
+{cite}`requirements.test-coverage.index.freshness`. It MUST show the number of
+selected test attempts and summarize coverage excluded because it is stale,
+unavailable, or from a historical build configuration. Detailed test identities,
+run provenance, and per-test execution data MUST remain in the saved coverage
+artifacts rather than being included in the generated book.
 
 For first-party Rust files under
 {cite}`requirements.references.rust_item_coverage`, the summary MUST compute
@@ -220,9 +220,8 @@ Each location MUST count once in the denominator and count as covered when any
 selected record has a positive execution count for it. Percentages MUST be
 computed from those union counts rather than averaged across process reports.
 A view with no instrumented lines MUST show coverage as unavailable. The index
-MUST link to {cite}`requirements.test-coverage.index.details`, visibly identify
-incomplete coverage, and MUST NOT imply that every current test has coverage
-merely because all available records are valid.
+MUST visibly identify incomplete coverage and MUST NOT imply that every current
+test has coverage merely because all available records are valid.
 :::
 
 :::{req} index.file_map
@@ -265,8 +264,8 @@ hiding its file rows and descendant groups.
 :::{req} index.file_map.directories.initial
 Directory groups under
 {cite}`requirements.test-coverage.index.file_map.directories` MUST be expanded
-initially in the combined gaps overview and collapsed initially in per-test
-maps. File rows at the workspace root MUST remain visible.
+initially in the combined gaps overview. File rows at the workspace root MUST
+remain visible.
 :::
 
 :::{req} index.file_map.directories.data
@@ -284,9 +283,6 @@ descendant directories.
 For the combined gaps overview, the minimum MUST consider all current
 first-party Rust files represented by the map within that directory,
 including files hidden because they have no unsatisfied obligations.
-For a per-test map, the minimum MUST consider only listed files, following
-the omission rule of {cite}`requirements.test-coverage.index.file_map.test`.
-
 The minimum MUST use the file coverage fractions of
 {cite}`requirements.test-coverage.index.file_map` before rounding for display,
 regardless of which groups are expanded. Its label MUST identify it as the
@@ -297,11 +293,10 @@ minimum.
 
 :::{req} index.file_map.minimum.statuses
 Each directory group under
-{cite}`requirements.test-coverage.index.file_map.directories` MUST separately
-display the number of its listed files, including descendants, that are
-not measured and the number that are unavailable whenever the corresponding
-count is nonzero. These statuses MUST follow
-{cite}`requirements.test-coverage.index.file_map`. The counts MUST describe
+{cite}`requirements.test-coverage.index.file_map.directories` MUST display
+the number of its listed files, including descendants, that are not measured
+whenever that count is nonzero. The status MUST follow
+{cite}`requirements.test-coverage.index.file_map`. The count MUST describe
 only files listed by the map, regardless of which groups are expanded.
 :::
 
@@ -315,7 +310,7 @@ of 25% and one not-measured file, including while collapsed.
 :::
 
 :::{req} index.file_map.notes
-Each listed first-party Rust file in a combined or per-test file coverage
+Each listed first-party Rust file in the combined file coverage
 map MUST provide access to a file-notes view identifying its
 workspace-relative path.
 :::
@@ -337,8 +332,7 @@ following {cite}`requirements.test-coverage.check.exceptions.anchor`.
 :::{req} index.file_map.notes.current
 The view of {cite}`requirements.test-coverage.index.file_map.notes` MUST use
 the current workspace source at book-render time and explicitly identify its
-contents as current workspace source notes. This MUST also hold when the link
-originates in a historical test report.
+contents as current workspace source notes.
 :::
 
 :::{req} index.file_map.notes.availability
@@ -394,16 +388,20 @@ from uncovered file and function obligations. They MUST NOT be presented as
 zero execution or as absence of individual function measurement in otherwise
 usable coverage.
 
-When no usable selected coverage exists, the overview MUST show coverage as
-unavailable and retain the collection guidance of
+When the coverage check reports a measurement failure under
+{cite}`requirements.test-coverage.check.measurement`, the combined overview
+MUST show coverage as unavailable and omit file rows and directory groups.
+Measurement findings MUST remain inspectable under
+{cite}`requirements.test-coverage.index.gaps`. When no usable selected coverage
+exists, the overview MUST retain the collection guidance of
 {cite}`requirements.test-coverage.index.unavailable`. Numerical coverage MUST
 NOT be fabricated from missing or incomplete data.
 :::
 
 :::{req} index.file_map.combined.details
-The test and run details required by
-{cite}`requirements.test-coverage.index.summary` MUST remain available on
-demand in the combined coverage overview rather than expanded by default.
+The combined coverage overview MUST restrict its expandable details to coverage
+gaps, explanation status, and coverage-check findings. It MUST NOT include a
+test-run provenance table or embed per-test coverage data.
 :::
 
 :::{req} index.gaps
@@ -468,39 +466,17 @@ MUST NOT be listed as active gaps.
 :::
 
 :::{req} index.file_map.test
-Each test-attempt report under
-{cite}`requirements.test-coverage.index.details` MUST present a file coverage
-map as its primary overview, listing the first-party Rust files in the
-originating run's captured source that have positive execution counts in that
-attempt. Files whose recorded execution counts are all zero, or that have no
-recorded instrumented lines, MUST be omitted from this map. Its counts MUST use
-that attempt's test
-process and associated child processes, following
-{cite}`requirements.test-coverage.index.file_map`. Source changes MUST NOT
-prevent displaying a complete historical attempt's map using its captured
-source.
-
-When complete coverage records no positive execution counts for any file, the
-map MUST show "No files covered by this test" rather than an empty report.
-
-If coverage for the attempt is missing, unreadable, or incomplete, its map MUST
-show coverage as unavailable rather than numerical percentages. Readable
-line-level and per-process details required by
-{cite}`requirements.test-coverage.index.details` MUST remain available on
-demand rather than expanded by default.
+The coverage index MUST NOT offer per-test file coverage maps or a test
+selector. Its file coverage map MUST focus on insufficient combined coverage
+under {cite}`requirements.test-coverage.index.file_map.combined`.
 :::
 
 :::{req} index.details
-For the records displayed by {cite}`requirements.test-coverage.index.summary`,
-`habeas mdbook` MUST generate a detail subchapter under the execution-coverage
-chapter of {cite}`requirements.test-coverage.index` for each recorded nextest
-test process, identifying its binary, test name, attempt, test-attempt outcome,
-and originating run. Each report MUST show its instrumented first-party Rust
-source lines and execution counts, distinguishing executed from unexecuted
-lines, using the source captured for that run, and link back to the
-execution-coverage chapter.
-Coverage from associated child processes MUST remain distinguishable from
-coverage recorded by the nextest test process itself.
+`habeas mdbook` MUST NOT generate per-test coverage subchapters or captured-source
+pages under the execution-coverage chapter of
+{cite}`requirements.test-coverage.index`. File-notes pages supporting coverage
+gap explanations under {cite}`requirements.test-coverage.index.file_map.notes`
+MUST remain available.
 :::
 
 :::{req} index.paths
@@ -512,7 +488,7 @@ an existing book chapter, including another generated chapter.
 :::{req} index.unavailable
 When no coverage run has been recorded, the coverage index MUST show a readable
 message explaining how to collect one. Missing, unreadable, or incomplete run
-data MUST produce a visible diagnostic in the index or affected process report
+data MUST produce a visible diagnostic in the index
 without preventing the rest of the book from rendering.
 :::
 

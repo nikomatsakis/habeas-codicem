@@ -1,6 +1,6 @@
 ---
 name: habeas-bootstrap-requirements
-description: Use when adopting Habeas in an existing codebase, when `habeas status` warns about uncovered items across most of a project's code, or when the user asks for a requirements coverage audit. Inventories tests, Rust items, and user-visible behavior; proposes an initial requirement set for the user's approval; tags every test and each requirement's root items; and drives `habeas author` and validation to full coverage. For a few uncovered items, use habeas-evidence.
+description: Use when adopting Habeas in an existing codebase, when `habeas status --coverage` warns about uncovered items across most of a project's code, or when the user asks for a requirements coverage audit. Inventories tests, Rust items, and user-visible behavior; proposes an initial requirement set for the user's approval; tags every test and each requirement's root items; and drives `habeas author` and validation to full coverage. For a few uncovered items, use habeas-evidence.
 ---
 
 # Bootstrap requirements

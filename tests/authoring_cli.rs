@@ -5134,7 +5134,7 @@ fn replacing_a_record_that_stops_reading_an_item_warns_until_it_is_covered() {
     )
     .unwrap();
     let uncovered = "src/helper.rs:1: function helper has no recent coverage";
-    let status = fixture.run(&["status"]);
+    let status = fixture.run(&["status", "--coverage"]);
     let text = String::from_utf8_lossy(&status.stdout).into_owned();
     assert!(!text.contains(uncovered), "{text}");
 
@@ -5151,7 +5151,7 @@ fn replacing_a_record_that_stops_reading_an_item_warns_until_it_is_covered() {
     assert!(!evidence.contains("helper"), "{evidence}");
 
     // ...so status warns about it...
-    let status = fixture.run(&["status"]);
+    let status = fixture.run(&["status", "--coverage"]);
     let text = String::from_utf8_lossy(&status.stdout).into_owned();
     assert!(
         text.contains(&format!(
@@ -5165,7 +5165,7 @@ fn replacing_a_record_that_stops_reading_an_item_warns_until_it_is_covered() {
         "// {impl}`requirements.ready`\nfn helper() {}\n\nfn other() {}\n",
     )
     .unwrap();
-    let status = fixture.run(&["status"]);
+    let status = fixture.run(&["status", "--coverage"]);
     let text = String::from_utf8_lossy(&status.stdout).into_owned();
     assert!(!text.contains(uncovered), "{text}");
 }

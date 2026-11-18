@@ -1169,12 +1169,11 @@ fn finish(root: &Path, dir: &Path, cov: &Path, profdata: &Path, run: &mut Run) -
         .collect::<io::Result<Vec<_>>>()?;
     attempts.sort();
     let progress = Progress::conversion(attempts.len());
-    // LLVM exports can use substantial memory. Limit concurrent conversions
-    // independently of nextest's test concurrency.
+    // Parallelize across attempts using the available CPUs. Each LLVM command
+    // uses one thread so its own pool does not multiply this concurrency.
     let workers = std::thread::available_parallelism()
         .map(usize::from)
-        .unwrap_or(1)
-        .min(4);
+        .unwrap_or(1);
     let results = parallel_collect(
         &attempts,
         workers,
@@ -1276,7 +1275,7 @@ fn finish_attempt(
         let merged = attempt_dir.join(format!("{pid}.profdata"));
         let result = output(
             Command::new(profdata)
-                .args(["merge", "-sparse"])
+                .args(["merge", "-sparse", "-num-threads=1"])
                 .args(&paths)
                 .arg("-o")
                 .arg(&merged),
@@ -1355,6 +1354,7 @@ fn export(
         .arg("export")
         .arg(first)
         .arg("-format=lcov")
+        .arg("-num-threads=1")
         .arg(format!("-instr-profile={}", profile.display()));
     for object in &objects[1..] {
         command.arg("-object").arg(object);
@@ -1397,6 +1397,7 @@ fn export(
     command
         .arg("export")
         .arg(first)
+        .arg("-num-threads=1")
         .arg(format!("-instr-profile={}", profile.display()));
     for object in &objects[1..] {
         command.arg("-object").arg(object);
@@ -1642,63 +1643,66 @@ mod tests {
         use std::sync::{Condvar, Mutex};
         use std::time::Duration;
 
-        let active = AtomicUsize::new(0);
-        let peak = AtomicUsize::new(0);
-        let visits: Vec<_> = (0..8).map(|_| AtomicUsize::new(0)).collect();
-        let finished: Vec<_> = (0..8).map(|_| AtomicBool::new(false)).collect();
-        let rendezvous = (Mutex::new(false), Condvar::new());
-        let mut completed = 0;
-        let results = parallel_collect(
-            &(0..8).collect::<Vec<_>>(),
-            2,
-            |&index| {
-                visits[index].fetch_add(1, Ordering::SeqCst);
-                let concurrent = active.fetch_add(1, Ordering::SeqCst) + 1;
-                peak.fetch_max(concurrent, Ordering::SeqCst);
-                if index < 2 {
-                    let mut met = rendezvous.0.lock().unwrap();
-                    if concurrent == 2 {
-                        *met = true;
-                        rendezvous.1.notify_all();
+        for workers in [2, 8] {
+            let total = workers * 2;
+            let active = AtomicUsize::new(0);
+            let peak = AtomicUsize::new(0);
+            let visits: Vec<_> = (0..total).map(|_| AtomicUsize::new(0)).collect();
+            let finished: Vec<_> = (0..total).map(|_| AtomicBool::new(false)).collect();
+            let rendezvous = (Mutex::new(false), Condvar::new());
+            let mut completed = 0;
+            let results = parallel_collect(
+                &(0..total).collect::<Vec<_>>(),
+                workers,
+                |&index| {
+                    visits[index].fetch_add(1, Ordering::SeqCst);
+                    let concurrent = active.fetch_add(1, Ordering::SeqCst) + 1;
+                    peak.fetch_max(concurrent, Ordering::SeqCst);
+                    if index < workers {
+                        let mut met = rendezvous.0.lock().unwrap();
+                        if concurrent == workers {
+                            *met = true;
+                            rendezvous.1.notify_all();
+                        }
+                        let (met, timeout) = rendezvous
+                            .1
+                            .wait_timeout_while(met, Duration::from_secs(5), |met| !*met)
+                            .unwrap();
+                        assert!(
+                            *met && !timeout.timed_out(),
+                            "conversion was not concurrent"
+                        );
                     }
-                    let (met, timeout) = rendezvous
-                        .1
-                        .wait_timeout_while(met, Duration::from_secs(5), |met| !*met)
-                        .unwrap();
+                    active.fetch_sub(1, Ordering::SeqCst);
+                    finished[index].store(true, Ordering::SeqCst);
+                    if index == 3 {
+                        Err("unreadable profile")
+                    } else {
+                        Ok(index)
+                    }
+                },
+                |index| {
                     assert!(
-                        *met && !timeout.timed_out(),
-                        "conversion was not concurrent"
+                        finished[index].load(Ordering::SeqCst),
+                        "progress advanced before conversion finished"
                     );
-                }
-                active.fetch_sub(1, Ordering::SeqCst);
-                finished[index].store(true, Ordering::SeqCst);
-                if index == 3 {
-                    Err("unreadable profile")
-                } else {
-                    Ok(index)
-                }
-            },
-            |index| {
-                assert!(
-                    finished[index].load(Ordering::SeqCst),
-                    "progress advanced before conversion finished"
-                );
-                completed += 1;
-            },
-        );
-        assert_eq!(peak.load(Ordering::SeqCst), 2);
-        assert!(visits.iter().all(|count| count.load(Ordering::SeqCst) == 1));
-        assert_eq!(completed, 8, "failed work also completes a conversion");
-        assert_eq!(
-            results,
-            (0..8)
-                .map(|index| if index == 3 {
-                    Err("unreadable profile")
-                } else {
-                    Ok(index)
-                })
-                .collect::<Vec<_>>()
-        );
+                    completed += 1;
+                },
+            );
+            assert_eq!(peak.load(Ordering::SeqCst), workers);
+            assert!(visits.iter().all(|count| count.load(Ordering::SeqCst) == 1));
+            assert_eq!(completed, total, "failed work also completes a conversion");
+            assert_eq!(
+                results,
+                (0..total)
+                    .map(|index| if index == 3 {
+                        Err("unreadable profile")
+                    } else {
+                        Ok(index)
+                    })
+                    .collect::<Vec<_>>()
+            );
+        }
     }
 
     // {test}`requirements.test-coverage.storage.outcomes`

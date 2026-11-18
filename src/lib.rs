@@ -1999,5 +1999,5 @@ mod commands;
 mod markdown;
 pub use commands::{
     CoverageWarnings, coverage_warnings, info_markdown, status_markdown, status_markdown_filtered,
-    status_markdown_with_github, status_markdown_with_options,
+    status_markdown_with_coverage, status_markdown_with_github, status_markdown_with_options,
 };

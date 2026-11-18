@@ -287,7 +287,7 @@ fn gaps(lines: impl Iterator<Item = u32>) -> String {
 // {impl}`requirements.test-coverage.check.report`
 fn check_in(project: &Path, target: PathBuf) -> io::Result<CheckReport> {
     let root = workspace_root(project)?;
-    let saved = book::load_saved(&root, Some(target), Path::new("coverage.md"));
+    let saved = book::load_saved(&root, Some(target));
     Ok(check_saved(&root, &saved)?.report)
 }
 
@@ -763,6 +763,7 @@ mod tests {
     // {test}`requirements.test-coverage.index.file_map.combined`
     // {test}`requirements.test-coverage.index.file_map.combined.measurement`
     // {test}`requirements.test-coverage.index.file_map.minimum`
+    // {test}`requirements.test-coverage.index.file_map.combined.details`
     #[test]
     fn book_verdict_and_gaps_follow_the_native_policy_and_current_reviews() {
         use mdbook_preprocessor::book::{Book, Chapter};
@@ -795,6 +796,22 @@ mod tests {
         };
         let missing = render();
         exercise_file_click(&missing);
+        let permitted_details = regex::Regex::new(r#"<details class="([^"]+)""#).unwrap();
+        let assert_details = |html: &str| {
+            for tag in permitted_details.captures_iter(html) {
+                assert!(
+                    matches!(
+                        &tag[1],
+                        "gap-directory" | "gap-explanation" | "gap-accepted-group" | "gap-footer"
+                    ),
+                    "unexpected expandable section: {}",
+                    &tag[1]
+                );
+            }
+            assert!(!html.contains("Test runs and provenance"));
+            assert!(!html.contains("habeas-coverage-test"));
+        };
+        assert_details(&missing);
         let unresolved_rows = missing
             .split("class=\"gap-obligation-table\"")
             .nth(1)
@@ -822,6 +839,7 @@ mod tests {
         assert!(missing.contains("code.rs:5"));
         reviews(root, json!(true));
         let accepted = render();
+        assert_details(&accepted);
         assert!(accepted.contains("1 unresolved gaps"));
         assert!(accepted.contains("Documented gaps — 1 accepted exceptions"));
         assert!(!accepted.contains("class=\"gap-accepted-group\" open"));
@@ -851,6 +869,10 @@ mod tests {
         assert!(accepted.contains("80.0%")); // Accepted exceptions add no execution.
         reviews(root, json!(false));
         let rejected = render();
+        assert_details(&rejected);
+        assert!(
+            rejected.contains("<details class=\"gap-footer\"><summary>Coverage-check findings")
+        );
         assert!(rejected.contains("2 unresolved gaps"));
         assert!(rejected.contains("Review not accepted"));
         assert!(rejected.contains("determination is false"));
@@ -895,6 +917,32 @@ mod tests {
         );
         let no_justification = render();
         assert!(no_justification.contains("No tracked justification is present."));
+        // File-level and function-level obligations share the same file control
+        // and must both expose their source, measurement and explanation.
+        record(
+            root,
+            "both",
+            3,
+            "same",
+            vec![process(root, &[(1, 1), (2, 0), (3, 0)], 0)],
+        );
+        let below_target = render();
+        exercise_file_click(&below_target);
+        let rows = below_target
+            .split("class=\"gap-obligation-table\"")
+            .nth(1)
+            .unwrap()
+            .split("</tbody></table>")
+            .next()
+            .unwrap();
+        assert!(
+            rows.contains("<code>File root</code><br><span class=\"gap-meta\">code.rs:1</span>")
+        );
+        assert!(rows.contains("1/3 (33.3%); 80% target; uncovered lines: 2-3"));
+        assert!(rows.contains("Missing habeas:coverage proposal"));
+        assert!(rows.contains("<code>fn[a]</code>"));
+        assert!(rows.contains("<code>fn[b]</code>"));
+        assert_details(&below_target);
     }
 
     // {test}`requirements.test-coverage.index.gaps`
@@ -967,10 +1015,17 @@ mod tests {
             );
         }
         // Measurement still succeeds when a discovered source cannot be parsed.
-        fs::write(root.join("driver.rs"), "fn broken(").unwrap();
+        fs::create_dir_all(root.join("src/nested")).unwrap();
+        fs::write(root.join("src/nested/driver.rs"), "fn broken(").unwrap();
         let mut p = process(root, &[(7, 0)], 0);
-        p.lines.insert("driver.rs".into(), BTreeMap::from([(1, 0)]));
-        record(root, "adapter", 2, "same", vec![p]);
+        p.lines
+            .insert("src/nested/driver.rs".into(), BTreeMap::from([(1, 0)]));
+        let attempt = record(root, "adapter", 2, "same", vec![p]);
+        let run_path = attempt.parent().unwrap().parent().unwrap().join("run.json");
+        let mut run: Run = super::super::load(&run_path).unwrap();
+        run.sources
+            .insert("src/nested/driver.rs".into(), "fn broken(".into());
+        save(&run_path, &run).unwrap();
         let broken = render();
         assert!(!report(root).passed);
         assert!(broken.contains("CI would fail"));
@@ -979,11 +1034,26 @@ mod tests {
         assert!(broken.contains("Coverage-check findings"));
         assert!(!broken.contains("0 unresolved gaps"));
         assert!(broken.contains("driver.rs"));
+        for directory in ["src", "src/nested"] {
+            let summary = broken
+                .split(&format!("data-directory=\"{directory}\""))
+                .nth(1)
+                .unwrap()
+                .split("</summary>")
+                .next()
+                .unwrap();
+            assert!(
+                summary.contains("Gap counts incomplete: 1 established uncovered obligations"),
+                "{summary}"
+            );
+        }
         assert!(
-            report(root).text.contains("driver.rs: below 80%"),
+            report(root)
+                .text
+                .contains("src/nested/driver.rs: below 80%"),
             "independent measured file threshold must still run after parse failure"
         );
-        fs::remove_file(root.join("driver.rs")).unwrap();
+        fs::remove_file(root.join("src/nested/driver.rs")).unwrap();
         git2::Repository::init(root).unwrap();
         fs::write(root.join(".git/index"), "not a valid index").unwrap();
         let discovery = render();

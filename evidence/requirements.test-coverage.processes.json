@@ -1,7 +1,7 @@
 {
   "requirement": "Each coverage run MUST retain LLVM coverage profiles independently for each\ntest process, identifying its nextest binary, test name, and attempt. Concurrent\ntests, tests with the same name in different binaries, retries, and separate\nruns MUST NOT overwrite or combine one another's stored profiles. Profiles from\ninstrumented child processes MUST remain separate and associated with the test\nattempt that spawned them.",
   "determination": true,
-  "rationale": "The tests adequately check `requirements.test-coverage.processes`.\n\nThe main test is `tests/execution_coverage.rs#fn[real_parallel_processes_retries_child_profiles_and_filtered_reruns]`. It runs a real nextest coverage run on the fixture project built by `fn[fixture]` in the same file. The run uses `--retries 1 -j 2 --no-fail-fast`. I judged each obligation against that test and its fixture:\n\n- **Identity per process (binary, test name, attempt).** Each attempt is stored as its own record under `attempts/<id>/attempt.json`. The test reads the `binary`, `test`, `attempt` and `outcome` fields. It checks that the 6 expected attempts exist and that every record has a unique `id`. It also checks that every record has at least one stored process.\n- **Same test name in different binaries.** The fixture has `same_name` in both `src/lib.rs` and `tests/processes.rs`. The test asserts there are exactly two such records. It also asserts their binaries are exactly `coverage-fixture` and `coverage-fixture::processes`, and that their ids differ, so neither overwrote the other.\n- **Retries.** The `retries` test only passes when `NEXTEST_ATTEMPT` is 2. The test asserts there are two `retries` records, a failed attempt \"1\" and a successful attempt \"2\". Both are retained with non-empty processes, so the failed attempt's profiles are not overwritten.\n- **Concurrent tests.** The run uses `-j 2` with several tests. Every attempt keeps its profile files under its own `attempts/<id>/` directory. The test asserts those files exist, both after the first run and again at the end. The fixture tests are tiny, so overlap is not guaranteed. Isolation is by per-attempt directory, though, and the unique ids and files assert that. The unit test `mod[tests]/fn[parallel_conversion_is_bounded_and_retains_every_result_in_order]` in `src/execution_coverage/runner.rs` checks that profile conversion really runs two at a time. It also checks that every item is converted exactly once and that all results are kept in order, including the failed one.\n- **Separate runs.** The test makes several later runs. These are a filtered rerun, a different profile, a feature change, `--no-run`, an empty selection, a failing run and a compile failure. After them it asserts that the first run's attempts are still 6, that every earlier profile file still exists, and that there are multiple run directories with distinct ids. The runs are sequential only. There is no test of two runs starting at the same moment, but the requirement's text does not call for one.\n- **Child processes.** The `child_process` fixture test re-executes its own test binary with `COVERAGE_CHILD` set. The test asserts that this attempt record has exactly 2 processes. Each process has a null diagnostic and non-empty line data, and the profile files for each exist under the spawning attempt's directory. The PTY test `fn[coverage_progress_on_a_pty_preserves_reports_and_plain_output_policy]` also checks `test(child_process)` gives 2 processes. So the child profile is kept as a separate process, attached to the attempt that spawned it.\n\nI found no plausible requirement-violating behavior that these tests would accept.",
+  "rationale": "The tests adequately cover `requirements.test-coverage.processes`. The main evidence is `tests/execution_coverage.rs#fn[real_parallel_processes_retries_child_profiles_and_filtered_reruns]`. It builds a real fixture (`fn[fixture]`) and runs the full `habeas coverage` flow. I also read `collect_process` and `Attempt`, but only to see how attempt identity is formed. I took the expected behaviour from the requirement text.\n\nObligations and the scenarios that cover them:\n\n- **Per-attempt retention that identifies binary, test and attempt.** The run is `--workspace --retries 1 -j 2 --no-fail-fast`. It asserts that exactly 6 attempt records exist (five tests, one retried). Each record's `binary`, `test` and `attempt` fields are read and checked. Every record has a non-empty `processes` list. Every recorded profile path is asserted to be a file under `attempts/<attempt id>/`. The set of attempt ids has the same size as the record list, so no two attempts share a directory.\n- **Concurrent tests do not overwrite or combine.** The run uses `-j 2` over five tests. The 6 distinct attempt ids and the per-attempt profile files would fail if concurrent tests shared a store. Nothing proves the tests overlapped in time. The isolation is checked by distinct identities and retained profiles, and that is the property the requirement states.\n- **Same test name in different binaries.** The `same_name` test exists in both the lib test binary and `tests/processes.rs`. The test asserts there are exactly 2 records ending in `same_name`. It asserts their binaries are exactly `{coverage-fixture, coverage-fixture::processes}`. It asserts they have distinct ids.\n- **Retries.** The `retries` test yields two records. One is attempt `\"1\"` with outcome `failed`. The other is attempt `\"2\"` with outcome `success`. Both are kept separately.\n- **Separate runs.** Several later runs follow: a filtered rerun, a different profile, a failed run, an empty selection, a features change, `--no-run` and a compile failure. Each later run adds its own run directory, and `runs(root).len()` becomes 2 after the first rerun. The first run still has 6 attempts (`attempts(&saved[0].0).len() == 6`), and `attempts(first).len() == 6` still holds at the end. The final loop re-asserts that every profile file of the first run's records still exists, so later runs neither overwrite nor merge it.\n- **Child process profiles stay separate and tied to the spawning attempt.** `child_process` spawns the test executable again with `COVERAGE_CHILD`. Its single attempt record has exactly 2 `processes`. Each has a null `diagnostic` and non-empty `lines`. Both sit in that attempt's directory. The profile pattern in `collect_process` is `%p-%m.profraw`, so each pid gets its own file. The test confirms two separately recorded processes under one attempt.\n\nThe unit test `runner.rs#mod[tests]/fn[parallel_conversion_is_bounded_and_retains_every_result_in_order]` adds a check on the post-run conversion step. It uses real concurrency with a rendezvous and checks that every result is kept in order, including a failed one. That supports the \"retain every process's profile independently\" side of the requirement.\n\nI found no plausible requirement-violating behaviour that these assertions would accept. A fixed or shared profile path, merged retry attempts, a same-name collision across binaries, a child profile lost or merged into the parent, and a later run clobbering an earlier one would each fail an assertion above. There are no acknowledgments, and none are needed.",
   "references": "3ca2d517e39ed4cfb0967a5fbd602c768951d7c83b54728c39fd2d6ea5aae4a0",
   "inputs": [
     {
@@ -23,12 +23,22 @@
     {
       "file": "src/execution_coverage/runner.rs",
       "item": "mod[tests]/fn[parallel_conversion_is_bounded_and_retains_every_result_in_order]",
-      "hash": "8f6cf86d8658a13d14d77fa0910abf15b24cbb378220ef8b3ddd4b5cdb45feba"
+      "hash": "54f6b3a9ff7883177ae25fd8a3081ccbc540fec3911b9e604a8f689009ff5561"
     },
     {
       "file": "tests/execution_coverage.rs",
       "item": "fn[real_parallel_processes_retries_child_profiles_and_filtered_reruns]",
       "hash": "13e822f885a39a69b0b2959f2581a3711ae578c43a9c85e6e1dec67fea5a186e"
+    },
+    {
+      "file": "src/execution_coverage/runner.rs",
+      "item": "fn[collect_process]",
+      "hash": "5915289715a55d1ce7a784a04c21c89144e8341a5dea8e3848cf108d68f8e334"
+    },
+    {
+      "file": "src/execution_coverage.rs",
+      "item": "struct[Attempt]",
+      "hash": "8ada6bd60aa99866604d66c77b74579284c07a62575960431eed12cfe03cdd1f"
     },
     {
       "file": "tests/execution_coverage.rs",
@@ -37,13 +47,8 @@
     },
     {
       "file": "tests/execution_coverage.rs",
-      "item": "fn[attempts]",
-      "hash": "0bc8bb48ab44331193de7a4b281c5e0708b86040758d684bae36a31872434a84"
-    },
-    {
-      "file": "tests/execution_coverage.rs",
-      "item": "fn[runs]",
-      "hash": "9c4d82e37697d10869f8407ef1b378e5e66afa9c15d6deb22ebab7b810e37a43"
+      "item": "fn[coverage_progress_on_a_pty_preserves_reports_and_plain_output_policy]",
+      "hash": "e57bfd2e6678c7e54601803cd81aa287ea730bdc40cedd2a19b1e20cf98cd170"
     }
   ]
 }
