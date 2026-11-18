@@ -148,7 +148,7 @@ pub(crate) fn citation_items(
         let parsed = outlines.parse(root, &file);
         let item = match parsed.as_ref() {
             Ok(parsed) if parsed.outline.profile.language.is_some() => {
-                let index = parsed.outline.owner_at_line(reference.line);
+                let index = parsed.reference_owner_at_line(reference.line);
                 parsed.outline.nodes[index].selector.clone()
             }
             // Plain-text files have only a root node; a source that cannot be

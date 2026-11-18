@@ -6,6 +6,7 @@
 //! every [`OutlineComment`] with the node it belongs to.
 
 mod hash;
+mod markdown;
 pub mod plain;
 pub mod profile;
 mod selector;
@@ -166,6 +167,9 @@ fn parse_grammar(
     let Some(language) = grammar else {
         return Ok(plain_text(profile, source, redaction, &lines));
     };
+    if profile.name == "markdown" {
+        return markdown::parse(profile, language, source, redaction, &lines);
+    }
     let tree = parse_tree(profile, language, source)?;
     check_errors(&tree, &lines)?;
     Ok(Builder::new(profile, source, redaction, &tree).finish(&lines))
@@ -967,6 +971,8 @@ impl Outline {
     }
 }
 
+#[cfg(all(test, feature = "default-languages"))]
+mod markdown_tests;
 #[cfg(all(test, feature = "default-languages"))]
 mod tests;
 

@@ -790,6 +790,8 @@ Each profile defines which grammar nodes are comments; in Markdown these are HTM
 | | | `media`, `supports` | `media_statement`, `supports_statement` | query text, whitespace collapsed |
 | | | `keyframes` | `keyframes_statement` | keyframes name |
 | Markdown | `.md`, `.markdown` | `section` | `section` | heading text, whitespace collapsed; anonymous before the first heading |
+| | | `paragraph` | `paragraph` | anonymous prose paragraph |
+| | | `block` | `fenced_code_block` | anonymous literal code block; colon directives are recursive blocks |
 | TOML | `.toml` | `table` | `table`, `table_array_element` | key as written |
 | | | `pair` | `pair` | key as written |
 | YAML | `.yml`, `.yaml` | `pair` | `block_mapping_pair`, `flow_pair` | `key` as written |

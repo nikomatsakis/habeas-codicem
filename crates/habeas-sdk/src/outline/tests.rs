@@ -787,8 +787,11 @@ fn markdown_profile_nests_sections_by_heading() {
         summary(&outline),
         [
             "section@ 4-5",
+            "section@/paragraph@ 4-4",
             "section[Head%20*one*] 6-10",
-            "section[Head%20*one*]/section[Sub] 8-10"
+            "section[Head%20*one*]/paragraph@ 7-7",
+            "section[Head%20*one*]/section[Sub] 8-10",
+            "section[Head%20*one*]/section[Sub]/paragraph@ 10-10"
         ]
     );
     assert_eq!(outline.comments.len(), 1);
@@ -1090,11 +1093,12 @@ fn markdown_comments_are_html_comment_blocks_not_inline_comments() {
             .iter()
             .all(|comment| !(comment.byte_start <= inline && inline < comment.byte_end))
     );
+    let owner = &outline.nodes[outline.owner_at_line(2)];
     assert_eq!(
-        outline.nodes[outline.owner_at_line(2)].selector,
-        "section[H]",
-        "an inline HTML comment is paragraph text of its section"
+        owner.kind, "paragraph",
+        "an inline HTML comment is paragraph text"
     );
+    assert_eq!(owner.parent, Some(outline.resolve("section[H]").unwrap()));
 }
 
 // {test}`requirements.references.outline_comments`

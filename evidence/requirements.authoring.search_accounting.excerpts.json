@@ -1,7 +1,7 @@
 {
   "requirement": "Every `ripgrep` or `ast_grep` excerpt, including matching and context text,\nMUST be clipped to\nthe source span of the outline item identified by their `file` and `item`,\nincluding that item's attached source under\n{cite}`requirements.references.outline_comments`.\nClipping MUST apply within a line shared by different items.",
   "determination": true,
-  "rationale": "The two marked tests in `src/authoring/tools.rs` cover each clause of `requirements.authoring.search_accounting.excerpts`. I found no gap.\n\n**Obligations derived from the text**\n1. Both `ripgrep` and `ast_grep` excerpts, matching and context text alike, are clipped to the span of the item named by `file` and `item`.\n2. That span includes the item's attached comments and attributes, per `requirements.references.outline_comments`.\n3. Clipping applies inside a line that different items share.\n\n**Coverage in `mod[tests]/fn[search_excerpts_stop_at_byte_boundaries_including_attached_comments_and_attributes]`**\n- The source file has `fn before`, a doc comment and `#[inline]` attached to `fn target`, `fn after`, and a shared line holding `fn left`, a trailing block comment, `#[inline] fn right` and `fn last`.\n- It runs both tools: `ripgrep` with `context` 99, and `ast_grep` with a rule that matches `needle()` or a block comment containing \"needle\".\n- Each tool must return exactly three matches, with items `fn[target]`, `fn[left]` and `fn[right]`, in that order.\n- Neighbouring items' content never leaks into any excerpt. The assertions rule out `unwanted_before`, `unwanted_after`, `unwanted_last` and `fn last` in the whole result. They also rule out `fn right` in left's excerpt and `fn left` in right's excerpt. Context of 99 lines for `ripgrep` would pull in neighbours if clipping failed.\n- Attached source is included. For `ripgrep` the `fn[target]` excerpt must contain \"needle docs\" and `#[inline]`. For both tools, `fn[left]` must contain \"needle attached\" and `fn[right]` must contain \"#[inline] fn right\".\n- The comment that follows code on the same line is attributed to `fn[left]` and kept out of `fn[right]`.\n- Clipping on a shared line is tested for both tools.\n- Multi-byte \"café\" in `fn target` exercises byte-boundary slicing, and the redaction marker is checked.\n- Two more `ripgrep` runs with `context` 0 check match attribution. One searches `café` and must return only `fn[target]`. The other searches `inline` and must return the `fn[target]` and `fn[right]` items, which are the two attribute owners.\n\n**Coverage in `mod[tests]/fn[exact_match_ranges_preserve_regex_anchors_and_skip_unmatched_or_binary_sources]`**\n- With `context` 10, anchored and case-insensitive patterns must yield exactly one line, `fn exact() { needle(); }`, from `fn[exact]`. The following `fn last() {}` line is not included, so context is clipped at the item end.\n- An assertion on the full `lines` JSON fixes the clipped text and the `matched` flag.\n\n**Considered but not a gap**\n- The attached-comment and attribute assertions for `fn[target]` run only for `ripgrep`. In the implementation, `impl[SearchNodes]/fn[entries]` handles both tools through one shared function. The `ast_grep` path is still tested for exclusion of neighbours and for shared-line clipping.",
+  "rationale": "**Verdict:** the reviewed tests adequately check `requirements.authoring.search_accounting.excerpts`.\n\n**Obligations derived from the text**\n1. Matching and context excerpts from both `ripgrep` and `ast_grep` must stay inside the source span of the item named by `file` and `item`.\n2. That span includes the item's attached source: its doc comments, attributes and attached comments, per `requirements.references.outline_comments`.\n3. Clipping must also apply inside a physical line that holds several items.\n\nI read `src/authoring/tools.rs#impl[SearchNodes]/fn[entries]` only to see how the code is structured. Both tools go through that one function, which clips each line to the node's source span plus its owned comments.\n\n**Test mapping**\n- `src/authoring/tools.rs#mod[tests]/fn[search_excerpts_stop_at_byte_boundaries_including_attached_comments_and_attributes]` runs both `ripgrep` (context 99) and `ast_grep` over one Rust file. The file holds adjacent functions, a doc comment plus `#[inline]` before `fn target`, and a shared line with `fn left`, a trailing block comment, `#[inline] fn right` and `fn last`.\n  - **Span clipping:** it asserts exactly three matches, with items `fn[target]`, `fn[left]` and `fn[right]`. The large context would pull in neighbouring lines if clipping failed. The test asserts that `unwanted_before`, `unwanted_after`, `unwanted_last` and `fn last` never appear in the output.\n  - **Attached source:** for `ripgrep` it asserts that `fn[target]`'s lines contain `needle docs` and `#[inline]`. For both tools it asserts that `fn[left]`'s lines contain `needle attached`, and that `fn[right]`'s lines contain `#[inline] fn right`.\n  - **Shared-line clipping:** `fn[left]`'s excerpt must not contain `fn right`. `fn[right]`'s excerpt must contain neither `fn left` nor `needle attached`.\n  - **Non-ASCII and redaction:** a multibyte `café` plus a token on the same line check byte-boundary slicing. The token must not appear unredacted.\n  - **Context 0:** two follow-up `ripgrep` queries with context 0 confirm that `café` yields only `fn[target]` and that `inline` yields `fn[target]` and `fn[right]`. The second shows attribute lines are attributed to the right items.\n- `src/authoring/tools.rs#mod[tests]/fn[exact_match_ranges_preserve_regex_anchors_and_skip_unmatched_or_binary_sources]` asserts that the whole-line excerpt `fn exact() { needle(); }` is returned unchanged and not extended into following items despite context 10. It uses anchored and case-insensitive regexes.\n\n**Gaps considered**\n- Clipping logic is language-agnostic, so other languages need no separate test.\n- `ast_grep` excerpts are checked through the same function and the same file, including the shared-line case.\n- I found no plausible violating behaviour that these tests would accept.",
   "references": "f3168551c676afa3cea9682625b111288eacc2dccebfadffb8a39ef96e63ac0f",
   "inputs": [
     {
@@ -29,7 +29,7 @@
         ":::{req} outline_comments",
         "Each documented profile defines which grammar nodes are comments; the Markdown",
         "profile's comments are HTML comment blocks, so an inline HTML comment within a",
-        "paragraph is text of its section. In every supported language, comments on consecutive lines with no other source",
+        "paragraph remains ordinary paragraph text. In every supported language, comments on consecutive lines with no other source",
         "between them MUST form one comment run. A comment that follows other source on",
         "the same line, including another comment, MUST form a run by itself and MUST belong to the innermost outline node",
         "containing that line. Any other run MUST belong to the next outline node that",
@@ -61,8 +61,31 @@
     }
   ],
   "format_version": 1,
-  "review_version": "*",
+  "review_version": "habeas-review-v1",
   "dependencies": [
+    {
+      "Node": [
+        {
+          "ReferenceSet": "requirements.authoring.search_accounting.excerpts"
+        },
+        {
+          "scheme": "habeas-reference-set-v1",
+          "value": "f3168551c676afa3cea9682625b111288eacc2dccebfadffb8a39ef96e63ac0f"
+        }
+      ]
+    },
+    {
+      "OutgoingEdges": [
+        {
+          "Requirement": "requirements.authoring.search_accounting.excerpts"
+        },
+        "Mandatory",
+        {
+          "scheme": "node-path-set-sha256-v1",
+          "value": "71974bb0345a8bd41ad83e286348666c63cf9783a83714c1c2e21c6ac77930cc"
+        }
+      ]
+    },
     {
       "Node": [
         {
@@ -81,7 +104,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "ed867fd1695a34eb4a5afd6786f319063190ecdadb2a89c84254d2bfd17e7e74"
+          "value": "101f8a03b3bd3fa80532731ee65132912cf85ae4cd5f9e1310353ed305ce072c"
         }
       ]
     },
@@ -133,17 +156,6 @@
         {
           "scheme": "habeas-input-v1",
           "value": "0f39e3d2681e1acb11babb13292583ad2de11f07086c8f2e53fe9237d2c386d7"
-        }
-      ]
-    },
-    {
-      "OutgoingEdges": [
-        {
-          "Requirement": "requirements.authoring.search_accounting.excerpts"
-        },
-        {
-          "scheme": "habeas-reference-set-v1",
-          "value": "f3168551c676afa3cea9682625b111288eacc2dccebfadffb8a39ef96e63ac0f"
         }
       ]
     }

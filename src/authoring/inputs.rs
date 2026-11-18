@@ -816,7 +816,7 @@ fn reference_selector(
         .as_ref()
         .map_err(|error| io::Error::other(format!("cannot outline referenced source: {error}")))?;
     let item = if parsed.outline.profile.language.is_some() {
-        let index = parsed.outline.owner_at_line(reference.line);
+        let index = parsed.reference_owner_at_line(reference.line);
         parsed.outline.nodes[index].selector.clone()
     } else {
         String::new()
@@ -1757,14 +1757,14 @@ pub(super) mod tests {
                 )
             })
             .collect::<Vec<_>>();
-        assert_eq!(
-            items,
-            [
-                ("docs/guide.md", "section[Usage]"),
-                // A plain-text file contributes the complete file.
-                ("notes.txt", ""),
-            ]
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].0, "docs/guide.md");
+        assert!(
+            items[0].1.starts_with("section[Usage]/paragraph@"),
+            "{items:#?}"
         );
+        // A plain-text file contributes the complete file.
+        assert_eq!(items[1], ("notes.txt", ""));
         let acknowledgments = sources.model_acknowledgments();
         assert_eq!(acknowledgments.len(), 1, "{acknowledgments:#?}");
         assert_eq!(acknowledgments[0]["file"], "src/lib.rs");

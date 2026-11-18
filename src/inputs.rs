@@ -59,6 +59,48 @@ pub(crate) struct ParsedSource {
     pub(crate) outline: Outline,
 }
 
+#[cfg(test)]
+mod ownership_tests {
+    use super::*;
+
+    // {test}`requirements.references.outline_comments`
+    // {test}`requirements.references.authoring_inputs`
+    // {test}`requirements.authoring.reference_index`
+    #[test]
+    fn markdown_references_select_the_nearest_directive_or_standalone_paragraph() {
+        let source = "# H\nAn ordinary citation.\n\n::::{note}\nOuter citation.\n\n:::{tip}\nInner citation.\n:::\n::::\n";
+        let parsed = ParsedSource {
+            path: PathBuf::from("a.md"),
+            source: source.to_owned(),
+            redacted: source.to_owned(),
+            outline: outline::parse(Path::new("a.md"), source).unwrap(),
+        };
+        let ordinary = parsed.reference_owner_at_line(2);
+        assert_eq!(parsed.outline.nodes[ordinary].kind, "paragraph");
+        let outer = parsed.reference_owner_at_line(5);
+        let inner = parsed.reference_owner_at_line(8);
+        assert_eq!(parsed.outline.nodes[outer].kind, "block");
+        assert_eq!(parsed.outline.nodes[inner].kind, "block");
+        assert_eq!(parsed.outline.nodes[inner].parent, Some(outer));
+        assert_eq!(parsed.outline.nodes[inner].line_start, 7);
+        assert_eq!(
+            parsed.outline.nodes[parsed.outline.owner_at_line(8)].kind,
+            "paragraph"
+        );
+        let rust = "fn run() {}\n";
+        let parsed = ParsedSource {
+            path: PathBuf::from("a.rs"),
+            source: rust.to_owned(),
+            redacted: rust.to_owned(),
+            outline: outline::parse(Path::new("a.rs"), rust).unwrap(),
+        };
+        assert_eq!(
+            parsed.reference_owner_at_line(1),
+            parsed.outline.owner_at_line(1)
+        );
+    }
+}
+
 // {cite}`habeas:util`
 /// Parsed outlines, cached per file for one validation or authoring run.
 #[derive(Default)]
@@ -170,6 +212,30 @@ impl OutlineCache {
 }
 
 impl ParsedSource {
+    /// Habeas attaches Markdown references to the nearest directive, or to
+    /// their paragraph outside directives. SDK line selection still exposes
+    /// the innermost paragraph.
+    // {impl}`requirements.references.outline_comments`
+    pub(crate) fn reference_owner_at_line(&self, line: usize) -> usize {
+        let owner = self.outline.owner_at_line(line);
+        if self.outline.profile.name != "markdown" {
+            return owner;
+        }
+        let mut current = Some(owner);
+        while let Some(index) = current {
+            let node = &self.outline.nodes[index];
+            if node.kind == "block"
+                && self.source[node.byte_start..node.byte_end]
+                    .trim_start()
+                    .starts_with(":::")
+            {
+                return index;
+            }
+            current = node.parent;
+        }
+        owner
+    }
+
     /// Resolves a selector to exactly one node.
     // {impl}`requirements.references.outline_selectors`
     pub(crate) fn resolve(&self, file: &str, item: &str) -> Result<usize, String> {

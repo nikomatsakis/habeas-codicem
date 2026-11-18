@@ -25,11 +25,17 @@ fn is_comment(node: Node<'_>, source: &str) -> bool {
     node.kind() == "html_block" && body.starts_with("<!--") && body.ends_with("-->")
 }
 
-const KINDS: &[KindRule] = &[KindRule::new(
-    "section",
-    "section",
-    NameRule::Custom(heading_name),
-)];
+// {impl}`requirements.sdk.sources.markdown.paragraphs`
+// {impl}`requirements.sdk.sources.markdown.fenced_blocks`
+const KINDS: &[KindRule] = &[
+    KindRule::new("section", "section", NameRule::Custom(heading_name)),
+    KindRule::new("paragraph", "paragraph", NameRule::Anonymous).when(|node| {
+        !node
+            .parent()
+            .is_some_and(|parent| matches!(parent.kind(), "atx_heading" | "setext_heading"))
+    }),
+    KindRule::new("fenced_code_block", "block", NameRule::Anonymous),
+];
 
 // {impl}`requirements.references.outline_comments`
 // {impl}`requirements.references.structural_hash`

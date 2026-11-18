@@ -1528,6 +1528,19 @@ fn authoring_documentation_shows_each_configuration_task() {
     assert!(reference.contains("[authoring.configs.cloud.options]"));
     assert!(reference.contains("`num_ctx`"));
     let chapter = chapter.split_whitespace().collect::<Vec<_>>().join(" ");
+    // The authoring chapter documents the resolution rules, not only the
+    // syntax and editing tasks for saved configurations.
+    for phrase in [
+        "The nearest enclosing file wins",
+        "Those records override same-named user records as a whole",
+        "A user's explicit project selection takes precedence over a workspace default; `--config` takes precedence over both",
+        "Remove the workspace default or configuration table to fall back to the user settings",
+    ] {
+        assert!(
+            chapter.contains(phrase),
+            "missing resolution rule: {phrase}"
+        );
+    }
     for phrase in [
         "Bedrock and OpenAI default to the available logical CPU count; Ollama defaults to one",
         "OpenAI defaults to `policy = \"once\"`",

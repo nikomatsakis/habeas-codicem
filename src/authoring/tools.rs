@@ -560,7 +560,7 @@ fn references(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Res
         let file = relative_path(&sources.root, &reference.file)?;
         let parsed = sources.outlines.parse(&sources.root, &file);
         let item = parsed.as_ref().as_ref().ok().map(|parsed| {
-            let index = parsed.outline.owner_at_line(reference.line);
+            let index = parsed.reference_owner_at_line(reference.line);
             parsed.outline.nodes[index].selector.clone()
         });
         sites.push((
@@ -1077,7 +1077,8 @@ fn referencing(
             let parsed = sources.outlines.parse(&sources.root, &file);
             match parsed.as_ref() {
                 Ok(parsed) => {
-                    let node = &parsed.outline.nodes[parsed.outline.owner_at_line(reference.line)];
+                    let node =
+                        &parsed.outline.nodes[parsed.reference_owner_at_line(reference.line)];
                     Some((node.line_start, node.line_end))
                 }
                 Err(_) => None,

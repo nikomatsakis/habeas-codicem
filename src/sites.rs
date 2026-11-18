@@ -530,7 +530,7 @@ pub(crate) fn site_fixmes(
                 .ok()
                 .filter(|parsed| parsed.outline.profile.language.is_some())
                 .map(|parsed| {
-                    parsed.outline.nodes[parsed.outline.owner_at_line(reference.line)]
+                    parsed.outline.nodes[parsed.reference_owner_at_line(reference.line)]
                         .selector
                         .clone()
                 })

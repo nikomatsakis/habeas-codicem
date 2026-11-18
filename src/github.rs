@@ -711,7 +711,7 @@ fn containing_item(
     if let Ok(parsed) = outlines.parse(&inspection.root, file).as_ref()
         && parsed.outline.profile.language.is_some()
     {
-        let node = &parsed.outline.nodes[parsed.outline.owner_at_line(reference.line)];
+        let node = &parsed.outline.nodes[parsed.reference_owner_at_line(reference.line)];
         if let (false, Some(name)) = (node.kind.is_empty(), node.display_name()) {
             return (node.declaration_line, format!("{} {name}", node.kind));
         }
