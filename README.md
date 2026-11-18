@@ -192,11 +192,15 @@ doctests. In this repository use `cargo habeas coverage`.
 Coverage conversion runs one attempt per available CPU, with each LLVM
 subprocess using one thread.
 
-`habeas coverage-check` combines the latest attempt per test for the latest
-build configuration. Source or build-input changes exclude old contributions.
-Each process retains its own raw LLVM profile and captured-source report under
+SQLite stores one current result per test. An unfiltered workspace collection
+clears the set; a filtered collection replaces its selected tests before
+execution and preserves the others. Retries replace earlier attempts.
+`habeas coverage-check` combines the current results. Source or build-input
+changes invalidate their contributions.
+Each current process retains its own raw LLVM profile and captured source under
 `target/habeas/coverage/` (or the configured Cargo target directory). These are
-disposable build artifacts: never commit them.
+retained until the result is replaced and are disposable build artifacts:
+never commit them. Legacy JSON results require a fresh collection.
 
 The book's Documented coverage gaps page connects all `habeas:coverage`
 annotations to current source explanations and last recorded reviews. It trusts

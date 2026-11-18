@@ -1,8 +1,8 @@
 {
-  "requirement": "Saved execution-coverage checks select the most recent recorded attempt\nfor each nextest binary and test name within the instrumented configuration\nof the most recently started recorded attempt. Most recent refers to when an\nattempt started, including failed or interrupted attempts. A newer filtered\nrun updates only tests it executes, leaving other compatible records available.\nA newer attempt with missing or unreadable coverage is unavailable and does\nnot fall back to an older success. Incompatible configurations under\n{cite}`requirements.test-coverage.storage.configuration` are excluded.\nSelection uses recorded metadata without building or executing tests.",
+  "requirement": "Saved execution-coverage checks read the current coverage set under\n{cite}`requirements.test-coverage.storage.current` from SQLite. Each check\nuses one coherent database snapshot of test identities, states, provenance,\nand processed measurements, so a replacement or update cannot mix results\nfrom different snapshots within the same check.\n\nChecks do not search historical runs or use a separate report-selection\nmetadata cache. Current test identities, states, and provenance can be read\nwithout loading their detailed measurements.\n\nOnly current results with complete, available measurements contribute to\ncoverage under {cite}`requirements.test-coverage.index.freshness`.\nPending, running, and unavailable entries are reported under\n{cite}`requirements.test-coverage.check.measurement`. Checking does not build\nor execute tests and never restores a superseded attempt.",
   "determination": true,
-  "rationale": "I judged this from the supplied test sources and did not request implementation source. The reviewed tests cover every obligation in `requirements.test-coverage.index.selection`.\n\n- **Latest attempt per binary and test name.**\n  - `selection_distinguishes_binaries_and_selects_latest_attempts_within_the_active_build` has two cases. It records the same test name under two binaries and asserts that both binaries are selected. It also writes several attempts for the same test and asserts that the newest is chosen.\n  - A further case puts a retry in the same run, with attempt start deliberately contradicting UUID and file order. The assertion expects the later-started attempt's count of 1.\n  - `history_selection_loads_measurements_only_for_latest_attempts` records three attempts for `one`. It asserts that only the latest is selected and that the older ones keep metadata without measurements.\n- **Most recent means attempt start, not run start.**\n  - In `selection_distinguishes_binaries_and_selects_latest_attempts_within_the_active_build`, run start and run ID ordering deliberately disagree with attempt-start ordering. The build-b run is given start 1000 while its attempt starts at 35. The assertion that the selected tests are `{one, two}` therefore only holds when selection follows attempt start.\n- **Configuration of the most recently started attempt.**\n  - The same test selects the build-a records because the newest attempt (`two` at 40) is build-a. The build-b attempt is excluded even though its run started later.\n  - `filtered_runs_union_latest_attempts_and_invalidate_with_saved_source` records a newer build-b attempt and asserts that exactly one record is selected and that its configuration is build-b. This covers exclusion of incompatible configurations under the cited `storage.configuration`.\n- **Filtered runs update only the tests they execute.**\n  - `filtered_runs_union_latest_attempts_and_invalidate_with_saved_source` records `one` and `two` in separate runs and asserts that both are selected. It asserts that the union has counts for lines 1 and 2.\n  - `history_selection_loads_measurements_only_for_latest_attempts` also checks that the newer `two` attempt leaves the `one` attempt selected.\n- **Newer failed, interrupted, missing or unreadable attempts do not fall back to an older success.**\n  - `filtered_runs_union_latest_attempts_and_invalidate_with_saved_source` adds a newer attempt with outcome `failed` or `interrupted` and a missing-profile diagnostic. It asserts that the check does not pass and that its text contains \"missing or unreadable coverage\".\n  - `unreadable_history_cannot_reintroduce_an_older_success` covers four failure forms: invalid metadata, missing source, unsupported schema and a missing profile file. It asserts that the check fails and that no positive older-success counts leak through.\n  - `malformed_historical_measurements_make_selection_uncertain` covers malformed measurement data. It asserts that `uncertain_history` is set and that the selection stays as the latest attempt.\n  - `selected_attempt_cannot_be_replaced_between_selection_and_loading` checks that measurements fail to load if the selected attempt changed after selection.\n- **Selection uses recorded metadata without building or executing tests.**\n  - `book_rendering_preserves_retained_coverage_and_never_launches_tests` in `tests/execution_coverage.rs` runs `coverage-check` and the mdbook preprocessor with a `cargo` wrapper that fails on any command other than `metadata`. It asserts that no forbidden command ran, that the test-execution marker file was not created, and that the stored files are unchanged.\n  - The metadata-cache tests, `metadata_cache_preserves_selection_and_detects_edits_with_restored_mtime` and `a_corrupt_optional_metadata_cache_does_not_hide_saved_measurements`, check that selection from recorded metadata stays correct when the cache is stale or corrupt.\n\nI found no obligation without a test that asserts its outcome, and no marking gap. Ties in start time are not specified by the text, so I did not treat them as a gap.",
-  "references": "eeec687a34ca9418efec870ce22eb5564cf741fb92586b7b42b53ebd622f34cf",
+  "rationale": "I judged this from the supplied test source only and did not request implementation source. The reviewed tests cover each obligation in `requirements.test-coverage.index.selection`.\n\n- **Current set read from SQLite, with one coherent snapshot.**\n  - `src/execution_coverage/store.rs#mod[tests]/fn[replacement_between_snapshot_queries_cannot_mix_configurations_or_results]` uses a SQLite trace hook to commit a replacement while a reader's snapshot query is in progress. It then asserts that the snapshot still shows the old configuration, run, test id and measurements (value 7). A later snapshot shows the new configuration, run, test id and measurements (value 9). This directly checks that a replacement cannot mix results from different snapshots.\n  - `metadata_queries_skip_measurements_and_snapshots_survive_subsequent_replacement` checks that a snapshot taken before a later replacement keeps the old data.\n- **No historical runs and no separate report-selection cache.**\n  - `src/execution_coverage/book.rs#mod[tests]/fn[a_corrupt_optional_metadata_cache_does_not_hide_saved_measurements]` writes a corrupt `selection-cache.json`. It asserts that the store stays valid and that the saved counts are still selected.\n  - `filtered_runs_union_latest_attempts_and_invalidate_with_saved_source` checks that only the latest attempt per test is selected, and that a new build configuration leaves a single selected record.\n  - `store.rs#fn[focused_replacement_preserves_unselected_results_and_shared_artifacts]` and `store.rs#fn[latest_started_retry_replaces_success_and_cannot_be_overwritten_by_old_conversion]` check that history is not accumulated and that a retry replaces the earlier success.\n- **Identities, states and provenance readable without measurements.** `metadata_queries_skip_measurements_and_snapshots_survive_subsequent_replacement` shows that `snapshot(false)` returns metadata with `measurements` set to `None`. The measurements column is corrupt in that test, and the metadata-only read still succeeds.\n- **Only complete, available measurements contribute; pending, running and unavailable entries are reported.**\n  - `src/execution_coverage/check.rs#mod[tests]/fn[running_and_unreadable_entries_suppress_totals_even_alongside_fresh_measurements]` covers a missing profile and the pending and running outcomes. In each case the check fails, the entry is named (\"missing or unreadable\", \"attempt pending\", \"attempt running\"), the fresh entry is not flagged, and no totals or per-file lines appear.\n  - `filtered_runs_union_latest_attempts_and_invalidate_with_saved_source` covers a failed or interrupted latest attempt whose measurements are missing: the check fails with \"missing or unreadable coverage\". It also covers stale source, where records are non-fresh and \"stale coverage\" is reported.\n- **Never restores a superseded attempt.** `book.rs#fn[unreadable_history_cannot_reintroduce_an_older_success]` makes the newest attempt bad in four ways: corrupt metadata, missing source, unsupported schema and a missing profile. It asserts that the check fails and that no older success supplies positive counts.\n- **Checking does not build or execute tests.** `tests/execution_coverage.rs#fn[book_rendering_preserves_retained_coverage_and_never_launches_tests]` runs `coverage-check` with a `cargo` shim that rejects every command other than `metadata`. It asserts that no test marker file appears and that the retained files are unchanged. It does the same for mdBook rendering.\n\nI found no obligation of the subject that lacks a test and assertion. The positive case where a failed attempt with complete measurements contributes belongs to `check.measurement`, which is cited here, so it is not assessed under the subject.",
+  "references": "314f11e87841b7c513839fe1dd0296b61a5a243bcce7e42a8247d4f65425e897",
   "inputs": [
     {
       "requirements": "requirements.test-coverage.index.selection",
@@ -11,62 +11,102 @@
       ],
       "text": [
         ":::{req} index.selection",
-        "Saved execution-coverage checks select the most recent recorded attempt",
-        "for each nextest binary and test name within the instrumented configuration",
-        "of the most recently started recorded attempt. Most recent refers to when an",
-        "attempt started, including failed or interrupted attempts. A newer filtered",
-        "run updates only tests it executes, leaving other compatible records available.",
-        "A newer attempt with missing or unreadable coverage is unavailable and does",
-        "not fall back to an older success. Incompatible configurations under",
-        "{cite}`requirements.test-coverage.storage.configuration` are excluded.",
-        "Selection uses recorded metadata without building or executing tests.",
+        "Saved execution-coverage checks read the current coverage set under",
+        "{cite}`requirements.test-coverage.storage.current` from SQLite. Each check",
+        "uses one coherent database snapshot of test identities, states, provenance,",
+        "and processed measurements, so a replacement or update cannot mix results",
+        "from different snapshots within the same check.",
+        "",
+        "Checks do not search historical runs or use a separate report-selection",
+        "metadata cache. Current test identities, states, and provenance can be read",
+        "without loading their detailed measurements.",
+        "",
+        "Only current results with complete, available measurements contribute to",
+        "coverage under {cite}`requirements.test-coverage.index.freshness`.",
+        "Pending, running, and unavailable entries are reported under",
+        "{cite}`requirements.test-coverage.check.measurement`. Checking does not build",
+        "or execute tests and never restores a superseded attempt.",
         ":::"
       ]
     },
     {
-      "requirements": "requirements.test-coverage.storage.configuration",
+      "requirements": "requirements.test-coverage.storage.current",
       "matches": [
-        "requirements.test-coverage.storage.configuration"
+        "requirements.test-coverage.storage.current"
       ],
       "text": [
-        ":::{req} storage.configuration",
-        "Each coverage record MUST identify the recorded toolchain, compilation target,",
-        "Cargo build profile, enabled features, and instrumentation-affecting compiler",
-        "settings. These settings MUST determine build-configuration compatibility for",
-        "the combined view. A nextest scheduling profile alone MUST NOT make otherwise",
-        "compatible build configurations incompatible.",
+        ":::{req} storage.current",
+        "The coverage set contains at most one current entry for each pair of nextest",
+        "binary identity and test name, within one active instrumented build",
+        "configuration under {cite}`requirements.test-coverage.storage.configuration`.",
+        "An entry represents either a test awaiting execution or its current attempt.",
+        "Replacing an entry removes its previous measurements from the current set.",
+        "",
+        "Metadata and files shared by remaining current entries stay available. The",
+        "store does not accumulate completed historical runs or retry attempts.",
         ":::"
       ]
     },
     {
-      "file": "src/execution_coverage/book.rs",
-      "item": "mod[tests]/fn[metadata_cache_preserves_selection_and_detects_edits_with_restored_mtime]",
-      "hash": "4a56b1cfcd4749daede4c0f96537189a437863acd1d1dbeae10f8f228705ae1f"
+      "requirements": "requirements.test-coverage.index.freshness",
+      "matches": [
+        "requirements.test-coverage.index.freshness"
+      ],
+      "text": [
+        ":::{req} index.freshness",
+        "Only current results whose captured source inputs match the current source",
+        "and whose build configurations are compatible contribute counts to saved",
+        "execution-coverage checks under",
+        "{cite}`requirements.test-coverage.index.selection`. Results with changed",
+        "inputs are identified as stale; results of unknown compatibility are",
+        "identified as unavailable. Both are excluded from combined totals.",
+        "",
+        "A filtered run preserves the provenance of unselected results under",
+        "{cite}`requirements.test-coverage.storage.replace`. It does not make those",
+        "results fresh when their recorded inputs no longer match. Their process",
+        "reports and matching captured source remain available until replacement or",
+        "removal of the build artifacts.",
+        ":::"
+      ]
+    },
+    {
+      "requirements": "requirements.test-coverage.check.measurement",
+      "matches": [
+        "requirements.test-coverage.check.measurement"
+      ],
+      "text": [
+        ":::{req} check.measurement",
+        "The coverage check fails when the current store is missing, unreadable, or",
+        "corrupt, when no usable coverage has been collected, or when a current entry",
+        "is pending, running, missing measurements, unreadable, or stale.",
+        "",
+        "Test execution outcome and measurement availability are distinct. A failed",
+        "or interrupted attempt can supply coverage if its measurement processing",
+        "completed successfully and its measurements are available. Such an outcome",
+        "does not by itself turn its measurements into zero execution or make them",
+        "unavailable.",
+        "",
+        "For a current result, every referenced raw profile must remain readable and",
+        "nonempty, and matching captured source must remain available. Loss of these",
+        "artifacts makes that result's measurements unavailable.",
+        "",
+        "These measurement failures are distinguished from measured lines with zero",
+        "execution and from individual functions absent from otherwise usable coverage.",
+        "Exception evidence does not excuse measurement failures or permit substitution",
+        "of a superseded attempt.",
+        "",
+        "An unsupported store format, or measurements lacking the function attribution",
+        "required by {cite}`requirements.test-coverage.check.functions`, is rejected",
+        "with guidance to recollect coverage. Missing or corrupt metadata that prevents",
+        "establishing the current test set, states, provenance, or active configuration",
+        "causes failure rather than silently checking the remaining readable records.",
+        ":::"
+      ]
     },
     {
       "file": "src/execution_coverage/book.rs",
       "item": "mod[tests]/fn[a_corrupt_optional_metadata_cache_does_not_hide_saved_measurements]",
-      "hash": "618153d50e6804731d8f90b899504480de9ef562abdb307b0110c757efa0e84a"
-    },
-    {
-      "file": "src/execution_coverage/book.rs",
-      "item": "mod[tests]/fn[history_selection_loads_measurements_only_for_latest_attempts]",
-      "hash": "252e0faebc2d7e320db6626a6e0d211bccb955571834f1d889555924ee67a5a9"
-    },
-    {
-      "file": "src/execution_coverage/book.rs",
-      "item": "mod[tests]/fn[malformed_historical_measurements_make_selection_uncertain]",
-      "hash": "c9b79e6ab67363f8aa6df5a185aea15ec7f298b4a4bfe4ce3c96d0318ec253ff"
-    },
-    {
-      "file": "src/execution_coverage/book.rs",
-      "item": "mod[tests]/fn[selected_attempt_cannot_be_replaced_between_selection_and_loading]",
-      "hash": "cabae18503e9c9c413b95c0f4f15ab58d4f466fc2b0fb6f11c8e0a214e074493"
-    },
-    {
-      "file": "src/execution_coverage/book.rs",
-      "item": "mod[tests]/fn[selection_distinguishes_binaries_and_selects_latest_attempts_within_the_active_build]",
-      "hash": "bbbfa49b922fa966aabcaf739c013686e861d50952bd1bb1eaeb0807721f7db3"
+      "hash": "b42a44ec320e65fb80b975fc59f70ef05d8a07d6a1b732878840bdc71e391067"
     },
     {
       "file": "src/execution_coverage/book.rs",
@@ -76,7 +116,32 @@
     {
       "file": "src/execution_coverage/book.rs",
       "item": "mod[tests]/fn[unreadable_history_cannot_reintroduce_an_older_success]",
-      "hash": "72cb620dd09644e52dc3e81cbae2aca0e073d31f67b46778c1dd73936328234a"
+      "hash": "506f5437266965649f0a2799010f5c9c3778c4c96b298ac5003c334fb3a021c4"
+    },
+    {
+      "file": "src/execution_coverage/check.rs",
+      "item": "mod[tests]/fn[running_and_unreadable_entries_suppress_totals_even_alongside_fresh_measurements]",
+      "hash": "bbe5e17ec17f643ce11d4d452c0ec49e9ddd93fc4df4f9130026379b4b307b57"
+    },
+    {
+      "file": "src/execution_coverage/store.rs",
+      "item": "mod[tests]/fn[focused_replacement_preserves_unselected_results_and_shared_artifacts]",
+      "hash": "87e03d38d9f6783d0fd0e812bb47d412518d663fa4b7da506041434ea4b39881"
+    },
+    {
+      "file": "src/execution_coverage/store.rs",
+      "item": "mod[tests]/fn[latest_started_retry_replaces_success_and_cannot_be_overwritten_by_old_conversion]",
+      "hash": "20e215d2d102ce5f216fa72a51a525cc3837d1e26e7645f97513086b82d09b37"
+    },
+    {
+      "file": "src/execution_coverage/store.rs",
+      "item": "mod[tests]/fn[metadata_queries_skip_measurements_and_snapshots_survive_subsequent_replacement]",
+      "hash": "b68f9772129077c7d936ab10dc64551aa72ecd951a3ae6964aeb0e16db1ec144"
+    },
+    {
+      "file": "src/execution_coverage/store.rs",
+      "item": "mod[tests]/fn[replacement_between_snapshot_queries_cannot_mix_configurations_or_results]",
+      "hash": "3308fd5170f7264896255d2510221ecf6c836aae04c97dd22586148f60c94359"
     },
     {
       "file": "tests/execution_coverage.rs",
@@ -94,7 +159,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "eeec687a34ca9418efec870ce22eb5564cf741fb92586b7b42b53ebd622f34cf"
+          "value": "314f11e87841b7c513839fe1dd0296b61a5a243bcce7e42a8247d4f65425e897"
         }
       ]
     },
@@ -106,7 +171,7 @@
         "Mandatory",
         {
           "scheme": "node-path-set-sha256-v1",
-          "value": "24ede08eef7e27da431e8f1897dbeeadbe00bbed6e7103f5df0f07925a586681"
+          "value": "deeb19ef63b96c6be67cdda80cf1cfe8a798c4ee5fb99d3058609713f884ed7f"
         }
       ]
     },
@@ -117,35 +182,40 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "092c4bf87c2c454a1056307cb065fff2c4b6ffd8c8481069022bfcce2ea67551"
+          "value": "c0df750d6a0c04809dd1ba1a57a080d14f5a6327c4b7c25e333810505770457a"
         }
       ]
     },
     {
       "Node": [
         {
-          "Requirement": "requirements.test-coverage.storage.configuration"
+          "Requirement": "requirements.test-coverage.storage.current"
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "3f9556e297d5ee8c963d32bf0d6e934212a38202fcd30d678006c29b4cb0d2e1"
+          "value": "43d4bc056f0e089167ed153d03af58cff498f5d1b7956987dc34214f4a08e44e"
         }
       ]
     },
     {
       "Node": [
         {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/execution_coverage/book.rs"
-            },
-            "selector": "mod[tests]/fn[metadata_cache_preserves_selection_and_detects_edits_with_restored_mtime]"
-          }
+          "Requirement": "requirements.test-coverage.index.freshness"
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "a5d522bdf5227a0732858fd6956a8a1935d4a257ac3eed98151484a608a35b16"
+          "value": "e18e2797cf78a847445d3d7f06159ade9e8bcbb0a51d56df3f782d78520a2b95"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Requirement": "requirements.test-coverage.check.measurement"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "36ebd61ee44044efa5fed7fbc9b054d3d1c57c34854a950e007daa3af78be5ad"
         }
       ]
     },
@@ -162,75 +232,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "f55f6f27230b074f2470c132ad7fa9e63ba8b011316be73490344d3bb7d712cc"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/execution_coverage/book.rs"
-            },
-            "selector": "mod[tests]/fn[history_selection_loads_measurements_only_for_latest_attempts]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "b260d65a60d1f528d0a12d28791da248fc21a335b22cbe564b0e3ddfc74c9bbc"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/execution_coverage/book.rs"
-            },
-            "selector": "mod[tests]/fn[malformed_historical_measurements_make_selection_uncertain]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "6a3fc5924fa611c793e7203cde653468401964676a724e11853cf46f0c841af3"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/execution_coverage/book.rs"
-            },
-            "selector": "mod[tests]/fn[selected_attempt_cannot_be_replaced_between_selection_and_loading]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "511522569a20dc66f956478691a41c36c3d921f5b719289a27828a2e2090e7e3"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/execution_coverage/book.rs"
-            },
-            "selector": "mod[tests]/fn[selection_distinguishes_binaries_and_selects_latest_attempts_within_the_active_build]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "ea2dde379f9961cf553b30dea6edf8d99d907ac5a2b75b977b5dc123e267be0b"
+          "value": "5a10652870b90acdc40f35ddf39b553cc3a68edadf4787b6345aba8eb6f83b09"
         }
       ]
     },
@@ -264,7 +266,92 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "9c819a72c22fe130659b7dd471ef34d70a89c1e49f7e9b0284d834903feab30a"
+          "value": "1566643e41cf46fae2694e53bcfb53df1566bd49abfc91d7c3affb5249dad7d2"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/execution_coverage/check.rs"
+            },
+            "selector": "mod[tests]/fn[running_and_unreadable_entries_suppress_totals_even_alongside_fresh_measurements]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "13acbc45a8ffc8f07c31008a705ad93a44a9acb117f3f8293cca6e76cdda9ecb"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/execution_coverage/store.rs"
+            },
+            "selector": "mod[tests]/fn[focused_replacement_preserves_unselected_results_and_shared_artifacts]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "e02bb18d07883f8cba4a973210772fc8a27d580c9c96fd1b50b32739a730085d"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/execution_coverage/store.rs"
+            },
+            "selector": "mod[tests]/fn[latest_started_retry_replaces_success_and_cannot_be_overwritten_by_old_conversion]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "c29a03975011260f4ddb4136303bf98b76616b9be251490be8fbeab500af1817"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/execution_coverage/store.rs"
+            },
+            "selector": "mod[tests]/fn[metadata_queries_skip_measurements_and_snapshots_survive_subsequent_replacement]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "05778909451865aaeaa78d643d9c617b405a88f2d48544434de762f84398c4f9"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/execution_coverage/store.rs"
+            },
+            "selector": "mod[tests]/fn[replacement_between_snapshot_queries_cannot_mix_configurations_or_results]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "e63c03ecca1770f638dcf31a17472b249073cc669c6b25f73e11f6af58448d8f"
         }
       ]
     },

@@ -3712,9 +3712,70 @@ fn bundled_skills_say_when_to_read_each_reference_file() {
             "references/reviews.md",
             "| false citation or site review | read [references/reviews.md](references/reviews.md) |",
         ),
+        (
+            "habeas-evidence",
+            "../habeas/references/ci.md",
+            "For CI integration, recommend the separate collection and check steps in the Habeas [CI example](../habeas/references/ci.md); collection alone does not enforce the policy.",
+        ),
+        (
+            "habeas-bootstrap-requirements",
+            "../habeas/references/ci.md",
+            "Recommend separate successful collection and `habeas coverage-check` steps in project CI, using the Habeas [CI example](../habeas/references/ci.md). Collection alone does not enforce the coverage policy.",
+        ),
+        (
+            "habeas",
+            "references/fixme.md",
+            "`{fixme}` acknowledges a deferred gap (the habeas-evidence skill's `references/fixme.md`).",
+        ),
+        (
+            "habeas-requirements",
+            "references/fixme.md",
+            "To defer a requirement gap the user agrees to, use `{fixme}` as the habeas-evidence skill's `references/fixme.md` describes.",
+        ),
+        (
+            "habeas-bootstrap-requirements",
+            "references/authoring-failures.md",
+            "If it fails, read the habeas-evidence skill's `references/authoring-failures.md`.",
+        ),
+        (
+            "habeas-bootstrap-requirements",
+            "references/fixme.md",
+            "the resulting false judgment stays on the gap list, or gets a `{fixme}` reference if the user defers it (the habeas-evidence skill's `references/fixme.md`).",
+        ),
+        (
+            "habeas-bootstrap-requirements",
+            "references/distributed-requirements.md",
+            "When a convention applies on its own at many sites, such as how every validation function continues after a failed check, propose a distributed requirement instead of marking each site `{impl}`; read the habeas skill's `references/distributed-requirements.md`.",
+        ),
+        (
+            "habeas-evidence",
+            "references/authoring-failures.md",
+            "If authoring fails on configuration, credentials, throttling, or a denied mandatory input, read [references/authoring-failures.md](references/authoring-failures.md).",
+        ),
     ];
+    for (name, _, link) in &links {
+        assert!(
+            collapse(skill_md(name)).contains(link),
+            "{name} lacks {link:?}"
+        );
+    }
+    let pointers =
+        regex::Regex::new(r"\]\((?:[^)]*/)?references/[^)]*\.md\)|`[^`\n]*references/[^`\n]*\.md`")
+            .unwrap();
     for name in SKILLS {
         let text = collapse(skill_md(name));
+        for pointer in pointers.find_iter(&text) {
+            assert!(
+                links.iter().any(|(skill, _, sentence)| {
+                    *skill == name
+                        && text.match_indices(sentence).any(|(start, sentence)| {
+                            start <= pointer.start() && pointer.end() <= start + sentence.len()
+                        })
+                }),
+                "{name}: reference without checked reading guidance: {}",
+                pointer.as_str()
+            );
+        }
         for (path, _) in &skill_files(name)[1..] {
             let found = links
                 .iter()

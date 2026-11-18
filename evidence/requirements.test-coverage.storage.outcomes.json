@@ -1,8 +1,8 @@
 {
-  "requirement": "Each coverage run MUST record the outcome of every test attempt that started.\nIt MUST distinguish successful, failed, and interrupted runs and identify\nattempts with missing or unreadable coverage rather than treating them as zero\nexecution. An empty test selection MUST be identified as empty; nextest's\nsuccess or failure for that selection MUST remain the test execution result.",
+  "requirement": "The store records each current test's state: pending, running, successful,\nfailed, or interrupted. Pending and running entries do not supply completed\nmeasurements. A started attempt records its attempt identity and outcome;\nmissing or unreadable coverage is unavailable rather than zero execution.\n\nThe latest collection invocation records whether it succeeded, failed, or was\ninterrupted. An empty selection is identified as empty, and nextest's success\nor failure for that selection remains the test execution result.",
   "determination": true,
-  "rationale": "The reviewed tests cover every obligation in `requirements.test-coverage.storage.outcomes`. I did not request implementation source, because the tests' assertions were enough to judge them.\n\n- **Every started attempt is recorded with its outcome.**\n  - `real_parallel_processes_retries_child_profiles_and_filtered_reruns` asserts 6 attempt records for 5 tests with one retried.\n  - The same test asserts that the retried test has a `failed` attempt 1 and a `success` attempt 2.\n  - It also asserts that attempt identities are unique.\n  - `a_process_that_cannot_start_is_failed_with_retained_attempt_metadata` covers a process that cannot start. It asserts one retained record with outcome `failed` and a \"Cannot start test process\" diagnostic.\n- **Successful, failed and interrupted outcomes are distinguished.**\n  - Success: the `success` attempt records and the run outcome `success` after the `--no-run` case, both in `real_parallel_processes_retries_child_profiles_and_filtered_reruns`.\n  - Failed: in the same test, a `--retries 0` rerun of the retry test gives run outcome `failed` and attempt outcome `failed`. The empty-selection failure and the compile-failure case also give run outcome `failed`. `a_build_that_cannot_start_retains_failed_run_metadata` and `unreadable_build_inputs_fail_preparation_before_any_tests_start` assert run outcome `failed` with no attempts.\n  - Interrupted: `interrupting_the_parent_preserves_started_attempt_metadata` sends SIGINT while a test is running. It asserts exit code 130, run outcome `interrupted`, and exactly one attempt record whose outcome is `interrupted`.\n- **Missing or unreadable coverage is identified rather than treated as zero.** `passing_tests_with_missing_or_corrupt_profiles_fail_collection_and_retain_partial_reports` covers both cases.\n  - A test that exits without writing a profile gets a \"No LLVM profile was written\" attempt diagnostic.\n  - A corrupt profile gets a non-null process diagnostic and empty lines.\n  - A good profile has non-empty lines.\n  - All three attempts keep outcome `success`, and the run outcome is `failed`. This shows that missing coverage is flagged separately from test execution.\n- **An empty selection is identified as empty.** `real_parallel_processes_retries_child_profiles_and_filtered_reruns` runs a filter that matches nothing and asserts no attempts and a run diagnostic containing \"Empty test selection\". It does this in both modes, with `--no-tests pass` and without it. It also asserts that a `--no-run` run carries a \"Compilation-only\" diagnostic and not \"Empty\".\n- **Nextest's result remains the test execution result.** With `--no-tests pass`, the test asserts that the exit status is success. Without it, the test asserts exit code 4 and run outcome `failed`.\n\nOne minor point: the empty-selection pass case does not assert the recorded run outcome. The exit status is asserted, and the requirement is about the execution result, so I don't count this as a gap.\n\n`empty_conversion_starts_no_work_and_reports_no_completions` is a peripheral unit test of `parallel_collect`. The other tests carry the weight.",
-  "references": "af37f80512eba3c6f69d2b71d359b11a483d2e8d9cbcc2ffa71c7463a39f2568",
+  "rationale": "The reviewed tests cover each obligation in `requirements.test-coverage.storage.outcomes`.\n\n**Per-test states: pending, running, successful, failed, interrupted.**\n- `store.rs#mod[tests]/fn[latest_started_retry_replaces_success_and_cannot_be_overwritten_by_old_conversion]` drives one attempt through the following states:\n  - It asserts a running retry has outcome `running` and `measurements.is_none()`.\n  - It then asserts `failed` with no measurements.\n  - It then asserts `interrupted`, with measurements present only once processes are supplied.\n  - The same test also covers the earlier successful attempt.\n- `tests/execution_coverage.rs#fn[real_parallel_processes_retries_child_profiles_and_filtered_reruns]` checks real `success` attempts and a real `failed` attempt.\n- `fn[fail_fast_leaves_every_unstarted_selected_test_pending_without_old_measurements]` checks that unstarted tests are `pending` and have empty processes.\n- `fn[interrupting_the_parent_preserves_started_attempt_metadata]` checks one `interrupted` attempt and one `pending` attempt with pid 0.\n- `fn[execution_startup_failure_leaves_prior_selected_results_pending_without_measurements]` checks a `pending` attempt with pid 0 and no measurements.\n\n**Pending and running entries supply no completed measurements.**\n- The store test asserts `measurements.is_none()` for running entries.\n- `incompatible_builds_reset_every_test_but_empty_focused_runs_do_not` asserts `measurements.is_none()` for a pending test.\n- The integration tests assert empty `processes` for pending attempts.\n- `fn[fail_fast_...]` and `fn[interrupting_...]` also assert that `saved_check` reports `pending` and not `100.0%`.\n\n**A started attempt records attempt identity and outcome.**\n- The retry test asserts `attempt` is \"2\" and the outcome is `success`.\n- `fn[a_process_that_cannot_start_is_failed_with_retained_attempt_metadata]` asserts a failed attempt \"2\" with a \"Cannot start test process\" diagnostic.\n\n**Missing or unreadable coverage is unavailable, not zero.**\n- `fn[passing_tests_with_missing_or_corrupt_profiles_fail_collection_and_retain_partial_reports]` covers the missing-profile case. It asserts a \"No LLVM profile was written\" diagnostic, which the implementation words as \"coverage is unavailable\" (`runner.rs#fn[finish_attempt]`). The test execution outcome stays `success`.\n- The same test covers the corrupt-profile case. It asserts a process diagnostic and an empty `lines` object, which is distinct from zero counts.\n\n**Latest collection invocation outcome.**\n- The retry test asserts `success`, `fn[fail_fast_...]` and the retries run assert `failed`, and `fn[interrupting_...]` asserts `interrupted` with exit code 130.\n- The corrupt-profile test asserts a collection outcome of `failed` while test attempts stay `success`.\n- `fn[execution_startup_failure_...]` asserts a `failed` collection outcome.\n- The `fn[a_build_that_cannot_start_preserves_the_current_set]` and `fn[unreadable_build_inputs_fail_preparation_before_any_tests_start]` tests check that preparation failures leave the stored set untouched.\n\n**Empty selection and nextest's result.**\n- In `fn[real_parallel_processes_...]`, the empty filter is run both with `--no-tests pass` (exit code 0) and without it (exit code 4). Nextest's result therefore stays the execution result.\n- Both runs assert that the latest run's diagnostics contain \"Empty test selection\" and that stored attempts are unchanged.\n- The store unit test asserts that `record_empty` sets the latest invocation while keeping prior measurements and the configuration.\n- The runner test `empty_conversion_starts_no_work_and_reports_no_completions` covers the empty conversion.\n\nI found no untested obligation and no assertion that contradicts the text.",
+  "references": "2a71a555b05c873aa38fefd2077ace553361e6ddd28b6c510390384feffcf113",
   "inputs": [
     {
       "requirements": "requirements.test-coverage.storage.outcomes",
@@ -11,11 +11,14 @@
       ],
       "text": [
         ":::{req} storage.outcomes",
-        "Each coverage run MUST record the outcome of every test attempt that started.",
-        "It MUST distinguish successful, failed, and interrupted runs and identify",
-        "attempts with missing or unreadable coverage rather than treating them as zero",
-        "execution. An empty test selection MUST be identified as empty; nextest's",
-        "success or failure for that selection MUST remain the test execution result.",
+        "The store records each current test's state: pending, running, successful,",
+        "failed, or interrupted. Pending and running entries do not supply completed",
+        "measurements. A started attempt records its attempt identity and outcome;",
+        "missing or unreadable coverage is unavailable rather than zero execution.",
+        "",
+        "The latest collection invocation records whether it succeeded, failed, or was",
+        "interrupted. An empty selection is identified as empty, and nextest's success",
+        "or failure for that selection remains the test execution result.",
         ":::"
       ]
     },
@@ -25,34 +28,59 @@
       "hash": "c47b786180fefe6ddc0c5c2e6eb858802de65956169b230afba93e0879fee1db"
     },
     {
-      "file": "tests/execution_coverage.rs",
-      "item": "fn[real_parallel_processes_retries_child_profiles_and_filtered_reruns]",
-      "hash": "13e822f885a39a69b0b2959f2581a3711ae578c43a9c85e6e1dec67fea5a186e"
+      "file": "src/execution_coverage/store.rs",
+      "item": "mod[tests]/fn[incompatible_builds_reset_every_test_but_empty_focused_runs_do_not]",
+      "hash": "c07e48f64d64a25829631a1540a27a8572433b5b083a2e59b380970a185c8aae"
+    },
+    {
+      "file": "src/execution_coverage/store.rs",
+      "item": "mod[tests]/fn[latest_started_retry_replaces_success_and_cannot_be_overwritten_by_old_conversion]",
+      "hash": "20e215d2d102ce5f216fa72a51a525cc3837d1e26e7645f97513086b82d09b37"
     },
     {
       "file": "tests/execution_coverage.rs",
-      "item": "fn[a_build_that_cannot_start_retains_failed_run_metadata]",
-      "hash": "e9eaefc401b540d7812cdb8c655692c876d4446e15b153721c7ebd69b6d3f40d"
+      "item": "fn[real_parallel_processes_retries_child_profiles_and_filtered_reruns]",
+      "hash": "19e2b1e61d5027ab192843ceed1beb865e8669c2d0aed71d8b68d8c31680c076"
+    },
+    {
+      "file": "tests/execution_coverage.rs",
+      "item": "fn[fail_fast_leaves_every_unstarted_selected_test_pending_without_old_measurements]",
+      "hash": "3a9b60ccea8386705fbdb3da65af6ecb0a56846c45094b5bfa4acb24fa73588d"
+    },
+    {
+      "file": "tests/execution_coverage.rs",
+      "item": "fn[a_build_that_cannot_start_preserves_the_current_set]",
+      "hash": "d547a5cbc375a1cb0e538a5bbb5da787d8ce486fd64bd67f5b0f66591dab0534"
     },
     {
       "file": "tests/execution_coverage.rs",
       "item": "fn[passing_tests_with_missing_or_corrupt_profiles_fail_collection_and_retain_partial_reports]",
-      "hash": "2c36ecc8e5bb1d74cb639aa25bcc478daabd53cf39a7a64230a20397a5e014eb"
+      "hash": "fb0f89994bc2153fd15e6a7c3a1242a53ac8ed90587c7de44aef6b45fa344a08"
     },
     {
       "file": "tests/execution_coverage.rs",
       "item": "fn[a_process_that_cannot_start_is_failed_with_retained_attempt_metadata]",
-      "hash": "f50524ab219c38ac9adad5d35f983edb1db13e9f1a1d76e4d95a9e8557eff3a7"
+      "hash": "aea4a82c653d0975bbc0b1db12ecdaae2cc1f13869ec1d8ca7c1f94e9c00bb0f"
     },
     {
       "file": "tests/execution_coverage.rs",
       "item": "fn[unreadable_build_inputs_fail_preparation_before_any_tests_start]",
-      "hash": "294ecaa6c7b3109ff55aa21ca4008a5e306ba054d49474ac1f03c2aba5a33aad"
+      "hash": "5986cb3a17802cf3466ebb5f9eba6bf3911add320a667fb71089ff623fbbdcd7"
     },
     {
       "file": "tests/execution_coverage.rs",
       "item": "fn[interrupting_the_parent_preserves_started_attempt_metadata]",
-      "hash": "2cc69336365cd01355fde72b702be81920350910de187d6c2519398931573a3f"
+      "hash": "9a8b88374f09e9028d2d321b9b53d77769660fe32c641bdf709fb3f7faea5de0"
+    },
+    {
+      "file": "tests/execution_coverage.rs",
+      "item": "fn[execution_startup_failure_leaves_prior_selected_results_pending_without_measurements]",
+      "hash": "aec4fe6573cc6e1ed050215391959bdf72675b8bffdb36e2075a3d73aded9f53"
+    },
+    {
+      "file": "src/execution_coverage/runner.rs",
+      "item": "fn[finish_attempt]",
+      "hash": "b0ea0ed61e2eddf123c167648ee727ba7175e36cc3b58e89797853e4a9aba7f8"
     }
   ],
   "format_version": 1,
@@ -65,7 +93,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "af37f80512eba3c6f69d2b71d359b11a483d2e8d9cbcc2ffa71c7463a39f2568"
+          "value": "2a71a555b05c873aa38fefd2077ace553361e6ddd28b6c510390384feffcf113"
         }
       ]
     },
@@ -77,7 +105,7 @@
         "Mandatory",
         {
           "scheme": "node-path-set-sha256-v1",
-          "value": "6e2bbc3a8f9a44ea3c45d7c1311960cf842f3331f41c628d9fd641be4ac30316"
+          "value": "5ac3f6bd448e971b2f43e51435cc952535a19b0ea6b810b175a83dd731003c4f"
         }
       ]
     },
@@ -88,7 +116,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "b2e2987b7ad29e83551f74a11fb2326addc27c50484990dcc563132dd421ccf9"
+          "value": "c0d5921148265abb52545b44f036e5cedeadd2c683e9e026a09b2a8668f9f3b1"
         }
       ]
     },
@@ -115,14 +143,31 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "tests/execution_coverage.rs"
+              "location": "src/execution_coverage/store.rs"
             },
-            "selector": "fn[real_parallel_processes_retries_child_profiles_and_filtered_reruns]"
+            "selector": "mod[tests]/fn[incompatible_builds_reset_every_test_but_empty_focused_runs_do_not]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "bf95d9b93336ae4120516cbeeb9b75d1b78c6a1655e7ade1d0f23fc2ddea78ec"
+          "value": "1029dd258d74a41e9d41a418fd22ba788cd6a6829810a918207da911b379b460"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/execution_coverage/store.rs"
+            },
+            "selector": "mod[tests]/fn[latest_started_retry_replaces_success_and_cannot_be_overwritten_by_old_conversion]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "c29a03975011260f4ddb4136303bf98b76616b9be251490be8fbeab500af1817"
         }
       ]
     },
@@ -134,12 +179,46 @@
               "scheme": "repo",
               "location": "tests/execution_coverage.rs"
             },
-            "selector": "fn[a_build_that_cannot_start_retains_failed_run_metadata]"
+            "selector": "fn[real_parallel_processes_retries_child_profiles_and_filtered_reruns]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "21dbf279aa08ac12207fabddd57385ed40d9aee97d5856af70c134a9e9e3b65f"
+          "value": "ef3d3f1e3a7b75b71f43536dede2c6ee08e3655be652f83eb1e494e66f8aa57b"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "tests/execution_coverage.rs"
+            },
+            "selector": "fn[fail_fast_leaves_every_unstarted_selected_test_pending_without_old_measurements]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "42e4fdf0073e985b5a966dd7cb5239d60e55959be07d4ebb42fc49922fecc092"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "tests/execution_coverage.rs"
+            },
+            "selector": "fn[a_build_that_cannot_start_preserves_the_current_set]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "296b2b13e5760a22f534dfc1341ca152847d9b26cd88df2e7dcc8208d8765283"
         }
       ]
     },
@@ -156,7 +235,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "4e74b24461359ef940fb80e4bab6c70a50a484d964eb29b7e9bcdbf0a3dd52cd"
+          "value": "883462b8ae740ad5fcdb41ccdc18c885221978babc2b929b94c062bba9f1c4f1"
         }
       ]
     },
@@ -173,7 +252,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "bee52965d00be0c5cad4a7102fbc6265ecf2570540879b5338acea0acbd6efb8"
+          "value": "72876fba9d3547a06d96942a11ee2bfde75d5789455b5142df5fd4d7bdbf0648"
         }
       ]
     },
@@ -190,7 +269,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "7e48f82aae8c9825023aaec252f8865354901f15ce9976362c178497fecb2f78"
+          "value": "bc20fd663e054caed3449eb37d75d33afcd16ba678b71a600e0fcec508009108"
         }
       ]
     },
@@ -207,7 +286,41 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "241eecebfbc8c343e3361f9dba7f26e6a7375ca3d7c2b3519736f735eb31444b"
+          "value": "011558bd9297b6a69f7718bde9ff21fe5768b32e1b93068b0fccac41baea119e"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "tests/execution_coverage.rs"
+            },
+            "selector": "fn[execution_startup_failure_leaves_prior_selected_results_pending_without_measurements]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "e133ffa759ecdaddc9cfa6aa66f85b6f85c73c722f1f88809fa22f543df95528"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/execution_coverage/runner.rs"
+            },
+            "selector": "fn[finish_attempt]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "6a9fa8cec33bc4cfdeb7fbe1fb4b7271e96f755fd4f7b525ad0b0f01ec5a8345"
         }
       ]
     }

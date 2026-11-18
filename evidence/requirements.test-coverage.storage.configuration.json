@@ -1,7 +1,7 @@
 {
   "requirement": "Each coverage record MUST identify the recorded toolchain, compilation target,\nCargo build profile, enabled features, and instrumentation-affecting compiler\nsettings. These settings MUST determine build-configuration compatibility for\nthe combined view. A nextest scheduling profile alone MUST NOT make otherwise\ncompatible build configurations incompatible.",
   "determination": true,
-  "rationale": "The tests adequately cover `requirements.test-coverage.storage.configuration`.\n\n**How the implementation realises the requirement (read only to see where compatibility is decided).** `src/execution_coverage/runner.rs#fn[run]` stores `configuration_inputs` and a `configuration` digest of those inputs on each run. `fn[build_configuration]` builds the inputs, and `fn[run]` later adds `enabled-features` from the feature ledger and recomputes the digest. `src/execution_coverage/book.rs#fn[load_saved]` selects only records whose digest equals the active one, so the digest decides compatibility. How the combined view uses that digest belongs to `index.selection`, which cites this requirement. It is not assessed here.\n\n**Obligations and the tests that cover them**\n\n- **Records identify the recorded toolchain.** `compiler_inputs_determine_compatibility_and_scheduling_does_not` asserts that the `rustc` input equals the supplied version text. It also asserts that changing only the version string changes the digest. The integration test `real_parallel_processes_retries_child_profiles_and_filtered_reruns` asserts that the saved `configuration_inputs[\"rustc\"]` contains `LLVM version:`.\n- **Records identify the target.** The unit test asserts the baseline target, and that `--target wasm32-unknown-unknown` gives a different target value and digest. The integration test asserts the target is non-empty.\n- **Records identify the Cargo build profile.** The unit test covers `test` (the default), `--release`, `-r` and `--cargo-profile custom`. Each case asserts the recorded field value and a digest different from the baseline's.\n- **Records identify enabled features.**\n  - The unit test covers `--all-features` and `--no-default-features`, each with a digest change.\n  - `compiler_wrapper_preserves_arguments_status_and_prior_wrapper_and_records_features` covers the per-package, per-target feature ledger. It asserts the recorded features are unique, sorted, and omit non-feature cfgs. It also asserts there is one record per package and target, and that compiler queries create no record.\n  - The integration test runs with `--features alpha -Fbeta`. It asserts the `enabled-features` JSON contains both features and that the configuration digest differs from the earlier runs.\n- **Records identify instrumentation-affecting compiler settings.**\n  - The unit test asserts the `instrumentation` input contains `-C instrument-coverage`.\n  - Changing a `.cargo/config.toml` `rustflags` value changes the digest, and so does changing it again.\n  - A child process with `RUSTFLAGS`, `CARGO_PROFILE_TEST_DEBUG` and `CARGO_TARGET_TEST_HOST_LINKER` set records those values and gets a different digest. This is a separate process, so no other test's environment is touched.\n  - The compile-wrapper test asserts that `-C instrument-coverage` is appended and that the original arguments and exit status are preserved.\n- **These settings determine compatibility.** Every distinguishing case above asserts `key(&inputs) != key(&baseline)`, where `key` is the same digest function the run record uses. The integration test also asserts that a feature change gives a different `configuration` string from the first run.\n- **A nextest scheduling profile alone does not split compatibility.**\n  - The unit test passes `--profile focused` and asserts the digest equals the baseline's.\n  - The integration test writes a `focused` nextest profile and runs `--profile focused`. It asserts `saved[0].configuration == saved[2].configuration`.\n  - It also asserts that a filtered run with no `--retries` or `-j` has the same configuration as the first run, which used `--retries 1 -j 2`.\n\n**Residual observations.**\n- No test asserts that a `--config` CLI override changes the recorded `cargo-overrides` input. The integration test uses `--config build.build-dir=...` but checks only the attempt count.\n- I did not treat this as a gap. The override input sits alongside the config-file and environment inputs that are tested. The requirement's classes (toolchain, target, profile, features, instrumentation settings, scheduling exclusion) each have a test that asserts the outcome.\n- No gap is established, and there are no acknowledgments.",
+  "rationale": "I judge the tests adequate for `requirements.test-coverage.storage.configuration`. I did not request implementation source, because the supplied tests settle each obligation.\n\n**Obligation 1: each record identifies the toolchain, target, Cargo profile, enabled features and instrumentation-affecting settings.**\n- `src/execution_coverage/runner.rs#mod[tests]/fn[compiler_inputs_determine_compatibility_and_scheduling_does_not]` checks the recorded inputs of `build_configuration`:\n  - `rustc` equals the supplied rustc version text.\n  - `target` is `test-host`.\n  - `cargo-profile` is `test`.\n  - `instrumentation` contains `-C instrument-coverage`.\n  - Changing `--target`, `--release`, `-r`, `--cargo-profile`, `--all-features` and `--no-default-features` each changes the matching field and the key.\n- `tests/execution_coverage.rs#fn[real_parallel_processes_retries_child_profiles_and_filtered_reruns]` checks the saved run's `configuration_inputs` from a real run:\n  - `rustc` contains `LLVM version:`.\n  - `target` is non-empty.\n  - `cargo-profile` is `test`.\n  - A run with `--features alpha -Fbeta` records `enabled-features` containing both `alpha` and `beta`.\n- `fn[compiler_wrapper_preserves_arguments_status_and_prior_wrapper_and_records_features]` checks how features are captured:\n  - The ledger gets one record per package and target.\n  - Features are unique and sorted, and non-feature cfgs are omitted.\n  - Compiler queries create no record.\n  - The target is recorded.\n  - `-C instrument-coverage` is added to the arguments.\n\n**Obligation 2: these settings determine compatibility for the combined view.**\n- The unit test shows that each input change gives a different digest key. This covers:\n  - the compiler version;\n  - the target, profile and feature flags;\n  - the `.cargo/config.toml` rustflags and env, including a later edit to that file;\n  - the `RUSTFLAGS`, `CARGO_PROFILE_*` and `CARGO_TARGET_*` environment variables, run in a child process.\n- The integration test shows the effect on the combined view:\n  - A rerun with the same configuration keeps both runs (`saved.len() == 2`, with the configuration equal to `first_configuration`).\n  - A rerun with different features leaves one run: \"incompatible configuration drops every previous result\".\n  - The configuration differs and the old run directory is removed.\n\n**Obligation 3: a nextest scheduling profile alone MUST NOT make compatible builds incompatible.**\n- The unit test checks that adding `--profile focused` gives a key equal to the baseline.\n- The integration test adds a `focused` nextest profile and reruns. The configuration equals `first_configuration`, the runs are still combined (`saved.len() == 2`), and the earlier run is replaced rather than dropped.\n\n**Gaps considered.** Both the positive cases (a change makes builds incompatible) and the negative case (a scheduling profile does not) are covered, with assertions that enforce the outcomes. I found no unexercised obligation or boundary the text names, and no marking gap, since all three tests carry `{test}` references to the requirement.",
   "references": "b8af502d35b4557a34111a2307979bb9a66335894ffdf64cbca2200161855780",
   "inputs": [
     {
@@ -32,32 +32,17 @@
     {
       "file": "tests/execution_coverage.rs",
       "item": "fn[real_parallel_processes_retries_child_profiles_and_filtered_reruns]",
-      "hash": "13e822f885a39a69b0b2959f2581a3711ae578c43a9c85e6e1dec67fea5a186e"
-    },
-    {
-      "file": "src/execution_coverage/runner.rs",
-      "item": "fn[build_configuration]",
-      "hash": "e47594a936406e97d6ee4453cbdd88f76b8325f82b2db9fd4871132f7972c789"
-    },
-    {
-      "file": "src/execution_coverage/book.rs",
-      "item": "fn[load_saved]",
-      "hash": "61d0ccaa8990284161b63d7eed1a8034e0b56e46fe2a6530fbb03b65b8d64bb2"
+      "hash": "19e2b1e61d5027ab192843ceed1beb865e8669c2d0aed71d8b68d8c31680c076"
     },
     {
       "file": "src/execution_coverage/runner.rs",
       "item": "fn[run]",
-      "hash": "3c55bb0a9f2eca5e86e0f966adc42381d40acdf3bb1989ab57f763cded098e59"
+      "hash": "6f7b49212d5756b245550399f3a6895dd432fa803419f541915029d484855462"
     },
     {
-      "file": "md/requirements/test-coverage.md",
-      "item": "section[Test%20execution%20coverage]/block@77ffe0bf2c4f/paragraph@c3883517f2d4",
-      "hash": "c3883517f2d437d9fb7de31099529b9cb77ff9e1253c87f8dedb3b50a8127a74"
-    },
-    {
-      "file": "md/requirements/test-coverage.md",
-      "item": "section[Test%20execution%20coverage]/block@67ece791a8e3/paragraph@e00f7708aa4f",
-      "hash": "e00f7708aa4f09f3215ecbfaebd8d5ffe68f5a5c1ff2fa5314294765b35ff417"
+      "file": "src/execution_coverage/store.rs",
+      "item": "mod[fixtures]/fn[save]",
+      "hash": "41e2a9c2ef7a3f9944dd3bdb52502d33db627a2cb36e5d81c1bc43e0cdff2600"
     }
   ],
   "format_version": 1,
@@ -144,41 +129,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "bf95d9b93336ae4120516cbeeb9b75d1b78c6a1655e7ade1d0f23fc2ddea78ec"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/execution_coverage/runner.rs"
-            },
-            "selector": "fn[build_configuration]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "ad90bbca852f34c6af1779c60c666e9abff3f471cb291cd40ad088a9449c75d7"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/execution_coverage/book.rs"
-            },
-            "selector": "fn[load_saved]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "4470746955c33591f2b441e39c9f61450cdd3258419b9c7d35e175a56be1339e"
+          "value": "ef3d3f1e3a7b75b71f43536dede2c6ee08e3655be652f83eb1e494e66f8aa57b"
         }
       ]
     },
@@ -195,7 +146,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "b2404ae2a80a34585f53079c0d1eea00cd5096057bf3a51c523b176ddc624f41"
+          "value": "df890c1209b62fd545ebe74125dedd202104f0c1a7339dfa543666cedb7e38e8"
         }
       ]
     },
@@ -205,31 +156,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "md/requirements/test-coverage.md"
+              "location": "src/execution_coverage/store.rs"
             },
-            "selector": "section[Test%20execution%20coverage]/block@77ffe0bf2c4f/paragraph@c3883517f2d4"
+            "selector": "mod[fixtures]/fn[save]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "3fd649579e31afdf6902b84aef66bc35dbc1ecb04f4c17ea4368e8f409961d3a"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "md/requirements/test-coverage.md"
-            },
-            "selector": "section[Test%20execution%20coverage]/block@67ece791a8e3/paragraph@e00f7708aa4f"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "778729b09b5e2d5e588ccc662017ef1cda52cdbe2bc5bbb5b5ead0b73d4e43fb"
+          "value": "82ab21b78bafc54fa70b80848c04c9072577e2f2f03cf24c83eef52861665873"
         }
       ]
     }

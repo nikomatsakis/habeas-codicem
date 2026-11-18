@@ -50,10 +50,13 @@ with `cargo install cargo-nextest --locked` (>= 0.9.116) and
 
 Profiles, reports, and captured source under the Cargo target directory
 (`target/habeas/coverage/` by default) are disposable build artifacts. Never stage
-or commit them to Git. `habeas coverage-check` combines each test's latest
-compatible attempt; source changes invalidate combined coverage, while saved
-reports remain inspectable. Building the book does not read execution
-measurements or run tests.
+or commit them to Git. SQLite stores one current result per test.
+An unfiltered workspace run clears the set; a filtered run replaces every
+selected test before execution and preserves unselected results. Retries
+replace earlier attempts. `habeas coverage-check` reads this current set;
+source changes invalidate combined coverage. Profiles and captured-source
+reports remain inspectable until their result is replaced. Building the book
+does not read execution measurements or run tests.
 
 For final verification, run `habeas test` (`cargo habeas test` in this repository).
 It collects coverage for the full workspace, then checks it. In CI, recommend

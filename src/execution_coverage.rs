@@ -13,6 +13,7 @@ mod configuration;
 mod notes;
 mod progress;
 mod runner;
+mod store;
 
 pub(crate) use book::populate;
 pub use check::{CheckReport, check, test};
@@ -21,7 +22,7 @@ pub use runner::{collect_process, compile_process, run};
 
 // {impl}`requirements.test-coverage.check.guidance`
 // {impl}`requirements.test-coverage.check.exceptions.setup`
-pub(crate) const GUIDANCE: &str = "Collect Rust unit and integration test coverage with `habeas coverage`.\nFor focused runs, forward nextest arguments with `habeas coverage -- -E 'test(name)'`.\nRun doctests separately with `cargo test --doc --workspace`.\n\nFor full verification, `habeas test` collects coverage for the whole workspace,\nthen checks it. In CI, run `habeas coverage -- --workspace` and, after it succeeds,\nrun `habeas coverage-check` as a separate step. Checking saved coverage runs no\ntests and calls no model; the static validation test needs no prior coverage.\n\nEvery first-party Rust file needs 80% instrumented-line coverage. Every function\nwith zero execution or no measurement needs an accepted explanation, including\nfunctions excluded by features or platform. Ordinary partly covered functions\nneed no exception when their file meets its target.\n\nUse a standard `habeas:coverage` citation with a substantive prose justification\nin fenced commentary or a Rust doc comment. A file-root citation excuses only\nthe file threshold; a function citation excuses only that function. Author its\nindependent citation review with `habeas author`; only a current accepted review\npermits an exception. No project declaration or special configuration is needed.\nCitations remain applicable across build configurations and can remain after\ncoverage improves. Exceptions never increase measured percentages.\n\nCoverage is disposable build output in the Cargo target directory. The CLI check\ncombines each test's latest compatible attempt; source changes invalidate its\ncontribution.\n\nThe book browses documented coverage gaps from source annotations and their last\nrecorded reviews. Expand a file to read its explanations. Building the book does\nnot load execution measurements or check whether reviews are current and accepted;\nuse `habeas status`, `habeas author`, and `habeas coverage-check` for those checks.\n";
+pub(crate) const GUIDANCE: &str = "Collect Rust unit and integration test coverage with `habeas coverage`.\nFor focused runs, forward nextest arguments with `habeas coverage -- -E 'test(name)'`.\nRun doctests separately with `cargo test --doc --workspace`.\n\nFor full verification, `habeas test` collects coverage for the whole workspace,\nthen checks it. In CI, run `habeas coverage -- --workspace` and, after it succeeds,\nrun `habeas coverage-check` as a separate step. Checking saved coverage runs no\ntests and calls no model; the static validation test needs no prior coverage.\n\nEvery first-party Rust file needs 80% instrumented-line coverage. Every function\nwith zero execution or no measurement needs an accepted explanation, including\nfunctions excluded by features or platform. Ordinary partly covered functions\nneed no exception when their file meets its target.\n\nUse a standard `habeas:coverage` citation with a substantive prose justification\nin fenced commentary or a Rust doc comment. A file-root citation excuses only\nthe file threshold; a function citation excuses only that function. Author its\nindependent citation review with `habeas author`; only a current accepted review\npermits an exception. No project declaration or special configuration is needed.\nCitations remain applicable across build configurations and can remain after\ncoverage improves. Exceptions never increase measured percentages.\n\nCoverage is disposable build output in the Cargo target directory. SQLite stores\none current result per test. Full workspace runs clear the set; filtered runs\nreplace selected tests before execution and preserve unselected results. Retries\nreplace earlier attempts. The CLI check reads the current set; source changes\ninvalidate its contribution. Profiles and captured source remain available until\nthe result is replaced.\n\nThe book browses documented coverage gaps from source annotations and their last\nrecorded reviews. Expand a file to read its explanations. Building the book does\nnot load execution measurements or check whether reviews are current and accepted;\nuse `habeas status`, `habeas author`, and `habeas coverage-check` for those checks.\n";
 
 // {impl}`requirements.test-coverage.storage`
 // {impl}`requirements.test-coverage.storage.provenance`
@@ -32,7 +33,7 @@ struct Run {
     id: String,
     started: u128,
     command: Vec<String>,
-    selection: Vec<String>,
+    selection: Vec<store::TestIdentity>,
     configuration: String,
     configuration_inputs: BTreeMap<String, String>,
     sources: BTreeMap<String, String>,
@@ -47,7 +48,7 @@ struct Run {
 // {impl}`requirements.test-coverage.processes`
 // {impl}`requirements.test-coverage.storage.outcomes`
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct Attempt<P = Process> {
+struct Attempt {
     id: String,
     binary: String,
     test: String,
@@ -56,20 +57,19 @@ struct Attempt<P = Process> {
     pid: u32,
     command: Vec<String>,
     outcome: String,
-    processes: Vec<P>,
+    processes: Vec<Process>,
     diagnostics: Vec<String>,
 }
 
 // {impl}`requirements.test-coverage.processes.reports`
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(bound(deserialize = "L: Deserialize<'de>, F: Deserialize<'de>"))]
-struct Process<L = BTreeMap<String, BTreeMap<u32, u64>>, F = Vec<FunctionExecution>> {
+struct Process {
     pid: u32,
     profiles: Vec<String>,
-    lines: L,
+    lines: BTreeMap<String, BTreeMap<u32, u64>>,
     /// Absent in older line-only captures, which need recollection for function checks.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    functions: Option<F>,
+    functions: Option<Vec<FunctionExecution>>,
     diagnostic: Option<String>,
 }
 

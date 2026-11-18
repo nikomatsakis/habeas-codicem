@@ -965,20 +965,26 @@ last recorded reviews. All proposals are included, even when a review is missing
 or rejected, or measured coverage already passes. The book trusts these records;
 `habeas status` and `habeas author` check annotations and reviews.
 
-`habeas coverage-check` combines each test's latest started attempt within the most recently
-used instrumented configuration. Filtered runs update only their selected tests.
-Failed and interrupted attempts remain visible; missing profiles cannot fall
-back to older successful attempts. Source and build-input changes invalidate the
-workspace's combined coverage. Other build configurations and older attempts
-remain saved with their captured source for historical report reconstruction. Coverage
-percentages count unique instrumented file-and-line locations, including child
-processes; process percentages are not averaged. Saved selection does not establish
-that all current tests were measured.
+SQLite stores one current result per test within one instrumented build
+configuration. An unfiltered workspace run clears the set, including removed
+tests. A filtered run replaces every selected test before execution and preserves
+unselected results and their original provenance. Selected tests that never
+start remain pending and unavailable. Each retry replaces the previous attempt;
+an incompatible build configuration clears the whole set.
 
-Profiles, normalized reports, source snapshots and matching coverage maps live
+`habeas coverage-check` reads this current set. Failed and interrupted attempts
+remain visible and may have usable measurements; missing profiles cannot fall
+back to earlier successes. Source and build-input changes invalidate combined
+coverage. Coverage percentages count unique instrumented file-and-line
+locations, including child processes; process percentages are not averaged.
+Incomplete results make combined coverage unavailable.
+
+The database, raw profiles, captured source and matching coverage maps live
 under `habeas/coverage/` in Cargo's target directory and are disposable build
-output. Do not commit them. `cargo clean` removes them. Building the book does not read
-these records, run tests, or collect profiles.
+output. Current profiles and captured-source reports remain available until
+their result is replaced; superseded artifacts are removed. Do not commit them.
+`cargo clean` removes them. Legacy JSON results require recollection. Building
+the book does not read these records, run tests, or collect profiles.
 
 Instrumented compilation uses a separate cache under
 `habeas/instrumented/` in that target directory, including when Cargo normally

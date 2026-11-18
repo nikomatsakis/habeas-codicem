@@ -228,15 +228,15 @@ fn check_in(project: &Path, target: PathBuf) -> io::Result<CheckReport> {
 // {impl}`requirements.test-coverage.check.threshold`
 pub(super) fn check_saved(root: &Path, saved: &book::SavedCoverage) -> io::Result<CheckReport> {
     let mut errors = Vec::new();
-    if saved.uncertain_history {
-        errors.push("Coverage history is incomplete: cannot establish latest-per-test selection or active build configuration. Repair or remove corrupt build artifacts, then recollect coverage.".into());
+    if saved.invalid_store {
+        errors.push("Current coverage store is incomplete: cannot establish the current test set or active build configuration. Repair or remove corrupt build artifacts, then recollect coverage.".into());
     }
     if saved.selected.is_empty() {
         errors.push(
             "No usable coverage has been collected. Run `habeas coverage -- --workspace`.".into(),
         );
     }
-    if saved.uncertain_history || saved.selected.is_empty() {
+    if saved.invalid_store || saved.selected.is_empty() {
         errors.extend(saved.diagnostics.iter().cloned());
     }
     let selected: Vec<_> = saved
@@ -456,8 +456,9 @@ pub(super) fn check_saved(root: &Path, saved: &book::SavedCoverage) -> io::Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::execution_coverage::store::fixtures::{load, save};
     use crate::execution_coverage::{
-        Attempt, FunctionExecution, Process, Run, input_hashes, load, save, workspace_inputs,
+        Attempt, FunctionExecution, Process, Run, input_hashes, workspace_inputs,
     };
     use serde_json::json;
     use std::fs;
@@ -746,7 +747,7 @@ mod tests {
             .insert("src/nested/driver.rs".into(), BTreeMap::from([(1, 0)]));
         let attempt = record(root, "adapter", 1, "same", vec![p]);
         let run_path = attempt.parent().unwrap().parent().unwrap().join("run.json");
-        let mut run: Run = super::super::load(&run_path).unwrap();
+        let mut run: Run = load(&run_path).unwrap();
         run.sources
             .insert("src/nested/driver.rs".into(), "fn broken(".into());
         save(&run_path, &run).unwrap();
@@ -1003,7 +1004,7 @@ mod tests {
     // {test}`requirements.test-coverage.check.measurement`
     // {test}`requirements.test-coverage.check.threshold`
     #[test]
-    fn stale_missing_legacy_and_uncertain_history_cannot_use_older_success() {
+    fn stale_missing_legacy_and_invalid_store_cannot_use_older_success() {
         let temp = fixture("fn a() {}");
         let root = temp.path();
         assert!(!report(root).passed);
@@ -1013,8 +1014,8 @@ mod tests {
         old.functions = None;
         record(root, "old", 0, "other-config", vec![old]);
         assert!(
-            report(root).passed,
-            "excluded legacy data cannot invalidate a supported active configuration"
+            !report(root).passed,
+            "a newly activated build with missing attribution is unavailable"
         );
         let current = record(root, "a", 2, "same", vec![process(root, &[(1, 1)], 1)]);
         fs::remove_file(current.join("profile.profraw")).unwrap();
@@ -1026,15 +1027,121 @@ mod tests {
         record(root, "a", 4, "same", vec![process(root, &[(1, 1)], 1)]);
         fs::write(root.join("code.rs"), "fn a() { let changed=1; }").unwrap();
         assert!(report(root).text.contains("stale coverage"));
-        record(root, "a", 5, "same", vec![process(root, &[(1, 1)], 1)]);
+        let current = record(root, "a", 5, "same", vec![process(root, &[(1, 1)], 1)]);
         assert!(report(root).passed);
-        fs::create_dir(root.join("target/habeas/coverage/corrupt")).unwrap();
-        fs::write(root.join("target/habeas/coverage/corrupt/run.json"), "{").unwrap();
+        crate::execution_coverage::store::fixtures::corrupt(
+            &current.parent().unwrap().parent().unwrap().join("run.json"),
+        );
         assert!(
             report(root)
                 .text
-                .contains("cannot establish latest-per-test")
+                .contains("cannot establish the current test set")
         );
+        let database =
+            rusqlite::Connection::open(root.join("target/habeas/coverage/current.sqlite")).unwrap();
+        database.execute_batch("PRAGMA user_version=999").unwrap();
+        let result = report(root);
+        assert!(!result.passed);
+        assert!(result.text.contains("recollect"), "{}", result.text);
+    }
+
+    // {test}`requirements.test-coverage.index.summary`
+    // {test}`requirements.test-coverage.index.selection`
+    // {test}`requirements.test-coverage.index.unavailable`
+    // {test}`requirements.test-coverage.check.measurement`
+    #[test]
+    fn running_and_unreadable_entries_suppress_totals_even_alongside_fresh_measurements() {
+        let temp = fixture("fn a() {}");
+        let root = temp.path();
+        record(root, "fresh", 1, "same", vec![process(root, &[(1, 1)], 1)]);
+        let path = record(root, "other", 2, "same", vec![process(root, &[(1, 1)], 1)]);
+        fs::remove_file(path.join("profile.profraw")).unwrap();
+        let result = report(root);
+        assert!(!result.passed);
+        assert!(
+            result
+                .text
+                .contains("binary / other: missing or unreadable")
+        );
+        assert!(
+            !result
+                .text
+                .contains("binary / fresh: missing or unreadable")
+        );
+        assert!(!result.text.contains("100.0%"));
+        assert!(!result.text.contains("code.rs:"));
+        let path = record(root, "other", 3, "same", vec![process(root, &[(1, 1)], 1)]);
+        let mut attempt: Attempt = load(&path.join("attempt.json")).unwrap();
+        for outcome in ["pending", "running"] {
+            attempt.outcome = outcome.into();
+            save(&path.join("attempt.json"), &attempt).unwrap();
+            let result = report(root);
+            assert!(!result.passed);
+            assert!(
+                result
+                    .text
+                    .contains("binary / other: missing or unreadable")
+            );
+            assert!(result.text.contains(&format!("attempt {outcome}")));
+            assert!(!result.text.contains("100.0%"));
+            assert!(!result.text.contains("code.rs:"));
+        }
+    }
+
+    // {test}`requirements.test-coverage.index.summary`
+    // {test}`requirements.test-coverage.index.freshness`
+    // {test}`requirements.test-coverage.storage.provenance`
+    // {test}`requirements.test-coverage.check.measurement`
+    #[test]
+    fn focused_recollection_leaves_only_the_unselected_result_stale_with_its_original_sources() {
+        let temp = fixture("fn a() {}");
+        let root = temp.path();
+        record(root, "rerun", 1, "same", vec![process(root, &[(1, 1)], 1)]);
+        let old = record(
+            root,
+            "unselected",
+            2,
+            "same",
+            vec![process(root, &[(1, 1)], 1)],
+        );
+        fs::write(root.join("code.rs"), "fn a() { let changed=1; }").unwrap();
+        record(root, "rerun", 3, "same", vec![process(root, &[(1, 1)], 1)]);
+        let result = report(root);
+        assert!(!result.passed);
+        assert!(result.text.contains("binary / unselected: stale coverage"));
+        assert!(!result.text.contains("binary / rerun: stale coverage"));
+        assert!(!result.text.contains("100.0%"));
+        assert!(!result.text.contains("code.rs:"));
+        let saved = book::load_saved(root, Some(root.join("target")));
+        let preserved = saved
+            .records
+            .iter()
+            .find(|r| r.attempt.test == "unselected")
+            .unwrap();
+        assert!(!preserved.fresh);
+        assert_eq!(
+            preserved.attempt.id,
+            old.file_name().unwrap().to_str().unwrap()
+        );
+        assert_eq!(
+            preserved.run.id,
+            old.parent()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+        );
+        assert_eq!(preserved.run.sources["code.rs"], "fn a() {}");
+        let rerun = saved
+            .records
+            .iter()
+            .find(|r| r.attempt.test == "rerun")
+            .unwrap();
+        assert!(rerun.fresh);
+        assert_eq!(rerun.run.sources["code.rs"], "fn a() { let changed=1; }");
     }
 
     // {test}`requirements.test-coverage.check.exceptions`
@@ -1246,11 +1353,13 @@ mod tests {
         let root = temp.path();
         let path = record(root, "a", 1, "same", vec![process(root, &[(1, 1)], 1)]);
         let mut attempt: Attempt = load(&path.join("attempt.json")).unwrap();
-        attempt.outcome = "failed".into();
-        save(&path.join("attempt.json"), &attempt).unwrap();
-        let result = report(root);
-        assert!(result.passed, "{}", result.text);
-        assert!(result.text.contains("attempt failed"));
+        for outcome in ["failed", "interrupted"] {
+            attempt.outcome = outcome.into();
+            save(&path.join("attempt.json"), &attempt).unwrap();
+            let result = report(root);
+            assert!(result.passed, "{}", result.text);
+            assert!(result.text.contains(&format!("attempt {outcome}")));
+        }
         attempt.processes[0].diagnostic = Some("broken coverage map".into());
         save(&path.join("attempt.json"), &attempt).unwrap();
         assert!(!report(root).passed);
@@ -1411,11 +1520,9 @@ mod tests {
                         format!("{source}\n// changed build input\n"),
                     )
                     .unwrap(),
-                    "corrupt history" => fs::write(
-                        newest.parent().unwrap().parent().unwrap().join("run.json"),
-                        "{",
-                    )
-                    .unwrap(),
+                    "corrupt history" => crate::execution_coverage::store::fixtures::corrupt(
+                        &newest.parent().unwrap().parent().unwrap().join("run.json"),
+                    ),
                     _ => {}
                 }
             }
