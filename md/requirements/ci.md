@@ -184,7 +184,7 @@ compare `hash` with the node's current structural hash under
 inclusive line range, including attached comments and attributes, during
 validation for display and reference coverage. Moving the node, editing other
 nodes, or editing comments its profile does not hash MUST NOT invalidate the
-input. Habeas MUST report a missing file, unsupported language, parse failure,
+input. Habeas MUST report a missing file, parse failure,
 invalid or ambiguous selector, or changed hash.
 :::
 
