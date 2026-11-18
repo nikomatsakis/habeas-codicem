@@ -1,7 +1,7 @@
 {
-  "requirement": "SDK checker and validator configuration MUST accept an application-supplied,\n`Send + Sync` resolver from `&D::NodeId` to `Result<String, D::Error>` for the\ncurrent procedure identity. The same resolver MUST be usable by `check_node`\nwithout a `Validation` implementation or model configuration and by\n`validate_node`. The runner MUST compare the resolved identity with saved\nevidence and use that same identity when storing a new record. Resolution\nfailures MUST be reported as errors without invoking validation or storing a\ncompleted judgment. This configuration MUST NOT require another domain trait.",
+  "requirement": "Checker and validator configuration accepts an application-supplied resolver:\n\n```rust,ignore\n// Trait bounds on the configured resolver; not a separate domain trait.\nFn(&D::NodeId) -> Result<String, D::Error> + Send + Sync\n```\n\nBoth `check_node` and `validate_node` use the same resolver. Checking needs\nneither a `Validation` implementation nor model configuration. The runner\ncompares the resolved identity with saved evidence and uses that identity for\nthe replacement record. A resolution failure returns an error before invoking\nvalidation or storing a completed judgment.",
   "determination": true,
-  "rationale": "The three marked tests cover each obligation in `requirements.sdk.graph.validation.procedure_identity`.\n\n- **Resolver accepted by checker and validator.**\n  - `contracts.rs#fn[checker_needs_no_validation_and_storage_preserves_nonserializable_metadata]` builds `Checker::new(&graph, |_| Ok(\"v1\".into()))` on a `GraphOnly` domain. That domain implements no `Validation` trait and has no model configuration.\n  - `validation.rs#fn[runner_reuses_negative_judgments_and_records_only_callback_observations]` and `validation.rs#fn[resolution_storage_and_callback_errors_are_not_judgments]` build `Validator::new` with the same closure shape.\n  - The `GraphOnly` check also covers the clause that configuration MUST NOT require another domain trait.\n- **Resolved identity compared with saved evidence.**\n  - The checker test saves a record, then expects `Current` under resolver \"v1\" and `Stale` under \"v2\".\n  - The validator test expects `Stale` for \"v2\" after a \"v1\" run.\n  - It also expects `Current` when the stored procedure is the `\"*\"` wildcard, which it sets by hand. I did not treat that wildcard as part of this requirement.\n- **Same identity used when storing.** After `v2.validate_node(&9)`, the test asserts `records[&9].procedure == \"v2\"`. In `runtime.rs#impl[Validator<'d, D, F>]/fn[validate_with_edges]`, the resolver is called once. That one value goes to both `check_with_version` and `finish`.\n- **Resolution failures reported as errors.**\n  - The checker test passes a resolver returning `Err(\"version\")`. It asserts that `check_node` returns `Err(\"version\")`.\n  - The validation test passes a resolver returning `Err(\"version\")`. It asserts `ValidationError::Graph(\"version\")`, that `started` is empty (validation was not invoked), and that `records` is empty (nothing stored).\n  - The checker test also asserts `callbacks == 0` and `writes == 1`.\n\n**Observations that are not gaps:**\n- Every test resolver ignores its node argument. The requirement names the `&D::NodeId` input, but only the type signature enforces it. The only way to pass the wrong node would be to use some other node value, which I judged implausible.\n- Nothing tests that a resolver that is not `Send + Sync` is rejected. That is a compile-time bound, and the tests use accepted closures.\n\nNo `{fixme}` acknowledgments apply, and I found no unresolved adequacy gap.",
+  "rationale": "The reviewed tests cover each obligation of `requirements.sdk.graph.validation.procedure_identity`.\n\n- **Resolver accepted by both configurations.** `Checker::new(&graph, |_| Ok(\"v1\".into()))` and `Validator::new(&graph, |_| Ok(\"v1\".into()))` both take an application-supplied closure that returns `Result<String, Error>`. `Validator::new` builds its `Checker` from the same closure (seen in `crates/habeas-sdk/src/graph/runtime.rs#impl[Validator<'d, D, F>]/fn[new]`). That matches \"Both … use the same resolver\". The `Send + Sync` bound is exercised through the `send(...)` helper in the contracts test.\n- **Checking needs no `Validation` implementation or model configuration.** `crates/habeas-sdk/tests/contracts.rs#fn[checker_needs_no_validation_and_storage_preserves_nonserializable_metadata]` builds a `Checker` over `GraphOnly`, which has no `Validation`, and calls `check_node`. It asserts `callbacks == 0`.\n- **Resolved identity compared with saved evidence.**\n  - The contracts test gets `Missing` with no record, `Current` when the identity matches (\"v1\"), and `Stale` when the resolver returns \"v2\".\n  - `crates/habeas-sdk/tests/validation.rs#fn[runner_reuses_negative_judgments_and_records_only_callback_observations]` repeats this through `Validator::check_node`: `Current` for v1, `Missing` for an unknown node, `Stale` for v2.\n  - The same test shows `validate_node` reuses a matching record, since `started == [9]` after two calls.\n  - It also edits the stored procedure to \"*\" and shows that v2 is still `Current`, so the comparison does not depend on the stored string alone.\n- **Resolved identity used for the replacement record.** After `v2.validate_node(&9)`, the test asserts `records[&9].procedure == \"v2\"`.\n- **Resolution failure returns an error before validation or storing.**\n  - `crates/habeas-sdk/tests/validation.rs#fn[resolution_storage_and_callback_errors_are_not_judgments]` uses a resolver that returns `Err(\"version\")`. `validate_node` returns `Err(ValidationError::Graph(\"version\"))`, and `started` is empty, so validation was not invoked.\n  - That test asserts `records.is_empty()` after the later store-failure case. A record stored by the bad-resolver run would have made that assertion fail, so this indirectly covers \"no stored judgment\".\n  - The contracts test asserts that `Checker::check_node` returns `Err(\"version\")`. It also asserts `writes == 1`, which is the saved record only.\n\nResidual points that are not gaps:\n\n- Every resolver in the tests ignores its node argument (`|_|`). The text does not require node-dependent identities.\n- `Validator::check_node` is not tested with a failing resolver. It delegates to the same `Checker`, which is tested.",
   "references": "3da83f5d7bdd2bbc5037408dff2aaa39a8213095230d4bbc8f542133f06f783b",
   "inputs": [
     {
@@ -11,14 +11,18 @@
       ],
       "text": [
         ":::{req} procedure_identity",
-        "SDK checker and validator configuration MUST accept an application-supplied,",
-        "`Send + Sync` resolver from `&D::NodeId` to `Result<String, D::Error>` for the",
-        "current procedure identity. The same resolver MUST be usable by `check_node`",
-        "without a `Validation` implementation or model configuration and by",
-        "`validate_node`. The runner MUST compare the resolved identity with saved",
-        "evidence and use that same identity when storing a new record. Resolution",
-        "failures MUST be reported as errors without invoking validation or storing a",
-        "completed judgment. This configuration MUST NOT require another domain trait.",
+        "Checker and validator configuration accepts an application-supplied resolver:",
+        "",
+        "```rust,ignore",
+        "// Trait bounds on the configured resolver; not a separate domain trait.",
+        "Fn(&D::NodeId) -> Result<String, D::Error> + Send + Sync",
+        "```",
+        "",
+        "Both `check_node` and `validate_node` use the same resolver. Checking needs",
+        "neither a `Validation` implementation nor model configuration. The runner",
+        "compares the resolved identity with saved evidence and uses that identity for",
+        "the replacement record. A resolution failure returns an error before invoking",
+        "validation or storing a completed judgment.",
         ":::"
       ]
     },
@@ -39,18 +43,8 @@
     },
     {
       "file": "crates/habeas-sdk/src/graph/runtime.rs",
-      "item": "impl[Checker<'d,%20D,%20F>]/fn[check_node]",
-      "hash": "8d73419b876b7681e01d7dd182580525fad9bfe3d9fefad62e467100f13b6379"
-    },
-    {
-      "file": "crates/habeas-sdk/src/graph/runtime.rs",
-      "item": "impl[Validator<'d,%20D,%20F>]/fn[validate_with_edges]",
-      "hash": "64c5372410f8037879345918e15b1202602df9753a81dad5480e067f18770f08"
-    },
-    {
-      "file": "crates/habeas-sdk/src/graph.rs",
-      "item": "fn[record_is_current]",
-      "hash": "96a45cbff4de0301ba2ce1455713c087c9f1f48c3aee1e1e73fbdd978e81dc9e"
+      "item": "impl[Validator<'d,%20D,%20F>]/fn[new]",
+      "hash": "1ad1042a519b9c541e0306bcb9390d52aad28946a76a59d3af56350672336bbc"
     }
   ],
   "format_version": 1,
@@ -74,7 +68,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "104a7cbe8addcbb49a0cc677c792d1222d1c4b1fa6d632ff57266efc29ca81e3"
+          "value": "ac627e3f985d43add49e56a229a1e959d30bcc12e9e3906c189ce200cc723bb7"
         }
       ]
     },
@@ -137,46 +131,12 @@
               "scheme": "repo",
               "location": "crates/habeas-sdk/src/graph/runtime.rs"
             },
-            "selector": "impl[Checker<'d,%20D,%20F>]/fn[check_node]"
+            "selector": "impl[Validator<'d,%20D,%20F>]/fn[new]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "9a0390f626cb930d8e8b802fb266c5b48226562262e2729ba3f331bd173b290e"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/src/graph/runtime.rs"
-            },
-            "selector": "impl[Validator<'d,%20D,%20F>]/fn[validate_with_edges]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "c3b84fc5146c36949fb8afef7e9f2ba76040e52179e4505c27928297f61fee16"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/src/graph.rs"
-            },
-            "selector": "fn[record_is_current]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "39f66b9572e2f6b91b653dd874ca0a7dcf42e42774e93c3652d6c4cfb7a0700d"
+          "value": "8ac98fb93075543274b6d651bf7fd18660f0d5caaea0695829fc9551436b7bc3"
         }
       ]
     }

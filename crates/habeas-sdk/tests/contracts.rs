@@ -12,7 +12,7 @@ struct Metadata {
 }
 #[derive(Default)]
 struct State {
-    records: Vec<(Node, Record<Node, Metadata>)>,
+    records: Vec<(Node, Record<Node, Metadata, u8>)>,
     text: String,
     edge_version: usize,
     reads: usize,
@@ -49,17 +49,15 @@ macro_rules! graph {
                     segments: vec!["domain".into(), node.0.to_string()],
                 }
             }
-            fn outgoing_edges(
-                &self,
-                _: &Node,
-            ) -> Result<Snapshot<Vec<Edge<Node, u8>>>, Self::Error> {
+            fn outgoing_edges(&self, _: &Node, _: u8) -> Result<Vec<Node>, Self::Error> {
                 let state = $state(self).lock().unwrap();
                 if state.fail_edges {
                     return Err("edges");
                 }
-                Ok(Snapshot {
-                    content: vec![],
-                    fingerprint: fingerprint(format!("edges {}", state.edge_version)),
+                Ok(if state.edge_version == 0 {
+                    vec![]
+                } else {
+                    vec![Node(state.edge_version as u8)]
                 })
             }
         }
@@ -72,7 +70,7 @@ macro_rules! graph {
             async fn load_evidence(
                 &self,
                 node: &Node,
-            ) -> Result<Option<Record<Node, Metadata>>, Self::Error> {
+            ) -> Result<Option<Record<Node, Metadata, u8>>, Self::Error> {
                 let state = $state(self).lock().unwrap();
                 if state.fail_load {
                     return Err("load");
@@ -86,7 +84,7 @@ macro_rules! graph {
             async fn store_evidence(
                 &self,
                 node: &Node,
-                record: &Record<Node, Metadata>,
+                record: &Record<Node, Metadata, u8>,
             ) -> Result<(), Self::Error> {
                 let mut state = $state(self).lock().unwrap();
                 if state.fail_store {
@@ -123,11 +121,7 @@ impl Validation for Application {
             .inspection()
             .read(ctx.node_id())
             .map_err(ValidationError::Graph)?;
-        assert!(
-            ctx.successors(&7)
-                .map_err(ValidationError::Graph)?
-                .is_empty()
-        );
+        assert!(ctx.successors(&7).map_err(ValidationError::Graph)?.len() <= 1);
         Ok(Judgment {
             result: ctx.node_id().0 % 2 == 0,
             rationale: format!("reviewed {}", content.0),
@@ -144,12 +138,12 @@ fn fingerprint(value: String) -> Fingerprint {
         value,
     }
 }
-fn record() -> Record<Node, Metadata> {
+fn record() -> Record<Node, Metadata, u8> {
     Record {
         procedure: "v1".into(),
         dependencies: vec![
             Dependency::Node(Node(1), fingerprint("1:source".into())),
-            Dependency::OutgoingEdges(Node(1), fingerprint("edges 0".into())),
+            Dependency::OutgoingEdges(Node(1), 7, edge_fingerprint(&GraphOnly::default(), &[])),
         ],
         output: Judgment {
             result: false,
@@ -302,7 +296,57 @@ async fn domain_validation_preserves_metadata_reuses_traces_and_propagates_failu
     assert_eq!(validator.validate_node(&Node(2)).await.unwrap(), positive);
 }
 
-// {test}`requirements.sdk.graph.node_path`
+// {test}`requirements.sdk.graph.validation.validate_node`
+// {test}`requirements.sdk.graph.evidence.checking_records`
+// {test}`requirements.sdk.graph.outgoing_edges`
+#[tokio::test]
+async fn changed_target_membership_revalidates_and_replaces_the_saved_selection() {
+    let graph = Application(GraphOnly::default());
+    graph.0.0.lock().unwrap().text = "unchanged content".into();
+    let validator = Validator::new(&graph, |_| Ok("v1".into()));
+    let original = validator.validate_node(&Node(1)).await.unwrap();
+    let before = graph.load_evidence(&Node(1)).await.unwrap().unwrap();
+    graph.0.0.lock().unwrap().edge_version = 3;
+    let reassessed = validator.validate_node(&Node(1)).await.unwrap();
+    assert_eq!(reassessed, original);
+    let after = graph.load_evidence(&Node(1)).await.unwrap().unwrap();
+    assert_ne!(after.dependencies, before.dependencies);
+    assert_eq!(
+        after.dependencies,
+        vec![
+            Dependency::Node(Node(1), fingerprint("1:unchanged content".into())),
+            Dependency::OutgoingEdges(Node(1), 7, edge_fingerprint(&graph, &[Node(3)])),
+        ]
+    );
+    assert_eq!(validator.validate_node(&Node(1)).await.unwrap(), reassessed);
+    let state = graph.0.0.lock().unwrap();
+    assert_eq!((state.callbacks, state.writes), (2, 2));
+}
+
+// {test}`requirements.sdk.graph.hierarchical-paths`
+#[test]
+fn hierarchical_requirement_identity_maps_each_component_to_a_path_segment() {
+    // This is the chapter's illustrative domain, rather than Habeas's persisted IDs.
+    enum HabeasNodeId {
+        Requirement(Vec<String>),
+    }
+    let node_path = |node: &HabeasNodeId| match node {
+        HabeasNodeId::Requirement(parts) => NodePath {
+            segments: std::iter::once("requirement".to_owned())
+                .chain(parts.iter().cloned())
+                .collect(),
+        },
+    };
+    let requirement = HabeasNodeId::Requirement(vec!["a".into(), "b".into(), "c".into()]);
+    assert_eq!(
+        node_path(&requirement).segments,
+        ["requirement", "a", "b", "c"]
+    );
+    assert_eq!(node_path(&requirement), node_path(&requirement));
+}
+
+// {test}`requirements.sdk.graph.node_path_method`
+// {test}`requirements.sdk.graph.node_path_struct`
 // {test}`requirements.sdk.graph.fingerprinting.fingerprint_content`
 // {test}`requirements.sdk.graph.fingerprinting.snapshot`
 #[test]

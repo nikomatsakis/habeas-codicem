@@ -714,6 +714,9 @@ mod tests {
         let source = concat!(
             "// {test}`requirements.example`\n#[test]\nfn tested() {}\n\n",
             "#[test]\nfn tested_in_body() {\n    // {test}`requirements.example`\n}\n\n",
+            "// :::{test} requirements.example\n// Closed fenced reference.\n// :::\n#[test]\nfn tested_with_fence() {}\n\n",
+            "// :::{test} requirements.example\n// Unclosed fenced reference.\n#[test]\nfn unclosed_fence() {}\n\n",
+            "// :::{test} requirements.missing\n// :::\n#[test]\nfn unknown_fenced_target() {}\n\n",
             "#[test]\nfn untested() {}\n\n",
             "// {cite}`requirements.example`\n#[tokio::test]\nasync fn only_cited() {}\n\n",
             "#[tokio::test(flavor = \"multi_thread\")]\nasync fn untested_async() {}\n\n",
@@ -729,6 +732,8 @@ mod tests {
         assert_eq!(
             names,
             [
+                "unclosed_fence",
+                "unknown_fenced_target",
                 "untested",
                 "only_cited",
                 "untested_async",

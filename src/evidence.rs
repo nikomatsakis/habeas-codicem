@@ -182,6 +182,44 @@ pub(crate) fn inspect_repository(root: &Path) -> io::Result<RepositoryInspection
     inspect_repository_with_progress(root, |_| {})
 }
 
+/// Coverage warnings need source items and recorded reads, without validating
+/// every judgment, reference set, citation, and distributed site a second time
+/// after authoring. Use the same discovery and Rust coverage rules as inspection.
+// {cite}`habeas:util`
+pub(crate) fn coverage_inventory(
+    root: &Path,
+) -> io::Result<(
+    PathBuf,
+    Vec<crate::rust_coverage::UncoveredItem>,
+    Vec<PathBuf>,
+    bool,
+)> {
+    let root = fs::canonicalize(root)?;
+    let mut errors = Vec::new();
+    let md_root = book_source_dir(&root, &mut errors);
+    let definitions = collect_definitions(&root, &md_root, &mut errors);
+    let evidence_root = root.join("evidence");
+    let listing_errors = errors.len();
+    let evidence_files = if evidence_root.is_dir() {
+        files_with_extension(&root, &evidence_root, "json", &mut errors)
+    } else {
+        Vec::new()
+    };
+    let evidence_listed = errors.len() == listing_errors;
+    let files = discovered_files(&root, &mut errors);
+    let reads = crate::rust_coverage::EvidenceReads::load(&evidence_files);
+    let uncovered = crate::rust_coverage::validate_rust_functions(
+        &root,
+        &files,
+        &definitions,
+        &reads,
+        &mut errors,
+        &mut Vec::new(),
+        &mut |_| {},
+    );
+    Ok((root, uncovered, evidence_files, evidence_listed))
+}
+
 // {impl}`requirements.ci.errors`
 // {impl}`requirements.examples.evidence`
 // {impl}`requirements.configuration.workspace_location`

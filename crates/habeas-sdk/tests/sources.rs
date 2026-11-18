@@ -289,6 +289,21 @@ async fn local_provider_scopes_paths_and_rejects_resources_outside_its_root() {
     let outside = tempfile::tempdir().unwrap();
     let secret = outside.path().join("secret.txt");
     std::fs::write(&secret, "secret").unwrap();
+    for prefix in [
+        "..".to_owned(),
+        outside.path().to_string_lossy().into_owned(),
+        "missing-directory".to_owned(),
+    ] {
+        assert!(
+            sources
+                .list(&SourceScope {
+                    prefix: prefix.clone()
+                })
+                .await
+                .is_err(),
+            "listing {prefix:?} must not return a successful empty result or outside files"
+        );
+    }
     assert!(
         sources
             .parse_sync(
@@ -311,6 +326,15 @@ async fn local_provider_scopes_paths_and_rejects_resources_outside_its_root() {
     );
     #[cfg(unix)]
     {
+        std::os::unix::fs::symlink(outside.path(), root.path().join("outside")).unwrap();
+        assert!(
+            sources
+                .list(&SourceScope {
+                    prefix: "outside".into()
+                })
+                .await
+                .is_err()
+        );
         std::os::unix::fs::symlink(&secret, root.path().join("alias.txt")).unwrap();
         assert!(
             sources
@@ -328,6 +352,7 @@ async fn local_provider_scopes_paths_and_rejects_resources_outside_its_root() {
 #[cfg(feature = "default-languages")]
 struct CachedParse {
     parses: AtomicUsize,
+    wrong_resource: bool,
 }
 #[cfg(feature = "default-languages")]
 impl SourceProvider for CachedParse {
@@ -352,8 +377,13 @@ impl SourceProvider for CachedParse {
         languages: &Registry,
     ) -> Result<ParsedSource, SourceError> {
         self.parses.fetch_add(1, Ordering::SeqCst);
+        let selected = if self.wrong_resource {
+            id("different.rs")
+        } else {
+            resource.clone()
+        };
         parse_snapshot(
-            resource,
+            &selected,
             SourceFile {
                 bytes: b"fn cached() { call(); }\n".as_slice().into(),
                 language: Some("rust".into()),
@@ -406,6 +436,7 @@ fn registered_grammars_match_their_profiles_and_parse_the_selected_language() {
 async fn structural_search_uses_overridden_parses_their_snapshot_and_requested_scope() {
     let provider = CachedParse {
         parses: AtomicUsize::new(0),
+        wrong_resource: false,
     };
     for (limit, count, complete) in [(None, 1, true), (Some(1), 1, true), (Some(0), 0, false)] {
         let matches = provider
@@ -518,6 +549,7 @@ async fn successful_empty_listing_and_empty_resources_are_distinct_from_errors()
 // {test}`requirements.sdk.sources.provider_defaults.composition`
 // {test}`requirements.sdk.sources.provider_results`
 // {test}`requirements.sdk.sources.provider_results.parse_snapshot`
+// {test}`requirements.sdk.sources.provider_results.search_completeness`
 #[cfg(feature = "default-languages")]
 #[tokio::test]
 async fn list_read_only_provider_supports_selected_language_parse_and_structural_search() {
@@ -547,6 +579,38 @@ async fn list_read_only_provider_supports_selected_language_parse_and_structural
     assert_eq!(matches.matches[0].node.selector, "fn[provided]");
     assert_eq!(matches.matches[0].excerpt, "call()");
     assert_eq!(matches.matches[0].node.resource, id("generated"));
+    let malformed = StructuralQuery {
+        rule: serde_json::json!({"rule":{"unknown-rule-key":true}})
+            .as_object()
+            .unwrap()
+            .clone(),
+        ..query
+    };
+    assert!(
+        provider
+            .search_structure(&malformed, &registry())
+            .await
+            .is_err()
+    );
+    let wrong = CachedParse {
+        parses: AtomicUsize::new(0),
+        wrong_resource: true,
+    };
+    let error = wrong
+        .search_structure(
+            &StructuralQuery {
+                rule: serde_json::json!({"rule":{"kind":"function_item"}})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+                ..malformed
+            },
+            &registry(),
+        )
+        .await
+        .err()
+        .expect("a mismatched resource is a provider error");
+    assert_eq!(error.to_string(), "parse returned a different resource");
     let mut mismatch = StructuralQuery {
         language: "python".into(),
         scope: SourceScope::default(),

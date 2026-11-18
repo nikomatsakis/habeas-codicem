@@ -1,7 +1,7 @@
 {
-  "requirement": "`load` MUST deserialize the selected JSON file as `Record<N, M>` using the\nsupplied types' Serde implementations. The helper MUST preserve the SDK-owned\nfields; node identities and application metadata round-trip according to their\nSerde implementations.\nA missing file, including a missing root directory, MUST return `Ok(None)`.\nOther filesystem failures MUST return `FileStorageError::Io`; malformed JSON\nor a record incompatible with the requested types MUST return\n`FileStorageError::Json`. Neither case MUST be treated as absent evidence.\nLoading MUST NOT create directories or invoke validation.",
+  "requirement": "`load` deserializes the selected JSON file as `Record<N, M, L>`, preserving\nSDK-owned fields. Node identities, edge labels, and application metadata\nround-trip through their Serde implementations.\n\n| File state | Result |\n| --- | --- |\n| Missing file or root directory | `Ok(None)` |\n| Other filesystem failure | `FileStorageError::Io` |\n| Malformed JSON or incompatible record types | `FileStorageError::Json` |\n\nErrors do not count as absent evidence. Loading creates no directories and\ninvokes no validation.",
   "determination": true,
-  "rationale": "The tests adequately cover `requirements.sdk.filesystem-storage.load`. I did not read the implementation, because the question was test adequacy.\n\n**Obligations and the tests that cover them**\n- **Deserialize and preserve SDK-owned fields.** `crates/habeas-sdk/tests/storage.rs#fn[records_round_trip_and_malformed_or_incompatible_data_is_an_error]` stores `record(\"A\")` and loads it back. It asserts `procedure`, `dependencies` and `output`. The `record` helper builds both `Dependency::Node` and `Dependency::OutgoingEdges` entries and a `Judgment` with JSON metadata. `#fn[consumer_delegates_evidence_storage_using_only_the_requested_nodes_path]` and `#fn[send_futures_create_missing_roots_and_nested_paths_without_shortening_keys]` also check the loaded output and dependencies.\n- **Missing file or missing root returns `Ok(None)`.**\n  - `#fn[paths_are_injective_and_loading_missing_records_has_no_side_effects]` loads from a nonexistent root across seven path shapes, including empty, `a/b`, `..` and Unicode. Each load must give `Ok(None)`.\n  - The consumer test loads a missing node under an existing root with `load_evidence(&\"other\")` and expects `None`.\n- **Other filesystem failures return `FileStorageError::Io`.** The round-trip test puts a directory at the record path and expects `Io`. It also asserts the error's display string equals the cause's. The `send_futures…` test loads a 4096-character key segment, which overflows the filename limit, and expects `Io`.\n- **Malformed JSON or an incompatible record returns `FileStorageError::Json`.**\n  - The round-trip test loads `Record<u8, _>` from a record stored with `String` node ids and expects `Json`. That is the incompatible-types case.\n  - The same test writes `not JSON` and asserts `Json`, with matching display text. The consumer test writes `bad JSON` and expects `Json`.\n- **Errors are not treated as absent evidence.** Every error case asserts `Err(...)` rather than `Ok(None)`.\n- **Loading must not create directories.** `#fn[paths_are_injective_and_loading_missing_records_has_no_side_effects]` asserts `!root.exists()` after all the missing loads. The `send_futures…` test also checks that the failed `too_long` load leaves exactly one entry in the root.\n- **Loading must not invoke validation.** No test targets this directly. `load` takes no validator or graph, so it has no validation hook to call. Every load test asserts only on the loaded data. I did not treat this as a gap.\n\nAll four tests carry `{test}` references to `requirements.sdk.filesystem-storage.load`, so there is no marking gap.\n\nI found no obligation of the requirement that lacks a test.",
+  "rationale": "The tests in `crates/habeas-sdk/tests/storage.rs` cover every obligation and outcome the `requirements.sdk.filesystem-storage.load` text names. All four are marked `{test}` for the requirement.\n\nI read the implementation, `crates/habeas-sdk/src/storage.rs#impl[FileEvidenceStorage]/fn[load]`, only to see how `load` handles errors. I took the expected behavior from the requirement text.\n\n- **Round-trip and field preservation.**\n  - `records_round_trip_and_malformed_or_incompatible_data_is_an_error` stores a record, loads it, and asserts that `procedure`, `dependencies` and `output` are equal.\n  - It then stores a record with a `Dependency::OutgoingEdges` that has `String` node identities and a non-unit `String` edge label (`\"tests/é\"`), and asserts that the loaded dependencies equal the stored ones.\n  - The fixture `record` supplies `Dependency::Node` and `Dependency::OutgoingEdges` with fingerprints, and `Judgment<Value>` application metadata. The tests assert the loaded `output` equals the stored one.\n  - `send_futures_create_missing_roots_and_nested_paths_without_shortening_keys` and `consumer_delegates_evidence_storage_using_only_the_requested_nodes_path` also round-trip and compare `output` and `dependencies`.\n- **Missing file or root gives `Ok(None)`.**\n  - `paths_are_injective_and_loading_missing_records_has_no_side_effects` loads seven different paths from a root that does not exist and asserts `None` for each.\n  - The consumer-delegation test loads a missing file under an existing root (`\"other\"`) and asserts `None`.\n- **Other filesystem failure gives `FileStorageError::Io`.**\n  - The round-trip test replaces the record file with a directory and asserts `FileStorageError::Io`. It also checks that `to_string()` equals the cause's message.\n  - The `send_futures…` test loads a 4096-character segment that exceeds the filesystem name limit. It asserts `Io`, so a missing-file result or hashing the key would fail the test.\n- **Malformed JSON or incompatible types gives `FileStorageError::Json`.**\n  - The round-trip test writes `b\"not JSON\"` and asserts `Json`.\n  - It loads with the wrong node type (`u8`) and the wrong label type (`u8`), and asserts `Json` both times.\n  - The consumer test also asserts `Json` for bad JSON.\n- **Errors are not absent evidence.** Every error case asserts `Err(...)` rather than `Ok(None)`.\n- **Loading creates no directories.** The missing-record test asserts `!root.exists()` after all the loads.\n- **Invokes no validation.** The storage `load` takes only a path and has no access to a graph or validator. The tests load records without any validation call. There is no separate behavior that could be exercised, so I found no gap here.\n\nI found no unacknowledged gap, and there are no `{fixme}` acknowledgments.",
   "references": "7036e38ba6eaf988428c515c14d873e1d9ef9f911c919e1b077a29c705e8e810",
   "inputs": [
     {
@@ -11,32 +11,35 @@
       ],
       "text": [
         ":::{req} load",
-        "`load` MUST deserialize the selected JSON file as `Record<N, M>` using the",
-        "supplied types' Serde implementations. The helper MUST preserve the SDK-owned",
-        "fields; node identities and application metadata round-trip according to their",
-        "Serde implementations.",
-        "A missing file, including a missing root directory, MUST return `Ok(None)`.",
-        "Other filesystem failures MUST return `FileStorageError::Io`; malformed JSON",
-        "or a record incompatible with the requested types MUST return",
-        "`FileStorageError::Json`. Neither case MUST be treated as absent evidence.",
-        "Loading MUST NOT create directories or invoke validation.",
+        "`load` deserializes the selected JSON file as `Record<N, M, L>`, preserving",
+        "SDK-owned fields. Node identities, edge labels, and application metadata",
+        "round-trip through their Serde implementations.",
+        "",
+        "| File state | Result |",
+        "| --- | --- |",
+        "| Missing file or root directory | `Ok(None)` |",
+        "| Other filesystem failure | `FileStorageError::Io` |",
+        "| Malformed JSON or incompatible record types | `FileStorageError::Json` |",
+        "",
+        "Errors do not count as absent evidence. Loading creates no directories and",
+        "invokes no validation.",
         ":::"
       ]
     },
     {
       "file": "crates/habeas-sdk/tests/storage.rs",
       "item": "fn[paths_are_injective_and_loading_missing_records_has_no_side_effects]",
-      "hash": "cb440ff1505e4f2d6769335083120773b1a216d3fadc95dbcc0414d147e7cfa0"
+      "hash": "bb663dc4f086624f5c57a87b97fb03fb33df329977832faef1f454e90a6ef0c8"
     },
     {
       "file": "crates/habeas-sdk/tests/storage.rs",
       "item": "fn[records_round_trip_and_malformed_or_incompatible_data_is_an_error]",
-      "hash": "063257d8721236c229292a42413b25a2095f471fcbb662f4ea542b846a3a5ca3"
+      "hash": "16414c3dba8906a942c077a8691e7204b59909670e16326cb8cc871d87165f72"
     },
     {
       "file": "crates/habeas-sdk/tests/storage.rs",
       "item": "fn[send_futures_create_missing_roots_and_nested_paths_without_shortening_keys]",
-      "hash": "f205c32c4e539c971a8e81ea1605d762f149606129a30d28684787f0a3826f96"
+      "hash": "2919fced485e1c1f88d327fc6d25bb928e355804e72e2061f500809c36a4ae27"
     },
     {
       "file": "crates/habeas-sdk/tests/storage.rs",
@@ -46,12 +49,12 @@
     {
       "file": "crates/habeas-sdk/tests/storage.rs",
       "item": "fn[record]",
-      "hash": "d78a2a2fd88c69abd3c47c4d5247c1c8282460f4f60f2e2db028de552c2a42e8"
+      "hash": "8ca7b3ea55a2a1ee133df9bf737e6ee2443977ff02b2530503e88b4071908b62"
     },
     {
-      "file": "crates/habeas-sdk/src/graph.rs",
-      "item": "struct[Record]",
-      "hash": "c9b5a35a59999b46b6f73791d65051ce79defadd9ec3573962132adb464db22b"
+      "file": "crates/habeas-sdk/src/storage.rs",
+      "item": "impl[FileEvidenceStorage]/fn[load]",
+      "hash": "18e9b8b8421391c3dd998c1250bdcfb61df7aebf463eb897465ca7ab154d70a5"
     },
     {
       "file": "crates/habeas-sdk/tests/storage.rs",
@@ -72,24 +75,31 @@
       "file": "crates/habeas-sdk/tests/storage.rs",
       "item": "use@ddfd50868028",
       "hash": "ddfd50868028ea77bbd8ccc1e499a458c84f58fd6426578e5cdee9e9e938b347"
-    },
-    {
-      "file": "crates/habeas-sdk/src/storage.rs",
-      "item": "impl[FileEvidenceStorage]/fn[load]",
-      "hash": "8e3ab2509ed0a5336a5c0de88836b6f95c27b874ea886eec8276aba6b827b7a4"
     }
   ],
   "format_version": 1,
   "review_version": "habeas-review-v1",
   "dependencies": [
     {
-      "OutgoingEdges": [
+      "Node": [
         {
-          "Requirement": "requirements.sdk.filesystem-storage.load"
+          "ReferenceSet": "requirements.sdk.filesystem-storage.load"
         },
         {
           "scheme": "habeas-reference-set-v1",
           "value": "7036e38ba6eaf988428c515c14d873e1d9ef9f911c919e1b077a29c705e8e810"
+        }
+      ]
+    },
+    {
+      "OutgoingEdges": [
+        {
+          "Requirement": "requirements.sdk.filesystem-storage.load"
+        },
+        "Mandatory",
+        {
+          "scheme": "node-path-set-sha256-v1",
+          "value": "d849a9c9b468ba3a7ca8090ea474dfb883e9df17cafec02da8da7004fb7094f2"
         }
       ]
     },
@@ -100,7 +110,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "171de3f89abc407dccc9b5372110a4e8459b851f7ec2f42f8e8302e14ca9118e"
+          "value": "33ec078ad577fe3811a4463d5173098ddd5553146893303957c9fd71e617d24e"
         }
       ]
     },
@@ -117,7 +127,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "7dfe46af715bf18dfdc2a51ce251a344c65968e90769a37016a5a073323d4741"
+          "value": "7a9cddb277a377ce55d8c965784e2caf18aa7f370e1c78fb34f01b7b90bb62ee"
         }
       ]
     },
@@ -134,7 +144,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "2b806f64608c8fd773b8e606946244f925403e81d513ff8a96befa39bd947997"
+          "value": "105a33a9eccb75ed8257507561b69eaae9990cb74a3754273e14caf2987f711b"
         }
       ]
     },
@@ -151,7 +161,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "97b02bfb983ed4d510c043c136466dc8df47b30032bdfda6bc8f81d68d985d43"
+          "value": "8df588ef1aece46a6b5c2fbf3a0577163db08507eda3dc8ef1d5cbbd4caf2c01"
         }
       ]
     },
@@ -185,7 +195,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "1667bf583a0d6b1741c3789d72db1b60f5a3aaeca36af51353d6a49f28733aca"
+          "value": "7c2fac792a328f2d3bd4314de760fce4d7514a547f0acfaf01571038150e5772"
         }
       ]
     },
@@ -195,14 +205,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/habeas-sdk/src/graph.rs"
+              "location": "crates/habeas-sdk/src/storage.rs"
             },
-            "selector": "struct[Record]"
+            "selector": "impl[FileEvidenceStorage]/fn[load]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "922dc109372ba5e4380fc6c793deefcdbdff0de5b71f262509a54e66c7cdf332"
+          "value": "352520726bd8727b28960f924cd4d68dcd4a128086fd204d7115e336ddf7f8b3"
         }
       ]
     },
@@ -271,23 +281,6 @@
         {
           "scheme": "habeas-input-v1",
           "value": "d1e38884f07c18b113be737f36ca4902889a3424da1a695249e9e5bcc3f966ea"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/src/storage.rs"
-            },
-            "selector": "impl[FileEvidenceStorage]/fn[load]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "af1e7f9a9f6efbf01dd642e700b0062e429727b2e79226eba877b0fed631297a"
         }
       ]
     }

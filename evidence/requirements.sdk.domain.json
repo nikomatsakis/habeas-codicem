@@ -1,8 +1,8 @@
 {
-  "requirement": "The SDK MUST expose the following traits and blanket implementation. Bodies\nmarked `/* ... */` omit members specified in their respective chapters:\n\n```rust,ignore\npub trait Fingerprinting: Graph {\n    /* ... Uses Graph's associated types. */\n}\n\npub trait EvidenceStorage: Graph {\n    /* ... Uses Graph's associated types. */\n}\n\npub trait Validation: Graph + Fingerprinting + Sized {\n    /* ... The application's assessment callback, usable without\n       EvidenceStorage. The SDK runner handles evidence freshness. */\n}\n\npub trait Domain: Graph + Validation + Fingerprinting + EvidenceStorage {}\n\nimpl<T: Graph + Validation + Fingerprinting + EvidenceStorage> Domain for T {}\n```\n\n`Graph` MUST own its node, content, edge-label, and error types as specified by\n{cite}`requirements.sdk.graph.domain_types`. The node validation runner MUST\nrequire `Domain`.\n\nThe SDK MUST allow concurrent validations to share a domain by reference.\nAsynchronous storage and assessment methods MUST return `Send` futures. Each\nvalidation MUST retain its own dependency trace. Concurrent operations within\none validation MUST safely share that trace, while each agent invocation MUST\nretain its own conversation and submission state. Observations MUST NOT leak\nbetween separate node validations.",
+  "requirement": "The SDK MUST expose a `Domain` trait with a blanket implementation and a number of subtraits that cover disjoint aspects of defining an application domain:\n\n```rust,ignore\n/// The node validation runner requires this combined domain.\n/// Assessment callbacks remain usable without EvidenceStorage.\n///\n/// Concurrent validations can share a domain by reference. Each validation\n/// has its own dependency trace; operations within it share that trace safely.\n/// Agent calls retain independent conversation and submission state.\n/// Observations never leak between separate validations.\npub trait Domain: Graph + Validation + Fingerprinting + EvidenceStorage {}\n\nimpl<T: Graph + Validation + Fingerprinting + EvidenceStorage> Domain for T {}\n\npub trait Graph {\n    // Defines the verification graph, including\n    //\n    // * Nodes: verifiable constructs\n    // * Edges: inputs to verification\n    // * NodeContent: the contents of a node, determines both its verification contract and what data is given\n    /* ... members defined in the Graph chapter ... */\n}\n\npub trait Fingerprinting: Graph {\n    // Defines which changes to input contents matter for validation.\n    /* ... members defined in the Fingerprinting chapter ... */\n}\n\npub trait EvidenceStorage: Graph {\n    // Defines how evidence is stored and loaded.\n    /* ... members defined in the Evidence storage chapter ... */\n}\n\npub trait Validation: Graph + Fingerprinting + Sized {\n    // Defines the evaluation function for\n    // whether a node is valid.\n    /* ... members defined in the Validation chapter ... */\n}\n```",
   "determination": true,
-  "rationale": "I judge the tests adequate for `requirements.sdk.domain`. Each obligation maps to at least one marked test, and the assertions enforce the outcome.\n\n- **Trait shape and blanket impl.** `domain_validation_preserves_metadata_reuses_traces_and_propagates_failures` in `contracts.rs` calls `fn domain<T: Domain>(_: &T)` on an `Application` type. That type only implements the component traits, so the call exercises the blanket `impl<T: …> Domain for T`. The test also builds a `Validator` over the same type and validates it end to end.\n- **`Validation` usable without `EvidenceStorage`.** `validation_is_usable_without_any_evidence_storage` in `agent.rs` runs `graph.validate(&ctx)` on a graph with no storage. It asserts the judgment and the recorded dependency.\n- **Storage-only use.** `checker_needs_no_validation_and_storage_preserves_nonserializable_metadata` in `contracts.rs` uses a `GraphOnly` type with `Checker` and no `Validation`. This is consistent with the split between `Validation` and `EvidenceStorage`.\n- **Runner requires `Domain`.** `Validator` is bounded on `D: Domain` in `runtime.rs` and `traversal.rs`, and the tests construct it with a `Domain` type. A negative compile-fail test is absent. A trait bound is a type-level obligation and the positive use covers it, so I don't count this as a gap.\n- **Send futures.**\n  - `load_evidence`, `store_evidence` and `Validation::validate` declare `+ Send` in their signatures. Every test implementation therefore has to compile with Send futures.\n  - The `send(...)` helper in the checker test asserts it for storage futures.\n  - `assert_send(&future)` asserts it for the agent-call future in `contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text`.\n  - `assert_send_sync(&ctx)` asserts it for the context in `later_lighter_agent_calls_preserve_the_contexts_existing_trace`.\n- **Concurrent validations share a domain by reference.** `cycles_shared_targets_negative_judgments_and_parallelism` and `cyclic_ready_work_is_bounded_by_each_configured_parallelism_limit` run `validate_transitive` over one `&graph` at concurrency 1, 2 and 3. They assert completion and the observed peak concurrency.\n- **Per-validation dependency trace and no leakage between node validations.** The same two traversal tests check every stored record's `dependencies` against exactly that node's own content and edge dependencies. A trace leaking between concurrent nodes would fail these assertions.\n- **Concurrent operations in one validation share the trace.**\n  - `concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads` and `shared_context_allows_independent_concurrent_agent_calls` run two agent calls in parallel on one context. They assert that the context's inspection holds the union of dependencies.\n  - `later_lighter_agent_calls_preserve_the_contexts_existing_trace` shows that a later call does not discard the existing trace.\n- **Each agent invocation keeps its own conversation and submission state.** The concurrent-agent test uses a barrier to force interleaving. It asserts that each call returns its own answer (\"alpha\" and \"beta\") and that each conversation made exactly 3 provider calls.\n- **`Graph`'s own types.** This is cited via `requirements.sdk.graph.domain_types`, which is context here and not reassessed.\n\nI found no unacknowledged gap.",
-  "references": "7f490e4916dc2ddd0a5ba277c2e808ccdf3847880eba5857f06ae61471932e96",
+  "rationale": "I judge the tests adequate for `requirements.sdk.domain`. I did not request implementation source, and I did not open the test files beyond the supplied excerpts. That includes the `Application`, `GraphOnly` and `Memory` fixtures. The mapping below rests on how the excerpts use them.\n\n**Trait structure and blanket impl.**\n- `contracts.rs#fn[domain_validation_preserves_metadata_reuses_traces_and_propagates_failures]` defines `fn domain<T: Domain>(_: &T)` and calls it on `Application(GraphOnly)`. This compile-time check shows a type that implements the four subtraits gets `Domain` through the blanket impl.\n- The same test then runs `Validator::validate_node` and `load_evidence` on that type. So all four aspects work together on a `Domain`.\n- The subtraits cover disjoint aspects. `contracts.rs#fn[checker_needs_no_validation_and_storage_preserves_nonserializable_metadata]` uses `GraphOnly`, which has Graph, Fingerprinting and EvidenceStorage but no `Validation`. It runs `Checker`, `store_evidence` and `load_evidence` on it, so those aspects are independent of `Validation`.\n- Domain-level validation additionally needs `Validation` (tested with `Application` above).\n\n**Assessment callbacks usable without EvidenceStorage.** `agent.rs#fn[validation_is_usable_without_any_evidence_storage]` calls `graph.validate(&ctx)` on a `Memory` graph and asserts the judgment and the recorded dependency. The doc comment in the requirement says exactly this.\n\n**Concurrent validations share a domain by reference, with separate traces and no leaked observations.**\n- `validation.rs#fn[concurrent_single_node_validations_keep_separate_traces]` runs three `validate_node` calls with `join!` over one `&graph`. It asserts a peak concurrency of 3. It also asserts that each stored record contains only its own node's dependencies (`Node(n)` and `OutgoingEdges(n, ..)`), so no observations leak between validations.\n- Within one validation, operations share the trace safely. `validation.rs#fn[later_lighter_agent_calls_preserve_the_contexts_existing_trace]` asserts `Send + Sync` on the context. It also asserts that a later call leaves the retained dependencies unchanged.\n- `agent.rs#fn[concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads]` and `validation.rs#fn[shared_context_allows_independent_concurrent_agent_calls]` run concurrent agent calls on one context. Each uses a barrier that forces real overlap. They assert independent per-call results, histories and submissions, and a shared dependency trace with the expected dependencies.\n- `validation.rs#fn[contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text]` covers independent request state, with a `Send` check on the future.\n\n**Gaps.** The refining members (Graph, Fingerprinting, Validation and EvidenceStorage details) are defined in other requirements and tested there. I found no remaining obligation in the subject text without a test and an assertion.",
+  "references": "ae5385d3a7f017a3b45726224466936cb025c009dbb43d35edeebaaa1851782a",
   "inputs": [
     {
       "requirements": "requirements.sdk.domain",
@@ -11,71 +11,52 @@
       ],
       "text": [
         ":::{req} domain",
-        "The SDK MUST expose the following traits and blanket implementation. Bodies",
-        "marked `/* ... */` omit members specified in their respective chapters:",
+        "The SDK MUST expose a `Domain` trait with a blanket implementation and a number of subtraits that cover disjoint aspects of defining an application domain:",
         "",
         "```rust,ignore",
-        "pub trait Fingerprinting: Graph {",
-        "    /* ... Uses Graph's associated types. */",
-        "}",
-        "",
-        "pub trait EvidenceStorage: Graph {",
-        "    /* ... Uses Graph's associated types. */",
-        "}",
-        "",
-        "pub trait Validation: Graph + Fingerprinting + Sized {",
-        "    /* ... The application's assessment callback, usable without",
-        "       EvidenceStorage. The SDK runner handles evidence freshness. */",
-        "}",
-        "",
+        "/// The node validation runner requires this combined domain.",
+        "/// Assessment callbacks remain usable without EvidenceStorage.",
+        "///",
+        "/// Concurrent validations can share a domain by reference. Each validation",
+        "/// has its own dependency trace; operations within it share that trace safely.",
+        "/// Agent calls retain independent conversation and submission state.",
+        "/// Observations never leak between separate validations.",
         "pub trait Domain: Graph + Validation + Fingerprinting + EvidenceStorage {}",
         "",
         "impl<T: Graph + Validation + Fingerprinting + EvidenceStorage> Domain for T {}",
-        "```",
         "",
-        "`Graph` MUST own its node, content, edge-label, and error types as specified by",
-        "{cite}`requirements.sdk.graph.domain_types`. The node validation runner MUST",
-        "require `Domain`.",
+        "pub trait Graph {",
+        "    // Defines the verification graph, including",
+        "    //",
+        "    // * Nodes: verifiable constructs",
+        "    // * Edges: inputs to verification",
+        "    // * NodeContent: the contents of a node, determines both its verification contract and what data is given",
+        "    /* ... members defined in the Graph chapter ... */",
+        "}",
         "",
-        "The SDK MUST allow concurrent validations to share a domain by reference.",
-        "Asynchronous storage and assessment methods MUST return `Send` futures. Each",
-        "validation MUST retain its own dependency trace. Concurrent operations within",
-        "one validation MUST safely share that trace, while each agent invocation MUST",
-        "retain its own conversation and submission state. Observations MUST NOT leak",
-        "between separate node validations.",
-        ":::"
-      ]
-    },
-    {
-      "requirements": "requirements.sdk.graph.domain_types",
-      "matches": [
-        "requirements.sdk.graph.domain_types"
-      ],
-      "text": [
-        ":::{req} domain_types",
-        "`habeas_sdk::graph` MUST expose the graph's associated types and content lookup operation:",
+        "pub trait Fingerprinting: Graph {",
+        "    // Defines which changes to input contents matter for validation.",
+        "    /* ... members defined in the Fingerprinting chapter ... */",
+        "}",
         "",
-        "```rust,ignore",
-        "pub trait Graph: Send + Sync {",
-        "    type NodeId: Clone + Eq + Send + Sync;",
-        "    type NodeContent: Send + Sync;",
-        "    type EdgeLabel: Clone + Send + Sync;",
-        "    type Error: Send;",
+        "pub trait EvidenceStorage: Graph {",
+        "    // Defines how evidence is stored and loaded.",
+        "    /* ... members defined in the Evidence storage chapter ... */",
+        "}",
         "",
-        "    // Outgoing edges and judgment metadata are specified separately.",
-        "    fn node_content(&self, node: &Self::NodeId) -> Result<Self::NodeContent, Self::Error>;",
+        "pub trait Validation: Graph + Fingerprinting + Sized {",
+        "    // Defines the evaluation function for",
+        "    // whether a node is valid.",
+        "    /* ... members defined in the Validation chapter ... */",
         "}",
         "```",
-        "",
-        "The SDK MUST leave the domain meaning of node identities, edges, and contents",
-        "to the consumer.",
         ":::"
       ]
     },
     {
       "file": "crates/habeas-sdk/tests/agent.rs",
       "item": "fn[concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads]",
-      "hash": "9b74aa9f76f2cd7e6e93be4dd64c3d893a32bfc90fc17c5121043591892657e7"
+      "hash": "3b059a09c1e9f7c334abe597b71d978c5174a9c53128440daa8ca4478dd8cfac"
     },
     {
       "file": "crates/habeas-sdk/tests/agent.rs",
@@ -90,12 +71,12 @@
     {
       "file": "crates/habeas-sdk/tests/contracts.rs",
       "item": "fn[domain_validation_preserves_metadata_reuses_traces_and_propagates_failures]",
-      "hash": "a1f987c952877c884092261e1ee4b4eea75560d13ee5347ca76f0d9b668f9ab0"
+      "hash": "38b36cadc68999b752d87ad2c6911273bb4a6346d008c27a4dbaa9458d3574fa"
     },
     {
       "file": "crates/habeas-sdk/tests/validation.rs",
       "item": "fn[contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text]",
-      "hash": "7651d83e2584d2615b91a9e99fa8492c8f855ecb2b97f45fc4258b2b49132abc"
+      "hash": "1eaea9f011ab04839fd926d10a67f14e6ebc9aa9f5f1cb79c785f906c2eef3a5"
     },
     {
       "file": "crates/habeas-sdk/tests/validation.rs",
@@ -105,75 +86,37 @@
     {
       "file": "crates/habeas-sdk/tests/validation.rs",
       "item": "fn[later_lighter_agent_calls_preserve_the_contexts_existing_trace]",
-      "hash": "4b007b161b1e76760313ef278741569242c3e3a5d80d67a7bc0d55d0c54eab2a"
+      "hash": "0f72fdbbacee59950c91fc0a42d42b4a4b945db0b7c54882791594d9ea62f7ea"
     },
     {
       "file": "crates/habeas-sdk/tests/validation.rs",
-      "item": "fn[cyclic_ready_work_is_bounded_by_each_configured_parallelism_limit]",
-      "hash": "26c8273a692b6d346e4bc91395c10ba0d62ed3655f089336dacbfc0b83dd54e9"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/validation.rs",
-      "item": "fn[cycles_shared_targets_negative_judgments_and_parallelism]",
-      "hash": "bc93e7eaecb5725906af58fa441f350a4b0b3c5ce1235c36ffd312492b87367e"
-    },
-    {
-      "file": "crates/habeas-sdk/src/graph.rs",
-      "item": "trait[EvidenceStorage]/fn[load_evidence]",
-      "hash": "327b12de7fc3a8e16ffa3dad354e30bcb079063c86f06c487c0b75b7e52cbeed"
-    },
-    {
-      "file": "crates/habeas-sdk/src/graph.rs",
-      "item": "trait[EvidenceStorage]/fn[store_evidence]",
-      "hash": "e260529863e821120d364bc7ac1b416125a711f8999e549ab911ab9b8af5b4ee"
-    },
-    {
-      "file": "crates/habeas-sdk/src/graph.rs",
-      "item": "trait[Domain]",
-      "hash": "3a96b7e9f49910c610b73c248d8be530985e4223afca68292ff20a04ac85cac4"
-    },
-    {
-      "file": "crates/habeas-sdk/src/graph.rs",
-      "item": "impl[T/Domain]",
-      "hash": "7114a38d0947f04fa678db36b44a0a6555341e3b29ed614e08f45cafb4298eb0"
-    },
-    {
-      "file": "crates/habeas-sdk/src/graph.rs",
-      "item": "trait[Validation]",
-      "hash": "0f8ced45244d358bf5afa06ac85b5fb909213912f6465d168d5a9318e00d3a63"
-    },
-    {
-      "file": "crates/habeas-sdk/src/graph.rs",
-      "item": "trait[Validation]/fn[validate]",
-      "hash": "a847b104283b7c2be7fa850041474f67c7b2e51fc04c9930796f5cf962d14247"
-    },
-    {
-      "file": "crates/habeas-sdk/src/graph/runtime.rs",
-      "item": "impl[Validator<'d,%20D,%20F>]",
-      "hash": "312661e591833bc941b5e966f2d1246c949190c21af9af774b771dbd9a5c0c00"
-    },
-    {
-      "file": "crates/habeas-sdk/src/graph/traversal.rs",
-      "item": "impl[Validator<'d,%20D,%20F>]",
-      "hash": "13c387303f2d7916f61f5afd6c537f1220de30eade64cce888a066be39cbc542"
-    },
-    {
-      "file": "crates/habeas-sdk/src/graph.rs",
-      "item": "trait[EvidenceStorage]",
-      "hash": "1ee79a269f5cb0b05cf90df28180fa43f74922cdb3123c9e3313125d37388c36"
+      "item": "fn[concurrent_single_node_validations_keep_separate_traces]",
+      "hash": "5aa258920ce7028b6f642e78061b65a32e173dea4818f69efadf0a65ca888045"
     }
   ],
   "format_version": 1,
   "review_version": "habeas-review-v1",
   "dependencies": [
     {
+      "Node": [
+        {
+          "ReferenceSet": "requirements.sdk.domain"
+        },
+        {
+          "scheme": "habeas-reference-set-v1",
+          "value": "ae5385d3a7f017a3b45726224466936cb025c009dbb43d35edeebaaa1851782a"
+        }
+      ]
+    },
+    {
       "OutgoingEdges": [
         {
           "Requirement": "requirements.sdk.domain"
         },
+        "Mandatory",
         {
-          "scheme": "habeas-reference-set-v1",
-          "value": "7f490e4916dc2ddd0a5ba277c2e808ccdf3847880eba5857f06ae61471932e96"
+          "scheme": "node-path-set-sha256-v1",
+          "value": "8e8505bbdb1245ab71b34ac8f9d540543e1b6a1b99cffde1941d742e6e79778a"
         }
       ]
     },
@@ -184,18 +127,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "7192c7c84bba2d49bf2362cae23f70c6780ad4a0229ff745c3ce718868b0165b"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Requirement": "requirements.sdk.graph.domain_types"
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "821387ce750420e34166c3a5ae196216258764f7091d1de8b50ebee254a03331"
+          "value": "115a6b5a5d6116230db044012a3598d4f89c3a67ab761c3d600dc3a8dbe90776"
         }
       ]
     },
@@ -212,7 +144,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "f0ff2998de3250b415a94e6b27b85a614a5d37632fd8a495f860b9d2c2e2001b"
+          "value": "ffa25e3a966758cb290f8cd0ab051243a97c0af7a1f503626f5c7357adc652b4"
         }
       ]
     },
@@ -263,7 +195,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "94a40d36d4c0a1f71b238d038c66f97ead2bd2038aee853c440f08aa56e2373c"
+          "value": "f9e3986c618e6b2061a8497398e7c970763c8d325fa919bc5191e8176942eaf1"
         }
       ]
     },
@@ -280,7 +212,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "95bb3394003820aa15f1bac8740bc87699d5276e983e0ca86ed23161297d1356"
+          "value": "63369d28161b345ae1efa8496c4f8cd452b0502cc71f6b246441f18a0823ebf5"
         }
       ]
     },
@@ -314,7 +246,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "9fd69112f945ed41003b93ae6a04b958111f886c836981eb7c72b49ec0a6ca60"
+          "value": "39b4ce49a57f649e71ed166e2466a84966ac9bf7cb38fcb18907066f21d7546c"
         }
       ]
     },
@@ -326,182 +258,12 @@
               "scheme": "repo",
               "location": "crates/habeas-sdk/tests/validation.rs"
             },
-            "selector": "fn[cyclic_ready_work_is_bounded_by_each_configured_parallelism_limit]"
+            "selector": "fn[concurrent_single_node_validations_keep_separate_traces]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "09c1d0a182929f1ceaa9b95fda5127b3409d7e1b8d9fab208dd20bc440c2b5a7"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/validation.rs"
-            },
-            "selector": "fn[cycles_shared_targets_negative_judgments_and_parallelism]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "c5ce6fe762ce0156a89ba6d83fff7a5a941b27c091b0641ceaf2dee00792b9af"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/src/graph.rs"
-            },
-            "selector": "trait[EvidenceStorage]/fn[load_evidence]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "0048a872c578c55a5649ef2be8666a52133c0f28bcfb358e38f0fbbd2b05f689"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/src/graph.rs"
-            },
-            "selector": "trait[EvidenceStorage]/fn[store_evidence]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "4dec2c9fa106785185eac786e2da504c5c05533bc35e2efc051e3a6a4042df80"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/src/graph.rs"
-            },
-            "selector": "trait[Domain]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "a155007a9b324c2bc6ecff6a0bc3a7ffc098faa490b2b101c6bb12030dc6b2eb"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/src/graph.rs"
-            },
-            "selector": "impl[T/Domain]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "e1861b030d100269a780cefa702591c5ce16af65149e7bfbd464030bd31baa6d"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/src/graph.rs"
-            },
-            "selector": "trait[Validation]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "30cda3146ce94341802f09e9d830dc7c25c535897adeec8facaaa62a8d6b1a0e"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/src/graph.rs"
-            },
-            "selector": "trait[Validation]/fn[validate]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "4c472c8ef43c72489a83d1088932ca0c89cbc7929e8b9e0b63fac24e67605a4d"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/src/graph/runtime.rs"
-            },
-            "selector": "impl[Validator<'d,%20D,%20F>]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "f37394097cfcdde1ade195d27cfe57030291bcf5f10b4826423f27141e0fa295"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/src/graph/traversal.rs"
-            },
-            "selector": "impl[Validator<'d,%20D,%20F>]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "b40f509f76d10f11c8fd0a118d75a7a538bc1e00b89d4da07a4002de423088b3"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/src/graph.rs"
-            },
-            "selector": "trait[EvidenceStorage]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "29669f88a63e8b1e256dc091942c473d01a0151c484c44cbb23f4bf9fad728c7"
+          "value": "0d244fb7fa34ac04e66c64249a5fc6f450423b26ef0a6aeda5dbe16bda0f36c3"
         }
       ]
     }

@@ -6,7 +6,7 @@ use crate::{
     inputs::{InputSelector, OutlineCache, ResolvedInput},
 };
 use habeas_sdk::{
-    graph::{Edge, Fingerprint, Fingerprinting, Graph, InspectionContext, NodePath, Snapshot},
+    graph::{Fingerprint, Fingerprinting, Graph, InspectionContext, NodePath},
     resource::{OutlineId, ResourceId},
 };
 use std::{collections::BTreeMap, path::Path};
@@ -20,6 +20,7 @@ pub(crate) struct RequirementId(pub String);
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) enum HabeasNode {
     Requirement(RequirementId),
+    ReferenceSet(RequirementId),
     RequirementSelection(String),
     Definition(String),
     Source(OutlineId),
@@ -56,6 +57,11 @@ impl HabeasNode {
     // {cite}`habeas:util`
     pub(crate) fn selector(&self) -> Result<InputSelector, std::io::Error> {
         Ok(match self {
+            Self::ReferenceSet(_) => {
+                return Err(std::io::Error::other(
+                    "reference-set nodes are not source inputs",
+                ));
+            }
             Self::Requirement(id) => InputSelector::Requirements {
                 requirements: id.0.clone(),
             },
@@ -84,7 +90,7 @@ impl HabeasNode {
 }
 
 // {cite}`habeas:util`
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) enum HabeasEdgeLabel {
     Implements,
     Tests,
@@ -109,6 +115,14 @@ impl Graph for HabeasDomain<'_> {
 
     // {cite}`habeas:util`
     fn node_content(&self, node: &HabeasNode) -> Result<ResolvedInput, std::io::Error> {
+        if let HabeasNode::ReferenceSet(id) = node {
+            return Ok(ResolvedInput {
+                text: vec![self.reference_set(id)?],
+                ranges: vec![],
+                matches: vec![],
+                node: None,
+            });
+        }
         let node = node.selector()?;
         node.resolve(self.root, self.definitions, self.outlines)
             .map_err(std::io::Error::other)
@@ -118,6 +132,7 @@ impl Graph for HabeasDomain<'_> {
     fn node_path(&self, node: &HabeasNode) -> NodePath {
         let segments = match node {
             HabeasNode::Requirement(id) => vec!["requirement".into(), id.0.clone()],
+            HabeasNode::ReferenceSet(id) => vec!["references".into(), id.0.clone()],
             HabeasNode::RequirementSelection(glob) => vec!["selection".into(), glob.clone()],
             HabeasNode::Definition(name) => vec!["definition".into(), name.clone()],
             HabeasNode::Source(id) => vec![
@@ -150,13 +165,63 @@ impl Graph for HabeasDomain<'_> {
     fn outgoing_edges(
         &self,
         node: &HabeasNode,
-    ) -> Result<Snapshot<Vec<Edge<HabeasNode, HabeasEdgeLabel>>>, std::io::Error> {
+        label: HabeasEdgeLabel,
+    ) -> std::io::Result<Vec<HabeasNode>> {
         let HabeasNode::Requirement(query) = node else {
-            return Ok(Snapshot {
-                content: Vec::new(),
-                fingerprint: input_fingerprint(&serde_json::json!([])),
-            });
+            return Ok(vec![]);
         };
+        if label == HabeasEdgeLabel::Mandatory {
+            // Seed the inspection's catalog before cloning its immutable snapshots.
+            // Every mandatory-selection check can then reuse the same discovery.
+            let catalog = self.outlines.reference_catalog(self.root);
+            catalog
+                .as_ref()
+                .as_ref()
+                .map_err(|error| std::io::Error::other(error.clone()))?;
+            let sources = crate::authoring::inputs::AssessmentSources::prepare_with_context(
+                self.root,
+                &query.0,
+                crate::github::GithubIssues::offline(),
+                self.definitions.clone(),
+                self.outlines.clone(),
+            )?;
+            return Ok(sources
+                .model_mandatory_inputs()
+                .iter()
+                .filter_map(crate::inputs::InputSelector::from_input)
+                .map(|selector| HabeasNode::from(&selector))
+                .filter(|target| target != node)
+                .collect());
+        }
+        let role = match label {
+            HabeasEdgeLabel::Implements => "impl",
+            HabeasEdgeLabel::Tests => "test",
+            HabeasEdgeLabel::Acknowledges => "fixme",
+            HabeasEdgeLabel::Mandatory => unreachable!(),
+        };
+        Ok(self
+            .reference_entries(query)?
+            .into_iter()
+            .filter(|entry| entry.role == role)
+            .map(|entry| {
+                HabeasNode::Source(OutlineId {
+                    resource: ResourceId {
+                        scheme: "repo".into(),
+                        location: entry.file,
+                    },
+                    selector: entry.item,
+                })
+            })
+            .collect())
+    }
+}
+
+impl HabeasDomain<'_> {
+    // {cite}`habeas:util`
+    fn reference_entries(
+        &self,
+        query: &RequirementId,
+    ) -> std::io::Result<Vec<crate::evidence::ReferenceSetEntry>> {
         let definition = self
             .definitions
             .get(&query.0)
@@ -184,33 +249,13 @@ impl Graph for HabeasDomain<'_> {
             &sites,
         );
         entries.sort();
-        let mut edges = Vec::new();
-        for entry in &entries {
-            let source = OutlineId {
-                resource: ResourceId {
-                    scheme: "repo".into(),
-                    location: entry.file.clone(),
-                },
-                selector: entry.item.clone(),
-            };
-            let label = match entry.role {
-                "impl" => HabeasEdgeLabel::Implements,
-                "test" => HabeasEdgeLabel::Tests,
-                "fixme" => HabeasEdgeLabel::Acknowledges,
-                _ => continue,
-            };
-            edges.push(Edge {
-                label,
-                target: HabeasNode::Source(source),
-            });
-        }
-        Ok(Snapshot {
-            content: edges,
-            fingerprint: Fingerprint {
-                scheme: "habeas-reference-set-v1".into(),
-                value: crate::evidence::digest_entries(entries),
-            },
-        })
+        Ok(entries)
+    }
+    // {cite}`habeas:util`
+    pub(crate) fn reference_set(&self, query: &RequirementId) -> std::io::Result<String> {
+        Ok(crate::evidence::digest_entries(
+            self.reference_entries(query)?,
+        ))
     }
 }
 
@@ -272,7 +317,9 @@ impl habeas_sdk::graph::EvidenceStorage for HabeasDomain<'_> {
     async fn load_evidence(
         &self,
         node: &HabeasNode,
-    ) -> std::io::Result<Option<habeas_sdk::graph::Record<HabeasNode, serde_json::Value>>> {
+    ) -> std::io::Result<
+        Option<habeas_sdk::graph::Record<HabeasNode, serde_json::Value, HabeasEdgeLabel>>,
+    > {
         let Some(path) = node.evidence_path(self.root) else {
             return Ok(None);
         };
@@ -289,7 +336,7 @@ impl habeas_sdk::graph::EvidenceStorage for HabeasDomain<'_> {
     async fn store_evidence(
         &self,
         node: &HabeasNode,
-        record: &habeas_sdk::graph::Record<HabeasNode, serde_json::Value>,
+        record: &habeas_sdk::graph::Record<HabeasNode, serde_json::Value, HabeasEdgeLabel>,
     ) -> std::io::Result<()> {
         let path = node
             .evidence_path(self.root)
@@ -301,6 +348,12 @@ impl habeas_sdk::graph::EvidenceStorage for HabeasDomain<'_> {
 // {impl}`requirements.sdk.graph.fingerprinting.fingerprint_content`
 impl Fingerprinting for HabeasDomain<'_> {
     fn fingerprint(&self, node: &HabeasNode, content: &ResolvedInput) -> Fingerprint {
+        if matches!(node, HabeasNode::ReferenceSet(_)) {
+            return Fingerprint {
+                scheme: "habeas-reference-set-v1".into(),
+                value: content.text[0].clone(),
+            };
+        }
         input_fingerprint(
             &node
                 .selector()
@@ -347,7 +400,8 @@ mod tests {
     use habeas_sdk::graph::{Dependency, EvidenceStorage, Judgment, Record};
     use std::fs;
 
-    // {test}`requirements.sdk.graph.node_path`
+    // {test}`requirements.sdk.graph.node_path_method`
+    // {test}`requirements.sdk.graph.node_path_struct`
     // {test}`requirements.sdk.graph.domain_types`
     #[test]
     fn habeas_paths_preserve_opaque_segments_and_separate_all_node_kinds() {
@@ -370,6 +424,10 @@ mod tests {
             (
                 HabeasNode::Requirement(RequirementId("same".into())),
                 vec!["requirement", "same"],
+            ),
+            (
+                HabeasNode::ReferenceSet(RequirementId("same".into())),
+                vec!["references", "same"],
             ),
             (
                 HabeasNode::RequirementSelection("same".into()),
@@ -430,6 +488,60 @@ mod tests {
             assert!(paths.insert(domain.node_path(&HabeasNode::Source(changed))));
         }
         assert_eq!(fs::read_dir(root.path()).unwrap().count(), 0);
+    }
+
+    // {test}`requirements.sdk.graph.habeas-test`
+    // {test}`requirements.sdk.graph.outgoing_edges`
+    #[test]
+    fn test_edges_select_only_tests_for_the_requested_requirement() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir(root.path().join("md")).unwrap();
+        fs::create_dir(root.path().join("src")).unwrap();
+        fs::write(root.path().join("book.toml"), "[book]\nsrc='md'\n").unwrap();
+        fs::write(
+            root.path().join("md/requirements.md"),
+            ":::{req} ready\nReady works.\n:::\n:::{req} other\nOther works.\n:::\n",
+        )
+        .unwrap();
+        fs::write(
+            root.path().join("src/lib.rs"),
+            "// {impl}`requirements.ready`\nfn implementation() {}\n\
+             // {test}`requirements.ready`\n#[test]\nfn selected() {}\n\
+             // {test}`requirements.other`\n#[test]\nfn unrelated() {}\n",
+        )
+        .unwrap();
+        let definitions = crate::evidence::load_definitions(root.path()).unwrap();
+        let outlines = OutlineCache::default();
+        let domain = HabeasDomain {
+            root: root.path(),
+            definitions: &definitions,
+            outlines: &outlines,
+        };
+        let requirement = HabeasNode::Requirement(RequirementId("requirements.ready".into()));
+        let selected = domain
+            .outgoing_edges(&requirement, HabeasEdgeLabel::Tests)
+            .unwrap();
+        assert_eq!(
+            selected,
+            vec![HabeasNode::Source(OutlineId {
+                resource: ResourceId {
+                    scheme: "repo".into(),
+                    location: "src/lib.rs".into(),
+                },
+                selector: "fn[selected]".into(),
+            })]
+        );
+        let implementations = domain
+            .outgoing_edges(&requirement, HabeasEdgeLabel::Implements)
+            .unwrap();
+        assert_eq!(implementations.len(), 1);
+        assert_ne!(selected, implementations);
+        assert!(
+            domain
+                .outgoing_edges(&selected[0], HabeasEdgeLabel::Tests)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     // {test}`requirements.sdk.graph.evidence.evidence_storage`
@@ -566,7 +678,12 @@ mod tests {
         let query = RequirementId("requirements.ready".into());
         let ctx = InspectionContext::new(&domain);
         let subject = HabeasNode::Requirement(query.clone());
-        assert!(ctx.outgoing_edges(&subject).unwrap().content.is_empty());
+        assert!(
+            ctx.outgoing_edges(&subject, HabeasEdgeLabel::Implements)
+                .unwrap()
+                .content
+                .is_empty()
+        );
         let selector = InputSelector::Requirements {
             requirements: query.0.clone(),
         };
@@ -605,17 +722,18 @@ mod tests {
         assert!(
             !habeas_sdk::graph::record_is_current(&changed, "test-review-v1", &record).unwrap()
         );
-        let snapshot = changed.outgoing_edges(&subject).unwrap();
-        assert_eq!(snapshot.content.len(), 1);
-        assert_eq!(snapshot.content[0].label, HabeasEdgeLabel::Implements);
+        let snapshot = changed
+            .outgoing_edges(&subject, HabeasEdgeLabel::Implements)
+            .unwrap();
+        assert_eq!(snapshot.len(), 1);
         assert_eq!(
-            snapshot.content[0].target,
+            snapshot[0],
             HabeasNode::from(&InputSelector::Outline {
                 file: "src/lib.rs".into(),
                 item: "fn[ready]".into()
             })
         );
-        let source_node = snapshot.content[0].target.clone();
+        let source_node = snapshot[0].clone();
         let retained_source = changed.node_content(&source_node).unwrap();
         let retained_fingerprint = changed.fingerprint(&source_node, &retained_source);
         fs::write(

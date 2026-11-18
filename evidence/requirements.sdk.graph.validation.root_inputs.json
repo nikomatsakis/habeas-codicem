@@ -1,8 +1,8 @@
 {
-  "requirement": "`ValidationContext<'d, D>` MUST expose:\n\n```rust,ignore\npub fn node_id(&self) -> &D::NodeId;\n\npub fn successors(\n    &self,\n    label: &D::EdgeLabel,\n) -> Result<Vec<Edge<D::NodeId, D::EdgeLabel>>, D::Error>\nwhere\n    D::EdgeLabel: PartialEq;\n```\n\n`node_id` MUST return the node being validated without reading its contents.\n`successors` MUST return the current node's outgoing edges whose labels compare\nequal to the requested label, preserving their order and duplicate edges. It\nMUST record the complete outgoing-edge snapshot, including when no edge matches,\nwithout reading target contents. A change to that recorded selection, including\nadding an edge to an empty selection, MUST make prior evidence stale. Target\ncontents MUST become node dependencies only through explicit tracked reads or\nagent insertions. Edges MUST NOT implicitly supply or require positive\nvalidation judgments for their targets.",
+  "requirement": "```rust,ignore\n// Methods on ValidationContext<'d, D>.\n\n/// The node being validated. Obtaining its identity does not read its contents.\npub fn node_id(&self) -> &D::NodeId;\n\n/// Select outgoing edges by label, preserving their order and duplicates.\n/// Record this label's target-set fingerprint even when nothing matches.\n/// Selecting edges does not read or validate their targets.\npub fn successors(\n    &self,\n    label: &D::EdgeLabel,\n) -> Result<Vec<D::NodeId>, D::Error>\nwhere\n    D::EdgeLabel: PartialEq;\n```\n\nLabels match by equality. A change to the recorded target set makes prior\nevidence stale, including adding an edge to an empty selection. Target contents\nbecome dependencies only through explicit tracked reads or agent insertions.\nAn edge neither supplies nor requires a positive validation judgment for its target.",
   "determination": true,
-  "rationale": "The reviewed tests adequately cover `requirements.sdk.graph.validation.root_inputs`.\n\n**`node_id` returns the node without reading contents.**\n- `crates/habeas-sdk/tests/validation.rs#fn[labeled_selection_records_all_edges_without_reading_targets]` asserts `ctx.node_id() == &1`.\n- It also asserts the graph's `reads` list is empty afterwards.\n\n**`successors` filters by label and preserves order and duplicates.**\n- The same test sets edges `[(8,2),(7,5),(7,3),(7,5)]` and calls `successors(&7)`.\n- It asserts the targets are exactly `[5,3,5]`. That excludes the label-8 edge, keeps the original order and keeps the duplicate.\n- It asserts that `reads` is still empty after the call.\n- It checks the edge's `label` and `target` fields.\n\n**`successors` records the complete outgoing-edge snapshot, including when no edge matches.**\n- The test first calls `successors(&7)` on a node with no edges and finishes an inspection record.\n- It asserts the record is current.\n- It then inserts edges and asserts the record is now stale. This is the \"adding an edge to an empty selection\" case.\n- With a record taken from the selected edges, it makes several changes and asserts the record is stale after each:\n  - changing a matching edge's label;\n  - popping a matching edge;\n  - changing the target of the non-matching label-8 edge, which shows the whole snapshot is recorded and not just the filtered selection;\n  - reversing the edge order.\n- It asserts the record is current again after the original edges are restored.\n- A failing `outgoing_edges` call surfaces as `Err(\"edges\")`.\n\n**Target contents become dependencies only through explicit reads or agent insertions.**\n- `fn[traversal_keeps_discovered_edges_and_reuse_does_not_skip_children]` runs a callback that only calls `successors`.\n- It asserts the stored dependencies are exactly `[Dependency::OutgoingEdges(1, fp(\"[(1, 2)]\"))]`, with no node-content or judgment dependency on the target.\n- It also checks that reuse of node 1 does not skip its child, node 2.\n\n**Errors from `successors` propagate.**\n- `crates/habeas-sdk/tests/contracts.rs#fn[domain_validation_preserves_metadata_reuses_traces_and_propagates_failures]` sets `fail_edges`.\n- It asserts `ValidationError::Graph(\"edges\")` is returned and that the stored evidence is unchanged.\n- It also checks that the evidence dependencies match `record().dependencies`.\n\n**Edges do not supply or require positive judgments for targets.**\n- The record in `fn[labeled_selection_records_all_edges_without_reading_targets]` stays current even though the target nodes (5, 3) have no judgments.\n- The exact-dependency assertion above shows no judgment dependency is created.\n- `fn[cycles_shared_targets_negative_judgments_and_parallelism]` is not marked for this requirement. It traverses a negative target (node 9) but does not assert the source nodes' results. I did not count it as evidence.\n\n**Remaining weakness.** No marked test checks that a source node still validates positively when one of its targets is judged negative. The code carrying this obligation has no logic of its own, because it is the absence of any implicit judgment dependency. The exact dependency-list assertions rule out an implicit dependency. I do not treat this as a gap.\n\nThere are no {fixme} acknowledgments to account for.",
-  "references": "5812aba22d31558d5e5f5e98777c1534848d97b130b629b6f9945632a19aa96a",
+  "rationale": "I reviewed the three marked tests against each obligation in `requirements.sdk.graph.validation.root_inputs`. I did not read implementation source or the `Memory` helper. For the effects of reads I relied on the `reads` assertions in the tests.\n\nThe main coverage is `crates/habeas-sdk/tests/validation.rs#fn[labeled_selections_track_only_target_membership_without_reading_contents]`.\n\n- **`node_id`:** the test asserts `ctx.node_id()` returns `&1`. The final assertion that `graph.state...reads` is empty shows that neither `node_id` nor `successors` read contents.\n- **Label equality and ordering:** with edges `(8,2),(7,5),(7,3),(7,5)`, `successors(&7)` returns `[5, 3, 5]`. That is the matching targets, in order, with duplicates kept, and the label-8 edge is excluded.\n- **Empty selection is still recorded:** `successors(&7)` on a node with no edges returns an empty list, and `finish` then produces an `empty` record. After an edge with the unrelated label 8 is added, `record_is_current` stays true. After label-7 edges are added, the same record becomes stale. This covers \"including adding an edge to an empty selection\" and \"record the fingerprint even when nothing matches\".\n- **Recorded dependency:** the record's dependencies equal exactly `[Dependency::OutgoingEdges(1, 7, edge_fingerprint(&graph, &[3, 5]))]`. Calling `successors` twice yields one dependency. The only dependency is the edge-set fingerprint, so no target-content dependency is created.\n- **Staleness:** changes to other labels, such as `(8,99)`, leave the record current. Changing a target from 5 to 6 makes it stale.\n- **Failure propagation:** `fail_edges` makes both `successors` and `record_is_current` return `Err(\"edges\")`.\n- **No target reads or validation:** the selected targets (5, 3, 6) have no contents or evidence, and selection and currency checks still work. The `reads` list stays empty.\n\nThe two other marked tests add the following.\n\n- `crates/habeas-sdk/tests/validation.rs#fn[concurrent_single_node_validations_keep_separate_traces]` runs real `validate_node` calls whose callbacks call `successors` and read the node. Each node has an edge to the unvalidated, content-less target 99. All three validations succeed, so an edge does not require a positive judgment or any validation of its target. Each stored record's dependencies are exactly `Node(own contents)` plus `OutgoingEdges(node, 1, fingerprint([99]))`. Target contents appear only through explicit reads, never from an edge. Concurrent traces stay separate.\n- `crates/habeas-sdk/tests/contracts.rs#fn[domain_validation_preserves_metadata_reuses_traces_and_propagates_failures]` exercises the full validator flow with an edges-enabled graph. Saved dependencies match the expected record and are reused. An edge-listing failure propagates as `ValidationError::Graph(\"edges\")`. The saved evidence is unchanged afterwards.\n\nEach obligation has a test that exercises it and asserts the outcome. The tests also cover the failure case and the unrelated-label boundary. I found no gap.",
+  "references": "b7ad42b74811d15140ccd0b2b9bab0b3610675c3f6a3805536ebe8e6a8196004",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.validation.root_inputs",
@@ -11,73 +11,69 @@
       ],
       "text": [
         ":::{req} root_inputs",
-        "`ValidationContext<'d, D>` MUST expose:",
-        "",
         "```rust,ignore",
+        "// Methods on ValidationContext<'d, D>.",
+        "",
+        "/// The node being validated. Obtaining its identity does not read its contents.",
         "pub fn node_id(&self) -> &D::NodeId;",
         "",
+        "/// Select outgoing edges by label, preserving their order and duplicates.",
+        "/// Record this label's target-set fingerprint even when nothing matches.",
+        "/// Selecting edges does not read or validate their targets.",
         "pub fn successors(",
         "    &self,",
         "    label: &D::EdgeLabel,",
-        ") -> Result<Vec<Edge<D::NodeId, D::EdgeLabel>>, D::Error>",
+        ") -> Result<Vec<D::NodeId>, D::Error>",
         "where",
         "    D::EdgeLabel: PartialEq;",
         "```",
         "",
-        "`node_id` MUST return the node being validated without reading its contents.",
-        "`successors` MUST return the current node's outgoing edges whose labels compare",
-        "equal to the requested label, preserving their order and duplicate edges. It",
-        "MUST record the complete outgoing-edge snapshot, including when no edge matches,",
-        "without reading target contents. A change to that recorded selection, including",
-        "adding an edge to an empty selection, MUST make prior evidence stale. Target",
-        "contents MUST become node dependencies only through explicit tracked reads or",
-        "agent insertions. Edges MUST NOT implicitly supply or require positive",
-        "validation judgments for their targets.",
+        "Labels match by equality. A change to the recorded target set makes prior",
+        "evidence stale, including adding an edge to an empty selection. Target contents",
+        "become dependencies only through explicit tracked reads or agent insertions.",
+        "An edge neither supplies nor requires a positive validation judgment for its target.",
         ":::"
       ]
     },
     {
       "file": "crates/habeas-sdk/tests/contracts.rs",
       "item": "fn[domain_validation_preserves_metadata_reuses_traces_and_propagates_failures]",
-      "hash": "a1f987c952877c884092261e1ee4b4eea75560d13ee5347ca76f0d9b668f9ab0"
+      "hash": "38b36cadc68999b752d87ad2c6911273bb4a6346d008c27a4dbaa9458d3574fa"
     },
     {
       "file": "crates/habeas-sdk/tests/validation.rs",
-      "item": "fn[labeled_selection_records_all_edges_without_reading_targets]",
-      "hash": "2048e8200871eaed00c2b53208e0d9aa59302de78ffc2b18c2c9a14a881beb6c"
+      "item": "fn[labeled_selections_track_only_target_membership_without_reading_contents]",
+      "hash": "680573ac0aaddefeb37511865da0f36a6f39b8e424f9a328ee98d0373ca7e57d"
     },
     {
       "file": "crates/habeas-sdk/tests/validation.rs",
-      "item": "fn[traversal_keeps_discovered_edges_and_reuse_does_not_skip_children]",
-      "hash": "3f0a5486ecf82e4886bc29b264f0efa7314452a297d3af6b1f734b2a583b0080"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/validation.rs",
-      "item": "fn[cycles_shared_targets_negative_judgments_and_parallelism]",
-      "hash": "bc93e7eaecb5725906af58fa441f350a4b0b3c5ce1235c36ffd312492b87367e"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/validation.rs",
-      "item": "impl[Memory/Validation]/fn[validate]",
-      "hash": "d944faacb8ce3feecec81c730a3748f8eefee6ffd4d894f271e86eb1156d4d21"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/contracts.rs",
-      "item": "impl[Application/Validation]/fn[validate]",
-      "hash": "32f3c147f0bd3e3fb2f17871fd6797c6ce7125be15f6b6b22e464290c956fc3b"
+      "item": "fn[concurrent_single_node_validations_keep_separate_traces]",
+      "hash": "5aa258920ce7028b6f642e78061b65a32e173dea4818f69efadf0a65ca888045"
     }
   ],
   "format_version": 1,
   "review_version": "habeas-review-v1",
   "dependencies": [
     {
+      "Node": [
+        {
+          "ReferenceSet": "requirements.sdk.graph.validation.root_inputs"
+        },
+        {
+          "scheme": "habeas-reference-set-v1",
+          "value": "b7ad42b74811d15140ccd0b2b9bab0b3610675c3f6a3805536ebe8e6a8196004"
+        }
+      ]
+    },
+    {
       "OutgoingEdges": [
         {
           "Requirement": "requirements.sdk.graph.validation.root_inputs"
         },
+        "Mandatory",
         {
-          "scheme": "habeas-reference-set-v1",
-          "value": "5812aba22d31558d5e5f5e98777c1534848d97b130b629b6f9945632a19aa96a"
+          "scheme": "node-path-set-sha256-v1",
+          "value": "616628bc61d3084c0283bd5c04777d1a4ea0c079fe762b8e866d8ea7b1d9d7cd"
         }
       ]
     },
@@ -88,7 +84,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "b7265ed5d9db2b952c9b76af0a506bf7fb173e6135925aea9332b2e3c4cd3f6f"
+          "value": "4f5dc9779b2b6f13ca4e9a9ec10e5263b5391b4220e17543739623b6b4b1e5e0"
         }
       ]
     },
@@ -105,7 +101,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "94a40d36d4c0a1f71b238d038c66f97ead2bd2038aee853c440f08aa56e2373c"
+          "value": "f9e3986c618e6b2061a8497398e7c970763c8d325fa919bc5191e8176942eaf1"
         }
       ]
     },
@@ -117,12 +113,12 @@
               "scheme": "repo",
               "location": "crates/habeas-sdk/tests/validation.rs"
             },
-            "selector": "fn[labeled_selection_records_all_edges_without_reading_targets]"
+            "selector": "fn[labeled_selections_track_only_target_membership_without_reading_contents]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "4b7fb0d2aecf634e88a97980b03b84d38852bb7cc2aee545456d5f201fd8dcfd"
+          "value": "8b18c46a4fcea281c4de8da0ff946c8cf2eb58d8541578235720c89abf5228b7"
         }
       ]
     },
@@ -134,63 +130,12 @@
               "scheme": "repo",
               "location": "crates/habeas-sdk/tests/validation.rs"
             },
-            "selector": "fn[traversal_keeps_discovered_edges_and_reuse_does_not_skip_children]"
+            "selector": "fn[concurrent_single_node_validations_keep_separate_traces]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "4bd40c322ce4c64e40f69a35fec8a428902c057c5ee531a60bff8550e0fa933c"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/validation.rs"
-            },
-            "selector": "fn[cycles_shared_targets_negative_judgments_and_parallelism]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "c5ce6fe762ce0156a89ba6d83fff7a5a941b27c091b0641ceaf2dee00792b9af"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/validation.rs"
-            },
-            "selector": "impl[Memory/Validation]/fn[validate]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "bd745c7672cd23b6c7315ac85fb6f11e7f02dae600d542eeceb45be7a40e7ee3"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/contracts.rs"
-            },
-            "selector": "impl[Application/Validation]/fn[validate]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "03488f5d31d2d38d0b7b6183143587c9846a6b8f480c89d8cff61b8ce1e3e1d5"
+          "value": "0d244fb7fa34ac04e66c64249a5fc6f450423b26ef0a6aeda5dbe16bda0f36c3"
         }
       ]
     }

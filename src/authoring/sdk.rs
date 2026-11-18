@@ -7,8 +7,8 @@ use crate::{
 };
 use habeas_sdk::{
     graph::{
-        Edge, Fingerprint, Fingerprinting, Graph, InspectionContext, NodePath, Snapshot,
-        Validation, ValidationContext, ValidationError,
+        Fingerprint, Fingerprinting, Graph, InspectionContext, NodePath, Validation,
+        ValidationContext, ValidationError,
     },
     procedure::{Agent, AgentInput, AgentInputRenderer, AgentRequest},
 };
@@ -64,6 +64,9 @@ impl Graph for ReviewGraph<'_> {
 
     // {cite}`habeas:util`
     fn node_content(&self, node: &HabeasNode) -> io::Result<Value> {
+        if matches!(node, HabeasNode::ReferenceSet(_)) {
+            return Ok(json!({"reference_set": self.reference_set}));
+        }
         if let Some((_, input)) = self.mandatory.iter().find(|(id, _)| id == node) {
             return Ok(input.clone());
         }
@@ -79,27 +82,17 @@ impl Graph for ReviewGraph<'_> {
     fn outgoing_edges(
         &self,
         node: &HabeasNode,
-    ) -> io::Result<Snapshot<Vec<Edge<HabeasNode, HabeasEdgeLabel>>>> {
-        if node == &self.node && matches!(node, HabeasNode::Requirement(_)) {
-            // This graph presents the already selected mandatory relationships.
-            // Their provenance remains protected by the complete reference set.
-            Ok(Snapshot {
-                content: self
-                    .mandatory
-                    .iter()
-                    .filter(|(id, _)| id != node)
-                    .map(|(id, _)| Edge {
-                        label: HabeasEdgeLabel::Mandatory,
-                        target: id.clone(),
-                    })
-                    .collect(),
-                fingerprint: Fingerprint {
-                    scheme: "habeas-reference-set-v1".into(),
-                    value: self.reference_set.clone(),
-                },
-            })
+        label: HabeasEdgeLabel,
+    ) -> io::Result<Vec<HabeasNode>> {
+        if node == &self.node && label == HabeasEdgeLabel::Mandatory {
+            Ok(self
+                .mandatory
+                .iter()
+                .filter(|(id, _)| id != node)
+                .map(|(id, _)| id.clone())
+                .collect())
         } else {
-            self.domain().outgoing_edges(node)
+            self.domain().outgoing_edges(node, label)
         }
     }
 }
@@ -117,7 +110,16 @@ impl ReviewGraph<'_> {
 
 impl Fingerprinting for ReviewGraph<'_> {
     // {cite}`habeas:util`
-    fn fingerprint(&self, _: &HabeasNode, content: &Value) -> Fingerprint {
+    fn fingerprint(&self, node: &HabeasNode, content: &Value) -> Fingerprint {
+        if matches!(node, HabeasNode::ReferenceSet(_)) {
+            return Fingerprint {
+                scheme: "habeas-reference-set-v1".into(),
+                value: content["reference_set"]
+                    .as_str()
+                    .expect("reference digest")
+                    .into(),
+            };
+        }
         input_fingerprint(&model_recorded_input(content))
     }
 }
@@ -152,6 +154,11 @@ impl Validation for ReviewGraph<'_> {
     where
         'd: 'a,
     {
+        if let HabeasNode::Requirement(id) = ctx.node_id() {
+            ctx.inspection()
+                .read(&HabeasNode::ReferenceSet(id.clone()))
+                .map_err(ValidationError::Graph)?;
+        }
         let (judgment, rationale, applies, verification) = match &self.operation {
             Operation::Assess => {
                 let request = ctx
@@ -383,7 +390,7 @@ async fn run(
     sources: &mut AssessmentSources,
     usage: &mut UsageLog,
     operation: Operation,
-) -> io::Result<habeas_sdk::graph::Record<HabeasNode, Value>> {
+) -> io::Result<habeas_sdk::graph::Record<HabeasNode, Value, HabeasEdgeLabel>> {
     let subject = match &sources.subject_kind {
         AssessmentKind::Definition(..) => {
             AuthoringSubject::Definition(sources.subject_name.clone())
@@ -465,7 +472,7 @@ mod tests {
     };
     use std::collections::VecDeque;
 
-    // {test}`requirements.sdk.graph.node_path`
+    // {test}`requirements.sdk.graph.node_path_method`
     // {test}`requirements.sdk.graph.domain_types`
     // {test}`requirements.sdk.graph.context-tools.tracked_inspection`
     #[test]
@@ -518,7 +525,12 @@ mod tests {
                 graph.fingerprint(&source, &delivered)
             )]
         );
-        assert!(graph.outgoing_edges(&source).unwrap().content.is_empty());
+        assert!(
+            graph
+                .outgoing_edges(&source, HabeasEdgeLabel::Tests)
+                .unwrap()
+                .is_empty()
+        );
         let missing = HabeasNode::from(&InputSelector::Outline {
             file: "src/lib.rs".into(),
             item: "fn[missing]".into(),

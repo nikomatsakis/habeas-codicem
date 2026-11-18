@@ -1,7 +1,7 @@
 {
-  "requirement": "`habeas_sdk::graph` MUST expose the following storage interface:\n\n```rust,ignore\nuse std::future::Future;\n\npub trait EvidenceStorage: Graph {\n    fn load_evidence<'a>(\n        &'a self,\n        node: &'a Self::NodeId,\n    ) -> impl Future<Output = Result<\n        Option<Record<Self::NodeId, Self::JudgmentMetadata>>,\n        Self::Error,\n    >> + Send + 'a;\n\n    fn store_evidence<'a>(\n        &'a self,\n        node: &'a Self::NodeId,\n        record: &'a Record<Self::NodeId, Self::JudgmentMetadata>,\n    ) -> impl Future<Output = Result<(), Self::Error>> + Send + 'a;\n}\n```\n\nThe node runner MUST use the requested `NodeId` directly for evidence lookup\nand persistence. It MUST NOT require a separate evidence-key type or a\nprocedure name as part of the storage key.\n`load_evidence` MUST distinguish an absent record (`Ok(None)`) from a storage\nerror (`Err`). Storage MUST preserve the record's procedure version,\ndependencies, and judgment. The application MUST be able to choose the\npersistence mechanism without filesystem paths or a global evidence listing\nbeing required by this interface.",
+  "requirement": "The application implements this trait from `habeas_sdk::graph`:\n\n```rust,ignore\nuse std::future::Future;\n\npub trait EvidenceStorage: Graph {\n    /// Look up a node's record. Ok(None) means absent; Err means storage failed.\n    /// The node identity is the key, with no separate procedure-name key.\n    fn load_evidence<'a>(\n        &'a self,\n        node: &'a Self::NodeId,\n    ) -> impl Future<Output = Result<\n        Option<Record<Self::NodeId, Self::JudgmentMetadata, Self::EdgeLabel>>,\n        Self::Error,\n    >> + Send + 'a;\n\n    /// Save the complete record, preserving its procedure version,\n    /// dependencies, and judgment.\n    fn store_evidence<'a>(\n        &'a self,\n        node: &'a Self::NodeId,\n        record: &'a Record<Self::NodeId, Self::JudgmentMetadata, Self::EdgeLabel>,\n    ) -> impl Future<Output = Result<(), Self::Error>> + Send + 'a;\n}\n```\n\nThe runner passes the requested node identity directly to these methods.\nThe application chooses the persistence mechanism; the interface requires\nneither filesystem paths nor a global listing of evidence.",
   "determination": true,
-  "rationale": "The reviewed tests cover every obligation in `requirements.sdk.graph.evidence.evidence_storage`.\n\n- **Interface and `Send` futures.**\n  - `contracts.rs#fn[checker_needs_no_validation_and_storage_preserves_nonserializable_metadata]` calls `store_evidence` and `load_evidence` through a `send()` helper. The helper only compiles if the returned futures are `Send`.\n  - The `EvidenceStorage` impl in the `graph` macro in `contracts.rs` uses the trait's signatures with `Node` and `Metadata`.\n  - Metadata that cannot be serialized shows the interface needs no serialization.\n\n- **Requested `NodeId` used directly as the key, with no procedure name in it.**\n  - The in-memory impl in `contracts.rs#macro[graph]` keys records only by `Node`.\n  - `fn[domain_validation_preserves_metadata_reuses_traces_and_propagates_failures]` validates `Node(1)` and `Node(2)`. It then reads each record back with `load_evidence(&Node(n))` and checks that the stored output equals the judgment.\n  - The checker test stores a record, then checks it with a `\"v2\"` procedure version. It gets `Stale`, not `Missing`. So the lookup found the record by node alone, and the procedure version is part of the record, not the key.\n  - `storage.rs#fn[consumer_delegates_evidence_storage_using_only_the_requested_nodes_path]` stores under an opaque node (`\"opaque/é\"`). It also checks that a different node (`\"other\"`) returns `None`.\n\n- **`Ok(None)` is distinct from `Err`.**\n  - The checker test gets `Missing` when nothing is stored, and propagates `Err(\"load\")` when `fail_load` is set.\n  - The domain test in `src/sdk.rs` checks that `load_evidence` returns `Ok(None)` for absent records of every review kind and for nodes that have no record.\n  - The file-storage test corrupts the stored file and asserts `Err(FileStorageError::Json(_))`.\n  - The domain test also checks that a failed `store_evidence` returns `Err`, with the `store` failure propagated and the previous record preserved.\n\n- **Procedure version, dependencies and judgment are preserved.**\n  - The checker test asserts equality of `procedure`, `dependencies` and `output` after a round trip.\n  - The `src/sdk.rs` domain test does the same for each review kind, with both `true` and `false` results.\n  - The file-storage test checks `dependencies` and `output`.\n  - The validation test checks that judgment metadata (a reason and a count) survives storage.\n\n- **The application chooses the persistence mechanism, with no filesystem paths or global listing required.**\n  - The trait is implemented by an in-memory mock (`GraphOnly`) with no paths or listing.\n  - It is also implemented by a file-backed delegate (`StoredGraph`) and by `HabeasDomain` (the real domain in `src/sdk.rs`). The same trait is therefore satisfied by different mechanisms.\n\nI found no uncovered obligation and no `{fixme}` acknowledgments are involved.",
+  "rationale": "The tests adequately cover `requirements.sdk.graph.evidence.evidence_storage`. Each obligation maps to a marked test with assertions:\n\n- **Trait shape and `Send` futures.** `crates/habeas-sdk/tests/contracts.rs#fn[checker_needs_no_validation_and_storage_preserves_nonserializable_metadata]` implements `EvidenceStorage` for a graph-only fixture. It wraps the `load_evidence` and `store_evidence` futures in `send::<T: Send>`, which checks the `+ Send` bound.\n- **`Ok(None)` for an absent record.** The same test shows `check_node` returns `EvidenceState::Missing` before any store. `crates/habeas-sdk/tests/storage.rs#fn[consumer_delegates_evidence_storage_using_only_the_requested_nodes_path]` and `src/sdk.rs#mod[tests]/fn[domain_storage_round_trips_each_review_kind_and_preserves_records_on_errors]` both assert `load_evidence(...).is_none()` for unseen nodes.\n- **`Err` for storage failure.** The contracts test sets `fail_load`, and the validator test sets `fail_store`. Both errors propagate: `check_node` returns `Err(\"load\")`, and `validate_node` returns `ValidationError::Graph(\"store\")`. The store-failure case also asserts the previously stored record is unchanged. The filesystem test asserts `FileStorageError::Json` on a corrupt file. The domain test asserts `store_evidence` errors with no-record nodes, an inconsistent record, and a directory at the record path.\n- **Complete record preserved.** The contracts test asserts that `procedure`, `dependencies` and `output` are equal after a store/load round trip. This covers the procedure version, dependencies and judgment. The validator test asserts the stored `output` and `dependencies`, including metadata that is not serializable. The filesystem and domain tests assert round trips of dependencies and output. The domain test also checks `procedure` for every review kind, with both true and false results.\n- **Node identity is the key, with no path or listing required.** The fixture keys records by the `Node` value. The validator test stores and loads `Node(1)` and `Node(2)` separately. The filesystem test uses an opaque node `\"opaque/é\"` and a distinct `\"other\"` node that loads as `None`. No test needs a global listing.\n- **Runner passes the requested node directly.** The checker and validator tests succeed only when the requested node (`Node(1)`, `Node(2)`) is the key used for load and store.\n\nI found no unexercised obligation and no wrong assertion, so I report no gap.",
   "references": "932f4083eae0e9dfd36b9b23d3b67f48bff8806fc8d5bf39ba10088a694fe17f",
   "inputs": [
     {
@@ -11,36 +11,35 @@
       ],
       "text": [
         ":::{req} evidence_storage",
-        "`habeas_sdk::graph` MUST expose the following storage interface:",
+        "The application implements this trait from `habeas_sdk::graph`:",
         "",
         "```rust,ignore",
         "use std::future::Future;",
         "",
         "pub trait EvidenceStorage: Graph {",
+        "    /// Look up a node's record. Ok(None) means absent; Err means storage failed.",
+        "    /// The node identity is the key, with no separate procedure-name key.",
         "    fn load_evidence<'a>(",
         "        &'a self,",
         "        node: &'a Self::NodeId,",
         "    ) -> impl Future<Output = Result<",
-        "        Option<Record<Self::NodeId, Self::JudgmentMetadata>>,",
+        "        Option<Record<Self::NodeId, Self::JudgmentMetadata, Self::EdgeLabel>>,",
         "        Self::Error,",
         "    >> + Send + 'a;",
         "",
+        "    /// Save the complete record, preserving its procedure version,",
+        "    /// dependencies, and judgment.",
         "    fn store_evidence<'a>(",
         "        &'a self,",
         "        node: &'a Self::NodeId,",
-        "        record: &'a Record<Self::NodeId, Self::JudgmentMetadata>,",
+        "        record: &'a Record<Self::NodeId, Self::JudgmentMetadata, Self::EdgeLabel>,",
         "    ) -> impl Future<Output = Result<(), Self::Error>> + Send + 'a;",
         "}",
         "```",
         "",
-        "The node runner MUST use the requested `NodeId` directly for evidence lookup",
-        "and persistence. It MUST NOT require a separate evidence-key type or a",
-        "procedure name as part of the storage key.",
-        "`load_evidence` MUST distinguish an absent record (`Ok(None)`) from a storage",
-        "error (`Err`). Storage MUST preserve the record's procedure version,",
-        "dependencies, and judgment. The application MUST be able to choose the",
-        "persistence mechanism without filesystem paths or a global evidence listing",
-        "being required by this interface.",
+        "The runner passes the requested node identity directly to these methods.",
+        "The application chooses the persistence mechanism; the interface requires",
+        "neither filesystem paths nor a global listing of evidence.",
         ":::"
       ]
     },
@@ -52,7 +51,7 @@
     {
       "file": "crates/habeas-sdk/tests/contracts.rs",
       "item": "fn[domain_validation_preserves_metadata_reuses_traces_and_propagates_failures]",
-      "hash": "a1f987c952877c884092261e1ee4b4eea75560d13ee5347ca76f0d9b668f9ab0"
+      "hash": "38b36cadc68999b752d87ad2c6911273bb4a6346d008c27a4dbaa9458d3574fa"
     },
     {
       "file": "crates/habeas-sdk/tests/storage.rs",
@@ -67,20 +66,32 @@
     {
       "file": "crates/habeas-sdk/tests/contracts.rs",
       "item": "macro[graph]",
-      "hash": "f807b6b06a29d4d72adf2af3d32f7659e2740487a11619b928c658e888b154df"
+      "hash": "a8254351866f14dde8bbbc70587af63cde87c90893c5d0072a3770e05f401d65"
     }
   ],
   "format_version": 1,
   "review_version": "habeas-review-v1",
   "dependencies": [
     {
-      "OutgoingEdges": [
+      "Node": [
         {
-          "Requirement": "requirements.sdk.graph.evidence.evidence_storage"
+          "ReferenceSet": "requirements.sdk.graph.evidence.evidence_storage"
         },
         {
           "scheme": "habeas-reference-set-v1",
           "value": "932f4083eae0e9dfd36b9b23d3b67f48bff8806fc8d5bf39ba10088a694fe17f"
+        }
+      ]
+    },
+    {
+      "OutgoingEdges": [
+        {
+          "Requirement": "requirements.sdk.graph.evidence.evidence_storage"
+        },
+        "Mandatory",
+        {
+          "scheme": "node-path-set-sha256-v1",
+          "value": "3cc924d3d4044dd0d4d52e1ba1eedba1e92aafdaf9c630a8d980556d101e7519"
         }
       ]
     },
@@ -91,7 +102,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "a5cb790c122b521e0dd07bd81e6df5f07075681e44b90b4f393a299632e79635"
+          "value": "15270ee36107e3a842d3094c483a130c269834860f3d428c0ff938bfe64161b6"
         }
       ]
     },
@@ -125,7 +136,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "94a40d36d4c0a1f71b238d038c66f97ead2bd2038aee853c440f08aa56e2373c"
+          "value": "f9e3986c618e6b2061a8497398e7c970763c8d325fa919bc5191e8176942eaf1"
         }
       ]
     },
@@ -176,7 +187,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "59e5f0bba0d74f9965e0fb0cb4d1c6aced61b621366fc908b60ab4a14da203a7"
+          "value": "539721e3ea88be73d10a78f363c8a123e122350c396aa7766dd9a7722d2198e1"
         }
       ]
     }

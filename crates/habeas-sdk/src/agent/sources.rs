@@ -26,12 +26,15 @@ where
     D: Graph,
     P: SourceProvider,
     P::Error: std::fmt::Display,
-    F: Fn(&OutlineId, &ParsedSource) -> Result<Option<Dependency<D::NodeId>>, String> + Send + Sync,
+    F: Fn(&OutlineId, &ParsedSource) -> Result<Option<Dependency<D::NodeId, D::EdgeLabel>>, String>
+        + Send
+        + Sync,
 {
     // {cite}`habeas:util`
     fn session<'a>(&'a self) -> Box<dyn ToolSession<D> + 'a>
     where
         D::NodeId: 'a,
+        D::EdgeLabel: 'a,
     {
         Box::new(SourceSession {
             tools: self,
@@ -41,17 +44,19 @@ where
 }
 
 // {cite}`habeas:util`
-struct SourceSession<'a, P, F, N> {
+struct SourceSession<'a, P, F, N, L> {
     tools: &'a SourceTools<P, F>,
-    pages: Vec<ToolDelivery<N>>,
+    pages: Vec<ToolDelivery<N, L>>,
 }
 
-impl<D, P, F> ToolSession<D> for SourceSession<'_, P, F, D::NodeId>
+impl<D, P, F> ToolSession<D> for SourceSession<'_, P, F, D::NodeId, D::EdgeLabel>
 where
     D: Graph,
     P: SourceProvider,
     P::Error: std::fmt::Display,
-    F: Fn(&OutlineId, &ParsedSource) -> Result<Option<Dependency<D::NodeId>>, String> + Send + Sync,
+    F: Fn(&OutlineId, &ParsedSource) -> Result<Option<Dependency<D::NodeId, D::EdgeLabel>>, String>
+        + Send
+        + Sync,
 {
     // {cite}`habeas:util`
     fn definitions(&self) -> io::Result<Vec<ToolDefinition>> {
@@ -76,7 +81,7 @@ where
         &'a mut self,
         name: &'a str,
         arguments: &'a Value,
-    ) -> BoxFuture<'a, io::Result<ToolDelivery<D::NodeId>>> {
+    ) -> BoxFuture<'a, io::Result<ToolDelivery<D::NodeId, D::EdgeLabel>>> {
         Box::pin(async move {
             let invalid = |error: String| io::Error::other(error);
             let scope = SourceScope {

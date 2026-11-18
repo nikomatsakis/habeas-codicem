@@ -1,7 +1,7 @@
 {
   "requirement": "Each coverage run MUST retain LLVM coverage profiles independently for each\ntest process, identifying its nextest binary, test name, and attempt. Concurrent\ntests, tests with the same name in different binaries, retries, and separate\nruns MUST NOT overwrite or combine one another's stored profiles. Profiles from\ninstrumented child processes MUST remain separate and associated with the test\nattempt that spawned them.",
   "determination": true,
-  "rationale": "The tests adequately cover `requirements.test-coverage.processes`. The main evidence is `tests/execution_coverage.rs#fn[real_parallel_processes_retries_child_profiles_and_filtered_reruns]`. It builds a real fixture (`fn[fixture]`) and runs the full `habeas coverage` flow. I also read `collect_process` and `Attempt`, but only to see how attempt identity is formed. I took the expected behaviour from the requirement text.\n\nObligations and the scenarios that cover them:\n\n- **Per-attempt retention that identifies binary, test and attempt.** The run is `--workspace --retries 1 -j 2 --no-fail-fast`. It asserts that exactly 6 attempt records exist (five tests, one retried). Each record's `binary`, `test` and `attempt` fields are read and checked. Every record has a non-empty `processes` list. Every recorded profile path is asserted to be a file under `attempts/<attempt id>/`. The set of attempt ids has the same size as the record list, so no two attempts share a directory.\n- **Concurrent tests do not overwrite or combine.** The run uses `-j 2` over five tests. The 6 distinct attempt ids and the per-attempt profile files would fail if concurrent tests shared a store. Nothing proves the tests overlapped in time. The isolation is checked by distinct identities and retained profiles, and that is the property the requirement states.\n- **Same test name in different binaries.** The `same_name` test exists in both the lib test binary and `tests/processes.rs`. The test asserts there are exactly 2 records ending in `same_name`. It asserts their binaries are exactly `{coverage-fixture, coverage-fixture::processes}`. It asserts they have distinct ids.\n- **Retries.** The `retries` test yields two records. One is attempt `\"1\"` with outcome `failed`. The other is attempt `\"2\"` with outcome `success`. Both are kept separately.\n- **Separate runs.** Several later runs follow: a filtered rerun, a different profile, a failed run, an empty selection, a features change, `--no-run` and a compile failure. Each later run adds its own run directory, and `runs(root).len()` becomes 2 after the first rerun. The first run still has 6 attempts (`attempts(&saved[0].0).len() == 6`), and `attempts(first).len() == 6` still holds at the end. The final loop re-asserts that every profile file of the first run's records still exists, so later runs neither overwrite nor merge it.\n- **Child process profiles stay separate and tied to the spawning attempt.** `child_process` spawns the test executable again with `COVERAGE_CHILD`. Its single attempt record has exactly 2 `processes`. Each has a null `diagnostic` and non-empty `lines`. Both sit in that attempt's directory. The profile pattern in `collect_process` is `%p-%m.profraw`, so each pid gets its own file. The test confirms two separately recorded processes under one attempt.\n\nThe unit test `runner.rs#mod[tests]/fn[parallel_conversion_is_bounded_and_retains_every_result_in_order]` adds a check on the post-run conversion step. It uses real concurrency with a rendezvous and checks that every result is kept in order, including a failed one. That supports the \"retain every process's profile independently\" side of the requirement.\n\nI found no plausible requirement-violating behaviour that these assertions would accept. A fixed or shared profile path, merged retry attempts, a same-name collision across binaries, a child profile lost or merged into the parent, and a later run clobbering an earlier one would each fail an assertion above. There are no acknowledgments, and none are needed.",
+  "rationale": "The tests adequately check `requirements.test-coverage.processes`. The main evidence is the end-to-end test `tests/execution_coverage.rs#fn[real_parallel_processes_retries_child_profiles_and_filtered_reruns]`. The fixture it uses comes from `fn[fixture]`, `fn[coverage]`, `fn[runs]` and `fn[attempts]`.\n\nI read the implementation (`src/execution_coverage/runner.rs#fn[collect_process]` and `src/execution_coverage.rs#struct[Attempt]`) only to see how storage is laid out. Each attempt gets its own directory named by a fresh UUID, with `LLVM_PROFILE_FILE` set to `<dir>/%p-%m.profraw`. The attempt record stores the nextest binary, test name and attempt number.\n\nObligations and how the tests cover them:\n- **Per-test-process retention, identified by binary, test and attempt:**\n  - The test runs the real `habeas coverage` command with `--workspace --retries 1 -j 2 --no-fail-fast`, then reads the stored attempt records.\n  - It asserts 6 attempts for 5 tests, so every attempt is stored separately.\n  - Every record has a non-empty `processes` list.\n  - The `retries` test has two records, with attempt \"1\" failed and attempt \"2\" successful.\n  - Every profile path listed in a process entry is a real file under `attempts/<id>/`.\n- **Concurrent tests do not overwrite or combine:** `-j 2` runs several tests at once. The test asserts that all attempt ids are unique, that the record count is preserved, and that each attempt's profile files exist in its own directory.\n- **Same test name in different binaries:** the `same_name` test exists in both `coverage-fixture` and `coverage-fixture::processes`. The test asserts there are two such records and that their binaries are exactly those two ids.\n- **Retries:** the two `retries` records are distinct, with different attempt numbers and outcomes, as above.\n- **Separate runs:**\n  - Later filtered, profile, feature, no-run and failing runs are executed against the same target directory.\n  - The test asserts that several run directories exist and that the first run still has 6 attempts, \"historical profiles were retained\".\n  - A final loop re-checks that all of the first run's profile files still exist after the later runs, including the compile-failure run.\n- **Child processes stay separate and tied to the spawning attempt:** the `child_process` test spawns a child. The test asserts that the record has 2 processes, each with no diagnostic and non-empty coverage lines. Those profiles live in the same attempt directory as the parent's.\n\n`src/execution_coverage/runner.rs#mod[tests]/fn[parallel_conversion_is_bounded_and_retains_every_result_in_order]` adds a unit check that parallel conversion of profiles visits every item once and keeps all results in order. This includes failed ones, so no stored profile is silently dropped.\n\nI found no relevant obligation that the tests leave unasserted. The requirement is not a distributed one and has no refining requirements, and no {fixme} acknowledgments apply.",
   "references": "3ca2d517e39ed4cfb0967a5fbd602c768951d7c83b54728c39fd2d6ea5aae4a0",
   "inputs": [
     {
@@ -47,13 +47,34 @@
     },
     {
       "file": "tests/execution_coverage.rs",
-      "item": "fn[coverage_progress_on_a_pty_preserves_reports_and_plain_output_policy]",
-      "hash": "e57bfd2e6678c7e54601803cd81aa287ea730bdc40cedd2a19b1e20cf98cd170"
+      "item": "fn[coverage]",
+      "hash": "8a6885e57de5bb03e0587d042c43c9b9a87e1128f5ad82f5e9c6773ef2fd4080"
+    },
+    {
+      "file": "tests/execution_coverage.rs",
+      "item": "fn[runs]",
+      "hash": "9c4d82e37697d10869f8407ef1b378e5e66afa9c15d6deb22ebab7b810e37a43"
+    },
+    {
+      "file": "tests/execution_coverage.rs",
+      "item": "fn[attempts]",
+      "hash": "0bc8bb48ab44331193de7a4b281c5e0708b86040758d684bae36a31872434a84"
     }
   ],
   "format_version": 1,
-  "review_version": "*",
+  "review_version": "habeas-review-v1",
   "dependencies": [
+    {
+      "OutgoingEdges": [
+        {
+          "Requirement": "requirements.test-coverage.processes"
+        },
+        {
+          "scheme": "habeas-reference-set-v1",
+          "value": "3ca2d517e39ed4cfb0967a5fbd602c768951d7c83b54728c39fd2d6ea5aae4a0"
+        }
+      ]
+    },
     {
       "Node": [
         {
@@ -78,7 +99,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "18caca07967f650f8193203a78b6f8485511159898319e965ec7c0e915d922cf"
+          "value": "be047574b2810bce95552477a3228e679185103319ea1fbe332c207c84172c65"
         }
       ]
     },
@@ -96,6 +117,40 @@
         {
           "scheme": "habeas-input-v1",
           "value": "bf95d9b93336ae4120516cbeeb9b75d1b78c6a1655e7ade1d0f23fc2ddea78ec"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/execution_coverage/runner.rs"
+            },
+            "selector": "fn[collect_process]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "cf98cdb7e1b836849533b0fe294cbf3d4b222fc79a513207b0afa935bb58583e"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/execution_coverage.rs"
+            },
+            "selector": "struct[Attempt]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "cad0f8824dc12364e6f5a6f36b6b2bf92fbb09065609e32176e5dabdbc8eac68"
         }
       ]
     },
@@ -124,12 +179,12 @@
               "scheme": "repo",
               "location": "tests/execution_coverage.rs"
             },
-            "selector": "fn[attempts]"
+            "selector": "fn[coverage]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "09d9a2b3f415ee43b9e58da27c057605273bd7cf8d1bb5a2750861dd28b0d6d4"
+          "value": "190c00930bb192053de8071140702f89df8e7f4742bd2c7d6a4ffe08a333d5fd"
         }
       ]
     },
@@ -151,13 +206,19 @@
       ]
     },
     {
-      "OutgoingEdges": [
+      "Node": [
         {
-          "Requirement": "requirements.test-coverage.processes"
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "tests/execution_coverage.rs"
+            },
+            "selector": "fn[attempts]"
+          }
         },
         {
-          "scheme": "habeas-reference-set-v1",
-          "value": "3ca2d517e39ed4cfb0967a5fbd602c768951d7c83b54728c39fd2d6ea5aae4a0"
+          "scheme": "habeas-input-v1",
+          "value": "09d9a2b3f415ee43b9e58da27c057605273bd7cf8d1bb5a2750861dd28b0d6d4"
         }
       ]
     }

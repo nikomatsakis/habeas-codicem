@@ -1,7 +1,7 @@
 {
-  "requirement": "`habeas_sdk::graph` MUST expose the graph's associated types and content lookup operation:\n\n```rust,ignore\npub trait Graph: Send + Sync {\n    type NodeId: Clone + Eq + Send + Sync;\n    type NodeContent: Send + Sync;\n    type EdgeLabel: Clone + Send + Sync;\n    type Error: Send;\n\n    // Outgoing edges and judgment metadata are specified separately.\n    fn node_content(&self, node: &Self::NodeId) -> Result<Self::NodeContent, Self::Error>;\n}\n```\n\nThe SDK MUST leave the domain meaning of node identities, edges, and contents\nto the consumer.",
+  "requirement": "`habeas_sdk::graph` MUST expose the graph's associated types and content lookup operation:\n\n```rust,ignore\npub trait Graph: Send + Sync {\n    /// The *identifier* identifies a particular node in the graph.\n    type NodeId: Clone + Eq + Send + Sync;\n\n    /// The *contents* of a node defines what is given to a validator\n    /// when the node is read.\n    type NodeContent: Send + Sync;\n\n    /// The *label* between edges defines the kind of verification relationship\n    /// between two nodes.\n    type EdgeLabel: Clone + Send + Sync;\n\n    /// User-defined errors that can occur when fetching node content or performing\n    /// other operations.\n    type Error: Send;\n\n    /// Fetch the content of a node.\n    fn node_content(&self, node: &Self::NodeId) -> Result<Self::NodeContent, Self::Error>;\n\n    // ... additional methods defined below ...\n}\n```",
   "determination": true,
-  "rationale": "**Obligations derived from `requirements.sdk.graph.domain_types`**\n1. `habeas_sdk::graph::Graph` exposes `NodeId`, `NodeContent`, `EdgeLabel` and `Error`, with the stated bounds.\n2. `Graph` exposes `node_content(&self, &NodeId) -> Result<NodeContent, Error>`.\n3. The SDK leaves the domain meaning of node identities, edges and contents to the consumer.\n\n**Coverage of the type-shape obligation**\n- The bounds are checked by the compiler at each `impl Graph`. The reviewed tests implement `Graph` for many unrelated consumer domains, so the trait must accept all of them:\n  - `Memory` in `agent.rs`, with `Node`, `Contents`, `Label` and `io::Error`.\n  - `GraphOnly` in `contracts.rs`, with `Node`, `Content`, `u8` and `&'static str`.\n  - `Memory` in `validation.rs`, with `u8`, `String`, `u8` and `&'static str`.\n  - `StoredGraph` in `storage.rs`, with `String`, `()`, `()` and `FileStorageError`.\n  - `GraphWithChangingEdges` in `agent.rs`, with `u8`, `String`, `()` and `io::Error`.\n  - `HabeasDomain` and `ReviewGraph`, with `HabeasNode`, `ResolvedInput`/`Value`, `HabeasEdgeLabel` and `io::Error`.\n- The `send` helper in `checker_needs_no_validation_and_storage_preserves_nonserializable_metadata` also checks that a consumer's futures are `Send`.\n\n**Coverage of `node_content`**\n- Success results are asserted in the following tests:\n  - `requirement_edges_and_input_freshness_use_the_sdk` reads `changed.node_content(&source_node)` and asserts its fingerprint changes when the source changes.\n  - `review_graph_delegates_unprepared_sources_and_paths_to_the_domain` compares the delivered input with `graph.domain().node_content(&source)` and asserts that the content contains `call();`.\n  - `default_tool_accepts_scalar_results_and_keeps_the_exact_prefix` checks the content reaches the dependency fingerprint and the chat history.\n  - `validation_is_usable_without_any_evidence_storage` checks the content reaches the dependency fingerprint.\n- Failure results are asserted in two tests:\n  - `review_graph_delegates_unprepared_sources_and_paths_to_the_domain` asserts that reading the missing `fn[missing]` node is an error and records no dependency.\n  - `checker_needs_no_validation_and_storage_preserves_nonserializable_metadata` injects a `\"read\"` failure and asserts the consumer's own `Error` value comes back unchanged.\n\n**Coverage of \"meaning left to the consumer\"**\n- `habeas_paths_preserve_opaque_segments_and_separate_all_node_kinds` shows the SDK treats the consumer's node identities as opaque.\n- The several unrelated domains listed above, each with its own node, edge and content types, show the SDK does not impose any meaning on them.\n\n**Gaps**\nI found no untested obligation, and I found no wrong expected result. There is no `{fixme}` acknowledgment, and none is needed.",
+  "rationale": "**Obligations.** `requirements.sdk.graph.domain_types` is a type-level contract with these parts:\n- `habeas_sdk::graph::Graph` is public and `Send + Sync`.\n- It has four associated types: `NodeId` (`Clone + Eq + Send + Sync`), `NodeContent` (`Send + Sync`), `EdgeLabel` (`Clone + Send + Sync`) and `Error` (`Send`).\n- It has a content lookup `node_content(&self, &NodeId) -> Result<NodeContent, Error>`.\n\nThe one behavioural part is that `node_content` returns the node's content or a user-defined error.\n\n**How the tests cover this.** The trait in `crates/habeas-sdk/src/graph.rs#trait[Graph]` declares exactly this shape. It also declares `JudgmentMetadata`, `node_path` and `outgoing_edges`, which belong to other requirements.\n\nThe marked tests implement or use `Graph` with several unrelated types, so the signature and the associated types are checked at compile time:\n- `crates/habeas-sdk/tests/agent.rs#fn[default_tool_accepts_scalar_results_and_keeps_the_exact_prefix]` uses a `Memory` graph with `Node` ids. The test checks that the content delivered to the validator is `\"source\"`. It also checks that the dependency fingerprint records that content.\n- `crates/habeas-sdk/tests/agent.rs#fn[validation_is_usable_without_any_evidence_storage]` uses the same kind of graph. It checks the result and rationale, and that the dependency records `\"ordinary computation\"`.\n- `crates/habeas-sdk/tests/contracts.rs#fn[checker_needs_no_validation_and_storage_preserves_nonserializable_metadata]` uses a `GraphOnly` graph. It reads content through the checker, so content changes give `Stale`. It also injects `load`, `read` and `edges` failures and asserts that each user-defined `Error` value comes back unchanged. It wraps the storage futures in a `send::<T: Send>` helper, which exercises the `Send` bounds.\n- `src/authoring/sdk.rs#mod[tests]/fn[review_graph_delegates_unprepared_sources_and_paths_to_the_domain]` calls `node_content` on the real `ReviewGraph` and `HabeasDomain`. It asserts the delivered content equals the domain's content and that a missing outline fails with an `Err`.\n- `src/sdk.rs#mod[tests]/fn[requirement_edges_and_input_freshness_use_the_sdk]` and `fn[habeas_paths_preserve_opaque_segments_and_separate_all_node_kinds]` use `HabeasDomain` with its own `NodeId`, `NodeContent`, `EdgeLabel` and `Error` types. They call `node_content` and assert the resulting content and fingerprints.\n\n**Bounds.** The `Send` and `Sync` bounds are checked at compile time. `crates/habeas-sdk/tests/validation.rs` has `assert_send_sync(&ctx)` on a context built from a `Graph`. The `Send`-future helpers named above also cover them. The SDK's generic code relies on `Clone` and `Eq` for `NodeId` and on `Clone` for `EdgeLabel`, so removing those bounds would break the build. The one gap is that no test statically asserts that a weaker or stronger bound is rejected. For a declarative trait signature, I treat that as covered by the compile-time use above.\n\n**Result.** Success (content returned and fingerprinted) and failure (user-defined `Error` propagated or returned as `Err`) are both asserted, across several distinct implementors and type choices. I found no unacknowledged gap.",
   "references": "00a6c109c5ae23ac2c87dc0627d20dcf1d3101a5c1eb749cecc1db614e8e1143",
   "inputs": [
     {
@@ -15,18 +15,27 @@
         "",
         "```rust,ignore",
         "pub trait Graph: Send + Sync {",
+        "    /// The *identifier* identifies a particular node in the graph.",
         "    type NodeId: Clone + Eq + Send + Sync;",
+        "",
+        "    /// The *contents* of a node defines what is given to a validator",
+        "    /// when the node is read.",
         "    type NodeContent: Send + Sync;",
+        "",
+        "    /// The *label* between edges defines the kind of verification relationship",
+        "    /// between two nodes.",
         "    type EdgeLabel: Clone + Send + Sync;",
+        "",
+        "    /// User-defined errors that can occur when fetching node content or performing",
+        "    /// other operations.",
         "    type Error: Send;",
         "",
-        "    // Outgoing edges and judgment metadata are specified separately.",
+        "    /// Fetch the content of a node.",
         "    fn node_content(&self, node: &Self::NodeId) -> Result<Self::NodeContent, Self::Error>;",
+        "",
+        "    // ... additional methods defined below ...",
         "}",
         "```",
-        "",
-        "The SDK MUST leave the domain meaning of node identities, edges, and contents",
-        "to the consumer.",
         ":::"
       ]
     },
@@ -48,17 +57,27 @@
     {
       "file": "src/authoring/sdk.rs",
       "item": "mod[tests]/fn[review_graph_delegates_unprepared_sources_and_paths_to_the_domain]",
-      "hash": "027d794253d5786834e50361a79afeb9176076c69dfb4e4b10f7a8f42b0db1d6"
+      "hash": "a3c63c8dc0aa4fe0d86989efa409cc2cb118b52a09b86f5bf176eb8637d5aa92"
     },
     {
       "file": "src/sdk.rs",
       "item": "mod[tests]/fn[habeas_paths_preserve_opaque_segments_and_separate_all_node_kinds]",
-      "hash": "af4ec52d7eee592a887e1aaac5892f5c47ff239d4540d6dbe9780531987cba41"
+      "hash": "f0fd4d736c527f3c5f0a39e6df4535570ba0a04816a40273f0bbe3e157c1ab22"
     },
     {
       "file": "src/sdk.rs",
       "item": "mod[tests]/fn[requirement_edges_and_input_freshness_use_the_sdk]",
-      "hash": "e9dd1d55ddda465d393f62e31b8a783cbb9a9003ef289c96848a5cc2850ae252"
+      "hash": "67a49917c103d8cd3434d6248c03b76adfb5340b2f05e5febfb3f6792631c6d0"
+    },
+    {
+      "file": "crates/habeas-sdk/src/graph.rs",
+      "item": "trait[Graph]",
+      "hash": "3726904f27a3df124ebaf1268b224b90132a24a490700a4225e40f452b81fb4e"
+    },
+    {
+      "file": "crates/habeas-sdk/tests/validation.rs",
+      "item": "fn[later_lighter_agent_calls_preserve_the_contexts_existing_trace]",
+      "hash": "0f72fdbbacee59950c91fc0a42d42b4a4b945db0b7c54882791594d9ea62f7ea"
     },
     {
       "file": "crates/habeas-sdk/src/graph.rs",
@@ -102,28 +121,28 @@
     },
     {
       "file": "crates/habeas-sdk/tests/agent.rs",
-      "item": "fn[agent_edge_tools_use_traversals_retained_selection_without_relisting]/impl[GraphWithChangingEdges/Graph]/type[NodeId]",
+      "item": "fn[agent_edge_tools_record_selections_without_validating_targets]/impl[GraphWithChangingEdges/Graph]/type[NodeId]",
       "hash": "4052fc7a3f4fccc58d0197159de31e9b28709ae7bfb90031925ef28791d11162"
     },
     {
       "file": "crates/habeas-sdk/tests/agent.rs",
-      "item": "fn[agent_edge_tools_use_traversals_retained_selection_without_relisting]/impl[GraphWithChangingEdges/Graph]/type[NodeContent]",
+      "item": "fn[agent_edge_tools_record_selections_without_validating_targets]/impl[GraphWithChangingEdges/Graph]/type[NodeContent]",
       "hash": "5643d10284f32c086faa0fffc0cffd1d3c2e7c40b69661d7e26af47b9541d9a1"
     },
     {
       "file": "crates/habeas-sdk/tests/agent.rs",
-      "item": "fn[agent_edge_tools_use_traversals_retained_selection_without_relisting]/impl[GraphWithChangingEdges/Graph]/type[EdgeLabel]",
+      "item": "fn[agent_edge_tools_record_selections_without_validating_targets]/impl[GraphWithChangingEdges/Graph]/type[EdgeLabel]",
       "hash": "6dd21054aa4c5598119aa1b9532aa50809499f7dd8fc831523064a733e84d055"
     },
     {
       "file": "crates/habeas-sdk/tests/agent.rs",
-      "item": "fn[agent_edge_tools_use_traversals_retained_selection_without_relisting]/impl[GraphWithChangingEdges/Graph]/type[Error]",
+      "item": "fn[agent_edge_tools_record_selections_without_validating_targets]/impl[GraphWithChangingEdges/Graph]/type[Error]",
       "hash": "e38e34f9801a572aedc7487fdf2d941a10de9cd734282de95f01611cce638472"
     },
     {
       "file": "crates/habeas-sdk/tests/contracts.rs",
       "item": "macro[graph]",
-      "hash": "f807b6b06a29d4d72adf2af3d32f7659e2740487a11619b928c658e888b154df"
+      "hash": "a8254351866f14dde8bbbc70587af63cde87c90893c5d0072a3770e05f401d65"
     },
     {
       "file": "crates/habeas-sdk/tests/storage.rs",
@@ -204,49 +223,31 @@
       "file": "src/sdk.rs",
       "item": "impl[HabeasDomain<'_>/Graph]/type[Error]",
       "hash": "62dd2d61f39ef576158fd851694893cb48481616a20e5c083fd67186a12fc910"
-    },
-    {
-      "file": "crates/habeas-sdk/src/graph.rs",
-      "item": "trait[Graph]",
-      "hash": "3d7f0e5da2b22ecc4b6bfefeb7423842d41467309144d7d866305a4952f4482e"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/agent.rs",
-      "item": "struct[Node]",
-      "hash": "37a5d012a8c68e204aa82707b29ccf1782aab55095e84abb1a0e498034e1b462"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/agent.rs",
-      "item": "struct[Label]",
-      "hash": "88861e16c3315cd453b717a41ca62218a9108903a16d70f3ab7c2550c3a5f8ab"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/agent.rs",
-      "item": "struct[Contents]",
-      "hash": "57930076d9167dd0e1aac4119d40fcfbecb8157d4a0fa3f371b4c5d2590eb2b5"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/contracts.rs",
-      "item": "struct[Node]",
-      "hash": "6432ba1c03e5d58df823ea2106175d9c26356019b703ba3906c9d80ba040abd6"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/contracts.rs",
-      "item": "struct[Content]",
-      "hash": "1871169283a0c2fff637b91bd9ccfdaa767bdee65f6afede60204936346757e1"
     }
   ],
   "format_version": 1,
   "review_version": "habeas-review-v1",
   "dependencies": [
     {
-      "OutgoingEdges": [
+      "Node": [
         {
-          "Requirement": "requirements.sdk.graph.domain_types"
+          "ReferenceSet": "requirements.sdk.graph.domain_types"
         },
         {
           "scheme": "habeas-reference-set-v1",
           "value": "00a6c109c5ae23ac2c87dc0627d20dcf1d3101a5c1eb749cecc1db614e8e1143"
+        }
+      ]
+    },
+    {
+      "OutgoingEdges": [
+        {
+          "Requirement": "requirements.sdk.graph.domain_types"
+        },
+        "Mandatory",
+        {
+          "scheme": "node-path-set-sha256-v1",
+          "value": "3090d1d09b9b31d4bfb9b07edd973c5ac41e5685120774fd744bb50c88e68bf5"
         }
       ]
     },
@@ -257,7 +258,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "821387ce750420e34166c3a5ae196216258764f7091d1de8b50ebee254a03331"
+          "value": "57b17fcd31b7fb782fd3c8fbbd81eb2e50ba1acf778bdca879eee9023ccb2abf"
         }
       ]
     },
@@ -325,7 +326,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "1442e68f995da10273daa048d263c290d040395bf5757a376d4dab1bd8983067"
+          "value": "5d524210b069a16cfaa4aa778498cdba4969d275c8db62c1dbb8fa8ed1d95825"
         }
       ]
     },
@@ -342,7 +343,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "9de54f7e35e2605d51caa303a82b6dc93364b82ebc6475a5432e032ce8b85ec8"
+          "value": "f995e200f94026e933fb78d0c700b7ec9a5ca8e2fa7aa308b2504687e6e0b452"
         }
       ]
     },
@@ -359,7 +360,41 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "cc7cbc6f7da6f81f11671e5a734e36a0648c7ea56cca42b2264bc7343335ff96"
+          "value": "1086a0997ffa5d23cfa495fc41998596b3a78300d6501e9a54c7700e45a95419"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/src/graph.rs"
+            },
+            "selector": "trait[Graph]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "3bb21f29e11b56c3e274ac636be2c404dd025bc576c89713598471023a0d5f47"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/tests/validation.rs"
+            },
+            "selector": "fn[later_lighter_agent_calls_preserve_the_contexts_existing_trace]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "39b4ce49a57f649e71ed166e2466a84966ac9bf7cb38fcb18907066f21d7546c"
         }
       ]
     },
@@ -507,12 +542,12 @@
               "scheme": "repo",
               "location": "crates/habeas-sdk/tests/agent.rs"
             },
-            "selector": "fn[agent_edge_tools_use_traversals_retained_selection_without_relisting]/impl[GraphWithChangingEdges/Graph]/type[NodeId]"
+            "selector": "fn[agent_edge_tools_record_selections_without_validating_targets]/impl[GraphWithChangingEdges/Graph]/type[NodeId]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "ebe36d98757ba4f02f147f6f64515cea841d985fdf4cd4a9f7e0c578a93bf11e"
+          "value": "a5e40f06339d8fcf1bdd6f884688288f94af1ac837d48fc81431dd7f157e46c5"
         }
       ]
     },
@@ -524,12 +559,12 @@
               "scheme": "repo",
               "location": "crates/habeas-sdk/tests/agent.rs"
             },
-            "selector": "fn[agent_edge_tools_use_traversals_retained_selection_without_relisting]/impl[GraphWithChangingEdges/Graph]/type[NodeContent]"
+            "selector": "fn[agent_edge_tools_record_selections_without_validating_targets]/impl[GraphWithChangingEdges/Graph]/type[NodeContent]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "157e558b81cb2eca9bf85e881a74e669141d5b482669b0f471eba02ec8e5bbb1"
+          "value": "3bf65181e96f4b154898cb8f12e6c15753cf6c3291d293511de2025779959938"
         }
       ]
     },
@@ -541,12 +576,12 @@
               "scheme": "repo",
               "location": "crates/habeas-sdk/tests/agent.rs"
             },
-            "selector": "fn[agent_edge_tools_use_traversals_retained_selection_without_relisting]/impl[GraphWithChangingEdges/Graph]/type[EdgeLabel]"
+            "selector": "fn[agent_edge_tools_record_selections_without_validating_targets]/impl[GraphWithChangingEdges/Graph]/type[EdgeLabel]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "c4bb36690349b9d004eaf3031e0c8da3e50874bd088f4a2d89e7c53b300c2bb9"
+          "value": "acc0c57d29da5f0b551863582a23e0a28448764fc5d6631ae9f17a8c2ede09da"
         }
       ]
     },
@@ -558,12 +593,12 @@
               "scheme": "repo",
               "location": "crates/habeas-sdk/tests/agent.rs"
             },
-            "selector": "fn[agent_edge_tools_use_traversals_retained_selection_without_relisting]/impl[GraphWithChangingEdges/Graph]/type[Error]"
+            "selector": "fn[agent_edge_tools_record_selections_without_validating_targets]/impl[GraphWithChangingEdges/Graph]/type[Error]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "230bba141cd4c4bc8567f66d78cb0d26fd0835e6611ffc9c314a4408c40da677"
+          "value": "cfd41bc7097845821bd0e86d39ff48cb65beddd97a619587b9e5b539891a000f"
         }
       ]
     },
@@ -580,7 +615,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "59e5f0bba0d74f9965e0fb0cb4d1c6aced61b621366fc908b60ab4a14da203a7"
+          "value": "539721e3ea88be73d10a78f363c8a123e122350c396aa7766dd9a7722d2198e1"
         }
       ]
     },
@@ -853,108 +888,6 @@
         {
           "scheme": "habeas-input-v1",
           "value": "c4a4b09d77b1b5992f55b1dabecfcac3670a0162df2e0f320ffb0b14120169ad"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/src/graph.rs"
-            },
-            "selector": "trait[Graph]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "a6dc67756c5ab39b3319bb34fdd0bc88b9f0c8580b105d754efc0a27a3e15dc8"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/agent.rs"
-            },
-            "selector": "struct[Node]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "dd4a201006d469e027fb8f7ed4890dc5a8ee7252210ee6df4664916375b672ff"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/agent.rs"
-            },
-            "selector": "struct[Label]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "d36657e84aa2ad2aa6a7a8252a412739583534117cdf6e258413d47bbe6d80da"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/agent.rs"
-            },
-            "selector": "struct[Contents]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "f7683df2a5b47d111ec376206855d6f9069bc4551f677e2267fc6086e8862656"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/contracts.rs"
-            },
-            "selector": "struct[Node]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "124c6b0c72fe4c4863e1dac2896d9f0a717336d624cb5e70f269ceedf5969755"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/contracts.rs"
-            },
-            "selector": "struct[Content]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "35845f7dbc7ce141b15ea861e647ba66a3d45621e4ebdd4ee1f1a8e6da77225f"
         }
       ]
     }

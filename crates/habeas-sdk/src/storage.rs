@@ -52,12 +52,13 @@ impl FileEvidenceStorage {
     }
 
     // {impl}`requirements.sdk.filesystem-storage.load`
-    pub async fn load<N, M>(
+    pub async fn load<N, M, L>(
         &self,
         path: &NodePath,
-    ) -> Result<Option<Record<N, M>>, FileStorageError>
+    ) -> Result<Option<Record<N, M, L>>, FileStorageError>
     where
         N: DeserializeOwned + Send,
+        L: DeserializeOwned + Send,
         M: DeserializeOwned + Send,
     {
         let bytes = match std::fs::read(self.record_path(path)) {
@@ -71,13 +72,14 @@ impl FileEvidenceStorage {
     }
 
     // {impl}`requirements.sdk.filesystem-storage.store`
-    pub async fn store<N, M>(
+    pub async fn store<N, M, L>(
         &self,
         path: &NodePath,
-        record: &Record<N, M>,
+        record: &Record<N, M, L>,
     ) -> Result<(), FileStorageError>
     where
         N: Serialize + Sync,
+        L: Serialize + Sync,
         M: Serialize + Sync,
     {
         let bytes = serde_json::to_vec_pretty(record).map_err(FileStorageError::Json)?;

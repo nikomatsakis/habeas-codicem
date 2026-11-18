@@ -1,7 +1,7 @@
 {
-  "requirement": "Storage or input resolution errors MUST be reported as errors rather than\ntreated as absent or stale evidence. A callback error MUST NOT be stored as a\ncompleted judgment.",
+  "requirement": "Storage and input-resolution failures return errors, rather than missing or\nstale states. A callback error is never stored as a completed judgment.",
   "determination": true,
-  "rationale": "**Obligations derived from the requirement text**\n1. Storage errors must be reported as errors, not treated as absent or stale evidence. This covers evidence load, evidence store, and the node-content and edge reads made during the freshness check.\n2. Input resolution errors must be reported as errors. This covers the procedure/version resolver and reads made through the callback context.\n3. A callback error must not be stored as a completed judgment.\n\n**Implementation question.** I read `crates/habeas-sdk/src/graph/runtime.rs#impl[Validator<'d, D, F>]/fn[validate_with_edges]` only to find the distinct error paths. There are four. The procedure resolver can fail. `check_with_version` can fail. `graph.validate(&ctx)` can fail. `store_evidence` can fail. Each path propagates its error with `?` before any record is stored.\n\n**Coverage by test**\n- **Procedure/version resolution error.**\n  - `resolution_storage_and_callback_errors_are_not_judgments` uses a resolver that returns `Err(\"version\")`.\n  - It asserts `ValidationError::Graph(\"version\")`.\n  - It asserts that no validation was started (`started.is_empty()`).\n- **Evidence load error.** The same test sets `fail_load` and asserts `Err(Graph(\"load\"))`. It is not treated as absent evidence, which would have run the callback.\n- **Evidence store error.** The same test sets `fail_store`. It asserts `Err(Graph(\"store\"))` and that `records` is empty.\n- **Callback error.**\n  - The same test uses `read_in_callback` on an empty graph. This gives `Graph(\"missing\")` and no stored record.\n  - `runner_does_not_store_a_missing_agent_error_and_supports_intermediate_calls` has a callback that asks an agent when none is configured. It asserts `NoAgentConfigured`, `records.is_empty()`, and no reads. It then shows that a correctly configured agent run stores the record normally.\n- **Read and edge errors during the freshness check, with existing evidence.**\n  - `domain_validation_preserves_metadata_reuses_traces_and_propagates_failures` first stores a judgment.\n  - It then sets `fail_read` and `fail_edges` in turn. Each time it asserts `Err(ValidationError::Graph(failure))`.\n  - It asserts the callback count and write count stay at (1, 1).\n  - It asserts the stored dependencies are unchanged. So the failure was neither treated as stale (which would have re-run and rewritten) nor stored.\n  - It also covers a store failure after the inputs changed. The old stored output is retained, and the next successful call stores the new judgment.\n\n**Assessment.** Every named error class has a test that asserts both that an error is returned and that no judgment is stored or re-run. The error tests carry {test} references to the subject. I found no gap.",
+  "rationale": "**Obligations** derived from `validate_node.errors`:\n1. Input-resolution failures return errors. These are the procedure/version resolution, the node read, and the edge selection.\n2. Storage failures (load and store) return errors.\n3. These failures do not produce a \"missing\" or \"stale\" state.\n4. A callback error is never stored as a completed judgment.\n\n**Implementation shape.** I read `Validator::validate_node` in `crates/habeas-sdk/src/graph/runtime.rs` to see which failure points exist. They are procedure resolution, the freshness check (`check_with_version`), the callback `graph.validate`, and `store_evidence`.\n\n**Coverage**\n- **Version/procedure resolution failure.** `tests/validation.rs#fn[resolution_storage_and_callback_errors_are_not_judgments]` uses a procedure closure that returns `Err(\"version\")`. It asserts `Err(ValidationError::Graph(\"version\"))` and that the callback never started.\n- **Load failure.** The same test sets `fail_load`. It asserts `Err(Graph(\"load\"))`. Swallowing the failure as \"missing\" would run the callback and return `Ok`, so the assertion would catch it.\n- **Store failure.** The same test sets `fail_store`. It asserts `Err(Graph(\"store\"))` and that `records` is empty. The contracts test also covers a store failure after the input changed. It asserts the error, then that the previously saved judgment is still what `load_evidence` returns.\n- **Callback error not stored.** In `fn[resolution_storage_and_callback_errors_are_not_judgments]`, the callback's input read hits a missing node and returns `Graph(\"missing\")`. The test asserts an error and an empty `records`. `fn[runner_does_not_store_a_missing_agent_error_and_supports_intermediate_calls]` has a callback that asks an agent when none is configured. It asserts `NoAgentConfigured`, no records and no reads. It then adds an agent and checks that validation succeeds and stores a record.\n- **Resolution failures that could yield a stale state.** `tests/contracts.rs#fn[domain_validation_preserves_metadata_reuses_traces_and_propagates_failures]` first stores evidence. It then makes the node read fail and, separately, the edge lookup fail. For each it asserts `Err(Graph(failure))`. It also asserts that callbacks and writes are unchanged at (1, 1) and that the stored record is untouched. A stale-judgment or missing result would fail these checks.\n\nAll clauses, including the stale-versus-error distinction, have tests that exercise the failure and assert the outcome. The tests carry the `{test}` reference to the subject. I found no unacknowledged gaps.",
   "references": "3f2764018e0c571f111c3ee1c3c220d17c23bf300b5a5ea841cf63cd776bd341",
   "inputs": [
     {
@@ -11,16 +11,15 @@
       ],
       "text": [
         ":::{req} validate_node.errors",
-        "Storage or input resolution errors MUST be reported as errors rather than",
-        "treated as absent or stale evidence. A callback error MUST NOT be stored as a",
-        "completed judgment.",
+        "Storage and input-resolution failures return errors, rather than missing or",
+        "stale states. A callback error is never stored as a completed judgment.",
         ":::"
       ]
     },
     {
       "file": "crates/habeas-sdk/tests/contracts.rs",
       "item": "fn[domain_validation_preserves_metadata_reuses_traces_and_propagates_failures]",
-      "hash": "a1f987c952877c884092261e1ee4b4eea75560d13ee5347ca76f0d9b668f9ab0"
+      "hash": "38b36cadc68999b752d87ad2c6911273bb4a6346d008c27a4dbaa9458d3574fa"
     },
     {
       "file": "crates/habeas-sdk/tests/validation.rs",
@@ -35,7 +34,7 @@
     {
       "file": "crates/habeas-sdk/src/graph/runtime.rs",
       "item": "impl[Validator<'d,%20D,%20F>]/fn[validate_node]",
-      "hash": "99607c80f60aa5ec01486f01598e12c670cf10d787ddfa91fa7ecbfdccc13c8a"
+      "hash": "f3a6b83a67249c0b1997ab47ebd5b3b66a23b1941b81ec4ea9a78f88695055b9"
     },
     {
       "file": "crates/habeas-sdk/tests/validation.rs",
@@ -45,40 +44,47 @@
     {
       "file": "crates/habeas-sdk/tests/validation.rs",
       "item": "impl[Memory/Graph]/fn[outgoing_edges]",
-      "hash": "c72571c5c333ba349e01fe81e83ebd61482e1ecf6c592147f0f895750f19dfbd"
+      "hash": "9ab023ee211eb39f99bb30d42405ff1b9fb61c2f478013c8e7a4ef552030b2a9"
     },
     {
       "file": "crates/habeas-sdk/tests/validation.rs",
       "item": "impl[Memory/EvidenceStorage]/fn[load_evidence]",
-      "hash": "1a0851eae4450721b49d20324886743a1e4882a5ad8721dd03bbb0bfda5c673d"
+      "hash": "6083cd0a44c00ce871f0de77abf6be152d5ec2671f3cc8e81123a5e9a2952963"
     },
     {
       "file": "crates/habeas-sdk/tests/validation.rs",
       "item": "impl[Memory/EvidenceStorage]/fn[store_evidence]",
-      "hash": "ca21d5eb208a9e089503c290416569caad761dcdd41eee2b9d9dcd45ecfeca30"
+      "hash": "5b031e53478f7548e75cf724eb44db2092e3b781a315775a17f7cc12e980c615"
     },
     {
       "file": "crates/habeas-sdk/tests/validation.rs",
       "item": "impl[Memory/Validation]/fn[validate]",
       "hash": "d944faacb8ce3feecec81c730a3748f8eefee6ffd4d894f271e86eb1156d4d21"
-    },
-    {
-      "file": "crates/habeas-sdk/src/graph/runtime.rs",
-      "item": "impl[Validator<'d,%20D,%20F>]/fn[validate_with_edges]",
-      "hash": "64c5372410f8037879345918e15b1202602df9753a81dad5480e067f18770f08"
     }
   ],
   "format_version": 1,
   "review_version": "habeas-review-v1",
   "dependencies": [
     {
-      "OutgoingEdges": [
+      "Node": [
         {
-          "Requirement": "requirements.sdk.graph.validation.validate_node.errors"
+          "ReferenceSet": "requirements.sdk.graph.validation.validate_node.errors"
         },
         {
           "scheme": "habeas-reference-set-v1",
           "value": "3f2764018e0c571f111c3ee1c3c220d17c23bf300b5a5ea841cf63cd776bd341"
+        }
+      ]
+    },
+    {
+      "OutgoingEdges": [
+        {
+          "Requirement": "requirements.sdk.graph.validation.validate_node.errors"
+        },
+        "Mandatory",
+        {
+          "scheme": "node-path-set-sha256-v1",
+          "value": "dce03055eed898bb2d1edbdc5a634271162dbc9e4a95c36294cd3c58a51c0e31"
         }
       ]
     },
@@ -89,7 +95,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "dd41bc9a51a0feac2b67a5acf5344d2e06da67bd50c380464581c78f2cd31079"
+          "value": "e23dc6d7e871cc502fc643a26d000359a69cba86378cbe6dec6d0aa652e323d0"
         }
       ]
     },
@@ -106,7 +112,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "94a40d36d4c0a1f71b238d038c66f97ead2bd2038aee853c440f08aa56e2373c"
+          "value": "f9e3986c618e6b2061a8497398e7c970763c8d325fa919bc5191e8176942eaf1"
         }
       ]
     },
@@ -157,7 +163,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "4f666bfdccc67d534b05a47ecd0342d455b2a4b476a8ebfcb5f4ab3d0d2cb5bd"
+          "value": "aad92e789bf43f5aba1f803b571025dee7c8c08dd372e0f558a52261351615ec"
         }
       ]
     },
@@ -191,7 +197,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "7fbb37b7802ffcf9a46aa9ab73fc9e470f42815f3c3bbaf370cf68eb3e21c601"
+          "value": "38e9d4e367a5551732e1658577012384e5e1647e19d2df8434a193c322042785"
         }
       ]
     },
@@ -208,7 +214,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "5f78a469cdcb2e9bc84858c3b372fc3f5fa77bc07d8d26b22c7b1f7aef190c35"
+          "value": "f71705093a093f499c1571d79543e8bc0bfc52cfcd0cbecd4be07a1156fe4652"
         }
       ]
     },
@@ -225,7 +231,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "dc2cd9c5f5d47825abde878dee58d4819e7e0db6c0180cdfb4cabc63b8e058cf"
+          "value": "d871c6e28f992cc96113b2ad95b6957ad87a3d59a2eeefab8707d660b3bb3e5e"
         }
       ]
     },
@@ -243,23 +249,6 @@
         {
           "scheme": "habeas-input-v1",
           "value": "bd745c7672cd23b6c7315ac85fb6f11e7f02dae600d542eeceb45be7a40e7ee3"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/src/graph/runtime.rs"
-            },
-            "selector": "impl[Validator<'d,%20D,%20F>]/fn[validate_with_edges]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "c3b84fc5146c36949fb8afef7e9f2ba76040e52179e4505c27928297f61fee16"
         }
       ]
     }

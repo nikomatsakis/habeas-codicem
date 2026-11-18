@@ -1,7 +1,7 @@
 {
-  "requirement": "For each `NodePath` segment, the helper MUST use `s` followed by the lowercase\nhexadecimal encoding of that segment's UTF-8 bytes as a directory component.\nIt MUST preserve segment order and store the record as `record.json` inside\nthe resulting directory under the configured root. An empty sequence MUST\nselect `record.json` directly under the root; an empty segment MUST select\nan `s` directory. Segment contents, including slashes and `..`, MUST NOT be\ninterpreted as filesystem path components. Load and store MUST use the same\nmapping. If the filesystem cannot represent the resulting path, the operation\nMUST return an I/O error rather than truncate or otherwise change the mapping.",
+  "requirement": "For each `NodePath` segment, the helper uses `s` followed by the lowercase\nhexadecimal encoding of that segment's UTF-8 bytes as a directory component.\nIt preserves segment order and stores `record.json` inside the resulting\ndirectory under the configured root. An empty sequence selects `record.json`\ndirectly under the root; an empty segment selects an `s` directory.\nSegment contents, including slashes and `..`, are encoded as data rather than\ninterpreted as path components. Load and store use the same mapping. If the\nfilesystem cannot represent that path, the operation returns an I/O error\nwithout truncating or otherwise changing the mapping.",
   "determination": true,
-  "rationale": "The two marked tests in `crates/habeas-sdk/tests/storage.rs` cover every obligation in `requirements.sdk.filesystem-storage.keys`.\n\n**Encoding and layout**\n- `paths_are_injective_and_loading_missing_records_has_no_side_effects` asserts `store.record_path(&path)` equals an exact expected path under the root for seven cases.\n- The empty sequence maps to `record.json` directly under the root.\n- The empty segment `\"\"` maps to `s/record.json`.\n- `[\"a\",\"b\"]` maps to `s61/s62/record.json`. This checks the `s` prefix, hex encoding, segment order and `record.json` inside the resulting directory.\n- `\"é\"` maps to `sc3a9` and `\"..\"` maps to `s2e2e`. Both contain hex letters, so the assertions enforce lowercase hex, not uppercase.\n- `\"é\"` and `\"e\\u{301}\"` map to different directories (`sc3a9` and `s65cc81`), so UTF-8 bytes are encoded without normalization.\n\n**Segment contents are not path components**\n- `\"a/b\"` maps to the single component `s612f62`.\n- `\"..\"` maps to `s2e2e`.\n- Both assertions compare against `root.join(expected)`, so a slash or `..` that was interpreted as a path component would fail them.\n\n**Load and store use the same mapping**\n- `send_futures_create_missing_roots_and_nested_paths_without_shortening_keys` stores a record at `[\"parent\",\"\",\"child\"]`. It then asserts that `record_path(&path)` is a file and that `load` returns the same output.\n- `record_path` is pinned to exact expected values in the first test, and the round trip shows `load` and `store` agree with it.\n- The first test also loads each of the seven paths from a missing root and asserts `None`, so `load` and `record_path` agree on those paths too. It asserts the root is never created.\n\n**Unrepresentable path returns an I/O error**\n- A 4096-character segment produces an encoded component that exceeds common filesystem name limits.\n- The test asserts both `load` and `store` return `Err(FileStorageError::Io(_))`.\n- It then asserts `read_dir(&root).count() == 1`. That count means nothing was written under a truncated or hashed key.\n\nI found no unresolved ambiguity and no untested obligation. The tests carry `{test}` references to the subject, and there are no acknowledgments to assess.",
+  "rationale": "The two tests marked `{test}` for `requirements.sdk.filesystem-storage.keys` cover every obligation in the requirement text. I judged this from the supplied test source and did not request implementation source.\n\n**Encoding and path layout**\n- `crates/habeas-sdk/tests/storage.rs#fn[paths_are_injective_and_loading_missing_records_has_no_side_effects]` asserts `store.record_path(&path)` against exact expected paths under the root.\n- The single-segment `a/b` case expects `s612f62/record.json`. This shows the `s` prefix, the hex of the UTF-8 bytes, and `record.json` placed inside the resulting directory.\n- The `é` case expects `sc3a9/record.json`. It contains the lowercase letters `c` and `a`, so an uppercase encoding would fail the assertion. It is also a multi-byte UTF-8 case.\n- The `e\\u{301}` case expects `s65cc81/record.json`, a second multi-byte case that differs from the precomposed `é`.\n- The `[a, b]` case expects `s61/s62/record.json`, which covers segment order and one directory per segment.\n\n**Empty and special segments**\n- The empty sequence expects `root/record.json` directly.\n- The single empty segment expects `s/record.json`.\n- Segments containing `/` (`a/b`) and `..` expect `s612f62` and `s2e2e`. This shows they are encoded as data and not interpreted as path components.\n\n**Load and store use the same mapping**\n- The test `crates/habeas-sdk/tests/storage.rs#fn[send_futures_create_missing_roots_and_nested_paths_without_shortening_keys]` stores to `[\"parent\", \"\", \"child\"]`.\n- It asserts `store.record_path(&path).is_file()`, so the store wrote at the mapped path.\n- It then loads the record back and compares the output, so load reads from the same mapping.\n- The first test checks that load of a missing record returns `None` for every mapping case.\n- It also checks that the missing root is not created.\n\n**Unrepresentable path returns an I/O error without changing the mapping**\n- A 4096-character segment is tried on both `load` and `store`. Each is asserted to return `Err(FileStorageError::Io(_))`.\n- The final `read_dir(&root).count() == 1` assertion shows that no truncated or hashed alternate key was created. Only the earlier nested record's directory exists.\n\nI found no uncovered obligation and no weak assertion. No `{fixme}` acknowledgments apply.",
   "references": "aca44d2a81427d602d71fbb21345d651cbded1be7b8028fbf1b937fbec43441e",
   "inputs": [
     {
@@ -11,40 +11,52 @@
       ],
       "text": [
         ":::{req} keys",
-        "For each `NodePath` segment, the helper MUST use `s` followed by the lowercase",
+        "For each `NodePath` segment, the helper uses `s` followed by the lowercase",
         "hexadecimal encoding of that segment's UTF-8 bytes as a directory component.",
-        "It MUST preserve segment order and store the record as `record.json` inside",
-        "the resulting directory under the configured root. An empty sequence MUST",
-        "select `record.json` directly under the root; an empty segment MUST select",
-        "an `s` directory. Segment contents, including slashes and `..`, MUST NOT be",
-        "interpreted as filesystem path components. Load and store MUST use the same",
-        "mapping. If the filesystem cannot represent the resulting path, the operation",
-        "MUST return an I/O error rather than truncate or otherwise change the mapping.",
+        "It preserves segment order and stores `record.json` inside the resulting",
+        "directory under the configured root. An empty sequence selects `record.json`",
+        "directly under the root; an empty segment selects an `s` directory.",
+        "Segment contents, including slashes and `..`, are encoded as data rather than",
+        "interpreted as path components. Load and store use the same mapping. If the",
+        "filesystem cannot represent that path, the operation returns an I/O error",
+        "without truncating or otherwise changing the mapping.",
         ":::"
       ]
     },
     {
       "file": "crates/habeas-sdk/tests/storage.rs",
       "item": "fn[paths_are_injective_and_loading_missing_records_has_no_side_effects]",
-      "hash": "cb440ff1505e4f2d6769335083120773b1a216d3fadc95dbcc0414d147e7cfa0"
+      "hash": "bb663dc4f086624f5c57a87b97fb03fb33df329977832faef1f454e90a6ef0c8"
     },
     {
       "file": "crates/habeas-sdk/tests/storage.rs",
       "item": "fn[send_futures_create_missing_roots_and_nested_paths_without_shortening_keys]",
-      "hash": "f205c32c4e539c971a8e81ea1605d762f149606129a30d28684787f0a3826f96"
+      "hash": "2919fced485e1c1f88d327fc6d25bb928e355804e72e2061f500809c36a4ae27"
     }
   ],
   "format_version": 1,
   "review_version": "habeas-review-v1",
   "dependencies": [
     {
-      "OutgoingEdges": [
+      "Node": [
         {
-          "Requirement": "requirements.sdk.filesystem-storage.keys"
+          "ReferenceSet": "requirements.sdk.filesystem-storage.keys"
         },
         {
           "scheme": "habeas-reference-set-v1",
           "value": "aca44d2a81427d602d71fbb21345d651cbded1be7b8028fbf1b937fbec43441e"
+        }
+      ]
+    },
+    {
+      "OutgoingEdges": [
+        {
+          "Requirement": "requirements.sdk.filesystem-storage.keys"
+        },
+        "Mandatory",
+        {
+          "scheme": "node-path-set-sha256-v1",
+          "value": "40297261f7b85b399c504d8dc5cc790fb8c797760abb10357df6d087e37c3460"
         }
       ]
     },
@@ -55,7 +67,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "f1ba6536aa5b22b1c634b491881f00985dd86c5b8a13ea6574be6c2f54cf5414"
+          "value": "5b00c317e53c3434479ec21d18ec706ae46ab3f3677b25ef9a398c7b2b57aa1e"
         }
       ]
     },
@@ -72,7 +84,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "7dfe46af715bf18dfdc2a51ce251a344c65968e90769a37016a5a073323d4741"
+          "value": "7a9cddb277a377ce55d8c965784e2caf18aa7f370e1c78fb34f01b7b90bb62ee"
         }
       ]
     },
@@ -89,7 +101,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "97b02bfb983ed4d510c043c136466dc8df47b30032bdfda6bc8f81d68d985d43"
+          "value": "8df588ef1aece46a6b5c2fbf3a0577163db08507eda3dc8ef1d5cbbd4caf2c01"
         }
       ]
     }

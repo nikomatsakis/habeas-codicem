@@ -2,7 +2,7 @@
 
 use crate::{
     judgment::Judgment,
-    sdk::{HabeasDomain, HabeasNode, input_fingerprint},
+    sdk::{HabeasDomain, HabeasEdgeLabel, HabeasNode, input_fingerprint},
 };
 use habeas_sdk::graph::{Dependency, Fingerprint, Record};
 use serde_json::{Value, json};
@@ -17,7 +17,9 @@ pub(crate) fn is_versioned(value: &Value) -> bool {
     SDK_FIELDS.iter().any(|field| value.get(*field).is_some())
 }
 
-fn versioned_fields(value: &Value) -> io::Result<(String, Vec<Dependency<HabeasNode>>)> {
+fn versioned_fields(
+    value: &Value,
+) -> io::Result<(String, Vec<Dependency<HabeasNode, HabeasEdgeLabel>>)> {
     if value["format_version"].as_u64() != Some(1) {
         return Err(io::Error::other(format!(
             "unsupported evidence format version {:?}",
@@ -28,14 +30,46 @@ fn versioned_fields(value: &Value) -> io::Result<(String, Vec<Dependency<HabeasN
         .as_str()
         .filter(|version| !version.is_empty())
         .ok_or_else(|| io::Error::other("versioned evidence requires a nonempty review_version"))?;
-    let dependencies = serde_json::from_value(
-        value
-            .get("dependencies")
-            .cloned()
-            .ok_or_else(|| io::Error::other("versioned evidence requires dependencies"))?,
-    )
-    .map_err(io::Error::other)?;
+    let mut wire_dependencies: Value = value
+        .get("dependencies")
+        .cloned()
+        .ok_or_else(|| io::Error::other("versioned evidence requires dependencies"))?;
+    normalize_dependencies(&mut wire_dependencies)?;
+    let dependencies = serde_json::from_value(wire_dependencies).map_err(io::Error::other)?;
     Ok((version.into(), dependencies))
+}
+
+// {cite}`habeas:util`
+fn normalize_dependencies(dependencies: &mut Value) -> io::Result<()> {
+    let entries = dependencies
+        .as_array_mut()
+        .ok_or_else(|| io::Error::other("dependencies must be an array"))?;
+    for entry in entries {
+        if let Some(old) = entry
+            .get("OutgoingEdges")
+            .and_then(Value::as_array)
+            .filter(|old| old.len() == 2)
+        {
+            let node: HabeasNode =
+                serde_json::from_value(old[0].clone()).map_err(io::Error::other)?;
+            let fingerprint: Fingerprint =
+                serde_json::from_value(old[1].clone()).map_err(io::Error::other)?;
+            let HabeasNode::Requirement(id) = node else {
+                return Err(io::Error::other(
+                    "historical outgoing dependency requires a requirement",
+                ));
+            };
+            if fingerprint.scheme != "habeas-reference-set-v1" {
+                return Err(io::Error::other("unknown historical outgoing fingerprint"));
+            }
+            *entry = serde_json::to_value(Dependency::<HabeasNode, HabeasEdgeLabel>::Node(
+                HabeasNode::ReferenceSet(id),
+                fingerprint,
+            ))
+            .map_err(io::Error::other)?;
+        }
+    }
+    Ok(())
 }
 
 /// Read-only semantic view used by the existing application checks.
@@ -58,7 +92,10 @@ pub(crate) fn view(value: &Value) -> io::Result<Value> {
 
 // {impl}`requirements.sdk.habeas.evidence_conversion.provenance`
 // {impl}`requirements.sdk.habeas.evidence_conversion.legacy_freshness`
-pub(crate) fn decode(value: &Value, subject: &HabeasNode) -> io::Result<Record<HabeasNode, Value>> {
+pub(crate) fn decode(
+    value: &Value,
+    subject: &HabeasNode,
+) -> io::Result<Record<HabeasNode, Value, HabeasEdgeLabel>> {
     let metadata = view(value)?;
     check_shape(&metadata, subject)?;
     let determination =
@@ -87,8 +124,11 @@ pub(crate) fn decode(value: &Value, subject: &HabeasNode) -> io::Result<Record<H
             let digest = metadata["references"]
                 .as_str()
                 .ok_or_else(|| io::Error::other("evidence requires references"))?;
-            dependencies.push(Dependency::OutgoingEdges(
-                subject.clone(),
+            dependencies.push(Dependency::Node(
+                match subject {
+                    HabeasNode::Requirement(id) => HabeasNode::ReferenceSet(id.clone()),
+                    _ => unreachable!(),
+                },
                 Fingerprint {
                     scheme: "habeas-reference-set-v1".into(),
                     value: digest.into(),
@@ -224,7 +264,7 @@ fn hex_digest(value: &str) -> bool {
 }
 
 // {impl}`requirements.sdk.habeas.evidence_format`
-pub(crate) fn encode(record: &Record<HabeasNode, Value>) -> io::Result<Value> {
+pub(crate) fn encode(record: &Record<HabeasNode, Value, HabeasEdgeLabel>) -> io::Result<Value> {
     let mut value = record.output.metadata.clone();
     let object = value
         .as_object_mut()
@@ -309,10 +349,30 @@ pub(crate) fn check_native(
     });
     match current.and_then(|version| {
         record.and_then(|mut record| {
+            let reference_set_changed = match subject {
+                HabeasNode::Requirement(id)
+                    if record.dependencies.iter().any(|dependency| {
+                        matches!(dependency, Dependency::OutgoingEdges(node, HabeasEdgeLabel::Mandatory, _) if node == subject)
+                    }) =>
+                {
+                    record.output.metadata["references"]
+                        .as_str()
+                        .is_some_and(|references| {
+                            domain.reference_set(id).is_ok_and(|current| current != references)
+                        })
+                }
+                _ => false,
+            };
             // Existing application checks give precise diagnostics for these
             // same historical observations. Keep generic findings for versions
             // and additional SDK observations that those checks cannot explain.
             record.dependencies.retain(|dependency| match dependency {
+                Dependency::Node(HabeasNode::ReferenceSet(id), fingerprint)
+                    if matches!(subject, HabeasNode::Requirement(subject_id) if subject_id == id)
+                        && fingerprint.scheme == "habeas-reference-set-v1" =>
+                {
+                    record.output.metadata["references"].as_str() != Some(&fingerprint.value)
+                }
                 Dependency::Node(node, fingerprint) => !record.output.metadata["inputs"]
                     .as_array()
                     .into_iter()
@@ -322,12 +382,13 @@ pub(crate) fn check_native(
                             node.selector().ok().as_ref() == Some(&selector)
                         }) && input_fingerprint(input) == *fingerprint
                     }),
-                Dependency::OutgoingEdges(node, fingerprint) => {
+                Dependency::OutgoingEdges(node, _label, fingerprint) => {
                     !(node == subject
                         && matches!(subject, HabeasNode::Requirement(_))
-                        && fingerprint.scheme == "habeas-reference-set-v1"
-                        && record.output.metadata["references"].as_str()
-                            == Some(&fingerprint.value))
+                        && ((_label == &HabeasEdgeLabel::Mandatory && reference_set_changed)
+                            || (fingerprint.scheme == "habeas-reference-set-v1"
+                                && record.output.metadata["references"].as_str()
+                                    == Some(&fingerprint.value))))
                 }
             });
             habeas_sdk::graph::record_is_current(domain, &version, &record)
@@ -543,7 +604,7 @@ mod tests {
         // Isolate input/version comparison; reference checks remain application policy.
         record
             .dependencies
-            .retain(|dependency| matches!(dependency, Dependency::Node(..)));
+            .retain(|dependency| matches!(dependency, Dependency::Node(node, _) if !matches!(node, HabeasNode::ReferenceSet(_))));
         assert!(
             habeas_sdk::graph::record_is_current(&graph, "future-review-version", &record).unwrap()
         );

@@ -24,7 +24,7 @@ use std::{
 struct State {
     contents: BTreeMap<u8, String>,
     edges: BTreeMap<u8, Vec<(u8, u8)>>,
-    records: BTreeMap<u8, Record<u8, ()>>,
+    records: BTreeMap<u8, Record<u8, (), u8>>,
     reads: Vec<u8>,
     selections: Vec<u8>,
     started: Vec<u8>,
@@ -68,31 +68,25 @@ impl Graph for Memory {
         }
         state.contents.get(node).cloned().ok_or("missing")
     }
-    // :::{cite} habeas:coverage
-    // This validation fixture stores records directly by opaque u8 node ID.
-    // Its in-memory EvidenceStorage does not translate IDs into filesystem
-    // paths; Graph still requires the addressing callback. Filesystem storage
-    // and its consumer delegation tests exercise path-based storage separately.
-    // :::
     fn node_path(&self, node: &u8) -> NodePath {
         NodePath {
             segments: vec![node.to_string()],
         }
     }
-    fn outgoing_edges(&self, node: &u8) -> Result<Snapshot<Vec<Edge<u8, u8>>>, Self::Error> {
+    fn outgoing_edges(&self, node: &u8, label: u8) -> Result<Vec<u8>, Self::Error> {
         let mut state = self.state.lock().unwrap();
         state.selections.push(*node);
         if state.fail_edges == Some(*node) {
             return Err("edges");
         }
-        let edges = state.edges.get(node).cloned().unwrap_or_default();
-        Ok(Snapshot {
-            fingerprint: fp(format!("{edges:?}")),
-            content: edges
-                .into_iter()
-                .map(|(label, target)| Edge { label, target })
-                .collect(),
-        })
+        Ok(state
+            .edges
+            .get(node)
+            .into_iter()
+            .flatten()
+            .filter(|(kind, _)| *kind == label)
+            .map(|(_, target)| *target)
+            .collect())
     }
 }
 impl Fingerprinting for Memory {
@@ -101,14 +95,18 @@ impl Fingerprinting for Memory {
     }
 }
 impl EvidenceStorage for Memory {
-    async fn load_evidence(&self, node: &u8) -> Result<Option<Record<u8, ()>>, Self::Error> {
+    async fn load_evidence(&self, node: &u8) -> Result<Option<Record<u8, (), u8>>, Self::Error> {
         let state = self.state.lock().unwrap();
         if state.fail_load {
             return Err("load");
         }
         Ok(state.records.get(node).cloned())
     }
-    async fn store_evidence(&self, node: &u8, record: &Record<u8, ()>) -> Result<(), Self::Error> {
+    async fn store_evidence(
+        &self,
+        node: &u8,
+        record: &Record<u8, (), u8>,
+    ) -> Result<(), Self::Error> {
         let mut state = self.state.lock().unwrap();
         if state.fail_store {
             return Err("store");
@@ -400,93 +398,60 @@ fn wildcard_versions_still_check_inputs_and_errors() {
 }
 
 // {test}`requirements.sdk.graph.evidence.checking_records`
-// {test}`requirements.sdk.graph.edges`
 // {test}`requirements.sdk.graph.validation.root_inputs`
 // {test}`requirements.sdk.graph.outgoing_edges`
 // {test}`requirements.sdk.graph.fingerprinting.snapshot`
 #[test]
-fn labeled_selection_records_all_edges_without_reading_targets() {
+fn labeled_selections_track_only_target_membership_without_reading_contents() {
     let graph = Memory::default();
     let ctx = ValidationContext::new(&graph, 1);
     assert_eq!(ctx.node_id(), &1);
-    assert!(graph.state.lock().unwrap().reads.is_empty());
     assert!(ctx.successors(&7).unwrap().is_empty());
-    let record = ctx.inspection().finish(
-        "v1".into(),
-        Judgment {
-            result: true,
-            rationale: "ok".into(),
-            metadata: (),
-        },
-    );
-    assert!(record_is_current(&graph, "v1", &record).unwrap());
+    let output = || Judgment {
+        result: true,
+        rationale: "selection".into(),
+        metadata: (),
+    };
+    let empty = ctx.inspection().finish("v1".into(), output());
+    graph.state.lock().unwrap().edges.insert(1, vec![(8, 2)]);
+    assert!(record_is_current(&graph, "v1", &empty).unwrap());
     graph
         .state
         .lock()
         .unwrap()
         .edges
         .insert(1, vec![(8, 2), (7, 5), (7, 3), (7, 5)]);
+    assert!(!record_is_current(&graph, "v1", &empty).unwrap());
+    let selected = ValidationContext::new(&graph, 1);
+    assert_eq!(selected.successors(&7).unwrap(), [5, 3, 5]);
+    selected.successors(&7).unwrap();
+    let record = selected.inspection().finish("v1".into(), output());
+    assert_eq!(
+        record.dependencies,
+        [Dependency::OutgoingEdges(
+            1,
+            7,
+            edge_fingerprint(&graph, &[3, 5])
+        )]
+    );
+    graph
+        .state
+        .lock()
+        .unwrap()
+        .edges
+        .insert(1, vec![(7, 3), (7, 5), (8, 99)]);
+    assert!(record_is_current(&graph, "v1", &record).unwrap());
+    graph
+        .state
+        .lock()
+        .unwrap()
+        .edges
+        .insert(1, vec![(7, 3), (7, 6), (8, 99)]);
     assert!(!record_is_current(&graph, "v1", &record).unwrap());
-    let selected = ctx.successors(&7).unwrap();
-    assert_eq!(
-        selected.iter().map(|edge| edge.target).collect::<Vec<_>>(),
-        vec![5, 3, 5]
-    );
     assert!(graph.state.lock().unwrap().reads.is_empty());
-    let edge = selected[0].clone();
-    assert_eq!((edge.label, edge.target), (7, 5));
-    assert!(format!("{edge:?}").contains("target: 5"));
-    let selected_ctx = ValidationContext::new(&graph, 1);
-    selected_ctx.successors(&7).unwrap();
-    let selected_record = selected_ctx.inspection().finish(
-        "v1".into(),
-        Judgment {
-            result: false,
-            rationale: "selection".into(),
-            metadata: (),
-        },
-    );
-    assert!(record_is_current(&graph, "v1", &selected_record).unwrap());
-    let original = graph.state.lock().unwrap().edges[&1].clone();
-    let original_fingerprint = graph.outgoing_edges(&1).unwrap().fingerprint;
-    graph.state.lock().unwrap().edges.get_mut(&1).unwrap()[1].0 = 9;
-    assert_ne!(
-        graph.outgoing_edges(&1).unwrap().fingerprint,
-        original_fingerprint
-    );
-    assert!(!record_is_current(&graph, "v1", &selected_record).unwrap());
-    graph
-        .state
-        .lock()
-        .unwrap()
-        .edges
-        .insert(1, original.clone());
-    graph.state.lock().unwrap().edges.get_mut(&1).unwrap().pop();
-    assert_ne!(
-        graph.outgoing_edges(&1).unwrap().fingerprint,
-        original_fingerprint
-    );
-    assert!(!record_is_current(&graph, "v1", &selected_record).unwrap());
-    graph.state.lock().unwrap().edges.insert(1, original);
-    assert!(record_is_current(&graph, "v1", &selected_record).unwrap());
-    graph.state.lock().unwrap().edges.get_mut(&1).unwrap()[0].1 = 99;
-    assert!(!record_is_current(&graph, "v1", &selected_record).unwrap());
     graph.state.lock().unwrap().fail_edges = Some(1);
-    assert_eq!(
-        record_is_current(&graph, "v1", &selected_record),
-        Err("edges")
-    );
-    graph.state.lock().unwrap().fail_edges = None;
-    let old = graph.outgoing_edges(&1).unwrap().fingerprint;
-    graph
-        .state
-        .lock()
-        .unwrap()
-        .edges
-        .get_mut(&1)
-        .unwrap()
-        .reverse();
-    assert_ne!(old, graph.outgoing_edges(&1).unwrap().fingerprint);
+    assert_eq!(selected.successors(&7), Err("edges"));
+    assert_eq!(record_is_current(&graph, "v1", &record), Err("edges"));
 }
 
 // {test}`requirements.sdk.graph.validation.validate_node`
@@ -644,7 +609,7 @@ async fn explicit_insertions_preserve_order_repetition_and_selection_snapshots()
     assert_eq!(
         ctx.inspection().dependencies(),
         vec![
-            Dependency::OutgoingEdges(1, fp("[(7, 3), (8, 99), (7, 2), (7, 3)]")),
+            Dependency::OutgoingEdges(1, 7, edge_fingerprint(&graph, &[2, 3])),
             Dependency::Node(1, fp("subject")),
             Dependency::Node(3, fp("implementation")),
             Dependency::Node(2, fp("test")),
@@ -696,7 +661,11 @@ async fn contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text()
     let requests = agent.requests.lock().unwrap();
     assert_eq!(requests[0].0, "héllo\n\npolicy\n\nquestion");
     assert_eq!(requests[0].1, context_fingerprint(&requests[0].0));
-    assert_eq!(requests[1].1, requests[2].1);
+    for request in &requests[1..=2] {
+        assert_eq!(request.0, "");
+        assert_eq!(request.1, context_fingerprint(""));
+        assert!(request.2.is_empty());
+    }
     assert_ne!(context_fingerprint("a\n\nb"), context_fingerprint("b\n\na"));
     assert_eq!(
         (
@@ -887,6 +856,7 @@ fn every_heterogeneous_tuple_arity_renders_elements_in_order() {
 
 // {test}`requirements.sdk.graph.agent-calls.author_procedure`
 // {test}`requirements.sdk.graph.agent-calls.procedures`
+// {test}`requirements.sdk.graph.agent-calls.judge`
 // {test}`requirements.sdk.domain`
 #[tokio::test]
 async fn shared_context_allows_independent_concurrent_agent_calls() {
@@ -948,7 +918,7 @@ async fn later_lighter_agent_calls_preserve_the_contexts_existing_trace() {
     assert_eq!(
         retained,
         vec![
-            Dependency::OutgoingEdges(1, fp("[]")),
+            Dependency::OutgoingEdges(1, 7, edge_fingerprint(&graph, &[])),
             Dependency::Node(1, fp("retained")),
         ]
     );
@@ -1009,7 +979,7 @@ async fn concurrent_single_node_validations_keep_separate_traces() {
             record.dependencies,
             vec![
                 Dependency::Node(*node, fp(format!("node {node}"))),
-                Dependency::OutgoingEdges(*node, fp("[(1, 99)]")),
+                Dependency::OutgoingEdges(*node, 1, edge_fingerprint(&graph, &[99])),
             ]
         );
     }
@@ -1091,7 +1061,11 @@ async fn queued_reads_selection_and_rendering_fail_before_agent_invocation() {
         assert!(graph.state.lock().unwrap().reads.is_empty());
         assert_eq!(
             ctx.inspection().dependencies(),
-            vec![Dependency::OutgoingEdges(1, fp(format!("{edges:?}")))]
+            vec![Dependency::OutgoingEdges(
+                1,
+                7,
+                edge_fingerprint(&graph, &[])
+            )]
         );
     }
     let initial_calls = agent.requests.lock().unwrap().len();

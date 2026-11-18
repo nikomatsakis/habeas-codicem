@@ -318,6 +318,22 @@ pub(crate) fn populate(book: &mut Book, project: &Path, parent: &Path) -> io::Re
 }
 
 // {cite}`habeas:util`
+fn reserve_path(
+    existing: &BTreeSet<PathBuf>,
+    generated: &mut BTreeSet<PathBuf>,
+    path: &Path,
+    kind: &str,
+) -> io::Result<()> {
+    if existing.contains(path) || !generated.insert(path.to_owned()) {
+        return Err(io::Error::other(format!(
+            "coverage {kind} path conflicts with an existing chapter: {}",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
+// {cite}`habeas:util`
 pub(super) struct SavedCoverage {
     pub(super) records: Vec<Record>,
     pub(super) selected: BTreeSet<usize>,
@@ -600,13 +616,8 @@ pub(super) fn populate_in(
         .chapters()
         .filter_map(|chapter| chapter.path.clone())
         .collect();
-    let mut generated = BTreeSet::from([index_path.clone()]);
-    if existing.contains(&index_path) {
-        return Err(io::Error::other(format!(
-            "coverage index path conflicts with an existing chapter: {}",
-            index_path.display()
-        )));
-    }
+    let mut generated = BTreeSet::new();
+    reserve_path(&existing, &mut generated, &index_path, "index")?;
     let mut details = Vec::new();
     let notes_root = workspace_root(project).unwrap_or_else(|_| project.to_path_buf());
     for chapter in super::notes::pages(&notes_root, &note_files, &index_path) {
@@ -614,12 +625,7 @@ pub(super) fn populate_in(
             .path
             .as_ref()
             .expect("file notes have a render path");
-        if existing.contains(path) || !generated.insert(path.clone()) {
-            return Err(io::Error::other(format!(
-                "coverage report path conflicts with an existing chapter: {}",
-                path.display()
-            )));
-        }
+        reserve_path(&existing, &mut generated, path, "report")?;
         details.push(BookItem::Chapter(chapter));
     }
     summary.push_str("## Collect coverage and check CI policy\n\n");
@@ -1031,6 +1037,7 @@ mod tests {
     // {test}`requirements.test-coverage.index.file_map.directories.initial`
     // {test}`requirements.test-coverage.index.file_map.directories.data`
     // {test}`requirements.test-coverage.index.file_map.minimum`
+    // {test}`requirements.test-coverage.index.file_map.test`
     // {test}`requirements.test-coverage.index.gaps.summary`
     // {test}`requirements.test-coverage.index.file_map.directories`
     #[test]
@@ -1113,6 +1120,38 @@ mod tests {
         assert!(overview.contains("1 file obligations · 3 function obligations"));
     }
 
+    // {test}`requirements.test-coverage.index.paths`
+    #[test]
+    fn generated_paths_reject_index_report_and_report_report_collisions() {
+        let existing = BTreeSet::from([PathBuf::from("authored.md")]);
+        let mut generated = BTreeSet::new();
+        let index = Path::new("reports/coverage.md");
+        reserve_path(&existing, &mut generated, index, "index").unwrap();
+        assert!(
+            reserve_path(&existing, &mut generated, index, "report")
+                .unwrap_err()
+                .to_string()
+                .contains("coverage report path conflicts")
+        );
+        let report = Path::new("reports/coverage/file.md");
+        reserve_path(&existing, &mut generated, report, "report").unwrap();
+        assert!(reserve_path(&existing, &mut generated, report, "report").is_err());
+        assert!(
+            reserve_path(
+                &existing,
+                &mut generated,
+                Path::new("authored.md"),
+                "report"
+            )
+            .is_err()
+        );
+        assert_eq!(
+            generated,
+            BTreeSet::from([index.to_owned(), report.to_owned()])
+        );
+    }
+
+    // {test}`requirements.test-coverage.index.paths`
     // {test}`requirements.test-coverage.index.file_map`
     // {test}`requirements.test-coverage.index.file_map.table`
     // {test}`requirements.test-coverage.index.file_map.combined`
@@ -1197,6 +1236,7 @@ mod tests {
         assert!(!html.contains("habeas-coverage-test"));
         assert!(!html.contains("Test runs and provenance"));
         assert!(!html.contains("binary / one"));
+        assert!(!html.contains("<select"));
         assert!(
             book.chapters()
                 .skip(1)
@@ -1644,6 +1684,7 @@ mod tests {
     // {test}`requirements.test-coverage.index.file_map.notes`
     // {test}`requirements.test-coverage.index.file_map.notes.current`
     // {test}`requirements.test-coverage.index.file_map.notes.render_only`
+    // {test}`requirements.test-coverage.index.paths`
     #[test]
     fn gap_notes_use_current_source_without_collecting() {
         let (temp, mut book) = fixture();
@@ -1694,6 +1735,11 @@ mod tests {
         let mut distinct = BTreeSet::new();
         for file in ["code.rs", "src/a.rs", "src/nested/a.rs"] {
             let path = super::super::notes::path(index.path.as_ref().unwrap(), file);
+            assert_ne!(
+                path,
+                *index.path.as_ref().unwrap(),
+                "report and index paths must differ"
+            );
             assert!(
                 distinct.insert(path.clone()),
                 "files must have distinct views"

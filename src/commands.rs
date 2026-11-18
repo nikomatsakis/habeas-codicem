@@ -240,7 +240,14 @@ impl CoverageWarnings {
 // {impl}`requirements.references.coverage.report`
 // {impl}`requirements.references.coverage.history`
 pub fn coverage_warnings(root: &Path) -> io::Result<CoverageWarnings> {
-    inspected_coverage_warnings(&crate::evidence::inspect_repository(root)?)
+    let (root, uncovered, evidence_files, evidence_listed) =
+        crate::evidence::coverage_inventory(root)?;
+    let (warned, incomplete) =
+        crate::coverage_history::warnings(&root, &uncovered, &evidence_files, evidence_listed)?;
+    Ok(CoverageWarnings {
+        items: warned.into_iter().map(|item| item.error).collect(),
+        incomplete,
+    })
 }
 
 /// The coverage warnings of an inspected repository.
@@ -463,6 +470,31 @@ fn site_section(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // {test}`requirements.references.coverage.report`
+    // {test}`requirements.references.coverage.history`
+    #[test]
+    fn coverage_warning_inventory_matches_full_inspection_with_invalid_evidence() {
+        let temp =
+            crate::sites::tests::project(crate::sites::tests::RULE, crate::sites::tests::SOURCE);
+        let root = temp.path();
+        for contents in [
+            None,
+            Some("not JSON"),
+            Some(r#"{"determination":false,"rationale":"negative","inputs":[]}"#),
+        ] {
+            if let Some(contents) = contents {
+                std::fs::create_dir_all(root.join("evidence")).unwrap();
+                std::fs::write(root.join("evidence/requirements.rule.json"), contents).unwrap();
+            }
+            let inspection = crate::evidence::inspect_repository(root).unwrap();
+            assert!(!inspection.report.errors.is_empty());
+            let full = inspected_coverage_warnings(&inspection).unwrap();
+            let fast = coverage_warnings(root).unwrap();
+            assert_eq!(fast.items, full.items);
+            assert_eq!(fast.incomplete, full.incomplete);
+        }
+    }
 
     // {cite}`habeas:util`
     /// Writes a record at `relative` whose rationale may carry the

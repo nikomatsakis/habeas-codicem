@@ -3,7 +3,7 @@
 pub(crate) mod access;
 mod adaptive;
 mod batch;
-mod inputs;
+pub(crate) mod inputs;
 mod line_numbers;
 mod pages;
 mod progress;
@@ -677,7 +677,7 @@ fn confirmed_record(
 fn merge_review_inputs(
     value: &mut Value,
     assessments: &[&Value],
-    extra: &[habeas_sdk::graph::Dependency<crate::sdk::HabeasNode>],
+    extra: &[habeas_sdk::graph::Dependency<crate::sdk::HabeasNode, crate::sdk::HabeasEdgeLabel>],
     extra_inputs: &[Value],
 ) {
     for field in ["dependencies", "inputs"] {
@@ -1101,7 +1101,8 @@ struct Verification {
     acknowledgments: Vec<String>,
     rationale: String,
     applies: Option<bool>,
-    dependencies: Vec<habeas_sdk::graph::Dependency<crate::sdk::HabeasNode>>,
+    dependencies:
+        Vec<habeas_sdk::graph::Dependency<crate::sdk::HabeasNode, crate::sdk::HabeasEdgeLabel>>,
     inputs: Vec<Value>,
 }
 

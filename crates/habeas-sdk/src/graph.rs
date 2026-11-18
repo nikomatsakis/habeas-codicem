@@ -1,6 +1,7 @@
 //! Consumer-defined graphs, tracked observations, and validation.
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{future::Future, sync::Mutex};
 
 mod runtime;
@@ -21,17 +22,10 @@ pub struct Snapshot<T> {
     pub fingerprint: Fingerprint,
 }
 
-// {impl}`requirements.sdk.graph.node_path`
+// {impl}`requirements.sdk.graph.node_path_struct`
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct NodePath {
     pub segments: Vec<String>,
-}
-
-// {impl}`requirements.sdk.graph.edges`
-#[derive(Clone, Debug)]
-pub struct Edge<N, L> {
-    pub label: L,
-    pub target: N,
 }
 
 // {impl}`requirements.sdk.graph.domain_types`
@@ -44,12 +38,13 @@ pub trait Graph: Send + Sync {
     type Error: Send;
 
     fn node_content(&self, node: &Self::NodeId) -> Result<Self::NodeContent, Self::Error>;
-    // {impl}`requirements.sdk.graph.node_path`
+    // {impl}`requirements.sdk.graph.node_path_method`
     fn node_path(&self, node: &Self::NodeId) -> NodePath;
     fn outgoing_edges(
         &self,
         node: &Self::NodeId,
-    ) -> Result<Snapshot<Vec<Edge<Self::NodeId, Self::EdgeLabel>>>, Self::Error>;
+        label: Self::EdgeLabel,
+    ) -> Result<Vec<Self::NodeId>, Self::Error>;
 }
 
 // {impl}`requirements.sdk.graph.fingerprinting.fingerprint_content`
@@ -68,16 +63,16 @@ pub struct Judgment<M> {
 
 // {impl}`requirements.sdk.graph.evidence.dependencies`
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Dependency<N> {
+pub enum Dependency<N, L = ()> {
     Node(N, Fingerprint),
-    OutgoingEdges(N, Fingerprint),
+    OutgoingEdges(N, L, Fingerprint),
 }
 
 // {impl}`requirements.sdk.graph.evidence.record`
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Record<N, M> {
+pub struct Record<N, M, L = ()> {
     pub procedure: String,
-    pub dependencies: Vec<Dependency<N>>,
+    pub dependencies: Vec<Dependency<N, L>>,
     pub output: Judgment<M>,
 }
 
@@ -115,14 +110,17 @@ pub trait EvidenceStorage: Graph {
         &self,
         node: &Self::NodeId,
     ) -> impl Future<
-        Output = Result<Option<Record<Self::NodeId, Self::JudgmentMetadata>>, Self::Error>,
+        Output = Result<
+            Option<Record<Self::NodeId, Self::JudgmentMetadata, Self::EdgeLabel>>,
+            Self::Error,
+        >,
     > + Send;
 
     // {impl}`requirements.sdk.graph.evidence.evidence_storage`
     fn store_evidence(
         &self,
         node: &Self::NodeId,
-        record: &Record<Self::NodeId, Self::JudgmentMetadata>,
+        record: &Record<Self::NodeId, Self::JudgmentMetadata, Self::EdgeLabel>,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send;
 }
 
@@ -177,7 +175,7 @@ pub trait Validation: Graph + Fingerprinting + Sized {
 // {impl}`requirements.sdk.graph.context-tools.tracked_inspection`
 pub struct InspectionContext<'d, D: Graph + Fingerprinting> {
     graph: &'d D,
-    observations: Mutex<Vec<Dependency<D::NodeId>>>,
+    observations: Mutex<Vec<Dependency<D::NodeId, D::EdgeLabel>>>,
 }
 
 impl<'d, D: Graph + Fingerprinting> InspectionContext<'d, D> {
@@ -220,12 +218,13 @@ impl<'d, D: Graph + Fingerprinting> InspectionContext<'d, D> {
     pub fn outgoing_edges(
         &self,
         node: &D::NodeId,
-    ) -> Result<Snapshot<Vec<Edge<D::NodeId, D::EdgeLabel>>>, D::Error> {
-        let snapshot = self.prepare_edges(node)?;
-        self.observe(Dependency::OutgoingEdges(
-            node.clone(),
-            snapshot.fingerprint.clone(),
-        ));
+        label: D::EdgeLabel,
+    ) -> Result<Snapshot<Vec<D::NodeId>>, D::Error>
+    where
+        D::EdgeLabel: PartialEq,
+    {
+        let snapshot = self.prepare_edges(node, label.clone())?;
+        self.observe_edges(node.clone(), label, snapshot.fingerprint.clone());
         Ok(snapshot)
     }
 
@@ -234,30 +233,55 @@ impl<'d, D: Graph + Fingerprinting> InspectionContext<'d, D> {
     pub fn prepare_edges(
         &self,
         node: &D::NodeId,
-    ) -> Result<Snapshot<Vec<Edge<D::NodeId, D::EdgeLabel>>>, D::Error> {
-        self.graph.outgoing_edges(node)
+        label: D::EdgeLabel,
+    ) -> Result<Snapshot<Vec<D::NodeId>>, D::Error> {
+        let content = self.graph.outgoing_edges(node, label)?;
+        let fingerprint = edge_fingerprint(self.graph, &content);
+        Ok(Snapshot {
+            content,
+            fingerprint,
+        })
     }
 
     /// Import the fingerprint of the exact snapshot delivered to the caller.
     pub fn observe_read(&self, node: D::NodeId, fingerprint: Fingerprint) {
-        self.observe(Dependency::Node(node, fingerprint));
-    }
-
-    // {cite}`habeas:util`
-    pub fn observe_edges(&self, node: D::NodeId, fingerprint: Fingerprint) {
-        self.observe(Dependency::OutgoingEdges(node, fingerprint));
-    }
-
-    // {cite}`habeas:util`
-    fn observe(&self, observation: Dependency<D::NodeId>) {
         let mut observations = self.observations.lock().expect("dependency trace poisoned");
-        if !observations.contains(&observation) {
-            observations.push(observation);
+        if !observations.iter().any(|dependency| {
+            matches!(dependency,
+            Dependency::Node(previous, hash) if previous == &node && hash == &fingerprint)
+        }) {
+            observations.push(Dependency::Node(node, fingerprint));
         }
     }
 
     // {cite}`habeas:util`
-    pub fn dependencies(&self) -> Vec<Dependency<D::NodeId>> {
+    pub fn observe_edges(&self, node: D::NodeId, label: D::EdgeLabel, fingerprint: Fingerprint)
+    where
+        D::EdgeLabel: PartialEq,
+    {
+        self.observe_edges_by(node, label, fingerprint, |a, b| a == b);
+    }
+
+    // {cite}`habeas:util`
+    pub(crate) fn observe_edges_by(
+        &self,
+        node: D::NodeId,
+        label: D::EdgeLabel,
+        fingerprint: Fingerprint,
+        matches: fn(&D::EdgeLabel, &D::EdgeLabel) -> bool,
+    ) {
+        let mut observations = self.observations.lock().expect("dependency trace poisoned");
+        if !observations.iter().any(|dependency| {
+            matches!(dependency,
+            Dependency::OutgoingEdges(previous, previous_label, hash)
+            if previous == &node && matches(previous_label, &label) && hash == &fingerprint)
+        }) {
+            observations.push(Dependency::OutgoingEdges(node, label, fingerprint));
+        }
+    }
+
+    // {cite}`habeas:util`
+    pub fn dependencies(&self) -> Vec<Dependency<D::NodeId, D::EdgeLabel>> {
         self.observations
             .lock()
             .expect("dependency trace poisoned")
@@ -269,7 +293,7 @@ impl<'d, D: Graph + Fingerprinting> InspectionContext<'d, D> {
         &self,
         procedure: String,
         output: Judgment<D::JudgmentMetadata>,
-    ) -> Record<D::NodeId, D::JudgmentMetadata> {
+    ) -> Record<D::NodeId, D::JudgmentMetadata, D::EdgeLabel> {
         Record {
             procedure,
             dependencies: self.dependencies(),
@@ -288,7 +312,7 @@ pub fn procedure_matches(stored: &str, requested: &str) -> bool {
 pub fn record_is_current<D: Graph + Fingerprinting>(
     graph: &D,
     procedure: &str,
-    record: &Record<D::NodeId, D::JudgmentMetadata>,
+    record: &Record<D::NodeId, D::JudgmentMetadata, D::EdgeLabel>,
 ) -> Result<bool, D::Error> {
     if !procedure_matches(&record.procedure, procedure) {
         return Ok(false);
@@ -299,13 +323,35 @@ pub fn record_is_current<D: Graph + Fingerprinting>(
                 let content = graph.node_content(node)?;
                 (graph.fingerprint(node, &content), previous)
             }
-            Dependency::OutgoingEdges(node, previous) => {
-                (graph.outgoing_edges(node)?.fingerprint, previous)
-            }
+            Dependency::OutgoingEdges(node, label, previous) => (
+                edge_fingerprint(graph, &graph.outgoing_edges(node, label.clone())?),
+                previous,
+            ),
         };
         if &current != previous {
             return Ok(false);
         }
     }
     Ok(true)
+}
+
+/// Hash the target set without requiring serialization or hashing of opaque IDs.
+/// JSON encodes segment boundaries and Unicode unambiguously; ordering and
+/// duplicate edges do not affect membership. Empty selections have a digest too.
+// {impl}`requirements.sdk.graph.outgoing_edges`
+pub fn edge_fingerprint<D: Graph>(graph: &D, targets: &[D::NodeId]) -> Fingerprint {
+    let mut paths = targets
+        .iter()
+        .map(|node| graph.node_path(node).segments)
+        .collect::<Vec<_>>();
+    paths.sort();
+    paths.dedup();
+    let bytes = serde_json::to_vec(&paths).expect("string paths serialize");
+    Fingerprint {
+        scheme: "node-path-set-sha256-v1".into(),
+        value: Sha256::digest(bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect(),
+    }
 }

@@ -1,7 +1,7 @@
 {
-  "requirement": "`store` MUST create all missing directories needed for the selected record path,\nincluding the configured root and the encoded segment directories, and serialize\nthe complete supplied record as JSON. It MUST replace the file\nfor the selected node path atomically: concurrent readers MUST observe an old or new\ncomplete record, never a partially written record. Serialization failure MUST\nleave any existing record unchanged. File-operation failures MUST be returned\nas `FileStorageError::Io`, and serialization failures as `FileStorageError::Json`.\nConcurrent stores MUST use independent temporary files; after successful\ncompeting writes, the saved record MUST be one of those complete records.\nThe helper MUST attempt to remove its temporary files after a failed write.\nA cleanup failure MUST be reported as `FileStorageError::Io`. Successful stores\nMUST leave no temporary file belonging to that operation.",
+  "requirement": "`store` creates missing root and encoded-segment directories, then serializes\nthe complete supplied record as JSON. Replacement is atomic: concurrent readers\nobserve either the old or new complete record, never a partial write.\nSerialization failure leaves any existing record unchanged.\n\nFile-operation failures return `FileStorageError::Io`; serialization failures\nreturn `FileStorageError::Json`. Concurrent stores use independent temporary\nfiles, and successful competing writes leave one of the complete records.\nAfter a failed write, the helper attempts to remove its temporary files.\nA cleanup failure returns `FileStorageError::Io`. A successful store leaves\nno temporary file belonging to that operation.",
   "determination": true,
-  "rationale": "I judge the tests adequate for `requirements.sdk.filesystem-storage.store`. I did not request implementation source. Each obligation maps to a marked test, as follows.\n\n- **Directory creation.** `tests/storage.rs#fn[send_futures_create_missing_roots_and_nested_paths_without_shortening_keys]` stores into a root that doesn't exist yet. The path has nested segments, including an empty one. It asserts that the record file exists and that the record loads back.\n- **Complete JSON serialization.** `records_round_trip_and_malformed_or_incompatible_data_is_an_error` stores a record, loads it, and compares the procedure, dependencies and output. `send_futures_create_missing_roots_and_nested_paths_without_shortening_keys` also checks the output round trip.\n- **File-operation failures as `Io`.**\n  - `send_futures_create_missing_roots_and_nested_paths_without_shortening_keys` stores a path whose encoded component is too long and asserts `Io`.\n  - `failed_serialization_preserves_records_and_failed_replacement_cleans_up` makes the record path a directory, so the replace fails, and asserts `Io`.\n  - The unit test `writing_and_replacing_report_each_io_failure_and_cleanup_failure` injects write and replace failures and asserts `Io` with the exact injected message.\n- **Serialization failure.** `failed_serialization_preserves_records_and_failed_replacement_cleans_up` stores a record whose metadata fails to serialize. It asserts `Json` and that the existing file's bytes are unchanged.\n- **Atomic replacement and concurrent stores.** `concurrent_readers_only_observe_complete_records_from_competing_writes` runs two writers over 30 iterations each, with a concurrent reader.\n  - Every read must succeed. The record's id must be A or B, and the padding must be the full 8192 bytes, so a partial or interleaved record would be caught.\n  - After the writers finish, the directory holds exactly one entry. That shows the independent temporary files were all cleaned up.\n- **Cleanup after a failed write.** The unit test covers write failure and replace failure, each with cleanup succeeding and failing. It asserts the operation sequence (write, replace, cleanup), so cleanup is attempted after each failure. A cleanup failure is reported as `Io`. The success case asserts that no cleanup is called.\n- **No temporary file after a successful store.** The directory-count assertions in the concurrent test and in the `send_futures_...` test cover this. The failed-replacement scenario also checks that only `record.json` remains.\n\nI found no obligation without a test that exercises it and asserts its outcome.",
+  "rationale": "The reviewed tests cover every obligation in `requirements.sdk.filesystem-storage.store`.\n\n- **Directory creation and JSON serialization.** `send_futures_create_missing_roots_and_nested_paths_without_shortening_keys` stores into a missing nested root with an empty segment. It asserts that the record file exists and that the loaded output matches. `records_round_trip_and_malformed_or_incompatible_data_is_an_error` round-trips records, including a record with a labeled dependency.\n- **Atomic replacement.** `concurrent_readers_only_observe_complete_records_from_competing_writes` runs two writers against one path, 30 stores each, while a reader loads repeatedly. Every read must parse as a complete record whose `id` is `A` or `B` and whose 8192-byte padding is intact. This also exercises independent temporary files and competing writes leaving one complete record. The test finishes by asserting that the directory holds exactly one entry.\n- **Serialization failure.** `failed_serialization_preserves_records_and_failed_replacement_cleans_up` stores a record whose metadata fails to serialize. It asserts `FileStorageError::Json` and that the existing file's bytes are unchanged.\n- **File-operation failures return `Io`.** Real failures are covered in three places:\n  - **Directory creation.** The over-long segment in `send_futures_create_missing_roots_and_nested_paths_without_shortening_keys` makes `store` return `Io`.\n  - **Replace.** A directory sitting at the record path in `failed_serialization_preserves_records_and_failed_replacement_cleans_up` makes `store` return `Io`.\n  - **Injected write, replace and cleanup failures.** The unit test `writing_and_replacing_report_each_io_failure_and_cleanup_failure` drives `write_and_replace` through a `FaultyTemporary` fixture. It asserts `Io` with the expected message and the exact operation sequence for each case.\n- **Cleanup after failure.**\n  - The unit test covers a write failure followed by cleanup, and a replace failure followed by cleanup.\n  - It also covers a cleanup failure after each of those, where the cleanup error is the one returned.\n  - The real failed replace in `failed_serialization_preserves_records_and_failed_replacement_cleans_up` checks that only `record.json` remains in the directory, so no temporary file is left behind.\n- **Successful store leaves no temporary file.** The directory-count assertions in the concurrent test and the nested-path test check this. The unit test's success case runs only write and replace, so no cleanup call occurs.\n\nThe implementation in `crates/habeas-sdk/src/storage.rs` creates its temporary file with `tempfile::NamedTempFile::new_in`, which gives each store its own unique file. The concurrent test would likely expose any shared-file corruption.\n\nI found no obligation without a test and no assertion that contradicts the requirement.",
   "references": "2b4c3d9890347fe83a2d5ce1724e9d408527393c07529500ef91868b43fe65ce",
   "inputs": [
     {
@@ -11,18 +11,17 @@
       ],
       "text": [
         ":::{req} store",
-        "`store` MUST create all missing directories needed for the selected record path,",
-        "including the configured root and the encoded segment directories, and serialize",
-        "the complete supplied record as JSON. It MUST replace the file",
-        "for the selected node path atomically: concurrent readers MUST observe an old or new",
-        "complete record, never a partially written record. Serialization failure MUST",
-        "leave any existing record unchanged. File-operation failures MUST be returned",
-        "as `FileStorageError::Io`, and serialization failures as `FileStorageError::Json`.",
-        "Concurrent stores MUST use independent temporary files; after successful",
-        "competing writes, the saved record MUST be one of those complete records.",
-        "The helper MUST attempt to remove its temporary files after a failed write.",
-        "A cleanup failure MUST be reported as `FileStorageError::Io`. Successful stores",
-        "MUST leave no temporary file belonging to that operation.",
+        "`store` creates missing root and encoded-segment directories, then serializes",
+        "the complete supplied record as JSON. Replacement is atomic: concurrent readers",
+        "observe either the old or new complete record, never a partial write.",
+        "Serialization failure leaves any existing record unchanged.",
+        "",
+        "File-operation failures return `FileStorageError::Io`; serialization failures",
+        "return `FileStorageError::Json`. Concurrent stores use independent temporary",
+        "files, and successful competing writes leave one of the complete records.",
+        "After a failed write, the helper attempts to remove its temporary files.",
+        "A cleanup failure returns `FileStorageError::Io`. A successful store leaves",
+        "no temporary file belonging to that operation.",
         ":::"
       ]
     },
@@ -34,12 +33,12 @@
     {
       "file": "crates/habeas-sdk/tests/storage.rs",
       "item": "fn[records_round_trip_and_malformed_or_incompatible_data_is_an_error]",
-      "hash": "063257d8721236c229292a42413b25a2095f471fcbb662f4ea542b846a3a5ca3"
+      "hash": "16414c3dba8906a942c077a8691e7204b59909670e16326cb8cc871d87165f72"
     },
     {
       "file": "crates/habeas-sdk/tests/storage.rs",
       "item": "fn[send_futures_create_missing_roots_and_nested_paths_without_shortening_keys]",
-      "hash": "f205c32c4e539c971a8e81ea1605d762f149606129a30d28684787f0a3826f96"
+      "hash": "2919fced485e1c1f88d327fc6d25bb928e355804e72e2061f500809c36a4ae27"
     },
     {
       "file": "crates/habeas-sdk/tests/storage.rs",
@@ -49,35 +48,42 @@
     {
       "file": "crates/habeas-sdk/tests/storage.rs",
       "item": "fn[concurrent_readers_only_observe_complete_records_from_competing_writes]",
-      "hash": "70fcfeaa03cfd2304448cd072b89c0b310bfea5befad56e2ef306069d4763412"
+      "hash": "29c43c30dd9943fbe607f9e33838ffe442e865e0af54f3266dea19ef3ecf1cb9"
     },
     {
       "file": "crates/habeas-sdk/src/storage.rs",
       "item": "impl[FileEvidenceStorage]/fn[store]",
-      "hash": "9ec393c6c0b2c423efde7931299b265784efa7ec63f324c4025c441e56e74097"
+      "hash": "2f81e5db9dedc5b9dba177b8dc3892b70da46aa914fe6d8a47d1b624ebd7b0fd"
     },
     {
       "file": "crates/habeas-sdk/src/storage.rs",
       "item": "fn[write_and_replace]",
       "hash": "589990c2e0793cd01f42904c5fe4f80d34d680b1b22731ab810292133d4d70a0"
-    },
-    {
-      "file": "crates/habeas-sdk/src/storage.rs",
-      "item": "trait[TemporaryRecord]",
-      "hash": "80a42c16866c6d6fd37357b9ec7b4d9e8c54c3eb46a4a72fef5178298cd75eea"
     }
   ],
   "format_version": 1,
   "review_version": "habeas-review-v1",
   "dependencies": [
     {
-      "OutgoingEdges": [
+      "Node": [
         {
-          "Requirement": "requirements.sdk.filesystem-storage.store"
+          "ReferenceSet": "requirements.sdk.filesystem-storage.store"
         },
         {
           "scheme": "habeas-reference-set-v1",
           "value": "2b4c3d9890347fe83a2d5ce1724e9d408527393c07529500ef91868b43fe65ce"
+        }
+      ]
+    },
+    {
+      "OutgoingEdges": [
+        {
+          "Requirement": "requirements.sdk.filesystem-storage.store"
+        },
+        "Mandatory",
+        {
+          "scheme": "node-path-set-sha256-v1",
+          "value": "e7923ee60e7ff25ee56b8c54c521cb70212b0109f583f400b80914c38fde4272"
         }
       ]
     },
@@ -88,7 +94,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "c2de7ac529b1f381435d926aaf5c1193f70d9630e2c9266eeb1fbdf6194fd1ae"
+          "value": "0047af3001aa1e2c3eab32f03d218d6ef77737fdff0ad0aab42af4c7ff98f4d7"
         }
       ]
     },
@@ -122,7 +128,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "2b806f64608c8fd773b8e606946244f925403e81d513ff8a96befa39bd947997"
+          "value": "105a33a9eccb75ed8257507561b69eaae9990cb74a3754273e14caf2987f711b"
         }
       ]
     },
@@ -139,7 +145,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "97b02bfb983ed4d510c043c136466dc8df47b30032bdfda6bc8f81d68d985d43"
+          "value": "8df588ef1aece46a6b5c2fbf3a0577163db08507eda3dc8ef1d5cbbd4caf2c01"
         }
       ]
     },
@@ -173,7 +179,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "9d9c0c68a60dea5230bc1a321dd624025adee71cd363911fafdd578528134d12"
+          "value": "41e66ef8e8d616a4ff1629e8c9d03894d89146ddd2c1b953edb82962af028e19"
         }
       ]
     },
@@ -190,7 +196,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "9dc22420fcde41dd35b46e5f5ba9827e6800062bab0a24299c1f9dd31cbfa6e5"
+          "value": "1c755bd9f4931194fe00cfef60ee665a4b78f9fcafa1236ddd6813e38a2c3377"
         }
       ]
     },
@@ -208,23 +214,6 @@
         {
           "scheme": "habeas-input-v1",
           "value": "88ce7ecb99db07b7c3c13aed1711ccc68ecf2a0ebe5d314dcebebdd79c9f7afa"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/src/storage.rs"
-            },
-            "selector": "trait[TemporaryRecord]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "d825d5523a6ef0e694d18f0af0b1c909627ab8cd3d6f3135f48c50af7ccd6e7d"
         }
       ]
     }

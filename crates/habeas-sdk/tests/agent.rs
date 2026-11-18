@@ -12,11 +12,11 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-// These graph values deliberately have no Serde or Hash implementations.
+// Node and metadata values deliberately have no Serde or Hash implementations.
 #[derive(Clone, Eq, PartialEq)]
 struct Node(u8);
 // {cite}`habeas:util`
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Deserialize, JsonSchema)]
 struct Label;
 // {cite}`habeas:util`
 struct Contents(String);
@@ -37,21 +37,8 @@ impl Graph for Memory {
             segments: vec![node.0.to_string()],
         }
     }
-    fn outgoing_edges(&self, node: &Node) -> io::Result<Snapshot<Vec<Edge<Node, Label>>>> {
-        Ok(Snapshot {
-            content: if node.0 == 1 {
-                vec![Edge {
-                    label: Label,
-                    target: Node(2),
-                }]
-            } else {
-                vec![]
-            },
-            fingerprint: Fingerprint {
-                scheme: "edges".into(),
-                value: "ordered-edge-snapshot".into(),
-            },
-        })
+    fn outgoing_edges(&self, node: &Node, _: Label) -> io::Result<Vec<Node>> {
+        Ok(if node.0 == 1 { vec![Node(2)] } else { vec![] })
     }
 }
 impl Fingerprinting for Memory {
@@ -276,13 +263,7 @@ async fn concurrent_tool_agents_isolate_histories_pages_and_submissions_and_shar
     let dependencies = ctx.inspection().dependencies();
     assert_eq!(dependencies.len(), 3);
     for expected in [
-        Dependency::OutgoingEdges(
-            Node(1),
-            Fingerprint {
-                scheme: "edges".into(),
-                value: "ordered-edge-snapshot".into(),
-            },
-        ),
+        Dependency::OutgoingEdges(Node(1), Label, edge_fingerprint(&graph, &[Node(2)])),
         Dependency::Node(
             Node(1),
             Fingerprint {
@@ -345,24 +326,11 @@ async fn agent_edge_tools_record_selections_without_validating_targets() {
                 segments: vec![node.to_string()],
             }
         }
-        fn outgoing_edges(&self, node: &u8) -> io::Result<Snapshot<Vec<Edge<u8, ()>>>> {
+        fn outgoing_edges(&self, node: &u8, _: ()) -> io::Result<Vec<u8>> {
             if *node == 1 && self.lookups.fetch_add(1, Ordering::SeqCst) != 0 {
                 return Err(io::Error::other("must not relist inspected edges"));
             }
-            Ok(Snapshot {
-                content: if *node == 1 {
-                    vec![Edge {
-                        label: (),
-                        target: 2,
-                    }]
-                } else {
-                    vec![]
-                },
-                fingerprint: Fingerprint {
-                    scheme: "selection".into(),
-                    value: format!("selection {node}"),
-                },
-            })
+            Ok(if *node == 1 { vec![2] } else { vec![] })
         }
     }
     impl Fingerprinting for GraphWithChangingEdges {
@@ -423,7 +391,10 @@ async fn agent_edge_tools_record_selections_without_validating_targets() {
     };
     let agent = ToolAgent::new(
         Script::new(vec![
-            Some(vec![("outgoing_edges", json!({"path":{"segments":["1"]}}))]),
+            Some(vec![(
+                "outgoing_edges",
+                json!({"path":{"segments":["1"]},"label":null}),
+            )]),
             Some(vec![("submit_result", json!({"result":true}))]),
         ]),
         Render,
@@ -447,10 +418,8 @@ async fn agent_edge_tools_record_selections_without_validating_targets() {
             .dependencies,
         vec![Dependency::OutgoingEdges(
             1,
-            Fingerprint {
-                scheme: "selection".into(),
-                value: "selection 1".into()
-            }
+            (),
+            edge_fingerprint(&graph, &[2])
         )]
     );
     let requests = agent.provider.requests.lock().unwrap();
@@ -529,7 +498,10 @@ async fn graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record
     let graph = Memory(Arc::new(Mutex::new("x".repeat(18_000))));
     let agent = ToolAgent::new(
         Script::new(vec![
-            Some(vec![("outgoing_edges", json!({"path":{"segments":["1"]}}))]),
+            Some(vec![(
+                "outgoing_edges",
+                json!({"path":{"segments":["1"]},"label":null}),
+            )]),
             Some(vec![("read_node", json!({"path":{"segments":["2"]}}))]),
             Some(vec![("get_node_page", json!({"page":1}))]),
             Some(vec![("submit_result", json!({"result":true}))]),
@@ -541,7 +513,7 @@ async fn graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record
     let observations = ctx.inspection().dependencies();
     assert_eq!(observations.len(), 2);
     assert!(
-        matches!(&observations[0],Dependency::OutgoingEdges(Node(1),fingerprint) if fingerprint.value == "ordered-edge-snapshot")
+        matches!(&observations[0],Dependency::OutgoingEdges(Node(1), Label, fingerprint) if *fingerprint == edge_fingerprint(&graph, &[Node(2)]))
     );
     assert!(
         matches!(&observations[1],Dependency::Node(Node(2),fingerprint) if fingerprint.value == "x".repeat(18_000))

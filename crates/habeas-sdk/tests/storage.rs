@@ -19,6 +19,7 @@ fn record(id: &str) -> Record<String, Value> {
             ),
             Dependency::OutgoingEdges(
                 "subject".into(),
+                (),
                 Fingerprint {
                     scheme: "edges-v1".into(),
                     value: "ordered targets".into(),
@@ -55,7 +56,13 @@ async fn paths_are_injective_and_loading_missing_records_has_no_side_effects() {
             segments: segments.iter().map(|s| s.to_string()).collect(),
         };
         assert_eq!(store.record_path(&path), root.join(expected));
-        assert!(store.load::<String, Value>(&path).await.unwrap().is_none());
+        assert!(
+            store
+                .load::<String, Value, ()>(&path)
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
     assert!(!root.exists());
 }
@@ -71,16 +78,45 @@ async fn records_round_trip_and_malformed_or_incompatible_data_is_an_error() {
         segments: vec!["node".into()],
     };
     store.store(&path, &record("A")).await.unwrap();
-    let saved = store.load::<String, Value>(&path).await.unwrap().unwrap();
+    let saved = store
+        .load::<String, Value, ()>(&path)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(saved.procedure, "v1");
     assert_eq!(saved.dependencies, record("A").dependencies);
     assert_eq!(saved.output, record("A").output);
     assert!(matches!(
-        store.load::<u8, Value>(&path).await,
+        store.load::<u8, Value, ()>(&path).await,
+        Err(FileStorageError::Json(_))
+    ));
+    let labeled = Record {
+        procedure: saved.procedure.clone(),
+        dependencies: vec![Dependency::OutgoingEdges(
+            "subject".to_owned(),
+            "tests/é".to_owned(),
+            Fingerprint {
+                scheme: "targets-v1".into(),
+                value: "preserved".into(),
+            },
+        )],
+        output: saved.output.clone(),
+    };
+    store.store(&path, &labeled).await.unwrap();
+    let loaded = store
+        .load::<String, Value, String>(&path)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(loaded.procedure, labeled.procedure);
+    assert_eq!(loaded.dependencies, labeled.dependencies);
+    assert_eq!(loaded.output, labeled.output);
+    assert!(matches!(
+        store.load::<String, Value, u8>(&path).await,
         Err(FileStorageError::Json(_))
     ));
     std::fs::write(store.record_path(&path), b"not JSON").unwrap();
-    let error = store.load::<String, Value>(&path).await.err().unwrap();
+    let error = store.load::<String, Value, ()>(&path).await.err().unwrap();
     let FileStorageError::Json(cause) = &error else {
         panic!("expected JSON error")
     };
@@ -88,7 +124,7 @@ async fn records_round_trip_and_malformed_or_incompatible_data_is_an_error() {
     assert_eq!(error.to_string(), cause.to_string());
     std::fs::remove_file(store.record_path(&path)).unwrap();
     std::fs::create_dir(store.record_path(&path)).unwrap();
-    let error = store.load::<String, Value>(&path).await.err().unwrap();
+    let error = store.load::<String, Value, ()>(&path).await.err().unwrap();
     let FileStorageError::Io(cause) = &error else {
         panic!("expected I/O error")
     };
@@ -115,7 +151,7 @@ async fn send_futures_create_missing_roots_and_nested_paths_without_shortening_k
     send(store.store(&path, &record)).await.unwrap();
     assert!(store.record_path(&path).is_file());
     assert_eq!(
-        send(store.load::<String, Value>(&path))
+        send(store.load::<String, Value, ()>(&path))
             .await
             .unwrap()
             .unwrap()
@@ -128,7 +164,7 @@ async fn send_futures_create_missing_roots_and_nested_paths_without_shortening_k
         segments: vec!["x".repeat(4096)],
     };
     assert!(matches!(
-        store.load::<String, Value>(&too_long).await,
+        store.load::<String, Value, ()>(&too_long).await,
         Err(FileStorageError::Io(_))
     ));
     assert!(matches!(
@@ -213,7 +249,7 @@ fn concurrent_readers_only_observe_complete_records_from_competing_writes() {
         barrier.wait();
         let mut reads = 0;
         while finished.load(Ordering::SeqCst) != 2 {
-            let saved = futures::executor::block_on(store.load::<String, Value>(&path))
+            let saved = futures::executor::block_on(store.load::<String, Value, ()>(&path))
                 .unwrap()
                 .unwrap();
             assert!(saved.output.metadata["id"] == "A" || saved.output.metadata["id"] == "B");
@@ -255,7 +291,7 @@ impl Graph for StoredGraph {
     // an unwanted graph access, which this guard rejects. Traversal fixtures
     // separately exercise edge discovery.
     // :::
-    fn outgoing_edges(&self, _: &String) -> Result<Snapshot<Vec<Edge<String, ()>>>, Self::Error> {
+    fn outgoing_edges(&self, _: &String, _: ()) -> Result<Vec<String>, Self::Error> {
         panic!("storage operations must not discover graph edges")
     }
 }

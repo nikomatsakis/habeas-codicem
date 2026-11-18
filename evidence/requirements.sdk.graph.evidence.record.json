@@ -1,7 +1,7 @@
 {
-  "requirement": "`habeas_sdk::graph` MUST define the completed record as follows:\n\n```rust,ignore\npub struct Record<N, M> {\n    pub procedure: String,\n    pub dependencies: Vec<Dependency<N>>,\n    pub output: Judgment<M>,\n}\n```\n\nThe consumer chooses the procedure identity and judgment metadata type, and\nselects serialization and storage through the graph's evidence methods. The\nSDK MUST preserve the judgment's boolean result, rationale, and metadata.\nThe SDK MUST construct the dependency list from its captured observations; the\nvalidation callback MUST NOT be required to return a dependency list.",
+  "requirement": "```rust,ignore\n/// The completed validation of one node, defined in habeas_sdk::graph.\npub struct Record<N, M, L = ()> {\n    /// Application-chosen version of the validation rules.\n    pub procedure: String,\n    /// Observations captured by the SDK; the callback need not assemble these.\n    pub dependencies: Vec<Dependency<N, L>>,\n    /// Preserve the result, rationale, and application metadata as returned.\n    pub output: Judgment<M>,\n}\n```\n\nThe application chooses the metadata type, serialization, and storage through\nthe graph's evidence methods. The SDK constructs `dependencies` from its trace.",
   "determination": true,
-  "rationale": "I judge the tests adequate for `requirements.sdk.graph.evidence.record`. The two tests marked `{test}` cover each obligation the requirement states.\n\n**Obligations and the tests that cover them**\n\n1. **Record shape (`procedure`, `dependencies`, `output: Judgment<M>`).**\n   - The helper `fn[record]` in `crates/habeas-sdk/tests/contracts.rs` builds a `Record<Node, Metadata>` with all three public fields.\n   - `fn[checker_needs_no_validation_and_storage_preserves_nonserializable_metadata]` stores the record with `store_evidence` and loads it back with `load_evidence`. It asserts that `procedure`, `dependencies` and `output` are each equal.\n\n2. **The SDK preserves the judgment's boolean result, rationale and metadata.**\n   - `fn[domain_validation_preserves_metadata_reuses_traces_and_propagates_failures]` runs `validate_node` through the `Application` `Validation` impl. That impl returns `result` as `node % 2 == 0`, a formatted rationale, and a `Metadata { reason, count: 17 }`.\n   - For Node(1) the test asserts `result == false`, the rationale `\"reviewed source\"`, and the exact metadata.\n   - It asserts that the stored `saved.output` equals the returned judgment, and that a re-validation returns the same judgment.\n   - For Node(2) it asserts `result == true`, so both boolean values are covered. It also asserts that the stored output equals the returned judgment, and that the second call returns the same judgment.\n   - The first test's `record()` carries a `false` result with metadata (`reason`, `count: 42`) and round-trips it through storage. Its `Current(j) if j == saved.output` check confirms that the stored output is returned unchanged.\n   - The metadata type has no `Serialize` derive, which shows that metadata is left to the consumer's storage choice.\n\n3. **The SDK builds the dependency list from captured observations.**\n   - In the domain test, the `Application` callback only calls `inspection().read` and `successors`.\n   - The test asserts `saved.dependencies == record().dependencies`. That list holds exactly `Dependency::Node(Node(1), \"1:source\")` and `Dependency::OutgoingEdges(Node(1), \"edges 0\")`, which are the callback's observations.\n   - The failure loop (`read`/`edges`) asserts that the stored record's dependencies are unchanged after failed re-validations.\n\n4. **The callback MUST NOT be required to return a dependency list.**\n   - The `Validation::validate` impl in the test returns only `Result<Judgment<Metadata>, ValidationError<_>>`, so this is enforced at compile time.\n   - The test runs it end to end.\n\n5. **Serialization and storage are selected through the graph's evidence methods.**\n   - Both tests go through the consumer's `store_evidence` and `load_evidence`.\n   - They use an in-memory graph, so the choice of storage is left to the consumer.\n\n**Assessment**\n\nI looked at other tests that check dependency construction, in `tests/agent.rs` and `tests/validation.rs`. They are not marked `{test}` for this requirement, so I did not rely on them. They also give no sign that any obligation here is unchecked.\n\nI found no counterexample the marked tests would accept. All text-stated obligations, both boolean outcomes, and the dependency-from-observation behavior are exercised with concrete assertions.",
+  "rationale": "The tests adequately check `requirements.sdk.graph.evidence.record`.\n\n**Obligations derived from the text:**\n1. `Record` carries `procedure`, `dependencies` and `output`.\n2. `output` preserves the result, rationale and application metadata as returned.\n3. The application picks the metadata type and the storage, and metadata is not required to be serializable.\n4. The SDK builds `dependencies` from its trace, so the callback does not assemble them.\n\n**Coverage:**\n- `tests/contracts.rs#fn[checker_needs_no_validation_and_storage_preserves_nonserializable_metadata]`:\n  - It stores the `record()` fixture. The fixture sets `procedure` to \"v1\", has Node and OutgoingEdges dependencies, and has `output` with `result` false, a rationale, and `Metadata`.\n  - `Metadata` is a plain struct that derives only `Clone`, `Debug`, `PartialEq` and `Eq`, so it is application-chosen and not serializable.\n  - After a store/load round trip it asserts that `procedure`, `dependencies` and `output` are equal.\n  - It asserts that `check_node` returns `Current(j)` with `j == saved.output`.\n  - A different procedure (\"v2\") gives `Stale`, and changed content gives `Stale`. This shows the stored `procedure` and `dependencies` are used.\n- `tests/contracts.rs#fn[domain_validation_preserves_metadata_reuses_traces_and_propagates_failures]`:\n  - It checks that `validate_node` returns the callback's result, rationale and `Metadata { reason, count }` unchanged.\n  - The stored record satisfies `saved.output == judgment`.\n  - It asserts `saved.dependencies == record().dependencies`. The test callback does not build dependencies (the callback counter shows it ran once), so the SDK built them from its trace.\n  - Both a false-result judgment (Node 1) and a true-result one (Node 2) are stored and compared with the loaded output, including their metadata. This covers `result` being preserved in both directions.\n  - Reuse is shown: a second `validate_node` call returns the stored judgment with callbacks and writes both still at 1. This means the stored `procedure` matched the validator's \"v1\". `saved.procedure` is not asserted directly, but the reuse check would fail if the wrong value were stored.\n  - After a store failure the previously stored output stays unchanged.\n\n**Gaps:** I found none. The only weak spot is that `procedure` on a validator-produced record is checked only indirectly, through reuse. The requirement gives no distinct behavior for it beyond what the checker and reuse paths exercise.",
   "references": "982e72f06554db9f161bbd1a324ef07b8d1a27c7dc660e4def336675cd113cf4",
   "inputs": [
     {
@@ -11,21 +11,20 @@
       ],
       "text": [
         ":::{req} record",
-        "`habeas_sdk::graph` MUST define the completed record as follows:",
-        "",
         "```rust,ignore",
-        "pub struct Record<N, M> {",
+        "/// The completed validation of one node, defined in habeas_sdk::graph.",
+        "pub struct Record<N, M, L = ()> {",
+        "    /// Application-chosen version of the validation rules.",
         "    pub procedure: String,",
-        "    pub dependencies: Vec<Dependency<N>>,",
+        "    /// Observations captured by the SDK; the callback need not assemble these.",
+        "    pub dependencies: Vec<Dependency<N, L>>,",
+        "    /// Preserve the result, rationale, and application metadata as returned.",
         "    pub output: Judgment<M>,",
         "}",
         "```",
         "",
-        "The consumer chooses the procedure identity and judgment metadata type, and",
-        "selects serialization and storage through the graph's evidence methods. The",
-        "SDK MUST preserve the judgment's boolean result, rationale, and metadata.",
-        "The SDK MUST construct the dependency list from its captured observations; the",
-        "validation callback MUST NOT be required to return a dependency list.",
+        "The application chooses the metadata type, serialization, and storage through",
+        "the graph's evidence methods. The SDK constructs `dependencies` from its trace.",
         ":::"
       ]
     },
@@ -37,37 +36,7 @@
     {
       "file": "crates/habeas-sdk/tests/contracts.rs",
       "item": "fn[domain_validation_preserves_metadata_reuses_traces_and_propagates_failures]",
-      "hash": "a1f987c952877c884092261e1ee4b4eea75560d13ee5347ca76f0d9b668f9ab0"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/contracts.rs",
-      "item": "impl[Application/Validation]",
-      "hash": "67bd5ed193d08f6c76df438f62ac97b3958c7c00e1c27c83af628d38812ab29e"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/contracts.rs",
-      "item": "fn[record]",
-      "hash": "4d6f003d2e931e38cd1985ea7702d2f2bfc35e9ac5af8c4ea04df3029d5b9988"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/contracts.rs",
-      "item": "use@634f58b523ae",
-      "hash": "634f58b523aeaad07c57cb8654dede556f1bb21b3dfb3c87ee9d27924ae0033e"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/contracts.rs",
-      "item": "use@17891119f0eb",
-      "hash": "17891119f0eb9d10b48f727e590ef4be9050f4cdc2813283f53abf585dfe721a"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/contracts.rs",
-      "item": "struct[Node]",
-      "hash": "6432ba1c03e5d58df823ea2106175d9c26356019b703ba3906c9d80ba040abd6"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/contracts.rs",
-      "item": "struct[Content]",
-      "hash": "1871169283a0c2fff637b91bd9ccfdaa767bdee65f6afede60204936346757e1"
+      "hash": "38b36cadc68999b752d87ad2c6911273bb4a6346d008c27a4dbaa9458d3574fa"
     },
     {
       "file": "crates/habeas-sdk/tests/contracts.rs",
@@ -76,61 +45,43 @@
     },
     {
       "file": "crates/habeas-sdk/tests/contracts.rs",
-      "item": "struct[State]",
-      "hash": "845def00581c38bc53fa3d7864ddcd6346ee120c06d77e15c8167c9807b6846f"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/contracts.rs",
       "item": "struct[GraphOnly]",
       "hash": "23e7ab91b76886fe379b7c1690655fb8b2d15530d229b18e52b578562331082d"
     },
     {
       "file": "crates/habeas-sdk/tests/contracts.rs",
-      "item": "struct[Application]",
-      "hash": "c31d65ebb3ad190b4b25a3d806ae032ad76188798624c723c3d8d779a2420f7c"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/contracts.rs",
       "item": "macro[graph]",
-      "hash": "f807b6b06a29d4d72adf2af3d32f7659e2740487a11619b928c658e888b154df"
+      "hash": "a8254351866f14dde8bbbc70587af63cde87c90893c5d0072a3770e05f401d65"
     },
     {
       "file": "crates/habeas-sdk/tests/contracts.rs",
-      "item": "fn[graph_state]",
-      "hash": "39b84cf9332cbd6d34c2180b0b57f681c75b6346d68f207831b27d2cabf32af9"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/contracts.rs",
-      "item": "macro@5bf493c5cca1",
-      "hash": "5bf493c5cca1ee5b7c4cfbcc213ac9cd57f4e197f86338218a0454893d1059de"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/contracts.rs",
-      "item": "fn[application_state]",
-      "hash": "58d2a8ec8003aa24e30d6153b1bf335212b0de907bb96f66ba6f53effacebe27"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/contracts.rs",
-      "item": "macro@07784b8a5158",
-      "hash": "07784b8a51587e9f54edf5471b28e9daf4f7856cab632c66650de1b48a014076"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/contracts.rs",
-      "item": "fn[fingerprint]",
-      "hash": "40c900434242f4d407334a1ca2058186315dd2fb2e2b0dd6e4354077b9afce37"
+      "item": "fn[record]",
+      "hash": "3203c60db08ed46a5be9cc3075f156b642f9879c89e36b17a8f5eeff95db0aa6"
     }
   ],
   "format_version": 1,
   "review_version": "habeas-review-v1",
   "dependencies": [
     {
-      "OutgoingEdges": [
+      "Node": [
         {
-          "Requirement": "requirements.sdk.graph.evidence.record"
+          "ReferenceSet": "requirements.sdk.graph.evidence.record"
         },
         {
           "scheme": "habeas-reference-set-v1",
           "value": "982e72f06554db9f161bbd1a324ef07b8d1a27c7dc660e4def336675cd113cf4"
+        }
+      ]
+    },
+    {
+      "OutgoingEdges": [
+        {
+          "Requirement": "requirements.sdk.graph.evidence.record"
+        },
+        "Mandatory",
+        {
+          "scheme": "node-path-set-sha256-v1",
+          "value": "85899a19b182c27767ced411152718c9dc0838d8c91f51fa32a9fb035a6e1a8c"
         }
       ]
     },
@@ -141,7 +92,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "0b42f4464791bc1ed517a0dc010f39c6fa2258c1c48f910372fb15875b0cbcf0"
+          "value": "5a1b5f10e6b1b8bdd451618363e668a50d6679c668543fd0556c7e12070dea86"
         }
       ]
     },
@@ -175,109 +126,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "94a40d36d4c0a1f71b238d038c66f97ead2bd2038aee853c440f08aa56e2373c"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/contracts.rs"
-            },
-            "selector": "impl[Application/Validation]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "0f41fe9cea54c4ca7f7651d54b0c899d2ef676693deeb6bd62152b03d6b1d11b"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/contracts.rs"
-            },
-            "selector": "fn[record]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "28a542d36942932a7d6b3f46b35862b87c1cc3d053b456b0c3ddf2f8fa3f354a"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/contracts.rs"
-            },
-            "selector": "use@634f58b523ae"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "59ea088e5b032d9370888408704af2082af4d0e68ee55f669c75d4094921abbd"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/contracts.rs"
-            },
-            "selector": "use@17891119f0eb"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "c7605567a764d67ed8ece564f5922660d68f4ea583c0f93a8dc0c75cc23e51af"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/contracts.rs"
-            },
-            "selector": "struct[Node]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "124c6b0c72fe4c4863e1dac2896d9f0a717336d624cb5e70f269ceedf5969755"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/contracts.rs"
-            },
-            "selector": "struct[Content]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "35845f7dbc7ce141b15ea861e647ba66a3d45621e4ebdd4ee1f1a8e6da77225f"
+          "value": "f9e3986c618e6b2061a8497398e7c970763c8d325fa919bc5191e8176942eaf1"
         }
       ]
     },
@@ -306,23 +155,6 @@
               "scheme": "repo",
               "location": "crates/habeas-sdk/tests/contracts.rs"
             },
-            "selector": "struct[State]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "13e979ecfd51c665d694b3ed4fe0780de25d4a8d5338024d361e2d58bc4a0c00"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/contracts.rs"
-            },
             "selector": "struct[GraphOnly]"
           }
         },
@@ -340,29 +172,12 @@
               "scheme": "repo",
               "location": "crates/habeas-sdk/tests/contracts.rs"
             },
-            "selector": "struct[Application]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "7244efefd1436328ea9fa9e84634bd092fa0cbc716da3b397b5b77627488f6c7"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/contracts.rs"
-            },
             "selector": "macro[graph]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "59e5f0bba0d74f9965e0fb0cb4d1c6aced61b621366fc908b60ab4a14da203a7"
+          "value": "539721e3ea88be73d10a78f363c8a123e122350c396aa7766dd9a7722d2198e1"
         }
       ]
     },
@@ -374,80 +189,12 @@
               "scheme": "repo",
               "location": "crates/habeas-sdk/tests/contracts.rs"
             },
-            "selector": "fn[graph_state]"
+            "selector": "fn[record]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "e63a249725be5909609f002bc6612cfeaf67cc37247e215d8ab8989a91c6efa2"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/contracts.rs"
-            },
-            "selector": "macro@5bf493c5cca1"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "9d6cb6b35fa733a7301f1e87e41d833f8402ffe37d8bcd5e9685e1c85e81526c"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/contracts.rs"
-            },
-            "selector": "fn[application_state]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "13aff535d8aca4d293d6f7d621499d9dc3f552b348f24e7febfb3f6c453092e6"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/contracts.rs"
-            },
-            "selector": "macro@07784b8a5158"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "16e1c15f645c7d4ff3f5754d83f2dcc3ff94cab880d9aee856e4ef401f016aa5"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/contracts.rs"
-            },
-            "selector": "fn[fingerprint]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "fdb1d13e11d5525009e4b117bed39668fdf4b6dc56d21bf7d7c299906f6ac611"
+          "value": "05a60a644b9c1fd3a582c5310e6d24591bf5f92405fcecb04af35e6198f2a44c"
         }
       ]
     }

@@ -75,9 +75,34 @@ impl AssessmentSources {
     // {impl}`requirements.references.builtin_definitions`
     // {impl}`requirements.references.site_review`
     pub(crate) fn prepare(root: &Path, subject_name: &str) -> io::Result<Self> {
+        Self::prepare_with_github(root, subject_name, GithubIssues::from_env(root))
+    }
+
+    // {cite}`habeas:util`
+    pub(crate) fn prepare_with_github(
+        root: &Path,
+        subject_name: &str,
+        github: GithubIssues,
+    ) -> io::Result<Self> {
+        Self::prepare_with_context(
+            root,
+            subject_name,
+            github,
+            load_definitions(root)?,
+            OutlineCache::default(),
+        )
+    }
+
+    // {cite}`habeas:util`
+    pub(crate) fn prepare_with_context(
+        root: &Path,
+        subject_name: &str,
+        github: GithubIssues,
+        definitions: BTreeMap<String, Declaration>,
+        outlines: OutlineCache,
+    ) -> io::Result<Self> {
         let root = fs::canonicalize(root)?;
         let access = super::access::load_source_access(&root)?;
-        let definitions = load_definitions(&root)?;
         let subject = definitions
             .get(subject_name)
             .filter(|definition| definition.kind != DefinitionKind::Term)
@@ -123,18 +148,13 @@ impl AssessmentSources {
             );
         }
 
-        let outlines = OutlineCache::default();
-        let mut errors = Vec::new();
-        let files = discovered_files(&root, &mut errors);
-        let references = crate::evidence::collect_references_with_progress(
-            &root,
-            &files,
-            &mut errors,
-            &mut |_| {},
-        );
-        if !errors.is_empty() {
-            return Err(io::Error::other(errors.join("\n")));
-        }
+        let catalog = outlines.reference_catalog(&root);
+        let catalog = catalog
+            .as_ref()
+            .as_ref()
+            .map_err(|error| io::Error::other(error.clone()))?;
+        let files = &catalog.files;
+        let references = &catalog.references;
         let sites =
             crate::evidence::definition_sites(&root, subject_name, subject, &files, &outlines)?;
         // The same edges determine the reference contributions below.
@@ -143,13 +163,8 @@ impl AssessmentSources {
             definitions: &definitions,
             outlines: &outlines,
         };
-        let checks = habeas_sdk::graph::InspectionContext::new(&domain);
-        let reference_set = checks
-            .outgoing_edges(&crate::sdk::HabeasNode::Requirement(
-                crate::sdk::RequirementId(subject_name.to_owned()),
-            ))?
-            .fingerprint
-            .value;
+        let reference_set =
+            domain.reference_set(&crate::sdk::RequirementId(subject_name.to_owned()))?;
         // Tests contribute source. Refining declarations contribute their text;
         // implementation references outside declarations only locate code.
         for reference in references.iter().filter(|reference| {
@@ -252,7 +267,6 @@ impl AssessmentSources {
             }
         }
         mandatory.extend(builtins.into_iter().map(builtin_input));
-        let github = GithubIssues::from_env(&root);
         let issue_states = crate::github::input_issue_states(
             &root,
             &github,

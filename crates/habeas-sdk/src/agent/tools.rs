@@ -8,9 +8,9 @@ use serde_json::json;
 
 // {cite}`habeas:util`
 /// A result and the exact observations acknowledged when it is delivered.
-pub struct ToolDelivery<N> {
+pub struct ToolDelivery<N, L = ()> {
     pub text: String,
-    pub dependencies: Vec<Dependency<N>>,
+    pub dependencies: Vec<Dependency<N, L>>,
 }
 
 pub trait ToolSession<D: Graph>: Send {
@@ -21,7 +21,7 @@ pub trait ToolSession<D: Graph>: Send {
         &'a mut self,
         name: &'a str,
         arguments: &'a Value,
-    ) -> BoxFuture<'a, io::Result<ToolDelivery<D::NodeId>>>;
+    ) -> BoxFuture<'a, io::Result<ToolDelivery<D::NodeId, D::EdgeLabel>>>;
 }
 
 /// Each agent call gets fresh tool state, including its own result pages.
@@ -29,7 +29,8 @@ pub trait ToolFactory<D: Graph>: Send + Sync {
     // {cite}`habeas:util`
     fn session<'a>(&'a self) -> Box<dyn ToolSession<D> + 'a>
     where
-        D::NodeId: 'a;
+        D::NodeId: 'a,
+        D::EdgeLabel: 'a;
 }
 
 // {cite}`habeas:util`
@@ -39,6 +40,7 @@ impl<D: Graph> ToolFactory<D> for NoTools {
     fn session<'a>(&'a self) -> Box<dyn ToolSession<D> + 'a>
     where
         D::NodeId: 'a,
+        D::EdgeLabel: 'a,
     {
         Box::new(NoTools)
     }
@@ -53,7 +55,7 @@ impl<D: Graph> ToolSession<D> for NoTools {
         &'a mut self,
         name: &'a str,
         _: &'a Value,
-    ) -> BoxFuture<'a, io::Result<ToolDelivery<D::NodeId>>> {
+    ) -> BoxFuture<'a, io::Result<ToolDelivery<D::NodeId, D::EdgeLabel>>> {
         Box::pin(async move { Err(io::Error::other(format!("unknown tool {name:?}"))) })
     }
 }
@@ -92,6 +94,7 @@ impl<P, R, T> ToolAgent<P, R, T> {
 impl<D, P, R, T> Agent<D> for ToolAgent<P, R, T>
 where
     D: Graph + Fingerprinting,
+    D::EdgeLabel: serde::de::DeserializeOwned + schemars::JsonSchema + PartialEq,
     D::Error: std::fmt::Display,
     P: CompletionProvider,
     R: AgentInputRenderer<D>,
@@ -155,14 +158,15 @@ struct GraphSession<'a, 'd, D: Graph + Fingerprinting, R> {
     renderer: &'a R,
     tools: Box<dyn ToolSession<D> + 'a>,
     known: Vec<D::NodeId>,
-    pending: Vec<Dependency<D::NodeId>>,
+    pending: Vec<Dependency<D::NodeId, D::EdgeLabel>>,
     parameters: Value,
-    pages: Vec<(String, Dependency<D::NodeId>)>,
+    pages: Vec<(String, Dependency<D::NodeId, D::EdgeLabel>)>,
 }
 
 impl<D, R> GraphSession<'_, '_, D, R>
 where
     D: Graph + Fingerprinting,
+    D::EdgeLabel: serde::de::DeserializeOwned + schemars::JsonSchema + PartialEq,
     D::Error: std::fmt::Display,
     R: AgentInputRenderer<D>,
 {
@@ -192,6 +196,7 @@ where
 impl<D, R> Conversation for GraphSession<'_, '_, D, R>
 where
     D: Graph + Fingerprinting,
+    D::EdgeLabel: serde::de::DeserializeOwned + schemars::JsonSchema + PartialEq,
     D::Error: std::fmt::Display,
     R: AgentInputRenderer<D>,
 {
@@ -202,8 +207,8 @@ where
         let mut tools: Vec<ToolDefinition> = [
             json!({"name":"read_node","description":"Read a known graph node. Returns text and page IDs when long. A delivered page records its enclosing node.",
                 "parameters":{"type":"object","required":["path"],"properties":{"path":path}}}),
-            json!({"name":"outgoing_edges","description":"Inspect a known node's complete ordered outgoing targets, making those targets available to read_node.",
-                "parameters":{"type":"object","required":["path"],"properties":{"path":path}}}),
+            json!({"name":"outgoing_edges","description":"Inspect a known node's outgoing targets for the requested label, making those targets available to read_node.",
+                "parameters":{"type":"object","required":["path","label"],"properties":{"path":path,"label":schemars::schema_for!(D::EdgeLabel)}}}),
             json!({"name":"get_node_page","description":"Read another prepared node page by its page ID.",
                 "parameters":{"type":"object","required":["page"],"properties":{"page":{"type":"integer","minimum":0}}}}),
             json!({"name":"submit_result","description":"Finish by submitting your structured result in result. Exactly one accepted submission ends this call.",
@@ -260,17 +265,19 @@ where
             }
             "outgoing_edges" => {
                 let node = self.node(arguments)?;
+                let label: D::EdgeLabel =
+                    serde_json::from_value(arguments["label"].clone()).map_err(io::Error::other)?;
                 let snapshot = self
                     .inspection
-                    .prepare_edges(&node)
+                    .prepare_edges(&node, label.clone())
                     .map_err(|error| io::Error::other(error.to_string()))?;
                 self.pending
-                    .push(Dependency::OutgoingEdges(node, snapshot.fingerprint));
+                    .push(Dependency::OutgoingEdges(node, label, snapshot.fingerprint));
                 let mut targets = Vec::new();
-                for edge in snapshot.content {
-                    targets.push(self.inspection.graph().node_path(&edge.target));
-                    if !self.known.contains(&edge.target) {
-                        self.known.push(edge.target);
+                for target in snapshot.content {
+                    targets.push(self.inspection.graph().node_path(&target));
+                    if !self.known.contains(&target) {
+                        self.known.push(target);
                     }
                 }
                 Ok(json!({"targets":targets}).to_string())
@@ -288,8 +295,8 @@ where
                 Dependency::Node(node, fingerprint) => {
                     self.inspection.observe_read(node, fingerprint)
                 }
-                Dependency::OutgoingEdges(node, fingerprint) => {
-                    self.inspection.observe_edges(node, fingerprint)
+                Dependency::OutgoingEdges(node, label, fingerprint) => {
+                    self.inspection.observe_edges(node, label, fingerprint)
                 }
             }
         }

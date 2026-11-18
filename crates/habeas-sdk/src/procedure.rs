@@ -155,20 +155,14 @@ impl<'d, D: Graph + Fingerprinting> ValidationContext<'d, D> {
     }
 
     // {impl}`requirements.sdk.graph.validation.root_inputs`
-    pub fn successors(
-        &self,
-        label: &D::EdgeLabel,
-    ) -> Result<Vec<Edge<D::NodeId, D::EdgeLabel>>, D::Error>
+    pub fn successors(&self, label: &D::EdgeLabel) -> Result<Vec<D::NodeId>, D::Error>
     where
         D::EdgeLabel: PartialEq,
     {
         Ok(self
             .inspection
-            .outgoing_edges(&self.node)?
-            .content
-            .into_iter()
-            .filter(|edge| &edge.label == label)
-            .collect())
+            .outgoing_edges(&self.node, label.clone())?
+            .content)
     }
 }
 
@@ -274,16 +268,20 @@ where
         for insertion in self.insertions {
             let nodes = match insertion {
                 Insertion::Current => vec![self.ctx.node.clone()],
-                Insertion::Successors(label, matches) => self
-                    .ctx
-                    .inspection
-                    .outgoing_edges(&self.ctx.node)
-                    .map_err(ValidationError::Graph)?
-                    .content
-                    .into_iter()
-                    .filter(|edge| matches(&edge.label, &label))
-                    .map(|edge| edge.target)
-                    .collect(),
+                Insertion::Successors(label, matches) => {
+                    let snapshot = self
+                        .ctx
+                        .inspection
+                        .prepare_edges(&self.ctx.node, label.clone())
+                        .map_err(ValidationError::Graph)?;
+                    self.ctx.inspection.observe_edges_by(
+                        self.ctx.node.clone(),
+                        label,
+                        snapshot.fingerprint,
+                        matches,
+                    );
+                    snapshot.content
+                }
             };
             for node in nodes {
                 let snapshot = self
