@@ -4316,6 +4316,8 @@ fn the_review_prompt_criteria_find_ambiguous_uncheckable_and_prescriptive_text()
             "**One reading:** text a careful reviewer could read two ways is a finding",
             "**Outcome, not implementation:** the text says what holds",
             "Public API declarations specify an observable interface",
+            "their accompanying comments can specify semantic guarantees",
+            "Distinguish these from prescribing internal implementation details that the contract does not need",
         ],
     );
 }
