@@ -9,6 +9,12 @@ The nextest integration uses nextest-owned configuration in
 `.config/nextest.toml`. It adds no settings to `habeas.toml`; that file's existing
 `[coverage]` table continues to control evidence-input coverage history.
 
+Collected execution coverage is a current set of results, one per test, rather
+than a history of runs. An unfiltered workspace run replaces the whole set;
+a focused run replaces just its selected tests. SQLite stores the current
+results and their provenance, while raw LLVM profiles remain files for the
+LLVM tools.
+
 :::{req} guidance
 :impl: assets/skills/habeas/SKILL.md
 :impl: assets/skills/habeas-evidence/SKILL.md
@@ -47,20 +53,22 @@ setting, rather than silently collecting incomplete coverage.
 :::
 
 :::{req} processes
-Each coverage run MUST retain LLVM coverage profiles independently for each
-test process, identifying its nextest binary, test name, and attempt. Concurrent
-tests, tests with the same name in different binaries, retries, and separate
-runs MUST NOT overwrite or combine one another's stored profiles. Profiles from
-instrumented child processes MUST remain separate and associated with the test
-attempt that spawned them.
+LLVM profiles are collected independently for each test process, identifying
+its nextest binary, test name, and attempt. Concurrent tests, same-named tests
+in different binaries, and different attempts do not overwrite or combine
+one another's profiles during collection. Instrumented child-process profiles
+remain separate and associated with the attempt that spawned them.
+
+Profiles for a current result remain available until that result is replaced
+under {cite}`requirements.test-coverage.storage.current`.
 :::
 
 :::{req} processes.reports
-Habeas MUST support deriving both a report for an individual recorded process
-and a combined report without discarding the separate profiles of
-{cite}`requirements.test-coverage.processes`. Retained run data MUST remain
-sufficient to display those reports using the matching captured source after
-the project is rebuilt or its source changes.
+Habeas supports deriving a report for an individual process in a current
+result and a combined report without discarding its separate profiles under
+{cite}`requirements.test-coverage.processes`. Until the result is replaced,
+its saved data and captured source remain sufficient to display those reports
+after the project is rebuilt or its source changes.
 :::
 
 :::{req} processes.progress
@@ -93,12 +101,105 @@ coverage results, retained profiles, or command exit status.
 :::
 
 :::{req} storage
-Coverage runs MUST be stored as disposable build artifacts under
+Execution coverage is stored as disposable build artifacts under
 `habeas/coverage/` in the project's Cargo target directory
-(`target/habeas/coverage/` with default Cargo settings), retaining earlier runs
-until those artifacts are removed. Each run record MUST identify the run,
-capture time, command, and test selection, and, when available, the source
-revision and whether the source had uncommitted changes.
+(`target/habeas/coverage/` with default Cargo settings). A SQLite database is
+the primary store for current test results, processed measurements, and the
+metadata identifying their collection invocation. Raw LLVM profiles and
+captured source may remain separate files referenced by those results.
+
+The invocation metadata identifies the invocation, capture time, command,
+selected tests, and, when available, the source revision and whether the source
+had uncommitted changes.
+:::
+
+:::{req} storage.current
+The coverage set contains at most one current entry for each pair of nextest
+binary identity and test name, within one active instrumented build
+configuration under {cite}`requirements.test-coverage.storage.configuration`.
+An entry represents either a test awaiting execution or its current attempt.
+Replacing an entry removes its previous measurements from the current set.
+
+Metadata and files shared by remaining current entries stay available. The
+store does not accumulate completed historical runs or retry attempts.
+:::
+
+:::{req} storage.cleanup
+A successful collection removes superseded results and artifacts referenced
+by no current result or latest invocation record. This includes superseded
+profiles and captured source snapshots; files and metadata shared by remaining
+current results are preserved.
+
+Interruption or a cleanup error can leave unreferenced artifacts behind. The
+next collection removes them before starting test execution. Cleanup errors
+are reported as collection failures and produce a failing exit status.
+Unreferenced artifacts never become eligible measurements again.
+Removing unreferenced artifacts does not replace current test entries or
+change the active build configuration.
+:::
+
+:::{req} storage.selection
+Before starting test execution, Habeas obtains the selected test identities
+from nextest using the same prepared test binaries and effective package and
+binary selection, test filters, partitioning, ignored-test settings, and
+profile configuration as the execution invocation. Nextest's configured
+default filters retain their native meaning. A test identity is its nextest
+binary identity and test name.
+
+If preparation or selection discovery fails, the command reports the failure
+without replacing saved test results or changing the active build
+configuration. An invocation requesting no execution, such as `--no-run`,
+also leaves those results and the active configuration unchanged.
+:::
+
+:::{req} storage.replace
+After preparation and selection discovery succeed, and before any selected
+test starts, Habeas atomically establishes the new coverage set:
+
+- An unfiltered workspace invocation clears the entire previous set,
+  including results for tests that no longer exist. This includes
+  `habeas coverage` with no supplied arguments and `habeas test`.
+- An invocation with an explicit package or binary restriction, test filter,
+  partition, or ignored-only selection is filtered. It clears results for all
+  selected test identities and preserves unselected results within the
+  active build configuration.
+- Every selected test receives a pending entry without measurements.
+
+Native default filters and the default handling of ignored tests still apply
+to an unfiltered workspace invocation. `--run-ignored all` alone does not make
+a workspace invocation filtered.
+
+A selected test that never starts because of fail-fast, interruption, or
+execution startup failure remains unavailable. Its previous result does not
+become available again. A filtered selection containing no tests leaves the
+current results and active configuration unchanged; an empty unfiltered
+workspace selection clears the previous set.
+
+If the atomic replacement cannot be committed, the command reports the
+failure and starts no tests. The previously committed coverage set and active
+configuration remain unchanged.
+:::
+
+:::{req} storage.retries
+Before another attempt of a selected test begins execution, it replaces the
+test's previous current attempt and its measurements. Only the most recently
+started attempt can supply that test's coverage, including when it fails, is
+interrupted, or has unavailable measurements. Execution from different retries
+is not combined, and an older success is never substituted.
+:::
+
+:::{req} storage.configuration_reset
+When replacing results for an unfiltered workspace invocation or a filtered
+invocation selecting at least one test, a prepared build configuration
+incompatible with the active configuration under
+{cite}`requirements.test-coverage.storage.configuration` clears the whole
+current set and becomes active in the same atomic replacement, before test
+execution.
+
+Results from the previous configuration do not reappear when that
+configuration is selected again. A filtered invocation selecting no tests
+leaves the current results and active configuration unchanged under
+{cite}`requirements.test-coverage.storage.replace`.
 :::
 
 :::{req} guidance.artifacts
@@ -135,18 +236,27 @@ compatible build configurations incompatible.
 :::
 
 :::{req} storage.outcomes
-Each coverage run MUST record the outcome of every test attempt that started.
-It MUST distinguish successful, failed, and interrupted runs and identify
-attempts with missing or unreadable coverage rather than treating them as zero
-execution. An empty test selection MUST be identified as empty; nextest's
-success or failure for that selection MUST remain the test execution result.
+The store records each current test's state: pending, running, successful,
+failed, or interrupted. Pending and running entries do not supply completed
+measurements. A started attempt records its attempt identity and outcome;
+missing or unreadable coverage is unavailable rather than zero execution.
+
+The latest collection invocation records whether it succeeded, failed, or was
+interrupted. An empty selection is identified as empty, and nextest's success
+or failure for that selection remains the test execution result.
 :::
 
 :::{req} failures
-The coverage workflow MUST return a failing exit status when test execution or
-coverage collection fails, preserve any profiles already collected, and report
-the failure. Collecting coverage MUST NOT turn a failing test run into a
-successful command.
+The coverage workflow returns a failing exit status when test execution or
+coverage collection fails and reports the failure.
+Collecting coverage does not turn a failing test run into a successful command.
+:::
+
+:::{req} failures.profiles
+Profiles already collected for a current attempt remain available for
+diagnosis when test execution or coverage collection fails. They remain
+subject to later replacement under
+{cite}`requirements.test-coverage.storage.current`.
 :::
 
 :::{req} failures.prerequisites
@@ -175,38 +285,54 @@ target.
 :::
 
 :::{req} index.selection
-Saved execution-coverage checks select the most recent recorded attempt
-for each nextest binary and test name within the instrumented configuration
-of the most recently started recorded attempt. Most recent refers to when an
-attempt started, including failed or interrupted attempts. A newer filtered
-run updates only tests it executes, leaving other compatible records available.
-A newer attempt with missing or unreadable coverage is unavailable and does
-not fall back to an older success. Incompatible configurations under
-{cite}`requirements.test-coverage.storage.configuration` are excluded.
-Selection uses recorded metadata without building or executing tests.
+Saved execution-coverage checks read the current coverage set under
+{cite}`requirements.test-coverage.storage.current` from SQLite. Each check
+uses one coherent database snapshot of test identities, states, provenance,
+and processed measurements, so a replacement or update cannot mix results
+from different snapshots within the same check.
+
+Checks do not search historical runs or use a separate report-selection
+metadata cache. Current test identities, states, and provenance can be read
+without loading their detailed measurements.
+
+Only current results with complete, available measurements contribute to
+coverage under {cite}`requirements.test-coverage.index.freshness`.
+Pending, running, and unavailable entries are reported under
+{cite}`requirements.test-coverage.check.measurement`. Checking does not build
+or execute tests and never restores a superseded attempt.
 :::
 
 :::{req} index.freshness
-Only records whose captured source inputs match the current source and
-whose build configurations are compatible contribute counts to saved
+Only current results whose captured source inputs match the current source
+and whose build configurations are compatible contribute counts to saved
 execution-coverage checks under
-{cite}`requirements.test-coverage.index.selection`. Invalidated records or
-records of unknown compatibility are identified as stale or unavailable and
-excluded from combined totals. Per-process reports and matching captured
-source remain retained until their build artifacts are removed.
+{cite}`requirements.test-coverage.index.selection`. Results with changed
+inputs are identified as stale; results of unknown compatibility are
+identified as unavailable. Both are excluded from combined totals.
+
+A filtered run preserves the provenance of unselected results under
+{cite}`requirements.test-coverage.storage.replace`. It does not make those
+results fresh when their recorded inputs no longer match. Their process
+reports and matching captured source remain available until replacement or
+removal of the build artifacts.
 :::
 
 :::{req} index.summary
 Saved execution-coverage checks compute line coverage from the union of
-instrumented file-and-line locations in the selected fresh records under
+instrumented file-and-line locations in the eligible current results under
 {cite}`requirements.test-coverage.index.selection` and
 {cite}`requirements.test-coverage.index.freshness`, including child processes.
 Each location counts once in the denominator and is covered when any selected
-record has a positive execution count. Percentages use these union counts,
-rather than averaging process reports. A selection containing no instrumented
-lines, or incomplete measurements, is unavailable under
-{cite}`requirements.test-coverage.check.measurement`; otherwise absent
-file or function measurements remain subject to their coverage obligations.
+process has a positive execution count. Percentages use these union counts,
+rather than averaging process reports.
+
+When the current set has no usable instrumented lines, or any current result
+has unavailable measurements under
+{cite}`requirements.test-coverage.check.measurement`, combined coverage is
+reported as unavailable. The check does not publish measured coverage
+percentages or threshold results computed from only the remaining readable
+results. Otherwise, absent file or function measurements remain subject to
+their coverage obligations.
 :::
 
 :::{req} index.file_map
@@ -508,20 +634,30 @@ NOT establish that a function has no executable coverage obligations.
 :::
 
 :::{req} check.measurement
-The coverage check MUST fail when no usable coverage has been collected, or when
-a selected latest attempt has missing, unreadable, or stale coverage. It MUST
-distinguish these measurement failures from measured lines with zero execution
-and from individual functions absent from otherwise usable coverage. Exception
-evidence MUST NOT excuse measurement failures or permit substitution of an
-older attempt. Excluded historical runs and incompatible configurations MUST
-NOT by themselves cause failure.
+The coverage check fails when the current store is missing, unreadable, or
+corrupt, when no usable coverage has been collected, or when a current entry
+is pending, running, missing measurements, unreadable, or stale.
 
-Coverage whose format does not support the function attribution required by
-{cite}`requirements.test-coverage.check.functions` MUST be rejected with guidance
-to recollect coverage. When missing or corrupt metadata prevents establishing
-the latest-per-test selection or active configuration, the check MUST fail
-rather than silently use remaining records. Historical data MAY be disregarded
-without failure only when its exclusion can be established.
+Test execution outcome and measurement availability are distinct. A failed
+or interrupted attempt can supply coverage if its measurement processing
+completed successfully and its measurements are available. Such an outcome
+does not by itself turn its measurements into zero execution or make them
+unavailable.
+
+For a current result, every referenced raw profile must remain readable and
+nonempty, and matching captured source must remain available. Loss of these
+artifacts makes that result's measurements unavailable.
+
+These measurement failures are distinguished from measured lines with zero
+execution and from individual functions absent from otherwise usable coverage.
+Exception evidence does not excuse measurement failures or permit substitution
+of a superseded attempt.
+
+An unsupported store format, or measurements lacking the function attribution
+required by {cite}`requirements.test-coverage.check.functions`, is rejected
+with guidance to recollect coverage. Missing or corrupt metadata that prevents
+establishing the current test set, states, provenance, or active configuration
+causes failure rather than silently checking the remaining readable records.
 :::
 
 :::{req} check.exceptions
