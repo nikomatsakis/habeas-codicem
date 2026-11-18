@@ -208,7 +208,7 @@ where
             json!({"name":"read_node","description":"Read a known graph node. Returns text and page IDs when long. A delivered page records its enclosing node.",
                 "parameters":{"type":"object","required":["path"],"properties":{"path":path}}}),
             json!({"name":"outgoing_edges","description":"Inspect a known node's outgoing targets for the requested label, making those targets available to read_node.",
-                "parameters":{"type":"object","required":["path","label"],"properties":{"path":path,"label":schemars::schema_for!(D::EdgeLabel)}}}),
+                "parameters":edge_parameters::<D::EdgeLabel>(&path)}),
             json!({"name":"get_node_page","description":"Read another prepared node page by its page ID.",
                 "parameters":{"type":"object","required":["page"],"properties":{"page":{"type":"integer","minimum":0}}}}),
             json!({"name":"submit_result","description":"Finish by submitting your structured result in result. Exactly one accepted submission ends this call.",
@@ -316,5 +316,59 @@ where
         messages.push(Message::tool_results(results));
         messages.push(Message::user(format!("The response was cut off at {limit} tokens. Continue with a shorter response and finish with submit_result.")));
         messages
+    }
+}
+
+// {cite}`habeas:util`
+fn edge_parameters<L: schemars::JsonSchema>(path: &Value) -> Value {
+    let mut label = serde_json::to_value(schemars::schema_for!(L)).expect("label schema");
+    let definitions = label
+        .as_object_mut()
+        .and_then(|object| object.remove("$defs"));
+    let mut parameters = json!({
+        "type":"object",
+        "required":["path","label"],
+        "properties":{"path":path,"label":label},
+    });
+    if let Some(definitions) = definitions {
+        parameters["$defs"] = definitions;
+    }
+    parameters
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // {test}`requirements.sdk.graph.outgoing_edges`
+    #[test]
+    fn nested_label_schema_references_resolve_from_the_tool_parameters_root() {
+        #[derive(schemars::JsonSchema)]
+        struct Label {
+            metadata: Metadata,
+        }
+        #[derive(schemars::JsonSchema)]
+        struct Metadata {
+            kind: String,
+        }
+        let label = Label {
+            metadata: Metadata {
+                kind: "tests".into(),
+            },
+        };
+        assert_eq!(label.metadata.kind, "tests");
+        let parameters = edge_parameters::<Label>(&json!({"type":"object"}));
+        let reference = parameters["properties"]["label"]["properties"]["metadata"]["$ref"]
+            .as_str()
+            .unwrap();
+        let definition = parameters
+            .pointer(reference.strip_prefix('#').unwrap())
+            .unwrap();
+        assert_eq!(definition["properties"]["kind"]["type"], "string");
+        assert!(parameters["properties"]["label"].get("$defs").is_none());
+        assert_eq!(parameters["required"], json!(["path", "label"]));
+        let unit = edge_parameters::<()>(&json!({"type":"object"}));
+        assert_eq!(unit["properties"]["label"]["type"], "null");
+        assert!(unit.get("$defs").is_none());
     }
 }
