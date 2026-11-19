@@ -2,7 +2,8 @@
 
 Use `FileEvidenceStorage` to implement `EvidenceStorage` with a directory of
 JSON records. The application chooses the directory and uses `Graph::node_path` to obtain
-a stable [`NodePath`](graph.md#give-nodes-a-stable-path). The helper handles serialization, file access, and replacing
+a stable [`NodePath`](graph.md#give-nodes-a-stable-path), paired with the validation's
+`CriterionPath`. The helper handles serialization, file access, and replacing
 saved records; it does not decide whether evidence is current.
 
 ## Configure the store
@@ -11,7 +12,7 @@ saved records; it does not decide whether evidence is current.
 ```rust,ignore
 use std::path::PathBuf;
 use serde::{Serialize, de::DeserializeOwned};
-use habeas_sdk::graph::{NodePath, Record};
+use habeas_sdk::graph::{CriterionPath, NodePath, Record};
 
 /// A directory of JSON records. Send + Sync; load/store futures are Send.
 /// Defined in habeas_sdk::storage.
@@ -27,37 +28,38 @@ impl FileEvidenceStorage {
     pub fn new(root: impl Into<PathBuf>) -> Self;
 
     /// Deserialize a record, or return None if its file is missing.
-    pub async fn load<N, M, L>(
+    pub async fn load<N, L>(
         &self,
         path: &NodePath,
-    ) -> Result<Option<Record<N, M, L>>, FileStorageError>
+        criterion: &CriterionPath,
+    ) -> Result<Option<Record<N, L>>, FileStorageError>
     where
         N: DeserializeOwned + Send,
-        L: DeserializeOwned + Send,
-        M: DeserializeOwned + Send;
+        L: DeserializeOwned + Send;
 
-    /// Atomically replace the record at this node path.
-    pub async fn store<N, M, L>(
+    /// Atomically replace this source/criterion pair's record.
+    pub async fn store<N, L>(
         &self,
         path: &NodePath,
-        record: &Record<N, M, L>,
+        criterion: &CriterionPath,
+        record: &Record<N, L>,
     ) -> Result<(), FileStorageError>
     where
         N: Serialize + Sync,
-        L: Serialize + Sync,
-        M: Serialize + Sync;
+        L: Serialize + Sync;
 }
 ```
 
-`Record`, `Dependency`, `Fingerprint`, and `Judgment` support Serde
-serialization and deserialization when their type parameters do. These bounds
-belong to storage use; `Graph` and `EvidenceStorage` themselves do not require them.
+`Record`, `Dependency`, and `Fingerprint` support Serde when their type
+parameters do. `Validation::Ok` is always serializable; its JSON value is
+already in the record. Serialization bounds on node identities and edge labels
+belong to this helper's use, rather than `Graph` itself.
 :::
 
 An application holds a store alongside its graph data. Its `load_evidence`
-method obtains `let path = self.node_path(node)` and delegates to
-`store.load(&path).await`; `store_evidence` delegates to
-`store.store(&path, record).await`. It maps
+method obtains `let path = self.node_path(source)` and delegates to
+`store.load(&path, criterion).await`; `store_evidence` delegates to
+`store.store(&path, criterion, record).await`. It maps
 `FileStorageError` into its own `Graph::Error`.
 
 ## Map node paths into the directory
@@ -70,29 +72,34 @@ paths, or CLI conventions are built into it.
 :::{req} keys
 For each `NodePath` segment, the helper uses `s` followed by the lowercase
 hexadecimal encoding of that segment's UTF-8 bytes as a directory component.
-It preserves segment order and stores `record.json` inside the resulting
-directory under the configured root. An empty sequence selects `record.json`
-directly under the root; an empty segment selects an `s` directory.
+After the encoded source components it inserts a literal `criteria` directory,
+then encodes the `CriterionPath` segments by the same rule and stores
+`record.json` inside the resulting directory under the configured root.
+The unencoded separator preserves the source/criterion boundary: encoded
+segments always begin with `s`. An empty source or criterion adds no components
+for that part; an empty segment selects an `s` directory.
 Segment contents, including slashes and `..`, are encoded as data rather than
 interpreted as path components. Load and store use the same mapping. If the
 filesystem cannot represent that path, the operation returns an I/O error
 without truncating or otherwise changing the mapping.
 :::
 
-For example, `["a", "b"]` maps to `s61/s62/record.json`, whereas `["a/b"]`
-maps to `s612f62/record.json`. A node and its descendants can each have a record
-because every record has its own fixed filename inside its node directory.
+For example, source `["a"]` with criterion `["b", "c"]` maps to
+`s61/criteria/s62/s63/record.json`, whereas source `["a", "b"]` with criterion
+`["c"]` maps to `s61/s62/criteria/s63/record.json`. Both paths empty select
+`criteria/record.json` under the root.
 
 The configured directory is application-owned. It can be relative or absolute;
-applications sharing it must agree on node paths and record types. The helper
+applications sharing it must agree on source paths, criterion paths, and records. The helper
 does not enumerate records or apply an evidence-retention policy.
 
 ## Load and replace records
 
 :::{req} load
-`load` deserializes the selected JSON file as `Record<N, M, L>`, preserving
-SDK-owned fields. Node identities, edge labels, and application metadata
-round-trip through their Serde implementations.
+`load` deserializes the selected JSON file as `Record<N, L>`, preserving
+SDK-owned fields. Node identities and edge labels round-trip through their
+Serde implementations. The output remains a JSON value; the helper does not
+decode it as a validation's result type.
 
 | File state | Result |
 | --- | --- |

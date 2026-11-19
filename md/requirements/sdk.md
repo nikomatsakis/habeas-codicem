@@ -3,9 +3,9 @@
 This chapter is for the implementer of a tool like Habeas. We start with the
 Habeas you already know and ask how to express its verification work as a graph.
 A node identifies a thing: a requirement, a function, a test, or a GitHub issue.
-The application defines what it means for that thing to be valid and supplies
-the procedure that checks it. The SDK is parametric over that definition of
-validity.
+The application can ask several questions about the same node. Each validation
+value identifies a criterion and supplies its execution procedure. The SDK
+tracks and reuses each criterion's answer independently.
 
 ## Start with one requirement and its inputs
 
@@ -48,7 +48,10 @@ question.
 
 ## SDK Perspective: obligations as a graph
 
-The SDK generalizes this concept by representing things as nodes in a graph. Each node plays a dual role. It represents some *noun* -- a thing, concept, whatever -- which both *has a source* and *must be validated*.  The SDK is not opinionated about how that source is fetched nor about how that validation takes place, that is defined by the application.
+The SDK represents things as nodes in a graph. A node has identity and contents;
+the application chooses which criteria, if any, to verify for it. Each criterion
+has its own inputs and saved evidence. The application defines how contents are
+fetched and how each criterion is executed.
 
 In our example, the requirement `requirements.auth.expiration` has a node, as does the Rust function `check_token` and the Rust test `expired_token_is_rejected`. The source for the requirement is the requirement text itself (*"The application MUST..."*). The source for the Rust nodes are their source content. These 3 nodes are connected by labeled edges, like so:
 
@@ -71,29 +74,29 @@ validation. Fingerprints determine which changes count as relevant.
 ## Defining the application domain
 
 The application defines its own domain by implementing `Domain`. This trait
-combines four subtraits that capture different aspects of the domain:
+combines three subtraits that capture different aspects of the domain.
+Validation is implemented by the values submitted to a validator:
 
 :::{req} domain
 The SDK MUST expose a `Domain` trait with a blanket implementation and a number of subtraits that cover disjoint aspects of defining an application domain:
 
 ```rust,ignore
-/// The node validation runner requires this combined domain.
-/// Assessment callbacks remain usable without EvidenceStorage.
+/// Every validation uses a domain with graph access, fingerprints, and storage.
 ///
 /// Concurrent validations can share a domain by reference. Each validation
 /// has its own dependency trace; operations within it share that trace safely.
 /// Agent calls retain independent conversation and submission state.
 /// Observations never leak between separate validations.
-pub trait Domain: Graph + Validation + Fingerprinting + EvidenceStorage {}
+pub trait Domain: Graph + Fingerprinting + EvidenceStorage {}
 
-impl<T: Graph + Validation + Fingerprinting + EvidenceStorage> Domain for T {}
+impl<T: Graph + Fingerprinting + EvidenceStorage> Domain for T {}
 
 pub trait Graph {
     // Defines the verification graph, including
     //
     // * Nodes: verifiable constructs
     // * Edges: inputs to verification
-    // * NodeContent: the contents of a node, determines both its verification contract and what data is given
+    // * NodeContent: the application-defined contents supplied by a node read
     /* ... members defined in the Graph chapter ... */
 }
 
@@ -106,21 +109,15 @@ pub trait EvidenceStorage: Graph {
     // Defines how evidence is stored and loaded.
     /* ... members defined in the Evidence storage chapter ... */
 }
-
-pub trait Validation: Graph + Fingerprinting + Sized {
-    // Defines the evaluation function for
-    // whether a node is valid.
-    /* ... members defined in the Validation chapter ... */
-}
 ```
 :::
 
-Each subtrait is covered in its own chapter:
+The domain traits and the separate validation interface have their own chapters:
 
 | Trait | Purpose |
 | --- | --- |
 | [Graph](sdk/graph.md) | What nodes and edges represent, and how to obtain their contents and relationships. |
-| [Validation](sdk/graph/validation.md) | The decision procedure to validate a node. |
+| [Validation](sdk/graph/validation.md) | A criterion's identity, result type, and execution procedure. |
 | [Fingerprinting](sdk/graph/fingerprinting.md) | What parts of a node's contents are significant. |
 | [EvidenceStorage](sdk/graph/evidence.md) | Where and how evidence is saved. |
 

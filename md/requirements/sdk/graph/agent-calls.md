@@ -113,12 +113,12 @@ where
 Its operations are:
 
 ```rust,ignore
-impl<'a, 'd, D: Validation, R> Ask<'a, 'd, D, R, ContextPhase> {
+impl<'a, 'd, D: Domain, R> Ask<'a, 'd, D, R, ContextPhase> {
     /// Append reusable text to the prefix.
     pub fn context(self, value: impl Context) -> Self;
 }
 
-impl<'a, 'd, D: Validation, R, P> Ask<'a, 'd, D, R, P> {
+impl<'a, 'd, D: Domain, R, P> Ask<'a, 'd, D, R, P> {
     /// Queue the current node's contents and enter the node phase.
     pub fn current_node_contents(self) -> Ask<'a, 'd, D, R, NodePhase>;
 
@@ -188,7 +188,7 @@ pub trait AgentInputRenderer<D: Graph>: Send + Sync {
 }
 ```
 
-The application supplies the renderer through agent context configuration.
+The application supplies the renderer through `Validator::with_agent`.
 Rendering errors return `ValidationError::Graph`. Neither `Graph::NodeContent`
 nor `Graph::NodeId` needs serialization or display bounds.
 :::
@@ -228,7 +228,7 @@ not a second SDK validation interface.
 Rendered context values are explicit application-supplied text; the SDK does not
 infer node identities from arbitrary strings. Node data whose freshness matters
 belongs in explicit node insertions or tracked reads. Changes to validation
-instructions belong in the procedure version used for evidence freshness.
+instructions belong in the criterion's revision used for evidence freshness.
 
 ## Keep a shared trace across calls
 
@@ -238,7 +238,7 @@ the same validation.
 
 :::{req} author_procedure
 `habeas_sdk::procedure` provides a `Send + Sync` per-validation
-`ValidationContext<'d, D>` for `D: Validation`, with tracked `inspection(&self)`
+`ValidationContext<'d, D>` for `D: Domain`, with tracked `inspection(&self)`
 and the `ask(&self)` builder under
 {cite}`requirements.sdk.graph.agent-calls.judge`.
 
@@ -251,16 +251,16 @@ serialize complete interactions behind a context-wide lock.
 The trace records the identities and supplied-content fingerprints of inputs
 actually delivered, including tool reads. Awaiting with fewer or no node
 insertions preserves earlier dependencies; an unawaited builder adds no
-agent-delivery dependencies. Callbacks receive only the context under
-{cite}`requirements.sdk.graph.validation.check_procedure`, without requiring
-evidence storage. This is the same callback interface with or without agent calls.
+agent-delivery dependencies. `Validation::execute` receives its context under
+{cite}`requirements.sdk.graph.validation.check_procedure`; the domain includes
+required evidence storage. This is the same execution interface with or without
+agent calls.
 :::
 
 :::{req} procedures
 An application-supplied assessment procedure can perform ordinary computation
-and request zero or more model judgments. It can use intermediate judgments in
-later computation and requests, then return a boolean judgment with
-graph-defined metadata.
+and request zero or more typed model answers. It can use intermediate answers
+in later computation and requests, then return its `Validation::Ok` value.
 :::
 
 An unconfigured agent is an error-returning implementation of the agent

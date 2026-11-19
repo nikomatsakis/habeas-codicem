@@ -1,98 +1,154 @@
 # Validation
 
-Implement `Validation` to decide whether a node meets your application's
-criterion. The SDK supplies a shared context for explicit input selection, captures
-dependencies, and stores the judgment you return.
+A node supplies contents. A validation asks a particular question about those
+contents and selects the inputs needed to answer it. Several validations can
+share a source node while keeping their results and dependencies separate.
 
-## Choose whether to check or validate
+For example, Habeas can assess a requirement's text, its behavioral tests, and
+its structural obligations independently. The SDK knows how to execute and
+reuse these assessments; Habeas defines the questions and interprets the answers.
 
+## Give each criterion a path
+
+The graph identifies the source with a `NodeId` and its stable `NodePath`.
+A validation identifies its question with a path relative to that source.
+
+:::{req} criterion_path
 ```rust,ignore
-// Check saved evidence without invoking application validation.
-let state = checker.check_node(&expiration).await?;
-
-// Reuse current evidence, or validate and save a new record.
-let judgment = validator.validate_node(&expiration).await?;
+// Defined in habeas_sdk::graph.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct CriterionPath {
+    pub segments: Vec<String>,
+}
 ```
 
-The SDK handles freshness, dependency tracking, and persistence. The application
-callback decides validity. The sections below follow their interaction.
+A criterion path preserves segment order and boundaries. An empty path is valid,
+as are empty segments. Its identity is stable across runs and changes to input
+contents. Different questions that need independent records have different
+paths; nested paths can distinguish several questions within one area.
+:::
 
-## Let the SDK create the validation context
+For example, a requirement might have criteria `text`, `behavior`, and
+`structure`. A source item's citation checks might use
+`["citations", "requirements.auth.expiration"]`.
 
-Suppose no evidence has been saved for the expiration requirement. The SDK
-creates a context identifying that node, invokes application code, then saves
-the result and the observations the callback actually uses:
+The complete identity is the pair of source node and criterion path. Appending
+criterion segments to a source `NodePath` gives a useful display path; storage
+preserves the boundary between the two paths so different pairs cannot collide.
+The [evidence chapter](evidence.md) defines that lookup.
 
-```mermaid
-sequenceDiagram
-    participant C as Caller
-    participant R as SDK runner
-    participant G as Application graph
-    participant P as Validation procedure
-    C->>R: validate_node(expiration)
-    R->>G: Load evidence
-    G-->>R: No saved record
-    R->>P: validate(context identifying expiration)
-    loop Explicit context reads or agent insertions
-        P->>G: Inspect selected nodes and edges through context
-        G-->>P: Contents and selection snapshots
-    end
-    P-->>R: Judgment
-    R->>G: Store judgment and captured dependencies
-    G-->>R: Stored
-    R-->>C: Judgment
-```
+## Define the question as a value
 
-The callback receives only a shared `ValidationContext`. It can obtain the
-subject's identity without reading its contents, inspect its outgoing edges, and
-choose the contents needed for each computation or agent call.
+A validation value can carry the source identity, review instructions, and other
+application state. It implements the execution procedure separately from the
+domain, which always provides graph access, fingerprinting, and evidence storage.
 
 :::{req} check_procedure
 ```rust,ignore
+use serde::{Serialize, de::DeserializeOwned};
+use std::future::Future;
+
 // Defined in habeas_sdk::graph.
 pub enum ValidationError<E> {
     Graph(E),
     NoAgentConfigured,
     Agent(String),
+    Output(serde_json::Error),
 }
 
-pub trait Validation: Graph + Fingerprinting + Sized {
-    /// Decide whether ctx.node_id() is valid.
-    ///
-    /// The runner supplies only this shared context. It reads no subject or
-    /// target contents to prepare the callback; select inputs through ctx.
-    /// No prepared NodeInputs bundle, extra application request, or
-    /// EvidenceStorage capability is required.
-    fn validate<'a, 'd>(
-        &'a self,
-        ctx: &'a ValidationContext<'d, Self>,
-    ) -> impl Future<Output = Result<
-        Judgment<Self::JudgmentMetadata>,
-        ValidationError<Self::Error>,
-    >> + Send + 'a
-    where
-        'd: 'a;
+pub trait Validation<D: Domain>: Send + Sized {
+    /// The completed answer, including any negative assessment.
+    /// The SDK serializes it for storage and reconstructs it when reused.
+    /// Its Serde JSON representation must reconstruct the completed answer.
+    type Ok: Serialize + DeserializeOwned + Send;
+
+    fn source_node_id(&self) -> D::NodeId;
+    fn criterion_path(&self) -> CriterionPath;
+
+    /// Version of these review rules and the result's encoding.
+    /// Change it when an old answer should no longer be reused.
+    fn revision(&self) -> String;
+
+    /// Execute this criterion with a private dependency trace.
+    /// Contents are read only when explicitly selected through cx.
+    fn execute(
+        self,
+        cx: &mut ValidationContext<'_, D>,
+    ) -> impl Future<Output = Result<Self::Ok, ValidationError<D::Error>>> + Send;
 }
 ```
 
-The context identifies the node requested by the caller. The callback remains
-usable without `EvidenceStorage`; persistence belongs to the runner.
+Obtaining the source identity, criterion path, and revision does not execute the
+criterion, invoke an agent, or record source-content dependencies. These values
+identify the same question for checking and execution. Parameters that change
+which question is being asked belong in its identity or revision.
 :::
 
+The application decides which validations to submit. There is no requirement
+that every graph node has a criterion or that the SDK enumerates them.
 
-The context provides identity and tracked selection independently of model use:
+## Share a validator, keep observations separate
+
+:::{req} validator
+```rust,ignore
+// Defined in habeas_sdk::graph.
+/// Shared domain access, caches, and optional agent configuration.
+/// Evidence storage is required through Domain.
+pub struct Validator<'d, D: Domain> { /* private fields */ }
+
+impl<'d, D: Domain> Validator<'d, D> {
+    pub fn new(domain: &'d D) -> Self;
+
+    /// Configure the contexts created for execution.
+    pub fn with_agent(
+        self,
+        agent: &'d dyn Agent<D>,
+        renderer: &'d dyn AgentInputRenderer<D>,
+    ) -> Self;
+}
+```
+
+`Agent` and `AgentInputRenderer` are supplied by `habeas_sdk::procedure`.
+Independent verifications share a validator through `&self`. Cached observations
+can be reused when they still represent the state being checked. Each execution
+has its own context and trace; dependencies and agent conversation state never
+leak between different executions. Operations within one execution can share
+its synchronized trace through context inspection and agent calls.
+
+Concurrent verifications of the same source and criterion run independently,
+each with its own context and trace. They can both execute when evidence is
+missing or stale; the validator does not combine their executions.
+:::
+
+Here are illustrative application-defined validation values for one requirement:
 
 ```rust,ignore
-let subject = ctx.node_id();
-let contents = ctx.inspection().read(subject)?;
-let test_edges = ctx.successors(&HabeasEdgeLabel::Tests)?;
+let validator = Validator::new(&domain);
+
+let text = validator.verify(TextualQuality {
+    requirement: expiration.clone(),
+}).await?;
+let behavior = validator.verify(BehavioralAdequacy {
+    requirement: expiration.clone(),
+}).await?;
+let structure = validator.verify(StructuralConformance {
+    requirement: expiration,
+}).await?;
 ```
+
+Each value returns its own criterion path and result type. Running one need not
+replace or re-execute the others.
+
+## Select inputs through the context
+
+The context identifies the validation's source node. A criterion path identifies
+the record, not another source whose contents should be inserted into a prompt.
 
 :::{req} root_inputs
 ```rust,ignore
 // Methods on ValidationContext<'d, D>.
 
-/// The node being validated. Obtaining its identity does not read its contents.
+/// The source node. Obtaining its identity does not read its contents.
 pub fn node_id(&self) -> &D::NodeId;
 
 /// Select outgoing edges by label, preserving their order and duplicates.
@@ -112,49 +168,10 @@ become dependencies only through explicit tracked reads or agent insertions.
 An edge neither supplies nor requires a positive validation judgment for its target.
 :::
 
-
-## Return the application's judgment
-
-The callback decides what validity means. For Habeas, that can include accepting
-a gap with an adequate FIXME acknowledgment. The SDK receives a boolean,
-explanation, and application metadata; it does not implement acknowledgment
-policy or ask the callback to assemble an evidence record.
-
-:::{req} judgment
-```rust,ignore
-/// The application's answer, defined in habeas_sdk::graph.
-pub struct Judgment<M> {
-    /// Whether the node satisfies the application-defined criterion.
-    pub result: bool,
-    /// Explanation of that result.
-    pub rationale: String,
-    /// Application-defined information; never an alternative result.
-    pub metadata: M,
-}
-
-pub trait Graph: Send + Sync {
-    // ...
-    type JudgmentMetadata: Send + Sync;
-}
-```
-
-The procedure returns `Judgment<D::JudgmentMetadata>`. The application defines
-the criterion and metadata's meaning; the SDK preserves all three fields.
-Failure to execute validation is an error, rather than a `false` judgment.
-Habeas owns FIXME acknowledgment policy.
-:::
-
-
-## Investigate through the context
-
-The callback can use ordinary code, inspect more nodes, ask an agent, or combine
-those operations. The context is shared: concurrent operations contribute to
-this validation's trace while keeping their request state independent.
+For example, a behavioral criterion can select the requirement and its tests:
 
 ```rust,ignore
-let helper = ctx.inspection().read(&helper_id)?;
-
-let answer: ExpirationAssessment = ctx.ask()
+let answer: ExpirationAssessment = cx.ask()
     .context((&review_policy, &project_conventions))
     .context(&question)
     .current_node_contents()
@@ -162,164 +179,128 @@ let answer: ExpirationAssessment = ctx.ask()
     .await?;
 ```
 
-Here the application defines `ExpirationAssessment` as a deserializable,
-schema-bearing response type. It also defines its instruction context values.
-The example shows how the callback uses the SDK; the builder, context
-composition, structured submission, and error contracts live in
-[Agent calls](agent-calls.md).
+A structural criterion can select implementations instead. A textual criterion
+can read the declaration and its cited definitions. Each records only the inputs
+it actually observes. If deciding which task to perform depends on an empty
+selection, inspect that selection through the context as well.
 
-The agent's tools use the same tracked inspection operations as ordinary code.
-[Context tools](context-tools.md) accounts for node-content reads,
-resource listings, outlines, ripgrep, ast-grep, relationship lookup, and paging.
-Independent shell or filesystem reads do not automatically enter the evidence
-record; use the tracked interface for information the judgment relies on.
-
-A callback can run without a configured agent if it never awaits an ask builder.
-Awaiting one without an agent reports `NoAgentConfigured`.
+[Agent calls](agent-calls.md) defines prompt construction and typed submissions.
+[Context tools](context-tools.md) defines tracked discovery and content reads.
+Independent filesystem or network reads are not automatically dependencies;
+use tracked operations for information the answer relies on.
 
 :::{req} deterministic_procedures
-`Validation::validate` works without a configured model provider. A callback
-that never invokes the agent interface does not fail because no agent is configured.
+`Validation::execute` can compute an answer without a configured model provider.
+A validation that never invokes the agent interface does not fail because no
+agent is configured. Evidence storage is still required.
 :::
 
+## Return an answer, including a negative one
 
-## Check or reuse the evidence tomorrow
+The result type belongs to the validation. The SDK preserves it without deciding
+whether it is favorable. For applications wanting a boolean and explanation,
+it provides this convenient result type:
 
-The application identifies its review rules with a procedure version such as
-`test-adequacy-v1`. Changing the review prompt or deterministic checking logic
-can require a new version even when all node contents are unchanged. This is
-independent of model selection and of the context-prefix cache fingerprint.
+:::{req} judgment
+```rust,ignore
+// Defined in habeas_sdk::graph.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct Judgment<M> {
+    pub result: bool,
+    pub rationale: String,
+    pub metadata: M,
+}
+```
 
-The checker and validator obtain that version from a shared configured resolver,
-not by running the validation callback:
+A validation can use `Judgment<M>` as its `Ok` type when the metadata satisfies
+its bounds, or use another serializable result. `Graph` has no judgment-metadata
+associated type. The SDK does not interpret these fields or implement Habeas's
+FIXME acknowledgment policy.
+:::
+
+A completed assessment finding a gap is an `Ok` value and can be saved and reused.
+An `Err` means execution failed and produces no completed record.
+
+## Check or reuse saved evidence
 
 :::{req} procedure_identity
-Checker and validator configuration accepts an application-supplied resolver:
+Checking and verification obtain the source node, criterion path, and revision
+from the same `Validation` value. There is no node-wide revision resolver.
+The pair of source and criterion selects a record; the revision determines
+whether that record still answers the current question.
 
-```rust,ignore
-// Trait bounds on the configured resolver; not a separate domain trait.
-Fn(&D::NodeId) -> Result<String, D::Error> + Send + Sync
-```
-
-Both `check_node` and `validate_node` use the same resolver. Checking needs
-neither a `Validation` implementation nor model configuration. The runner
-compares the resolved identity with saved evidence and uses that identity for
-the replacement record. A resolution failure returns an error before invoking
-validation or storing a completed judgment.
-:::
-
-Suppose we ask the SDK to validate `requirements.auth.expiration`. It first
-looks for saved evidence. To decide whether that evidence is current, it checks
-the procedure version and resolves the recorded dependencies: the requirement
-itself if it was read, observed outgoing-edge selections, test inputs, and any
-implementation or helper reads made by the previous review. Resolving these inputs
-supplies their current fingerprints, computed from the contents being observed.
-The freshness check therefore performs reads before it can reuse a judgment.
-
-If all fingerprints still match, the SDK returns the saved judgment. This
-includes a negative judgment: unchanged inputs do not justify rerunning a review
-merely because it failed. A legacy record's stored procedure version `*`
-matches any configured version under
+Changing review instructions, deterministic rules, input-selection policy, or
+result encoding in a way that invalidates an old answer requires a changed
+revision. This is independent of model selection and the agent's context-prefix
+cache fingerprint. A stored legacy revision `*` retains the matching behavior of
 {cite}`requirements.sdk.graph.evidence.checking_records.procedure_match`.
-A concrete procedure-version or dependency mismatch can establish staleness
-early, without checking the remaining saved dependencies.
-
-When evidence is missing or stale, the SDK creates a fresh context identifying
-the requested node. The callback chooses its reads and agent input insertions
-and returns a judgment. Snapshots already obtained during this invocation can
-be reused when they still represent the state being validated and satisfy an
-explicit callback read or insertion. The SDK records the new run's observations
-and stores its evidence.
-Freshness checking uses a separate observation scope from the new assessment.
-Reads performed only to check old evidence do not become dependencies of the
-new judgment. If a checked snapshot is explicitly reused as a callback input,
-its identity and fingerprint are recorded in the new assessment's trace.
-
-```mermaid
-sequenceDiagram
-    participant C as Caller
-    participant R as SDK runner
-    participant G as Application graph
-    participant P as Validation procedure
-    C->>R: validate_node(expiration)
-    R->>G: Load saved evidence
-    G-->>R: Record or absence
-    opt Record present
-        R->>G: Resolve saved dependencies
-        G-->>R: Current fingerprints
-        R->>R: Compare procedure version and fingerprints
-    end
-    alt Record current
-        R-->>C: Saved judgment, true or false
-    else Record missing or stale
-        R->>P: validate(fresh context identifying expiration)
-        P->>G: Explicit tracked reads and edge selections
-        G-->>P: Requested contents and snapshots
-        P-->>R: Judgment
-        R->>G: Store new record
-        G-->>R: Stored
-        R-->>C: New judgment
-    end
-```
-
-A configured validator combines graph access, evidence storage, and the
-application's callback. Its `Error` covers graph, callback, and storage failures.
-
-`validate_node` concerns this node's judgment. Reading the implementation as an
-input does not recursively validate the implementation.
+:::
 
 :::{req} validate_node
 ```rust,ignore
-// Method on the configured validator; associated types come from its domain.
-
-/// Reuse current evidence, including a negative judgment.
-/// Otherwise run validation and save the completed record before returning.
-fn validate_node<'a>(
-    &'a self,
-    node: &'a Self::NodeId,
-) -> impl Future<Output = Result<Judgment<Self::JudgmentMetadata>, Self::Error>> + Send + 'a;
+// Method on Validator<'d, D>.
+/// Reuse the current answer, including a negative assessment.
+/// Otherwise execute and save the completed record before returning.
+pub fn verify<V: Validation<D>>(
+    &self,
+    validation: V,
+) -> impl Future<Output = Result<V::Ok, ValidationError<D::Error>>> + Send;
 ```
 
-The operation first looks up the requested node's evidence for the configured
-procedure. It checks the procedure identity and resolves recorded dependencies
-to compare current and saved fingerprints under
-{cite}`requirements.sdk.graph.evidence.checking_records`.
-Current evidence returns its judgment without a callback invocation.
-Missing or stale evidence starts a fresh context for that node, invokes the
-callback, and constructs a record from its judgment and captured dependencies.
+The SDK loads the record for this source and criterion and compares its revision
+and dependencies under {cite}`requirements.sdk.graph.evidence.checking_records`.
+Current evidence is decoded into `V::Ok` and returned without calling `execute`.
+Missing or stale evidence starts a fresh context identifying the source node,
+executes the supplied validation, and saves its result and captured dependencies.
+Other criteria's records are unaffected.
+
+Freshness checking has a separate observation scope from execution. Reads used
+only to check old evidence do not become dependencies of the new result. A
+checked snapshot can be reused if it still represents the current state; when
+execution explicitly reads or delivers it, its fingerprint enters the new trace.
 :::
 
 :::{req} validate_node.errors
-Storage and input-resolution failures return errors, rather than missing or
-stale states. A callback error is never stored as a completed judgment.
+Storage, dependency-resolution, output-encoding, and current-output decoding
+failures return errors rather than missing or stale states. An execution error
+is never stored as a completed result. A serialization failure does not replace
+an existing record. A save failure is returned rather than reporting successful
+verification.
 :::
 
-## Check evidence in CI without invoking validation
+## Inspect evidence without executing the criterion
 
-Suppose CI encounters stale evidence for the expiration requirement. It should
-report that state, without starting an agent to repair it. The
-`check_node` operation uses the same storage lookup and freshness comparison as
-`validate_node`, but stops before invoking a callback or saving a replacement.
+CI needs to distinguish missing, stale, and current evidence without running an
+agent or replacing records. It supplies the same validation value to `check`:
 
 ```rust,ignore
-// This SDK operation never calls Validation::validate.
-let state = checker.check_node(&expiration).await?;
-// state: current judgment, missing evidence, or stale evidence
+let review = BehavioralAdequacy { requirement: expiration };
+let state = validator.check(&review).await?;
 ```
 
 :::{req} check_node
-`check_node` returns a current stored judgment, a missing-evidence state, or a
-stale-evidence state. Storage and input-resolution failures return errors.
-It gets the current procedure identity through
-{cite}`requirements.sdk.graph.validation.procedure_identity`.
+```rust,ignore
+// Defined in habeas_sdk::graph.
+pub enum EvidenceState<O> {
+    Current(O),
+    Missing,
+    Stale,
+}
 
-The SDK performs lookup and freshness comparison itself, using only
-`Graph + Fingerprinting + EvidenceStorage`. Checking invokes no validation
-callback or model and writes no evidence; it needs neither a `Validation`
-implementation nor a configured agent.
+// Method on Validator<'d, D>.
+pub fn check<V: Validation<D>>(
+    &self,
+    validation: &V,
+) -> impl Future<Output = Result<EvidenceState<V::Ok>, ValidationError<D::Error>>> + Send;
+```
+
+`check` uses the same identity, revision, and freshness comparison as `verify`.
+It reads the descriptor before awaiting; it does not retain a reference to the
+validation value across asynchronous storage or dependency operations. Checking
+invokes neither `execute` nor a model and writes no evidence. It needs no
+configured agent. Storage, dependency-resolution, and current-output decoding
+failures are errors, not missing or stale evidence.
 :::
 
-A current negative judgment is a successful freshness check but may fail
-Habeas's CI policy. Running `validate_node` without an agent can also produce
-a new judgment if the callback does not need one. Checking evidence and
-producing evidence remain distinct SDK operations.
+A current negative assessment is still current. Habeas decides which results
+make CI pass and how to report the results of its separate criteria.

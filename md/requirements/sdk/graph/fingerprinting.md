@@ -39,7 +39,7 @@ contain a negative judgment. The SDK uses these fingerprints to
 ```rust,ignore
 /// A digest and the rules used to compute it.
 /// Tracking and freshness checks compare both fields as opaque values.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Fingerprint {
     pub scheme: String,
     pub value: String,
