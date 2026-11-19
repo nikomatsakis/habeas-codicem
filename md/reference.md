@@ -284,21 +284,6 @@ default, then user default.
 {cite}`requirements.configuration.evidence_paths`
 {cite}`requirements.authoring.configuration_precedence`
 
-In `habeas.toml`, the optional `[coverage]` table sets how many committed versions of
-each evidence file count toward an item's recent coverage, as described under
-[Rust items](#rust-items). `reauthorings` must be a positive integer; without
-it, the last 3 commits that changed each file count:
-
-```toml
-version = 1
-
-[coverage]
-reauthorings = 5
-```
-
-Delete the `[coverage]` table to return to the default of 3.
-{cite}`requirements.references.coverage.history`
-
 Existing Cargo build-script output directories are automatically allowed when
 discoverable from the current build layout, including external build directories.
 No build is run to find or recreate them. Root listings expose discovered output
@@ -597,7 +582,13 @@ Each reference must name an existing requirement or example, or a built-in defin
 - `{test}`: the source is designed to verify behavior the definition specifies, either a test through its scenario and assertions, or a named example through its concrete case.
 - `{cite}`: the source relies on, supports, or refers to the definition without implementing or testing it.
 
-Only requirements and examples are assessed; code is reviewed as part of the definitions it implements or tests. `{impl}` and `{test}` point from the definition to the source, so the source becomes a mandatory input to the definition's assessment, and that definition's evidence must cover the reference line. `{cite}` points from the source to the definition: a citing requirement or example receives the cited declaration as context, and the citing site needs no evidence coverage. Marking only `{cite}` on code that implements part of a requirement leaves a gap in that requirement's review. In the book, references and definitions become linked badges.
+Only requirements and examples are assessed. `{impl}` and `{test}` point from
+the definition to the source. Tests are supplied to the assessment and their
+reference lines must be covered by recorded inputs. Implementation references
+help readers and agents find the code; the assessment requests implementation
+source only to answer a specific question. `{cite}` points from the source to
+the definition: a citing requirement or example receives the cited declaration
+as context. In the book, references and definitions become linked badges.
 {cite}`requirements.references.roles` {cite}`requirements.references.evidence_coverage` {cite}`requirements.references.authoring_inputs`
 
 Habeas discovers references in the same sources authoring may read. In a Git worktree, these are the files in the Git index, including staged new files; outside Git, every project file. Either way, the project-root `book` and `evidence` directories, `.git` and `target` directories at any depth, and paths your `[evidence]` configuration disallows are skipped. References in an untracked file are not validated and do not count toward any definition until you stage the file with `git add`; `habeas status` lists untracked files that contain references as a reminder.
@@ -607,12 +598,17 @@ Habeas discovers references in the same sources authoring may read. In a Git wor
 
 For each definition a source item could reference, choose by this procedure. An item may carry several references.
 
-1. If the item is a test or test helper designed to verify the definition, use `{test}`.
-2. Otherwise, if fulfilling the definition depends on the item, use `{impl}`. For code, this means it makes a decision, performs a check, produces an output, or handles a case the definition specifies. For a type, it means the definition constrains its shape: its fields, variants, serialized form, or validation.
+1. If the item is a test designed to verify the definition, use `{test}`. Helpers reached from that test need no reference of their own.
+2. Otherwise, if the item is an implementation root for the definition, use `{impl}`. For code, this means it makes a decision, performs a check, produces an output, or handles a case the definition specifies. For a type, it means the definition constrains its shape: its fields, variants, serialized form, or validation. A root is such an item that no other `{impl}` item for the definition reaches through calls or types it uses; helpers reached from it need no individual annotation.
 3. Otherwise, if the item should be re-checked or kept in sync when the definition changes, use `{cite}`.
-4. If the item has no reference after applying steps 1 to 3 to every definition, and no assessment reads it, cite the built-in `habeas:util` when it serves other code. An item that does neither carries out behavior that needs a requirement, or is not needed.
 
-For internal code, state any invariant worth checking, such as a cache that must not change results, as an ordinary requirement and implement it. Otherwise cite `habeas:util` for an item that only serves other code. An item that does neither needs a requirement, or is not needed. Do not write grouping requirements that state no checkable obligation just to give internal helpers something to reference.
+Other source items need no annotation or recorded assessment read merely to
+account for their existence. Assessments still inspect relevant helpers, and
+execution-coverage obligations continue to apply.
+For internal code, state any invariant worth checking, such as a cache that must
+not change results, as an ordinary requirement and implement it. Do not write
+grouping requirements that state no checkable obligation just to give internal
+helpers something to reference.
 {cite}`requirements.references.procedure` {cite}`requirements.cli.internal_detail_guidance`
 
 ### Fenced references and commentary
@@ -670,7 +666,9 @@ fn split_lines(text: &str) -> Vec<&str> {
 }
 ```
 
-A `habeas:util` citation counts as a reference for Rust item coverage. An item whose only citations are of `habeas:util` needs no citation review; the reviews of the roots that reach it judge what it does.
+This citation is optional. An item whose only citations are of `habeas:util`
+needs no citation review; a review that reaches it from a root considers it as
+part of that root's assessment.
 {cite}`requirements.references.builtin_definitions` {cite}`requirements.references.util`
 
 The built-in `habeas:coverage` has this text:
@@ -745,7 +743,27 @@ The bundled skill MUST explain how to author evidence.
 
 ### Rust items
 
-For Rust, Habeas parses first-party source files, which are the `.rs` files among the sources reference discovery considers, except under the project-root `vendor` directory. Validation fails for two kinds of item: a test function, marked `#[test]` or another attribute whose path ends in `test`, without a `{test}` reference, and a Cargo example that does not `{cite}` a named example of the book. Every other explicit function or method, and every struct, enum, and union, should be covered: it has a requirement or named example reference in an attached comment or its body, or an assessment read it, meaning its outline node or one containing it is an outline input of an evidence record, a citation review, or a site review. Selected search snippets recorded by `finish_search` also count as outline inputs. A reference on an enclosing `impl` or module, in a string literal, or only in an evidence input does not count as the item's reference. An item that is not covered contributes to the coverage-warning count in `habeas status` and after `habeas author`, not a validation failure; use `habeas status --coverage` to see individual warnings and coverage-history details. An item contributes to the count only when no recent version of an existing evidence file read it: the version on disk or one of the last three commits that changed it (set `[coverage] reauthorings` in `habeas.toml` to change the number). So an item that a re-authored record stopped reading stays quiet for a few re-authorings, while a new item nothing has read, or one whose only record was deleted, is warned about at once. Items inside `mod tests` are never warned about. A Rust source file that cannot be parsed is reported as an error. For an item that serves other code, including a trait implementation a library calls, cite `habeas:util`, as described under [Built-in definitions](#built-in-definitions). {cite}`requirements.references.rust_item_coverage` {cite}`requirements.references.coverage.tests` {cite}`requirements.references.coverage.examples` {cite}`requirements.references.coverage.history` {cite}`requirements.references.coverage.report` {cite}`requirements.cli.internal_detail_guidance`
+For Rust, Habeas parses first-party source files, which are the `.rs` files among
+the sources reference discovery considers, except under the project-root `vendor`
+directory. A Rust source file that cannot be parsed is reported as an error.
+Tests and Cargo examples need explicit connections to the book: a test function,
+marked `#[test]` or another attribute whose path ends in `test`, needs a `{test}`
+reference, and a Cargo example needs to `{cite}` a named example of the book.
+Missing annotations on these items are validation errors.
+{cite}`requirements.references.rust_item_coverage.parsing`
+{cite}`requirements.references.coverage.tests`
+{cite}`requirements.references.coverage.examples`
+
+Other functions and types need no annotation or recorded assessment read merely
+to account for their existence. Assessments still inspect relevant helpers, and
+execution-coverage obligations continue to apply.
+Place implementation references at meaningful roots; helpers reached from them
+can remain unmarked. Recorded source reads still make an assessment stale when
+those inputs change, but neither current reads nor older evidence versions
+supply an item-coverage score or warnings.
+{cite}`requirements.references.procedure`
+{cite}`requirements.references.rust_item_coverage`
+{cite}`requirements.ci.outline_inputs`
 
 Rust selectors use syntactic ancestry within one repository-relative file, under the Rust outline profile below. Examples include `mod[local]/fn[run]`, `impl[Thing]/fn[run]`, `impl[Thing/Trait]/fn[run]`, `trait[Trait]/fn[read]`, `extern[C]/fn[puts]`, and `fn[outer]/fn[inner]`. An impl is named by its self type and optional trait as written, so `impl<T> Trait for Wrapper<T>` is `impl[Wrapper<T>/Trait]`. `use` declarations and item-position macro invocations are anonymous, such as `use@3f2a9c01b7de`. Modules are never resolved across files. {cite}`requirements.references.rust_item_selectors`
 
@@ -839,7 +857,7 @@ in one step leaves its evidence stale, so commit the move first.
 
 ## Checking and viewing
 
-The test created by `habeas setup` calls `habeas::validate()`. Run `habeas coverage` to find missing evidence, false determinations, changed lines, changed reference sets, uncovered `{test}` references, misplaced or malformed `{fixme}` references, missing or stale citation reviews, and uncovered Rust items. Validation accepts true and FIXME judgments when all other evidence checks pass. FIXME remains visible in status and the book with its recorded references and rationale. These checks are deterministic: they verify the saved evidence without inference or reassessing the reviewer's judgment about documented gaps. The check reports all the errors it finds, with diffs for changed text. Run `mdbook build` to render the book. {cite}`requirements.ci.determination`
+The test created by `habeas setup` calls `habeas::validate()`. Run `habeas coverage` to find missing evidence, false determinations, changed lines, changed reference sets, uncovered `{test}` references, misplaced or malformed `{fixme}` references, and missing or stale citation reviews. Validation accepts true and FIXME judgments when all other evidence checks pass. FIXME remains visible in status and the book with its recorded references and rationale. These checks are deterministic: they verify the saved evidence without inference or reassessing the reviewer's judgment about documented gaps. The check reports all the errors it finds, with diffs for changed text. Run `mdbook build` to render the book. {cite}`requirements.ci.determination`
 
 Run `habeas status [<selection>]` from within the project to list requirements and named
 examples needing attention and their validation findings. FIXME judgments are
@@ -881,7 +899,6 @@ habeas info requirements.ci.outline_inputs
 habeas info 'requirements.cli.*'
 habeas status 'requirements.cli.*' --all
 habeas status --verbose
-habeas status --coverage
 ```
 
 Agent skills installed by Habeas point to `habeas info` for looking up definition details.

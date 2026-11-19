@@ -1,13 +1,13 @@
 # Test execution coverage
 
 Execution coverage records which instrumented Rust code ran in test processes.
-The evidence-input coverage of
-{cite}`requirements.references.coverage.report` records which code requirement
-assessments read; execution coverage does not replace those assessments.
+Requirement assessments judge whether tests adequately check the stated
+behavior under {cite}`requirements.ci.review_criteria`; execution coverage
+does not replace those assessments. Recorded source reads track evidence
+freshness, rather than supplying a coverage score for ordinary Rust items.
 
 The nextest integration uses nextest-owned configuration in
-`.config/nextest.toml`. It adds no settings to `habeas.toml`; that file's existing
-`[coverage]` table continues to control evidence-input coverage history.
+`.config/nextest.toml`. It adds no settings to `habeas.toml`.
 
 Collected execution coverage is a current set of results, one per test, rather
 than a history of runs. An unfiltered workspace run replaces the whole set;
@@ -586,7 +586,7 @@ assessment model.
 :::{req} check.scope
 The coverage check MUST consider every explicitly declared function or method
 with a body in the first-party Rust sources of
-{cite}`requirements.references.rust_item_coverage`, including test functions,
+{cite}`requirements.references.rust_item_coverage.parsing`, including test functions,
 test helpers, and default trait methods. Declarations without bodies MUST NOT
 create execution-coverage obligations. Source discovery or parsing failures
 MUST cause the check to fail rather than silently omit functions.
@@ -599,7 +599,7 @@ build configuration require exception evidence under
 
 :::{req} check.threshold
 Each first-party Rust file under
-{cite}`requirements.references.rust_item_coverage` MUST have at least 80%
+{cite}`requirements.references.rust_item_coverage.parsing` MUST have at least 80%
 execution coverage of its instrumented lines, or current accepted exception
 evidence explaining why the file falls below that target under
 {cite}`requirements.test-coverage.check.exceptions`. Counts MUST use the
