@@ -1,8 +1,8 @@
 {
-  "requirement": "The SDK checks freshness itself, using graph operations and fingerprints. It\nrequires no application freshness callback and runs neither the assessment\nprocedure nor a model. It compares the requested procedure identity and the\nrecord's dependencies with their current state. A\nprocedure-identity mismatch under\n{cite}`requirements.sdk.graph.evidence.checking_records.procedure_match` or a\nfingerprint mismatch makes the record stale. A dependency-resolution error is\nreturned as an error.",
+  "requirement": "The SDK checks the loaded record's revision first. A mismatch establishes\nstaleness without resolving saved dependencies or decoding its output. Otherwise\nit resolves the saved dependencies through graph operations and fingerprints,\ncomparing each with its saved observation. A fingerprint mismatch establishes\nstaleness and permits an early return; it need not resolve later dependencies.\nAn encountered dependency-resolution failure returns an error.\n\nChecking executes no validation or model and writes no evidence. It uses the\ncurrent state that the caller intends to inspect, rather than reusing source\nsnapshots from an earlier invocation without establishing that they remain\ncurrent.",
   "determination": true,
-  "rationale": "The reviewed tests cover every obligation in `requirements.sdk.graph.evidence.checking_records`. They also cover the cited `procedure_match` behavior that applies here.\n\n**Obligations and their tests**\n- **The SDK checks freshness itself, with no callback and no assessment run.**\n  - `contracts.rs#fn[checker_needs_no_validation_and_storage_preserves_nonserializable_metadata]` builds a `Checker` over a graph-only implementation.\n  - That graph has no validation or freshness callback.\n  - The test ends by asserting `state.callbacks == 0` and `state.writes == 1`, so checking neither assessed nor wrote anything.\n- **A matching procedure and matching dependencies make the record current.** The same test asserts `EvidenceState::Current(j)` with `j == saved.output`. `Missing` is asserted when no record exists.\n- **A procedure-identity mismatch makes the record stale.**\n  - The same test checks a `Checker` with version `v2` against the saved `v1` record and expects `Stale`.\n  - `validation.rs#fn[wildcard_versions_still_check_inputs_and_errors]` also covers it through `record_is_current` and `procedure_matches`.\n- **A fingerprint mismatch makes the record stale, for both `Dependency` variants.** The enum has only `Node` and `OutgoingEdges`.\n  - `Node` dependencies: the contracts test changes the node text and expects `Stale`. The wildcard test changes the fingerprint value and the fingerprint scheme and expects not current.\n  - `OutgoingEdges` dependencies: `validation.rs#fn[labeled_selections_track_only_target_membership_without_reading_contents]` covers both directions.\n    - The record is stale when the selected label's membership changes.\n    - The record is not stale when other labels or edge order change.\n  - `src/sdk.rs#mod[tests]/fn[requirement_edges_and_input_freshness_use_the_sdk]` covers the domain-specific case. A record is current, then stale once an `impl` edge appears.\n- **A dependency-resolution error is returned as an error.**\n  - The contracts test injects `load`, `read` and `edges` failures through `check_node` and expects `Err`.\n  - It also checks that an error from the procedure-version callback is returned as an error.\n  - The wildcard test expects `Err(\"read\")` from `record_is_current`, and the labeled-selection test expects `Err(\"edges\")`.\n- **Reads made during freshness checks do not leak into the replacement trace.** `validation.rs#fn[historical_freshness_reads_do_not_enter_the_replacement_trace]` and `contracts.rs#fn[changed_target_membership_revalidates_and_replaces_the_saved_selection]` check this for the validate path. They also confirm that stale detection triggers reassessment.\n\n**`procedure_match` (cited)**\n- `wildcard_versions_still_check_inputs_and_errors` covers each clause.\n- A stored `*` matches any request.\n- A stored `v*` against `v42` does not match, so there is no glob matching.\n- Case differences, prefixes, and a stored `v42` against a requested `*` do not match.\n- An empty stored value does not match.\n- A wildcard still yields stale when a dependency changes, and still yields an error when a read fails.\n- A wildcard leaves the judgment unchanged (`record.output.result` is still false).\n\nThe assertions check outcomes, and the expected results follow the requirement text. I found no plausible requirement-violating behavior that these tests would accept. There is no gap and no acknowledgment is needed.",
-  "references": "5c2efa26ac9ebd72a465e1ffbed1b1745c253be21e730c3fd27ba65e7756c065",
+  "rationale": "The reviewed tests cover each obligation in `requirements.sdk.graph.evidence.checking_records`. I did not request implementation source.\n\n- **Revision mismatch is stale without resolving dependencies or decoding output.**\n  - `crates/habeas-sdk/tests/contracts.rs#fn[revision_and_dependency_checks_precede_output_decoding]` saves a record with a dependency on `Node(99)` and turns on `fail_read`.\n  - It then checks with a changed revision and an output type that cannot decode the saved JSON. The result is `Stale`, `reads` is empty, and there is no error.\n  - The same test then checks the same revision with dependencies cleared. That yields `ValidationError::Output`, so decoding runs once the revision matches.\n- **A saved dependency is resolved and compared by fingerprint.**\n  - `contracts.rs#fn[changing_one_criteria_input_does_not_invalidate_another]` checks that a changed node makes only the record that depends on it `Stale`. The record that depends on a different node stays `Current(true)`.\n  - `crates/habeas-sdk/tests/validation.rs#fn[wildcard_versions_still_check_inputs_and_errors]` covers a matching fingerprint, a changed value, and a changed scheme.\n  - `validation.rs#fn[labeled_selections_track_only_target_membership_without_reading_contents]` covers outgoing-edge dependencies. A change in a selected label's target set makes the record stale, and an unrelated edge change does not.\n  - `contracts.rs#fn[absence_certification_is_invalidated_by_the_first_selected_root]` covers a new edge invalidating a record that was certified on the absence of edges.\n- **Staleness on mismatch.** The same tests assert `Stale` or `false`. The text only permits an early return, so there is nothing further to test there.\n- **A dependency-resolution failure returns an error.**\n  - `wildcard_versions_still_check_inputs_and_errors` asserts `Err(\"read\")` from `record_is_current` when reading fails.\n  - `labeled_selections_track_only_target_membership_without_reading_contents` asserts `Err(\"edges\")` when the edge lookup fails.\n- **Checking executes no validation or model and writes no evidence.**\n  - `changing_one_criteria_input_does_not_invalidate_another` asserts that `executions` is still 2 after two checks.\n  - `revision_and_dependency_checks_precede_output_decoding` asserts that `executions` and `writes` are both 1 after the checks and the failed `verify`.\n- **Current state is used, not earlier snapshots.**\n  - `validation.rs#fn[historical_freshness_reads_do_not_enter_the_replacement_trace]` shows that freshness reads happen on the current graph state.\n  - `src/sdk.rs#mod[tests]/fn[requirement_edges_and_input_freshness_use_the_sdk]` shows that `record_is_current` with a fresh outline cache sees the changed source. The fingerprint of the retained snapshot differs from the fingerprint of the current content.\n\nI found no untested obligation, so there is no gap.",
+  "references": "59b80511da08d2f48c0073a02fe38a9baab722bf07b9aaa636295a0a28884832",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.evidence.checking_records",
@@ -11,65 +11,59 @@
       ],
       "text": [
         ":::{req} checking_records",
-        "The SDK checks freshness itself, using graph operations and fingerprints. It",
-        "requires no application freshness callback and runs neither the assessment",
-        "procedure nor a model. It compares the requested procedure identity and the",
-        "record's dependencies with their current state. A",
-        "procedure-identity mismatch under",
-        "{cite}`requirements.sdk.graph.evidence.checking_records.procedure_match` or a",
-        "fingerprint mismatch makes the record stale. A dependency-resolution error is",
-        "returned as an error.",
-        ":::"
-      ]
-    },
-    {
-      "requirements": "requirements.sdk.graph.evidence.checking_records.procedure_match",
-      "matches": [
-        "requirements.sdk.graph.evidence.checking_records.procedure_match"
-      ],
-      "text": [
-        ":::{req} checking_records.procedure_match",
-        "The procedure identity matches when the stored `Record::procedure` is `*` or",
-        "equals the requested identity exactly. Only the complete stored value `*` is a",
-        "wildcard; other values compare literally, without glob matching. A wildcard",
-        "leaves dependency comparison and the saved judgment unchanged.",
+        "The SDK checks the loaded record's revision first. A mismatch establishes",
+        "staleness without resolving saved dependencies or decoding its output. Otherwise",
+        "it resolves the saved dependencies through graph operations and fingerprints,",
+        "comparing each with its saved observation. A fingerprint mismatch establishes",
+        "staleness and permits an early return; it need not resolve later dependencies.",
+        "An encountered dependency-resolution failure returns an error.",
+        "",
+        "Checking executes no validation or model and writes no evidence. It uses the",
+        "current state that the caller intends to inspect, rather than reusing source",
+        "snapshots from an earlier invocation without establishing that they remain",
+        "current.",
         ":::"
       ]
     },
     {
       "file": "crates/habeas-sdk/tests/contracts.rs",
-      "item": "fn[checker_needs_no_validation_and_storage_preserves_nonserializable_metadata]",
-      "hash": "73c0250290985756f83e208a33c20419dbe3525a5086eac90cc792f418857428"
+      "item": "fn[changing_one_criteria_input_does_not_invalidate_another]",
+      "hash": "0d42fc614241e2d111f072dad8bdee9ece514e6bb2113e4ea797ddfce75ab54f"
     },
     {
       "file": "crates/habeas-sdk/tests/contracts.rs",
-      "item": "fn[changed_target_membership_revalidates_and_replaces_the_saved_selection]",
-      "hash": "955037411d45e854438dacba485b07a58e967d6e266ff6344f401d74db9815fc"
+      "item": "fn[revision_and_dependency_checks_precede_output_decoding]",
+      "hash": "037876dd132368f33b90db17538fe87aedbec87244c0fe7f964debcd1a946874"
+    },
+    {
+      "file": "crates/habeas-sdk/tests/contracts.rs",
+      "item": "fn[absence_certification_is_invalidated_by_the_first_selected_root]",
+      "hash": "697fb74af046f676594403f86c6e863dd36a843417ad45e72daf34f80237fb3d"
     },
     {
       "file": "crates/habeas-sdk/tests/validation.rs",
       "item": "fn[historical_freshness_reads_do_not_enter_the_replacement_trace]",
-      "hash": "6c775dcf69e37b79096a087de9e91565d3cefb2342511a5e7c7bdd61e6692396"
+      "hash": "9146955de91179cbabb9f0cdd268f7c7bb4313b2c818070b80f06f277e299e33"
     },
     {
       "file": "crates/habeas-sdk/tests/validation.rs",
       "item": "fn[wildcard_versions_still_check_inputs_and_errors]",
-      "hash": "23a82c9e1626b834abd3b2cb7152398bc626cca309c04a58b003d7ad4f17a129"
+      "hash": "766ed31bab7ee71debeadab9869f7c8e1fa1f8f2f04c84bc7d7311b2b7377606"
     },
     {
       "file": "crates/habeas-sdk/tests/validation.rs",
       "item": "fn[labeled_selections_track_only_target_membership_without_reading_contents]",
-      "hash": "680573ac0aaddefeb37511865da0f36a6f39b8e424f9a328ee98d0373ca7e57d"
+      "hash": "4a2856070d4405b5501e24291a6b1639cccf3fedf480815165d0d7ceacdd7ec9"
     },
     {
       "file": "src/sdk.rs",
       "item": "mod[tests]/fn[requirement_edges_and_input_freshness_use_the_sdk]",
-      "hash": "67a49917c103d8cd3434d6248c03b76adfb5340b2f05e5febfb3f6792631c6d0"
+      "hash": "5a09b641e83290b83745ccdc8e097c6c61db43f6430e1488e59da188fd4fc4fd"
     },
     {
-      "file": "crates/habeas-sdk/src/graph.rs",
-      "item": "enum[Dependency]",
-      "hash": "fe5519f4fbe4dbde50c868209706c52775c0c142e88c97d75bbebf4a296ed0c0"
+      "file": "crates/habeas-sdk/tests/contracts.rs",
+      "item": "fn[dependency_resolution_failures_do_not_execute_or_replace_saved_answers]",
+      "hash": "bb351d46de402d029ff54047ceafec38b1646f85241c9b4f7496cc90c8d2b0ac"
     }
   ],
   "format_version": 1,
@@ -82,7 +76,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "5c2efa26ac9ebd72a465e1ffbed1b1745c253be21e730c3fd27ba65e7756c065"
+          "value": "59b80511da08d2f48c0073a02fe38a9baab722bf07b9aaa636295a0a28884832"
         }
       ]
     },
@@ -94,7 +88,7 @@
         "Mandatory",
         {
           "scheme": "node-path-set-sha256-v1",
-          "value": "33a124e17bd54b1ba07c9f9c2a23984b1f72254938e6cb244fabe5bd7101b480"
+          "value": "a91ec6eb7d7451d6ca22b0e3a59bbb6c7b80164e5dfb7934485cb26a99ef6a9e"
         }
       ]
     },
@@ -105,18 +99,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "58d3458c11dd47b42dae37b7eef210f4aaccd927edb6d04edb276539ef0c1b00"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Requirement": "requirements.sdk.graph.evidence.checking_records.procedure_match"
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "c58cba2122d07847ad713e09488876356dbfaa1623118d836e349846bec88811"
+          "value": "e055c5a286e04b97f36c75997696269bde4bae996068012e27116ae3b3dea403"
         }
       ]
     },
@@ -128,12 +111,12 @@
               "scheme": "repo",
               "location": "crates/habeas-sdk/tests/contracts.rs"
             },
-            "selector": "fn[checker_needs_no_validation_and_storage_preserves_nonserializable_metadata]"
+            "selector": "fn[changing_one_criteria_input_does_not_invalidate_another]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "c0b56943808cd044b6b281443bf23388811599f2cdf469fff7a128b8c3c6c722"
+          "value": "553fed96c09ae7ea8d5285fd4a93d9ac48acb8f98c1cbc2c4c9e4f9662271653"
         }
       ]
     },
@@ -145,12 +128,29 @@
               "scheme": "repo",
               "location": "crates/habeas-sdk/tests/contracts.rs"
             },
-            "selector": "fn[changed_target_membership_revalidates_and_replaces_the_saved_selection]"
+            "selector": "fn[revision_and_dependency_checks_precede_output_decoding]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "4ef3f01059fb9de6dfd8afcbe6afa4702963ae5c09d93a8ca7ee54dd1086c54e"
+          "value": "dc4ba781fe76ced7fd53e2f5fd9e41a5f9df5791b2e6ab25e6c611340fd04b42"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/tests/contracts.rs"
+            },
+            "selector": "fn[absence_certification_is_invalidated_by_the_first_selected_root]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "372e7f9203891d0d092a9b86e6123e6e6184083dde76d15aa544b563f248cf28"
         }
       ]
     },
@@ -167,7 +167,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "c1b7e90ff0d502bea0db92ff3b664a4781d31bd933d66931dd6568bd5237412b"
+          "value": "60a41a2c898eca3120a539ad832d7b371eb9297cb2bfbc2cccceb2c9f9cd51fd"
         }
       ]
     },
@@ -184,7 +184,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "09c348757c4fa6c711a3af8f3f6d0907a6f0ac3ce52844ea7fb5e7a0da1cbcda"
+          "value": "68945189666b5b089f441f60dbd59b49b987a76854c3940c835fc1a6bce57f9a"
         }
       ]
     },
@@ -201,7 +201,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "8b18c46a4fcea281c4de8da0ff946c8cf2eb58d8541578235720c89abf5228b7"
+          "value": "ea4b8b38228cc056b5a5c465cf772ebc6a6f51ff921517eca93ef471cc63e4a5"
         }
       ]
     },
@@ -218,7 +218,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "1086a0997ffa5d23cfa495fc41998596b3a78300d6501e9a54c7700e45a95419"
+          "value": "bb319360ad362793c499ca6908d0bfd6c5a53ba5fca5c6579cddc048231187b6"
         }
       ]
     },
@@ -228,14 +228,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/habeas-sdk/src/graph.rs"
+              "location": "crates/habeas-sdk/tests/contracts.rs"
             },
-            "selector": "enum[Dependency]"
+            "selector": "fn[dependency_resolution_failures_do_not_execute_or_replace_saved_answers]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "4db7455dd1c871cacfe82cdf4fc140f9288a2512205c1b2caf032144d842cd3b"
+          "value": "d996907cce19f051fac6e333fefd7ffca8914f905398bb742d905ee537ef4185"
         }
       ]
     }

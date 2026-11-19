@@ -1,8 +1,8 @@
 {
-  "requirement": "`check_node` returns a current stored judgment, a missing-evidence state, or a\nstale-evidence state. Storage and input-resolution failures return errors.\nIt gets the current procedure identity through\n{cite}`requirements.sdk.graph.validation.procedure_identity`.\n\nThe SDK performs lookup and freshness comparison itself, using only\n`Graph + Fingerprinting + EvidenceStorage`. Checking invokes no validation\ncallback or model and writes no evidence; it needs neither a `Validation`\nimplementation nor a configured agent.",
+  "requirement": "```rust,ignore\n// Defined in habeas_sdk::graph.\npub enum EvidenceState<O> {\n    Current(O),\n    Missing,\n    Stale,\n}\n\n// Method on Validator<'d, D>.\npub fn check<V: Validation<D>>(\n    &self,\n    validation: &V,\n) -> impl Future<Output = Result<EvidenceState<V::Ok>, ValidationError<D::Error>>> + Send;\n```\n\n`check` uses the same identity, revision, and freshness comparison as `verify`.\nIt reads the descriptor before awaiting; it does not retain a reference to the\nvalidation value across asynchronous storage or dependency operations. Checking\ninvokes neither `execute` nor a model and writes no evidence. It needs no\nconfigured agent. Storage, dependency-resolution, and current-output decoding\nfailures are errors, not missing or stale evidence.",
   "determination": true,
-  "rationale": "The tests adequately cover `requirements.sdk.graph.validation.check_node`. I judged this from the supplied test sources and did not request implementation source.\n\n**Outcome states**\n- `crates/habeas-sdk/tests/contracts.rs#fn[checker_needs_no_validation_and_storage_preserves_nonserializable_metadata]` asserts `EvidenceState::Missing` when nothing is stored.\n- The same test stores a record and asserts `EvidenceState::Current(j)` with `j == saved.output`.\n- It asserts `Stale` when the resolver returns a different procedure identity (\"v2\").\n- It also asserts `Stale` when the graph text changes, so a changed dependency is covered.\n- `crates/habeas-sdk/tests/validation.rs#fn[runner_reuses_negative_judgments_and_records_only_callback_observations]` repeats these states on the `Validator`'s `check_node`. It checks that a negative judgment is `Current`, an unknown node is `Missing`, and a new resolver version is `Stale`. After `validate_node` re-records the evidence under \"v2\", it checks that the stored procedure is \"v2\".\n\n**Errors, not states**\n- In the contracts test, a resolver error (`Err(\"version\")`) makes `check_node` return that error.\n- A loop over load, read and edges failures asserts that each storage or input-resolution failure comes back as an `Err`.\n- `crates/habeas-sdk/tests/validation.rs#fn[resolution_storage_and_callback_errors_are_not_judgments]` covers errors on the validate path. It is only partly relevant here, but it reinforces the resolver-error behavior.\n\n**No validation or writes, and the minimal trait bounds**\n- The contracts test builds `Checker::new(&graph, …)` over a `GraphOnly` graph that has no `Validation` implementation or agent. That shows checking needs only the graph, fingerprinting and evidence storage.\n- It then asserts `state.callbacks == 0` and `state.writes == 1`. The single write is the test's own `store_evidence`, so checking performed no writes.\n- The `Validator` test shows that checking the same stored evidence does not change the recorded state.\n\n**Procedure identity**\n- Getting the identity through the resolver is exercised by the changing resolver versions (\"v1\", \"v2\") and by the failing resolver. These change the outcomes from `Current` to `Stale` and to an error.\n\nI found no untested obligation and no assertion that contradicts the requirement. The tests carry `{test}` references to the subject.",
-  "references": "d80b733d5e8bc574ec9c89e6b1df7caee57772fa9a92811d5c8109bc1a94586b",
+  "rationale": "The reviewed tests cover every obligation in `requirements.sdk.graph.validation.check_node`, and I found no gap. I did not need implementation source.\n\n- **Same comparison as `verify`.**\n  - The tests assert `Current`, `Missing` and `Stale` outcomes.\n  - `Current` cases: `criteria_have_independent_typed_answers_and_cache_negative_results`, `changing_one_criteria_input_does_not_invalidate_another`, and `runner_reuses_negative_judgments_and_records_only_callback_observations`.\n  - `Missing` cases: a different criterion, a different source node, and an unverified criterion. These are in `wildcard_revision_does_not_supply_other_criteria_or_nodes` and the `criteria_have_independent_typed_answers_and_cache_negative_results` test.\n  - `Stale` cases: a dependency change (`changing_one_criteria_input_does_not_invalidate_another`) and a revision change (`revision_and_dependency_checks_precede_output_decoding` and `runner_reuses_negative_judgments_and_records_only_callback_observations`).\n  - The stored `*` revision case is covered too.\n  - A sibling criterion stays `Current` when another one goes stale.\n- **No retained reference or reads before awaiting.** `validation_and_answer_need_send_without_sync` drives `check` through a `send(...)` helper with a non-`Sync` `Review`. It also asserts `descriptor_reads == 1`.\n- **No `execute`, no model, no writes.** The tests assert execution and write counters after checks. They also assert that a `Missing` check in `src/authoring/sdk.rs#mod[tests]/fn[review_graph_persists_and_reuses_a_negative_validation_through_the_sdk]` leaves the evidence file absent and sends no provider request. They assert the stored bytes are unchanged after a `Current` check. `revision_and_dependency_checks_precede_output_decoding` shows `writes == 1` after a `Stale` check.\n- **No agent needed.** Checks in most of these tests run on validators built without an agent.\n- **Errors, not `Missing` or `Stale`.**\n  - Load failures are covered in `loading_execution_resolution_and_saving_failures_do_not_publish_answers`.\n  - Dependency read and edge failures are covered in `dependency_resolution_failures_do_not_execute_or_replace_saved_answers`.\n  - Malformed storage (a `Json` error) and an undecodable current output (`ValidationError::Output`) are covered in the `storage.rs` test `malformed_records_are_storage_errors_and_current_bad_outputs_are_output_errors`. `revision_and_dependency_checks_precede_output_decoding` covers the `Output` case as well.\n\nAll the tests carry `{test}` references to the subject, so there are no marking gaps.",
+  "references": "29ee8968ac46549f6c9b611d2d5f32cdb3be915d7f71c0f2cca53c46bbb85ccc",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.validation.check_node",
@@ -11,67 +11,109 @@
       ],
       "text": [
         ":::{req} check_node",
-        "`check_node` returns a current stored judgment, a missing-evidence state, or a",
-        "stale-evidence state. Storage and input-resolution failures return errors.",
-        "It gets the current procedure identity through",
-        "{cite}`requirements.sdk.graph.validation.procedure_identity`.",
-        "",
-        "The SDK performs lookup and freshness comparison itself, using only",
-        "`Graph + Fingerprinting + EvidenceStorage`. Checking invokes no validation",
-        "callback or model and writes no evidence; it needs neither a `Validation`",
-        "implementation nor a configured agent.",
-        ":::"
-      ]
-    },
-    {
-      "requirements": "requirements.sdk.graph.validation.procedure_identity",
-      "matches": [
-        "requirements.sdk.graph.validation.procedure_identity"
-      ],
-      "text": [
-        ":::{req} procedure_identity",
-        "Checker and validator configuration accepts an application-supplied resolver:",
-        "",
         "```rust,ignore",
-        "// Trait bounds on the configured resolver; not a separate domain trait.",
-        "Fn(&D::NodeId) -> Result<String, D::Error> + Send + Sync",
+        "// Defined in habeas_sdk::graph.",
+        "pub enum EvidenceState<O> {",
+        "    Current(O),",
+        "    Missing,",
+        "    Stale,",
+        "}",
+        "",
+        "// Method on Validator<'d, D>.",
+        "pub fn check<V: Validation<D>>(",
+        "    &self,",
+        "    validation: &V,",
+        ") -> impl Future<Output = Result<EvidenceState<V::Ok>, ValidationError<D::Error>>> + Send;",
         "```",
         "",
-        "Both `check_node` and `validate_node` use the same resolver. Checking needs",
-        "neither a `Validation` implementation nor model configuration. The runner",
-        "compares the resolved identity with saved evidence and uses that identity for",
-        "the replacement record. A resolution failure returns an error before invoking",
-        "validation or storing a completed judgment.",
+        "`check` uses the same identity, revision, and freshness comparison as `verify`.",
+        "It reads the descriptor before awaiting; it does not retain a reference to the",
+        "validation value across asynchronous storage or dependency operations. Checking",
+        "invokes neither `execute` nor a model and writes no evidence. It needs no",
+        "configured agent. Storage, dependency-resolution, and current-output decoding",
+        "failures are errors, not missing or stale evidence.",
         ":::"
       ]
     },
     {
       "file": "crates/habeas-sdk/tests/contracts.rs",
-      "item": "fn[checker_needs_no_validation_and_storage_preserves_nonserializable_metadata]",
-      "hash": "73c0250290985756f83e208a33c20419dbe3525a5086eac90cc792f418857428"
+      "item": "fn[criteria_have_independent_typed_answers_and_cache_negative_results]",
+      "hash": "446b6469843c4e83ae2f009708952547195e937e1ba90eb8f96913ae26a0c43f"
+    },
+    {
+      "file": "crates/habeas-sdk/tests/contracts.rs",
+      "item": "fn[changing_one_criteria_input_does_not_invalidate_another]",
+      "hash": "0d42fc614241e2d111f072dad8bdee9ece514e6bb2113e4ea797ddfce75ab54f"
+    },
+    {
+      "file": "crates/habeas-sdk/tests/contracts.rs",
+      "item": "fn[revision_and_dependency_checks_precede_output_decoding]",
+      "hash": "037876dd132368f33b90db17538fe87aedbec87244c0fe7f964debcd1a946874"
+    },
+    {
+      "file": "crates/habeas-sdk/tests/contracts.rs",
+      "item": "fn[dependency_resolution_failures_do_not_execute_or_replace_saved_answers]",
+      "hash": "bb351d46de402d029ff54047ceafec38b1646f85241c9b4f7496cc90c8d2b0ac"
+    },
+    {
+      "file": "crates/habeas-sdk/tests/contracts.rs",
+      "item": "fn[wildcard_revision_does_not_supply_other_criteria_or_nodes]",
+      "hash": "4442e9f98d9d487165465ebd604cbf490f9c9b297e687a10cc3208b8108c2fa9"
+    },
+    {
+      "file": "crates/habeas-sdk/tests/contracts.rs",
+      "item": "fn[validation_and_answer_need_send_without_sync]",
+      "hash": "0ce378b5583d41e3fcd2079a00150fadd52ca290419d739e1c9f8573a87b338b"
+    },
+    {
+      "file": "crates/habeas-sdk/tests/contracts.rs",
+      "item": "fn[loading_execution_resolution_and_saving_failures_do_not_publish_answers]",
+      "hash": "301df8e21bd6ca369a6b7c91326123f03929703764ac8aa7b68c198ce1975167"
+    },
+    {
+      "file": "crates/habeas-sdk/tests/storage.rs",
+      "item": "fn[malformed_records_are_storage_errors_and_current_bad_outputs_are_output_errors]",
+      "hash": "d317d0c3cef248067966e6f29ed76c61321f2179f1ade9a3a4815e0a78710e93"
     },
     {
       "file": "crates/habeas-sdk/tests/validation.rs",
       "item": "fn[runner_reuses_negative_judgments_and_records_only_callback_observations]",
-      "hash": "af2b35a9b9dc9811f071b58ab6b922e39c6b43a23e9ed2d1bd9725c9b6f02a11"
+      "hash": "d3b76d43c14e6833d007d08c4e0b0c6054d9c835288ef10be2511ae065617f54"
     },
     {
       "file": "crates/habeas-sdk/tests/validation.rs",
       "item": "fn[resolution_storage_and_callback_errors_are_not_judgments]",
-      "hash": "6f5c6112861695007a5846a869c0c308641738999d1bf4f5d4c078b6ec6400b2"
+      "hash": "41f599af74dee6578d906c9d6ae9e8c8ea2f9e93fa0922338884504511b828de"
+    },
+    {
+      "file": "src/authoring/sdk.rs",
+      "item": "mod[tests]/fn[review_graph_persists_and_reuses_a_negative_validation_through_the_sdk]",
+      "hash": "be16c5377af91133a7c4919cb62449af45261df967865add92e67da391e6525a"
     }
   ],
   "format_version": 1,
   "review_version": "habeas-review-v1",
   "dependencies": [
     {
+      "Node": [
+        {
+          "ReferenceSet": "requirements.sdk.graph.validation.check_node"
+        },
+        {
+          "scheme": "habeas-reference-set-v1",
+          "value": "29ee8968ac46549f6c9b611d2d5f32cdb3be915d7f71c0f2cca53c46bbb85ccc"
+        }
+      ]
+    },
+    {
       "OutgoingEdges": [
         {
           "Requirement": "requirements.sdk.graph.validation.check_node"
         },
+        "Mandatory",
         {
-          "scheme": "habeas-reference-set-v1",
-          "value": "d80b733d5e8bc574ec9c89e6b1df7caee57772fa9a92811d5c8109bc1a94586b"
+          "scheme": "node-path-set-sha256-v1",
+          "value": "08fab9d903d1380c9ea19b7800778140c81c871720e1838a98a2b0e3081858bc"
         }
       ]
     },
@@ -82,18 +124,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "630332a7a29c899caacbdb8bb5cf82b982ac62302990050daa60ee22b5fcf88f"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Requirement": "requirements.sdk.graph.validation.procedure_identity"
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "ac627e3f985d43add49e56a229a1e959d30bcc12e9e3906c189ce200cc723bb7"
+          "value": "37c40695714769f6b0c053f457be4f5ed44341cafa4fccfa2abaacf8d4a429f0"
         }
       ]
     },
@@ -105,12 +136,131 @@
               "scheme": "repo",
               "location": "crates/habeas-sdk/tests/contracts.rs"
             },
-            "selector": "fn[checker_needs_no_validation_and_storage_preserves_nonserializable_metadata]"
+            "selector": "fn[criteria_have_independent_typed_answers_and_cache_negative_results]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "c0b56943808cd044b6b281443bf23388811599f2cdf469fff7a128b8c3c6c722"
+          "value": "f801a7b1a136d5f9447de8c3affe17a43576ca694017a24a592472fbcb3ff6f0"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/tests/contracts.rs"
+            },
+            "selector": "fn[changing_one_criteria_input_does_not_invalidate_another]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "553fed96c09ae7ea8d5285fd4a93d9ac48acb8f98c1cbc2c4c9e4f9662271653"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/tests/contracts.rs"
+            },
+            "selector": "fn[revision_and_dependency_checks_precede_output_decoding]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "dc4ba781fe76ced7fd53e2f5fd9e41a5f9df5791b2e6ab25e6c611340fd04b42"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/tests/contracts.rs"
+            },
+            "selector": "fn[dependency_resolution_failures_do_not_execute_or_replace_saved_answers]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "d996907cce19f051fac6e333fefd7ffca8914f905398bb742d905ee537ef4185"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/tests/contracts.rs"
+            },
+            "selector": "fn[wildcard_revision_does_not_supply_other_criteria_or_nodes]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "09ec9ebaaf65dc448178fdd2027cabde92a847f1d5457a265f141bcf672675d8"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/tests/contracts.rs"
+            },
+            "selector": "fn[validation_and_answer_need_send_without_sync]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "a1e5fdb121e3d73c3e3e8cbbed80895a49d327d0932846489cf50e034c232b15"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/tests/contracts.rs"
+            },
+            "selector": "fn[loading_execution_resolution_and_saving_failures_do_not_publish_answers]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "d4ebba47366c7d701cef20ef5cce8dc7370db50a7ef8fbf12a1a8f8f6a23c0a7"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/tests/storage.rs"
+            },
+            "selector": "fn[malformed_records_are_storage_errors_and_current_bad_outputs_are_output_errors]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "1aa476b1ffa19187d82ceb6ef18ed35f38882bb826e144b98c3ef0566b19960f"
         }
       ]
     },
@@ -127,7 +277,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "7dbbfd52a0a76a94509f7c70c8b3530dbf0eb6e4bc86672e4b78e6130f6c6a0c"
+          "value": "73facf7a32a90ceff58f9e1e5c35533d7a3ae16c6ddefc28b35f33828f760abe"
         }
       ]
     },
@@ -144,7 +294,24 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "d4d271324ad4e0852c10d8d38b0d9b0ebef25c3ea9f688729e9fe123f0e3bfb7"
+          "value": "720db472550a0996eb74cba219209992995b7dfd0cfbbe2b259e3b66d6e5ee1f"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/sdk.rs"
+            },
+            "selector": "mod[tests]/fn[review_graph_persists_and_reuses_a_negative_validation_through_the_sdk]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "ed8a5cc41fa1fc56557c9d01915f360723621f811ac56f4af30648ef43402ea5"
         }
       ]
     }

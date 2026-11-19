@@ -4,7 +4,7 @@ use rig_core::{
     message::{AssistantContent, Message, Origin, ToolCall, ToolFunction, ToolName},
 };
 use schemars::JsonSchema;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     collections::VecDeque,
@@ -12,7 +12,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-// Node and metadata values deliberately have no Serde or Hash implementations.
+// Node identities deliberately have no Serde or Hash implementations.
 #[derive(Clone, Eq, PartialEq)]
 struct Node(u8);
 // {cite}`habeas:util`
@@ -21,16 +21,54 @@ struct Label;
 // {cite}`habeas:util`
 struct Contents(String);
 // {cite}`habeas:util`
+#[derive(Serialize, Deserialize)]
 struct Metadata;
-struct Memory(Arc<Mutex<String>>);
+struct Memory {
+    contents: Arc<Mutex<String>>,
+    records: Mutex<Vec<(Node, CriterionPath, Record<Node, Label>)>>,
+}
+impl Memory {
+    fn new(contents: String) -> Self {
+        Self {
+            contents: Arc::new(Mutex::new(contents)),
+            records: Mutex::default(),
+        }
+    }
+}
+impl EvidenceStorage for Memory {
+    async fn load_evidence(
+        &self,
+        node: &Node,
+        criterion: &CriterionPath,
+    ) -> io::Result<Option<Record<Node, Label>>> {
+        Ok(self
+            .records
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(n, c, _)| n == node && c == criterion)
+            .map(|(_, _, r)| r.clone()))
+    }
+    async fn store_evidence(
+        &self,
+        node: &Node,
+        criterion: &CriterionPath,
+        record: &Record<Node, Label>,
+    ) -> io::Result<()> {
+        let mut records = self.records.lock().unwrap();
+        records.retain(|(n, c, _)| n != node || c != criterion);
+        records.push((node.clone(), criterion.clone(), record.clone()));
+        Ok(())
+    }
+}
 impl Graph for Memory {
     type NodeId = Node;
     type NodeContent = Contents;
     type EdgeLabel = Label;
-    type JudgmentMetadata = Metadata;
+
     type Error = io::Error;
     fn node_content(&self, _: &Node) -> io::Result<Contents> {
-        Ok(Contents(self.0.lock().unwrap().clone()))
+        Ok(Contents(self.contents.lock().unwrap().clone()))
     }
     fn node_path(&self, node: &Node) -> NodePath {
         NodePath {
@@ -49,14 +87,22 @@ impl Fingerprinting for Memory {
         }
     }
 }
-impl Validation for Memory {
-    async fn validate<'a, 'd>(
-        &'a self,
-        ctx: &'a ValidationContext<'d, Self>,
-    ) -> Result<Judgment<Metadata>, ValidationError<io::Error>>
-    where
-        'd: 'a,
-    {
+struct Review(Node);
+impl Validation<Memory> for Review {
+    type Ok = Judgment<Metadata>;
+    fn source_node_id(&self) -> Node {
+        self.0.clone()
+    }
+    fn criterion_path(&self) -> CriterionPath {
+        CriterionPath { segments: vec![] }
+    }
+    fn revision(&self) -> String {
+        "v1".into()
+    }
+    async fn execute(
+        self,
+        ctx: &mut ValidationContext<'_, Memory>,
+    ) -> Result<Judgment<Metadata>, ValidationError<io::Error>> {
         let text = ctx
             .inspection()
             .read(ctx.node_id())
@@ -127,7 +173,7 @@ impl CompletionProvider for Script {
 // {test}`requirements.sdk.graph.agent-calls.judge.rendering`
 #[tokio::test]
 async fn default_tool_accepts_scalar_results_and_keeps_the_exact_prefix() {
-    let graph = Memory(Arc::new(Mutex::new("source".into())));
+    let graph = Memory::new("source".into());
     let agent = ToolAgent::new(
         Script::new(vec![Some(vec![("submit_result", json!({"result":true}))])]),
         Renderer,
@@ -232,7 +278,7 @@ impl CompletionProvider for ParallelConversations {
 #[tokio::test]
 async fn concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads() {
     use std::future::IntoFuture;
-    let graph = Memory(Arc::new(Mutex::new("source".into())));
+    let graph = Memory::new("source".into());
     let agent = ToolAgent::new(
         ParallelConversations {
             barrier: tokio::sync::Barrier::new(2),
@@ -291,9 +337,113 @@ async fn concurrent_tool_agents_isolate_histories_pages_and_submissions_and_shar
                     metadata: Metadata,
                 }
             )
+            .unwrap()
             .dependencies
             == dependencies
     );
+}
+
+struct Question {
+    name: String,
+    successors: bool,
+}
+impl Validation<Memory> for Question {
+    type Ok = String;
+    fn source_node_id(&self) -> Node {
+        Node(1)
+    }
+    fn criterion_path(&self) -> CriterionPath {
+        CriterionPath {
+            segments: vec![self.name.clone()],
+        }
+    }
+    fn revision(&self) -> String {
+        "v1".into()
+    }
+    async fn execute(
+        self,
+        ctx: &mut ValidationContext<'_, Memory>,
+    ) -> Result<String, ValidationError<io::Error>> {
+        let request = ctx.ask::<String>().context(self.name);
+        if self.successors {
+            request.successors_content(Label).await
+        } else {
+            request.current_node_contents().await
+        }
+    }
+}
+
+// {test}`requirements.sdk.graph.validation.validator`
+// {test}`requirements.sdk.graph.validation.validate_node`
+// {test}`requirements.sdk.graph.agent-calls.judge.rendering`
+#[tokio::test]
+async fn validator_agent_executions_isolate_conversations_and_dependency_traces() {
+    let graph = Memory::new("source".into());
+    let agent = ToolAgent::new(
+        ParallelConversations {
+            barrier: tokio::sync::Barrier::new(2),
+            calls: Mutex::default(),
+        },
+        DistinctPages,
+    );
+    let validator = Validator::new(&graph).with_agent(&agent, &agent.renderer);
+    let question = |name: &str, successors| Question {
+        name: name.into(),
+        successors,
+    };
+    let (alpha, beta) = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        futures::join!(
+            validator.verify(question("alpha", false)),
+            validator.verify(question("beta", true)),
+        )
+    })
+    .await
+    .unwrap();
+    assert_eq!(alpha.unwrap(), "alpha");
+    assert_eq!(beta.unwrap(), "beta");
+    {
+        let calls = agent.provider.calls.lock().unwrap();
+        assert_eq!(calls["alpha"], 3);
+        assert_eq!(calls["beta"], 3);
+    }
+    let alpha_record = graph
+        .load_evidence(&Node(1), &question("alpha", false).criterion_path())
+        .await
+        .unwrap()
+        .unwrap();
+    let beta_record = graph
+        .load_evidence(&Node(1), &question("beta", true).criterion_path())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        alpha_record.dependencies
+            == [Dependency::Node(
+                Node(1),
+                Fingerprint {
+                    scheme: "content".into(),
+                    value: "source".into()
+                }
+            ),]
+    );
+    assert!(
+        beta_record.dependencies
+            == [
+                Dependency::OutgoingEdges(Node(1), Label, edge_fingerprint(&graph, &[Node(2)])),
+                Dependency::Node(
+                    Node(2),
+                    Fingerprint {
+                        scheme: "content".into(),
+                        value: "source".into()
+                    }
+                ),
+            ]
+    );
+    assert_eq!(
+        validator.verify(question("alpha", false)).await.unwrap(),
+        "alpha"
+    );
+    assert_eq!(agent.provider.calls.lock().unwrap()["alpha"], 3);
 }
 
 // {test}`requirements.sdk.graph.context-tools.tracked_inspection`
@@ -310,7 +460,7 @@ async fn agent_edge_tools_record_selections_without_validating_targets() {
         type NodeId = u8;
         type NodeContent = String;
         type EdgeLabel = ();
-        type JudgmentMetadata = ();
+
         type Error = io::Error;
         // :::{cite} habeas:coverage
         // This edge-only validation regression deliberately supplies no node
@@ -345,22 +495,39 @@ async fn agent_edge_tools_record_selections_without_validating_targets() {
         }
     }
     impl EvidenceStorage for GraphWithChangingEdges {
-        async fn load_evidence(&self, _: &u8) -> io::Result<Option<Record<u8, ()>>> {
+        async fn load_evidence(
+            &self,
+            _: &u8,
+            _: &CriterionPath,
+        ) -> io::Result<Option<Record<u8, ()>>> {
             Ok(None)
         }
-        async fn store_evidence(&self, node: &u8, record: &Record<u8, ()>) -> io::Result<()> {
+        async fn store_evidence(
+            &self,
+            node: &u8,
+            _: &CriterionPath,
+            record: &Record<u8, ()>,
+        ) -> io::Result<()> {
             self.records.lock().unwrap().push((*node, record.clone()));
             Ok(())
         }
     }
-    impl Validation for GraphWithChangingEdges {
-        async fn validate<'a, 'd>(
-            &'a self,
-            ctx: &'a ValidationContext<'d, Self>,
-        ) -> Result<Judgment<()>, ValidationError<io::Error>>
-        where
-            'd: 'a,
-        {
+    struct EdgeReview(u8);
+    impl Validation<GraphWithChangingEdges> for EdgeReview {
+        type Ok = Judgment<()>;
+        fn source_node_id(&self) -> u8 {
+            self.0
+        }
+        fn criterion_path(&self) -> CriterionPath {
+            CriterionPath { segments: vec![] }
+        }
+        fn revision(&self) -> String {
+            "v1".into()
+        }
+        async fn execute(
+            self,
+            ctx: &mut ValidationContext<'_, GraphWithChangingEdges>,
+        ) -> Result<Judgment<()>, ValidationError<io::Error>> {
             let result = if *ctx.node_id() == 1 {
                 ctx.ask::<bool>().await?
             } else {
@@ -399,9 +566,9 @@ async fn agent_edge_tools_record_selections_without_validating_targets() {
         ]),
         Render,
     );
-    let result = Validator::new(&graph, |_| Ok("v1".into()))
+    let result = Validator::new(&graph)
         .with_agent(&agent, &agent.renderer)
-        .validate_node(&1)
+        .verify(EdgeReview(1))
         .await
         .unwrap();
     assert!(result.result);
@@ -445,7 +612,7 @@ enum Decision {
 // {test}`requirements.sdk.graph.agent-calls.judge.submission`
 #[tokio::test]
 async fn typed_submission_references_resolve_and_invalid_results_are_agent_errors() {
-    let graph = Memory(Arc::new(Mutex::new("source".into())));
+    let graph = Memory::new("source".into());
     let agent = ToolAgent::new(
         Script::new(vec![Some(vec![(
             "submit_result",
@@ -495,7 +662,7 @@ async fn typed_submission_references_resolve_and_invalid_results_are_agent_error
 // {test}`requirements.sdk.graph.fingerprinting.snapshot`
 #[tokio::test]
 async fn graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery() {
-    let graph = Memory(Arc::new(Mutex::new("x".repeat(18_000))));
+    let graph = Memory::new("x".repeat(18_000));
     let agent = ToolAgent::new(
         Script::new(vec![
             Some(vec![(
@@ -518,14 +685,17 @@ async fn graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record
     assert!(
         matches!(&observations[1],Dependency::Node(Node(2),fingerprint) if fingerprint.value == "x".repeat(18_000))
     );
-    let record = ctx.inspection().finish(
-        "v1".into(),
-        Judgment {
-            result: true,
-            rationale: "read".into(),
-            metadata: Metadata,
-        },
-    );
+    let record = ctx
+        .inspection()
+        .finish(
+            "v1".into(),
+            Judgment {
+                result: true,
+                rationale: "read".into(),
+                metadata: Metadata,
+            },
+        )
+        .unwrap();
     assert!(record.dependencies == observations);
     let failed = ToolAgent::new(
         Script::new(vec![
@@ -556,7 +726,7 @@ async fn graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record
 async fn source_tools_keep_search_discovery_separate_from_delivered_source_reads() {
     let root = tempfile::tempdir().unwrap();
     std::fs::write(root.path().join("note.txt"), "observed source\n").unwrap();
-    let graph = Memory(Arc::new(Mutex::new("unrelated graph bytes".into())));
+    let graph = Memory::new("unrelated graph bytes".into());
     let factory = SourceTools {
         analysis: SourceAnalysis::new(
             LocalSources::new(root.path()),
@@ -598,14 +768,19 @@ async fn source_tools_keep_search_discovery_separate_from_delivered_source_reads
 // {test}`requirements.sdk.domain`
 // {test}`requirements.sdk.graph.agent-calls.author_procedure`
 #[tokio::test]
-async fn validation_is_usable_without_any_evidence_storage() {
-    let graph = Memory(Arc::new(Mutex::new("ordinary computation".into())));
-    let ctx = ValidationContext::new(&graph, Node(1));
-    let result = graph.validate(&ctx).await.unwrap();
+async fn deterministic_validation_uses_required_storage_without_an_agent() {
+    let graph = Memory::new("ordinary computation".into());
+    let validator = Validator::new(&graph);
+    let result = validator.verify(Review(Node(1))).await.unwrap();
+    let saved = graph
+        .load_evidence(&Node(1), &CriterionPath { segments: vec![] })
+        .await
+        .unwrap()
+        .unwrap();
     assert!(!result.result);
     assert_eq!(result.rationale, "ordinary computation");
     assert!(
-        matches!(&ctx.inspection().dependencies()[0],Dependency::Node(Node(1),fingerprint) if fingerprint.value=="ordinary computation")
+        matches!(&saved.dependencies[0],Dependency::Node(Node(1),fingerprint) if fingerprint.value=="ordinary computation")
     );
 }
 
@@ -627,7 +802,7 @@ impl CompletionProvider for TextOnly {
 // {test}`requirements.sdk.graph.agent-calls.judge.submission`
 #[tokio::test]
 async fn assistant_text_and_provider_failure_cannot_become_typed_results() {
-    let graph = Memory(Arc::new(Mutex::new("source".into())));
+    let graph = Memory::new("source".into());
     let agent = ToolAgent::new(TextOnly(Mutex::default()), Renderer);
     let ctx = ValidationContext::with_agent(&graph, Node(1), &agent, &agent.renderer);
     assert!(
@@ -803,7 +978,7 @@ fn throttled() -> io::Error {
 // {test}`requirements.sdk.graph.context-tools.tracked_inspection`
 #[tokio::test]
 async fn unknown_tools_return_errors_without_creating_inputs_or_preventing_submission() {
-    let graph = Memory(Arc::new(Mutex::new("source".into())));
+    let graph = Memory::new("source".into());
     let agent = ToolAgent::new(
         Script::new(vec![
             Some(vec![("invented", json!({}))]),
@@ -826,7 +1001,7 @@ async fn unknown_tools_return_errors_without_creating_inputs_or_preventing_submi
 // {test}`requirements.sdk.graph.context-tools.tracked_inspection`
 #[tokio::test(start_paused = true)]
 async fn retries_and_cut_off_tools_preserve_inputs_and_submission_skips_other_reads() {
-    let graph = Memory(Arc::new(Mutex::new("source".into())));
+    let graph = Memory::new("source".into());
     let calls = || {
         vec![
             ("read_node", json!({"path":{"segments":["2"]}})),
@@ -972,7 +1147,7 @@ async fn generic_conversations_can_use_default_telemetry_through_retry_and_conti
 // {test}`requirements.sdk.graph.evidence.node_inputs`
 #[tokio::test]
 async fn cached_selected_source_reads_record_exact_delivered_contents_and_errors_add_no_input() {
-    let graph = Memory(Arc::new(Mutex::new("different current source".into())));
+    let graph = Memory::new("different current source".into());
     let factory = SourceTools {
         analysis: SourceAnalysis::new(CachedProvider, habeas_languages::registry()),
         observation: |id: &OutlineId, parsed: &ParsedSource| {

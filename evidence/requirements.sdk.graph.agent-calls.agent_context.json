@@ -1,7 +1,7 @@
 {
   "requirement": "```rust,ignore\nuse std::borrow::Cow;\n\n/// Reusable agent instructions, defined in habeas_sdk::procedure.\npub trait Context {\n    fn contents(&self) -> Cow<'_, String>;\n}\n```\n\nThe SDK implements this trait for the following combinations:\n\n| Value | Rendering |\n| --- | --- |\n| `&C`, where `C: Context + ?Sized` | Forward to the referenced value. |\n| `[C]` and `Vec<C>`, where `C: Context` | Render elements in order, separated by two newlines. An empty collection renders an empty string. |\n| Heterogeneous tuples of 2 through 12 `Context` values | Render elements in order, separated by two newlines. |\n\nCombinations can nest and preserve repeated elements. Each `.context(value)`\ncall obtains the text once and retains it for both the prefix and its hash,\nwithout retaining a borrow of `value`. The value needs no `Hash`, `Serialize`,\n`Send`, or `Sync` implementation. Repeated calls use the same two-newline\nseparator as combinations. No context calls give the empty prefix and the\nsame fingerprint as an explicitly empty rendered prefix.\n\nThe cache fingerprint hashes the exact UTF-8 prefix delivered to the agent,\nusing a versioned scheme. It preserves order and repetition and uses neither\nobject addresses nor type identities. It identifies this prefix, including the\nquestion; node inputs, the result schema, and the rest of the request are outside\nthat fingerprint.",
   "determination": true,
-  "rationale": "The three marked tests in `crates/habeas-sdk/tests/validation.rs` cover each obligation of `requirements.sdk.graph.agent-calls.agent_context`.\n\n**Trait impls**\n- `&C` forwarding is exercised by `fn[every_heterogeneous_tuple_arity_renders_elements_in_order]`, which puts `&custom` in tuples. It is also exercised by `.context(&context)` in `fn[contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text]`.\n- The `?Sized` bound on `&C` is not exercised with an unsized value. It is a type-level bound, and the `&C` impl only forwards the call.\n- `Vec<C>` is tested with elements and with repeated elements: `vec![\"a\",\"a\"]` inside a tuple renders `\"a\\n\\na\\n\\nb\"`.\n- Non-empty `[C]` is not tested directly. `impl[Vec<C>/Context]` delegates to `self.as_slice().contents()`, so the `Vec` assertions also exercise the slice impl.\n- The empty collections `Vec::<String>::new()` and `&[String]` both render `\"\"`.\n- Tuples of every arity from 2 through 12 are tested with a heterogeneous mix of the custom context and `String`. Each arity asserts the exact two-newline-separated output in order.\n- Nesting is tested by putting a `Vec` inside a tuple. Repeated elements are preserved.\n\n**`.context(value)` behavior**\n- The builder is built with `.context(&context)` and then `.context((policy, question))`. The prefix is asserted to be `\"héllo\\n\\npolicy\\n\\nquestion\"`, which checks the two-newline separator between repeated calls.\n- `renders.get() == 1` is asserted right after `.context(&context)`, so the text is obtained once.\n- `context.text` is mutated while the builder exists. This compiles, which shows no borrow is retained. The delivered prefix is still `\"héllo\"` and its fingerprint matches, so the text was retained rather than re-read.\n- `CountingContext` holds an `Rc` and has no `Hash` or `Serialize`, so it is neither `Send` nor `Sync`. The test still accepts it, and `assert_send(&future)` checks that the future is `Send`.\n- A request with no `.context` call and a request with an empty `Vec` context both give prefix `\"\"`, fingerprint `context_fingerprint(\"\")`, and empty inputs.\n\n**Fingerprint**\n- `fn[prefix_hashes_match_known_utf8_sha256_without_normalization]` asserts the scheme string `context-prefix-sha256-v1`. It checks known SHA-256 values for `\"\"` and `\"héllo\"`, which fixes the exact UTF-8 bytes and the hash.\n- It asserts that `\"é\"` and `\"e\\u{301}\"` differ, and that `\"a b\"` and `\"a  b\"` differ. Together these show there is no normalization.\n- Order sensitivity is asserted with `\"a\\n\\nb\"` against `\"b\\n\\na\"`.\n- Repetition is preserved because the hash is of the exact rendered text, and that text keeps the repeated elements.\n- The delivered request fingerprint equals `context_fingerprint` of the delivered prefix. `context_fingerprint` is the SDK's own function, not a test-local one.\n- The fingerprint is a pure function of the prefix string, so address and type identity cannot affect it.\n\nI found no unmet obligation and no scenario whose violation the tests would accept.",
+  "rationale": "The three marked tests in `crates/habeas-sdk/tests/validation.rs` cover each obligation of `requirements.sdk.graph.agent-calls.agent_context`. The listed `{test}` references are in place.\n\n- **`&C` forwarding.** In `every_heterogeneous_tuple_arity_renders_elements_in_order`, `(&custom, …)` goes through the `&C` impl. It asserts the forwarded text and, via `custom.renders.get() == 11`, that each call renders exactly once. `contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text` also passes `.context(&context)`.\n- **`[C]` and `Vec<C>`.**\n  - An empty `Vec<String>` and an empty `&[String]` both render `\"\"`.\n  - A non-empty `Vec` of repeated elements, `vec![\"a\",\"a\"]`, renders `\"a\\n\\na\"` inside a tuple. This checks order, repetition and the two-newline separator.\n  - `Vec` delegates to the slice impl, so the slice impl is exercised through it.\n- **Tuples of 2 through 12.** `every_heterogeneous_tuple_arity_renders_elements_in_order` asserts every arity from 2 to 12. Each tuple mixes a custom type with `String`, and the expected text is in order and joined by `\\n\\n`. The main test also checks a 12-tuple of `String`.\n- **Nesting and repetition.** A tuple is passed to `.context(...)`, and a `Vec` sits inside a tuple.\n- **Render once, no retained borrow, no `Hash`/`Serialize`/`Send`/`Sync` bounds.**\n  - `CountingContext` uses `Rc<Cell>`, so it is not `Send` or `Sync`.\n  - The test asserts `renders == 1` after the `.context` calls.\n  - It assigns `context.text = \"changed\"` while the builder is still live, which only compiles if the builder holds no borrow of `context`.\n  - It asserts the sent text is `\"héllo…\"`, not `\"changed\"`, and that the future is `Send`.\n- **Repeated calls.** Two `.context` calls yield `\"héllo\\n\\npolicy\\n\\nquestion\"`, so the separator between calls matches the one inside combinations.\n- **No context calls.** `ctx.ask::<Answer>()` with no `.context` call and the one with an empty `Vec` both deliver `\"\"`. Both carry `context_fingerprint(\"\")`.\n- **Fingerprint.**\n  - `prefix_hashes_match_known_utf8_sha256_without_normalization` asserts the scheme string `context-prefix-sha256-v1` and known SHA-256 values for `\"\"` and `\"héllo\"`.\n  - The same test shows no Unicode normalization (`é` differs from `e\\u{301}`) and no whitespace normalization (`\"a b\"` differs from `\"a  b\"`).\n  - The main test asserts order sensitivity, with `\"a\\n\\nb\"` differing from `\"b\\n\\na\"`.\n  - It also asserts the delivered fingerprint equals `context_fingerprint(delivered_text)`, so the hash depends only on the prefix text, including the question. It does not depend on addresses, types, node inputs or the schema.\n\nTwo small points are not exercised: the `?Sized` bound on the `&C` impl (for example, forwarding a `&dyn Context` or `&[C]`), and direct inspection of a non-empty bare slice. The first is a compile-time bound with no runtime behavior. The second goes through the same code as `Vec`. Neither is a behavioral gap, and there are no acknowledged FIXMEs.",
   "references": "ff8fdfc0b9604fffe0b6e14dbdf43efaa6ee34c2841da5df10a8308f7d86caaf",
   "inputs": [
     {
@@ -60,16 +60,6 @@
     },
     {
       "file": "crates/habeas-sdk/src/procedure.rs",
-      "item": "fn[context_fingerprint]",
-      "hash": "e2837292dbb5dbab5fc27750f37b14f30aae3dc12a5d444eb830aa6fc7ae1cd6"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/validation.rs",
-      "item": "impl[CountingContext/Context]",
-      "hash": "3a9d546382bba48d2608c0df925969983107ac2df2b315a7e0f094b75abdfa9f"
-    },
-    {
-      "file": "crates/habeas-sdk/src/procedure.rs",
       "item": "impl[&C/Context]",
       "hash": "d9cd9d69c03efa06d97a40ab54b95b57708088e4abea382e37a60b0fbe99af7a"
     },
@@ -90,18 +80,28 @@
     },
     {
       "file": "crates/habeas-sdk/src/procedure.rs",
-      "item": "impl[Ask<'a,%20'd,%20D,%20R,%20ContextPhase>]",
-      "hash": "4a3b8c8680249e8397c85678e5e85a73c5a0770bf326b10e53a59ba44a67807e"
+      "item": "impl[Ask<'a,%20'd,%20D,%20R,%20ContextPhase>]/fn[context]",
+      "hash": "40ee4435e784f834abea244c54a5bcb4d17de21f805197b5532e500d619b7876"
+    },
+    {
+      "file": "crates/habeas-sdk/src/procedure.rs",
+      "item": "fn[context_fingerprint]",
+      "hash": "e2837292dbb5dbab5fc27750f37b14f30aae3dc12a5d444eb830aa6fc7ae1cd6"
+    },
+    {
+      "file": "crates/habeas-sdk/tests/validation.rs",
+      "item": "impl[CountingContext/Context]",
+      "hash": "3a9d546382bba48d2608c0df925969983107ac2df2b315a7e0f094b75abdfa9f"
+    },
+    {
+      "file": "crates/habeas-sdk/src/procedure.rs",
+      "item": "impl[%5BC%5D/Context]/fn[contents]",
+      "hash": "29066a5642ca6309d7ef40553e9dfaae1dcbc3b8d9a633410a18e256240995dd"
     },
     {
       "file": "crates/habeas-sdk/src/procedure.rs",
       "item": "impl[Vec<C>/Context]/fn[contents]",
       "hash": "7881e6e86810231f80c3e8d7532042b6f18001070a7c7c9722e42997d94bafa0"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/validation.rs",
-      "item": "struct[CountingContext]",
-      "hash": "d3433d172d94dd0db0253df9c9515a770184292a4868ca75802548e140bb3b0f"
     }
   ],
   "format_version": 1,
@@ -200,40 +200,6 @@
               "scheme": "repo",
               "location": "crates/habeas-sdk/src/procedure.rs"
             },
-            "selector": "fn[context_fingerprint]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "a0c7f7af5e12b9a8beafe604e69ab328c07429fe9d4adc87f395c81caa270fbb"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/validation.rs"
-            },
-            "selector": "impl[CountingContext/Context]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "936574d70707b823239062c8e253a76d553c6bfecade43eb41c9a4fea8eba477"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/src/procedure.rs"
-            },
             "selector": "impl[&C/Context]"
           }
         },
@@ -302,12 +268,63 @@
               "scheme": "repo",
               "location": "crates/habeas-sdk/src/procedure.rs"
             },
-            "selector": "impl[Ask<'a,%20'd,%20D,%20R,%20ContextPhase>]"
+            "selector": "impl[Ask<'a,%20'd,%20D,%20R,%20ContextPhase>]/fn[context]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "68ae275f3d33a2c0d4628db1600f6772b5a7061c65af1f4b93453642f90f996c"
+          "value": "0534bcd52ccc4eb6c27c7795a8f710d4e3cb79b71724f301ec2a0192eb1fcabc"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/src/procedure.rs"
+            },
+            "selector": "fn[context_fingerprint]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "a0c7f7af5e12b9a8beafe604e69ab328c07429fe9d4adc87f395c81caa270fbb"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/tests/validation.rs"
+            },
+            "selector": "impl[CountingContext/Context]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "936574d70707b823239062c8e253a76d553c6bfecade43eb41c9a4fea8eba477"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/src/procedure.rs"
+            },
+            "selector": "impl[%5BC%5D/Context]/fn[contents]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "11bcf21feea49f5f5c91464fa6177db7c258ff9201793ef94ecb631550dcd192"
         }
       ]
     },
@@ -325,23 +342,6 @@
         {
           "scheme": "habeas-input-v1",
           "value": "22728e9f6bbae8b861823ca827a1a032c50cf12fcdd01701b2ff0dc2c64a1560"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/validation.rs"
-            },
-            "selector": "struct[CountingContext]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "b6968213aa7787071f32abf151486621ed29080d544bf8c7dd9095f79384baf5"
         }
       ]
     }

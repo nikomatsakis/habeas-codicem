@@ -1,6 +1,6 @@
 //! Atomic filesystem storage for graph evidence.
 
-use crate::graph::{NodePath, Record};
+use crate::graph::{CriterionPath, NodePath, Record};
 use serde::{Serialize, de::DeserializeOwned};
 use std::{
     io::Write,
@@ -38,30 +38,38 @@ impl FileEvidenceStorage {
     }
 
     // {impl}`requirements.sdk.filesystem-storage.keys`
-    pub fn record_path(&self, path: &NodePath) -> PathBuf {
+    pub fn record_path(&self, path: &NodePath, criterion: &CriterionPath) -> PathBuf {
         let mut result = self.root.clone();
-        for segment in &path.segments {
-            let encoded: String = segment
-                .as_bytes()
-                .iter()
-                .map(|byte| format!("{byte:02x}"))
-                .collect();
-            result.push(format!("s{encoded}"));
+        for (index, segments) in [&path.segments, &criterion.segments]
+            .into_iter()
+            .enumerate()
+        {
+            if index == 1 {
+                result.push("criteria");
+            }
+            for segment in segments {
+                let encoded: String = segment
+                    .as_bytes()
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect();
+                result.push(format!("s{encoded}"));
+            }
         }
         result.join("record.json")
     }
 
     // {impl}`requirements.sdk.filesystem-storage.load`
-    pub async fn load<N, M, L>(
+    pub async fn load<N, L>(
         &self,
         path: &NodePath,
-    ) -> Result<Option<Record<N, M, L>>, FileStorageError>
+        criterion: &CriterionPath,
+    ) -> Result<Option<Record<N, L>>, FileStorageError>
     where
         N: DeserializeOwned + Send,
         L: DeserializeOwned + Send,
-        M: DeserializeOwned + Send,
     {
-        let bytes = match std::fs::read(self.record_path(path)) {
+        let bytes = match std::fs::read(self.record_path(path, criterion)) {
             Ok(bytes) => bytes,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(FileStorageError::Io(error)),
@@ -72,18 +80,18 @@ impl FileEvidenceStorage {
     }
 
     // {impl}`requirements.sdk.filesystem-storage.store`
-    pub async fn store<N, M, L>(
+    pub async fn store<N, L>(
         &self,
         path: &NodePath,
-        record: &Record<N, M, L>,
+        criterion: &CriterionPath,
+        record: &Record<N, L>,
     ) -> Result<(), FileStorageError>
     where
         N: Serialize + Sync,
         L: Serialize + Sync,
-        M: Serialize + Sync,
     {
         let bytes = serde_json::to_vec_pretty(record).map_err(FileStorageError::Json)?;
-        let target = self.record_path(path);
+        let target = self.record_path(path, criterion);
         let parent = target.parent().expect("record path has a parent");
         std::fs::create_dir_all(parent).map_err(FileStorageError::Io)?;
         let temp = tempfile::NamedTempFile::new_in(parent).map_err(FileStorageError::Io)?;

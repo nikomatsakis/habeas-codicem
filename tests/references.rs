@@ -31,13 +31,10 @@ fn project() -> TempDir {
     temp
 }
 
-/// The validation errors, followed by the coverage warnings, which do not
-/// fail validation.
+/// All repository validation findings.
 // {cite}`habeas:util`
 fn errors(root: &Path) -> Vec<String> {
-    let mut findings = habeas::validate_repository(root).unwrap().errors;
-    findings.extend(habeas::coverage_warnings(root).unwrap().items);
-    findings
+    habeas::validate_repository(root).unwrap().errors
 }
 
 // {cite}`habeas:util`
@@ -98,11 +95,6 @@ fn fenced_references_in_comments_and_built_in_rules_are_validated() {
         "src/lib.rs:14: built-in habeas:util may only be referenced with {cite}",
         "src/lib.rs:19: {cite}`habeas:other` has no matching built-in definition",
         "src/lib.rs:24: fenced {cite} reference to rules.ready has no closing fence",
-        "src/lib.rs:7: function inline has no recent coverage: it has no requirement or example reference, and no recent evidence record or review read it",
-        "src/lib.rs:17: function wrong_role has no recent coverage: it has no requirement or example reference, and no recent evidence record or review read it",
-        "src/lib.rs:22: function unknown has no recent coverage: it has no requirement or example reference, and no recent evidence record or review read it",
-        "src/lib.rs:28: function unclosed has no recent coverage: it has no requirement or example reference, and no recent evidence record or review read it",
-        "src/lib.rs:33: function fenced_none has no recent coverage: it has no requirement or example reference, and no recent evidence record or review read it",
     ] {
         assert!(has(&errors, expected), "missing {expected:?}: {errors:#?}");
     }
@@ -148,8 +140,7 @@ fn habeas_util_citations_cover_their_item_without_a_citation_review() {
     );
     fs::write(root.join("src/lib.rs"), source).unwrap();
     let errors = errors(root);
-    // Inline and fenced citations, with or without commentary, cover their
-    // item and need no citation review.
+    // Inline and fenced utility citations need no citation review.
     for item in ["inline", "fenced", "bare"] {
         assert!(!has(&errors, &format!("function {item} ")), "{errors:#?}");
         assert!(
@@ -174,11 +165,11 @@ fn habeas_util_citations_cover_their_item_without_a_citation_review() {
         assert!(has(&errors, &expected), "missing {expected:?}: {errors:#?}");
     }
     assert!(
-        has(&errors, "function implemented has no recent coverage"),
+        !has(&errors, "function implemented has no recent coverage"),
         "{errors:#?}"
     );
     assert!(
-        has(&errors, "function tested has no recent coverage"),
+        !has(&errors, "function tested has no recent coverage"),
         "{errors:#?}"
     );
     assert!(!has(&errors, "evidence/habeas:util"), "{errors:#?}");
@@ -358,34 +349,6 @@ fn fixme_references_are_fenced_described_and_named_only_outside_the_book() {
     }
     // A misplaced named `{fixme}` is reported once, not also as uncovered.
     assert!(!has(&errors, "` at md/"), "{errors:#?}");
-}
-
-// {test}`requirements.references.procedure`
-// {test}`requirements.references.rust_item_coverage`
-// {test}`requirements.references.roles`
-#[test]
-fn a_fixme_does_not_count_as_an_items_reference() {
-    let temp = project();
-    let root = temp.path();
-    let fx = role("fixme");
-    fs::write(
-        root.join("src/lib.rs"),
-        format!(
-            "// :::{fx} rules.ready\n// The gap.\n// :::\nfn gap() {{}}\n\n\
-             // :::{fx}\n// :github: example/rules#1\n// :::\nfn tracked() {{}}\n\n\
-             // {}`rules.ready`\n// :::{fx} rules.ready\n// Another gap.\n// :::\nfn implemented() {{}}\n",
-            role("impl")
-        ),
-    )
-    .unwrap();
-    let errors = errors(root);
-    for expected in [
-        "src/lib.rs:4: function gap has no recent coverage: it has no requirement or example reference, and no recent evidence record or review read it",
-        "src/lib.rs:9: function tracked has no recent coverage: it has no requirement or example reference, and no recent evidence record or review read it",
-    ] {
-        assert!(has(&errors, expected), "missing {expected:?}: {errors:#?}");
-    }
-    assert!(!has(&errors, "function implemented"), "{errors:#?}");
 }
 
 // {test}`requirements.ci.reference_set`
@@ -759,16 +722,13 @@ fn untracked_sources_are_not_validated_until_staged_and_status_lists_them() {
     assert!(section.contains("- `src/extra.rs`"), "{status}");
     assert!(!section.contains("notes.txt"), "{status}");
 
-    // Staging the new file brings its references and items back.
+    // Staging the new file brings its references into validation.
     git(root, &["add", "src/extra.rs"]);
     let errors = errors(root);
     assert!(has(&errors, "src/extra.rs:1"), "{errors:#?}");
     assert!(has(&errors, "rules.missing"), "{errors:#?}");
     assert!(
-        has(
-            &errors,
-            "src/extra.rs:4: function uncited has no recent coverage: it has no requirement or example reference, and no recent evidence record or review read it"
-        ),
+        !has(&errors, "function uncited has no recent coverage"),
         "{errors:#?}"
     );
     let status = habeas::status_markdown(root, false).unwrap();
@@ -813,10 +773,10 @@ fn disallowed_paths_are_skipped_and_projects_outside_git_scan_every_file() {
         assert!(!has(&errors, skipped), "{skipped}: {errors:#?}");
     }
     // Outside Git every other project file is considered, untracked or not;
-    // vendored Rust sources still carry references but are not covered.
+    // ordinary functions need no individual annotation.
     assert!(has(&errors, "notes/other.rs:1"), "{errors:#?}");
     assert!(
-        has(&errors, "notes/other.rs:2: function uncited"),
+        !has(&errors, "notes/other.rs:2: function uncited"),
         "{errors:#?}"
     );
     assert!(has(&errors, "vendor/dep/lib.rs:1"), "{errors:#?}");
@@ -828,68 +788,5 @@ fn disallowed_paths_are_skipped_and_projects_outside_git_scan_every_file() {
     assert!(
         !status.contains("Untracked files with references"),
         "{status}"
-    );
-}
-
-// {test}`requirements.references.rust_item_coverage`
-// {test}`requirements.references.coverage.history`
-// {test}`requirements.references.procedure`
-#[test]
-fn items_named_by_recent_evidence_have_recent_coverage_whatever_their_hash() {
-    let temp = project();
-    let root = temp.path();
-    let source = "fn read_directly() {}\n\nstruct Thing;\n\nimpl Thing {\n    fn method(&self) {}\n}\n\nfn changed() {}\n\nfn unread() {}\n";
-    fs::write(root.join("src/lib.rs"), source).unwrap();
-    let input = |item: &str| habeas::outline_input(root, "src/lib.rs", item).unwrap();
-    let mut stale = input("fn[changed]");
-    stale["hash"] = json!("0".repeat(64));
-    // An ordinary record reads one item; a citation review reads the impl
-    // block containing a method; a site review records a stale hash.
-    fs::write(
-        root.join("evidence/rules.ready.json"),
-        json!({"inputs": [input("fn[read_directly]")]}).to_string(),
-    )
-    .unwrap();
-    fs::create_dir_all(root.join("evidence/citations/src/lib.rs")).unwrap();
-    fs::write(
-        root.join("evidence/citations/src/lib.rs/struct[Thing].json"),
-        json!({"inputs": [input("impl[Thing]"), input("struct[Thing]")]}).to_string(),
-    )
-    .unwrap();
-    fs::create_dir_all(root.join("evidence/sites/rules.ready/src/lib.rs")).unwrap();
-    fs::write(
-        root.join("evidence/sites/rules.ready/src/lib.rs/fn[changed].json"),
-        json!({"inputs": [stale]}).to_string(),
-    )
-    .unwrap();
-    let uncovered = |errors: &[String]| {
-        errors
-            .iter()
-            .filter(|error| error.contains(" has no recent coverage: "))
-            .map(|error| error.split(':').take(3).collect::<Vec<_>>().join(":"))
-            .collect::<Vec<_>>()
-    };
-    // Recent coverage names a node by file and selector, whatever hash a
-    // record gave it: a stale hash still covers it.
-    let found = errors(root);
-    assert_eq!(
-        uncovered(&found),
-        ["src/lib.rs:11: function unread has no recent coverage"],
-        "{found:#?}"
-    );
-    // Editing a read item, or a method inside a read impl block, keeps it
-    // covered while some recent version of an evidence file names it.
-    fs::write(
-        root.join("src/lib.rs"),
-        source
-            .replace("fn read_directly() {}", "fn read_directly() { 1; }")
-            .replace("fn method(&self) {}", "fn method(&self) { 2; }"),
-    )
-    .unwrap();
-    let found = errors(root);
-    assert_eq!(
-        uncovered(&found),
-        ["src/lib.rs:11: function unread has no recent coverage"],
-        "{found:#?}"
     );
 }

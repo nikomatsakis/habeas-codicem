@@ -1,7 +1,7 @@
 {
   "requirement": "When a Bedrock configuration sets no `maxTokens` option, each provider request\nMUST ask for at most 16,384 output tokens. A configured `maxTokens` MUST be used\nas given.\n\nWhen a response stops because it reached a known output limit, the harness MUST\ncontinue the same conversation once, adding a user message with an error result\nfor each tool call in the cut-off response, followed by this text with `<limit>`\nreplaced by the limit:\n\n```text\nYour previous response reached the <limit>-token output limit and was cut off,\nso its tool call was incomplete. Keep within the limit: make your rationale\nshorter, then call the tool again.\n```\n\nA second response that reaches the limit, or a response that stops at an\noutput limit that is not known, MUST fail the assessment as an incomplete\nresponse. Where the provider reports whether a response stopped at the output\nlimit or because the conversation exceeded the model's context window, the\nharness SHOULD continue only the former and fail the assessment on the latter;\nwhere it does not, the stop MUST be treated as reaching the output limit.",
   "determination": true,
-  "rationale": "The reviewed tests cover every obligation in `requirements.authoring.output_limit`.\n\n- **Default of at most 16,384 output tokens.**\n  - `tests/authoring_cli.rs#fn[bedrock_requests_without_max_tokens_ask_for_at_most_16k_output_tokens]` runs a Bedrock configuration with no `maxTokens`, for two models.\n  - It asserts that every request body's `inferenceConfig` is exactly `{\"maxTokens\":16384}`.\n  - `src/authoring/providers.rs#mod[tests]/fn[bedrock_native_option_types_are_checked_and_only_max_tokens_is_defaulted]` asserts `request.max_tokens == Some(16_384)` after `apply_bedrock_options`.\n- **A configured `maxTokens` is used as given.**\n  - `tests/authoring_cli.rs#fn[bedrock_cli_uses_selected_profile_region_and_converse_tools]` configures 321 and asserts it appears on both requests.\n  - `tests/authoring_cli.rs#fn[a_configured_bedrock_limit_controls_requests_and_the_continuation_note]` asserts 321 on all requests.\n- **One continuation of the same conversation.**\n  - `tests/authoring_cli.rs#fn[a_response_cut_off_at_the_output_limit_is_continued_once]` checks that the second request's history is the first request's history plus the cut-off assistant turn plus one user message.\n  - That user message has an error `toolResult` for each cut-off tool call, two calls in this test. Each result says \"not run\". It ends with a text block equal to `LIMIT_NOTE`.\n  - `LIMIT_NOTE` matches the required text with 16384 substituted for `<limit>`.\n  - The SDK tests `retries_and_cut_off_tools_preserve_inputs_and_submission_skips_other_reads` and `generic_conversations_can_use_default_telemetry_through_retry_and_continuation` check the same behavior for generic conversations. They cover the \"not run\" results for two cut-off tools, the history prefix, and the \"32 tokens\" text.\n- **`<limit>` replaced by the actual limit.**\n  - The configured-limit Bedrock test asserts `LIMIT_NOTE.replace(\"16384\",\"321\")`.\n  - `a_configured_ollama_num_predict_is_the_known_output_limit` asserts \"reached the 512-token output limit\".\n- **A second response at the limit fails as incomplete.** `tests/authoring_cli.rs#fn[a_second_response_at_the_output_limit_fails_the_assessment]` asserts a non-zero exit, \"incomplete\" in stderr, and exactly two requests. It also asserts that the usage outcome is \"failed\".\n- **A stop at an output limit that is not known fails without continuing.**\n  - `tests/authoring_cli.rs#fn[a_stop_at_an_output_limit_that_is_not_known_fails_the_assessment]` uses Ollama with no `num_predict`. It asserts failure with \"incomplete\" and \"does not set\" in stderr, one request, and unchanged evidence.\n  - `src/authoring/mod.rs#mod[tests]/fn[a_cut_off_response_without_a_known_output_limit_fails_without_continuing]` asserts one provider call and no accepted determination.\n- **Context-window overflow versus output limit.**\n  - `tests/authoring_cli.rs#fn[a_context_window_overflow_fails_without_a_continuation]` sends a Bedrock `model_context_window_exceeded` stop. It asserts failure, \"context window\" in stderr, and a single request with no continuation.\n  - Where the provider does not report the reason, the stop is treated as reaching the output limit. This is exercised by the Ollama `done_reason: \"length\"` continuation test and by the generic `FinishReason::Length` test.\n\nI found no uncovered obligation, and the tests' expected results match the requirement text.",
+  "rationale": "I found no test-adequacy gap in `requirements.authoring.output_limit`. Each obligation maps to a test that exercises it and asserts its outcome.\n\n- **Default of 16,384 when `maxTokens` is unset:**\n  - `tests/authoring_cli.rs#fn[bedrock_requests_without_max_tokens_ask_for_at_most_16k_output_tokens]` runs two models and checks that every request body has `inferenceConfig` equal to `{\"maxTokens\":16384}`.\n  - `src/authoring/providers.rs#mod[tests]/fn[bedrock_native_option_types_are_checked_and_only_max_tokens_is_defaulted]` checks that `apply_bedrock_options` sets `request.max_tokens` to `Some(16_384)` when no `maxTokens` is given.\n- **A configured `maxTokens` is used as given:**\n  - `bedrock_cli_uses_selected_profile_region_and_converse_tools` checks 321 on both requests.\n  - `a_configured_bedrock_limit_controls_requests_and_the_continuation_note` checks 321 on every request, and checks that the continuation note says 321 tokens.\n- **Continuing once after a known-limit cut-off:**\n  - `a_response_cut_off_at_the_output_limit_is_continued_once` checks that the second request keeps the first request's messages as a prefix and then adds the cut-off assistant turn.\n  - It checks that the next message is a user message with an error `toolResult` for each of the two cut-off calls, `cut` and `read-cut`, followed by a text block equal to `LIMIT_NOTE`.\n  - `LIMIT_NOTE` matches the required text with 16384 substituted.\n  - It also checks that the cut-off calls did not run, through the `tool_skipped` counts.\n  - The `tests/agent.rs` tests `retries_and_cut_off_tools_preserve_inputs_and_submission_skips_other_reads` and `generic_conversations_can_use_default_telemetry_through_retry_and_continuation` cover the same continuation in the SDK conversation layer. They check that the history is preserved, that both cut-off tool calls get \"not run\" results, and that the limit appears in the continuation.\n- **A second response at the limit fails as incomplete:** `a_second_response_at_the_output_limit_fails_the_assessment` checks a non-zero exit, \"incomplete\" in stderr, exactly two requests, the note on the second request, and an outcome of `failed`.\n- **An unknown limit fails without a continuation:**\n  - `a_stop_at_an_output_limit_that_is_not_known_fails_the_assessment` uses Ollama with no `num_predict`. It checks a failure, \"incomplete\" and \"does not set\" in stderr, one request, and the evidence file unchanged.\n  - `src/authoring/mod.rs#mod[tests]/fn[a_cut_off_response_without_a_known_output_limit_fails_without_continuing]` checks the same at the `assess` level: one provider call and no determination recorded.\n  - `a_configured_ollama_num_predict_is_the_known_output_limit` is the positive counterpart, where a configured limit of 512 is known and produces a continuation naming \"512-token\".\n- **A context-window overflow fails without a continuation, where the provider reports it:** `a_context_window_overflow_fails_without_a_continuation` uses the stop reason `model_context_window_exceeded`. It checks a failure, \"context window\" in stderr, a single request, and an outcome of `failed`.\n- **A stop treated as the output limit where the provider does not report the cause:** the Ollama tests above cover this. Their only signal is `done_reason` `length`, and it is treated as the limit when `num_predict` is configured.\n\nThe tests cover the default and configured limits, the exact note text, the per-call error results, the single continuation, the second-failure case, the unknown-limit case and the context-window case. Nothing in the text is left unchecked.",
   "references": "d3ad0ed3b99477b4426663fa69a63e2c3b40f04b1a08d2ffc255e0cfddf7bdc8",
   "inputs": [
     {
@@ -38,7 +38,7 @@
     {
       "file": "crates/habeas-sdk/tests/agent.rs",
       "item": "fn[retries_and_cut_off_tools_preserve_inputs_and_submission_skips_other_reads]",
-      "hash": "caa7709b854c8553e3bfe8771b09bc28224944854842da004807c81f5d95b497"
+      "hash": "577909ae71a0941e85a1ef93436198f67fdc2a9dc6c033cb105dea25303c860b"
     },
     {
       "file": "crates/habeas-sdk/tests/agent.rs",
@@ -97,13 +97,13 @@
     },
     {
       "file": "tests/authoring_cli.rs",
-      "item": "fn[cut_off_submission]",
-      "hash": "1c69b964305ba86d3699467494a859fd728925dab5ee1fb009f8a08fd5b3ba6a"
+      "item": "const[LIMIT_NOTE]",
+      "hash": "d191df3ae77e2211d3d6fbd88218cb521453ffaa5263b66a7c932e3ab093d699"
     },
     {
       "file": "tests/authoring_cli.rs",
-      "item": "const[LIMIT_NOTE]",
-      "hash": "d191df3ae77e2211d3d6fbd88218cb521453ffaa5263b66a7c932e3ab093d699"
+      "item": "fn[cut_off_submission]",
+      "hash": "1c69b964305ba86d3699467494a859fd728925dab5ee1fb009f8a08fd5b3ba6a"
     },
     {
       "file": "tests/authoring_cli.rs",
@@ -115,13 +115,25 @@
   "review_version": "habeas-review-v1",
   "dependencies": [
     {
-      "OutgoingEdges": [
+      "Node": [
         {
-          "Requirement": "requirements.authoring.output_limit"
+          "ReferenceSet": "requirements.authoring.output_limit"
         },
         {
           "scheme": "habeas-reference-set-v1",
           "value": "d3ad0ed3b99477b4426663fa69a63e2c3b40f04b1a08d2ffc255e0cfddf7bdc8"
+        }
+      ]
+    },
+    {
+      "OutgoingEdges": [
+        {
+          "Requirement": "requirements.authoring.output_limit"
+        },
+        "Mandatory",
+        {
+          "scheme": "node-path-set-sha256-v1",
+          "value": "96b7a5f889f4927938365c9551b17ef5f025a1493e761e7ed6fe78b5767b9edb"
         }
       ]
     },
@@ -149,7 +161,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "b1f3ddbc96d99660a85119f59aada77f4cb29d0b8c34aed9358d908c4e4e8618"
+          "value": "d0c6bbcc98aad613d06a00f7451ca9c9a76be7a314c45177d986acde67e9400d"
         }
       ]
     },
@@ -348,12 +360,12 @@
               "scheme": "repo",
               "location": "tests/authoring_cli.rs"
             },
-            "selector": "fn[cut_off_submission]"
+            "selector": "const[LIMIT_NOTE]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "f48ba6629f7a9047db58e2893347fda3c4f4c45cb7237528f8ae4c90a39c7e08"
+          "value": "69718dd6bb88a212f9b729a8461cbc853b4114a82e8c6ac219df27e361d1f886"
         }
       ]
     },
@@ -365,12 +377,12 @@
               "scheme": "repo",
               "location": "tests/authoring_cli.rs"
             },
-            "selector": "const[LIMIT_NOTE]"
+            "selector": "fn[cut_off_submission]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "69718dd6bb88a212f9b729a8461cbc853b4114a82e8c6ac219df27e361d1f886"
+          "value": "f48ba6629f7a9047db58e2893347fda3c4f4c45cb7237528f8ae4c90a39c7e08"
         }
       ]
     },

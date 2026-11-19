@@ -97,7 +97,7 @@ pub(crate) fn view(value: &Value) -> io::Result<Value> {
 pub(crate) fn decode(
     value: &Value,
     subject: &HabeasNode,
-) -> io::Result<Record<HabeasNode, Value, HabeasEdgeLabel>> {
+) -> io::Result<Record<HabeasNode, HabeasEdgeLabel>> {
     let metadata = view(value)?;
     check_shape(&metadata, subject)?;
     let determination =
@@ -140,13 +140,14 @@ pub(crate) fn decode(
         ("*".into(), dependencies)
     };
     Ok(Record {
-        procedure,
+        revision: procedure,
         dependencies,
-        output: habeas_sdk::graph::Judgment {
+        output: serde_json::to_value(habeas_sdk::graph::Judgment {
             result: determination != Judgment::False,
             rationale,
             metadata,
-        },
+        })
+        .map_err(io::Error::other)?,
     })
 }
 
@@ -268,22 +269,24 @@ fn hex_digest(value: &str) -> bool {
 }
 
 // {impl}`requirements.sdk.habeas.evidence_format`
-pub(crate) fn encode(record: &Record<HabeasNode, Value, HabeasEdgeLabel>) -> io::Result<Value> {
-    let mut value = record.output.metadata.clone();
+pub(crate) fn encode(record: &Record<HabeasNode, HabeasEdgeLabel>) -> io::Result<Value> {
+    let output: habeas_sdk::graph::Judgment<Value> =
+        serde_json::from_value(record.output.clone()).map_err(io::Error::other)?;
+    let mut value = output.metadata;
     let object = value
         .as_object_mut()
         .ok_or_else(|| io::Error::other("Habeas judgment metadata must be an object"))?;
     let determination = Judgment::from_value(object.get("determination").unwrap_or(&Value::Null))
         .map_err(io::Error::other)?;
-    if (determination != Judgment::False) != record.output.result
-        || object.get("rationale").and_then(Value::as_str) != Some(record.output.rationale.as_str())
+    if (determination != Judgment::False) != output.result
+        || object.get("rationale").and_then(Value::as_str) != Some(output.rationale.as_str())
     {
         return Err(io::Error::other(
             "SDK judgment and Habeas determination or rationale disagree",
         ));
     }
     object.insert("format_version".into(), json!(1));
-    object.insert("review_version".into(), json!(record.procedure));
+    object.insert("review_version".into(), json!(record.revision));
     object.insert(
         "dependencies".into(),
         serde_json::to_value(&record.dependencies).map_err(io::Error::other)?,
@@ -339,27 +342,21 @@ pub(crate) fn check_native(
     if !is_versioned(value) {
         return;
     }
-    let current = crate::sdk::review_version(subject);
     // The application validators report application fields individually.
     // Freshness needs only the SDK header, not a second strict application decode.
     let record = versioned_fields(value).map(|(procedure, dependencies)| Record {
-        procedure,
+        revision: procedure,
         dependencies,
-        output: habeas_sdk::graph::Judgment {
-            result: false,
-            rationale: String::new(),
-            metadata: value.clone(),
-        },
+        output: json!({"metadata": value}),
     });
-    match current.and_then(|version| {
-        record.and_then(|mut record| {
+    match record.and_then(|mut record| {
             let reference_set_changed = match subject {
                 HabeasNode::Requirement(id)
                     if record.dependencies.iter().any(|dependency| {
                         matches!(dependency, Dependency::OutgoingEdges(node, HabeasEdgeLabel::Mandatory, _) if node == subject)
                     }) =>
                 {
-                    record.output.metadata["references"]
+                    record.output["metadata"]["references"]
                         .as_str()
                         .is_some_and(|references| {
                             domain.reference_set(id).is_ok_and(|current| current != references)
@@ -375,9 +372,9 @@ pub(crate) fn check_native(
                     if matches!(subject, HabeasNode::Requirement(subject_id) if subject_id == id)
                         && fingerprint.scheme == "habeas-reference-set-v1" =>
                 {
-                    record.output.metadata["references"].as_str() != Some(&fingerprint.value)
+                    record.output["metadata"]["references"].as_str() != Some(&fingerprint.value)
                 }
-                Dependency::Node(node, fingerprint) => !record.output.metadata["inputs"]
+                Dependency::Node(node, fingerprint) => !record.output["metadata"]["inputs"]
                     .as_array()
                     .into_iter()
                     .flatten()
@@ -391,12 +388,11 @@ pub(crate) fn check_native(
                         && matches!(subject, HabeasNode::Requirement(_))
                         && ((_label == &HabeasEdgeLabel::Mandatory && reference_set_changed)
                             || (fingerprint.scheme == "habeas-reference-set-v1"
-                                && record.output.metadata["references"].as_str()
+                                && record.output["metadata"]["references"].as_str()
                                     == Some(&fingerprint.value))))
                 }
             });
-            habeas_sdk::graph::record_is_current(domain, &version, &record)
-        })
+            habeas_sdk::graph::record_is_current(domain, crate::sdk::REVIEW_VERSION, &record)
     }) {
         Ok(true) => {}
         Ok(false) => errors.push(format!("{label}: review version or SDK dependency changed")),
@@ -465,10 +461,10 @@ mod tests {
             let old = legacy(&subject);
             let node = HabeasNode::review_subject(&subject);
             let record = decode(&old, &node).unwrap();
-            assert_eq!(record.procedure, "*");
-            assert_eq!(record.output.metadata, old);
-            assert_eq!(record.output.rationale, "Historical rationale.");
-            assert!(record.output.result);
+            assert_eq!(record.revision, "*");
+            assert_eq!(record.output["metadata"], old);
+            assert_eq!(record.output["rationale"], "Historical rationale.");
+            assert!(record.output["result"].as_bool().unwrap());
             assert_eq!(
                 record.dependencies[0],
                 Dependency::Node(
@@ -495,6 +491,30 @@ mod tests {
                 record.dependencies
             );
             assert!(!native.to_string().contains("source text"));
+        }
+    }
+
+    // {test}`requirements.sdk.habeas.evidence_conversion`
+    #[test]
+    fn legacy_true_false_and_fixme_determinations_preserve_the_sdk_result() {
+        let subject = AuthoringSubject::Definition("old.ready".into());
+        let node = HabeasNode::review_subject(&subject);
+        for (determination, expected) in [
+            (json!(true), true),
+            (json!(false), false),
+            (json!({"FIXME": ["example/repo#1"]}), true),
+        ] {
+            let mut old = legacy(&subject);
+            old["determination"] = determination;
+            let record = decode(&old, &node).unwrap();
+            assert_eq!(record.output["result"], json!(expected));
+            assert_eq!(
+                record.output["metadata"]["determination"],
+                old["determination"]
+            );
+            let native = encode(&record).unwrap();
+            assert_eq!(view(&native).unwrap(), old);
+            assert_eq!(decode(&native, &node).unwrap().output, record.output);
         }
     }
 
@@ -530,7 +550,7 @@ mod tests {
         malformed["inputs"][0]["hash"] = json!("not a digest");
         assert!(decode(&malformed, &node).is_err());
         let mut record = decode(&legacy(&subject), &node).unwrap();
-        record.output.result = false;
+        record.output["result"] = serde_json::json!(false);
         assert!(encode(&record).is_err());
     }
 
@@ -553,8 +573,12 @@ mod tests {
             definitions: &definitions,
             outlines: &outlines,
         };
-        let record = graph.load_evidence(&node).await.unwrap().unwrap();
-        assert_eq!(record.procedure, "*");
+        let record = graph
+            .load_evidence(&node, &crate::sdk::review_criterion())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(record.revision, "*");
         assert_eq!(std::fs::read(&path).unwrap(), before);
         convert_file(&path, &node).unwrap();
         let after = std::fs::read(&path).unwrap();
@@ -574,7 +598,13 @@ mod tests {
             1
         );
         let missing = HabeasNode::Requirement(crate::sdk::RequirementId("missing".into()));
-        assert!(graph.load_evidence(&missing).await.unwrap().is_none());
+        assert!(
+            graph
+                .load_evidence(&missing, &crate::sdk::review_criterion())
+                .await
+                .unwrap()
+                .is_none()
+        );
         assert!(!missing.evidence_path(root.path()).unwrap().exists());
     }
 
@@ -612,12 +642,12 @@ mod tests {
         assert!(
             habeas_sdk::graph::record_is_current(&graph, "future-review-version", &record).unwrap()
         );
-        record.procedure = "old-concrete-version".into();
+        record.revision = "old-concrete-version".into();
         assert!(
             !habeas_sdk::graph::record_is_current(&graph, crate::sdk::REVIEW_VERSION, &record)
                 .unwrap()
         );
-        record.procedure = "*".into();
+        record.revision = "*".into();
         std::fs::write(
             root.path().join("md/rules.md"),
             ":::{req} ready\nChanged MUST work.\n:::\n",

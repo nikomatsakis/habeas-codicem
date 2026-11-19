@@ -3078,7 +3078,7 @@ fn home_markers(home: &str) -> &'static [&'static str] {
             "A judgment is one of three outcomes",
             "`habeas author --all` assesses every definition whose evidence is missing, stale, or invalid",
             "## Fixing findings",
-            "An item has recent coverage when it has its own reference, or when a recent version of an existing evidence record or review read it",
+            "Recorded reads track evidence freshness, without Git-history grace periods or unreferenced-item warnings",
             "A FIXME judgment, such as",
             "gets a citation review. For project requirements and examples it checks that",
             "For built-ins it checks their permitted forms and stated criteria",
@@ -3298,7 +3298,6 @@ fn bundled_skills_refer_to_a_topic_home_instead_of_restating_it() {
                 "use `{fixme}` as the habeas-evidence skill's `references/fixme.md` describes",
                 "follow the habeas-evidence skill to author evidence",
                 "follow its \"Disagreeing assessments\"",
-                "\"Uncovered Rust items\" in the habeas-evidence skill",
                 "is a habeas-refactor task",
             ][..],
         ),
@@ -3444,7 +3443,10 @@ fn the_evidence_skill_is_home_of_authoring_findings_and_assessment_outcomes() {
     assert_text(
         "fixing findings",
         &section(raw, "## Fixing findings"),
-        &["| Finding | Action |", "### Uncovered Rust items"],
+        &[
+            "| Finding | Action |",
+            "### Missing test and example references",
+        ],
     );
     assert_text(
         "disagreeing assessments",
@@ -4502,7 +4504,7 @@ fn bootstrap_skill_is_bundled_and_directs_complete_inventories() {
             "Record the behavior each test checks; fill in requirement names once they are installed",
             "Every test must end up with a `{test}` reference to a requirement or example",
             // Map every end-user-visible source unit.
-            "every function, method, struct, enum, and union, listed from the source rather than from the coverage warnings",
+            "every function, method, struct, enum, and union, listed from the source to discover behavior no requirement states",
             "public APIs, commands, handlers, UI actions, configuration, outputs, errors, and distinct observable branches",
             "A tagged entry point doesn't mean every observable branch beneath it has a requirement",
             "Give every inventoried test and each requirement's roots their references",
@@ -4657,8 +4659,9 @@ fn bundled_skills_limit_anchors_to_files_whose_items_cannot_carry_references() {
 
 // {test}`requirements.cli.internal_detail_guidance`
 // {test}`requirements.cli.behavior_review_guidance`
+// {test}`requirements.references.procedure`
 #[test]
-fn bundled_skills_direct_the_reference_procedure_and_report_items_without_one() {
+fn bundled_skills_direct_the_reference_procedure_and_allow_unmarked_helpers() {
     // habeas-requirements is the home of the reference procedure; its steps
     // come in order.
     assert_text_in_order(
@@ -4670,8 +4673,8 @@ fn bundled_skills_direct_the_reference_procedure_and_report_items_without_one() 
             "1. A test designed to verify it gets `{test}`",
             "2. Otherwise a root gets `{impl}`",
             "3. Otherwise, code that should be re-checked when the requirement changes gets `{cite}`",
-            "and it serves other code and carries out no requirement itself, it gets `` // {cite}`habeas:util` ``",
-            "That includes code a library calls, such as a trait implementation it requires",
+            "4. Otherwise, leave it unmarked",
+            "An optional `` // {cite}`habeas:util` `` can explain that an item serves other code; it is not required bookkeeping",
             "propose a requirement stating the invariant and `{impl}` it",
             "Don't propose grouping requirements that state no checkable obligation",
             "An item that neither carries out a requirement nor serves other code needs a requirement or is not needed: report it to the user with a proposed requirement, or as dead code if nothing reaches it. Don't delete it unasked",
@@ -4681,8 +4684,8 @@ fn bundled_skills_direct_the_reference_procedure_and_report_items_without_one() 
     assert_phrases(
         "habeas-evidence",
         &[
-            "choose references by \"Choosing references\" in the habeas-requirements skill",
-            "| the item only serves other code | add `` // {cite}`habeas:util` `` |",
+            "Ordinary functions, types, trait methods, and test helpers need no individual book connection",
+            "Keep meaningful `{impl}` roots and optional explanatory citations",
         ],
     );
     assert_phrases(
@@ -4722,6 +4725,7 @@ fn bundled_skills_direct_the_reference_procedure_and_report_items_without_one() 
 }
 
 // {test}`requirements.cli.behavior_review_guidance`
+// {test}`requirements.references.procedure`
 #[test]
 fn bundled_skills_direct_behavior_review_against_requirements() {
     // The three outcomes.
@@ -4822,8 +4826,9 @@ fn bundled_skills_direct_behavior_review_against_requirements() {
 
 // {test}`requirements.cli.behavior_review_guidance`
 // {test}`requirements.cli.internal_detail_guidance`
+// {test}`requirements.references.procedure`
 #[test]
-fn bundled_skills_mark_roots_and_handle_uncovered_items() {
+fn bundled_skills_mark_roots_without_requiring_helper_bookkeeping() {
     const ROOT: &str = "A *root* is an item that carries out part of a requirement and that no other `{impl}` item for it reaches";
     // habeas-requirements is the home of roots: reach goes downward only.
     assert_text_in_order(
@@ -4839,42 +4844,41 @@ fn bundled_skills_mark_roots_and_handle_uncovered_items() {
             "Don't remove an existing `{impl}` from code a root reaches unless the user asks",
         ],
     );
-    // Coverage comes from a reference or a current read, never a search, and
-    // reads exist only after authoring.
     assert_text(
         "requirements gotchas",
         &section(skill_md("habeas-requirements"), "## Gotchas"),
         &[
-            "by its own reference, or by a current assessment that read it or an enclosing item",
-            "Search results only locate code; they cover nothing",
-            "Reads exist only after `habeas author`, so author before treating an item as uncovered",
+            "every runnable test needs a `{test}` reference",
+            "Ordinary functions, types, trait methods, and test helpers need no individual book connection",
+            "Recorded reads track evidence freshness",
         ],
     );
-    // habeas-evidence handles items still warned about after authoring by the
-    // reference procedure.
-    assert_text_in_order(
-        "uncovered Rust items",
-        &section(skill_md("habeas-evidence"), "### Uncovered Rust items"),
+    assert_text(
+        "test and example references",
+        &section(
+            skill_md("habeas-evidence"),
+            "### Missing test and example references",
+        ),
         &[
-            "For each item still warned about after `habeas author --all`, choose references by \"Choosing references\" in the habeas-requirements skill",
-            "Before changing an uncovered item, determine whether it is a requirement root, an entry point, an item that serves other code, or dead code",
-            "Report dead code to the user without editing it",
-            "| the item is a root of a requirement's implementation | add `{impl}` of that requirement to the item |",
-            "| the item only serves other code | add `` // {cite}`habeas:util` `` |",
-            "| nothing reaches the item | report it to the user as dead code; don't delete it unasked |",
+            "needs a `{test}` reference",
+            "A Cargo example needs to `{cite}` a named example in the book",
+            "without Git-history grace periods or unreferenced-item warnings",
         ],
     );
     assert_phrases(
         "habeas-evidence",
         &[
-            "except uncovered Rust items: leave those until after step 3, because an assessment that reads an item covers it",
             "| rationale identifies an unmarked standalone test | add `{test}` for the requirement or example it verifies",
         ],
     );
-    assert_phrases(
+    for name in [
+        "habeas",
+        "habeas-evidence",
+        "habeas-requirements",
         "habeas-bootstrap-requirements",
-        &["Leave uncovered items for now"],
-    );
+    ] {
+        assert!(!bundled_skill(name).contains("status --coverage"), "{name}");
+    }
     // The other skills refer to the definition of a root rather than restate it.
     for name in SKILLS
         .into_iter()
@@ -5070,6 +5074,7 @@ fn bundled_skills_describe_sites_as_queries_select_them_with_checkable_obligatio
 }
 
 // {test}`requirements.cli.distributed_guidance.reviews`
+// {test}`requirements.references.procedure`
 #[test]
 fn bundled_skills_explain_site_references_and_site_reviews() {
     assert_text(
@@ -5209,66 +5214,6 @@ fn the_refactor_skill_never_hand_edits_evidence_and_a_rename_is_not_a_move() {
             "Editing moved code or text in the same step leaves every record that read it stale",
         ],
     );
-}
-
-// {test}`requirements.references.rust_item_coverage`
-#[test]
-fn replacing_a_record_that_stops_reading_an_item_warns_until_it_is_covered() {
-    let server = Server::start(vec![reply(vec![call(
-        "submit",
-        "submit_judgment",
-        json!({"determination": true, "rationale": "Ready is implemented."}),
-    )])]);
-    let fixture = Fixture::new(&server.endpoint);
-    fs::write(
-        fixture.project.join("src/helper.rs"),
-        "fn helper() {}\n\nfn other() {}\n",
-    )
-    .unwrap();
-    // The record being replaced read `helper`, so it was covered.
-    let read = habeas::outline_input(&fixture.project, "src/helper.rs", "fn[helper]").unwrap();
-    fs::write(
-        &fixture.evidence,
-        json!({"requirement": REQUIREMENT, "determination": false,
-            "rationale": "PREVIOUS_RATIONALE relied on helper.", "inputs": [read]})
-        .to_string(),
-    )
-    .unwrap();
-    let uncovered = "src/helper.rs:1: function helper has no recent coverage";
-    let status = fixture.run(&["status", "--coverage"]);
-    let text = String::from_utf8_lossy(&status.stdout).into_owned();
-    assert!(!text.contains(uncovered), "{text}");
-
-    let output = fixture.run(&["author", SUBJECT]);
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    // Authoring runs one conversation, for the subject alone.
-    assert_eq!(server.finish().len(), 1);
-    // The new record does not read the item...
-    let evidence = fs::read_to_string(&fixture.evidence).unwrap();
-    assert!(!evidence.contains("helper"), "{evidence}");
-
-    // ...so status warns about it...
-    let status = fixture.run(&["status", "--coverage"]);
-    let text = String::from_utf8_lossy(&status.stdout).into_owned();
-    assert!(
-        text.contains(&format!(
-            "{uncovered}: it has no requirement or example reference, and no recent evidence record or review read it"
-        )),
-        "{text}"
-    );
-    // ...until the item is covered again.
-    fs::write(
-        fixture.project.join("src/helper.rs"),
-        "// {impl}`requirements.ready`\nfn helper() {}\n\nfn other() {}\n",
-    )
-    .unwrap();
-    let status = fixture.run(&["status", "--coverage"]);
-    let text = String::from_utf8_lossy(&status.stdout).into_owned();
-    assert!(!text.contains(uncovered), "{text}");
 }
 
 // {test}`requirements.authoring.provider`

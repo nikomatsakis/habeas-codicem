@@ -93,8 +93,7 @@ to enforce measured coverage.
 
 ## Inspecting
 
-- `habeas status [<selection>]` lists definitions needing attention and a coverage-warning count.
-- `habeas status --coverage` shows individual evidence-coverage warnings and coverage-history details.
+- `habeas status [<selection>]` lists definitions needing attention and validation findings.
 - `habeas info <selection>` prints requirement and example text, evidence state,
   rationale, inputs, and validation findings.
 

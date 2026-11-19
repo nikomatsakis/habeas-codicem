@@ -1,14 +1,18 @@
 use habeas_sdk::{graph::*, storage::*};
 use serde::{Serialize, Serializer};
-use serde_json::{Value, json};
+use serde_json::json;
 use std::sync::{
     Arc, Barrier,
     atomic::{AtomicUsize, Ordering},
 };
 
-fn record(id: &str) -> Record<String, Value> {
+fn criterion() -> CriterionPath {
+    CriterionPath { segments: vec![] }
+}
+
+fn record(id: &str) -> Record<String> {
     Record {
-        procedure: "v1".into(),
+        revision: "v1".into(),
         dependencies: vec![
             Dependency::Node(
                 "source".into(),
@@ -26,11 +30,7 @@ fn record(id: &str) -> Record<String, Value> {
                 },
             ),
         ],
-        output: Judgment {
-            result: false,
-            rationale: "a negative review".into(),
-            metadata: json!({"id": id, "padding": "x".repeat(8192)}),
-        },
+        output: json!({"result": false, "rationale": "a negative review", "metadata": {"id": id, "padding": "x".repeat(8192)}}),
     }
 }
 
@@ -43,22 +43,22 @@ async fn paths_are_injective_and_loading_missing_records_has_no_side_effects() {
     let root = temp.path().join("missing");
     let store = FileEvidenceStorage::new(&root);
     let cases = [
-        (vec![], "record.json"),
-        (vec![""], "s/record.json"),
-        (vec!["a", "b"], "s61/s62/record.json"),
-        (vec!["a/b"], "s612f62/record.json"),
-        (vec![".."], "s2e2e/record.json"),
-        (vec!["é"], "sc3a9/record.json"),
-        (vec!["e\u{301}"], "s65cc81/record.json"),
+        (vec![], "criteria/record.json"),
+        (vec![""], "s/criteria/record.json"),
+        (vec!["a", "b"], "s61/s62/criteria/record.json"),
+        (vec!["a/b"], "s612f62/criteria/record.json"),
+        (vec![".."], "s2e2e/criteria/record.json"),
+        (vec!["é"], "sc3a9/criteria/record.json"),
+        (vec!["e\u{301}"], "s65cc81/criteria/record.json"),
     ];
     for (segments, expected) in cases {
         let path = NodePath {
             segments: segments.iter().map(|s| s.to_string()).collect(),
         };
-        assert_eq!(store.record_path(&path), root.join(expected));
+        assert_eq!(store.record_path(&path, &criterion()), root.join(expected));
         assert!(
             store
-                .load::<String, Value, ()>(&path)
+                .load::<String, ()>(&path, &criterion())
                 .await
                 .unwrap()
                 .is_none()
@@ -67,9 +67,91 @@ async fn paths_are_injective_and_loading_missing_records_has_no_side_effects() {
     assert!(!root.exists());
 }
 
+// {test}`requirements.sdk.graph.evidence.evidence_storage.filesystem`
+// {test}`requirements.sdk.graph.validation.criterion_path`
+// {test}`requirements.sdk.graph.evidence.evidence_storage`
+// {test}`requirements.sdk.filesystem-storage.keys`
+// {test}`requirements.sdk.filesystem-storage.store`
+// {test}`requirements.sdk.filesystem-storage.load`
+#[tokio::test]
+async fn source_and_criterion_boundaries_preserve_independent_records() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = FileEvidenceStorage::new(temp.path());
+    let pairs = [
+        (
+            vec!["a"],
+            vec!["b", "c"],
+            "s61/criteria/s62/s63/record.json",
+        ),
+        (
+            vec!["a", "b"],
+            vec!["c"],
+            "s61/s62/criteria/s63/record.json",
+        ),
+        (vec![], vec![], "criteria/record.json"),
+        (vec![], vec![""], "criteria/s/record.json"),
+        (vec![""], vec![], "s/criteria/record.json"),
+        (
+            vec!["criteria"],
+            vec![],
+            "s6372697465726961/criteria/record.json",
+        ),
+        (
+            vec!["a"],
+            vec!["../é"],
+            "s61/criteria/s2e2e2fc3a9/record.json",
+        ),
+    ];
+    for (index, (source, segments, expected)) in pairs.iter().enumerate() {
+        let source = NodePath {
+            segments: source.iter().map(|s| (*s).into()).collect(),
+        };
+        let criterion = CriterionPath {
+            segments: segments.iter().map(|s| (*s).into()).collect(),
+        };
+        assert_eq!(
+            store.record_path(&source, &criterion),
+            temp.path().join(expected)
+        );
+        assert!(
+            store
+                .load::<String, ()>(&source, &criterion)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        store
+            .store(&source, &criterion, &record(&index.to_string()))
+            .await
+            .unwrap();
+        let entries = std::fs::read_dir(store.record_path(&source, &criterion).parent().unwrap())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect::<Vec<_>>();
+        assert_eq!(entries, vec![std::ffi::OsString::from("record.json")]);
+    }
+    for (index, (source, segments, _)) in pairs.iter().enumerate() {
+        let source = NodePath {
+            segments: source.iter().map(|s| (*s).into()).collect(),
+        };
+        let criterion = CriterionPath {
+            segments: segments.iter().map(|s| (*s).into()).collect(),
+        };
+        let saved = store
+            .load::<String, ()>(&source, &criterion)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(saved.output, record(&index.to_string()).output);
+    }
+}
+
 // {test}`requirements.sdk.filesystem-storage.interface`
 // {test}`requirements.sdk.filesystem-storage.load`
 // {test}`requirements.sdk.filesystem-storage.store`
+// {test}`requirements.sdk.graph.evidence.record`
+// {test}`requirements.sdk.graph.evidence.dependencies`
+// {test}`requirements.sdk.graph.fingerprinting.fingerprint`
 #[tokio::test]
 async fn records_round_trip_and_malformed_or_incompatible_data_is_an_error() {
     let temp = tempfile::tempdir().unwrap();
@@ -77,21 +159,24 @@ async fn records_round_trip_and_malformed_or_incompatible_data_is_an_error() {
     let path = NodePath {
         segments: vec!["node".into()],
     };
-    store.store(&path, &record("A")).await.unwrap();
+    store
+        .store(&path, &criterion(), &record("A"))
+        .await
+        .unwrap();
     let saved = store
-        .load::<String, Value, ()>(&path)
+        .load::<String, ()>(&path, &criterion())
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(saved.procedure, "v1");
+    assert_eq!(saved.revision, "v1");
     assert_eq!(saved.dependencies, record("A").dependencies);
     assert_eq!(saved.output, record("A").output);
     assert!(matches!(
-        store.load::<u8, Value, ()>(&path).await,
+        store.load::<u8, ()>(&path, &criterion()).await,
         Err(FileStorageError::Json(_))
     ));
     let labeled = Record {
-        procedure: saved.procedure.clone(),
+        revision: saved.revision.clone(),
         dependencies: vec![Dependency::OutgoingEdges(
             "subject".to_owned(),
             "tests/é".to_owned(),
@@ -102,29 +187,37 @@ async fn records_round_trip_and_malformed_or_incompatible_data_is_an_error() {
         )],
         output: saved.output.clone(),
     };
-    store.store(&path, &labeled).await.unwrap();
+    store.store(&path, &criterion(), &labeled).await.unwrap();
     let loaded = store
-        .load::<String, Value, String>(&path)
+        .load::<String, String>(&path, &criterion())
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(loaded.procedure, labeled.procedure);
+    assert_eq!(loaded.revision, labeled.revision);
     assert_eq!(loaded.dependencies, labeled.dependencies);
     assert_eq!(loaded.output, labeled.output);
     assert!(matches!(
-        store.load::<String, Value, u8>(&path).await,
+        store.load::<String, u8>(&path, &criterion()).await,
         Err(FileStorageError::Json(_))
     ));
-    std::fs::write(store.record_path(&path), b"not JSON").unwrap();
-    let error = store.load::<String, Value, ()>(&path).await.err().unwrap();
+    std::fs::write(store.record_path(&path, &criterion()), b"not JSON").unwrap();
+    let error = store
+        .load::<String, ()>(&path, &criterion())
+        .await
+        .err()
+        .unwrap();
     let FileStorageError::Json(cause) = &error else {
         panic!("expected JSON error")
     };
     assert!(!error.to_string().is_empty());
     assert_eq!(error.to_string(), cause.to_string());
-    std::fs::remove_file(store.record_path(&path)).unwrap();
-    std::fs::create_dir(store.record_path(&path)).unwrap();
-    let error = store.load::<String, Value, ()>(&path).await.err().unwrap();
+    std::fs::remove_file(store.record_path(&path, &criterion())).unwrap();
+    std::fs::create_dir(store.record_path(&path, &criterion())).unwrap();
+    let error = store
+        .load::<String, ()>(&path, &criterion())
+        .await
+        .err()
+        .unwrap();
     let FileStorageError::Io(cause) = &error else {
         panic!("expected I/O error")
     };
@@ -148,10 +241,12 @@ async fn send_futures_create_missing_roots_and_nested_paths_without_shortening_k
     };
     assert!(!root.exists());
     let record = record("nested");
-    send(store.store(&path, &record)).await.unwrap();
-    assert!(store.record_path(&path).is_file());
+    send(store.store(&path, &criterion(), &record))
+        .await
+        .unwrap();
+    assert!(store.record_path(&path, &criterion()).is_file());
     assert_eq!(
-        send(store.load::<String, Value, ()>(&path))
+        send(store.load::<String, ()>(&path, &criterion()))
             .await
             .unwrap()
             .unwrap()
@@ -164,19 +259,19 @@ async fn send_futures_create_missing_roots_and_nested_paths_without_shortening_k
         segments: vec!["x".repeat(4096)],
     };
     assert!(matches!(
-        store.load::<String, Value, ()>(&too_long).await,
+        store.load::<String, ()>(&too_long, &criterion()).await,
         Err(FileStorageError::Io(_))
     ));
     assert!(matches!(
-        store.store(&too_long, &record).await,
+        store.store(&too_long, &criterion(), &record).await,
         Err(FileStorageError::Io(_))
     ));
     assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
 }
 
 // {cite}`habeas:util`
-struct BadMetadata;
-impl Serialize for BadMetadata {
+struct BadNode;
+impl Serialize for BadNode {
     // {cite}`habeas:util`
     fn serialize<S: Serializer>(&self, _: S) -> Result<S::Ok, S::Error> {
         Err(serde::ser::Error::custom("cannot serialize"))
@@ -191,29 +286,39 @@ async fn failed_serialization_preserves_records_and_failed_replacement_cleans_up
     let path = NodePath {
         segments: Vec::new(),
     };
-    store.store(&path, &record("original")).await.unwrap();
-    let before = std::fs::read(store.record_path(&path)).unwrap();
-    let bad: Record<String, BadMetadata> = Record {
-        procedure: "v2".into(),
-        dependencies: vec![],
-        output: Judgment {
-            result: true,
-            rationale: "new".into(),
-            metadata: BadMetadata,
-        },
+    store
+        .store(&path, &criterion(), &record("original"))
+        .await
+        .unwrap();
+    let before = std::fs::read(store.record_path(&path, &criterion())).unwrap();
+    let bad: Record<BadNode> = Record {
+        revision: "v2".into(),
+        dependencies: vec![Dependency::Node(
+            BadNode,
+            Fingerprint {
+                scheme: "fail".into(),
+                value: "fail".into(),
+            },
+        )],
+        output: json!("new"),
     };
     assert!(matches!(
-        store.store(&path, &bad).await,
+        store.store(&path, &criterion(), &bad).await,
         Err(FileStorageError::Json(_))
     ));
-    assert_eq!(std::fs::read(store.record_path(&path)).unwrap(), before);
-    std::fs::remove_file(store.record_path(&path)).unwrap();
-    std::fs::create_dir(store.record_path(&path)).unwrap();
+    assert_eq!(
+        std::fs::read(store.record_path(&path, &criterion())).unwrap(),
+        before
+    );
+    std::fs::remove_file(store.record_path(&path, &criterion())).unwrap();
+    std::fs::create_dir(store.record_path(&path, &criterion())).unwrap();
     assert!(matches!(
-        store.store(&path, &record("replacement")).await,
+        store
+            .store(&path, &criterion(), &record("replacement"))
+            .await,
         Err(FileStorageError::Io(_))
     ));
-    let names: Vec<_> = std::fs::read_dir(temp.path())
+    let names: Vec<_> = std::fs::read_dir(store.record_path(&path, &criterion()).parent().unwrap())
         .unwrap()
         .map(|entry| entry.unwrap().file_name())
         .collect();
@@ -222,6 +327,7 @@ async fn failed_serialization_preserves_records_and_failed_replacement_cleans_up
 
 // {test}`requirements.sdk.filesystem-storage.store`
 // {test}`requirements.sdk.filesystem-storage.interface`
+// {test}`requirements.sdk.graph.evidence.evidence_storage`
 #[test]
 fn concurrent_readers_only_observe_complete_records_from_competing_writes() {
     let temp = tempfile::tempdir().unwrap();
@@ -229,7 +335,7 @@ fn concurrent_readers_only_observe_complete_records_from_competing_writes() {
     let path = NodePath {
         segments: Vec::new(),
     };
-    futures::executor::block_on(store.store(&path, &record("A"))).unwrap();
+    futures::executor::block_on(store.store(&path, &criterion(), &record("A"))).unwrap();
     let barrier = Arc::new(Barrier::new(3));
     let finished = Arc::new(AtomicUsize::new(0));
     std::thread::scope(|scope| {
@@ -241,7 +347,16 @@ fn concurrent_readers_only_observe_complete_records_from_competing_writes() {
             scope.spawn(move || {
                 barrier.wait();
                 for _ in 0..30 {
-                    futures::executor::block_on(store.store(path, &record(id))).unwrap();
+                    let mut value = record(id);
+                    value.revision = id.into();
+                    value.dependencies = vec![Dependency::Node(
+                        id.into(),
+                        Fingerprint {
+                            scheme: id.into(),
+                            value: id.repeat(1024),
+                        },
+                    )];
+                    futures::executor::block_on(store.store(path, &criterion(), &value)).unwrap();
                 }
                 finished.fetch_add(1, Ordering::SeqCst);
             });
@@ -249,14 +364,32 @@ fn concurrent_readers_only_observe_complete_records_from_competing_writes() {
         barrier.wait();
         let mut reads = 0;
         while finished.load(Ordering::SeqCst) != 2 {
-            let saved = futures::executor::block_on(store.load::<String, Value, ()>(&path))
+            let saved = futures::executor::block_on(store.load::<String, ()>(&path, &criterion()))
                 .unwrap()
                 .unwrap();
-            assert!(saved.output.metadata["id"] == "A" || saved.output.metadata["id"] == "B");
+            assert!(saved.output["metadata"]["id"] == "A" || saved.output["metadata"]["id"] == "B");
             assert_eq!(
-                saved.output.metadata["padding"].as_str().unwrap().len(),
+                saved.output["metadata"]["padding"].as_str().unwrap().len(),
                 8192
             );
+            let id = saved.output["metadata"]["id"].as_str().unwrap();
+            // The initial record can still be observed before either writer.
+            if saved.revision != "v1" {
+                assert_eq!(saved.revision, id);
+                assert_eq!(
+                    saved.dependencies,
+                    [Dependency::Node(
+                        id.into(),
+                        Fingerprint {
+                            scheme: id.into(),
+                            value: id.repeat(1024),
+                        }
+                    )]
+                );
+            } else {
+                assert_eq!(id, "A");
+                assert_eq!(saved.dependencies, record("A").dependencies);
+            }
             reads += 1;
         }
         assert!(reads > 0);
@@ -269,7 +402,7 @@ impl Graph for StoredGraph {
     type NodeId = String;
     type NodeContent = ();
     type EdgeLabel = ();
-    type JudgmentMetadata = Value;
+
     type Error = FileStorageError;
     // :::{cite} habeas:coverage
     // This storage-only consumer must delegate load/store using node_path
@@ -299,16 +432,103 @@ impl EvidenceStorage for StoredGraph {
     async fn load_evidence(
         &self,
         node: &String,
-    ) -> Result<Option<Record<String, Value>>, Self::Error> {
-        self.0.load(&self.node_path(node)).await
+        criterion: &CriterionPath,
+    ) -> Result<Option<Record<String>>, Self::Error> {
+        self.0.load(&self.node_path(node), criterion).await
     }
     async fn store_evidence(
         &self,
         node: &String,
-        record: &Record<String, Value>,
+        criterion: &CriterionPath,
+        record: &Record<String>,
     ) -> Result<(), Self::Error> {
-        self.0.store(&self.node_path(node), record).await
+        self.0.store(&self.node_path(node), criterion, record).await
     }
+}
+
+impl Fingerprinting for StoredGraph {
+    // :::{cite} habeas:coverage
+    // These storage and output-decoding checks use records with no content
+    // dependencies. The required fingerprint callback must remain unused:
+    // consulting graph contents would mask a storage-layer or decoding error.
+    // Other domain fixtures exercise tracked fingerprint observations.
+    // :::
+    fn fingerprint(&self, _: &String, _: &()) -> Fingerprint {
+        panic!("storage and output-decoding checks must not resolve contents")
+    }
+}
+
+struct StoredReview<'a>(&'a AtomicUsize);
+impl Validation<StoredGraph> for StoredReview<'_> {
+    type Ok = String;
+    fn source_node_id(&self) -> String {
+        "opaque/é".into()
+    }
+    fn criterion_path(&self) -> CriterionPath {
+        CriterionPath {
+            segments: vec!["review".into()],
+        }
+    }
+    fn revision(&self) -> String {
+        "v1".into()
+    }
+    async fn execute(
+        self,
+        _: &mut ValidationContext<'_, StoredGraph>,
+    ) -> Result<String, ValidationError<FileStorageError>> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Ok("completed answer".into())
+    }
+}
+
+// {test}`requirements.sdk.graph.evidence.record.output`
+// {test}`requirements.sdk.graph.validation.check_node`
+// {test}`requirements.sdk.graph.validation.validate_node.errors`
+#[tokio::test]
+async fn malformed_records_are_storage_errors_and_current_bad_outputs_are_output_errors() {
+    let temp = tempfile::tempdir().unwrap();
+    let graph = StoredGraph(FileEvidenceStorage::new(temp.path()));
+    let validator = Validator::new(&graph);
+    let executions = AtomicUsize::new(0);
+    assert_eq!(
+        validator.verify(StoredReview(&executions)).await.unwrap(),
+        "completed answer"
+    );
+    let source = StoredReview(&executions).source_node_id();
+    let criterion = StoredReview(&executions).criterion_path();
+    let path = graph.0.record_path(&graph.node_path(&source), &criterion);
+    let mut saved = graph
+        .load_evidence(&source, &criterion)
+        .await
+        .unwrap()
+        .unwrap();
+    std::fs::write(&path, "not JSON").unwrap();
+    assert!(matches!(
+        validator.check(&StoredReview(&executions)).await,
+        Err(ValidationError::Graph(FileStorageError::Json(_)))
+    ));
+    assert!(matches!(
+        validator.verify(StoredReview(&executions)).await,
+        Err(ValidationError::Graph(FileStorageError::Json(_)))
+    ));
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "not JSON");
+    assert_eq!(executions.load(Ordering::SeqCst), 1);
+    saved.output = json!({"not": "a String"});
+    graph
+        .store_evidence(&source, &criterion, &saved)
+        .await
+        .unwrap();
+    let before = std::fs::read(&path).unwrap();
+    assert!(matches!(
+        validator.check(&StoredReview(&executions)).await,
+        Err(ValidationError::Output(_))
+    ));
+    assert!(matches!(
+        validator.verify(StoredReview(&executions)).await,
+        Err(ValidationError::Output(_))
+    ));
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    assert_eq!(executions.load(Ordering::SeqCst), 1);
 }
 
 // {test}`requirements.sdk.graph.evidence.evidence_storage.filesystem`
@@ -320,22 +540,39 @@ async fn consumer_delegates_evidence_storage_using_only_the_requested_nodes_path
     let temp = tempfile::tempdir().unwrap();
     let graph = StoredGraph(FileEvidenceStorage::new(temp.path().join("new")));
     let node = "opaque/é".to_string();
-    assert!(graph.load_evidence(&node).await.unwrap().is_none());
-    let record = record("delegated");
-    graph.store_evidence(&node, &record).await.unwrap();
-    let loaded = graph.load_evidence(&node).await.unwrap().unwrap();
-    assert_eq!(loaded.dependencies, record.dependencies);
-    assert_eq!(loaded.output, record.output);
     assert!(
         graph
-            .load_evidence(&"other".into())
+            .load_evidence(&node, &criterion())
             .await
             .unwrap()
             .is_none()
     );
-    std::fs::write(graph.0.record_path(&graph.node_path(&node)), b"bad JSON").unwrap();
+    let record = record("delegated");
+    graph
+        .store_evidence(&node, &criterion(), &record)
+        .await
+        .unwrap();
+    let loaded = graph
+        .load_evidence(&node, &criterion())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(loaded.dependencies, record.dependencies);
+    assert_eq!(loaded.output, record.output);
+    assert!(
+        graph
+            .load_evidence(&"other".into(), &criterion())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    std::fs::write(
+        graph.0.record_path(&graph.node_path(&node), &criterion()),
+        b"bad JSON",
+    )
+    .unwrap();
     assert!(matches!(
-        graph.load_evidence(&node).await,
+        graph.load_evidence(&node, &criterion()).await,
         Err(FileStorageError::Json(_))
     ));
 }

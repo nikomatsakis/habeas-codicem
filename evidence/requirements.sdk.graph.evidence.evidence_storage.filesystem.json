@@ -1,8 +1,8 @@
 {
-  "requirement": "The SDK supplies a filesystem-backed helper for the `load_evidence` and\n`store_evidence` methods under\n{cite}`requirements.sdk.graph.evidence.evidence_storage`. An application can\ndelegate to that helper when implementing `EvidenceStorage`.",
+  "requirement": "The SDK supplies a filesystem-backed helper for the methods under\n{cite}`requirements.sdk.graph.evidence.evidence_storage`. The domain can delegate\nto that helper. Its mapping distinguishes the source path from the criterion\npath and preserves segment boundaries under\n{cite}`requirements.sdk.filesystem-storage.keys`.",
   "determination": true,
-  "rationale": "The subject has two obligations. The SDK must supply a filesystem-backed helper for `load_evidence` and `store_evidence`. An application must be able to delegate to that helper when implementing `EvidenceStorage`.\n\nThe marked test `crates/habeas-sdk/tests/storage.rs#fn[consumer_delegates_evidence_storage_using_only_the_requested_nodes_path]` covers both obligations:\n- **Helper is supplied:** the test uses the SDK's `FileEvidenceStorage`. It also uses `FileStorageError` as the `EvidenceStorage` error type.\n- **Delegation works:** `impl[StoredGraph/EvidenceStorage]` implements `load_evidence` and `store_evidence` by calling `self.0.load(&self.node_path(node))` and `self.0.store(...)`. The test drives the trait methods on this consumer type.\n- **Behavior through the delegate:**\n  - Loading an unstored node returns `Ok(None)`.\n  - Storing a record and then loading it returns the same `dependencies` and `output`. The node id is `opaque/é`, a non-path-safe key.\n  - Loading a different node returns `None`.\n  - Corrupt JSON on disk makes `load_evidence` return `Err(FileStorageError::Json(_))`.\n\nThe test does not assert `procedure` after the delegated round trip. The subject text does not require it. The procedure-preservation clause belongs to `evidence_storage`, which the subject only cites, and to the separate `filesystem-storage.store` requirement. That requirement is tested in `fn[records_round_trip_and_malformed_or_incompatible_data_is_an_error]`, which asserts `saved.procedure == \"v1\"`. The helper's detailed behavior is therefore not this subject's concern.\n\nI found no gap in test adequacy for this requirement.",
-  "references": "a7acd7515cb0da8eb4bcf8d281a19c2b8af40b6a81e09f15ac3b27df2c4034e1",
+  "rationale": "The tests adequately check `requirements.sdk.graph.evidence.evidence_storage.filesystem`. They cover each obligation in its text.\n\n**Obligations.** The subject states three obligations:\n1. The SDK supplies a filesystem-backed helper for the `EvidenceStorage` methods.\n2. The domain can delegate to that helper.\n3. The helper's mapping distinguishes the source path from the criterion path and preserves segment boundaries, under the cited `requirements.sdk.filesystem-storage.keys`. That requirement is context only, so I did not reassess its implementation or tests.\n\n**Coverage.**\n- **Helper and delegation.** `tests/storage.rs#fn[consumer_delegates_evidence_storage_using_only_the_requested_nodes_path]` builds `StoredGraph`. Its `impl[StoredGraph/EvidenceStorage]` forwards `load_evidence` to `self.0.load(&self.node_path(node), criterion)`, where `self.0` is the `FileEvidenceStorage` helper. The test asserts that:\n  - a load before any store returns `None`;\n  - a store followed by a load returns the same dependencies and output;\n  - a different node still loads `None`;\n  - corrupt JSON in the record file surfaces as `FileStorageError::Json`.\n  This shows the helper can be used for the trait methods end to end.\n- **Source/criterion distinction and segment boundaries.** `tests/storage.rs#fn[source_and_criterion_boundaries_preserve_independent_records]` is the main check.\n  - It stores two pairs that flatten to the same segments: source `[\"a\"]` with criterion `[\"b\",\"c\"]`, and source `[\"a\",\"b\"]` with criterion `[\"c\"]`. They map to different paths, `s61/criteria/s62/s63/record.json` and `s61/s62/criteria/s63/record.json`.\n  - It asserts each record path exactly.\n  - It first checks that each key loads as absent, then stores a distinct record for it.\n  - After all stores, it reloads each key and checks that it gets back its own output, so no record was overwritten by another key.\n  - It also covers an empty source and criterion, an empty segment, a source segment literally named `criteria`, and `../é`, which checks that slashes, dots and non-ASCII are encoded as data.\n  - It checks that each record directory contains only `record.json`.\n\nAll relevant tests carry `{test}` references to the subject. I found no untested obligation, wrong expectation or marking gap.",
+  "references": "915a6bb4bb0b33eacb55109fc651b477e03d0b179607f3d81aee1582f300738c",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.evidence.evidence_storage.filesystem",
@@ -11,10 +11,11 @@
       ],
       "text": [
         ":::{req} evidence_storage.filesystem",
-        "The SDK supplies a filesystem-backed helper for the `load_evidence` and",
-        "`store_evidence` methods under",
-        "{cite}`requirements.sdk.graph.evidence.evidence_storage`. An application can",
-        "delegate to that helper when implementing `EvidenceStorage`.",
+        "The SDK supplies a filesystem-backed helper for the methods under",
+        "{cite}`requirements.sdk.graph.evidence.evidence_storage`. The domain can delegate",
+        "to that helper. Its mapping distinguishes the source path from the criterion",
+        "path and preserves segment boundaries under",
+        "{cite}`requirements.sdk.filesystem-storage.keys`.",
         ":::"
       ]
     },
@@ -25,92 +26,83 @@
       ],
       "text": [
         ":::{req} evidence_storage",
-        "The application implements this trait from `habeas_sdk::graph`:",
-        "",
         "```rust,ignore",
         "use std::future::Future;",
         "",
+        "// Defined in habeas_sdk::graph.",
         "pub trait EvidenceStorage: Graph {",
-        "    /// Look up a node's record. Ok(None) means absent; Err means storage failed.",
-        "    /// The node identity is the key, with no separate procedure-name key.",
-        "    fn load_evidence<'a>(",
-        "        &'a self,",
-        "        node: &'a Self::NodeId,",
+        "    /// Ok(None) means absent; Err means loading failed.",
+        "    fn load_evidence(",
+        "        &self,",
+        "        source: &Self::NodeId,",
+        "        criterion: &CriterionPath,",
         "    ) -> impl Future<Output = Result<",
-        "        Option<Record<Self::NodeId, Self::JudgmentMetadata, Self::EdgeLabel>>,",
+        "        Option<Record<Self::NodeId, Self::EdgeLabel>>,",
         "        Self::Error,",
-        "    >> + Send + 'a;",
+        "    >> + Send;",
         "",
-        "    /// Save the complete record, preserving its procedure version,",
-        "    /// dependencies, and judgment.",
-        "    fn store_evidence<'a>(",
-        "        &'a self,",
-        "        node: &'a Self::NodeId,",
-        "        record: &'a Record<Self::NodeId, Self::JudgmentMetadata, Self::EdgeLabel>,",
-        "    ) -> impl Future<Output = Result<(), Self::Error>> + Send + 'a;",
+        "    /// Atomically replace only this source/criterion pair's complete record.",
+        "    fn store_evidence(",
+        "        &self,",
+        "        source: &Self::NodeId,",
+        "        criterion: &CriterionPath,",
+        "        record: &Record<Self::NodeId, Self::EdgeLabel>,",
+        "    ) -> impl Future<Output = Result<(), Self::Error>> + Send;",
         "}",
         "```",
         "",
-        "The runner passes the requested node identity directly to these methods.",
-        "The application chooses the persistence mechanism; the interface requires",
-        "neither filesystem paths nor a global listing of evidence.",
+        "The runner passes the source identity and criterion path to both methods. The",
+        "key preserves both parts: source paths `[\"a\"]` and `[\"a\", \"b\"]` with criteria",
+        "`[\"b\", \"c\"]` and `[\"c\"]` identify different records, even though flattening each",
+        "pair would produce the same segments.",
+        "",
+        "Different criteria of a source have independent records. A revision change",
+        "invalidates the same criterion's record rather than creating another key.",
+        "The interface requires neither filesystem paths nor global evidence listing.",
+        "",
+        "Successful loads observe either an old or new complete record, or absence",
+        "before the first save. Successful competing saves leave one complete record;",
+        "its revision, dependencies, and output all belong to that save. No ordering",
+        "between competing saves is guaranteed.",
+        ":::"
+      ]
+    },
+    {
+      "requirements": "requirements.sdk.filesystem-storage.keys",
+      "matches": [
+        "requirements.sdk.filesystem-storage.keys"
+      ],
+      "text": [
+        ":::{req} keys",
+        "For each `NodePath` segment, the helper uses `s` followed by the lowercase",
+        "hexadecimal encoding of that segment's UTF-8 bytes as a directory component.",
+        "After the encoded source components it inserts a literal `criteria` directory,",
+        "then encodes the `CriterionPath` segments by the same rule and stores",
+        "`record.json` inside the resulting directory under the configured root.",
+        "The unencoded separator preserves the source/criterion boundary: encoded",
+        "segments always begin with `s`. An empty source or criterion adds no components",
+        "for that part; an empty segment selects an `s` directory.",
+        "Segment contents, including slashes and `..`, are encoded as data rather than",
+        "interpreted as path components. Load and store use the same mapping. If the",
+        "filesystem cannot represent that path, the operation returns an I/O error",
+        "without truncating or otherwise changing the mapping.",
         ":::"
       ]
     },
     {
       "file": "crates/habeas-sdk/tests/storage.rs",
+      "item": "fn[source_and_criterion_boundaries_preserve_independent_records]",
+      "hash": "0a560e215da10edd8e877dff40e3daabf95785d5cc6b5075cc0081e52f192a43"
+    },
+    {
+      "file": "crates/habeas-sdk/tests/storage.rs",
       "item": "fn[consumer_delegates_evidence_storage_using_only_the_requested_nodes_path]",
-      "hash": "948d0ff2743282288d3085ab7e437837641d508cb058a7fb5a0be532b20edcff"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/storage.rs",
-      "item": "struct[StoredGraph]",
-      "hash": "2a2851b04e940765b016904831fd947138452f35a0f6d8701e3bcb46bb49951e"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/storage.rs",
-      "item": "impl[StoredGraph/Graph]",
-      "hash": "0aaec07c16c8755e18d8331607e579bb6e3b60174a7e1af70026f89b1cb124cf"
+      "hash": "dcf1b2516183c5a1137a7c42b7f447af84aee767dc8c872c35e5147bb0552a10"
     },
     {
       "file": "crates/habeas-sdk/tests/storage.rs",
       "item": "impl[StoredGraph/EvidenceStorage]",
-      "hash": "f2cc836a73d200322bd7b20ef8b1331f2fe725bf51dff9292df328154f9defed"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/storage.rs",
-      "item": "use@3e39302c3302",
-      "hash": "3e39302c33025b31dc1c03d89776481a4e110287ae6596d2fa8ef5c6c73fd9ef"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/storage.rs",
-      "item": "use@063e1579d9b6",
-      "hash": "063e1579d9b60201c8d957d25b1f07b34a7da6462a44b26a660b6a18ec137d39"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/storage.rs",
-      "item": "use@6e42e0801700",
-      "hash": "6e42e08017009abb18f33fa65d11a99391be1f47814478d1337e25ea5a0189ec"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/storage.rs",
-      "item": "use@ddfd50868028",
-      "hash": "ddfd50868028ea77bbd8ccc1e499a458c84f58fd6426578e5cdee9e9e938b347"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/storage.rs",
-      "item": "fn[record]",
-      "hash": "8ca7b3ea55a2a1ee133df9bf737e6ee2443977ff02b2530503e88b4071908b62"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/storage.rs",
-      "item": "fn[paths_are_injective_and_loading_missing_records_has_no_side_effects]",
-      "hash": "bb663dc4f086624f5c57a87b97fb03fb33df329977832faef1f454e90a6ef0c8"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/storage.rs",
-      "item": "fn[records_round_trip_and_malformed_or_incompatible_data_is_an_error]",
-      "hash": "16414c3dba8906a942c077a8691e7204b59909670e16326cb8cc871d87165f72"
+      "hash": "510abbe243d8eb35c32945089dca87ab22e7898502e0a23ec66bd8cd82d7fedd"
     }
   ],
   "format_version": 1,
@@ -123,7 +115,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "a7acd7515cb0da8eb4bcf8d281a19c2b8af40b6a81e09f15ac3b27df2c4034e1"
+          "value": "915a6bb4bb0b33eacb55109fc651b477e03d0b179607f3d81aee1582f300738c"
         }
       ]
     },
@@ -135,7 +127,7 @@
         "Mandatory",
         {
           "scheme": "node-path-set-sha256-v1",
-          "value": "14d712b5f13f36e205a2ccc11f0b5af96b2537f826184216dfce45aaf76fa4f1"
+          "value": "c616ff07abd140f05aab3a54d14042beeee75c9c7d57125528489cb4f1620648"
         }
       ]
     },
@@ -146,7 +138,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "1063046b6074f06742afd4b9292b6644d91e43a90bdd1ece491014946bc20a89"
+          "value": "dc789664266e4fa6755c87cbf6e3bd050342cbd3cc60f5abbc13bf6912304212"
         }
       ]
     },
@@ -157,7 +149,35 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "15270ee36107e3a842d3094c483a130c269834860f3d428c0ff938bfe64161b6"
+          "value": "6314d4a16324ae60da3f771c68f88d16e381d2142de837e2d3c809e0fa2ddfb0"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Requirement": "requirements.sdk.filesystem-storage.keys"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "05c3655ab9b6f653bc47b3819260b4ca09d1f20598001558ba4f500e5fade2cd"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/tests/storage.rs"
+            },
+            "selector": "fn[source_and_criterion_boundaries_preserve_independent_records]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "debbe6278ca936b0029191423bf52dc8fb350233066c682a01df1b187232c195"
         }
       ]
     },
@@ -174,41 +194,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "5dca5ac100e3ce4a2a1a124294d703157791c85e179de67df67d1b8906a52dd8"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/storage.rs"
-            },
-            "selector": "struct[StoredGraph]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "c4e04ed488cf7c1552068505681e4bbd00a78bb480c48280c7d11b61292d3d01"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/storage.rs"
-            },
-            "selector": "impl[StoredGraph/Graph]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "fac6356f488885784397e1a6346d18c6b09971fa81c629e150161ec0c7af6cd2"
+          "value": "ce7105d1ecfc37b9b76f1b3405870b7f7e70c2e003f18fa049020b309eed5d7b"
         }
       ]
     },
@@ -225,126 +211,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "3bc6c25e6c3e0e14608a13e3f7e9626f0ee79013089e80b913c2644734746a32"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/storage.rs"
-            },
-            "selector": "use@3e39302c3302"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "fde205f23d2c7ae0c137ef807a2948c6b079ae60cef79da8f5352fc4c329e3e9"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/storage.rs"
-            },
-            "selector": "use@063e1579d9b6"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "16bc92fa3b69532136da7b6cd54ea453255292c3d63c9da27510ac83860baac7"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/storage.rs"
-            },
-            "selector": "use@6e42e0801700"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "8ce82958790eeebaeddf9da28727721d60ede7e42877a93bd792f615bdcf37cd"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/storage.rs"
-            },
-            "selector": "use@ddfd50868028"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "d1e38884f07c18b113be737f36ca4902889a3424da1a695249e9e5bcc3f966ea"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/storage.rs"
-            },
-            "selector": "fn[record]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "7c2fac792a328f2d3bd4314de760fce4d7514a547f0acfaf01571038150e5772"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/storage.rs"
-            },
-            "selector": "fn[paths_are_injective_and_loading_missing_records_has_no_side_effects]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "7a9cddb277a377ce55d8c965784e2caf18aa7f370e1c78fb34f01b7b90bb62ee"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/storage.rs"
-            },
-            "selector": "fn[records_round_trip_and_malformed_or_incompatible_data_is_an_error]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "105a33a9eccb75ed8257507561b69eaae9990cb74a3754273e14caf2987f711b"
+          "value": "12a0372adccfe8eeec734469db74f8b57ae79adfd7ad978cb8560eba4dcf0ca3"
         }
       ]
     }

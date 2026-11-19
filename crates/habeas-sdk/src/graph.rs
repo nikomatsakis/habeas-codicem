@@ -6,7 +6,7 @@ use std::{future::Future, sync::Mutex};
 
 mod runtime;
 pub use crate::procedure::ValidationContext;
-pub use runtime::{Checker, EvidenceState, Validator};
+pub use runtime::{EvidenceState, Validator};
 
 // {impl}`requirements.sdk.graph.fingerprinting.fingerprint`
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -28,13 +28,18 @@ pub struct NodePath {
     pub segments: Vec<String>,
 }
 
+// {impl}`requirements.sdk.graph.validation.criterion_path`
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct CriterionPath {
+    pub segments: Vec<String>,
+}
+
 // {impl}`requirements.sdk.graph.domain_types`
 // {impl}`requirements.sdk.graph.outgoing_edges`
 pub trait Graph: Send + Sync {
     type NodeId: Clone + Eq + Send + Sync;
     type NodeContent: Send + Sync;
     type EdgeLabel: Clone + Send + Sync;
-    type JudgmentMetadata: Send + Sync;
     type Error: Send;
 
     fn node_content(&self, node: &Self::NodeId) -> Result<Self::NodeContent, Self::Error>;
@@ -70,10 +75,10 @@ pub enum Dependency<N, L = ()> {
 
 // {impl}`requirements.sdk.graph.evidence.record`
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Record<N, M, L = ()> {
-    pub procedure: String,
+pub struct Record<N, L = ()> {
+    pub revision: String,
     pub dependencies: Vec<Dependency<N, L>>,
-    pub output: Judgment<M>,
+    pub output: serde_json::Value,
 }
 
 // {cite}`habeas:util`
@@ -109,25 +114,22 @@ pub trait EvidenceStorage: Graph {
     fn load_evidence(
         &self,
         node: &Self::NodeId,
-    ) -> impl Future<
-        Output = Result<
-            Option<Record<Self::NodeId, Self::JudgmentMetadata, Self::EdgeLabel>>,
-            Self::Error,
-        >,
-    > + Send;
+        criterion: &CriterionPath,
+    ) -> impl Future<Output = Result<Option<Record<Self::NodeId, Self::EdgeLabel>>, Self::Error>> + Send;
 
     // {impl}`requirements.sdk.graph.evidence.evidence_storage`
     fn store_evidence(
         &self,
         node: &Self::NodeId,
-        record: &Record<Self::NodeId, Self::JudgmentMetadata, Self::EdgeLabel>,
+        criterion: &CriterionPath,
+        record: &Record<Self::NodeId, Self::EdgeLabel>,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send;
 }
 
 // {impl}`requirements.sdk.domain`
-pub trait Domain: Graph + Validation + Fingerprinting + EvidenceStorage {}
+pub trait Domain: Graph + Fingerprinting + EvidenceStorage {}
 
-impl<T: Graph + Validation + Fingerprinting + EvidenceStorage> Domain for T {}
+impl<T: Graph + Fingerprinting + EvidenceStorage> Domain for T {}
 
 // {impl}`requirements.sdk.graph.validation.check_procedure`
 #[derive(Debug)]
@@ -135,6 +137,7 @@ pub enum ValidationError<E> {
     Graph(E),
     NoAgentConfigured,
     Agent(String),
+    Output(serde_json::Error),
 }
 
 impl<E: std::fmt::Display> std::fmt::Display for ValidationError<E> {
@@ -144,6 +147,7 @@ impl<E: std::fmt::Display> std::fmt::Display for ValidationError<E> {
             Self::Graph(error) => error.fmt(f),
             Self::NoAgentConfigured => f.write_str("no agent is configured"),
             Self::Agent(error) => write!(f, "agent: {error}"),
+            Self::Output(error) => write!(f, "output: {error}"),
         }
     }
 }
@@ -153,22 +157,25 @@ impl<E: std::error::Error + 'static> std::error::Error for ValidationError<E> {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Graph(error) => Some(error),
+            Self::Output(error) => Some(error),
             Self::Agent(_) | Self::NoAgentConfigured => None,
         }
     }
 }
 
 // {impl}`requirements.sdk.graph.validation.check_procedure`
-pub trait Validation: Graph + Fingerprinting + Sized {
+pub trait Validation<D: Domain>: Send + Sized {
+    type Ok: Serialize + serde::de::DeserializeOwned + Send;
+
+    fn source_node_id(&self) -> D::NodeId;
+    fn criterion_path(&self) -> CriterionPath;
+    fn revision(&self) -> String;
+
     // {impl}`requirements.sdk.graph.validation.check_procedure`
-    fn validate<'a, 'd>(
-        &'a self,
-        ctx: &'a ValidationContext<'d, Self>,
-    ) -> impl Future<Output = Result<Judgment<Self::JudgmentMetadata>, ValidationError<Self::Error>>>
-    + Send
-    + 'a
-    where
-        'd: 'a;
+    fn execute(
+        self,
+        ctx: &mut ValidationContext<'_, D>,
+    ) -> impl Future<Output = Result<Self::Ok, ValidationError<D::Error>>> + Send;
 }
 
 /// The trace lock only protects observations, never graph or agent operations.
@@ -291,14 +298,14 @@ impl<'d, D: Graph + Fingerprinting> InspectionContext<'d, D> {
     // {impl}`requirements.sdk.graph.evidence.record`
     pub fn finish(
         &self,
-        procedure: String,
-        output: Judgment<D::JudgmentMetadata>,
-    ) -> Record<D::NodeId, D::JudgmentMetadata, D::EdgeLabel> {
-        Record {
-            procedure,
+        revision: String,
+        output: impl Serialize,
+    ) -> Result<Record<D::NodeId, D::EdgeLabel>, serde_json::Error> {
+        Ok(Record {
+            revision,
             dependencies: self.dependencies(),
-            output,
-        }
+            output: serde_json::to_value(output)?,
+        })
     }
 }
 
@@ -311,10 +318,10 @@ pub fn procedure_matches(stored: &str, requested: &str) -> bool {
 // {impl}`requirements.sdk.graph.evidence.checking_records`
 pub fn record_is_current<D: Graph + Fingerprinting>(
     graph: &D,
-    procedure: &str,
-    record: &Record<D::NodeId, D::JudgmentMetadata, D::EdgeLabel>,
+    revision: &str,
+    record: &Record<D::NodeId, D::EdgeLabel>,
 ) -> Result<bool, D::Error> {
-    if !procedure_matches(&record.procedure, procedure) {
+    if !procedure_matches(&record.revision, revision) {
         return Ok(false);
     }
     for dependency in &record.dependencies {

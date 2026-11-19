@@ -1,8 +1,8 @@
 {
-  "requirement": "Checker and validator configuration accepts an application-supplied resolver:\n\n```rust,ignore\n// Trait bounds on the configured resolver; not a separate domain trait.\nFn(&D::NodeId) -> Result<String, D::Error> + Send + Sync\n```\n\nBoth `check_node` and `validate_node` use the same resolver. Checking needs\nneither a `Validation` implementation nor model configuration. The runner\ncompares the resolved identity with saved evidence and uses that identity for\nthe replacement record. A resolution failure returns an error before invoking\nvalidation or storing a completed judgment.",
+  "requirement": "Checking and verification obtain the source node, criterion path, and revision\nfrom the same `Validation` value. There is no node-wide revision resolver.\nThe pair of source and criterion selects a record; the revision determines\nwhether that record still answers the current question.\n\nChanging review instructions, deterministic rules, input-selection policy, or\nresult encoding in a way that invalidates an old answer requires a changed\nrevision. This is independent of model selection and the agent's context-prefix\ncache fingerprint. A stored legacy revision `*` retains the matching behavior of\n{cite}`requirements.sdk.graph.evidence.checking_records.procedure_match`.",
   "determination": true,
-  "rationale": "The reviewed tests cover each obligation of `requirements.sdk.graph.validation.procedure_identity`.\n\n- **Resolver accepted by both configurations.** `Checker::new(&graph, |_| Ok(\"v1\".into()))` and `Validator::new(&graph, |_| Ok(\"v1\".into()))` both take an application-supplied closure that returns `Result<String, Error>`. `Validator::new` builds its `Checker` from the same closure (seen in `crates/habeas-sdk/src/graph/runtime.rs#impl[Validator<'d, D, F>]/fn[new]`). That matches \"Both … use the same resolver\". The `Send + Sync` bound is exercised through the `send(...)` helper in the contracts test.\n- **Checking needs no `Validation` implementation or model configuration.** `crates/habeas-sdk/tests/contracts.rs#fn[checker_needs_no_validation_and_storage_preserves_nonserializable_metadata]` builds a `Checker` over `GraphOnly`, which has no `Validation`, and calls `check_node`. It asserts `callbacks == 0`.\n- **Resolved identity compared with saved evidence.**\n  - The contracts test gets `Missing` with no record, `Current` when the identity matches (\"v1\"), and `Stale` when the resolver returns \"v2\".\n  - `crates/habeas-sdk/tests/validation.rs#fn[runner_reuses_negative_judgments_and_records_only_callback_observations]` repeats this through `Validator::check_node`: `Current` for v1, `Missing` for an unknown node, `Stale` for v2.\n  - The same test shows `validate_node` reuses a matching record, since `started == [9]` after two calls.\n  - It also edits the stored procedure to \"*\" and shows that v2 is still `Current`, so the comparison does not depend on the stored string alone.\n- **Resolved identity used for the replacement record.** After `v2.validate_node(&9)`, the test asserts `records[&9].procedure == \"v2\"`.\n- **Resolution failure returns an error before validation or storing.**\n  - `crates/habeas-sdk/tests/validation.rs#fn[resolution_storage_and_callback_errors_are_not_judgments]` uses a resolver that returns `Err(\"version\")`. `validate_node` returns `Err(ValidationError::Graph(\"version\"))`, and `started` is empty, so validation was not invoked.\n  - That test asserts `records.is_empty()` after the later store-failure case. A record stored by the bad-resolver run would have made that assertion fail, so this indirectly covers \"no stored judgment\".\n  - The contracts test asserts that `Checker::check_node` returns `Err(\"version\")`. It also asserts `writes == 1`, which is the saved record only.\n\nResidual points that are not gaps:\n\n- Every resolver in the tests ignores its node argument (`|_|`). The text does not require node-dependent identities.\n- `Validator::check_node` is not tested with a failing resolver. It delegates to the same `Checker`, which is tested.",
-  "references": "3da83f5d7bdd2bbc5037408dff2aaa39a8213095230d4bbc8f542133f06f783b",
+  "rationale": "The reviewed tests cover every testable obligation in `requirements.sdk.graph.validation.procedure_identity`. I did not request implementation source.\n\n**Obligations and the tests that cover them**\n- **Source, criterion path and revision come from one `Validation` value (`check` and `verify` alike).** Every test drives `verify` and `check` through a single `Review` value. For example, `revision_and_dependency_checks_precede_output_decoding` builds `changed` with revision `v2` and uses that same value for the stale `check` and the later `verify`. `runner_reuses_negative_judgments_and_records_only_callback_observations` does the same with `Review { node, revision }`. The \"no node-wide revision resolver\" clause is structural and needs no separate test.\n- **The source and criterion pair selects the record.**\n  - `criteria_have_independent_typed_answers_and_cache_negative_results` verifies `behavior`, `structure` and `judgment` on one source. Each gets its own typed answer, and a repeat `verify` of `behavior` returns the cached negative answer without executing again. The `text` criterion, which was never verified, checks as `Missing`. The test asserts the execution and write counts and the stored outputs per criterion.\n  - `runner_reuses_negative_judgments_and_records_only_callback_observations` checks node 8 as `Missing` after only node 9 was recorded. This covers the source half of the pair.\n- **The revision determines whether the record still answers.**\n  - Same revision: `check` returns `Current`.\n  - Changed revision: `check` returns `Stale`, with no content read in either test, so the revision is compared before dependencies and output decoding. A following `verify` replaces the record for the same criterion. Both tests assert this, and `revision_and_dependency_checks_precede_output_decoding` also asserts that the record count stays at 1.\n  - Same revision with an undecodable stored output returns `ValidationError::Output` without re-execution.\n- **A stored legacy revision `*` keeps the matching behavior of `procedure_match`.** `runner_reuses_negative_judgments_and_records_only_callback_observations` overwrites the stored revision with `*` and checks with `v2`. It asserts `Current` with the stored negative judgment, which covers the wildcard match for the selected source and criterion. The literal-comparison and \"only the complete value `*`\" details belong to the cited `procedure_match` requirement and its own tests, so I did not reassess them here.\n- **Errors are not judgments.** `resolution_storage_and_callback_errors_are_not_judgments` checks that failures while resolving, storing or running the callback leave no record. This supports the identity and record semantics.\n- **Changing instructions, rules, input policy or encoding requires a changed revision, independent of model and cache fingerprint.** This is an obligation on procedure authors, not a runtime behavior. The tests do show that the revision alone controls staleness.\n\nAll the tests carry `{test}` references to the subject. I found no unacknowledged test-adequacy gap.",
+  "references": "136dfd4ec6a71b8bbe7839502bb2dbb001a835b3bdd0b3ae73ca0609f7bf76a3",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.validation.procedure_identity",
@@ -11,53 +11,83 @@
       ],
       "text": [
         ":::{req} procedure_identity",
-        "Checker and validator configuration accepts an application-supplied resolver:",
+        "Checking and verification obtain the source node, criterion path, and revision",
+        "from the same `Validation` value. There is no node-wide revision resolver.",
+        "The pair of source and criterion selects a record; the revision determines",
+        "whether that record still answers the current question.",
         "",
-        "```rust,ignore",
-        "// Trait bounds on the configured resolver; not a separate domain trait.",
-        "Fn(&D::NodeId) -> Result<String, D::Error> + Send + Sync",
-        "```",
-        "",
-        "Both `check_node` and `validate_node` use the same resolver. Checking needs",
-        "neither a `Validation` implementation nor model configuration. The runner",
-        "compares the resolved identity with saved evidence and uses that identity for",
-        "the replacement record. A resolution failure returns an error before invoking",
-        "validation or storing a completed judgment.",
+        "Changing review instructions, deterministic rules, input-selection policy, or",
+        "result encoding in a way that invalidates an old answer requires a changed",
+        "revision. This is independent of model selection and the agent's context-prefix",
+        "cache fingerprint. A stored legacy revision `*` retains the matching behavior of",
+        "{cite}`requirements.sdk.graph.evidence.checking_records.procedure_match`.",
+        ":::"
+      ]
+    },
+    {
+      "requirements": "requirements.sdk.graph.evidence.checking_records.procedure_match",
+      "matches": [
+        "requirements.sdk.graph.evidence.checking_records.procedure_match"
+      ],
+      "text": [
+        ":::{req} checking_records.procedure_match",
+        "The revision matches when the stored `Record::revision` is `*` or equals the",
+        "requested revision exactly. Only the complete stored value `*` is a wildcard;",
+        "other values compare literally. A wildcard leaves dependency comparison and",
+        "result decoding unchanged. It matches revisions for the selected source and",
+        "criterion only, and does not supply evidence for other criteria.",
         ":::"
       ]
     },
     {
       "file": "crates/habeas-sdk/tests/contracts.rs",
-      "item": "fn[checker_needs_no_validation_and_storage_preserves_nonserializable_metadata]",
-      "hash": "73c0250290985756f83e208a33c20419dbe3525a5086eac90cc792f418857428"
+      "item": "fn[criteria_have_independent_typed_answers_and_cache_negative_results]",
+      "hash": "446b6469843c4e83ae2f009708952547195e937e1ba90eb8f96913ae26a0c43f"
+    },
+    {
+      "file": "crates/habeas-sdk/tests/contracts.rs",
+      "item": "fn[revision_and_dependency_checks_precede_output_decoding]",
+      "hash": "037876dd132368f33b90db17538fe87aedbec87244c0fe7f964debcd1a946874"
     },
     {
       "file": "crates/habeas-sdk/tests/validation.rs",
       "item": "fn[runner_reuses_negative_judgments_and_records_only_callback_observations]",
-      "hash": "af2b35a9b9dc9811f071b58ab6b922e39c6b43a23e9ed2d1bd9725c9b6f02a11"
+      "hash": "d3b76d43c14e6833d007d08c4e0b0c6054d9c835288ef10be2511ae065617f54"
     },
     {
       "file": "crates/habeas-sdk/tests/validation.rs",
       "item": "fn[resolution_storage_and_callback_errors_are_not_judgments]",
-      "hash": "6f5c6112861695007a5846a869c0c308641738999d1bf4f5d4c078b6ec6400b2"
+      "hash": "41f599af74dee6578d906c9d6ae9e8c8ea2f9e93fa0922338884504511b828de"
     },
     {
       "file": "crates/habeas-sdk/src/graph/runtime.rs",
-      "item": "impl[Validator<'d,%20D,%20F>]/fn[new]",
-      "hash": "1ad1042a519b9c541e0306bcb9390d52aad28946a76a59d3af56350672336bbc"
+      "item": "impl[Validator<'d,%20D>]/fn[check]",
+      "hash": "b08bc3eefb6da1183510a0da09444f5e8d0f8b561e1acaa636f630a20e3a4411"
     }
   ],
   "format_version": 1,
   "review_version": "habeas-review-v1",
   "dependencies": [
     {
+      "Node": [
+        {
+          "ReferenceSet": "requirements.sdk.graph.validation.procedure_identity"
+        },
+        {
+          "scheme": "habeas-reference-set-v1",
+          "value": "136dfd4ec6a71b8bbe7839502bb2dbb001a835b3bdd0b3ae73ca0609f7bf76a3"
+        }
+      ]
+    },
+    {
       "OutgoingEdges": [
         {
           "Requirement": "requirements.sdk.graph.validation.procedure_identity"
         },
+        "Mandatory",
         {
-          "scheme": "habeas-reference-set-v1",
-          "value": "3da83f5d7bdd2bbc5037408dff2aaa39a8213095230d4bbc8f542133f06f783b"
+          "scheme": "node-path-set-sha256-v1",
+          "value": "1f5f458d8ceea75991ae96bcb28ff18a5c6e01a9962573b96dddd9eaa7d3ee5c"
         }
       ]
     },
@@ -68,7 +98,18 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "ac627e3f985d43add49e56a229a1e959d30bcc12e9e3906c189ce200cc723bb7"
+          "value": "2bbb36a74e44a47860caff1a4e9df98958901f3f916253d8d4c23e287cc96a69"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Requirement": "requirements.sdk.graph.evidence.checking_records.procedure_match"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "ec48431e385e671549a9983360980e958a885cc0cbc0f06dc2ab1bc2f2ca4cd8"
         }
       ]
     },
@@ -80,12 +121,29 @@
               "scheme": "repo",
               "location": "crates/habeas-sdk/tests/contracts.rs"
             },
-            "selector": "fn[checker_needs_no_validation_and_storage_preserves_nonserializable_metadata]"
+            "selector": "fn[criteria_have_independent_typed_answers_and_cache_negative_results]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "c0b56943808cd044b6b281443bf23388811599f2cdf469fff7a128b8c3c6c722"
+          "value": "f801a7b1a136d5f9447de8c3affe17a43576ca694017a24a592472fbcb3ff6f0"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/tests/contracts.rs"
+            },
+            "selector": "fn[revision_and_dependency_checks_precede_output_decoding]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "dc4ba781fe76ced7fd53e2f5fd9e41a5f9df5791b2e6ab25e6c611340fd04b42"
         }
       ]
     },
@@ -102,7 +160,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "7dbbfd52a0a76a94509f7c70c8b3530dbf0eb6e4bc86672e4b78e6130f6c6a0c"
+          "value": "73facf7a32a90ceff58f9e1e5c35533d7a3ae16c6ddefc28b35f33828f760abe"
         }
       ]
     },
@@ -119,7 +177,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "d4d271324ad4e0852c10d8d38b0d9b0ebef25c3ea9f688729e9fe123f0e3bfb7"
+          "value": "720db472550a0996eb74cba219209992995b7dfd0cfbbe2b259e3b66d6e5ee1f"
         }
       ]
     },
@@ -131,12 +189,12 @@
               "scheme": "repo",
               "location": "crates/habeas-sdk/src/graph/runtime.rs"
             },
-            "selector": "impl[Validator<'d,%20D,%20F>]/fn[new]"
+            "selector": "impl[Validator<'d,%20D>]/fn[check]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "8ac98fb93075543274b6d651bf7fd18660f0d5caaea0695829fc9551436b7bc3"
+          "value": "6b07e2548cb2221f99c5f76f603cf9ae8719ec0b31a739196abc6fd69b364ecb"
         }
       ]
     }

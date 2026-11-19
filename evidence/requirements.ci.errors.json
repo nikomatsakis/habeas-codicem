@@ -1,7 +1,7 @@
 {
   "requirement": "Repository validation MUST continue after a failed check and report every failed\ncheck it finds in one run, each as a {term}`requirements.ci.validation_error`.\nThis is a convention for every validation error; the requirement for each check\nstates which conditions that check reports. A file that cannot be parsed, such as\na malformed `habeas.toml`, `book.toml`, or evidence file, is one failed check:\nits error MAY report only the first parse or decoding problem in that file, and\nchecks that do not depend on its contents MUST still run.\n\nThe code that sequences the repository's checks carries out the first paragraph.\nA repository-validation function that collects validation errors MUST hold them\nin a parameter or local variable named `errors`, and a function with such a\nvariable is a site below; authoring code that collects errors only to abort is\nnot one. After one of its checks fails, a site MUST still run every later check\nthat does not depend on the failed check's result, including later checks in the\nsame loop iteration, and MUST NOT report one failure twice.\n\n::::{sites} error_accumulators\n```yaml\nlanguage: rust\npaths: [src, crates/habeas-sdk/src]\nexclude: [src/authoring/inputs.rs, src/authoring/tools.rs]\nrule:\n  kind: function_item\n  has:\n    stopBy: { kind: function_item }\n    any:\n      - kind: parameter\n        has: { field: pattern, regex: \"^errors$\" }\n      - kind: let_declaration\n        has: { field: pattern, regex: \"^errors$\" }\n  not:\n    inside:\n      stopBy: end\n      kind: mod_item\n      has: { field: name, regex: \"^tests$\" }\nmatch:\n  - \"fn check(value: &str, errors: &mut Vec<String>) {}\"\n  - |\n    fn run() {\n        let mut errors: BTreeSet<String> = BTreeSet::new();\n        check(\"\", &mut errors);\n    }\nno_match:\n  - \"fn check(value: &str, discovery_errors: &mut Vec<String>) {}\"\n  - |\n    fn run() {\n        let mut problems = Vec::new();\n        check(\"\", &mut problems);\n    }\n  - |\n    mod tests {\n        fn check(errors: &mut Vec<String>) {}\n    }\n```\n::::\n\n::::{violations} early_exits\n```yaml\nlanguage: rust\npaths: [src, crates/habeas-sdk/src]\nwithin: error_accumulators\nrule:\n  any:\n    - kind: try_expression\n    - kind: return_expression\n    - kind: continue_expression\n    - kind: break_expression\nmatch:\n  - |\n    fn check(v: &Value, errors: &mut Vec<String>) -> Option<u8> {\n        let n = v.as_u64()?;\n        if v.is_null() { errors.push(\"null\".into()); }\n        Some(n as u8)\n    }\n  - |\n    fn check(items: &[Value], errors: &mut Vec<String>) {\n        for item in items {\n            if !item.is_object() { errors.push(\"object\".into()); continue; }\n            if item.is_null() { errors.push(\"null\".into()); }\n        }\n    }\n  - |\n    fn check(v: &Value, errors: &mut Vec<String>) {\n        if !v.is_object() { errors.push(\"object\".into()); return; }\n        if v.is_null() { errors.push(\"null\".into()); }\n    }\n  - |\n    fn check(items: &[Value], errors: &mut Vec<String>) {\n        for item in items {\n            if !item.is_object() { errors.push(\"object\".into()); break; }\n        }\n        if items.is_empty() { errors.push(\"empty\".into()); }\n    }\nno_match:\n  - |\n    fn parse(v: &Value) -> Option<u8> {\n        let n = v.as_u64()?;\n        Some(n as u8)\n    }\n```\n::::",
   "determination": true,
-  "rationale": "I found no gaps in the tests or in the site and violation queries for `requirements.ci.errors`.\n\n**Obligations and the tests that cover them**\n\n1. **Continue after a failed check and report every failure.** This obligation belongs to the sequencing code in `src/evidence.rs` (`inspect_repository_with_progress`).\n   - `mod[tests]/fn[failed_checks_do_not_hide_later_independent_checks]` triggers many independent failures at once. Examples are invalid and reserved chapter names, a missing fence, multiple malformed inputs in one record, and inline or misplaced `{fixme}`. It asserts that every expected message appears, and that two failures in the same input or loop iteration both appear. For example, a bad hash is reported next to a missing file.\n   - `mod[tests]/fn[collects_missing_orphan_format_false_and_changed_line_errors]` and `mod[tests]/fn[schema_rejects_each_malformed_field_and_input_form]` check the same property across records and fields. The second also asserts that independent stale-text checks still run next to malformed fields.\n   - `mod[tests]/fn[inspection_progress_preserves_validation_and_finishes_each_phase]` checks that a broken evidence file and a broken Rust source are both reported in the same run.\n   - `tests/references.rs#fn[unclosed_fences_still_report_unknown_names]` and `tests/references.rs#fn[malformed_citation_entries_do_not_hide_later_independent_errors]` check the same continuation property for fences and citation reviews. `citation_reviews_are_required_current_and_not_orphaned` is also marked for this requirement.\n   - `src/execution_coverage/check.rs#mod[tests]/fn[accepted_exceptions_cannot_waive_invalid_measurement_and_checks_still_collect_errors]` checks that the coverage check keeps collecting errors after parse and configuration failures.\n   - `src/sites.rs#mod[tests]/fn[failed_site_queries_do_not_repeat_errors_through_dependent_violations]`, `a_violation_query_needs_a_site_query` and `within_cannot_name_another_violation_query` check that query failures are reported and that checks that do not depend on them still run.\n2. **A file that cannot be parsed is one failed check, and checks that do not depend on its contents still run.**\n   - `configuration_and_dependency_failures_do_not_stop_later_checks` writes an invalid `habeas.toml`, a malformed `book.toml`, a malformed evidence file (`ghost.json`) and a bad `{impl}` reference. It asserts that all four are reported, and that the `habeas.toml` and `book.toml` messages each appear exactly once.\n   - The same test covers coverage configuration failures (an invalid `.config/nextest.toml` and `coverage.reauthorings`). It asserts that later evidence and reference checks still run and that there are no duplicate messages.\n   - `tests/commands.rs#fn[status_loads_nearest_workspace_file_without_validating_authoring]` checks that `status` and `info` still report the evidence error next to an invalid workspace file. The text says the error \"MAY report only the first\" problem, so nothing more is required there.\n3. **MUST NOT report one failure twice.** This is checked by assertions that messages are unique or counted once.\n   - `failed_checks_do_not_hide_later_independent_checks` sorts and dedups the errors and compares lengths.\n   - `configuration_and_dependency_failures_do_not_stop_later_checks` asserts uniqueness through a `BTreeSet`.\n   - `git_index_failure_is_reported_once_and_later_checks_still_run` asserts that exactly one discovery error appears.\n   - `src/index.rs#mod[tests]/fn[an_unreadable_record_is_reported_once]` asserts that an unreadable record is reported once, even when validation already reported it.\n   - `tests/evidence_boundaries.rs#fn[an_unlistable_review_directory_is_reported_once]` asserts that an unlistable review directory is reported once.\n   - `src/authoring/sdk.rs#mod[tests]/fn[every_review_kind_loads_both_formats_and_reports_each_application_failure_once]` asserts that each review kind reports each application failure once.\n4. **`errors` naming, no early exit after a failed check, and no duplicate reports at each site.** These obligations are upheld by each site on its own and are reviewed per site. They need no test here. The `early_exits` violation query flags the constructs that most likely break them.\n\n**Site query `error_accumulators`**\n\nI ran it by name. It selects functions that have a parameter or a `let` named `errors`, and it excludes `mod tests`.\n- It covers the validation functions in `src/evidence.rs`, `src/citations.rs`, `src/sites.rs`, `src/rust_coverage.rs`, `src/terms.rs`, `src/evidence_format.rs`, `src/execution_coverage/check.rs`, `src/github.rs`, `src/index.rs` and `crates/habeas-sdk/src/access.rs`.\n- The excluded files `src/authoring/inputs.rs` and `src/authoring/tools.rs` contain only the abort-only accumulators `prepare_citation`, `prepare_site`, `references`, `referencing` and `declared_query`. Each returns `Err` as soon as `errors` is non-empty, which matches the text's \"collects errors only to abort\" carve-out.\n- Other abort-only accumulators use a different name and carry a comment saying they are not validation sites. Examples are `failures` in `delete_orphaned_reviews`, `load_definitions` and `reference_set_digest_for`, and `diagnostics` in book-page rendering. They are correctly not selected.\n- I found no `mut errors` parameter forms that the `parameter` pattern would miss. I found no functions outside `mod tests` in test-only modules (`fixtures`, `ownership_tests`) or in the separate `src/refactor/tests.rs` file that use a bare `errors` variable, so the query selects no test code.\n- The `crates/habeas-*` language crates have no `errors` accumulators.\n- Its snippets cover a parameter match, a local `let mut errors` match, and no_match cases for a different name (`discovery_errors`, `problems`) and for a `tests` module.\n\n**Violation query `early_exits`**\n\nIt matches `?`, `return`, `continue` and `break` within sites. Its match snippets show each of the four constructs after an `errors.push`, and its no_match snippet shows an early-exit function that is not a site. Like any heuristic, it cannot tell a legitimate early return from a harmful one. That is not a gap.",
+  "rationale": "**Verdict:** the tests for `requirements.ci.errors` are adequate, and I found no gap in its site or violation queries.\n\n**Obligations, split by who carries them**\n- Obligations A–C below are carried out by the code that sequences the repository's checks, and I assessed their tests here.\n- Obligation D is upheld by each site on its own. Each site has its own review, so I did not vet it.\n  - (A) Validation continues after a failed check and reports every failed check in one run.\n  - (B) A file that cannot be parsed counts as one failed check, and checks that do not depend on its contents still run.\n  - (C) The same failure is not reported twice.\n  - (D) Each site runs every later independent check, including later checks in the same loop iteration. This also covers the rule that the variable is named `errors`.\n\n**Test mapping**\n- **A (continue and report all):**\n  - `src/evidence.rs#mod[tests]/fn[failed_checks_do_not_hide_later_independent_checks]` checks that a bad chapter name, a missing fence or text, and bad evidence inputs are all reported together. Examples are a malformed hash alongside a missing file, and inline, misplaced and unknown `{fixme}` references. It also checks that no message appears twice.\n  - `fn[collects_missing_orphan_format_false_and_changed_line_errors]` checks many independent failure kinds in one run.\n  - `fn[schema_rejects_each_malformed_field_and_input_form]` checks that every malformed field is reported while well-formed neighbours are still checked.\n  - `tests/references.rs#fn[malformed_citation_entries_do_not_hide_later_independent_errors]` and `fn[unclosed_fences_still_report_unknown_names]` check the same for citation reviews and source references.\n  - `tests/evidence_boundaries.rs#fn[an_unlistable_review_directory_is_reported_once]` and `src/sites.rs#mod[tests]/fn[failed_site_queries_do_not_repeat_errors_through_dependent_violations]` cover site-query failures and an unlistable directory.\n  - `src/execution_coverage/check.rs#mod[tests]/fn[accepted_exceptions_cannot_waive_invalid_measurement_and_checks_still_collect_errors]` and the `src/authoring/sdk.rs` review-kind test cover coverage and review checks.\n- **B (parse failures):**\n  - `fn[configuration_and_dependency_failures_do_not_stop_later_checks]` writes a bad `habeas.toml`, a malformed `book.toml` and a malformed evidence file. It asserts that each is reported once and that an unrelated unknown `{impl}` reference in source still gets reported. It also covers an invalid `.config/nextest.toml` and an invalid coverage configuration.\n  - `tests/commands.rs#fn[status_loads_nearest_workspace_file_without_validating_authoring]` covers an invalid workspace file at the CLI level, and checks that the malformed evidence finding is still reported.\n  - `fn[inspection_progress_preserves_validation_and_finishes_each_phase]` pairs malformed JSON evidence with unparsable Rust source and asserts that both are reported.\n  - `fn[git_index_failure_is_reported_once_and_later_checks_still_run]` covers a reference-discovery failure that is reported once while later evidence checks still run.\n- **C (no duplicates):** the tests above assert uniqueness through a sort and dedup length comparison, an exact count of 1, or a set size. `src/index.rs#mod[tests]/fn[an_unreadable_record_is_reported_once]` covers the case where validation has already reported the same finding.\n- **Each failure as a `requirements.ci.validation_error`:** these tests assert messages that begin with the evidence file, requirement or source location and state the specific value, so the format is exercised.\n- **D (sites):** I did not assess this, as the task directs.\n\n**Site query**\n- I ran `requirements.ci.errors/error_accumulators` and read its matches. They are validation functions that take or declare `errors`. Examples are `inspect_repository_with_progress`, `validate_evidence_file`, `validate_input`, `collect_definitions`, `book_source_dir`, the citation and site validators, and `DiscoverySources::files` and `walk` in the SDK crate.\n- Functions with an abort-only accumulator use other names (`failures`, `ignored`) and carry comments saying they are not sites. Examples are `load_definitions` and `reference_set_digest_for`. The files `src/authoring/inputs.rs` and `src/authoring/tools.rs` are excluded, and `mod tests` is excluded by the rule.\n- I searched `src` and `crates/habeas-sdk/src` for other collectors, meaning parameters or locals of type `&mut Vec<String>` and locals named like errors. None is a validation accumulator under another name. The `diagnostics` locals in `execution_coverage/book.rs` and `index.rs#fn[populate]` are rendering code. `mut errors` parameters, destructured `errors` bindings and `errors` bindings in SDK functions did not turn up anything missed.\n- The match snippets cover both a parameter and a `let` binding. The no_match snippets cover a differently named parameter (`discovery_errors`), a differently named local (`problems`), and a function inside `mod tests`.\n\n**Violation query `early_exits`**\n- The match snippets cover `?`, `continue`, `return` and `break`, each inside a site, with a later check that gets skipped. The no_match snippet is the same construct in a non-site function.\n- It is a heuristic and will not catch every early exit, for example one inside a closure. That is not a gap.\n\nNo acknowledgments are needed, and none were supplied.",
   "references": "691fd6bd624b4c8f838b869bac71e20869976911a46320cec082c7f665ec6577",
   "inputs": [
     {
@@ -118,12 +118,12 @@
     {
       "file": "src/authoring/sdk.rs",
       "item": "mod[tests]/fn[every_review_kind_loads_both_formats_and_reports_each_application_failure_once]",
-      "hash": "cf9ded0951f0ba2e010c6236ab3d485fa6c9167fec68572cdb8391fb8d9b6afc"
+      "hash": "660e7d99002c91725687046123ba79b9939105c4818aa0d8c89cd8973b21a71a"
     },
     {
       "file": "src/evidence.rs",
       "item": "mod[tests]/fn[inspection_progress_preserves_validation_and_finishes_each_phase]",
-      "hash": "7b2674812c8863885bba63850c1e80b69fe027379969e038d222ea2aa1f065c1"
+      "hash": "f4f374b0316621acf78ea36311982a0fb7c3edd6cd164359dfeb024322b4ede6"
     },
     {
       "file": "src/evidence.rs",
@@ -138,7 +138,7 @@
     {
       "file": "src/evidence.rs",
       "item": "mod[tests]/fn[configuration_and_dependency_failures_do_not_stop_later_checks]",
-      "hash": "c8a3c9ab783263b383c83e0888888bfddaeb178baf2f475b09ae6d7cb6d3ff49"
+      "hash": "67c6466de54e2ba3b63912ed36656e60c374d0261ba68c00fb7422279e70b554"
     },
     {
       "file": "src/evidence.rs",
@@ -215,6 +215,31 @@
       ]
     },
     {
+      "file": "src/evidence.rs",
+      "item": "fn[load_definitions]",
+      "hash": "cfe575123d40406dab954b5425650cafaa4fb20bfdb4f8c809f9924e5fb7d6de"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[reference_set_digest_for]",
+      "hash": "28fa1b0cda51c2f4b0230473f69c65ccd49e9874921d37cc80eb69889c7babd2"
+    },
+    {
+      "file": "src/structural.rs",
+      "item": "fn[parse_queries]",
+      "hash": "96f1a821a28e2be27e0416fb500c36ea27fb5f46decab42bb51838046453e190"
+    },
+    {
+      "file": "src/execution_coverage/book.rs",
+      "item": "fn[populate_in]",
+      "hash": "1c56feab3fa21687ab1c2e4ff3d1b8bebd9988d2e39830bafcb07d782a783ef7"
+    },
+    {
+      "file": "src/index.rs",
+      "item": "impl[DetailPlan]/fn[populate]",
+      "hash": "7a908a37fefee3cbb07f9f122f6e02e8bc118cd1dd94e1a6b0f4f2acc46ee504"
+    },
+    {
       "file": "crates/habeas-sdk/src/access.rs",
       "item": "impl[DiscoverySources]/fn[files]",
       "hash": "c23d7be1e1f0c41c9a26b2ce1e4f98fc6aca2b1932c9e7f767babe3997084880"
@@ -223,6 +248,131 @@
       "file": "crates/habeas-sdk/src/access.rs",
       "item": "impl[DiscoverySources]/fn[walk]",
       "hash": "916d46df740d97d0e696c09c5958dd8adcb0905dfc6e058938c19a35a0323b4f"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[inspect_repository_with_progress]",
+      "hash": "788e24af357372441e74b0823319d6b50ee4c071637fc9a47eb30d05e94d654d"
+    },
+    {
+      "file": "src/authoring/adaptive.rs",
+      "item": "fn[route]",
+      "hash": "d920dbc1c9a4ffdc7ff2e9862df248ed71e54adaa74ad5dc10f91c145236a173"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "impl[AssessmentSources]/fn[prepare_citation]",
+      "hash": "c206bede8eaea9441ca75472e7796cb0d079f37335dfb1b5c868ba3678e22612"
+    },
+    {
+      "file": "src/authoring/inputs.rs",
+      "item": "impl[AssessmentSources]/fn[prepare_site]",
+      "hash": "78871f124b696ca72d616d3ec081b01f4aaabcfc9d0539444b6066f5be16f6af"
+    },
+    {
+      "file": "src/authoring/progress.rs",
+      "item": "struct[BatchProgress]",
+      "hash": "4f886d7efa57409f30bed65cb7d2ad5e80c982c61a057b30a3c4ddea3de72605"
+    },
+    {
+      "file": "src/authoring/progress.rs",
+      "item": "impl[BatchProgress]/fn[new]",
+      "hash": "a6727f1556cf97a83cf5e7adfac2a451c2e80f81b0fa50691f36b6bf35008351"
+    },
+    {
+      "file": "src/authoring/progress.rs",
+      "item": "impl[BatchProgress]/fn[refresh]",
+      "hash": "b9622df9d0cc13daa1a7097000baf9f960c647559e1caea910c2bba1fd592094"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "fn[references]",
+      "hash": "34ddaf1e894ebe6ec74dce4f8456ac69bc0768a1a8e62d5b31beadd2eea92fed"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "fn[referencing]",
+      "hash": "49f8b22258b043792d122a07dd9f294b4106b9d8febc0ff649e8353f9a9422cc"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "fn[declared_query]",
+      "hash": "d9c46334bd1fdcad7efaba720f845782b75790a1804d7a3318577513dc80726c"
+    },
+    {
+      "file": "src/authoring/tools.rs",
+      "item": "fn[definitions]",
+      "hash": "087308c828bd44ff3237c485177514df523baf2143f5bcf88f8653c268addf44"
+    },
+    {
+      "file": "src/config.rs",
+      "item": "fn[credential_values]",
+      "hash": "55703ef2a699aecbc46d7379809fd1d1c18da759bc9bb5d86e391307a83bb23b"
+    },
+    {
+      "file": "src/terms.rs",
+      "item": "fn[referenced_terms]",
+      "hash": "c99c06392d1cca088b06ee045a1f05f6cc7e5f2cf403a221cf4f890b1a489e83"
+    },
+    {
+      "file": "src/authoring/batch.rs",
+      "item": "fn[delete_orphaned_reviews]",
+      "hash": "96fb6ba4b0a09a49ded10ee373d24784b50ca62cfd966d9c21e1b888ca6de2e4"
+    },
+    {
+      "file": "src/commands.rs",
+      "item": "fn[status_markdown_with_github]",
+      "hash": "2a50af65bf1e2858770591672b5a6d29650a86f646a4ddc9b0cad500d9d3f9a5"
+    },
+    {
+      "file": "src/execution_coverage/book.rs",
+      "item": "fn[load_saved]",
+      "hash": "f0f891e3da40fc65f994190c73abed3e2d718af624f6e3cf8efda757fe582f68"
+    },
+    {
+      "file": "src/execution_coverage/notes.rs",
+      "item": "fn[pages]",
+      "hash": "285bc43558c2193c300ad2ddc77b667a4439714a0c2d0928f65a5995ef926631"
+    },
+    {
+      "file": "src/execution_coverage/runner.rs",
+      "item": "fn[capture_inputs]",
+      "hash": "e7536f215dd8cd67227d74302aae826c3abe84879815aab2559f6e14b1545887"
+    },
+    {
+      "file": "src/index.rs",
+      "item": "impl[LoadedDetailEvidence]/fn[load_path]",
+      "hash": "44bc4be7a9cede94c94c96f0ff61494fa87d510050d7c9f2f0c4213d4b4a1b6e"
+    },
+    {
+      "file": "src/index.rs",
+      "item": "impl[LoadedDetailEvidence]/fn[load_record_path]",
+      "hash": "e0c63cf02bba451db1cb42cbd0ed7135550f81c4dd1f22a4992bb32502df21b6"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "impl[OutlineCache]/fn[reference_catalog]",
+      "hash": "23cf74ebc0dc4fcf5e486e438f3b71a190f58fd96c9f420ad7e8f5bb87c670ad"
+    },
+    {
+      "file": "src/refactor.rs",
+      "item": "impl[States]/fn[compute]",
+      "hash": "1ae409cd4ce7da9badaa5374cde3de8a2d97fb19dad4fcf021fbe51f1cf2b5a6"
+    },
+    {
+      "file": "src/refactor.rs",
+      "item": "fn[rewrite_record]",
+      "hash": "fbe65dfbcc20282d32d94e4bd45db002e5622ef3b61353ae23bbff2a52036257"
+    },
+    {
+      "file": "src/sites.rs",
+      "item": "fn[validate_queries]",
+      "hash": "c22721be34f2b8a9c6bd84185223d1471c27a734dcac5ca7e037ea2e4026544c"
+    },
+    {
+      "file": "src/terms.rs",
+      "item": "fn[close_dependencies]",
+      "hash": "8e1f9f88b3acc193635629f6a4ebf2449b87db607cae79b5406d831a986bd0f1"
     },
     {
       "file": "src/citations.rs",
@@ -241,43 +391,18 @@
     },
     {
       "file": "src/evidence.rs",
-      "item": "fn[coverage_inventory]",
-      "hash": "91e2b005afce0c6015955bdeb77e411c7171eb2da54bcb7964afa67e52e880a7"
-    },
-    {
-      "file": "src/authoring/batch.rs",
-      "item": "fn[delete_orphaned_reviews]",
-      "hash": "96fb6ba4b0a09a49ded10ee373d24784b50ca62cfd966d9c21e1b888ca6de2e4"
+      "item": "fn[book_source_dir]",
+      "hash": "33a30a969160c640c89ec3b77e79f820241805f4eb9813279a89ebb9a8b7f4a8"
     },
     {
       "file": "src/evidence.rs",
-      "item": "fn[load_definitions]",
-      "hash": "cfe575123d40406dab954b5425650cafaa4fb20bfdb4f8c809f9924e5fb7d6de"
+      "item": "fn[collect_definitions]",
+      "hash": "61473bcdb7cfaa2f9a00fdf816a5995234a8e1a86063965cb6e0f4f0394361ec"
     },
     {
-      "file": "src/evidence.rs",
-      "item": "fn[reference_set_digest_for]",
-      "hash": "28fa1b0cda51c2f4b0230473f69c65ccd49e9874921d37cc80eb69889c7babd2"
-    },
-    {
-      "file": "src/execution_coverage/runner.rs",
-      "item": "fn[capture_inputs]",
-      "hash": "e7536f215dd8cd67227d74302aae826c3abe84879815aab2559f6e14b1545887"
-    },
-    {
-      "file": "src/index.rs",
-      "item": "impl[DetailPlan]/fn[populate]",
-      "hash": "7a908a37fefee3cbb07f9f122f6e02e8bc118cd1dd94e1a6b0f4f2acc46ee504"
-    },
-    {
-      "file": "src/inputs.rs",
-      "item": "impl[OutlineCache]/fn[reference_catalog]",
-      "hash": "23cf74ebc0dc4fcf5e486e438f3b71a190f58fd96c9f420ad7e8f5bb87c670ad"
-    },
-    {
-      "file": "src/sites.rs",
-      "item": "fn[validate_queries]",
-      "hash": "c22721be34f2b8a9c6bd84185223d1471c27a734dcac5ca7e037ea2e4026544c"
+      "file": "src/authoring/mod.rs",
+      "item": "mod[submission_description_tests]",
+      "hash": "4d7be106ef96cef6096c0ed9e369a00027cb0f2eaa53cae76337e4ccda7939d8"
     },
     {
       "file": "src/execution_coverage/store.rs",
@@ -290,134 +415,9 @@
       "hash": "c990df9bd4a0078415b0911ce8ef9308034eb639f9f9d5184b72c9f13e958c21"
     },
     {
-      "file": "src/refactor.rs",
-      "item": "mod[tests]",
-      "hash": "d4f588c5e797c2da513a2e099e5cbe1c8f2ea3ea01ab5e30a10833bab5c94f14"
-    },
-    {
       "file": "src/refactor/tests.rs",
       "item": "fn[site_reviews_follow_their_site_and_renamed_requirement]",
       "hash": "483a73a80ab0e0f2f4c9b98c044bdfb89d5e837aba78ca25ed66463001b8bf57"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "impl[AssessmentSources]/fn[prepare_citation]",
-      "hash": "c206bede8eaea9441ca75472e7796cb0d079f37335dfb1b5c868ba3678e22612"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "fn[references]",
-      "hash": "34ddaf1e894ebe6ec74dce4f8456ac69bc0768a1a8e62d5b31beadd2eea92fed"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "fn[referencing]",
-      "hash": "49f8b22258b043792d122a07dd9f294b4106b9d8febc0ff649e8353f9a9422cc"
-    },
-    {
-      "file": "src/authoring/tools.rs",
-      "item": "fn[declared_query]",
-      "hash": "d9c46334bd1fdcad7efaba720f845782b75790a1804d7a3318577513dc80726c"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[inspect_repository_with_progress]",
-      "hash": "c9617bd91c99b2bd7f4138a1efb8a4a81d431c2ccf95a7701891c9a577cd8967"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[book_source_dir]",
-      "hash": "33a30a969160c640c89ec3b77e79f820241805f4eb9813279a89ebb9a8b7f4a8"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[collect_definitions]",
-      "hash": "61473bcdb7cfaa2f9a00fdf816a5995234a8e1a86063965cb6e0f4f0394361ec"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[files_with_extension]",
-      "hash": "4fab710823f8c96ba4bf9d890172091a4c3001a3c726298c099768d7c498073e"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[validate_evidence_file]",
-      "hash": "a5b094bae2358675e9aecc733eb4ce8ebfd79a3a8a8af530eb394135b3aa8823"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[validate_input]",
-      "hash": "ba071d68ab65d0a7893dd005cc03d35444c368ee68181a7835b3ed2806d2ebf0"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[validate_outline_input]",
-      "hash": "c35b3ea35864a24c2250898ecb8a90409ee1e3de86a21da57bbeed7782475804"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[text_field]",
-      "hash": "2eb38677e0af3ccb920bf573276145e8d9729f1d2205faf2259c3bd4be9a5aa9"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[validate_resolved_input]",
-      "hash": "4f589686b3a09710c4bcb7ab5b175b27e89ddb01e5f6b76a7c239729ccbbb44f"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[validate_references]",
-      "hash": "e7ad9c1901dbfb547ef6c51e1988f97a1de360ab695538086b4d527e87ef80c0"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[validate_fixme_form]",
-      "hash": "96175bf48bf658e9cd39f62750afb65c8558e2e4a85fe3c306c3f57350413e91"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[validate_fixme_entries]",
-      "hash": "adafa4d067066c99d40de3be87e455ea856192c888a5cdede8a175ea186b9065"
-    },
-    {
-      "file": "src/authoring/inputs.rs",
-      "item": "impl[AssessmentSources]/fn[prepare_site]",
-      "hash": "78871f124b696ca72d616d3ec081b01f4aaabcfc9d0539444b6066f5be16f6af"
-    },
-    {
-      "file": "src/execution_coverage/book.rs",
-      "item": "fn[load_saved]",
-      "hash": "f0f891e3da40fc65f994190c73abed3e2d718af624f6e3cf8efda757fe582f68"
-    },
-    {
-      "file": "src/execution_coverage/check.rs",
-      "item": "fn[check_saved]",
-      "hash": "2469d605b62e9297c997f8ae73c0c0c6ec83443bf50527c7ab33005012a23fd7"
-    },
-    {
-      "file": "src/github.rs",
-      "item": "fn[add_issue_findings]",
-      "hash": "2b58a3582a6e1715422cd32367c72fcb2ecc5a57b36f82467657a50badccf266"
-    },
-    {
-      "file": "src/index.rs",
-      "item": "impl[LoadedDetailEvidence]/fn[load_path]",
-      "hash": "44bc4be7a9cede94c94c96f0ff61494fa87d510050d7c9f2f0c4213d4b4a1b6e"
-    },
-    {
-      "file": "src/index.rs",
-      "item": "impl[LoadedDetailEvidence]/fn[load_record_path]",
-      "hash": "e0c63cf02bba451db1cb42cbd0ed7135550f81c4dd1f22a4992bb32502df21b6"
-    },
-    {
-      "file": "src/structural.rs",
-      "item": "fn[parse_queries]",
-      "hash": "96f1a821a28e2be27e0416fb500c36ea27fb5f46decab42bb51838046453e190"
-    },
-    {
-      "file": "src/terms.rs",
-      "item": "fn[close_dependencies]",
-      "hash": "8e1f9f88b3acc193635629f6a4ebf2449b87db607cae79b5406d831a986bd0f1"
     }
   ],
   "format_version": 1,
@@ -470,7 +470,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "1aec47effdf31d6fc6449def3a541d28427f9c07e8f950e079f02fdbf7627971"
+          "value": "3d381586b59847d3bae9569cdacd2dddc168aefd6eeba7b2ca58706a962c32c1"
         }
       ]
     },
@@ -487,7 +487,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "faa8013c3e1ee3d25bd956a224057403376aceccd35dd04928863e6e3ba38745"
+          "value": "20f213d4d676e21b722b90d3a6a14f5e1956dce5f0e897736756268d2196674f"
         }
       ]
     },
@@ -538,7 +538,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "4a5a9625b8f161caf4eb2a54ed32b0dfc4d6714cc715e2bfd6caa27c8a5ddd9f"
+          "value": "1fe085cb29bdc0e95a05aeb2fff3411000963d4c3c184c6fd8971baeb21ccc77"
         }
       ]
     },
@@ -763,6 +763,91 @@
           "Source": {
             "resource": {
               "scheme": "repo",
+              "location": "src/evidence.rs"
+            },
+            "selector": "fn[load_definitions]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "9074fff9414e08f2e779d484c046d1adb0ee44e8d2044d5dcc5e94b779e519d0"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/evidence.rs"
+            },
+            "selector": "fn[reference_set_digest_for]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "89d719af6fea8da586fa08bcaaffa4ba022f9d1201d0b66f83d9911dd626e402"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/structural.rs"
+            },
+            "selector": "fn[parse_queries]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "bb0f4fcbe1dde2ce7b606601d65316b47a2931b9e06c8a420c4cb932532befc7"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/execution_coverage/book.rs"
+            },
+            "selector": "fn[populate_in]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "1d1757874f568d48052e0a9da811499d189c15d9cf8a33b6f3888dbb394b0ad8"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/index.rs"
+            },
+            "selector": "impl[DetailPlan]/fn[populate]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "59a0c2e9b4a2ca6fe0cb78b0cdfa6b2f1c75b2bc7a2b040e138bd307c76006b4"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
               "location": "crates/habeas-sdk/src/access.rs"
             },
             "selector": "impl[DiscoverySources]/fn[files]"
@@ -788,6 +873,431 @@
         {
           "scheme": "habeas-input-v1",
           "value": "cd14778bcb827819ec41c9553af5f9451ca75fa505cacf5fe2862e293b601d23"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/evidence.rs"
+            },
+            "selector": "fn[inspect_repository_with_progress]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "23ba690443ef8b677e74fd463e1902a0be5879ed12c7145b3933a200b66071a1"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/adaptive.rs"
+            },
+            "selector": "fn[route]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "951ff83c0da4696fdc50be29bbd64aaa0f1b2817ef38e57856535a41424772d3"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/inputs.rs"
+            },
+            "selector": "impl[AssessmentSources]/fn[prepare_citation]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "9845f9d72d63bb2a4d713d9a53930aed5e9b34acf187011b32500ca216a9154d"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/inputs.rs"
+            },
+            "selector": "impl[AssessmentSources]/fn[prepare_site]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "6aef48fce4ce35cabc519290d2b0a54a4bb026df5668eacbf2a23e5a02d26247"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/progress.rs"
+            },
+            "selector": "struct[BatchProgress]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "9976697513ce3b5fcecf78e9d3d95a8ea76381c6b5cd4afc18b7eb1285135810"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/progress.rs"
+            },
+            "selector": "impl[BatchProgress]/fn[new]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "5f9a7d3516648a148310ca20e7df6f277f0f70fb5fda8d2d99b3e67011e67b18"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/progress.rs"
+            },
+            "selector": "impl[BatchProgress]/fn[refresh]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "f27426679e3994e37d055eaf445c25a04933b7e97d75a7ed35acc6c6b1fa32dd"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/tools.rs"
+            },
+            "selector": "fn[references]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "f5d9f602dfb2930278f5116d7ca655e64829ca5a6f2f5599a9505e94a0e28abe"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/tools.rs"
+            },
+            "selector": "fn[referencing]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "a40cc8d7cf9b6dec268d9b3075f0e94d82fcdc3781a11593e272dbb8ee5b5c45"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/tools.rs"
+            },
+            "selector": "fn[declared_query]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "211972a41beac153f85a0f349125ea1d9e9ac4fa0100e02c67098914037719e2"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/tools.rs"
+            },
+            "selector": "fn[definitions]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "30095fc22bee286c25f63ba988d2860ed0a97b66dfd0a90ee9e860c92f8168d4"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/config.rs"
+            },
+            "selector": "fn[credential_values]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "c3f7c0ee9510c7bdb439fa4c7aded01f21e8146323dc2bfe98374e31fa83ab4e"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/terms.rs"
+            },
+            "selector": "fn[referenced_terms]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "db8354a3e28401802114c0636ea96f0b0718bfd91d64e27b4b155cd609aee86c"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/batch.rs"
+            },
+            "selector": "fn[delete_orphaned_reviews]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "dbdc64181f1119c4c25151cb56fea42908ba7afbf3a27b887ea2cc16d9fbfd9f"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/commands.rs"
+            },
+            "selector": "fn[status_markdown_with_github]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "67ddfc517a2a423f9a7bc75a30e4127636d545314c5fca71ae8512a0b01d538b"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/execution_coverage/book.rs"
+            },
+            "selector": "fn[load_saved]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "654b1b94ccd6586f09d97c4d87254cf3e7aa8d356ada49bf235bf844663a05bf"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/execution_coverage/notes.rs"
+            },
+            "selector": "fn[pages]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "45b299b5fc26e5f553f6cbd6c67d9a3577f91c4bc6fff762433dd3b2280776c8"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/execution_coverage/runner.rs"
+            },
+            "selector": "fn[capture_inputs]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "84ea8dc4c8f7312345fd6cf5a00b3422a1229892641d77737841e1c6f719eb8d"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/index.rs"
+            },
+            "selector": "impl[LoadedDetailEvidence]/fn[load_path]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "de902ebd0e15292244373d9476535f77c59bd0cfcc2f9de5d97b4680a0f036c1"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/index.rs"
+            },
+            "selector": "impl[LoadedDetailEvidence]/fn[load_record_path]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "5e8b357ae0feddc0f3247394fb3b06451c708f7f95d924bc5262c153365ae8e1"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/inputs.rs"
+            },
+            "selector": "impl[OutlineCache]/fn[reference_catalog]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "681625ba57f35fc07d02f9c1617d05fa0f5144eb48c9a02f08b04bf2f708686f"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/refactor.rs"
+            },
+            "selector": "impl[States]/fn[compute]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "e66930710ae77b24e5d292afcf1fae8952c0760b4ccb634d75f9e5d8519a15d3"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/refactor.rs"
+            },
+            "selector": "fn[rewrite_record]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "df396bd8171a4c92884c5a065e2bc8e3d3f9029096b54eaddccf862a86a3f77a"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/sites.rs"
+            },
+            "selector": "fn[validate_queries]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "13a7d8436237977b1fe4c5dcc066db04ec9cf45ddbe20f7f8139fe86d0fb87a3"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/terms.rs"
+            },
+            "selector": "fn[close_dependencies]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "6bfe982f16590ba88b4b7b7cb3829f4345ce606f06d86061460f2e8e3b70f855"
         }
       ]
     },
@@ -850,29 +1360,12 @@
               "scheme": "repo",
               "location": "src/evidence.rs"
             },
-            "selector": "fn[coverage_inventory]"
+            "selector": "fn[book_source_dir]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "43ecea6090033ccd77ed0f6bb88c80e70c4ce64d4759824b7e2c22a20c7f0e4d"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/authoring/batch.rs"
-            },
-            "selector": "fn[delete_orphaned_reviews]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "dbdc64181f1119c4c25151cb56fea42908ba7afbf3a27b887ea2cc16d9fbfd9f"
+          "value": "c9a91f0dcf7dba28f8394a1332fd387e7f9bbbe45e5ac390ed0b7480a0302486"
         }
       ]
     },
@@ -884,12 +1377,12 @@
               "scheme": "repo",
               "location": "src/evidence.rs"
             },
-            "selector": "fn[load_definitions]"
+            "selector": "fn[collect_definitions]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "9074fff9414e08f2e779d484c046d1adb0ee44e8d2044d5dcc5e94b779e519d0"
+          "value": "3ac8e9099cee1ef9fd69823838927a275422af393c7545c3f55b89a1ba185cd2"
         }
       ]
     },
@@ -899,82 +1392,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "src/evidence.rs"
+              "location": "src/authoring/mod.rs"
             },
-            "selector": "fn[reference_set_digest_for]"
+            "selector": "mod[submission_description_tests]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "89d719af6fea8da586fa08bcaaffa4ba022f9d1201d0b66f83d9911dd626e402"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/execution_coverage/runner.rs"
-            },
-            "selector": "fn[capture_inputs]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "84ea8dc4c8f7312345fd6cf5a00b3422a1229892641d77737841e1c6f719eb8d"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/index.rs"
-            },
-            "selector": "impl[DetailPlan]/fn[populate]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "59a0c2e9b4a2ca6fe0cb78b0cdfa6b2f1c75b2bc7a2b040e138bd307c76006b4"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/inputs.rs"
-            },
-            "selector": "impl[OutlineCache]/fn[reference_catalog]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "681625ba57f35fc07d02f9c1617d05fa0f5144eb48c9a02f08b04bf2f708686f"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/sites.rs"
-            },
-            "selector": "fn[validate_queries]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "13a7d8436237977b1fe4c5dcc066db04ec9cf45ddbe20f7f8139fe86d0fb87a3"
+          "value": "3180c592d5ce91efc3cd5f0de441773b472c95a830df31f0539db6b8d848dd20"
         }
       ]
     },
@@ -1018,23 +1443,6 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "src/refactor.rs"
-            },
-            "selector": "mod[tests]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "d60092eacd72d2eb222ee649e2772f52f3fd73880aa25a85110e1b48929a3a82"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
               "location": "src/refactor/tests.rs"
             },
             "selector": "fn[site_reviews_follow_their_site_and_renamed_requirement]"
@@ -1043,414 +1451,6 @@
         {
           "scheme": "habeas-input-v1",
           "value": "397f60d01812ba065aa5b0a3ab5f202ac2095c2d39dcd5ba516000131523a665"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/authoring/inputs.rs"
-            },
-            "selector": "impl[AssessmentSources]/fn[prepare_citation]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "9845f9d72d63bb2a4d713d9a53930aed5e9b34acf187011b32500ca216a9154d"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/authoring/tools.rs"
-            },
-            "selector": "fn[references]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "f5d9f602dfb2930278f5116d7ca655e64829ca5a6f2f5599a9505e94a0e28abe"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/authoring/tools.rs"
-            },
-            "selector": "fn[referencing]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "a40cc8d7cf9b6dec268d9b3075f0e94d82fcdc3781a11593e272dbb8ee5b5c45"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/authoring/tools.rs"
-            },
-            "selector": "fn[declared_query]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "211972a41beac153f85a0f349125ea1d9e9ac4fa0100e02c67098914037719e2"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/evidence.rs"
-            },
-            "selector": "fn[inspect_repository_with_progress]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "5fc8f47e27f5f38fc0ba18aea33fffcdc5392500484868d44b7407e80fb930b4"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/evidence.rs"
-            },
-            "selector": "fn[book_source_dir]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "c9a91f0dcf7dba28f8394a1332fd387e7f9bbbe45e5ac390ed0b7480a0302486"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/evidence.rs"
-            },
-            "selector": "fn[collect_definitions]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "3ac8e9099cee1ef9fd69823838927a275422af393c7545c3f55b89a1ba185cd2"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/evidence.rs"
-            },
-            "selector": "fn[files_with_extension]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "0674419d2719ce3f6c5d26baa59e86b249d36b88c54796788299c5cb1828e88d"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/evidence.rs"
-            },
-            "selector": "fn[validate_evidence_file]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "55eea6fb8ecee1b2ebd8f1313d729718da07e61fd3b937ea000b3f41c3f67138"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/evidence.rs"
-            },
-            "selector": "fn[validate_input]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "4e80f15d31fd56e66350112238409f919b984a0b6c1effa7cf29005cb9d004dd"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/evidence.rs"
-            },
-            "selector": "fn[validate_outline_input]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "90e42d805fef67a3bb5950ef45f0641fa7068842f5604f26d07d6728eef26281"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/evidence.rs"
-            },
-            "selector": "fn[text_field]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "d81b55d3e31eb5a940b3657462aa6d881ce5e6a3628e56543fb70821c58f8ae8"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/evidence.rs"
-            },
-            "selector": "fn[validate_resolved_input]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "31ffdf456abdc8468ed7515fc5f74ac36c7a883af8df82976ff5e48f17b33028"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/evidence.rs"
-            },
-            "selector": "fn[validate_references]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "da18679860150c81aeec5fe62281e6a6ba2fde9beecfdec428f734f193115796"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/evidence.rs"
-            },
-            "selector": "fn[validate_fixme_form]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "96f442539d148ae1bfdc1f2a602971b6b6b973e904f750957d47fd17a2720a18"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/evidence.rs"
-            },
-            "selector": "fn[validate_fixme_entries]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "0876672da5fb20a8b67277302ba6bc3dad7b8bc8b407979a8024d359a3a632b8"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/authoring/inputs.rs"
-            },
-            "selector": "impl[AssessmentSources]/fn[prepare_site]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "6aef48fce4ce35cabc519290d2b0a54a4bb026df5668eacbf2a23e5a02d26247"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/execution_coverage/book.rs"
-            },
-            "selector": "fn[load_saved]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "654b1b94ccd6586f09d97c4d87254cf3e7aa8d356ada49bf235bf844663a05bf"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/execution_coverage/check.rs"
-            },
-            "selector": "fn[check_saved]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "76dd276e205121c6773535f91cfaf78478341aad439a74e8c0fa3433f80961d1"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/github.rs"
-            },
-            "selector": "fn[add_issue_findings]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "0aca05b376729ddb1225949eb43f69e8b5e546109527d97dbb9306ed5a062641"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/index.rs"
-            },
-            "selector": "impl[LoadedDetailEvidence]/fn[load_path]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "de902ebd0e15292244373d9476535f77c59bd0cfcc2f9de5d97b4680a0f036c1"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/index.rs"
-            },
-            "selector": "impl[LoadedDetailEvidence]/fn[load_record_path]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "5e8b357ae0feddc0f3247394fb3b06451c708f7f95d924bc5262c153365ae8e1"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/structural.rs"
-            },
-            "selector": "fn[parse_queries]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "bb0f4fcbe1dde2ce7b606601d65316b47a2931b9e06c8a420c4cb932532befc7"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/terms.rs"
-            },
-            "selector": "fn[close_dependencies]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "6bfe982f16590ba88b4b7b7cb3829f4345ce606f06d86061460f2e8e3b70f855"
         }
       ]
     }

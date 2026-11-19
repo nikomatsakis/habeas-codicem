@@ -2021,6 +2021,7 @@ mod tests {
 
     // {test}`requirements.index.state`
     // {test}`requirements.examples.index`
+    // {test}`requirements.cli.shared_status_rendering`
     #[test]
     fn index_and_detail_pages_show_each_example_evidence_state() {
         let temp = TempDir::new().unwrap();
@@ -2124,6 +2125,7 @@ mod tests {
     // {test}`requirements.examples.index`
     // {test}`requirements.index.detail_format`
     // {test}`requirements.index.invalid_detail`
+    // {test}`requirements.cli.shared_status_rendering`
     #[test]
     fn index_lists_examples_and_links_their_detail_pages() {
         let temp = TempDir::new().unwrap();

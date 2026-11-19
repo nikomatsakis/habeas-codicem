@@ -1,7 +1,7 @@
 {
   "requirement": "After preparation and selection discovery succeed, and before any selected\ntest starts, Habeas atomically establishes the new coverage set:\n\n- An unfiltered workspace invocation clears the entire previous set,\n  including results for tests that no longer exist. This includes\n  `habeas coverage` with no supplied arguments and `habeas test`.\n- An invocation with an explicit package or binary restriction, test filter,\n  partition, or ignored-only selection is filtered. It clears results for all\n  selected test identities and preserves unselected results within the\n  active build configuration.\n- Every selected test receives a pending entry without measurements.\n\nNative default filters and the default handling of ignored tests still apply\nto an unfiltered workspace invocation. `--run-ignored all` alone does not make\na workspace invocation filtered.\n\nA selected test that never starts because of fail-fast, interruption, or\nexecution startup failure remains unavailable. Its previous result does not\nbecome available again. A filtered selection containing no tests leaves the\ncurrent results and active configuration unchanged; an empty unfiltered\nworkspace selection clears the previous set.\n\nIf the atomic replacement cannot be committed, the command reports the\nfailure and starts no tests. The previously committed coverage set and active\nconfiguration remain unchanged.",
   "determination": true,
-  "rationale": "The reviewed tests cover every obligation in `requirements.test-coverage.storage.replace`, and their assertions enforce the expected outcomes.\n\n**Unfiltered replacement clears the whole set.**\n- `src/execution_coverage/store.rs#mod[tests]/fn[focused_replacement_preserves_unselected_results_and_shared_artifacts]` runs an unfiltered `replace` with one test after a three-test set. It asserts that only one test remains and that the old run directory is gone, so results for tests that no longer exist are cleared.\n- The same test runs an empty unfiltered `replace` and asserts that the snapshot has no tests.\n- `tests/execution_coverage.rs#fn[fail_fast_leaves_every_unstarted_selected_test_pending_without_old_measurements]` runs `--workspace` after a previous run. It asserts that the old run directory is removed and that exactly one run remains.\n- `habeas coverage` with no arguments is exercised by `no_arguments_selects_all_workspace_members_with_configured_parallelism_and_git_metadata` and `configured_retries_filters_profiles_and_libtest_arguments_are_preserved`, which also exercises native default filters.\n- `habeas test` calls `run` with `--workspace --ignore-default-filter`. That form is asserted to be unfiltered in `src/execution_coverage/runner.rs#mod[tests]/fn[explicit_filters_are_distinguished_from_workspace_run_settings]`.\n\n**Filter classification.** The `runner.rs` test classifies many argument sets.\n- Unfiltered: `--workspace`, `--all`, `--run-ignored all`, `--run-ignored=default`, retries and `-j`, `-P`, `--features`, `--ignore-default-filter`, and the libtest arguments `--include-ignored` and `--nocapture`.\n- Filtered: `-p`, `--lib`, `--exclude`, `--run-ignored=only`, `--partition`, `-E`, a positional filter, and libtest `--ignored` and `--skip`.\n- This covers the rule that `--run-ignored all` alone does not make a run filtered.\n\n**Filtered replacement.**\n- `package_binary_partition_and_ignored_selection_replace_only_their_actual_test_identities` covers package, lib plus filter, binary, ignored-only and partition selections. It asserts that only the selected identities are replaced and that unselected metadata and measurements are unchanged. It also asserts that the configuration is unchanged and that partitions are disjoint.\n- The store test above asserts that a selected test becomes `pending` with no measurements. It also asserts that unselected results and their shared artifacts are preserved.\n- `incompatible_builds_reset_every_test_but_empty_focused_runs_do_not` covers the \"within the active build configuration\" condition. A filtered run under a different configuration resets everything.\n\n**Pending entries.** Selected tests get `pending` entries with empty `processes`. This is asserted in the store tests and in the fail-fast, interruption and startup-failure integration tests.\n\n**Selected tests that never start stay unavailable.**\n- Fail-fast: `fail_fast_leaves_every_unstarted_selected_test_pending_without_old_measurements` asserts that unstarted tests are `pending` with no processes, and `saved_check` shows \"pending\" and no \"100.0%\".\n- Interruption: `interrupting_the_parent_preserves_started_attempt_metadata` asserts exit code 130, the started test `interrupted`, the unstarted test `pending` with `pid` 0, and that the unstarted test never ran.\n- Startup failure: `execution_startup_failure_leaves_prior_selected_results_pending_without_measurements` asserts a `pending` record, `pid` 0, no processes and no attempt artifacts. It also asserts that the old run is removed.\n\n**Empty selections.**\n- An empty filtered selection (`replace(..., true)` with no tests) returns false in `incompatible_builds_reset_every_test_but_empty_focused_runs_do_not`. The configuration stays `\"a\"` and the previous results and measurements remain.\n- An empty unfiltered selection is covered by the empty unfiltered `replace` in the store test.\n\n**Ordering and failure.**\n- `selection_discovery_failure_preserves_existing_results_and_configuration` asserts that a failure during selection discovery leaves runs and measurements unchanged.\n- `src/execution_coverage/store.rs#mod[tests]/fn[failed_atomic_replacement_preserves_results_configuration_and_invocation]` injects a SQLite trigger failure. It asserts that the call errors and that the configuration, latest invocation and measurements are preserved.\n- `a_failed_replacement_commit_reports_the_error_without_launching_execution` does the same through the CLI. It asserts a non-zero exit, the error on stderr and no execution sentinel file. It also asserts unchanged runs, measurements and profiles.\n\n`collector_ownership_is_released_when_the_owner_exits` is marked for this requirement but is not needed for any obligation. I found no unacknowledged gap.",
+  "rationale": "I found no test-adequacy gap in `requirements.test-coverage.storage.replace`. Each obligation maps to at least one marked test with assertions on the outcome.\n\n**Unfiltered workspace replacement clears the whole previous set, including tests that no longer exist.**\n- `store.rs#mod[tests]/fn[focused_replacement_preserves_unselected_results_and_shared_artifacts]` runs `replace(..., false)` with one test after three were stored. It asserts that only one test remains and that the old run directory is gone. The dropped tests include `removed`.\n- The same test then runs an empty unfiltered `replace`. It asserts that the snapshot has no tests, so an empty unfiltered workspace selection clears the previous set.\n- `tests/execution_coverage.rs#fn[fail_fast_leaves_every_unstarted_selected_test_pending_without_old_measurements]` runs `--workspace` and asserts `!old.exists()`.\n- That test also asserts that exactly one saved run remains. The interruption and startup-failure tests assert the same.\n- `habeas coverage` with no arguments becomes `--workspace` inside `runner.rs#fn[run]` before `filtered` is called, so the `--workspace` cases in the classification test stand in for it. `habeas test` is the same path, since it runs the same coverage flow. No marked test drives either command through a prior-set clear, but they add no separate logic.\n\n**Filtered invocations clear only their selected identities and keep the rest within the active configuration.**\n- The `store.rs` focused-replacement test checks the replaced `lib::same` entry is pending with no measurements. Unselected entries keep their measurements and their attempt artifacts, and `integration::same` is kept apart from `lib::same`.\n- `tests/execution_coverage.rs#fn[package_binary_partition_and_ignored_selection_replace_only_their_actual_test_identities]` covers a package restriction, a `--lib` filterset, a `--test` binary restriction, and `--run-ignored only`. It also covers both hash partitions.\n- For each case it compares the full union of saved attempts to the expected set and asserts the configuration is unchanged.\n- It asserts the partitions are disjoint and together cover every non-ignored test. After the partition reruns it asserts that the ignored-test result is still saved.\n\n**Classification of filtered versus unfiltered.**\n- `runner.rs#mod[tests]/fn[explicit_filters_are_distinguished_from_workspace_run_settings]` asserts these are unfiltered:\n  - `--workspace`\n  - `--all`\n  - `--run-ignored all`\n  - `--run-ignored=default`\n  - retries and `-j`\n  - `-P` and `--features`\n  - `--ignore-default-filter`\n  - `-- --include-ignored`\n- It asserts these are filtered:\n  - `-p`\n  - `--lib`\n  - `--exclude`\n  - `--run-ignored=only`\n  - `--partition`\n  - `-E`\n  - a name filter\n  - `-- --ignored`\n  - `-- --skip`\n- That covers the clause that `--run-ignored all` alone does not make a run filtered.\n\n**Pending entry for every selected test.** The store test, the fail-fast test, the interruption test, and the startup-failure test assert `outcome == \"pending\"` and no measurements. The process-bearing records are empty.\n\n**A selected test that never starts stays unavailable.**\n- The fail-fast test gives old measurements to every test, then fails the first test under `--fail-fast`. It asserts the unstarted tests are pending with empty `processes`, and that the saved check reports `pending` and not `100.0%`.\n- `interrupting_the_parent_preserves_started_attempt_metadata` sends SIGINT. It asserts the unstarted test is pending with `pid` 0, its body never ran, and the old run is gone.\n- `execution_startup_failure_leaves_prior_selected_results_pending_without_measurements` makes `cargo` disappear after discovery. It asserts the selected test is pending with no processes or attempt artifacts.\n\n**An empty filtered selection changes nothing, and an empty unfiltered selection clears the set.**\n- `incompatible_builds_reset_every_test_but_empty_focused_runs_do_not` asserts that `replace` returns false for an empty filtered selection. The prior configuration, both tests and the measurements all stay.\n- The empty unfiltered case is the empty `replace` at the end of the focused-replacement test, described above.\n\n**A failed atomic commit changes nothing and starts no tests.**\n- `store.rs#mod[tests]/fn[failed_atomic_replacement_preserves_results_configuration_and_invocation]` forces an insert failure with a trigger. It asserts the error, the old configuration, the latest invocation, and the measurements.\n- `a_failed_replacement_commit_reports_the_error_without_launching_execution` is the end-to-end version. It asserts the failure message is reported and that no `nextest run` was launched. It also asserts the stored runs, attempts and profiles are unchanged.\n- `selection_discovery_failure_preserves_existing_results_and_configuration` covers the precondition that replacement only follows successful discovery. A discovery failure leaves the store untouched.\n\n`store.rs#mod[tests]/fn[collector_ownership_is_released_when_the_owner_exits]` supports the atomicity machinery.\n\nThere are no `{fixme}` acknowledgments, and none are needed.",
   "references": "cb2ce41c471a0e99b6312fbc6644117db261413106a2f5821a058b8da3960801",
   "inputs": [
     {
@@ -106,6 +106,11 @@
     },
     {
       "file": "tests/execution_coverage.rs",
+      "item": "fn[real_parallel_processes_retries_child_profiles_and_filtered_reruns]",
+      "hash": "19e2b1e61d5027ab192843ceed1beb865e8669c2d0aed71d8b68d8c31680c076"
+    },
+    {
+      "file": "tests/execution_coverage.rs",
       "item": "fn[configured_retries_filters_profiles_and_libtest_arguments_are_preserved]",
       "hash": "0332de3ce8dedcbd02dcab2e6f99bffe12063534d0c6d93bb2cc13f240673b7e"
     },
@@ -113,26 +118,6 @@
       "file": "tests/execution_coverage.rs",
       "item": "fn[no_arguments_selects_all_workspace_members_with_configured_parallelism_and_git_metadata]",
       "hash": "8a94cbb74d1ed64b7c5bfe1242a055eaf285756ee484565f3005a4a2f7f4370e"
-    },
-    {
-      "file": "src/main.rs",
-      "item": "enum[Command]",
-      "hash": "2779a9a4e1d6857a3d66791839ae00dee39bf102cd010f1d275c72395fdffa20"
-    },
-    {
-      "file": "src/execution_coverage/check.rs",
-      "item": "fn[test]",
-      "hash": "1642be4a67327bee1205991f35a9e9c96da4808c87e621fc6a33665d765ff8ef"
-    },
-    {
-      "file": "tests/execution_coverage.rs",
-      "item": "fn[full_flow]",
-      "hash": "598e98b513606c110e3a1d2b7ad3afc5ba875d7f430558bbccb77d14c39f177c"
-    },
-    {
-      "file": "tests/execution_coverage.rs",
-      "item": "fn[real_parallel_processes_retries_child_profiles_and_filtered_reruns]",
-      "hash": "19e2b1e61d5027ab192843ceed1beb865e8669c2d0aed71d8b68d8c31680c076"
     }
   ],
   "format_version": 1,
@@ -401,6 +386,23 @@
               "scheme": "repo",
               "location": "tests/execution_coverage.rs"
             },
+            "selector": "fn[real_parallel_processes_retries_child_profiles_and_filtered_reruns]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "ef3d3f1e3a7b75b71f43536dede2c6ee08e3655be652f83eb1e494e66f8aa57b"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "tests/execution_coverage.rs"
+            },
             "selector": "fn[configured_retries_filters_profiles_and_libtest_arguments_are_preserved]"
           }
         },
@@ -424,74 +426,6 @@
         {
           "scheme": "habeas-input-v1",
           "value": "0e3ee36df661860989e0c9ea895d2169acbb3f188033b3020f2e3d070f5bec6b"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/main.rs"
-            },
-            "selector": "enum[Command]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "c70f1cbf2666ed9c8272a497764d4598968f487a9c3935dadad4439ca5a189ac"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/execution_coverage/check.rs"
-            },
-            "selector": "fn[test]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "d768329f484a351ee8ff19fe5fb09b60a441b99cfdb7b0df4a908d4a82909087"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "tests/execution_coverage.rs"
-            },
-            "selector": "fn[full_flow]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "0413ec9bb5b2a71282745fcbe0b09aad9028d6e18ab803346f82a346f8343cad"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "tests/execution_coverage.rs"
-            },
-            "selector": "fn[real_parallel_processes_retries_child_profiles_and_filtered_reruns]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "ef3d3f1e3a7b75b71f43536dede2c6ee08e3655be652f83eb1e494e66f8aa57b"
         }
       ]
     }

@@ -1,8 +1,8 @@
 {
-  "requirement": "The application implements this trait from `habeas_sdk::graph`:\n\n```rust,ignore\nuse std::future::Future;\n\npub trait EvidenceStorage: Graph {\n    /// Look up a node's record. Ok(None) means absent; Err means storage failed.\n    /// The node identity is the key, with no separate procedure-name key.\n    fn load_evidence<'a>(\n        &'a self,\n        node: &'a Self::NodeId,\n    ) -> impl Future<Output = Result<\n        Option<Record<Self::NodeId, Self::JudgmentMetadata, Self::EdgeLabel>>,\n        Self::Error,\n    >> + Send + 'a;\n\n    /// Save the complete record, preserving its procedure version,\n    /// dependencies, and judgment.\n    fn store_evidence<'a>(\n        &'a self,\n        node: &'a Self::NodeId,\n        record: &'a Record<Self::NodeId, Self::JudgmentMetadata, Self::EdgeLabel>,\n    ) -> impl Future<Output = Result<(), Self::Error>> + Send + 'a;\n}\n```\n\nThe runner passes the requested node identity directly to these methods.\nThe application chooses the persistence mechanism; the interface requires\nneither filesystem paths nor a global listing of evidence.",
+  "requirement": "```rust,ignore\nuse std::future::Future;\n\n// Defined in habeas_sdk::graph.\npub trait EvidenceStorage: Graph {\n    /// Ok(None) means absent; Err means loading failed.\n    fn load_evidence(\n        &self,\n        source: &Self::NodeId,\n        criterion: &CriterionPath,\n    ) -> impl Future<Output = Result<\n        Option<Record<Self::NodeId, Self::EdgeLabel>>,\n        Self::Error,\n    >> + Send;\n\n    /// Atomically replace only this source/criterion pair's complete record.\n    fn store_evidence(\n        &self,\n        source: &Self::NodeId,\n        criterion: &CriterionPath,\n        record: &Record<Self::NodeId, Self::EdgeLabel>,\n    ) -> impl Future<Output = Result<(), Self::Error>> + Send;\n}\n```\n\nThe runner passes the source identity and criterion path to both methods. The\nkey preserves both parts: source paths `[\"a\"]` and `[\"a\", \"b\"]` with criteria\n`[\"b\", \"c\"]` and `[\"c\"]` identify different records, even though flattening each\npair would produce the same segments.\n\nDifferent criteria of a source have independent records. A revision change\ninvalidates the same criterion's record rather than creating another key.\nThe interface requires neither filesystem paths nor global evidence listing.\n\nSuccessful loads observe either an old or new complete record, or absence\nbefore the first save. Successful competing saves leave one complete record;\nits revision, dependencies, and output all belong to that save. No ordering\nbetween competing saves is guaranteed.",
   "determination": true,
-  "rationale": "The tests adequately cover `requirements.sdk.graph.evidence.evidence_storage`. Each obligation maps to a marked test with assertions:\n\n- **Trait shape and `Send` futures.** `crates/habeas-sdk/tests/contracts.rs#fn[checker_needs_no_validation_and_storage_preserves_nonserializable_metadata]` implements `EvidenceStorage` for a graph-only fixture. It wraps the `load_evidence` and `store_evidence` futures in `send::<T: Send>`, which checks the `+ Send` bound.\n- **`Ok(None)` for an absent record.** The same test shows `check_node` returns `EvidenceState::Missing` before any store. `crates/habeas-sdk/tests/storage.rs#fn[consumer_delegates_evidence_storage_using_only_the_requested_nodes_path]` and `src/sdk.rs#mod[tests]/fn[domain_storage_round_trips_each_review_kind_and_preserves_records_on_errors]` both assert `load_evidence(...).is_none()` for unseen nodes.\n- **`Err` for storage failure.** The contracts test sets `fail_load`, and the validator test sets `fail_store`. Both errors propagate: `check_node` returns `Err(\"load\")`, and `validate_node` returns `ValidationError::Graph(\"store\")`. The store-failure case also asserts the previously stored record is unchanged. The filesystem test asserts `FileStorageError::Json` on a corrupt file. The domain test asserts `store_evidence` errors with no-record nodes, an inconsistent record, and a directory at the record path.\n- **Complete record preserved.** The contracts test asserts that `procedure`, `dependencies` and `output` are equal after a store/load round trip. This covers the procedure version, dependencies and judgment. The validator test asserts the stored `output` and `dependencies`, including metadata that is not serializable. The filesystem and domain tests assert round trips of dependencies and output. The domain test also checks `procedure` for every review kind, with both true and false results.\n- **Node identity is the key, with no path or listing required.** The fixture keys records by the `Node` value. The validator test stores and loads `Node(1)` and `Node(2)` separately. The filesystem test uses an opaque node `\"opaque/é\"` and a distinct `\"other\"` node that loads as `None`. No test needs a global listing.\n- **Runner passes the requested node directly.** The checker and validator tests succeed only when the requested node (`Node(1)`, `Node(2)`) is the key used for load and store.\n\nI found no unexercised obligation and no wrong assertion, so I report no gap.",
-  "references": "932f4083eae0e9dfd36b9b23d3b67f48bff8806fc8d5bf39ba10088a694fe17f",
+  "rationale": "The seven marked tests cover each obligation in `requirements.sdk.graph.evidence.evidence_storage`. I judged this from the supplied test source and one targeted search. I did not read implementation source.\n\n- **Absence versus failure (`Ok(None)` versus `Err`):**\n  - `src/sdk.rs#mod[tests]/fn[domain_storage_round_trips_each_review_kind_and_preserves_records_on_errors]` asserts `Ok(None)` before the first save, and for a different criterion and for node kinds that have no record.\n  - `crates/habeas-sdk/tests/storage.rs#fn[consumer_delegates_evidence_storage_using_only_the_requested_nodes_path]` asserts `Ok(None)` for an unknown node. It also overwrites the record file with bad JSON and asserts `Err(FileStorageError::Json(_))`.\n- **Store replaces only this pair's complete record:**\n  - The load-after-store round trip checks revision, dependencies and output in the `src/sdk.rs` test.\n  - The same test asserts that a failed store (wrong criterion, inconsistent output, a directory in place of the file) leaves the saved bytes unchanged.\n  - The `consumer_delegates...` test checks the delegated round trip, and `src/authoring/sdk.rs#mod[tests]/fn[review_graph_persists_and_reuses_a_negative_validation_through_the_sdk]` checks it through the validator.\n- **Key preserves both parts:**\n  - `storage.rs#fn[source_and_criterion_boundaries_preserve_independent_records]` uses the exact `[\"a\"]`+`[\"b\",\"c\"]` versus `[\"a\",\"b\"]`+`[\"c\"]` pair from the requirement.\n  - It also uses empty, empty-string and `\"criteria\"`-named segments and a non-ASCII segment.\n  - It asserts distinct record paths, absence before each save, a single file per directory, and that every record reads back with its own distinct output.\n- **Criteria of a source are independent:**\n  - `contracts.rs#fn[criteria_have_independent_typed_answers_and_cache_negative_results]` stores `behavior`, `structure` and `judgment` records for the same source. It asserts that each keeps its own output.\n  - The `storage.rs` pairs that share a source path (both empty) but differ in criterion add to this.\n- **A revision change replaces the record instead of creating a key:** `contracts.rs#fn[concurrent_same_criterion_executions_keep_complete_independent_records]` saves two different revisions for the same source and criterion. It asserts `records.len()==1`. The unmarked `revision_and_dependency_checks_precede_output_decoding` makes the same assertion for a sequential revision change. It carries no `{test}` reference to the subject, but the marked test already covers the obligation.\n- **No filesystem path or global listing required:** The in-memory `Application` domain in `contracts.rs` implements the trait without filesystem paths. The `src/sdk.rs` test calls the trait through the domain.\n- **Atomicity and competing saves:**\n  - `storage.rs#fn[concurrent_readers_only_observe_complete_records_from_competing_writes]` has two writers and a concurrent reader. Each save writes a revision, dependencies and large output that all carry the same id. Every load asserts that the three fields belong to a single save and that the 8192-byte padding is intact. It also asserts that no temporary files remain.\n  - The contracts concurrent test asserts that one complete record, with matching revision, dependencies and output, survives two competing saves.\n\nOne limitation: the reader race starts from a seeded record, so a load racing the very first save is not exercised. The \"absence before first save\" case is tested only sequentially. I do not count this as a gap, because the text only requires that loads see absence or a complete record. The atomic-replace race and the leftover-file check cover the mechanism.\n\nNo FIXME acknowledgments apply, and I found no adequacy gap.",
+  "references": "7163ff776bb1e7e6b187f01cb7502ecbc7cb9931c4f263b6bb41a8a4a5d29c89",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.evidence.evidence_storage",
@@ -11,62 +11,86 @@
       ],
       "text": [
         ":::{req} evidence_storage",
-        "The application implements this trait from `habeas_sdk::graph`:",
-        "",
         "```rust,ignore",
         "use std::future::Future;",
         "",
+        "// Defined in habeas_sdk::graph.",
         "pub trait EvidenceStorage: Graph {",
-        "    /// Look up a node's record. Ok(None) means absent; Err means storage failed.",
-        "    /// The node identity is the key, with no separate procedure-name key.",
-        "    fn load_evidence<'a>(",
-        "        &'a self,",
-        "        node: &'a Self::NodeId,",
+        "    /// Ok(None) means absent; Err means loading failed.",
+        "    fn load_evidence(",
+        "        &self,",
+        "        source: &Self::NodeId,",
+        "        criterion: &CriterionPath,",
         "    ) -> impl Future<Output = Result<",
-        "        Option<Record<Self::NodeId, Self::JudgmentMetadata, Self::EdgeLabel>>,",
+        "        Option<Record<Self::NodeId, Self::EdgeLabel>>,",
         "        Self::Error,",
-        "    >> + Send + 'a;",
+        "    >> + Send;",
         "",
-        "    /// Save the complete record, preserving its procedure version,",
-        "    /// dependencies, and judgment.",
-        "    fn store_evidence<'a>(",
-        "        &'a self,",
-        "        node: &'a Self::NodeId,",
-        "        record: &'a Record<Self::NodeId, Self::JudgmentMetadata, Self::EdgeLabel>,",
-        "    ) -> impl Future<Output = Result<(), Self::Error>> + Send + 'a;",
+        "    /// Atomically replace only this source/criterion pair's complete record.",
+        "    fn store_evidence(",
+        "        &self,",
+        "        source: &Self::NodeId,",
+        "        criterion: &CriterionPath,",
+        "        record: &Record<Self::NodeId, Self::EdgeLabel>,",
+        "    ) -> impl Future<Output = Result<(), Self::Error>> + Send;",
         "}",
         "```",
         "",
-        "The runner passes the requested node identity directly to these methods.",
-        "The application chooses the persistence mechanism; the interface requires",
-        "neither filesystem paths nor a global listing of evidence.",
+        "The runner passes the source identity and criterion path to both methods. The",
+        "key preserves both parts: source paths `[\"a\"]` and `[\"a\", \"b\"]` with criteria",
+        "`[\"b\", \"c\"]` and `[\"c\"]` identify different records, even though flattening each",
+        "pair would produce the same segments.",
+        "",
+        "Different criteria of a source have independent records. A revision change",
+        "invalidates the same criterion's record rather than creating another key.",
+        "The interface requires neither filesystem paths nor global evidence listing.",
+        "",
+        "Successful loads observe either an old or new complete record, or absence",
+        "before the first save. Successful competing saves leave one complete record;",
+        "its revision, dependencies, and output all belong to that save. No ordering",
+        "between competing saves is guaranteed.",
         ":::"
       ]
     },
     {
       "file": "crates/habeas-sdk/tests/contracts.rs",
-      "item": "fn[checker_needs_no_validation_and_storage_preserves_nonserializable_metadata]",
-      "hash": "73c0250290985756f83e208a33c20419dbe3525a5086eac90cc792f418857428"
+      "item": "fn[criteria_have_independent_typed_answers_and_cache_negative_results]",
+      "hash": "446b6469843c4e83ae2f009708952547195e937e1ba90eb8f96913ae26a0c43f"
     },
     {
       "file": "crates/habeas-sdk/tests/contracts.rs",
-      "item": "fn[domain_validation_preserves_metadata_reuses_traces_and_propagates_failures]",
-      "hash": "38b36cadc68999b752d87ad2c6911273bb4a6346d008c27a4dbaa9458d3574fa"
+      "item": "fn[concurrent_same_criterion_executions_keep_complete_independent_records]",
+      "hash": "e405b8241ff9a2f2f4c9a4813ed26e653a628d80e44d72a315590f6527ea8703"
+    },
+    {
+      "file": "crates/habeas-sdk/tests/storage.rs",
+      "item": "fn[source_and_criterion_boundaries_preserve_independent_records]",
+      "hash": "0a560e215da10edd8e877dff40e3daabf95785d5cc6b5075cc0081e52f192a43"
+    },
+    {
+      "file": "crates/habeas-sdk/tests/storage.rs",
+      "item": "fn[concurrent_readers_only_observe_complete_records_from_competing_writes]",
+      "hash": "7377d51bca89c29a6b85e97bf27993d0d675e0e338f318b5afa3fd804ff1971c"
     },
     {
       "file": "crates/habeas-sdk/tests/storage.rs",
       "item": "fn[consumer_delegates_evidence_storage_using_only_the_requested_nodes_path]",
-      "hash": "948d0ff2743282288d3085ab7e437837641d508cb058a7fb5a0be532b20edcff"
+      "hash": "dcf1b2516183c5a1137a7c42b7f447af84aee767dc8c872c35e5147bb0552a10"
+    },
+    {
+      "file": "src/authoring/sdk.rs",
+      "item": "mod[tests]/fn[review_graph_persists_and_reuses_a_negative_validation_through_the_sdk]",
+      "hash": "be16c5377af91133a7c4919cb62449af45261df967865add92e67da391e6525a"
     },
     {
       "file": "src/sdk.rs",
       "item": "mod[tests]/fn[domain_storage_round_trips_each_review_kind_and_preserves_records_on_errors]",
-      "hash": "3aee455629cb1d2a79b6c036e3502d4c16275dba4a1ad9b90d84f4c39a5fe05d"
+      "hash": "e8e4db482c0678178b724e9586468045e9988eec9bae93738b5518e2453ed317"
     },
     {
       "file": "crates/habeas-sdk/tests/contracts.rs",
-      "item": "macro[graph]",
-      "hash": "a8254351866f14dde8bbbc70587af63cde87c90893c5d0072a3770e05f401d65"
+      "item": "fn[revision_and_dependency_checks_precede_output_decoding]",
+      "hash": "037876dd132368f33b90db17538fe87aedbec87244c0fe7f964debcd1a946874"
     }
   ],
   "format_version": 1,
@@ -79,7 +103,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "932f4083eae0e9dfd36b9b23d3b67f48bff8806fc8d5bf39ba10088a694fe17f"
+          "value": "7163ff776bb1e7e6b187f01cb7502ecbc7cb9931c4f263b6bb41a8a4a5d29c89"
         }
       ]
     },
@@ -91,7 +115,7 @@
         "Mandatory",
         {
           "scheme": "node-path-set-sha256-v1",
-          "value": "3cc924d3d4044dd0d4d52e1ba1eedba1e92aafdaf9c630a8d980556d101e7519"
+          "value": "1dcb82e060666974a468cf371dce07f0f74bb9d93019cbbd77c1ad55cc4e059e"
         }
       ]
     },
@@ -102,7 +126,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "15270ee36107e3a842d3094c483a130c269834860f3d428c0ff938bfe64161b6"
+          "value": "6314d4a16324ae60da3f771c68f88d16e381d2142de837e2d3c809e0fa2ddfb0"
         }
       ]
     },
@@ -114,12 +138,12 @@
               "scheme": "repo",
               "location": "crates/habeas-sdk/tests/contracts.rs"
             },
-            "selector": "fn[checker_needs_no_validation_and_storage_preserves_nonserializable_metadata]"
+            "selector": "fn[criteria_have_independent_typed_answers_and_cache_negative_results]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "c0b56943808cd044b6b281443bf23388811599f2cdf469fff7a128b8c3c6c722"
+          "value": "f801a7b1a136d5f9447de8c3affe17a43576ca694017a24a592472fbcb3ff6f0"
         }
       ]
     },
@@ -131,12 +155,46 @@
               "scheme": "repo",
               "location": "crates/habeas-sdk/tests/contracts.rs"
             },
-            "selector": "fn[domain_validation_preserves_metadata_reuses_traces_and_propagates_failures]"
+            "selector": "fn[concurrent_same_criterion_executions_keep_complete_independent_records]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "f9e3986c618e6b2061a8497398e7c970763c8d325fa919bc5191e8176942eaf1"
+          "value": "1462add7a76db2b9132d8f764dc0fd630cb95d9b8c3c905a124a2399225d2805"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/tests/storage.rs"
+            },
+            "selector": "fn[source_and_criterion_boundaries_preserve_independent_records]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "debbe6278ca936b0029191423bf52dc8fb350233066c682a01df1b187232c195"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/tests/storage.rs"
+            },
+            "selector": "fn[concurrent_readers_only_observe_complete_records_from_competing_writes]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "355a3213d2b19ceec9c4d3dbf682c08b6b3a170e5da5f08a8eafa3cf48fb5cf7"
         }
       ]
     },
@@ -153,7 +211,24 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "5dca5ac100e3ce4a2a1a124294d703157791c85e179de67df67d1b8906a52dd8"
+          "value": "ce7105d1ecfc37b9b76f1b3405870b7f7e70c2e003f18fa049020b309eed5d7b"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/sdk.rs"
+            },
+            "selector": "mod[tests]/fn[review_graph_persists_and_reuses_a_negative_validation_through_the_sdk]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "ed8a5cc41fa1fc56557c9d01915f360723621f811ac56f4af30648ef43402ea5"
         }
       ]
     },
@@ -170,7 +245,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "42a92c8357eaad022637e33d3aba0497c0ba99e081d45dc63960c6415ed1989d"
+          "value": "4108c66c2d13487666ca5301443f58310278fd62510c5568fc89de35306135dc"
         }
       ]
     },
@@ -182,12 +257,12 @@
               "scheme": "repo",
               "location": "crates/habeas-sdk/tests/contracts.rs"
             },
-            "selector": "macro[graph]"
+            "selector": "fn[revision_and_dependency_checks_precede_output_decoding]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "539721e3ea88be73d10a78f363c8a123e122350c396aa7766dd9a7722d2198e1"
+          "value": "dc4ba781fe76ced7fd53e2f5fd9e41a5f9df5791b2e6ab25e6c611340fd04b42"
         }
       ]
     }

@@ -1,7 +1,7 @@
 {
   "requirement": "{impl}`requirements.configuration.feature_sections`\nHabeas MUST define its authoring configuration using these data structures:\n\n```text\nUserAuthoringConfig {\n    default: Optional<ConfigName>,\n    configs: Map<ConfigName, AuthoringConfig>,\n    projects: Map<CanonicalProjectRoot, ProjectSelection>,\n}\n\nWorkspaceAuthoringConfig {\n    default: Optional<ConfigName>,\n    configs: Map<ConfigName, AuthoringConfig>,  // omitted means empty\n}\n\nProjectSelection {\n    config: ConfigName,\n}\n\nAuthoringConfig {\n    backend: BackendConfig,                   // tagged union, flattened in TOML\n    concurrency: Optional<PositiveInteger>,   // simultaneous assessments\n    policy: Optional<AssessmentPolicy>,       // default: Once for OpenAI; Confirm otherwise\n}\n\nAssessmentPolicy = Confirm | Once             // TOML: \"confirm\" or \"once\"\n\nBackendConfig = Bedrock(BedrockConfig) | Ollama(OllamaConfig) | Openai(OpenAiConfig)\n\nBedrockConfig {\n    model: ModelId,                           // model ID or inference-profile ID/ARN\n    aws_profile: Optional<String>,\n    region: Optional<String>,\n    credentials: Optional<BedrockCredentials>,\n    options: Map<String, OptionValue>,\n}\n\nBedrockCredentials {\n    access_key_id: SecretString,\n    secret_access_key: SecretString,\n    session_token: Optional<SecretString>,\n}\n\nOllamaConfig {\n    model: ModelId,                           // exact identifier, including tag\n    endpoint: Optional<String>,               // default: http://localhost:11434\n    api_key_env: Optional<EnvironmentVariableName>,\n    api_key: Optional<SecretString>,\n    options: Map<String, OptionValue>,\n}\n\nOpenAiConfig {\n    model: Optional<ModelId>,                 // default: gpt-6.1-sol\n    endpoint: Optional<String>,               // default: https://api.openai.com/v1\n    api_key_env: Optional<EnvironmentVariableName>, // default: OPENAI_API_KEY\n    api_key: Optional<SecretString>,\n    options: Map<String, OptionValue>,\n}\n\nOptionValue = String | Boolean | Integer | FiniteFloat\n            | Array<OptionValue> | Map<String, OptionValue>\n\nSecretString = String                         // serialized normally; redacted in Debug\n\nModelRef {\n    backend: BackendKind,                     // Bedrock, Ollama, or Openai\n    model: ModelId,\n}\n```\n\n`ModelRef` MUST be derived from the selected backend configuration and MUST\npreserve the exact model identifier. It MUST identify the model without replacing\nconnection settings such as AWS profile, region, or Ollama endpoint.",
   "determination": true,
-  "rationale": "The code defines every structure the requirement lists, and tests cover each obligation. I found no gaps.\n\n**Structures.** Each one matches the spec's shape, defaults and serialized form:\n- **User and workspace configs.** `src/config.rs#struct[UserAuthoringConfig]` has `default`, a required `configs` map and a `projects` map keyed by `PathBuf`. `src/config.rs#struct[WorkspaceAuthoringConfig]` has `default` and a `configs` map that is omitted when empty, so omitted means empty. `src/config.rs#struct[ProjectSelection]` holds `config`.\n- **Authoring config.** `src/config.rs#struct[AuthoringConfig]` has `concurrency: Option<NonZeroUsize>` and `policy: Option<AssessmentPolicy>`. Its backend is flattened and tagged by `backend` through `src/config.rs#enum[BackendConfig]`, whose variants are `Bedrock`, `Ollama` and `Openai`.\n- **Backend configs.** `BedrockConfig`, `BedrockCredentials`, `OllamaConfig` and `OpenAiConfig` have the listed fields. `OpenAiConfig.model` is optional.\n- **Policy and option values.** `AssessmentPolicy` is lowercase `confirm` or `once`. `OptionValue` is an untagged enum of string, boolean, integer, float, array and map.\n- **Secrets.** `SecretString` is a transparent `String`, so it serializes normally. `src/config.rs#impl[SecretString/fmt::Debug]/fn[fmt]` redacts it in Debug output.\n- **Defaults.** `OllamaConfig::endpoint` defaults to `http://localhost:11434`. `OpenAiConfig` defaults the endpoint to `https://api.openai.com/v1`, the model to `gpt-6.1-sol` and the key variable to `OPENAI_API_KEY`. `ResolvedAuthoringConfig::effective_policy` defaults to `Once` for OpenAI and `Confirm` otherwise.\n- **Validation.**\n  - `src/config.rs#impl[UserAuthoringConfig]/fn[validate]` checks configuration names and canonical absolute project roots.\n  - `src/config.rs#impl[BackendConfig]/fn[validate]` checks non-empty model IDs and environment-variable names.\n  - `src/config.rs#impl[OptionValue]/fn[validate]` enforces `FiniteFloat`, including inside nested arrays and maps.\n\n**`ModelRef`.**\n- `src/config.rs#impl[BackendConfig]/fn[model_ref]` builds it from the selected backend. It carries only the backend kind and the exact model string, so AWS profile, region and endpoint are untouched.\n- `ResolvedAuthoringConfig::model_ref` only passes that value through unchanged, so it needs no test of its own.\n\n**Tests.**\n- `tests/configuration.rs#fn[backend_configuration_round_trips_without_materializing_defaults]` checks the Ollama endpoint default, the `ModelRef` for Ollama, nested options and the round trip.\n- `tests/configuration.rs#fn[user_and_workspace_authoring_tables_round_trip_every_map]` checks the `projects` map, empty `configs`, and workspace configs with options. It also checks `ModelRef` for Bedrock IDs and ARNs with `aws_profile` and `region` kept, and for Ollama with `endpoint` kept.\n- `tests/configuration.rs#fn[storage_rules_reject_each_invalid_field_with_its_setting]` checks names, project keys, model IDs, `api_key_env` and non-finite floats, including nested ones.\n- `tests/configuration.rs#fn[authoring_concurrency_defaults_overrides_and_invalid_values]` checks the optional and positive `concurrency` field.\n- `tests/configuration.rs#fn[authoring_policy_defaults_to_confirm_and_round_trips]`, `tests/configuration.rs#fn[openai_policy_defaults_to_once_without_changing_explicit_policy]` and `tests/authoring_batch.rs#fn[policy_comes_from_the_flag_then_the_configuration_then_defaults_to_confirm]` check the policy field and its backend-dependent default.\n- `tests/configuration.rs#fn[openai_configuration_preserves_model_and_resolves_credentials]` and `tests/configuration.rs#fn[openai_defaults_are_effective_only_and_explicit_values_win]` check the OpenAI model, endpoint and `api_key_env` defaults, and the `OpenAiConfig` fields.\n- `tests/configuration.rs#fn[explicit_credentials_round_trip_but_diagnostics_and_debug_redact_them]` checks `SecretString` round-tripping, Debug redaction and credentials.\n- `tests/configuration.rs#fn[explicit_project_and_default_selections_choose_whole_configs]` checks `default` and `ProjectSelection`.\n- `tests/configuration.rs#fn[workspace_discovery_uses_nearest_file_without_merging_or_rewriting_it]` checks that a workspace file with no `configs` loads with an empty map.\n\nAll of these tests carry `{test}` references to the subject.\n\nThe extra validation rules in the backend `validate` function (options may not replace the model, prompt or tools; credentials and `aws_profile` are mutually exclusive) belong to the sibling requirements the same code marks with `{impl}`: `requirements.authoring.configuration_storage` and `requirements.authoring.credentials`. They are not unspecified behavior.",
+  "rationale": "The reviewed tests check each part of the data-structure requirement and the `ModelRef` obligations.\n\n**Top-level structures**\n- `UserAuthoringConfig` (`default`, `configs`, `projects`): `tests/configuration.rs#fn[explicit_project_and_default_selections_choose_whole_configs]` resolves the default, a project selection and an explicit name. `fn[user_and_workspace_authoring_tables_round_trip_every_map]` round-trips `[authoring.projects.<root>]` with `config`, and also round-trips an empty `configs = {}`.\n- `WorkspaceAuthoringConfig` (`configs` omitted means empty): `fn[workspace_discovery_uses_nearest_file_without_merging_or_rewriting_it]` parses a workspace file with `default` and no `configs`. It asserts `configs` is empty and that serialization omits `configs`. `fn[user_and_workspace_authoring_tables_round_trip_every_map]` covers a populated workspace table.\n- `ProjectSelection { config }`: covered by the same tests.\n\n**`AuthoringConfig`**\n- The tagged `backend` flattened in TOML is exercised by every parse in these tests.\n- `concurrency`: `fn[authoring_concurrency_defaults_overrides_and_invalid_values]` checks that it is absent by default and not serialized when absent. It checks that a value of 7 round-trips and that `0`, `-1`, `1.5` and `'2'` are rejected, for all three backends.\n- `policy`: `fn[authoring_policy_defaults_to_confirm_and_round_trips]` covers `confirm` and `once` round-trips and rejection of invalid values. `fn[openai_policy_defaults_to_once_without_changing_explicit_policy]` covers the OpenAI default of Once, the Confirm default for other backends, and an explicit policy staying unchanged. `tests/authoring_batch.rs#fn[policy_comes_from_the_flag_then_the_configuration_then_defaults_to_confirm]` covers it end to end.\n\n**Backend configs**\n- Bedrock: `model`, `aws_profile` and `region` are asserted in `fn[user_and_workspace_authoring_tables_round_trip_every_map]`. `credentials` (with and without `session_token`) and its Debug redaction are covered in `fn[explicit_credentials_round_trip_but_diagnostics_and_debug_redact_them]`.\n- Ollama: the default endpoint is asserted, and the unmaterialized default is checked in `fn[backend_configuration_round_trips_without_materializing_defaults]`. A custom endpoint, `api_key_env`, `api_key` (resolved and redacted) and `options` are covered across the configuration tests.\n- OpenAI: `fn[openai_defaults_are_effective_only_and_explicit_values_win]` checks the default model `gpt-6.1-sol` and that explicit models win. `fn[openai_configuration_preserves_model_and_resolves_credentials]` checks the default endpoint, the default `OPENAI_API_KEY` environment name, the custom endpoint and key env, and the `api_key`/`api_key_env` conflict.\n- `OptionValue`: strings, floats, ints, bools, arrays and nested maps are parsed and asserted in `fn[backend_configuration_round_trips_without_materializing_defaults]`. Non-finite floats, including nested ones, are rejected in `fn[storage_rules_reject_each_invalid_field_with_its_setting]`.\n- `SecretString`: redaction in Debug together with normal serialization is covered by the credentials test above.\n\n**`ModelRef`**\n- `fn[user_and_workspace_authoring_tables_round_trip_every_map]` asserts full `ModelRef` equality (backend plus exact model) for a Bedrock inference-profile ARN and an ID with a tag. It also asserts that `aws_profile` and `region` stay on the backend config. For Ollama it checks the model and that the custom endpoint remains.\n- `fn[backend_configuration_round_trips_without_materializing_defaults]` and `fn[openai_configuration_preserves_model_and_resolves_credentials]` cover the Ollama and OpenAI `ModelRef`. `fn[storage_rules_reject_each_invalid_field_with_its_setting]` checks that a model ID with tags and a digest is preserved exactly.\n\n**Possible gap I did not count**\nNo test shows that a workspace file's `[authoring.projects]` is rejected. The requirement's structure simply has no `projects` field for the workspace type, and it does not state a rejection obligation. I did not treat that as a gap.\n\nEvery stated obligation is mapped to concrete scenarios with real assertions, so I found no gap.",
   "references": "6b15313bcbf9ee38c946597bdc55a9865def49cccb73689dacdda77c9877e0d4",
   "inputs": [
     {
@@ -88,61 +88,6 @@
       ]
     },
     {
-      "file": "src/config.rs",
-      "item": "struct[WorkspaceAuthoringConfig]",
-      "hash": "dc77877aa0ec14ccc3722764dc03c147573d21c90195f6398c6ccae78ce104c5"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[SecretString/fmt::Debug]/fn[fmt]",
-      "hash": "98f5f27559cedd7d31bcf7de2713d16ce026289e7e03b6e033418581ae183fa2"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "struct[UserAuthoringConfig]",
-      "hash": "d2e5b7da032551910106c5024d9b6a286b1603c0268a63b9a2b851fe3330153b"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[UserAuthoringConfig]/fn[validate]",
-      "hash": "5473444689500a71c33a09d29291b3be423c46afe6c6a23813c12524b46107fc"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[BackendConfig]/fn[validate]",
-      "hash": "7db57db8dea4e31b26daf43c7b090deb233f224706d914e07668423f8d4cf28f"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[OptionValue]/fn[validate]",
-      "hash": "c4d8657a0632ecf6e2514f5b2de4dd916d1dffe4c12beafd956c415fc4a7305e"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[OllamaConfig]/fn[endpoint]",
-      "hash": "c415f1dc83d441fc82a14831a6748729838d6249d7b6bb4dffe78b73f305610b"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[OpenAiConfig]/fn[endpoint]",
-      "hash": "d6873b26e4adb87f66800ef62722cf77dafd333a86e13f3fa8cc1bc2f86250d4"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[OpenAiConfig]/fn[api_key_from]",
-      "hash": "d89d2a4772093d5fddbd1ceac22e524c4983187bfebe71654fda3338adf000a6"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[ResolvedAuthoringConfig]/fn[model_ref]",
-      "hash": "ba39e0c3fba8e179a3f196296995e9c83d9a2e635529c978684d03d345962237"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[ResolvedAuthoringConfig]/fn[effective_policy]",
-      "hash": "2c9f82ce9d170a4b62a7d151b886ef4f856d549b5e4c5b445deac8e3519358d6"
-    },
-    {
       "file": "tests/authoring_batch.rs",
       "item": "fn[policy_comes_from_the_flag_then_the_configuration_then_defaults_to_confirm]",
       "hash": "4f22daa7e42e5fe9583eaa3cee2932f05cd0c82c1664ebe84c3c0b70a3ae00db"
@@ -204,78 +149,56 @@
     },
     {
       "file": "src/config.rs",
-      "item": "",
-      "hash": "aa0aa95fb581ca1ed3e272a0eebaee01426812675fb01556cf789e14e4b04526"
+      "item": "struct[WorkspaceAuthoringConfig]",
+      "hash": "dc77877aa0ec14ccc3722764dc03c147573d21c90195f6398c6ccae78ce104c5"
     },
     {
       "file": "src/config.rs",
-      "item": "struct[SecretString]",
-      "hash": "b7e8b5ba10a7ca05849edc46e52d827f134b5b54b9813986246f9a29a7491d9a"
+      "item": "struct[UserAuthoringConfig]",
+      "hash": "d2e5b7da032551910106c5024d9b6a286b1603c0268a63b9a2b851fe3330153b"
     },
     {
-      "file": "src/config.rs",
-      "item": "struct[BedrockCredentials]",
-      "hash": "0be8d654e8c7d39c9ed046216190093c2dda93f4862fec2dcb3f88ccf921aee4"
+      "file": "tests/configuration.rs",
+      "item": "fn[invalid_schema_and_feature_values_report_the_configuration_path]",
+      "hash": "f0903831c57bc55e09ef682d4b1105d6d9fdf9a3dd60d12bf165e7da658811fb"
     },
     {
-      "file": "src/config.rs",
-      "item": "struct[ProjectSelection]",
-      "hash": "9c20bc057d63c1972e2664967a18366422b22742143a834e81e89927f892ce30"
+      "file": "tests/configuration.rs",
+      "item": "fn[authoring_documentation_shows_each_configuration_task]",
+      "hash": "3ea3afb047e7bab519f45bd38ad14b9ae7c050e0d7a9c72f2fc3d9cc6218eb05"
     },
     {
-      "file": "src/config.rs",
-      "item": "struct[AuthoringConfig]",
-      "hash": "d374f32df0798a6e989353a20db09dd6fbf087ffd4ba829ba3bc3dcf0eb3b133"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "enum[BackendConfig]",
-      "hash": "021d3215d0c12d74640c3ca5707ac7430c183ef7654f3d5c25909d839124e06f"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "struct[BedrockConfig]",
-      "hash": "e123937a7e339468258c2a8a9a0926311f6b446c5430b1aaf5668aa82d758e15"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "struct[OllamaConfig]",
-      "hash": "75a1dacb21ac62202f7a625fbd76627d723870f174a00fed5d8ec05515f76fc9"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "struct[OpenAiConfig]",
-      "hash": "e461a99c1e9e9f37109a845e66b022b00f9aeae0af212d81f0dac2ebb39d0a51"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "enum[OptionValue]",
-      "hash": "c057e530a7860d09f4e1a5086082044ff94e8f573d0817244d2b5aec50004a74"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "enum[AssessmentPolicy]",
-      "hash": "b46e1d8be504d851234504ba16c9bad20f511e757c36ed3d4177b173606e030d"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "enum[BackendKind]",
-      "hash": "95df6fe040bf4139b65ed0eabe4eb18e54bf76a76be6bbff286956efc65ebdf7"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "struct[ModelRef]",
-      "hash": "812cb7505bb8aa46e898381466b12b251ae680aa9e2b9c67c48cceaa1151a60c"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "impl[BackendConfig]/fn[model_ref]",
-      "hash": "6b39ba6a6ed8ed6eb5457c03cc48916a94fdaebe74e2be6058cad2dbdf3343a4"
+      "file": "tests/configuration.rs",
+      "item": "fn[feature_sections_are_scoped_and_absent_sections_use_defaults]",
+      "hash": "d84f40c8c0d842619615d9b885ab05397856bc343bdd9b95209c724f63c93ca5"
     }
   ],
   "format_version": 1,
-  "review_version": "*",
+  "review_version": "habeas-review-v1",
   "dependencies": [
+    {
+      "Node": [
+        {
+          "ReferenceSet": "requirements.authoring.configuration_structure"
+        },
+        {
+          "scheme": "habeas-reference-set-v1",
+          "value": "6b15313bcbf9ee38c946597bdc55a9865def49cccb73689dacdda77c9877e0d4"
+        }
+      ]
+    },
+    {
+      "OutgoingEdges": [
+        {
+          "Requirement": "requirements.authoring.configuration_structure"
+        },
+        "Mandatory",
+        {
+          "scheme": "node-path-set-sha256-v1",
+          "value": "66c6df420e7ad87f80ec1d15ed2fb02117572b3894a0bb47ec03d17875c3e7cc"
+        }
+      ]
+    },
     {
       "Node": [
         {
@@ -284,193 +207,6 @@
         {
           "scheme": "habeas-input-v1",
           "value": "c64530cb4a7f1b0025ee0d42dc5d82ce979ec9107dc190b51e82096a0d2ff09c"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/config.rs"
-            },
-            "selector": "struct[WorkspaceAuthoringConfig]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "fef2d62eabaaa56615100dc7838a9a67bfdaec717fcac9db341da4e424de127a"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/config.rs"
-            },
-            "selector": "impl[SecretString/fmt::Debug]/fn[fmt]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "21e1e8927ad3feea471f47aa596f8fcae492035f59aeb1ffbe7622a1b910c267"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/config.rs"
-            },
-            "selector": "struct[UserAuthoringConfig]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "ce99958e15d154aa80cb768b3d3e1f26efd41df7570d0f0994fc30721f148906"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/config.rs"
-            },
-            "selector": "impl[UserAuthoringConfig]/fn[validate]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "3e3e7535e779c2223997e8213186fc8c479e669eda7fec960aa21f00109f6ea3"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/config.rs"
-            },
-            "selector": "impl[BackendConfig]/fn[validate]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "8b6e58fbb26ef8147db06b0c905e3a87c9ca402e406ee0da50dbe4e64f928be1"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/config.rs"
-            },
-            "selector": "impl[OptionValue]/fn[validate]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "b3f9002f0f80fca742c4ef8dede8e29722ed7600c855ca882a6240e7eec8b14e"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/config.rs"
-            },
-            "selector": "impl[OllamaConfig]/fn[endpoint]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "b85adf4bad7d14b3bc0288a4bbe40313acbf95fcb201428f7e9c515e5d97a811"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/config.rs"
-            },
-            "selector": "impl[OpenAiConfig]/fn[endpoint]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "eaf3fed9c008f2c9b7c08c289983ee7211cfada3704ec78be6439e6f4c54779e"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/config.rs"
-            },
-            "selector": "impl[OpenAiConfig]/fn[api_key_from]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "e2d0a46bd9d1b3664153f371f9d2a0fecfcf23bae743b67567088a9c81412d82"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/config.rs"
-            },
-            "selector": "impl[ResolvedAuthoringConfig]/fn[model_ref]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "22e0568b140109f7915dd60d3b6fac6e1aa9bf6d34101111029b71586d27e964"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/config.rs"
-            },
-            "selector": "impl[ResolvedAuthoringConfig]/fn[effective_policy]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "0fc7c474a194915a103a9a5f3d55b4d022ce401706499ecc5daca2e09c36c1c3"
         }
       ]
     },
@@ -686,12 +422,12 @@
               "scheme": "repo",
               "location": "src/config.rs"
             },
-            "selector": ""
+            "selector": "struct[WorkspaceAuthoringConfig]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "f1f694e73efc089ef79fac07ae89d6ccee5099708a527ad08219484d0ab1b2c1"
+          "value": "fef2d62eabaaa56615100dc7838a9a67bfdaec717fcac9db341da4e424de127a"
         }
       ]
     },
@@ -703,12 +439,12 @@
               "scheme": "repo",
               "location": "src/config.rs"
             },
-            "selector": "struct[SecretString]"
+            "selector": "struct[UserAuthoringConfig]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "367b6e57df55bf7ad3d44efd63dc2791f1ff16a0953c9747472989d6b8900bd0"
+          "value": "ce99958e15d154aa80cb768b3d3e1f26efd41df7570d0f0994fc30721f148906"
         }
       ]
     },
@@ -718,14 +454,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "src/config.rs"
+              "location": "tests/configuration.rs"
             },
-            "selector": "struct[BedrockCredentials]"
+            "selector": "fn[invalid_schema_and_feature_values_report_the_configuration_path]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "61e521ef64d3cd77d2934a1dd7dd80cc5ce8425041cd457722a45d3409f93a40"
+          "value": "cc148da02f11190c4a6494cc43e9957d6e4e8752387d03ee0f65ef9de877a58d"
         }
       ]
     },
@@ -735,14 +471,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "src/config.rs"
+              "location": "tests/configuration.rs"
             },
-            "selector": "struct[ProjectSelection]"
+            "selector": "fn[authoring_documentation_shows_each_configuration_task]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "9ce23d255dbf37f34a89e7be460f5a3256f781ce0cf1cb3cda7594ae7c768a01"
+          "value": "6aec586bdc223d1893b3fae4270474ecee5355eff86e087884086667bd9bac3b"
         }
       ]
     },
@@ -752,178 +488,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "src/config.rs"
+              "location": "tests/configuration.rs"
             },
-            "selector": "struct[AuthoringConfig]"
+            "selector": "fn[feature_sections_are_scoped_and_absent_sections_use_defaults]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "03d1b661ee4f12299e29ba829feb3156b3e20b558c1d87dd850bf647e3ccc2f8"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/config.rs"
-            },
-            "selector": "enum[BackendConfig]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "bd82d4394b46d1fe2f4c75df76a78f26305b4e87f76e0c0c6a7dd6f27cb9281a"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/config.rs"
-            },
-            "selector": "struct[BedrockConfig]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "8dc46426749a2f6f174e01db871f0f90ee758a073c318aa580f25ac0bdd78432"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/config.rs"
-            },
-            "selector": "struct[OllamaConfig]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "1268117350c3ca1d8eb39c9d1174a2c05ee02ec53f5c274be14844d42d416abf"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/config.rs"
-            },
-            "selector": "struct[OpenAiConfig]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "9f12043cab938d007f69bb2918daf208a5273c08d210c5c76875d7c46d48a122"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/config.rs"
-            },
-            "selector": "enum[OptionValue]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "f771e958ffbdf2bd94e80c94ea677ad7f9caa8e9b0684c4bb148f054ae730131"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/config.rs"
-            },
-            "selector": "enum[AssessmentPolicy]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "72fff1b0d950d79866ad0268d7fa3552d7f7c162398a2d32913083e1b848ab49"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/config.rs"
-            },
-            "selector": "enum[BackendKind]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "dc4486a859096a780c7878604282e5c5769c00a32be4ff47fca386d6d99e60aa"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/config.rs"
-            },
-            "selector": "struct[ModelRef]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "f8c7461630b5b723f394aa3859e09d9ae6daa4e95793ac022bb7a181085045c1"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/config.rs"
-            },
-            "selector": "impl[BackendConfig]/fn[model_ref]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "51e23263b78b745a3a2bf458a6058203d59c0d2c3bb83e79211e1c9a9e86c29f"
-        }
-      ]
-    },
-    {
-      "OutgoingEdges": [
-        {
-          "Requirement": "requirements.authoring.configuration_structure"
-        },
-        {
-          "scheme": "habeas-reference-set-v1",
-          "value": "6b15313bcbf9ee38c946597bdc55a9865def49cccb73689dacdda77c9877e0d4"
+          "value": "84282a02ceae82e803e21f25b493ef1e1ff38e5b34d706cf6ab1cbea5884b29d"
         }
       ]
     }

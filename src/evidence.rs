@@ -134,12 +134,6 @@ pub(crate) struct RepositoryInspection {
     pub(crate) references: Vec<SourceReference>,
     /// The sites of each distributed requirement.
     pub(crate) sites: crate::sites::Sites,
-    /// The Rust items reported uncovered, in report order.
-    pub(crate) uncovered: Vec<crate::rust_coverage::UncoveredItem>,
-    /// The evidence files found, for the coverage history to reuse.
-    pub(crate) evidence_files: Vec<PathBuf>,
-    /// Whether every evidence directory could be listed.
-    pub(crate) evidence_listed: bool,
     pub(crate) report: EvidenceReport,
     pub(crate) discovery_errors: Vec<String>,
     pub(crate) outlines: OutlineCache,
@@ -183,44 +177,6 @@ pub(crate) fn inspect_repository(root: &Path) -> io::Result<RepositoryInspection
     inspect_repository_with_progress(root, |_| {})
 }
 
-/// Coverage warnings need source items and recorded reads, without validating
-/// every judgment, reference set, citation, and distributed site a second time
-/// after authoring. Use the same discovery and Rust coverage rules as inspection.
-// {cite}`habeas:util`
-pub(crate) fn coverage_inventory(
-    root: &Path,
-) -> io::Result<(
-    PathBuf,
-    Vec<crate::rust_coverage::UncoveredItem>,
-    Vec<PathBuf>,
-    bool,
-)> {
-    let root = fs::canonicalize(root)?;
-    let mut errors = Vec::new();
-    let md_root = book_source_dir(&root, &mut errors);
-    let definitions = collect_definitions(&root, &md_root, &mut errors);
-    let evidence_root = root.join("evidence");
-    let listing_errors = errors.len();
-    let evidence_files = if evidence_root.is_dir() {
-        files_with_extension(&root, &evidence_root, "json", &mut errors)
-    } else {
-        Vec::new()
-    };
-    let evidence_listed = errors.len() == listing_errors;
-    let files = discovered_files(&root, &mut errors);
-    let reads = crate::rust_coverage::EvidenceReads::load(&evidence_files);
-    let uncovered = crate::rust_coverage::validate_rust_functions(
-        &root,
-        &files,
-        &definitions,
-        &reads,
-        &mut errors,
-        &mut Vec::new(),
-        &mut |_| {},
-    );
-    Ok((root, uncovered, evidence_files, evidence_listed))
-}
-
 // {impl}`requirements.ci.errors`
 // {impl}`requirements.examples.evidence`
 // {impl}`requirements.configuration.workspace_location`
@@ -252,19 +208,12 @@ pub(crate) fn inspect_repository_with_progress(
     if let Err(error) = crate::execution_coverage::validate_setup(&root) {
         errors.push(error.to_string());
     }
-    // Only the coverage report uses `[coverage]`, so an invalid table is a
-    // finding but not a discovery failure, and authoring still proceeds.
-    if let Some(error) = crate::config::coverage_error(&root) {
-        errors.push(error.to_string());
-    }
     let evidence_root = root.join("evidence");
-    let listing_errors = errors.len();
     let evidence_files = if evidence_root.is_dir() {
         files_with_extension(&root, &evidence_root, "json", &mut errors)
     } else {
         Vec::new()
     };
-    let evidence_listed = errors.len() == listing_errors;
     let mut present = BTreeSet::new();
     let outlines = OutlineCache::default();
     // Citation reviews are validated against their source items below.
@@ -385,14 +334,10 @@ pub(crate) fn inspect_repository_with_progress(
         &references,
         &mut errors,
     );
-    // An item an evidence record or review read is covered.
-    // {impl}`requirements.references.rust_item_coverage`
-    let reads = crate::rust_coverage::EvidenceReads::load(&evidence_files);
-    let uncovered = crate::rust_coverage::validate_rust_functions(
+    crate::rust_coverage::validate_rust_functions(
         &root,
         &files,
         &definitions,
-        &reads,
         &mut errors,
         &mut discovery_errors,
         &mut progress,
@@ -417,9 +362,6 @@ pub(crate) fn inspect_repository_with_progress(
         definitions,
         references,
         sites,
-        uncovered,
-        evidence_files,
-        evidence_listed,
         discovery_errors,
         outlines,
     })
@@ -2471,15 +2413,8 @@ pub(crate) mod tests {
                 for error in ["invalid JSON", "cannot parse Rust source"] {
                     assert!(errors.contains(error), "missing {error:?}: {errors}");
                 }
-                // An uncovered item is reported, not a validation error.
+                // Ordinary helpers have no annotation obligation.
                 assert!(!errors.contains("retained"), "{errors}");
-                assert!(
-                    inspected.uncovered.iter().any(|item| item
-                        .error
-                        .starts_with("src/lib.rs:1: function retained has no recent coverage")),
-                    "{:?}",
-                    inspected.uncovered
-                );
                 let discovery = inspected.discovery_errors.join("\n");
                 assert!(
                     discovery.contains("src/broken.rs")
@@ -3148,7 +3083,7 @@ pub(crate) mod tests {
             "{errors}"
         );
 
-        // Coverage setup and coverage-history configuration failures must
+        // Coverage setup and unknown configuration failures must
         // also leave independent later evidence and reference checks running.
         fs::write(temp.path().join("book.toml"), "[book]\nsrc = 'md'\n").unwrap();
         let (path, valid) = crate::execution_coverage::configure(temp.path()).unwrap();
@@ -3157,7 +3092,7 @@ pub(crate) mod tests {
             (
                 "version = 1\n[coverage]\nreauthorings = 0\n",
                 "",
-                "coverage.reauthorings",
+                "coverage",
             ),
         ] {
             fs::write(temp.path().join("habeas.toml"), configuration).unwrap();

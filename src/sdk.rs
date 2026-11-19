@@ -6,7 +6,7 @@ use crate::{
     inputs::{InputSelector, OutlineCache, ResolvedInput},
 };
 use habeas_sdk::{
-    graph::{Fingerprint, Fingerprinting, Graph, InspectionContext, NodePath},
+    graph::{CriterionPath, Fingerprint, Fingerprinting, Graph, InspectionContext, NodePath},
     resource::{OutlineId, ResourceId},
 };
 use std::{collections::BTreeMap, path::Path};
@@ -110,7 +110,6 @@ impl Graph for HabeasDomain<'_> {
     type NodeId = HabeasNode;
     type EdgeLabel = HabeasEdgeLabel;
     type NodeContent = ResolvedInput;
-    type JudgmentMetadata = serde_json::Value;
     type Error = std::io::Error;
 
     // {cite}`habeas:util`
@@ -300,9 +299,11 @@ impl HabeasNode {
 
 pub(crate) const REVIEW_VERSION: &str = "habeas-review-v1";
 
-// {impl}`requirements.sdk.graph.validation.procedure_identity`
-pub(crate) fn review_version(_: &HabeasNode) -> std::io::Result<String> {
-    Ok(REVIEW_VERSION.into())
+// {impl}`requirements.sdk.graph.validation.criterion_path`
+pub(crate) fn review_criterion() -> CriterionPath {
+    CriterionPath {
+        segments: vec!["review".into()],
+    }
 }
 
 // {impl}`requirements.sdk.habeas.evidence_format.loading`
@@ -310,9 +311,11 @@ impl habeas_sdk::graph::EvidenceStorage for HabeasDomain<'_> {
     async fn load_evidence(
         &self,
         node: &HabeasNode,
-    ) -> std::io::Result<
-        Option<habeas_sdk::graph::Record<HabeasNode, serde_json::Value, HabeasEdgeLabel>>,
-    > {
+        criterion: &CriterionPath,
+    ) -> std::io::Result<Option<habeas_sdk::graph::Record<HabeasNode, HabeasEdgeLabel>>> {
+        if criterion != &review_criterion() {
+            return Ok(None);
+        }
         let Some(path) = node.evidence_path(self.root) else {
             return Ok(None);
         };
@@ -329,8 +332,12 @@ impl habeas_sdk::graph::EvidenceStorage for HabeasDomain<'_> {
     async fn store_evidence(
         &self,
         node: &HabeasNode,
-        record: &habeas_sdk::graph::Record<HabeasNode, serde_json::Value, HabeasEdgeLabel>,
+        criterion: &CriterionPath,
+        record: &habeas_sdk::graph::Record<HabeasNode, HabeasEdgeLabel>,
     ) -> std::io::Result<()> {
+        if criterion != &review_criterion() {
+            return Err(std::io::Error::other("unsupported Habeas review criterion"));
+        }
         let path = node
             .evidence_path(self.root)
             .ok_or_else(|| std::io::Error::other("this source node has no Habeas review record"))?;
@@ -585,12 +592,18 @@ mod tests {
             ),
         ];
         for (node, mut metadata) in cases {
-            assert!(domain.load_evidence(&node).await.unwrap().is_none());
+            assert!(
+                domain
+                    .load_evidence(&node, &crate::sdk::review_criterion())
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
             for result in [false, true] {
                 metadata["determination"] = serde_json::json!(result);
                 metadata["rationale"] = serde_json::json!("fixture review");
                 let record = Record {
-                    procedure: "test-review-v2".into(),
+                    revision: "test-review-v2".into(),
                     dependencies: vec![Dependency::Node(
                         requirement.clone(),
                         Fingerprint {
@@ -598,30 +611,71 @@ mod tests {
                             value: "retained".into(),
                         },
                     )],
-                    output: Judgment {
+                    output: serde_json::to_value(Judgment {
                         result,
                         rationale: "fixture review".into(),
                         metadata: metadata.clone(),
-                    },
+                    })
+                    .unwrap(),
                 };
-                domain.store_evidence(&node, &record).await.unwrap();
-                let loaded = domain.load_evidence(&node).await.unwrap().unwrap();
-                assert_eq!(loaded.procedure, record.procedure);
+                domain
+                    .store_evidence(&node, &crate::sdk::review_criterion(), &record)
+                    .await
+                    .unwrap();
+                let loaded = domain
+                    .load_evidence(&node, &crate::sdk::review_criterion())
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(loaded.revision, record.revision);
                 assert_eq!(loaded.dependencies, record.dependencies);
                 assert_eq!(loaded.output, record.output);
                 let path = node.evidence_path(root.path()).unwrap();
                 let original = fs::read(&path).unwrap();
+                let other_criterion = CriterionPath {
+                    segments: vec!["another".into(), "criterion".into()],
+                };
+                assert!(
+                    domain
+                        .load_evidence(&node, &other_criterion)
+                        .await
+                        .unwrap()
+                        .is_none()
+                );
+                assert!(
+                    domain
+                        .store_evidence(&node, &other_criterion, &record)
+                        .await
+                        .is_err()
+                );
+                assert_eq!(fs::read(&path).unwrap(), original);
                 let mut inconsistent = record.clone();
-                inconsistent.output.result = !result;
-                assert!(domain.store_evidence(&node, &inconsistent).await.is_err());
+                inconsistent.output["result"] = serde_json::json!(!result);
+                assert!(
+                    domain
+                        .store_evidence(&node, &crate::sdk::review_criterion(), &inconsistent)
+                        .await
+                        .is_err()
+                );
                 assert_eq!(fs::read(&path).unwrap(), original);
                 for no_record in [
                     HabeasNode::Source(source.clone()),
                     HabeasNode::Definition("term".into()),
                     HabeasNode::RequirementSelection("*".into()),
                 ] {
-                    assert!(domain.store_evidence(&no_record, &record).await.is_err());
-                    assert!(domain.load_evidence(&no_record).await.unwrap().is_none());
+                    assert!(
+                        domain
+                            .store_evidence(&no_record, &crate::sdk::review_criterion(), &record)
+                            .await
+                            .is_err()
+                    );
+                    assert!(
+                        domain
+                            .load_evidence(&no_record, &crate::sdk::review_criterion())
+                            .await
+                            .unwrap()
+                            .is_none()
+                    );
                 }
             }
         }
@@ -629,18 +683,24 @@ mod tests {
         fs::remove_file(&path).unwrap();
         fs::create_dir(&path).unwrap();
         let record = Record {
-            procedure: "test-review-v2".into(),
+            revision: "test-review-v2".into(),
             dependencies: vec![],
-            output: Judgment {
+            output: serde_json::to_value(Judgment {
                 result: true,
                 rationale: "fixture review".into(),
                 metadata: serde_json::json!({
                     "requirement":"ready", "references":"0".repeat(64), "inputs":[],
                     "determination":true, "rationale":"fixture review"
                 }),
-            },
+            })
+            .unwrap(),
         };
-        assert!(domain.store_evidence(&requirement, &record).await.is_err());
+        assert!(
+            domain
+                .store_evidence(&requirement, &crate::sdk::review_criterion(), &record)
+                .await
+                .is_err()
+        );
         assert!(path.is_dir());
         assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 3);
     }
@@ -671,6 +731,16 @@ mod tests {
         let query = RequirementId("requirements.ready".into());
         let ctx = InspectionContext::new(&domain);
         let subject = HabeasNode::Requirement(query.clone());
+        let references = HabeasNode::ReferenceSet(query.clone());
+        let retained_references = ctx.read(&references).unwrap();
+        let reference_fingerprint = domain.fingerprint(&references, &retained_references);
+        assert_eq!(
+            reference_fingerprint,
+            Fingerprint {
+                scheme: "habeas-reference-set-v1".into(),
+                value: retained_references.text[0].clone(),
+            }
+        );
         assert!(
             ctx.outgoing_edges(&subject, HabeasEdgeLabel::Implements)
                 .unwrap()
@@ -696,14 +766,16 @@ mod tests {
                 value: "a60363aa2a9f4d79aff6d511c59e574752e36810da394f6087a72c164adabf7c".into(),
             }
         );
-        let record = ctx.finish(
-            "test-review-v1".into(),
-            habeas_sdk::graph::Judgment {
-                result: true,
-                rationale: "ready".into(),
-                metadata: serde_json::Value::Null,
-            },
-        );
+        let record = ctx
+            .finish(
+                "test-review-v1".into(),
+                habeas_sdk::graph::Judgment {
+                    result: true,
+                    rationale: "ready".into(),
+                    metadata: serde_json::Value::Null,
+                },
+            )
+            .unwrap();
         assert!(habeas_sdk::graph::record_is_current(&domain, "test-review-v1", &record).unwrap());
         let reference = format!("// {{{}}}`requirements.ready`\nfn ready() {{}}\n", "impl");
         fs::write(root.path().join("src/lib.rs"), reference).unwrap();
@@ -712,6 +784,14 @@ mod tests {
             outlines: &fresh_outlines,
             ..domain
         };
+        assert_eq!(
+            changed.fingerprint(&references, &retained_references),
+            reference_fingerprint
+        );
+        assert_ne!(
+            changed.fingerprint(&references, &changed.node_content(&references).unwrap()),
+            reference_fingerprint
+        );
         assert!(
             !habeas_sdk::graph::record_is_current(&changed, "test-review-v1", &record).unwrap()
         );

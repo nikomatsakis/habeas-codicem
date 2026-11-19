@@ -1,8 +1,8 @@
 {
-  "requirement": "```rust,ignore\n/// The application's answer, defined in habeas_sdk::graph.\npub struct Judgment<M> {\n    /// Whether the node satisfies the application-defined criterion.\n    pub result: bool,\n    /// Explanation of that result.\n    pub rationale: String,\n    /// Application-defined information; never an alternative result.\n    pub metadata: M,\n}\n\npub trait Graph: Send + Sync {\n    // ...\n    type JudgmentMetadata: Send + Sync;\n}\n```\n\nThe procedure returns `Judgment<D::JudgmentMetadata>`. The application defines\nthe criterion and metadata's meaning; the SDK preserves all three fields.\nFailure to execute validation is an error, rather than a `false` judgment.\nHabeas owns FIXME acknowledgment policy.",
+  "requirement": "```rust,ignore\n// Defined in habeas_sdk::graph.\n#[derive(serde::Serialize, serde::Deserialize)]\npub struct Judgment<M> {\n    pub result: bool,\n    pub rationale: String,\n    pub metadata: M,\n}\n```\n\nA validation can use `Judgment<M>` as its `Ok` type when the metadata satisfies\nits bounds, or use another serializable result. `Graph` has no judgment-metadata\nassociated type. The SDK does not interpret these fields or implement Habeas's\nFIXME acknowledgment policy.",
   "determination": true,
-  "rationale": "The reviewed tests adequately cover `requirements.sdk.graph.validation.judgment`. I did not read the test helpers or the implementation. The assertions are against literal expected values, so they do not depend on how the helpers work.\n\n**Obligations derived from the text**\n1. The procedure returns a `Judgment<D::JudgmentMetadata>` with `result`, `rationale` and `metadata`.\n2. The SDK preserves all three fields. The application defines their meaning, and metadata is never an alternative result.\n3. A failure to execute validation is an error, not a `false` judgment.\n\n**Preservation of all three fields**\n- `crates/habeas-sdk/tests/contracts.rs#fn[domain_validation_preserves_metadata_reuses_traces_and_propagates_failures]` validates `Node(1)` and asserts three things:\n  - `result` is `false`.\n  - `rationale` is `\"reviewed source\"`.\n  - `metadata` equals `Metadata { reason: \"application reason\", count: 17 }`.\n- The same test then asserts that the stored evidence `output` equals the judgment. A repeated `validate_node` call returns an equal judgment, and the callback and write counters stay at `(1, 1)`. This shows the fields survive storage and reuse.\n- The test also validates `Node(2)`. It asserts that `result` is `true`, that the rationale is `\"reviewed changed\"`, and that the metadata equals the first judgment's metadata. It also asserts that the evidence output and a repeated call both equal the positive judgment. This covers both values of `result`, and metadata carried independently of `result`.\n- After `fail_store` is cleared, a changed source gives the new rationale `\"reviewed changed\"`. The rationale is therefore not a fixed or cached value.\n\n**Failures are errors, not `false` judgments**\n- The `contracts.rs` test makes graph reads fail, makes edge reads fail, and makes the store fail. Each case asserts `Err(ValidationError::Graph(..))`. After each failure the callback and write counts are unchanged, and the stored evidence still holds the earlier judgment.\n- `crates/habeas-sdk/tests/validation.rs#fn[resolution_storage_and_callback_errors_are_not_judgments]` covers four more failure cases:\n  - The version resolver returns an error, and no validation starts.\n  - Loading evidence fails.\n  - Storing evidence fails, and no record is written.\n  - A graph read fails inside the callback, and no record is written.\n- In each case the result is an `Err`, not `Ok(Judgment { result: false, .. })`.\n\nThe `Judgment` struct and the `JudgmentMetadata` associated type are enforced at compile time by the generic usage and the `Metadata` comparisons. The sentence \"Habeas owns FIXME acknowledgment policy\" states no testable behavior. No gaps remain.",
-  "references": "4e0f7aa2b960cd5456a838ca5b4fa6dd18e3700851e41d30c3b87d1896e3e5f1",
+  "rationale": "The tests adequately check `requirements.sdk.graph.validation.judgment`.\n\n**Obligations derived from the text**\n1. `Judgment<M>` has public `result: bool`, `rationale: String` and `metadata: M` fields, and is serde-serializable and deserializable.\n2. A validation can use `Judgment<M>` as its `Ok` type, or use another serializable result.\n3. `Graph` has no judgment-metadata associated type.\n4. The SDK does not interpret the fields or apply a FIXME policy.\n\n**Test mapping**\n- `crates/habeas-sdk/tests/contracts.rs#fn[criteria_have_independent_typed_answers_and_cache_negative_results]` covers items 1, 2 and 4.\n  - It sits in an integration-test crate, so it can only build `Judgment { result, rationale, metadata }` if the fields are public. This covers the field set and its visibility.\n  - It verifies a `Judgment<serde_json::Value>`-style value through `validator.verify`, and the returned value equals the original. This shows it works as the `Ok` type.\n  - It then calls `validator.check` and gets `EvidenceState::Current(value)` with `value == judgment`. That round-trips through the stored record, so it exercises both `Serialize` and `Deserialize`.\n  - The recorded `output` is asserted equal to `serde_json::to_value(&judgment)`, which shows the serialized form is the one persisted.\n  - The same test also uses other serializable result types, `answer(...)`/JSON values and `Vec<String>`. This covers the \"or use another serializable result\" alternative.\n  - The `Judgment` has `result: false` while its metadata says `satisfied: true`. It is stored and returned unchanged, and the counts (`executions == 3`, `writes == 3`) show it was handled as an ordinary result. This covers \"the SDK does not interpret these fields\". A negative result is stored and not treated as an error or reinterpreted.\n  - The `answer(false, ...)` case is cached, and a later verify with a different value does not re-execute. This shows that negative results are handled by the generic validation path, not by judgment-specific logic.\n- `crates/habeas-sdk/tests/validation.rs#fn[resolution_storage_and_callback_errors_are_not_judgments]` is cited for the same requirement. It shows that graph and storage errors surface as `ValidationError` and write no record. This matches \"SDK does not interpret\" and is supplementary.\n- The \"`Graph` has no judgment-metadata associated type\" clause is a structural, compile-time property. The tests use a `Graph` implementation (`Application`, `Memory`) that does not define such a type, and nothing needs a runtime test.\n\n**Gaps considered**\n- The recorded output is compared against `serde_json::to_value(&judgment)`, so it does not pin literal field names. The type uses derived serde with no renaming, and the requirement states no specific wire names beyond the struct definition. Deserialization of the stored record into the same type would fail if the names did not round-trip. I do not count this as a gap.\n- No acknowledgments (`{fixme}`) apply.",
+  "references": "5abe13e0c85ce731ca9a8ee277815f1ad0375653d0afc67fd90b53ee5d7a1cda",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.validation.judgment",
@@ -12,48 +12,46 @@
       "text": [
         ":::{req} judgment",
         "```rust,ignore",
-        "/// The application's answer, defined in habeas_sdk::graph.",
+        "// Defined in habeas_sdk::graph.",
+        "#[derive(serde::Serialize, serde::Deserialize)]",
         "pub struct Judgment<M> {",
-        "    /// Whether the node satisfies the application-defined criterion.",
         "    pub result: bool,",
-        "    /// Explanation of that result.",
         "    pub rationale: String,",
-        "    /// Application-defined information; never an alternative result.",
         "    pub metadata: M,",
-        "}",
-        "",
-        "pub trait Graph: Send + Sync {",
-        "    // ...",
-        "    type JudgmentMetadata: Send + Sync;",
         "}",
         "```",
         "",
-        "The procedure returns `Judgment<D::JudgmentMetadata>`. The application defines",
-        "the criterion and metadata's meaning; the SDK preserves all three fields.",
-        "Failure to execute validation is an error, rather than a `false` judgment.",
-        "Habeas owns FIXME acknowledgment policy.",
+        "A validation can use `Judgment<M>` as its `Ok` type when the metadata satisfies",
+        "its bounds, or use another serializable result. `Graph` has no judgment-metadata",
+        "associated type. The SDK does not interpret these fields or implement Habeas's",
+        "FIXME acknowledgment policy.",
         ":::"
       ]
     },
     {
       "file": "crates/habeas-sdk/tests/contracts.rs",
-      "item": "fn[domain_validation_preserves_metadata_reuses_traces_and_propagates_failures]",
-      "hash": "38b36cadc68999b752d87ad2c6911273bb4a6346d008c27a4dbaa9458d3574fa"
+      "item": "fn[criteria_have_independent_typed_answers_and_cache_negative_results]",
+      "hash": "446b6469843c4e83ae2f009708952547195e937e1ba90eb8f96913ae26a0c43f"
     },
     {
       "file": "crates/habeas-sdk/tests/validation.rs",
       "item": "fn[resolution_storage_and_callback_errors_are_not_judgments]",
-      "hash": "6f5c6112861695007a5846a869c0c308641738999d1bf4f5d4c078b6ec6400b2"
+      "hash": "41f599af74dee6578d906c9d6ae9e8c8ea2f9e93fa0922338884504511b828de"
     },
     {
-      "file": "crates/habeas-sdk/tests/contracts.rs",
-      "item": "macro[graph]",
-      "hash": "a8254351866f14dde8bbbc70587af63cde87c90893c5d0072a3770e05f401d65"
+      "file": "crates/habeas-sdk/src/graph.rs",
+      "item": "struct[Judgment]",
+      "hash": "83278fbf3e4dd01252665db6256b9fcdede1056b85c5ce6fd4eb7aa76e695add"
     },
     {
-      "file": "crates/habeas-sdk/tests/contracts.rs",
-      "item": "impl[Application/Validation]/fn[validate]",
-      "hash": "9de48c9f39ca7e7465f4c74d89f06afe65ab652abed427e0badb9a327d77ed59"
+      "file": "crates/habeas-sdk/tests/validation.rs",
+      "item": "impl[Memory]/fn[run_review]",
+      "hash": "1f934d8bec2a71e1e0f450d06a56974197d6b3a969991567d8d21d97f6acf2de"
+    },
+    {
+      "file": "crates/habeas-sdk/tests/validation.rs",
+      "item": "fn[wildcard_versions_still_check_inputs_and_errors]",
+      "hash": "766ed31bab7ee71debeadab9869f7c8e1fa1f8f2f04c84bc7d7311b2b7377606"
     }
   ],
   "format_version": 1,
@@ -66,7 +64,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "4e0f7aa2b960cd5456a838ca5b4fa6dd18e3700851e41d30c3b87d1896e3e5f1"
+          "value": "5abe13e0c85ce731ca9a8ee277815f1ad0375653d0afc67fd90b53ee5d7a1cda"
         }
       ]
     },
@@ -78,7 +76,7 @@
         "Mandatory",
         {
           "scheme": "node-path-set-sha256-v1",
-          "value": "4a820fdf3d282127c6d243b52561f324dc82e6a51349bdc68bb5f636463ea278"
+          "value": "a7c728225260e7d7188316976c4800e3a212ed9aec5047b5a325b55f361d5cb4"
         }
       ]
     },
@@ -89,7 +87,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "0e5f408e9b8520c692299a978f77f5690b3dc987a004d24bac07ee967f7746df"
+          "value": "8636283e9bcf24787295ff6bf10f29fe6733449bd0fb8389869e357f041c306d"
         }
       ]
     },
@@ -101,12 +99,12 @@
               "scheme": "repo",
               "location": "crates/habeas-sdk/tests/contracts.rs"
             },
-            "selector": "fn[domain_validation_preserves_metadata_reuses_traces_and_propagates_failures]"
+            "selector": "fn[criteria_have_independent_typed_answers_and_cache_negative_results]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "f9e3986c618e6b2061a8497398e7c970763c8d325fa919bc5191e8176942eaf1"
+          "value": "f801a7b1a136d5f9447de8c3affe17a43576ca694017a24a592472fbcb3ff6f0"
         }
       ]
     },
@@ -123,7 +121,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "d4d271324ad4e0852c10d8d38b0d9b0ebef25c3ea9f688729e9fe123f0e3bfb7"
+          "value": "720db472550a0996eb74cba219209992995b7dfd0cfbbe2b259e3b66d6e5ee1f"
         }
       ]
     },
@@ -133,14 +131,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/contracts.rs"
+              "location": "crates/habeas-sdk/src/graph.rs"
             },
-            "selector": "macro[graph]"
+            "selector": "struct[Judgment]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "539721e3ea88be73d10a78f363c8a123e122350c396aa7766dd9a7722d2198e1"
+          "value": "c0b328128470ef0b6139db7c65dd002224ff6f3a2384941af4b5f52cc5ad7c72"
         }
       ]
     },
@@ -150,14 +148,31 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/contracts.rs"
+              "location": "crates/habeas-sdk/tests/validation.rs"
             },
-            "selector": "impl[Application/Validation]/fn[validate]"
+            "selector": "impl[Memory]/fn[run_review]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "65ba9cc4ec6019025ca2ee9a9fc40caea12949d066633a2c368cbd3c93a0a0f1"
+          "value": "0ff8cbc6f2a4b326005da850f4944125a0ee0f4ebcf35232a54bc0afdecadcab"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/tests/validation.rs"
+            },
+            "selector": "fn[wildcard_versions_still_check_inputs_and_errors]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "68945189666b5b089f441f60dbd59b49b987a76854c3940c835fc1a6bce57f9a"
         }
       ]
     }

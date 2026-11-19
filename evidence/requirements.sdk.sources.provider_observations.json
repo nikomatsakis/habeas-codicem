@@ -1,7 +1,7 @@
 {
   "requirement": "The tracked inspection context records successful source-node reads delivered\nto the procedure as assessment dependencies, whether the provider uses defaults\nor overrides. Each fingerprint describes the contents delivered to the caller.",
   "determination": true,
-  "rationale": "The three marked tests in `crates/habeas-sdk/tests/agent.rs` cover each obligation in `requirements.sdk.sources.provider_observations`.\n\nObligations I derived from the text:\n1. Successful source-node reads delivered to the procedure are recorded as assessment dependencies on the tracked inspection context.\n2. This holds whether the provider uses the SDK defaults or overrides some operations.\n3. Each recorded fingerprint describes the contents actually delivered to the caller.\n4. By implication, deliveries that are not source-node reads add no dependency. The same goes for failed reads.\n\nTest coverage:\n- **Default provider.** `source_tools_keep_search_discovery_separate_from_delivered_source_reads` uses `LocalSources`, which relies on the default operations. It runs `search_text`, then `read_source` of `note.txt`, then `submit_result`. It asserts through `ctx.inspection().dependencies()` that there is exactly one dependency. It also asserts that the dependency is `Dependency::Node(Node(7), ..)` and that its fingerprint value equals the delivered text, `\"observed source\\n\"`. The graph holds unrelated bytes, so the fingerprint cannot come from the graph. The earlier `search_text` call adds nothing.\n- **Overriding provider.** `cached_selected_source_reads_record_exact_delivered_contents_and_errors_add_no_input` uses `CachedProvider`, which overrides `parse` with a cached snapshot. Its `read` fails if the SDK refetches. The scripted agent calls `search_structure`, `outline_source`, a successful `read_source` of `fn[observed]`, and a failing `read_source` of `fn[missing]`. The test asserts the dependency list is exactly one `Node(7)` entry. Its fingerprint equals the selected node's text, `\"fn observed() { call(); }\"`, with scheme `selected-content`. That shows the fingerprint describes the delivered selection rather than the whole file or the graph's \"different current source\". It also shows the failed read adds no dependency.\n- **Discovery and pages.** `source_discovery_and_its_pages_do_not_register_reads` dispatches `list_sources`, `search_text` and `outline_source`. It also fetches every returned page through `get_source_page`. It asserts that every delivery has empty dependencies and that the observation callback ran zero times. Discovery output therefore never registers as a read.\n\nGaps considered and rejected:\n- Dependencies attached to pages of an oversized `read_source` are not exercised by a dedicated test. The requirement does not distinguish paged reads, and the dependency is attached to every page in the same way. I do not treat this as a named obligation.\n- The fingerprint scheme is supplied by the consumer's `observation` callback. The tests check that the callback receives and records exactly the delivered parse snapshot, and that is the SDK's obligation.",
+  "rationale": "**Obligations derived from `requirements.sdk.sources.provider_observations`**\n1. Successful source-node reads delivered to the procedure are recorded as dependencies in the tracked inspection context.\n2. This holds whether the provider uses defaults or overrides.\n3. Each fingerprint describes the contents actually delivered to the caller.\n4. By implication, anything that is not a successful delivered node read (discovery, pages of discovery, failed reads) adds nothing.\n\n**Test mapping**\n- `tests/agent.rs#fn[source_tools_keep_search_discovery_separate_from_delivered_source_reads]`\n  - It uses the default `LocalSources` provider with an empty language registry.\n  - The agent runs `search_text`, then `read_source`, then submits a result.\n  - It asserts that `ctx.inspection().dependencies()` has exactly one entry. That entry is `Dependency::Node(Node(7), …)` with a fingerprint equal to the delivered file contents.\n  - The graph holds unrelated bytes, so the fingerprint cannot come from the graph.\n  - This covers obligations 1 and 3 for the default provider, and the discovery/read separation in obligation 4.\n- `tests/agent.rs#fn[cached_selected_source_reads_record_exact_delivered_contents_and_errors_add_no_input]`\n  - It uses the overriding `CachedProvider`, whose parse snapshot is cached and whose refetch is rejected. The graph holds different bytes.\n  - The agent runs a structural search, an outline, a successful `read_source` of `fn[observed]`, and a failing `read_source` of `fn[missing]`.\n  - It asserts that the dependencies are exactly one `Node(7)` entry, with scheme `selected-content` and value `fn observed() { call(); }`.\n  - The fingerprint is therefore the exact delivered selected-node content.\n  - This covers the override-provider case (obligation 2), obligation 3, and the rule that a failed read adds no input.\n- `tests/agent.rs#fn[source_discovery_and_its_pages_do_not_register_reads]`\n  - It drives `list_sources`, `search_text` and `outline_source`, plus `get_source_page` for every returned page.\n  - Each delivery must have empty `dependencies`, and the observation callback must be called zero times.\n  - This covers the negative side of obligation 4.\n\n**Implementation question**\nI read `SourceSession::dispatch` in `src/agent/sources.rs` to check where observations are produced. The observation callback is invoked only for `read_source`, after parse and selector resolution succeed, and it receives the same `ParsedSource` that supplies the delivered text. The tests above would catch violations of both points.\n\n**Residual considerations**\n- The requirement does not name paging of large `read_source` results. No test covers it, and I do not treat that as a gap.\n- Dependencies are carried on every page of a paged result. Observation recording for the discovery pages is tested.\n\nI found no gap in test adequacy for the stated obligations.",
   "references": "efafba41a52a10ad470c49517619d9e98491f7305cadb85183b43eeb6dbf625f",
   "inputs": [
     {
@@ -20,7 +20,7 @@
     {
       "file": "crates/habeas-sdk/tests/agent.rs",
       "item": "fn[source_tools_keep_search_discovery_separate_from_delivered_source_reads]",
-      "hash": "f08f03d9c23b561baf00d767a373cb8ad76821692f55cbbeda26f0b4cc32fcea"
+      "hash": "8a3e7e2816c3ad50e271a56639c2acf27620ca3538a1fe763b2a5acec80a4ebd"
     },
     {
       "file": "crates/habeas-sdk/tests/agent.rs",
@@ -30,7 +30,7 @@
     {
       "file": "crates/habeas-sdk/tests/agent.rs",
       "item": "fn[cached_selected_source_reads_record_exact_delivered_contents_and_errors_add_no_input]",
-      "hash": "50a262db9766294e0dec87f329553eee7fa1bed36eaca2f8841567d1c2c2de28"
+      "hash": "6478976869629244bb2dae95d98f1a34e12e57ebc79bc0cf0e8bd153acb2ae90"
     },
     {
       "file": "crates/habeas-sdk/src/agent/sources.rs",
@@ -38,24 +38,19 @@
       "hash": "9bb0bd13f0143dd8ae775c147672da649efc939318809d901e6df66cab4a3893"
     },
     {
-      "file": "crates/habeas-sdk/src/agent/sources.rs",
-      "item": "struct[SourceTools]",
-      "hash": "2b427eaa4c60fc9a420b4c73075d91e071580386c7acf96ee46c5edf99fadd44"
-    },
-    {
       "file": "crates/habeas-sdk/tests/agent.rs",
       "item": "impl[CachedProvider/SourceProvider]",
       "hash": "45eed4a4549223f268548132370d21ba1fd2dde4f4dddf9dab5320cb43f4cd7e"
     },
     {
-      "file": "crates/habeas-sdk/src/sources.rs",
-      "item": "impl[LocalSources/SourceProvider]",
-      "hash": "90497469ec612165162cfb6e3ae29d38beaf3ac849476bdb26650ce77718f18d"
+      "file": "crates/habeas-sdk/src/agent/tools.rs",
+      "item": "impl[GraphSession<'_,%20'_,%20D,%20R>/Conversation]/fn[delivered]",
+      "hash": "f16cc420cb7845db7859fb5d0eb530dde7f79ac377107b5e69b62936a2c9309f"
     },
     {
-      "file": "crates/habeas-sdk/src/sources.rs",
-      "item": "trait[SourceProvider]",
-      "hash": "4baf2c6ea773b1898a7217f045a38a51c1c9c3c9cd87d24014e763049dceb337"
+      "file": "crates/habeas-sdk/src/graph.rs",
+      "item": "impl[InspectionContext<'d,%20D>]/fn[observe_read]",
+      "hash": "b597717d78d02d13337498e9a3d6381071bf30a102165ca378f27f56fd38de77"
     }
   ],
   "format_version": 1,
@@ -108,7 +103,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "3f02fc647e6b66075c0f2a6b902c90da2f078a40ab457f4f7fcca878a3ff42dc"
+          "value": "fa71a9eb1ee8ff8813534dad573ac9aaf8d6550274fdac39cb4291be0ff9ce21"
         }
       ]
     },
@@ -142,7 +137,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "7d39fec78be6439d2442f9b00070a49b626f3de67a5438c1c95fc790b4f51ebd"
+          "value": "2f728d39473f1c544e38b0b196e72b551cb9773d2a0b0a818aebf04b86b68fbd"
         }
       ]
     },
@@ -169,23 +164,6 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/habeas-sdk/src/agent/sources.rs"
-            },
-            "selector": "struct[SourceTools]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "6fc22397620e5775e7210b449ed69d6424cec315f6c55e7431a08addd849beda"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
               "location": "crates/habeas-sdk/tests/agent.rs"
             },
             "selector": "impl[CachedProvider/SourceProvider]"
@@ -203,14 +181,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/habeas-sdk/src/sources.rs"
+              "location": "crates/habeas-sdk/src/agent/tools.rs"
             },
-            "selector": "impl[LocalSources/SourceProvider]"
+            "selector": "impl[GraphSession<'_,%20'_,%20D,%20R>/Conversation]/fn[delivered]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "fdee134bc150a1ea2cff04823bea8b3c312c954fffb6b6aaf2a3623072ca6690"
+          "value": "2acfd1c0aab8b2ff849b3529a5b4708cea068aaa45228f2b30cd6f67612d357b"
         }
       ]
     },
@@ -220,14 +198,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/habeas-sdk/src/sources.rs"
+              "location": "crates/habeas-sdk/src/graph.rs"
             },
-            "selector": "trait[SourceProvider]"
+            "selector": "impl[InspectionContext<'d,%20D>]/fn[observe_read]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "662156b880f87d24db87d014671de733327a084ea459d7bad9122ea598eb6fbf"
+          "value": "a6d7f2964f8ceff0a5be0eba1e1a2e1c4c04de5787ab3938a9febf2117b7fb3b"
         }
       ]
     }

@@ -999,8 +999,7 @@ no_match:
             nested.matches_value()[1],
             json!({"kind": "violations", "query": "panics", "item": "mod[inner]/fn[check_three]/fn[nested]", "text": "panic!(\"z\")"})
         );
-        // No query problems; each site lacks a review, and being a site is
-        // not a reference for Rust item coverage.
+        // No query problems; each site lacks its own review.
         assert!(
             !errors.iter().any(|error| error.contains("query")),
             "{errors:?}"
@@ -1018,14 +1017,6 @@ no_match:
                 "{item}: {errors:?}"
             );
         }
-        let inspection = crate::evidence::inspect_repository(temp.path()).unwrap();
-        assert!(
-            inspection.uncovered.iter().any(|item| item
-                .error
-                .contains("function check_two has no recent coverage")),
-            "{:?}",
-            inspection.uncovered
-        );
     }
 
     // {test}`requirements.references.distributed`

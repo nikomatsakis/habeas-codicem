@@ -1,8 +1,8 @@
 {
-  "requirement": "```rust,ignore\n// Method on the configured validator; associated types come from its domain.\n\n/// Reuse current evidence, including a negative judgment.\n/// Otherwise run validation and save the completed record before returning.\nfn validate_node<'a>(\n    &'a self,\n    node: &'a Self::NodeId,\n) -> impl Future<Output = Result<Judgment<Self::JudgmentMetadata>, Self::Error>> + Send + 'a;\n```\n\nThe operation first looks up the requested node's evidence for the configured\nprocedure. It checks the procedure identity and resolves recorded dependencies\nto compare current and saved fingerprints under\n{cite}`requirements.sdk.graph.evidence.checking_records`.\nCurrent evidence returns its judgment without a callback invocation.\nMissing or stale evidence starts a fresh context for that node, invokes the\ncallback, and constructs a record from its judgment and captured dependencies.",
+  "requirement": "```rust,ignore\n// Method on Validator<'d, D>.\n/// Reuse the current answer, including a negative assessment.\n/// Otherwise execute and save the completed record before returning.\npub fn verify<V: Validation<D>>(\n    &self,\n    validation: V,\n) -> impl Future<Output = Result<V::Ok, ValidationError<D::Error>>> + Send;\n```\n\nThe SDK loads the record for this source and criterion and compares its revision\nand dependencies under {cite}`requirements.sdk.graph.evidence.checking_records`.\nCurrent evidence is decoded into `V::Ok` and returned without calling `execute`.\nMissing or stale evidence starts a fresh context identifying the source node,\nexecutes the supplied validation, and saves its result and captured dependencies.\nOther criteria's records are unaffected.\n\nFreshness checking has a separate observation scope from execution. Reads used\nonly to check old evidence do not become dependencies of the new result. A\nchecked snapshot can be reused if it still represents the current state; when\nexecution explicitly reads or delivers it, its fingerprint enters the new trace.",
   "determination": true,
-  "rationale": "I judged the tests from the supplied test source alone. I did not request any implementation source. Together they cover every obligation in `requirements.sdk.graph.validation.validate_node`.\n\n**Reuse of current evidence, including negative judgments, with no callback**\n- `validation.rs#fn[runner_reuses_negative_judgments_and_records_only_callback_observations]` validates node 9 twice. The judgment is negative, and `state.started == [9]` shows the callback ran once.\n- `contracts.rs#fn[domain_validation_preserves_metadata_reuses_traces_and_propagates_failures]` asserts `(callbacks, writes) == (1, 1)` after a second call that returns the same judgment. It also re-validates the positive node 2 and gets an equal judgment.\n\n**Missing evidence runs the callback and saves a record**\n- The first call in each of the tests above starts from no evidence. The callback runs, and the saved record is checked against the judgment and the dependencies.\n- `contracts.rs` asserts `saved.output == judgment` and `saved.dependencies == record().dependencies`, with metadata preserved. The runner test asserts that a callback with no reads leaves an empty dependency list.\n- The store-failure case shows the save is part of the operation. `validate_node` returns `Err(Graph(\"store\"))`, and the saved evidence is still the old judgment.\n\n**Stale evidence from a procedure-identity mismatch**\n- In the runner test, `v2` finds the `v1` record `Stale`. `v2.validate_node` then rewrites it with procedure `v2`.\n- The test then sets the stored procedure to `*` and gets `Current`. This is the wildcard-match behavior I read from the `check_procedure` matching, which is not part of this subject.\n\n**Stale evidence from a fingerprint mismatch**\n- `validation.rs#fn[historical_freshness_reads_do_not_enter_the_replacement_trace]` has a stored `Node(2)` fingerprint that differs from the current content. Validation re-runs, and the record is replaced by one holding only the callback's own observation.\n- In `contracts.rs`, changing the text to \"changed\" gives the rationale \"reviewed changed\".\n- `contracts.rs#fn[changed_target_membership_revalidates_and_replaces_the_saved_selection]` changes the outgoing-edge selection while content stays the same. The callback runs again, `(callbacks, writes) == (2, 2)`, and the new dependencies replace the old ones.\n\n**Dependency-resolution errors are returned as errors**\n- The failure loop in `contracts.rs` makes a read fail and then an edge listing fail. Each returns `ValidationError::Graph(..)`. The callback and write counts stay at 1, and the saved record is unchanged.\n\n**Fresh context per node and captured dependencies**\n- `validation.rs#fn[concurrent_single_node_validations_keep_separate_traces]` runs three validations concurrently. Peak concurrency is 3, and each record holds only its own node's dependencies.\n- `agent.rs#fn[agent_edge_tools_record_selections_without_validating_targets]` checks that the record is built from the captured `OutgoingEdges` dependency. It also asserts that edges were looked up only once.\n\nNo obligation lacks a test, and no {fixme} acknowledgments are involved.",
-  "references": "a78f67e3790f7683f640a285abada5e1213abaf2e00d4943575c23bb201ab3b9",
+  "rationale": "The marked tests cover each obligation of `requirements.sdk.graph.validation.validate_node`.\n\n**Reuse of current evidence, including negative results, without calling `execute`**\n- `crates/habeas-sdk/tests/contracts.rs#fn[criteria_have_independent_typed_answers_and_cache_negative_results]` stores a negative answer. It calls `verify` again with a different payload (\"must not execute\") and asserts the original negative answer comes back. It then asserts `executions == 3` and `writes == 3`.\n- `crates/habeas-sdk/tests/validation.rs#fn[runner_reuses_negative_judgments_and_records_only_callback_observations]` calls `verify` twice and asserts that `started == [9]`. It also asserts that the stored record is unchanged and still reports as current.\n- `src/authoring/sdk.rs#mod[tests]/fn[review_graph_persists_and_reuses_a_negative_validation_through_the_sdk]` checks that the provider receives only one request and that the saved file bytes are unchanged after the second `verify`.\n- The cached output is decoded into the typed `V::Ok`. This is checked with a `Judgment` and with a `Cell` value in `fn[validation_and_answer_need_send_without_sync]`.\n\n**Missing or stale evidence executes and saves the result and captured dependencies**\n- Missing evidence is covered by the first `verify` in each of the tests above.\n- A revision mismatch is covered in `fn[runner_reuses_negative_judgments_and_records_only_callback_observations]`. The v2 check reports `Stale`, `verify` runs again, and the record's revision becomes \"v2\".\n- A changed dependency is covered in `fn[changed_dependencies_precede_decoding_and_execution_records_its_own_reads]`, `fn[changing_one_criteria_input_does_not_invalidate_another]` and `fn[historical_freshness_reads_do_not_enter_the_replacement_trace]`. In each, `verify` re-executes and the saved dependency list is asserted exactly.\n\n**A fresh context identifies the source node**\n- `fn[concurrent_single_node_validations_keep_separate_traces]` runs three nodes concurrently. It asserts the started nodes are 1, 2 and 3, and that each saved record holds only that node's own dependencies.\n- `fn[agent_edge_tools_record_selections_without_validating_targets]` and `fn[validator_agent_executions_isolate_conversations_and_dependency_traces]` assert the dependency traces of their agent runs.\n\n**Other criteria's records are unaffected**\n- `fn[changing_one_criteria_input_does_not_invalidate_another]` changes node 2's content. The \"behavior\" criterion becomes `Stale` and \"structure\" stays `Current(true)`. A later replacement `verify` of \"behavior\" changes only the \"behavior\" record.\n- `fn[criteria_have_independent_typed_answers_and_cache_negative_results]` covers independent criteria with different output types.\n\n**Separate observation scope for freshness checking and execution**\n- `fn[historical_freshness_reads_do_not_enter_the_replacement_trace]` asserts reads of `[2, 1]`. The new record contains only the `Node(1, root)` dependency, so the freshness read of node 2 is excluded.\n- `fn[changed_dependencies_precede_decoding_and_execution_records_its_own_reads]` asserts reads of `[2, 2]` (\"separate observations\"). The saved record holds the execution-time \"after\" fingerprint.\n- The rule that an explicit read or delivery enters the trace is asserted wherever execution reads. Examples are the `Node` and `OutgoingEdges` dependencies in the agent tests.\n\n**Cited `checking_records`**\n- Applying it in this subject's case is covered. The revision check, the stale outcome and the dependency comparison are exercised through `verify`.\n- Error propagation from dependency resolution, storage and callbacks is handled by the refining `validate_node.errors` requirement. `fn[resolution_storage_and_callback_errors_are_not_judgments]` carries the `{test}` reference for it. Those obligations are not assessed here.\n\nI found no plausible requirement-violating behavior that these tests would accept. Reusing a checked snapshot is permissive in the text (\"can be reused\"), so it needs no test.",
+  "references": "81a8a29719272147ccedbd62f5f1751b008ae8b3a87d1cf5d256f109a23e8369",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.validation.validate_node",
@@ -12,23 +12,26 @@
       "text": [
         ":::{req} validate_node",
         "```rust,ignore",
-        "// Method on the configured validator; associated types come from its domain.",
-        "",
-        "/// Reuse current evidence, including a negative judgment.",
-        "/// Otherwise run validation and save the completed record before returning.",
-        "fn validate_node<'a>(",
-        "    &'a self,",
-        "    node: &'a Self::NodeId,",
-        ") -> impl Future<Output = Result<Judgment<Self::JudgmentMetadata>, Self::Error>> + Send + 'a;",
+        "// Method on Validator<'d, D>.",
+        "/// Reuse the current answer, including a negative assessment.",
+        "/// Otherwise execute and save the completed record before returning.",
+        "pub fn verify<V: Validation<D>>(",
+        "    &self,",
+        "    validation: V,",
+        ") -> impl Future<Output = Result<V::Ok, ValidationError<D::Error>>> + Send;",
         "```",
         "",
-        "The operation first looks up the requested node's evidence for the configured",
-        "procedure. It checks the procedure identity and resolves recorded dependencies",
-        "to compare current and saved fingerprints under",
-        "{cite}`requirements.sdk.graph.evidence.checking_records`.",
-        "Current evidence returns its judgment without a callback invocation.",
-        "Missing or stale evidence starts a fresh context for that node, invokes the",
-        "callback, and constructs a record from its judgment and captured dependencies.",
+        "The SDK loads the record for this source and criterion and compares its revision",
+        "and dependencies under {cite}`requirements.sdk.graph.evidence.checking_records`.",
+        "Current evidence is decoded into `V::Ok` and returned without calling `execute`.",
+        "Missing or stale evidence starts a fresh context identifying the source node,",
+        "executes the supplied validation, and saves its result and captured dependencies.",
+        "Other criteria's records are unaffected.",
+        "",
+        "Freshness checking has a separate observation scope from execution. Reads used",
+        "only to check old evidence do not become dependencies of the new result. A",
+        "checked snapshot can be reused if it still represents the current state; when",
+        "execution explicitly reads or delivers it, its fingerprint enters the new trace.",
         ":::"
       ]
     },
@@ -39,46 +42,84 @@
       ],
       "text": [
         ":::{req} checking_records",
-        "The SDK checks freshness itself, using graph operations and fingerprints. It",
-        "requires no application freshness callback and runs neither the assessment",
-        "procedure nor a model. It compares the requested procedure identity and the",
-        "record's dependencies with their current state. A",
-        "procedure-identity mismatch under",
-        "{cite}`requirements.sdk.graph.evidence.checking_records.procedure_match` or a",
-        "fingerprint mismatch makes the record stale. A dependency-resolution error is",
-        "returned as an error.",
+        "The SDK checks the loaded record's revision first. A mismatch establishes",
+        "staleness without resolving saved dependencies or decoding its output. Otherwise",
+        "it resolves the saved dependencies through graph operations and fingerprints,",
+        "comparing each with its saved observation. A fingerprint mismatch establishes",
+        "staleness and permits an early return; it need not resolve later dependencies.",
+        "An encountered dependency-resolution failure returns an error.",
+        "",
+        "Checking executes no validation or model and writes no evidence. It uses the",
+        "current state that the caller intends to inspect, rather than reusing source",
+        "snapshots from an earlier invocation without establishing that they remain",
+        "current.",
         ":::"
       ]
     },
     {
       "file": "crates/habeas-sdk/tests/agent.rs",
+      "item": "fn[validator_agent_executions_isolate_conversations_and_dependency_traces]",
+      "hash": "672215059abee2fec7002dab5f063e8c3d60b4ca77d30788685a521447da54a3"
+    },
+    {
+      "file": "crates/habeas-sdk/tests/agent.rs",
       "item": "fn[agent_edge_tools_record_selections_without_validating_targets]",
-      "hash": "5245d15ed1a86817a9a6e4422b31137313074d58acbccdf40ca80492086d099c"
+      "hash": "9f5067261557fce342d0962e80846c93d4811f38b619b1b7969fe43e4d9d846f"
     },
     {
       "file": "crates/habeas-sdk/tests/contracts.rs",
-      "item": "fn[domain_validation_preserves_metadata_reuses_traces_and_propagates_failures]",
-      "hash": "38b36cadc68999b752d87ad2c6911273bb4a6346d008c27a4dbaa9458d3574fa"
+      "item": "fn[criteria_have_independent_typed_answers_and_cache_negative_results]",
+      "hash": "446b6469843c4e83ae2f009708952547195e937e1ba90eb8f96913ae26a0c43f"
     },
     {
       "file": "crates/habeas-sdk/tests/contracts.rs",
-      "item": "fn[changed_target_membership_revalidates_and_replaces_the_saved_selection]",
-      "hash": "955037411d45e854438dacba485b07a58e967d6e266ff6344f401d74db9815fc"
+      "item": "fn[changing_one_criteria_input_does_not_invalidate_another]",
+      "hash": "0d42fc614241e2d111f072dad8bdee9ece514e6bb2113e4ea797ddfce75ab54f"
+    },
+    {
+      "file": "crates/habeas-sdk/tests/contracts.rs",
+      "item": "fn[changed_dependencies_precede_decoding_and_execution_records_its_own_reads]",
+      "hash": "7f5a4297c59cf706aa9708abdd6b37783402003fa61ee37740669eb77947302a"
+    },
+    {
+      "file": "crates/habeas-sdk/tests/contracts.rs",
+      "item": "fn[validation_and_answer_need_send_without_sync]",
+      "hash": "0ce378b5583d41e3fcd2079a00150fadd52ca290419d739e1c9f8573a87b338b"
     },
     {
       "file": "crates/habeas-sdk/tests/validation.rs",
       "item": "fn[historical_freshness_reads_do_not_enter_the_replacement_trace]",
-      "hash": "6c775dcf69e37b79096a087de9e91565d3cefb2342511a5e7c7bdd61e6692396"
+      "hash": "9146955de91179cbabb9f0cdd268f7c7bb4313b2c818070b80f06f277e299e33"
     },
     {
       "file": "crates/habeas-sdk/tests/validation.rs",
       "item": "fn[runner_reuses_negative_judgments_and_records_only_callback_observations]",
-      "hash": "af2b35a9b9dc9811f071b58ab6b922e39c6b43a23e9ed2d1bd9725c9b6f02a11"
+      "hash": "d3b76d43c14e6833d007d08c4e0b0c6054d9c835288ef10be2511ae065617f54"
     },
     {
       "file": "crates/habeas-sdk/tests/validation.rs",
       "item": "fn[concurrent_single_node_validations_keep_separate_traces]",
-      "hash": "5aa258920ce7028b6f642e78061b65a32e173dea4818f69efadf0a65ca888045"
+      "hash": "d78a535e5d6a168a38bdd3c57bb9dd997313ca58d864e057a0f7323eb9680c78"
+    },
+    {
+      "file": "src/authoring/sdk.rs",
+      "item": "mod[tests]/fn[review_graph_persists_and_reuses_a_negative_validation_through_the_sdk]",
+      "hash": "be16c5377af91133a7c4919cb62449af45261df967865add92e67da391e6525a"
+    },
+    {
+      "file": "crates/habeas-sdk/tests/validation.rs",
+      "item": "fn[resolution_storage_and_callback_errors_are_not_judgments]",
+      "hash": "41f599af74dee6578d906c9d6ae9e8c8ea2f9e93fa0922338884504511b828de"
+    },
+    {
+      "file": "crates/habeas-sdk/tests/contracts.rs",
+      "item": "fn[dependency_resolution_failures_do_not_execute_or_replace_saved_answers]",
+      "hash": "bb351d46de402d029ff54047ceafec38b1646f85241c9b4f7496cc90c8d2b0ac"
+    },
+    {
+      "file": "crates/habeas-sdk/tests/contracts.rs",
+      "item": "fn[loading_execution_resolution_and_saving_failures_do_not_publish_answers]",
+      "hash": "301df8e21bd6ca369a6b7c91326123f03929703764ac8aa7b68c198ce1975167"
     }
   ],
   "format_version": 1,
@@ -91,7 +132,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "a78f67e3790f7683f640a285abada5e1213abaf2e00d4943575c23bb201ab3b9"
+          "value": "81a8a29719272147ccedbd62f5f1751b008ae8b3a87d1cf5d256f109a23e8369"
         }
       ]
     },
@@ -103,7 +144,7 @@
         "Mandatory",
         {
           "scheme": "node-path-set-sha256-v1",
-          "value": "3f1da612fccf1336b3fbe7d61e6179f70c59f1519622ebd87dfac9b9fa92f736"
+          "value": "1efe3cca6b6f868cfc273c76c98c829b5bc3d1248083537894ee57d8f7ef22d0"
         }
       ]
     },
@@ -114,7 +155,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "228caa7b3981974129bb3a5ba307859b0d18f71f917ee44484b43d63794fc856"
+          "value": "418af0f150f07739462a5cf7934660ed0e26d08af08942edb0ed9e626249653a"
         }
       ]
     },
@@ -125,7 +166,24 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "58d3458c11dd47b42dae37b7eef210f4aaccd927edb6d04edb276539ef0c1b00"
+          "value": "e055c5a286e04b97f36c75997696269bde4bae996068012e27116ae3b3dea403"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/tests/agent.rs"
+            },
+            "selector": "fn[validator_agent_executions_isolate_conversations_and_dependency_traces]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "01a9702fe35a0a6473a6a1985af8bb55f3b74e42dceb7028c8a355bb88510582"
         }
       ]
     },
@@ -142,7 +200,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "8ed391afc8ed65317e4dfe42f5a65390cde547595238b1c86bbe514f49a57f56"
+          "value": "2bfae781f2ee9f3210a5cfad2aed0f5bb2da0c539905d884994fc99214759af3"
         }
       ]
     },
@@ -154,12 +212,12 @@
               "scheme": "repo",
               "location": "crates/habeas-sdk/tests/contracts.rs"
             },
-            "selector": "fn[domain_validation_preserves_metadata_reuses_traces_and_propagates_failures]"
+            "selector": "fn[criteria_have_independent_typed_answers_and_cache_negative_results]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "f9e3986c618e6b2061a8497398e7c970763c8d325fa919bc5191e8176942eaf1"
+          "value": "f801a7b1a136d5f9447de8c3affe17a43576ca694017a24a592472fbcb3ff6f0"
         }
       ]
     },
@@ -171,12 +229,46 @@
               "scheme": "repo",
               "location": "crates/habeas-sdk/tests/contracts.rs"
             },
-            "selector": "fn[changed_target_membership_revalidates_and_replaces_the_saved_selection]"
+            "selector": "fn[changing_one_criteria_input_does_not_invalidate_another]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "4ef3f01059fb9de6dfd8afcbe6afa4702963ae5c09d93a8ca7ee54dd1086c54e"
+          "value": "553fed96c09ae7ea8d5285fd4a93d9ac48acb8f98c1cbc2c4c9e4f9662271653"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/tests/contracts.rs"
+            },
+            "selector": "fn[changed_dependencies_precede_decoding_and_execution_records_its_own_reads]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "e7f731e1c0c82c2c3e5b26a6e8cfdb6ac657719595c9e5f378e85cb26a8585fe"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/tests/contracts.rs"
+            },
+            "selector": "fn[validation_and_answer_need_send_without_sync]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "a1e5fdb121e3d73c3e3e8cbbed80895a49d327d0932846489cf50e034c232b15"
         }
       ]
     },
@@ -193,7 +285,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "c1b7e90ff0d502bea0db92ff3b664a4781d31bd933d66931dd6568bd5237412b"
+          "value": "60a41a2c898eca3120a539ad832d7b371eb9297cb2bfbc2cccceb2c9f9cd51fd"
         }
       ]
     },
@@ -210,7 +302,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "7dbbfd52a0a76a94509f7c70c8b3530dbf0eb6e4bc86672e4b78e6130f6c6a0c"
+          "value": "73facf7a32a90ceff58f9e1e5c35533d7a3ae16c6ddefc28b35f33828f760abe"
         }
       ]
     },
@@ -227,7 +319,75 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "0d244fb7fa34ac04e66c64249a5fc6f450423b26ef0a6aeda5dbe16bda0f36c3"
+          "value": "cbeaf29c7ccb4f0f0207b24c665c84535f35c95cc17b6ef64fd7aa5e0d7adcd4"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/sdk.rs"
+            },
+            "selector": "mod[tests]/fn[review_graph_persists_and_reuses_a_negative_validation_through_the_sdk]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "ed8a5cc41fa1fc56557c9d01915f360723621f811ac56f4af30648ef43402ea5"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/tests/validation.rs"
+            },
+            "selector": "fn[resolution_storage_and_callback_errors_are_not_judgments]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "720db472550a0996eb74cba219209992995b7dfd0cfbbe2b259e3b66d6e5ee1f"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/tests/contracts.rs"
+            },
+            "selector": "fn[dependency_resolution_failures_do_not_execute_or_replace_saved_answers]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "d996907cce19f051fac6e333fefd7ffca8914f905398bb742d905ee537ef4185"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/tests/contracts.rs"
+            },
+            "selector": "fn[loading_execution_resolution_and_saving_failures_do_not_publish_answers]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "d4ebba47366c7d701cef20ef5cce8dc7370db50a7ef8fbf12a1a8f8f6a23c0a7"
         }
       ]
     }

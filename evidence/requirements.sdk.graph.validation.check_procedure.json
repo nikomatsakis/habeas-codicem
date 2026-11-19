@@ -1,8 +1,8 @@
 {
-  "requirement": "```rust,ignore\n// Defined in habeas_sdk::graph.\npub enum ValidationError<E> {\n    Graph(E),\n    NoAgentConfigured,\n    Agent(String),\n}\n\npub trait Validation: Graph + Fingerprinting + Sized {\n    /// Decide whether ctx.node_id() is valid.\n    ///\n    /// The runner supplies only this shared context. It reads no subject or\n    /// target contents to prepare the callback; select inputs through ctx.\n    /// No prepared NodeInputs bundle, extra application request, or\n    /// EvidenceStorage capability is required.\n    fn validate<'a, 'd>(\n        &'a self,\n        ctx: &'a ValidationContext<'d, Self>,\n    ) -> impl Future<Output = Result<\n        Judgment<Self::JudgmentMetadata>,\n        ValidationError<Self::Error>,\n    >> + Send + 'a\n    where\n        'd: 'a;\n}\n```\n\nThe context identifies the node requested by the caller. The callback remains\nusable without `EvidenceStorage`; persistence belongs to the runner.",
+  "requirement": "```rust,ignore\nuse serde::{Serialize, de::DeserializeOwned};\nuse std::future::Future;\n\n// Defined in habeas_sdk::graph.\npub enum ValidationError<E> {\n    Graph(E),\n    NoAgentConfigured,\n    Agent(String),\n    Output(serde_json::Error),\n}\n\npub trait Validation<D: Domain>: Send + Sized {\n    /// The completed answer, including any negative assessment.\n    /// The SDK serializes it for storage and reconstructs it when reused.\n    /// Its Serde JSON representation must reconstruct the completed answer.\n    type Ok: Serialize + DeserializeOwned + Send;\n\n    fn source_node_id(&self) -> D::NodeId;\n    fn criterion_path(&self) -> CriterionPath;\n\n    /// Version of these review rules and the result's encoding.\n    /// Change it when an old answer should no longer be reused.\n    fn revision(&self) -> String;\n\n    /// Execute this criterion with a private dependency trace.\n    /// Contents are read only when explicitly selected through cx.\n    fn execute(\n        self,\n        cx: &mut ValidationContext<'_, D>,\n    ) -> impl Future<Output = Result<Self::Ok, ValidationError<D::Error>>> + Send;\n}\n```\n\nObtaining the source identity, criterion path, and revision does not execute the\ncriterion, invoke an agent, or record source-content dependencies. These values\nidentify the same question for checking and execution. Parameters that change\nwhich question is being asked belong in its identity or revision.",
   "determination": true,
-  "rationale": "The reviewed tests cover each obligation in `requirements.sdk.graph.validation.check_procedure`.\n\n**Obligations and the tests that cover them**\n\n- **`ValidationError` shape (`Graph(E)`, `NoAgentConfigured`, `Agent(String)`).**\n  - `validation.rs#fn[agent_errors_expose_the_agreed_string_payload]` constructs `Agent` from a `String`. It destructures the variant into a `String` and checks the payload.\n  - The same test builds `Graph` around an `io::Error` and checks its source.\n  - `NoAgentConfigured` is exercised by `validation.rs#fn[runner_does_not_store_a_missing_agent_error_and_supports_intermediate_calls]` and `validation.rs#fn[dropped_builders_and_missing_agents_do_not_resolve_queued_inputs]`. Neither carries a `{test}` reference to this requirement. The requirement only names the variant and says nothing about when it occurs, so this is not a gap.\n- **`Validation::validate` takes only `&ValidationContext` and returns `Judgment` or `ValidationError`.**\n  - Every test implements or calls `validate` with this signature.\n  - `agent.rs#fn[validation_is_usable_without_any_evidence_storage]` calls it directly and asserts on the result's `result` and `rationale`.\n- **The context identifies the node the caller requested.**\n  - In `contracts.rs#fn[domain_validation_preserves_metadata_reuses_traces_and_propagates_failures]`, `validate_node(&Node(1))` and `validate_node(&Node(2))` give different judgments. This shows the requested node reaches the callback.\n  - In the `validation.rs` runner test, `state.started == vec![9]` shows the callback saw `ctx.node_id()` equal to the requested node.\n  - In the `agent.rs` test, the callback reads `ctx.node_id()`, and the recorded dependency is `Node(1)`.\n- **The runner reads no subject or target contents to prepare the callback.** `validation.rs#fn[runner_reuses_negative_judgments_and_records_only_callback_observations]` runs `validate_node` with a callback that reads nothing. It asserts `state.reads` and `state.selections` are empty and that the recorded dependencies are empty. The test `Memory` records every `node_content` and `outgoing_edges` call, so any pre-read by the runner would fail these assertions.\n- **No prepared `NodeInputs` bundle, extra application request, or `EvidenceStorage` capability is required.**\n  - In `agent.rs#fn[validation_is_usable_without_any_evidence_storage]`, `Memory` implements only `Graph`, `Fingerprinting` and `Validation`. It does not implement `EvidenceStorage`.\n  - `validate` is called with only a `ValidationContext`, and the call succeeds.\n  - The callback runs without storage, and the runner persists separately. The runner tests show this: `contracts.rs#fn[domain_validation_preserves_metadata_reuses_traces_and_propagates_failures]` checks the saved evidence and the write counts.\n\n**Gaps:** none found. The one untested detail is the `Display` text of `NoAgentConfigured`, which the requirement does not specify.",
-  "references": "27e2a4148fc5d08fb86926a8ea64431b57e585c6ca07c7652fd1d0b7d9e112c5",
+  "rationale": "The reviewed tests adequately check `requirements.sdk.graph.validation.check_procedure`. I found no gaps.\n\n**Obligations derived from the text**\n1. The `Validation` trait shape must hold. `Ok` must round-trip through Serde JSON. `source_node_id`, `criterion_path` and `revision` are the question's identity. `execute` returns `ValidationError<D::Error>`.\n2. Obtaining the source identity, criterion path and revision must not execute the criterion, invoke an agent, or record source-content dependencies.\n3. The same values must identify the question for both checking and execution.\n4. Parameters that change the question belong in the identity or the revision.\n5. `ValidationError` has the variants `Graph`, `NoAgentConfigured`, `Agent(String)` and `Output`.\n\n**Mapping to tests**\n- **Trait shape and round-trip.** Every test implements `Validation` for a `Review` type, which compiles against the trait. In `criteria_have_independent_typed_answers_and_cache_negative_results`, negative answers, `Vec<String>`, `Judgment` and `serde_json::Value` all come back equal from `verify` and from `check` as `EvidenceState::Current`. The stored `output` is asserted against the expected JSON. `validation_and_answer_need_send_without_sync` covers a `Send`-but-not-`Sync` `Ok` type (`Cell`) and checks that the answer is reconstructed on reuse.\n- **Identity does not execute, call an agent or record dependencies.**\n  - `criteria_have_independent_typed_answers_and_cache_negative_results` asserts `executions == 3` and `writes == 3` for three distinct verified criteria, even though several `check` and repeat `verify` calls happened. It also asserts `state.reads.is_empty()` (\"source identity must not imply a content read\") and that every record has empty `dependencies`.\n  - `runner_reuses_negative_judgments_and_records_only_callback_observations` asserts a single `started`, no reads or selections, and empty dependencies.\n  - `review_graph_persists_and_reuses_a_negative_validation_through_the_sdk` calls `source_node_id`, `criterion_path` and `revision` directly and asserts the expected node, `[\"review\"]` and `REVIEW_VERSION`. Its `check` returns `Missing`, writes no file and sends no provider request. After `verify`, there is exactly one provider request.\n  - `deterministic_validation_uses_required_storage_without_an_agent` shows that a deterministic criterion runs without an agent and that its dependency is recorded only through the explicit node read.\n- **Same question for check and execute.** `check` and `verify` on equal descriptors yield `Current` with the stored value. A second `verify` with a different payload returns the cached answer and does not execute again.\n- **Identity and revision distinguish questions.**\n  - Criterion paths `behavior`, `structure`, `text` and `judgment` are independent. Each stores its own answer, and `text` is `Missing`.\n  - Node 8 is `Missing` while node 9 is current.\n  - Revision `v2` against a stored `v1` gives `Stale`. After re-verify the stored revision is `v2`.\n  - `review_graph_persists_and_reuses_a_negative_validation_through_the_sdk` shows a different criterion path (`another/review`) does not load the stored record.\n- **Error variants.** `agent_errors_expose_the_agreed_string_payload` checks the `Agent(String)` payload, its display text and `source`, and that `Graph` exposes its source. Other tests assert `ValidationError::NoAgentConfigured` (in `runner_does_not_store_a_missing_agent_error_and_supports_intermediate_calls`) and `ValidationError::Output` (in `serialization_failure_leaves_the_existing_record_unchanged`). The ripgrep search found these tests, but they carry no `{test}` reference to this requirement. That is not a gap, because the enum is only a declared shape here.\n\nI found no plausible behavior that violates the requirement and would pass these tests. A `check` that executed the criterion would break the execution count. An identity accessor that read content would show up in `reads` or `dependencies`. A revision or path that was ignored would break the `Stale` and independence assertions.",
+  "references": "9060d755e568f6264b36539daa550c39195daeae76b32cc9911b510bad128e46",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.validation.check_procedure",
@@ -12,51 +12,65 @@
       "text": [
         ":::{req} check_procedure",
         "```rust,ignore",
+        "use serde::{Serialize, de::DeserializeOwned};",
+        "use std::future::Future;",
+        "",
         "// Defined in habeas_sdk::graph.",
         "pub enum ValidationError<E> {",
         "    Graph(E),",
         "    NoAgentConfigured,",
         "    Agent(String),",
+        "    Output(serde_json::Error),",
         "}",
         "",
-        "pub trait Validation: Graph + Fingerprinting + Sized {",
-        "    /// Decide whether ctx.node_id() is valid.",
-        "    ///",
-        "    /// The runner supplies only this shared context. It reads no subject or",
-        "    /// target contents to prepare the callback; select inputs through ctx.",
-        "    /// No prepared NodeInputs bundle, extra application request, or",
-        "    /// EvidenceStorage capability is required.",
-        "    fn validate<'a, 'd>(",
-        "        &'a self,",
-        "        ctx: &'a ValidationContext<'d, Self>,",
-        "    ) -> impl Future<Output = Result<",
-        "        Judgment<Self::JudgmentMetadata>,",
-        "        ValidationError<Self::Error>,",
-        "    >> + Send + 'a",
-        "    where",
-        "        'd: 'a;",
+        "pub trait Validation<D: Domain>: Send + Sized {",
+        "    /// The completed answer, including any negative assessment.",
+        "    /// The SDK serializes it for storage and reconstructs it when reused.",
+        "    /// Its Serde JSON representation must reconstruct the completed answer.",
+        "    type Ok: Serialize + DeserializeOwned + Send;",
+        "",
+        "    fn source_node_id(&self) -> D::NodeId;",
+        "    fn criterion_path(&self) -> CriterionPath;",
+        "",
+        "    /// Version of these review rules and the result's encoding.",
+        "    /// Change it when an old answer should no longer be reused.",
+        "    fn revision(&self) -> String;",
+        "",
+        "    /// Execute this criterion with a private dependency trace.",
+        "    /// Contents are read only when explicitly selected through cx.",
+        "    fn execute(",
+        "        self,",
+        "        cx: &mut ValidationContext<'_, D>,",
+        "    ) -> impl Future<Output = Result<Self::Ok, ValidationError<D::Error>>> + Send;",
         "}",
         "```",
         "",
-        "The context identifies the node requested by the caller. The callback remains",
-        "usable without `EvidenceStorage`; persistence belongs to the runner.",
+        "Obtaining the source identity, criterion path, and revision does not execute the",
+        "criterion, invoke an agent, or record source-content dependencies. These values",
+        "identify the same question for checking and execution. Parameters that change",
+        "which question is being asked belong in its identity or revision.",
         ":::"
       ]
     },
     {
       "file": "crates/habeas-sdk/tests/agent.rs",
-      "item": "fn[validation_is_usable_without_any_evidence_storage]",
-      "hash": "a2c7a03819c323a4cb71676aabd39b26b8b7eba83f4cf519f9661336990ed257"
+      "item": "fn[deterministic_validation_uses_required_storage_without_an_agent]",
+      "hash": "807367b8ec485c8c1d892200c39ebb5a477f9a84a5ba89d32061d195f6ce69d5"
     },
     {
       "file": "crates/habeas-sdk/tests/contracts.rs",
-      "item": "fn[domain_validation_preserves_metadata_reuses_traces_and_propagates_failures]",
-      "hash": "38b36cadc68999b752d87ad2c6911273bb4a6346d008c27a4dbaa9458d3574fa"
+      "item": "fn[criteria_have_independent_typed_answers_and_cache_negative_results]",
+      "hash": "446b6469843c4e83ae2f009708952547195e937e1ba90eb8f96913ae26a0c43f"
+    },
+    {
+      "file": "crates/habeas-sdk/tests/contracts.rs",
+      "item": "fn[validation_and_answer_need_send_without_sync]",
+      "hash": "0ce378b5583d41e3fcd2079a00150fadd52ca290419d739e1c9f8573a87b338b"
     },
     {
       "file": "crates/habeas-sdk/tests/validation.rs",
       "item": "fn[runner_reuses_negative_judgments_and_records_only_callback_observations]",
-      "hash": "af2b35a9b9dc9811f071b58ab6b922e39c6b43a23e9ed2d1bd9725c9b6f02a11"
+      "hash": "d3b76d43c14e6833d007d08c4e0b0c6054d9c835288ef10be2511ae065617f54"
     },
     {
       "file": "crates/habeas-sdk/tests/validation.rs",
@@ -64,109 +78,9 @@
       "hash": "d788d79becc748845a1b77564884c70b0f26de23c117265b29227e804c07ee9a"
     },
     {
-      "file": "crates/habeas-sdk/tests/agent.rs",
-      "item": "use@64b2ebe3c59e",
-      "hash": "64b2ebe3c59ea465ab965d8d74c975e73e9fd8f22ed3ed8f7ab5be8291001b6d"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/agent.rs",
-      "item": "use@8c4226b06fa7",
-      "hash": "8c4226b06fa7bdb9aeb83cf8b003cf56e18a682ede6aa774d84056bec94a7748"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/agent.rs",
-      "item": "use@193d0d93bdfb",
-      "hash": "193d0d93bdfb8f2a8d8236d54ad604353833f0f721571d3bad5504150f2b9ae7"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/agent.rs",
-      "item": "use@129d5d282ac3",
-      "hash": "129d5d282ac3b7627d7d71bf325da9f3a8bd6ef007e75ea4c69277d913edb6ed"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/agent.rs",
-      "item": "use@6e42e0801700",
-      "hash": "6e42e08017009abb18f33fa65d11a99391be1f47814478d1337e25ea5a0189ec"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/agent.rs",
-      "item": "use@33b430141e47",
-      "hash": "33b430141e47032dbf0e70f3aed61bfaacc4531a28b2d035edd0fe7ecad909fc"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/agent.rs",
-      "item": "struct[Node]",
-      "hash": "37a5d012a8c68e204aa82707b29ccf1782aab55095e84abb1a0e498034e1b462"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/agent.rs",
-      "item": "struct[Label]",
-      "hash": "301bc99c70bf56636fb12b99d435b11bfee4ba2f67456cf82c19e6e12e0223f6"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/agent.rs",
-      "item": "struct[Contents]",
-      "hash": "57930076d9167dd0e1aac4119d40fcfbecb8157d4a0fa3f371b4c5d2590eb2b5"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/agent.rs",
-      "item": "struct[Metadata]",
-      "hash": "69670ef2db9d401cccbef98abdafdaec649384c5b696b222f77da4b2a3d51e2e"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/agent.rs",
-      "item": "struct[Memory]",
-      "hash": "147d501f6d6318e27740bd2d811a339f78a74a642080aaca610510e9435eb713"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/agent.rs",
-      "item": "impl[Memory/Graph]",
-      "hash": "99453cd26de50e1ed7a3d576b6613447a0af0d3f175212ec1d3e1758f05cbd90"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/agent.rs",
-      "item": "impl[Memory/Fingerprinting]",
-      "hash": "063aa278257317c084ba7f8159d11b289fb43b0f03d92801b4d09b76898a8660"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/agent.rs",
-      "item": "impl[Memory/Validation]",
-      "hash": "982f676a0da8eb465452cde9c7406f72891b1392e461cccc4ae3f0f0ca45d121"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/agent.rs",
-      "item": "struct[Renderer]",
-      "hash": "ebf2d6b6c10f555a223b1ab7e3bf977c8fc63b618cf49d138d57dd591265064b"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/agent.rs",
-      "item": "impl[Renderer/AgentInputRenderer<Memory>]",
-      "hash": "34f8dcb54bb04c44acb0605846cc330233e5c3d3b34aa88982143d56921f3678"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/agent.rs",
-      "item": "struct[Script]",
-      "hash": "f0046ef614ab83d8dd6ca1717c8bfa847a811b47098951677f675292e6c1bfba"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/validation.rs",
-      "item": "fn[runner_does_not_store_a_missing_agent_error_and_supports_intermediate_calls]",
-      "hash": "b3bbd5a30bc7888ef662e5d4301229bd55312a1e27316ed177326b83fb48deb1"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/validation.rs",
-      "item": "fn[dropped_builders_and_missing_agents_do_not_resolve_queued_inputs]",
-      "hash": "fbf8834a52c0582d32ea3ce5e786c95b49b0bfe96240a6213deb32f22f66bac8"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/validation.rs",
-      "item": "impl[Memory/Graph]/fn[node_content]",
-      "hash": "b99fe314226c1bd430444e257d9a056bfe97b98ed1a36baa792e7dc9a2771bd7"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/validation.rs",
-      "item": "impl[Memory/Graph]/fn[outgoing_edges]",
-      "hash": "9ab023ee211eb39f99bb30d42405ff1b9fb61c2f478013c8e7a4ef552030b2a9"
+      "file": "src/authoring/sdk.rs",
+      "item": "mod[tests]/fn[review_graph_persists_and_reuses_a_negative_validation_through_the_sdk]",
+      "hash": "be16c5377af91133a7c4919cb62449af45261df967865add92e67da391e6525a"
     }
   ],
   "format_version": 1,
@@ -179,7 +93,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "27e2a4148fc5d08fb86926a8ea64431b57e585c6ca07c7652fd1d0b7d9e112c5"
+          "value": "9060d755e568f6264b36539daa550c39195daeae76b32cc9911b510bad128e46"
         }
       ]
     },
@@ -191,7 +105,7 @@
         "Mandatory",
         {
           "scheme": "node-path-set-sha256-v1",
-          "value": "c4f2bd0e1b82d104c2c8f3d4b4c46a182c78026f305f11a8e0f80089c32ccaf4"
+          "value": "09e6b7de35beb6fbfc6571acdc053342f292649f07d6cb0cef7585c9a7608326"
         }
       ]
     },
@@ -202,7 +116,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "8592fc2d24f02ed29d00f9575178ba5d39a7700acb80d7493ebedf35e966def9"
+          "value": "e7511d8cf53cef14bce676b7d96d7d779d86e2098830dcf262ceed50a2c21b3a"
         }
       ]
     },
@@ -214,12 +128,12 @@
               "scheme": "repo",
               "location": "crates/habeas-sdk/tests/agent.rs"
             },
-            "selector": "fn[validation_is_usable_without_any_evidence_storage]"
+            "selector": "fn[deterministic_validation_uses_required_storage_without_an_agent]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "38e8e458c58d5bce3a637d9f7986e42370cb11fa7ab01127b51beefe0f00de8c"
+          "value": "315c846de178ccfc60149f532872ec5340d00d400861fc9978e33ec3dc9483f5"
         }
       ]
     },
@@ -231,12 +145,29 @@
               "scheme": "repo",
               "location": "crates/habeas-sdk/tests/contracts.rs"
             },
-            "selector": "fn[domain_validation_preserves_metadata_reuses_traces_and_propagates_failures]"
+            "selector": "fn[criteria_have_independent_typed_answers_and_cache_negative_results]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "f9e3986c618e6b2061a8497398e7c970763c8d325fa919bc5191e8176942eaf1"
+          "value": "f801a7b1a136d5f9447de8c3affe17a43576ca694017a24a592472fbcb3ff6f0"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/tests/contracts.rs"
+            },
+            "selector": "fn[validation_and_answer_need_send_without_sync]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "a1e5fdb121e3d73c3e3e8cbbed80895a49d327d0932846489cf50e034c232b15"
         }
       ]
     },
@@ -253,7 +184,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "7dbbfd52a0a76a94509f7c70c8b3530dbf0eb6e4bc86672e4b78e6130f6c6a0c"
+          "value": "73facf7a32a90ceff58f9e1e5c35533d7a3ae16c6ddefc28b35f33828f760abe"
         }
       ]
     },
@@ -280,354 +211,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/agent.rs"
+              "location": "src/authoring/sdk.rs"
             },
-            "selector": "use@64b2ebe3c59e"
+            "selector": "mod[tests]/fn[review_graph_persists_and_reuses_a_negative_validation_through_the_sdk]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "1359289b89e7223fdfb025427d57251defd39daa9a10aa5ae6dcf921c6ebcebf"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/agent.rs"
-            },
-            "selector": "use@8c4226b06fa7"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "5df6e850e23cc19466e71e1c93ab1052846a044b229ee496e4b444746d9ad7f7"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/agent.rs"
-            },
-            "selector": "use@193d0d93bdfb"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "2a30db785defe610608ac735e187406f0e1212ca81bb1bdb699348bb81fe80fb"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/agent.rs"
-            },
-            "selector": "use@129d5d282ac3"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "0e3292850acf00df0614a4e7e00a1898ad05e01bb435306842d2e37efabe33f8"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/agent.rs"
-            },
-            "selector": "use@6e42e0801700"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "af91f70ef645e5dffe9b8b26f0d7af1f68848192e200227df1a3ccca23a2c146"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/agent.rs"
-            },
-            "selector": "use@33b430141e47"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "089053933f88e1aaced61baf4167569f1e6870c676a8c61fa2a7aa3985d2a7a3"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/agent.rs"
-            },
-            "selector": "struct[Node]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "dd4a201006d469e027fb8f7ed4890dc5a8ee7252210ee6df4664916375b672ff"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/agent.rs"
-            },
-            "selector": "struct[Label]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "dd279999a276fe639d688cc1c726a6fc8a8eb41ab7a4c1508fee0c7884e3e066"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/agent.rs"
-            },
-            "selector": "struct[Contents]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "f7683df2a5b47d111ec376206855d6f9069bc4551f677e2267fc6086e8862656"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/agent.rs"
-            },
-            "selector": "struct[Metadata]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "44d127b171f884c0f9583975339df2b7d1c9f837a503d22e67a288c5a446f40c"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/agent.rs"
-            },
-            "selector": "struct[Memory]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "d69bfada0b51f2ef1fb6d9a09897c4bdabb902fc11c0fe1eb6b174fd537a7a92"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/agent.rs"
-            },
-            "selector": "impl[Memory/Graph]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "163822364355b9ebddfa20eae3b51c21ff1077aaceed44ae32b31a261f72e7b5"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/agent.rs"
-            },
-            "selector": "impl[Memory/Fingerprinting]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "a5ad3d07d4adc092365421ed6bb4415bcef07ccc1b7a10cfc16681bfc1601e64"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/agent.rs"
-            },
-            "selector": "impl[Memory/Validation]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "6797c7d033a1fe834b3e2f55fc5895321fa43acedbe49c5ecfb0fc6742bced63"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/agent.rs"
-            },
-            "selector": "struct[Renderer]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "bc8f032acf16d39c137672c3f6d67ec6f15ba502a3c818034a826eb80b09e535"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/agent.rs"
-            },
-            "selector": "impl[Renderer/AgentInputRenderer<Memory>]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "b26c4698a3d8bf6149ef1029a4be73aa81893a18bcaa015e31dac6a8bfb5c6db"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/agent.rs"
-            },
-            "selector": "struct[Script]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "1ce81975f563d92c8ee0c0900407fb724017efec65291643095c60f1b5b81b68"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/validation.rs"
-            },
-            "selector": "fn[runner_does_not_store_a_missing_agent_error_and_supports_intermediate_calls]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "806c45c8312832006b99e73920cf9c8910b429b57a431dec71d2c519969bd526"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/validation.rs"
-            },
-            "selector": "fn[dropped_builders_and_missing_agents_do_not_resolve_queued_inputs]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "811195f2940d9a325c8961574a1669dbaa941d940c629784e2d03f9a7ac53a4e"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/validation.rs"
-            },
-            "selector": "impl[Memory/Graph]/fn[node_content]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "7ba192d96886d9fd7aea92bd40304ffaa89c33bc6a0f479f8da72f2ac95bb261"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/validation.rs"
-            },
-            "selector": "impl[Memory/Graph]/fn[outgoing_edges]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "38e9d4e367a5551732e1658577012384e5e1647e19d2df8434a193c322042785"
+          "value": "ed8a5cc41fa1fc56557c9d01915f360723621f811ac56f4af30648ef43402ea5"
         }
       ]
     }

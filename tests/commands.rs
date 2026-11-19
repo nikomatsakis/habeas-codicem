@@ -457,70 +457,6 @@ fn status_lists_nonvalid_requirements_and_all_option_in_name_order() {
     );
 }
 
-// {test}`requirements.cli.status`
-// {test}`requirements.references.rust_item_coverage`
-// {test}`requirements.references.definition_globs`
-// {test}`requirements.references.coverage.report`
-#[test]
-fn status_preserves_repository_wide_rust_findings_in_every_form() {
-    let temp = fixture();
-    let nested = temp.path().join("src/nested");
-    // `main` is read by an evidence record; this item is read by none.
-    fs::write(temp.path().join("src/extra.rs"), "fn unread() {}\n").unwrap();
-    for flags in [
-        [].as_slice(),
-        ["--all"].as_slice(),
-        ["--verbose"].as_slice(),
-        ["--all", "--verbose"].as_slice(),
-    ] {
-        for selection in [None, Some("requirements.ready")] {
-            for coverage in [false, true] {
-                let mut args = vec!["status"];
-                args.extend_from_slice(flags);
-                args.extend(selection);
-                if coverage {
-                    args.push("--coverage");
-                }
-                let output = habeas(&nested, &args);
-                assert!(output.status.success(), "{args:?}: {output:?}");
-                let text = String::from_utf8(output.stdout).unwrap();
-                if coverage {
-                    assert!(text.contains("## Coverage warnings"), "{args:?}: {text}");
-                    assert!(
-                    text.contains(
-                        "src/extra.rs:1: function unread has no recent coverage: it has no requirement or example reference, and no recent evidence record or review read it"
-                    ),
-                    "{args:?}: {text}"
-                );
-                } else {
-                    assert!(
-                        text.contains(
-                            "1 nodes have coverage warnings. Use `status --coverage` to see them."
-                        ),
-                        "{args:?}: {text}"
-                    );
-                    assert!(!text.contains("has no recent coverage"), "{args:?}: {text}");
-                    assert!(!text.contains("## Coverage warnings"), "{args:?}: {text}");
-                }
-                assert!(
-                    !text.contains("function main has no recent coverage"),
-                    "{args:?}: {text}"
-                );
-                assert!(
-                    text.contains("evidence/requirements.malformed.json: invalid JSON"),
-                    "{args:?}: {text}"
-                );
-                assert!(
-                    text.contains("## Validation findings")
-                        || text.contains("## Other validation findings"),
-                    "{args:?}: {text}"
-                );
-                assert!(!text.contains("attestation"), "{args:?}: {text}");
-            }
-        }
-    }
-}
-
 // {test}`requirements.cli.info`
 // {test}`requirements.cli.definition_glob_search`
 // {test}`requirements.index.invalid_detail`
@@ -670,7 +606,12 @@ fn commands_report_invalid_arguments_and_unmatched_selectors() {
 #[test]
 fn status_tables_align_each_column_to_its_widest_cell() {
     let temp = fixture();
-    for args in [["status"].as_slice(), ["status", "--all"].as_slice()] {
+    for args in [
+        ["status"].as_slice(),
+        ["status", "--all"].as_slice(),
+        ["status", "requirements.absent"].as_slice(),
+        ["status", "--all", "requirements.absent"].as_slice(),
+    ] {
         let output = habeas(temp.path(), args);
         assert!(output.status.success(), "{args:?}: {output:?}");
         let text = String::from_utf8(output.stdout).unwrap();
@@ -731,6 +672,7 @@ fn status_tables_align_each_column_to_its_widest_cell() {
 // {test}`requirements.cli.status`
 // {test}`requirements.cli.info`
 // {test}`requirements.cli.definition_glob_search`
+// {test}`requirements.cli.shared_status_rendering`
 #[test]
 fn status_and_info_accept_a_definition_selection() {
     let temp = fixture();
@@ -827,4 +769,34 @@ fn definition_glob_lists_a_requirement_and_an_example_in_info_and_status() {
         "{ready}"
     );
     assert!(!status.contains("`bar.other`"), "{status}");
+}
+
+// {test}`requirements.cli.status`
+// {test}`requirements.references.rust_item_coverage`
+// {test}`requirements.references.definition_globs`
+#[test]
+fn status_retains_repository_findings_without_indexing_unreferenced_functions() {
+    let temp = fixture();
+    fs::write(temp.path().join("src/extra.rs"), "fn unread() {}\n").unwrap();
+    for flags in [
+        vec![],
+        vec!["--all"],
+        vec!["--verbose"],
+        vec!["--all", "--verbose"],
+    ] {
+        for selection in [None, Some("requirements.ready")] {
+            let mut args = vec!["status"];
+            args.extend_from_slice(&flags);
+            args.extend(selection);
+            let output = habeas(&temp.path().join("src/nested"), &args);
+            assert!(output.status.success(), "{args:?}: {output:?}");
+            let text = String::from_utf8(output.stdout).unwrap();
+            assert!(!text.contains("has no recent coverage"), "{text}");
+            assert!(!text.contains("coverage warnings"), "{text}");
+            assert!(
+                text.contains("evidence/requirements.malformed.json: invalid JSON"),
+                "{text}"
+            );
+        }
+    }
 }

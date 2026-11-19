@@ -24,7 +24,7 @@ use std::{
 struct State {
     contents: BTreeMap<u8, String>,
     edges: BTreeMap<u8, Vec<(u8, u8)>>,
-    records: BTreeMap<u8, Record<u8, (), u8>>,
+    records: BTreeMap<u8, Record<u8, u8>>,
     reads: Vec<u8>,
     selections: Vec<u8>,
     started: Vec<u8>,
@@ -57,7 +57,7 @@ impl Graph for Memory {
     type NodeId = u8;
     type NodeContent = String;
     type EdgeLabel = u8;
-    type JudgmentMetadata = ();
+
     type Error = &'static str;
 
     fn node_content(&self, node: &u8) -> Result<String, Self::Error> {
@@ -95,7 +95,11 @@ impl Fingerprinting for Memory {
     }
 }
 impl EvidenceStorage for Memory {
-    async fn load_evidence(&self, node: &u8) -> Result<Option<Record<u8, (), u8>>, Self::Error> {
+    async fn load_evidence(
+        &self,
+        node: &u8,
+        _: &CriterionPath,
+    ) -> Result<Option<Record<u8, u8>>, Self::Error> {
         let state = self.state.lock().unwrap();
         if state.fail_load {
             return Err("load");
@@ -105,7 +109,8 @@ impl EvidenceStorage for Memory {
     async fn store_evidence(
         &self,
         node: &u8,
-        record: &Record<u8, (), u8>,
+        _: &CriterionPath,
+        record: &Record<u8, u8>,
     ) -> Result<(), Self::Error> {
         let mut state = self.state.lock().unwrap();
         if state.fail_store {
@@ -115,11 +120,34 @@ impl EvidenceStorage for Memory {
         Ok(())
     }
 }
-impl Validation for Memory {
-    async fn validate<'a, 'd>(
+struct Review {
+    node: u8,
+    revision: &'static str,
+}
+impl Validation<Memory> for Review {
+    type Ok = Judgment<()>;
+    fn source_node_id(&self) -> u8 {
+        self.node
+    }
+    fn criterion_path(&self) -> CriterionPath {
+        CriterionPath { segments: vec![] }
+    }
+    fn revision(&self) -> String {
+        self.revision.into()
+    }
+    async fn execute(
+        self,
+        cx: &mut ValidationContext<'_, Memory>,
+    ) -> Result<Self::Ok, ValidationError<&'static str>> {
+        cx.inspection().graph().run_review(cx).await
+    }
+}
+
+impl Memory {
+    async fn run_review<'a, 'd>(
         &'a self,
         ctx: &'a ValidationContext<'d, Self>,
-    ) -> Result<Judgment<()>, ValidationError<Self::Error>>
+    ) -> Result<Judgment<()>, ValidationError<&'static str>>
     where
         'd: 'a,
     {
@@ -171,18 +199,22 @@ async fn historical_freshness_reads_do_not_enter_the_replacement_trace() {
         state.records.insert(
             1,
             Record {
-                procedure: "v1".into(),
+                revision: "v1".into(),
                 dependencies: vec![Dependency::Node(2, fp("old"))],
-                output: Judgment {
+                output: serde_json::to_value(Judgment {
                     result: true,
                     rationale: "historical".into(),
                     metadata: (),
-                },
+                })
+                .unwrap(),
             },
         );
     }
-    Validator::new(&graph, |_| Ok("v1".into()))
-        .validate_node(&1)
+    Validator::new(&graph)
+        .verify(Review {
+            node: 1,
+            revision: "v1",
+        })
         .await
         .unwrap();
     let state = graph.state.lock().unwrap();
@@ -196,6 +228,8 @@ async fn historical_freshness_reads_do_not_enter_the_replacement_trace() {
 // {test}`requirements.sdk.graph.agent-calls.model_capability`
 // {test}`requirements.sdk.graph.agent-calls.procedures`
 // {test}`requirements.sdk.graph.validation.validate_node.errors`
+// {test}`requirements.sdk.graph.validation.validator`
+// {test}`requirements.sdk.graph.agent-calls.judge.rendering`
 #[tokio::test]
 async fn runner_does_not_store_a_missing_agent_error_and_supports_intermediate_calls() {
     let graph = Memory {
@@ -208,9 +242,14 @@ async fn runner_does_not_store_a_missing_agent_error_and_supports_intermediate_c
         .unwrap()
         .contents
         .insert(1, "root".into());
-    let validator = Validator::new(&graph, |_| Ok("v1".into()));
+    let validator = Validator::new(&graph);
     assert!(matches!(
-        validator.validate_node(&1).await,
+        validator
+            .verify(Review {
+                node: 1,
+                revision: "v1"
+            })
+            .await,
         Err(ValidationError::NoAgentConfigured)
     ));
     {
@@ -220,7 +259,16 @@ async fn runner_does_not_store_a_missing_agent_error_and_supports_intermediate_c
     }
     let agent = MockAgent::default();
     let validator = validator.with_agent(&agent, &Renderer);
-    assert!(validator.validate_node(&1).await.unwrap().result);
+    assert!(
+        validator
+            .verify(Review {
+                node: 1,
+                revision: "v1"
+            })
+            .await
+            .unwrap()
+            .result
+    );
     let state = graph.state.lock().unwrap();
     assert_eq!(
         state.records[&1].dependencies,
@@ -325,14 +373,16 @@ fn snapshots_record_exact_reads_and_retain_distinct_versions() {
         ]
     );
     assert_eq!(graph.state.lock().unwrap().reads, vec![1, 1, 1, 2]);
-    let record = inspection.finish(
-        "v1".into(),
-        Judgment {
-            result: true,
-            rationale: "ok".into(),
-            metadata: (),
-        },
-    );
+    let record = inspection
+        .finish(
+            "v1".into(),
+            Judgment {
+                result: true,
+                rationale: "ok".into(),
+                metadata: (),
+            },
+        )
+        .unwrap();
     assert_eq!(
         record.dependencies,
         vec![
@@ -356,19 +406,20 @@ fn wildcard_versions_still_check_inputs_and_errors() {
         .contents
         .insert(1, "same".into());
     let mut record = Record {
-        procedure: "*".into(),
+        revision: "*".into(),
         dependencies: vec![Dependency::Node(1, fp("same"))],
-        output: Judgment {
+        output: serde_json::to_value(Judgment {
             result: false,
             rationale: "negative".into(),
             metadata: (),
-        },
+        })
+        .unwrap(),
     };
     assert!(record_is_current(&graph, "v42", &record).unwrap());
-    assert!(!record.output.result);
-    record.procedure = "v*".into();
+    assert!(!record.output["result"].as_bool().unwrap());
+    record.revision = "v*".into();
     assert!(!record_is_current(&graph, "v42", &record).unwrap());
-    record.procedure = "v42".into();
+    record.revision = "v42".into();
     assert!(record_is_current(&graph, "v42", &record).unwrap());
     record.dependencies = vec![Dependency::Node(
         1,
@@ -378,7 +429,7 @@ fn wildcard_versions_still_check_inputs_and_errors() {
         },
     )];
     assert!(!record_is_current(&graph, "v42", &record).unwrap());
-    record.procedure = "*".into();
+    record.revision = "*".into();
     record.dependencies = vec![Dependency::Node(1, fp("changed"))];
     assert!(!record_is_current(&graph, "v42", &record).unwrap());
     graph.state.lock().unwrap().fail_read = true;
@@ -412,7 +463,7 @@ fn labeled_selections_track_only_target_membership_without_reading_contents() {
         rationale: "selection".into(),
         metadata: (),
     };
-    let empty = ctx.inspection().finish("v1".into(), output());
+    let empty = ctx.inspection().finish("v1".into(), output()).unwrap();
     graph.state.lock().unwrap().edges.insert(1, vec![(8, 2)]);
     assert!(record_is_current(&graph, "v1", &empty).unwrap());
     graph
@@ -425,7 +476,7 @@ fn labeled_selections_track_only_target_membership_without_reading_contents() {
     let selected = ValidationContext::new(&graph, 1);
     assert_eq!(selected.successors(&7).unwrap(), [5, 3, 5]);
     selected.successors(&7).unwrap();
-    let record = selected.inspection().finish("v1".into(), output());
+    let record = selected.inspection().finish("v1".into(), output()).unwrap();
     assert_eq!(
         record.dependencies,
         [Dependency::OutgoingEdges(
@@ -463,9 +514,27 @@ fn labeled_selections_track_only_target_membership_without_reading_contents() {
 #[tokio::test]
 async fn runner_reuses_negative_judgments_and_records_only_callback_observations() {
     let graph = Memory::default();
-    let validator = Validator::new(&graph, |_| Ok("v1".into()));
-    assert!(!validator.validate_node(&9).await.unwrap().result);
-    assert!(!validator.validate_node(&9).await.unwrap().result);
+    let validator = Validator::new(&graph);
+    assert!(
+        !validator
+            .verify(Review {
+                node: 9,
+                revision: "v1"
+            })
+            .await
+            .unwrap()
+            .result
+    );
+    assert!(
+        !validator
+            .verify(Review {
+                node: 9,
+                revision: "v1"
+            })
+            .await
+            .unwrap()
+            .result
+    );
     {
         let state = graph.state.lock().unwrap();
         assert_eq!(state.started, vec![9]);
@@ -474,19 +543,35 @@ async fn runner_reuses_negative_judgments_and_records_only_callback_observations
         assert!(state.records[&9].dependencies.is_empty());
     }
     assert!(
-        matches!(validator.check_node(&9).await.unwrap(), EvidenceState::Current(j) if !j.result)
+        matches!(validator.check(&Review { node: 9, revision: "v1" }).await.unwrap(), EvidenceState::Current(j) if !j.result)
     );
     assert!(matches!(
-        validator.check_node(&8).await.unwrap(),
+        validator
+            .check(&Review {
+                node: 8,
+                revision: "v1"
+            })
+            .await
+            .unwrap(),
         EvidenceState::Missing
     ));
-    let v2 = Validator::new(&graph, |_| Ok("v2".into()));
+    let v2 = Validator::new(&graph);
     assert!(matches!(
-        v2.check_node(&9).await.unwrap(),
+        v2.check(&Review {
+            node: 9,
+            revision: "v2"
+        })
+        .await
+        .unwrap(),
         EvidenceState::Stale
     ));
-    v2.validate_node(&9).await.unwrap();
-    assert_eq!(graph.state.lock().unwrap().records[&9].procedure, "v2");
+    v2.verify(Review {
+        node: 9,
+        revision: "v2",
+    })
+    .await
+    .unwrap();
+    assert_eq!(graph.state.lock().unwrap().records[&9].revision, "v2");
     graph
         .state
         .lock()
@@ -494,8 +579,10 @@ async fn runner_reuses_negative_judgments_and_records_only_callback_observations
         .records
         .get_mut(&9)
         .unwrap()
-        .procedure = "*".into();
-    assert!(matches!(v2.check_node(&9).await.unwrap(), EvidenceState::Current(j) if !j.result));
+        .revision = "*".into();
+    assert!(
+        matches!(v2.check(&Review { node: 9, revision: "v2" }).await.unwrap(), EvidenceState::Current(j) if !j.result)
+    );
 }
 
 // {test}`requirements.sdk.graph.validation.validate_node.errors`
@@ -505,22 +592,26 @@ async fn runner_reuses_negative_judgments_and_records_only_callback_observations
 #[tokio::test]
 async fn resolution_storage_and_callback_errors_are_not_judgments() {
     let graph = Memory::default();
-    let bad_version = Validator::new(&graph, |_| Err("version"));
-    assert!(matches!(
-        bad_version.validate_node(&1).await,
-        Err(ValidationError::Graph("version"))
-    ));
-    assert!(graph.state.lock().unwrap().started.is_empty());
-    let validator = Validator::new(&graph, |_| Ok("v1".into()));
+    let validator = Validator::new(&graph);
     graph.state.lock().unwrap().fail_load = true;
     assert!(matches!(
-        validator.validate_node(&1).await,
+        validator
+            .verify(Review {
+                node: 1,
+                revision: "v1"
+            })
+            .await,
         Err(ValidationError::Graph("load"))
     ));
     graph.state.lock().unwrap().fail_load = false;
     graph.state.lock().unwrap().fail_store = true;
     assert!(matches!(
-        validator.validate_node(&1).await,
+        validator
+            .verify(Review {
+                node: 1,
+                revision: "v1"
+            })
+            .await,
         Err(ValidationError::Graph("store"))
     ));
     assert!(graph.state.lock().unwrap().records.is_empty());
@@ -528,9 +619,14 @@ async fn resolution_storage_and_callback_errors_are_not_judgments() {
         read_in_callback: true,
         ..Memory::default()
     };
-    let validator = Validator::new(&graph, |_| Ok("v1".into()));
+    let validator = Validator::new(&graph);
     assert!(matches!(
-        validator.validate_node(&1).await,
+        validator
+            .verify(Review {
+                node: 1,
+                revision: "v1"
+            })
+            .await,
         Err(ValidationError::Graph("missing"))
     ));
     assert!(graph.state.lock().unwrap().records.is_empty());
@@ -935,6 +1031,7 @@ async fn later_lighter_agent_calls_preserve_the_contexts_existing_trace() {
                     metadata: (),
                 }
             )
+            .unwrap()
             .dependencies,
         retained
     );
@@ -959,11 +1056,20 @@ async fn concurrent_single_node_validations_keep_separate_traces() {
             state.edges.insert(node, vec![(1, 99)]);
         }
     }
-    let validator = Validator::new(&graph, |_| Ok("v1".into()));
+    let validator = Validator::new(&graph);
     let (first, second, third) = futures::join!(
-        validator.validate_node(&1),
-        validator.validate_node(&2),
-        validator.validate_node(&3),
+        validator.verify(Review {
+            node: 1,
+            revision: "v1"
+        }),
+        validator.verify(Review {
+            node: 2,
+            revision: "v1"
+        }),
+        validator.verify(Review {
+            node: 3,
+            revision: "v1"
+        }),
     );
     assert!(first.unwrap().result);
     assert!(second.unwrap().result);

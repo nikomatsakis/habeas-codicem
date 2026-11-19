@@ -244,8 +244,7 @@ settings that apply across projects. A workspace file named `habeas.toml` holds
 settings for the directory containing it and its descendants. Both are UTF-8 TOML.
 Each must start with the schema version `version = 1`; any other version is
 rejected. Apart from `version`, the top level may contain only feature tables:
-`[authoring]` in either file, and `[evidence]` and `[coverage]` in
-`habeas.toml`. Unknown keys,
+`[authoring]` in either file, and `[evidence]` in `habeas.toml`. Unknown keys,
 wrongly typed values, and invalid TOML are reported with the file and setting.
 A file containing only `version = 1` is valid and configures nothing. The
 [common data structures](requirements/configuration.md#common-data-structures)

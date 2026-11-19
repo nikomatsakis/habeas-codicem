@@ -1,7 +1,7 @@
 {
   "requirement": "A write-capable conversion atomically replaces the selected file at its existing\nlocation. Readers observe either the original complete record or the converted\ncomplete record. Failure before replacement leaves the original file unchanged.",
   "determination": true,
-  "rationale": "The tests adequately check `requirements.sdk.habeas.evidence_conversion.atomic`. I read the implementation (`write_atomic` and `convert_file` in `src/evidence_format.rs`) only to see how the tests exercise it.\n\nThe requirement has three obligations:\n\n1. **Atomic replacement at the existing location.** `src/evidence_format.rs#mod[tests]/fn[atomic_conversion_replaces_the_file_and_never_exposes_partial_bytes]` checks this in two ways.\n   - On unix it asserts that the inode changes after `convert_file`. That shows a replacement rather than an in-place rewrite.\n   - It asserts that the final bytes at the same path equal the expected converted record.\n   - `fn[loading_is_read_only_and_conversion_is_in_place_idempotent_and_preserves_failures]` also asserts that the file at the same path changes (`assert_ne!(after, before)`).\n\n2. **Readers see either the original or the converted complete record.** The atomic test starts a writer thread that calls `convert_file`, synchronized by a barrier. The main thread reads the file in a loop until the writer finishes. Every read must equal exactly `before` or `after`, so a truncated or partial file would fail the test. The expected `after` is computed independently from `encode(decode(..))`.\n\n3. **Failure before replacement leaves the original unchanged.** The tests cover three failure paths.\n   - In `fn[loading_is_read_only_and_conversion_is_in_place_idempotent_and_preserves_failures]`, a malformed file makes `convert_file` return an error. The file bytes stay `malformed`, and the directory still holds only one entry, so no temp file is left behind.\n   - In the atomic test, the target path is a directory, so `persist` fails. `write_atomic` returns an error, the directory's contents are intact, and no temp file is left.\n   - In `src/sdk.rs#mod[tests]/fn[domain_storage_round_trips_each_review_kind_and_preserves_records_on_errors]`, an inconsistent record makes `store_evidence` fail, and the on-disk bytes equal the original. The directory-at-target failure there leaves the directory and exactly three entries.\n\nA failure while writing the temp file is hard to inject. It would happen before any replacement, and the code closes the temp file on that path. The requirement does not name it as a separate case.\n\nI found no gap, and there are no `{fixme}` acknowledgments to account for.",
+  "rationale": "The tests adequately cover all three obligations in `requirements.sdk.habeas.evidence_conversion.atomic`.\n\n**Obligations**\n1. A write-capable conversion replaces the selected file in place, at its existing location.\n2. Readers see either the original complete record or the converted complete record.\n3. A failure before replacement leaves the original file unchanged.\n\n**Coverage**\n- **Replacement at the same location:**\n  - `src/evidence_format.rs#mod[tests]/fn[atomic_conversion_replaces_the_file_and_never_exposes_partial_bytes]` calls `convert_file` on a legacy record. It asserts that the file at the same path now holds the exact converted bytes.\n  - On unix it also asserts that the inode changed, which shows the file was replaced rather than rewritten in place.\n  - `src/evidence_format.rs#mod[tests]/fn[loading_is_read_only_and_conversion_is_in_place_idempotent_and_preserves_failures]` checks that the converted file differs from the original (`assert_ne!(after, before)`) and that a second conversion is a no-op.\n- **Readers see only complete records:**\n  - The atomic test runs a reader loop in parallel with a writer thread, synchronised by a barrier.\n  - Every read must equal either the pre-conversion bytes or the expected post-conversion bytes. Any partial or truncated content would fail.\n  - The loop only exits once the writer has finished.\n- **Failure leaves the original unchanged:**\n  - Converting a malformed file returns an error, and the file still holds `malformed`. This is in the loading/conversion test.\n  - The atomic test makes the target a directory, so replacement fails. `write_atomic` returns an error, the directory contents are untouched, and no temp file is left behind (`read_dir` count is 1).\n  - `src/sdk.rs#mod[tests]/fn[domain_storage_round_trips_each_review_kind_and_preserves_records_on_errors]` checks at the storage level that rejected stores leave the existing record byte-for-byte unchanged. It also checks that a failed store over a directory path leaves the directory in place with no stray temp files.\n\n**Residual risk**\n- The implementation, `write_atomic` and `convert_file`, writes to a `NamedTempFile` in the same directory and then persists it over the target. The one failure path not injected directly is a `write_all` error on the temp file. That would need fault injection, and the replacement-failure and decode-failure paths already cover the \"unchanged on failure\" behaviour.\n\nI found no gap.",
   "references": "5e35bd132f6fce990a20e6b07056a686fa2b63083cb444e05a9aeb8615793374",
   "inputs": [
     {
@@ -20,7 +20,7 @@
     {
       "file": "src/evidence_format.rs",
       "item": "mod[tests]/fn[loading_is_read_only_and_conversion_is_in_place_idempotent_and_preserves_failures]",
-      "hash": "ec6695784f9dc3b66341f7a060b7df848356927521d9f8511313680ff4a3a758"
+      "hash": "af23112d5fa7fd3a2009bd942014b2e8fdb5793adbc271afd5901c8b852a8c08"
     },
     {
       "file": "src/evidence_format.rs",
@@ -30,7 +30,7 @@
     {
       "file": "src/sdk.rs",
       "item": "mod[tests]/fn[domain_storage_round_trips_each_review_kind_and_preserves_records_on_errors]",
-      "hash": "3aee455629cb1d2a79b6c036e3502d4c16275dba4a1ad9b90d84f4c39a5fe05d"
+      "hash": "e8e4db482c0678178b724e9586468045e9988eec9bae93738b5518e2453ed317"
     },
     {
       "file": "src/evidence_format.rs",
@@ -47,13 +47,25 @@
   "review_version": "habeas-review-v1",
   "dependencies": [
     {
-      "OutgoingEdges": [
+      "Node": [
         {
-          "Requirement": "requirements.sdk.habeas.evidence_conversion.atomic"
+          "ReferenceSet": "requirements.sdk.habeas.evidence_conversion.atomic"
         },
         {
           "scheme": "habeas-reference-set-v1",
           "value": "5e35bd132f6fce990a20e6b07056a686fa2b63083cb444e05a9aeb8615793374"
+        }
+      ]
+    },
+    {
+      "OutgoingEdges": [
+        {
+          "Requirement": "requirements.sdk.habeas.evidence_conversion.atomic"
+        },
+        "Mandatory",
+        {
+          "scheme": "node-path-set-sha256-v1",
+          "value": "a4e3a94957050259a0b4e65ba907277bd33a0d7b5e920623294201baed698fc4"
         }
       ]
     },
@@ -81,7 +93,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "3e200ff23706ab8974f491b96154de208f8a3f331460cf97220142f7dd296baf"
+          "value": "62da606b1bf180e1fed5867ac36627988500a488424db3757aa60d2aafd1ba7e"
         }
       ]
     },
@@ -115,7 +127,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "42a92c8357eaad022637e33d3aba0497c0ba99e081d45dc63960c6415ed1989d"
+          "value": "4108c66c2d13487666ca5301443f58310278fd62510c5568fc89de35306135dc"
         }
       ]
     },

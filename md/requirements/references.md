@@ -64,6 +64,8 @@ helpers need no annotation merely because they serve other code.
 :::
 
 :::{req} procedure
+:impl: assets/skills/habeas-requirements/SKILL.md
+:impl: assets/skills/habeas-bootstrap-requirements/SKILL.md
 A source item MUST choose its references under {cite}`requirements.references.roles`
 for each candidate definition by this procedure, and MAY carry several:
 

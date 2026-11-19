@@ -131,11 +131,9 @@ several):
 2. Otherwise a root gets `{impl}`. Leave what it reaches unmarked.
 3. Otherwise, code that should be re-checked when the requirement changes gets
    `{cite}`.
-4. Otherwise, if the item is still uncovered after `habeas author` has run
-   (see Gotchas), and it serves other code and carries out no requirement
-   itself, it gets
-   `` // {cite}`habeas:util` ``. That includes code a library calls, such as a
-   trait implementation it requires.
+4. Otherwise, leave it unmarked. An optional
+   `` // {cite}`habeas:util` `` can explain that an item serves other code;
+   it is not required bookkeeping.
 
 Edge cases:
 
@@ -207,11 +205,7 @@ agreed requirement.
 
 ## Gotchas
 
-- In Rust, every explicit function or method, including trait methods and test
-  helpers, and every struct, enum, and union must be covered: by
-  its own reference, or by a current assessment that read it or an enclosing
-  item. A reference on an enclosing module or `impl` is not the item's own.
-- Search results only locate code; they cover nothing.
-- Reads exist only after `habeas author`, so author before treating an item as
-  uncovered, and before giving it `habeas:util`. For an item still uncovered
-  after that, see "Uncovered Rust items" in the habeas-evidence skill.
+- In Rust, every runnable test needs a `{test}` reference. Ordinary functions,
+  types, trait methods, and test helpers need no individual book connection.
+- Search results locate code. Recorded reads track evidence freshness; they do
+  not satisfy a separate obligation to index every Rust item.

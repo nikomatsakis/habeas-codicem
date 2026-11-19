@@ -7,8 +7,8 @@ use crate::{
 };
 use habeas_sdk::{
     graph::{
-        Fingerprint, Fingerprinting, Graph, InspectionContext, NodePath, Validation,
-        ValidationContext, ValidationError,
+        CriterionPath, EvidenceStorage, Fingerprint, Fingerprinting, Graph, InspectionContext,
+        NodePath, Validation, ValidationContext, ValidationError,
     },
     procedure::{Agent, AgentInput, AgentInputRenderer, AgentRequest},
 };
@@ -59,7 +59,6 @@ impl Graph for ReviewGraph<'_> {
     type NodeId = HabeasNode;
     type NodeContent = Value;
     type EdgeLabel = HabeasEdgeLabel;
-    type JudgmentMetadata = Value;
     type Error = io::Error;
 
     // {cite}`habeas:util`
@@ -108,6 +107,29 @@ impl ReviewGraph<'_> {
     }
 }
 
+impl EvidenceStorage for ReviewGraph<'_> {
+    // {impl}`requirements.sdk.graph.evidence.evidence_storage`
+    async fn load_evidence(
+        &self,
+        source: &HabeasNode,
+        criterion: &CriterionPath,
+    ) -> io::Result<Option<habeas_sdk::graph::Record<HabeasNode, HabeasEdgeLabel>>> {
+        self.domain().load_evidence(source, criterion).await
+    }
+
+    // {impl}`requirements.sdk.graph.evidence.evidence_storage`
+    async fn store_evidence(
+        &self,
+        source: &HabeasNode,
+        criterion: &CriterionPath,
+        record: &habeas_sdk::graph::Record<HabeasNode, HabeasEdgeLabel>,
+    ) -> io::Result<()> {
+        self.domain()
+            .store_evidence(source, criterion, record)
+            .await
+    }
+}
+
 impl Fingerprinting for ReviewGraph<'_> {
     // {cite}`habeas:util`
     fn fingerprint(&self, node: &HabeasNode, content: &Value) -> Fingerprint {
@@ -145,25 +167,41 @@ impl AgentInputRenderer<ReviewGraph<'_>> for Renderer {
 // {impl}`requirements.sdk.graph.validation.check_procedure`
 // {impl}`requirements.sdk.graph.agent-calls.procedures`
 // {impl}`requirements.authoring.mandatory_inputs`
-impl Validation for ReviewGraph<'_> {
+struct Review {
+    node: HabeasNode,
+}
+
+impl Validation<ReviewGraph<'_>> for Review {
+    type Ok = habeas_sdk::graph::Judgment<Value>;
+
+    fn source_node_id(&self) -> HabeasNode {
+        self.node.clone()
+    }
+
+    fn criterion_path(&self) -> CriterionPath {
+        crate::sdk::review_criterion()
+    }
+
+    fn revision(&self) -> String {
+        crate::sdk::REVIEW_VERSION.into()
+    }
+
     // {cite}`habeas:util`
-    async fn validate<'a, 'd>(
-        &'a self,
-        ctx: &'a ValidationContext<'d, Self>,
-    ) -> Result<habeas_sdk::graph::Judgment<Value>, ValidationError<io::Error>>
-    where
-        'd: 'a,
-    {
+    async fn execute(
+        self,
+        ctx: &mut ValidationContext<'_, ReviewGraph<'_>>,
+    ) -> Result<habeas_sdk::graph::Judgment<Value>, ValidationError<io::Error>> {
+        let graph = ctx.inspection().graph();
         if let HabeasNode::Requirement(id) = ctx.node_id() {
             ctx.inspection()
                 .read(&HabeasNode::ReferenceSet(id.clone()))
                 .map_err(ValidationError::Graph)?;
         }
-        let (judgment, rationale, applies, verification) = match &self.operation {
+        let (judgment, rationale, applies, verification) = match &graph.operation {
             Operation::Assess => {
                 let request = ctx
                     .ask::<ReviewAnswer>()
-                    .context(&self.system)
+                    .context(&graph.system)
                     .current_node_contents();
                 let answer = if matches!(ctx.node_id(), HabeasNode::Requirement(_)) {
                     request
@@ -179,7 +217,7 @@ impl Validation for ReviewGraph<'_> {
             Operation::Verify(..) => {
                 let request = ctx
                     .ask::<VerificationAnswer>()
-                    .context(&self.system)
+                    .context(&graph.system)
                     .current_node_contents();
                 let answer = if matches!(ctx.node_id(), HabeasNode::Requirement(_)) {
                     request
@@ -202,7 +240,7 @@ impl Validation for ReviewGraph<'_> {
                 )
             }
         };
-        let mut conversation = self.conversation.lock().expect("review lease lock");
+        let mut conversation = graph.conversation.lock().expect("review lease lock");
         let (sources, usage) = conversation
             .as_mut()
             .expect("conversation returned its lease");
@@ -368,7 +406,7 @@ pub(super) async fn verify(
         Operation::Verify(judgment.clone(), rationale.into()),
     )
     .await?;
-    let mut value = record.output.metadata;
+    let mut value = record.output["metadata"].clone();
     if !site {
         value
             .as_object_mut()
@@ -390,7 +428,7 @@ async fn run(
     sources: &mut AssessmentSources,
     usage: &mut UsageLog,
     operation: Operation,
-) -> io::Result<habeas_sdk::graph::Record<HabeasNode, Value, HabeasEdgeLabel>> {
+) -> io::Result<habeas_sdk::graph::Record<HabeasNode, HabeasEdgeLabel>> {
     let subject = match &sources.subject_kind {
         AssessmentKind::Definition(..) => {
             AuthoringSubject::Definition(sources.subject_name.clone())
@@ -442,8 +480,10 @@ async fn run(
         agent_failure: Mutex::new(None),
     };
     let agent = ReviewAgent(provider);
-    let ctx = ValidationContext::with_agent(&graph, node.clone(), &agent, &Renderer);
-    let judgment = match graph.validate(&ctx).await {
+    let review = Review { node: node.clone() };
+    let revision = review.revision();
+    let mut ctx = ValidationContext::with_agent(&graph, node.clone(), &agent, &Renderer);
+    let judgment = match review.execute(&mut ctx).await {
         Ok(judgment) => judgment,
         Err(ValidationError::Graph(error)) => return Err(error),
         Err(ValidationError::Agent(message)) => {
@@ -457,10 +497,11 @@ async fn run(
         Err(ValidationError::NoAgentConfigured) => {
             return Err(io::Error::other("no agent is configured"));
         }
+        Err(ValidationError::Output(error)) => return Err(io::Error::other(error)),
     };
-    Ok(ctx
-        .inspection()
-        .finish(crate::sdk::review_version(&node)?, judgment))
+    ctx.inspection()
+        .finish(revision, judgment)
+        .map_err(io::Error::other)
 }
 
 #[cfg(test)]
@@ -537,6 +578,93 @@ mod tests {
         });
         assert!(inspection.read(&missing).is_err());
         assert_eq!(inspection.dependencies().len(), 1);
+    }
+
+    // {test}`requirements.sdk.graph.validation.check_procedure`
+    // {test}`requirements.sdk.graph.validation.check_node`
+    // {test}`requirements.sdk.graph.validation.validate_node`
+    // {test}`requirements.sdk.graph.evidence.evidence_storage`
+    // {test}`requirements.sdk.habeas.evidence_format.loading`
+    #[tokio::test]
+    async fn review_graph_persists_and_reuses_a_negative_validation_through_the_sdk() {
+        use habeas_sdk::graph::{EvidenceState, Validator};
+
+        let root = inputs::tests::project();
+        let state = tempfile::tempdir().unwrap();
+        let mut sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        let mut usage = UsageLog::start(state.path(), root.path(), "requirements.ready").unwrap();
+        let node = HabeasNode::Requirement(crate::sdk::RequirementId("requirements.ready".into()));
+        let graph = ReviewGraph {
+            root: root.path().into(),
+            node: node.clone(),
+            definitions: crate::evidence::load_definitions(root.path()).unwrap(),
+            outlines: sources.outlines.clone(),
+            mandatory: sources
+                .model_mandatory_inputs()
+                .into_iter()
+                .map(|input| {
+                    let selector = InputSelector::from_input(&input).unwrap();
+                    (HabeasNode::from(&selector), input)
+                })
+                .collect(),
+            reference_set: sources.reference_set.clone(),
+            system: initial_prompt(&sources).unwrap().system,
+            operation: Operation::Assess,
+            conversation: Mutex::new(Some((&mut sources, &mut usage))),
+            agent_failure: Mutex::new(None),
+        };
+        let provider = script(vec![(
+            "submit_judgment",
+            json!({"determination":false,"rationale":"The readiness case is missing."}),
+        )]);
+        let agent = ReviewAgent(&provider);
+        let validator = Validator::new(&graph).with_agent(&agent, &Renderer);
+        let review = || Review { node: node.clone() };
+        let path = node.evidence_path(root.path()).unwrap();
+        assert_eq!(review().source_node_id(), node);
+        assert_eq!(review().criterion_path().segments, ["review"]);
+        assert_eq!(review().revision(), crate::sdk::REVIEW_VERSION);
+        assert!(matches!(
+            validator.check(&review()).await.unwrap(),
+            EvidenceState::Missing
+        ));
+        assert!(!path.exists());
+        assert!(provider.requests.lock().unwrap().is_empty());
+
+        let answer = validator.verify(review()).await.unwrap();
+        assert!(!answer.result);
+        assert_eq!(answer.rationale, "The readiness case is missing.");
+        assert_eq!(answer.metadata["determination"], false);
+        let saved = fs::read(&path).unwrap();
+        let record = graph
+            .load_evidence(&node, &review().criterion_path())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(record.revision, crate::sdk::REVIEW_VERSION);
+        assert_eq!(record.output, serde_json::to_value(&answer).unwrap());
+        assert!(!record.dependencies.is_empty());
+        match validator.check(&review()).await.unwrap() {
+            EvidenceState::Current(cached) => {
+                assert_eq!(cached.result, answer.result);
+                assert_eq!(cached.rationale, answer.rationale);
+                assert_eq!(cached.metadata, answer.metadata);
+            }
+            state => panic!("expected a current negative answer, got {state:?}"),
+        }
+        assert_eq!(
+            validator.verify(review()).await.unwrap().metadata,
+            answer.metadata
+        );
+        assert_eq!(provider.requests.lock().unwrap().len(), 1);
+        assert_eq!(fs::read(&path).unwrap(), saved);
+
+        let other = CriterionPath {
+            segments: vec!["another".into(), "review".into()],
+        };
+        assert!(graph.load_evidence(&node, &other).await.unwrap().is_none());
+        assert!(graph.store_evidence(&node, &other, &record).await.is_err());
+        assert_eq!(fs::read(&path).unwrap(), saved);
     }
 
     struct Script {
@@ -857,8 +985,12 @@ mod tests {
                 crate::evidence_format::write_atomic(&path, &native).unwrap();
                 assert_eq!(findings(), legacy_findings, "{label}");
                 let before = fs::read(&path).unwrap();
-                let loaded = graph.load_evidence(&node).await.unwrap().unwrap();
-                assert_eq!(loaded.procedure, version);
+                let loaded = graph
+                    .load_evidence(&node, &crate::sdk::review_criterion())
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(loaded.revision, version);
                 assert_eq!(loaded.dependencies, decoded.dependencies);
                 assert_eq!(loaded.output, decoded.output);
                 assert_eq!(fs::read(&path).unwrap(), before);
@@ -891,7 +1023,12 @@ mod tests {
                 unique.dedup();
                 assert_eq!(unique.len(), native_findings.len());
                 let before = fs::read(&path).unwrap();
-                assert!(graph.load_evidence(&node).await.is_err());
+                assert!(
+                    graph
+                        .load_evidence(&node, &crate::sdk::review_criterion())
+                        .await
+                        .is_err()
+                );
                 assert_eq!(fs::read(&path).unwrap(), before);
             }
             // '*' accepts an unknown procedure version while preserving all
@@ -967,7 +1104,13 @@ mod tests {
                 assert_eq!(findings(), legacy_findings, "{label}: {mutations}");
                 // Staleness is an application finding, not a loading error.
                 let before = fs::read(&path).unwrap();
-                assert!(graph.load_evidence(&node).await.unwrap().is_some());
+                assert!(
+                    graph
+                        .load_evidence(&node, &crate::sdk::review_criterion())
+                        .await
+                        .unwrap()
+                        .is_some()
+                );
                 assert_eq!(fs::read(&path).unwrap(), before);
             }
             for version in [json!(2), json!("unsupported")] {
@@ -978,7 +1121,12 @@ mod tests {
                 assert_eq!(errors.len(), 1, "{label}: {errors:?}");
                 assert!(errors[0].contains("unsupported evidence format version"));
                 let before = fs::read(&path).unwrap();
-                assert!(graph.load_evidence(&node).await.is_err());
+                assert!(
+                    graph
+                        .load_evidence(&node, &crate::sdk::review_criterion())
+                        .await
+                        .is_err()
+                );
                 assert_eq!(fs::read(&path).unwrap(), before);
             }
             for header in [
@@ -993,14 +1141,28 @@ mod tests {
                     .extend(header.as_object().unwrap().clone());
                 crate::evidence_format::write_atomic(&path, &invalid).unwrap();
                 assert_eq!(findings().len(), 1, "{label}: {:?}", findings());
-                assert!(graph.load_evidence(&node).await.is_err());
+                assert!(
+                    graph
+                        .load_evidence(&node, &crate::sdk::review_criterion())
+                        .await
+                        .is_err()
+                );
             }
             fs::write(&path, b"malformed JSON").unwrap();
-            assert!(graph.load_evidence(&node).await.is_err());
+            assert!(
+                graph
+                    .load_evidence(&node, &crate::sdk::review_criterion())
+                    .await
+                    .is_err()
+            );
             assert_eq!(fs::read(&path).unwrap(), b"malformed JSON");
             crate::evidence_format::write_atomic(&path, &old).unwrap();
-            let loaded = graph.load_evidence(&node).await.unwrap().unwrap();
-            assert_eq!(loaded.procedure, "*");
+            let loaded = graph
+                .load_evidence(&node, &crate::sdk::review_criterion())
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(loaded.revision, "*");
             assert_eq!(loaded.output, decoded.output);
         }
     }

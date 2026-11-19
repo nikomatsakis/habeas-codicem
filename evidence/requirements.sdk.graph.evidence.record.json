@@ -1,8 +1,8 @@
 {
-  "requirement": "```rust,ignore\n/// The completed validation of one node, defined in habeas_sdk::graph.\npub struct Record<N, M, L = ()> {\n    /// Application-chosen version of the validation rules.\n    pub procedure: String,\n    /// Observations captured by the SDK; the callback need not assemble these.\n    pub dependencies: Vec<Dependency<N, L>>,\n    /// Preserve the result, rationale, and application metadata as returned.\n    pub output: Judgment<M>,\n}\n```\n\nThe application chooses the metadata type, serialization, and storage through\nthe graph's evidence methods. The SDK constructs `dependencies` from its trace.",
+  "requirement": "```rust,ignore\n// Defined in habeas_sdk::graph.\n#[derive(serde::Serialize, serde::Deserialize)]\npub struct Record<N, L = ()> {\n    /// Application-chosen revision of this criterion's review rules.\n    pub revision: String,\n    /// Observations captured by the SDK.\n    pub dependencies: Vec<Dependency<N, L>>,\n    /// Serialized Validation::Ok; interpretation belongs to the application.\n    pub output: serde_json::Value,\n}\n```\n\nThe SDK constructs the dependencies from execution's trace and encodes the\ncompleted result using its Serde JSON representation; there is no required\nboolean, rationale, or metadata shape. `Record`, `Dependency`, and\n`Fingerprint` support Serde when their type parameters do. The graph's node\nidentities and edge labels need not implement Serde unless its storage backend\nrequires those bounds.",
   "determination": true,
-  "rationale": "The tests adequately check `requirements.sdk.graph.evidence.record`.\n\n**Obligations derived from the text:**\n1. `Record` carries `procedure`, `dependencies` and `output`.\n2. `output` preserves the result, rationale and application metadata as returned.\n3. The application picks the metadata type and the storage, and metadata is not required to be serializable.\n4. The SDK builds `dependencies` from its trace, so the callback does not assemble them.\n\n**Coverage:**\n- `tests/contracts.rs#fn[checker_needs_no_validation_and_storage_preserves_nonserializable_metadata]`:\n  - It stores the `record()` fixture. The fixture sets `procedure` to \"v1\", has Node and OutgoingEdges dependencies, and has `output` with `result` false, a rationale, and `Metadata`.\n  - `Metadata` is a plain struct that derives only `Clone`, `Debug`, `PartialEq` and `Eq`, so it is application-chosen and not serializable.\n  - After a store/load round trip it asserts that `procedure`, `dependencies` and `output` are equal.\n  - It asserts that `check_node` returns `Current(j)` with `j == saved.output`.\n  - A different procedure (\"v2\") gives `Stale`, and changed content gives `Stale`. This shows the stored `procedure` and `dependencies` are used.\n- `tests/contracts.rs#fn[domain_validation_preserves_metadata_reuses_traces_and_propagates_failures]`:\n  - It checks that `validate_node` returns the callback's result, rationale and `Metadata { reason, count }` unchanged.\n  - The stored record satisfies `saved.output == judgment`.\n  - It asserts `saved.dependencies == record().dependencies`. The test callback does not build dependencies (the callback counter shows it ran once), so the SDK built them from its trace.\n  - Both a false-result judgment (Node 1) and a true-result one (Node 2) are stored and compared with the loaded output, including their metadata. This covers `result` being preserved in both directions.\n  - Reuse is shown: a second `validate_node` call returns the stored judgment with callbacks and writes both still at 1. This means the stored `procedure` matched the validator's \"v1\". `saved.procedure` is not asserted directly, but the reuse check would fail if the wrong value were stored.\n  - After a store failure the previously stored output stays unchanged.\n\n**Gaps:** I found none. The only weak spot is that `procedure` on a validator-produced record is checked only indirectly, through reuse. The requirement gives no distinct behavior for it beyond what the checker and reuse paths exercise.",
-  "references": "982e72f06554db9f161bbd1a324ef07b8d1a27c7dc660e4def336675cd113cf4",
+  "rationale": "The three marked tests cover each obligation in `requirements.sdk.graph.evidence.record`.\n\n- **Output encoded as Serde JSON, with no required shape.**\n  - `crates/habeas-sdk/tests/contracts.rs#fn[criteria_have_independent_typed_answers_and_cache_negative_results]` asserts the stored `Record.output` equals `{\"satisfied\": false, \"details\": [...]}` for the `Answer` type.\n  - The same test asserts it equals `serde_json::to_value(&judgment)` for a `Judgment`.\n  - It also stores a plain `Vec<String>` answer and a `Judgment` whose metadata contradicts its result, so no boolean, rationale, or metadata shape is required.\n\n- **Dependencies built from the execution trace.**\n  - `crates/habeas-sdk/tests/contracts.rs#fn[changed_dependencies_precede_decoding_and_execution_records_its_own_reads]` checks that the stored record's dependencies are exactly `Dependency::Node(Node(2), Fingerprint{text-v1,\"after\"})`. This matches the content observed during execution, not the earlier record's \"before\".\n  - It also checks that freshness and execution each make their own read (`reads == [2, 2]`).\n  - The first test asserts empty dependencies when the execution made no reads.\n\n- **`Record`, `Dependency` and `Fingerprint` support Serde when their type parameters do.**\n  - `crates/habeas-sdk/tests/storage.rs#fn[records_round_trip_and_malformed_or_incompatible_data_is_an_error]` round-trips records through JSON files. It checks `revision`, `dependencies` and `output` for `Record<String, ()>` and for `Record<String, String>` with an `OutgoingEdges` dependency that has a non-ASCII label and a `Fingerprint`.\n  - It also checks that loading with mismatched type parameters (`u8`) fails with a JSON error.\n\n- **Node identities and edge labels need not implement Serde.** The `Node(u8)` type in `contracts.rs` deliberately lacks Serde, Hash and Display. The in-memory storage and the SDK-built records still work with it, which exercises the \"unless storage requires\" clause.\n\n- **`revision` field.** The record's `revision` is asserted on load in the storage round-trip test. Other `contracts.rs` tests also assert that the stored revision equals the application's revision. Examples are `fn[concurrent_same_criterion_executions_keep_complete_independent_records]` and `fn[revision_and_dependency_checks_precede_output_decoding]`. They are not marked with `{test}` for this requirement, but the field is a plain struct member and the marked tests already exercise it, so I don't count this as a gap.\n\nI found no obligation that lacks a test, and no plausible violating behavior that these assertions would accept.",
+  "references": "1de4bc8cde8a0da55f204faddbeafbe2fbede33f90036ae53604885c8626a3d6",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.evidence.record",
@@ -12,51 +12,66 @@
       "text": [
         ":::{req} record",
         "```rust,ignore",
-        "/// The completed validation of one node, defined in habeas_sdk::graph.",
-        "pub struct Record<N, M, L = ()> {",
-        "    /// Application-chosen version of the validation rules.",
-        "    pub procedure: String,",
-        "    /// Observations captured by the SDK; the callback need not assemble these.",
+        "// Defined in habeas_sdk::graph.",
+        "#[derive(serde::Serialize, serde::Deserialize)]",
+        "pub struct Record<N, L = ()> {",
+        "    /// Application-chosen revision of this criterion's review rules.",
+        "    pub revision: String,",
+        "    /// Observations captured by the SDK.",
         "    pub dependencies: Vec<Dependency<N, L>>,",
-        "    /// Preserve the result, rationale, and application metadata as returned.",
-        "    pub output: Judgment<M>,",
+        "    /// Serialized Validation::Ok; interpretation belongs to the application.",
+        "    pub output: serde_json::Value,",
         "}",
         "```",
         "",
-        "The application chooses the metadata type, serialization, and storage through",
-        "the graph's evidence methods. The SDK constructs `dependencies` from its trace.",
+        "The SDK constructs the dependencies from execution's trace and encodes the",
+        "completed result using its Serde JSON representation; there is no required",
+        "boolean, rationale, or metadata shape. `Record`, `Dependency`, and",
+        "`Fingerprint` support Serde when their type parameters do. The graph's node",
+        "identities and edge labels need not implement Serde unless its storage backend",
+        "requires those bounds.",
         ":::"
       ]
     },
     {
       "file": "crates/habeas-sdk/tests/contracts.rs",
-      "item": "fn[checker_needs_no_validation_and_storage_preserves_nonserializable_metadata]",
-      "hash": "73c0250290985756f83e208a33c20419dbe3525a5086eac90cc792f418857428"
+      "item": "fn[criteria_have_independent_typed_answers_and_cache_negative_results]",
+      "hash": "446b6469843c4e83ae2f009708952547195e937e1ba90eb8f96913ae26a0c43f"
     },
     {
       "file": "crates/habeas-sdk/tests/contracts.rs",
-      "item": "fn[domain_validation_preserves_metadata_reuses_traces_and_propagates_failures]",
-      "hash": "38b36cadc68999b752d87ad2c6911273bb4a6346d008c27a4dbaa9458d3574fa"
+      "item": "fn[changed_dependencies_precede_decoding_and_execution_records_its_own_reads]",
+      "hash": "7f5a4297c59cf706aa9708abdd6b37783402003fa61ee37740669eb77947302a"
+    },
+    {
+      "file": "crates/habeas-sdk/tests/storage.rs",
+      "item": "fn[records_round_trip_and_malformed_or_incompatible_data_is_an_error]",
+      "hash": "0f0d3ae70864b6099d10bb2cd07374f5bc748e25da848e22d193e1c6a4e513d8"
     },
     {
       "file": "crates/habeas-sdk/tests/contracts.rs",
-      "item": "struct[Metadata]",
-      "hash": "85f74ea28b165e91ba98c5a3c0f077f23846a5bd6107b9f60023de40d817d56c"
+      "item": "struct[Node]",
+      "hash": "6432ba1c03e5d58df823ea2106175d9c26356019b703ba3906c9d80ba040abd6"
     },
     {
       "file": "crates/habeas-sdk/tests/contracts.rs",
-      "item": "struct[GraphOnly]",
-      "hash": "23e7ab91b76886fe379b7c1690655fb8b2d15530d229b18e52b578562331082d"
+      "item": "impl[Review<O>/Validation<Application>]/fn[revision]",
+      "hash": "5fc0e87d5a84d1b2f01e950afee02cc951d821638b965d073c4f4d02f5cad591"
     },
     {
       "file": "crates/habeas-sdk/tests/contracts.rs",
-      "item": "macro[graph]",
-      "hash": "a8254351866f14dde8bbbc70587af63cde87c90893c5d0072a3770e05f401d65"
+      "item": "fn[revision_and_dependency_checks_precede_output_decoding]",
+      "hash": "037876dd132368f33b90db17538fe87aedbec87244c0fe7f964debcd1a946874"
     },
     {
       "file": "crates/habeas-sdk/tests/contracts.rs",
-      "item": "fn[record]",
-      "hash": "3203c60db08ed46a5be9cc3075f156b642f9879c89e36b17a8f5eeff95db0aa6"
+      "item": "fn[concurrent_same_criterion_executions_keep_complete_independent_records]",
+      "hash": "e405b8241ff9a2f2f4c9a4813ed26e653a628d80e44d72a315590f6527ea8703"
+    },
+    {
+      "file": "crates/habeas-sdk/tests/agent.rs",
+      "item": "struct[Node]",
+      "hash": "37a5d012a8c68e204aa82707b29ccf1782aab55095e84abb1a0e498034e1b462"
     }
   ],
   "format_version": 1,
@@ -69,7 +84,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "982e72f06554db9f161bbd1a324ef07b8d1a27c7dc660e4def336675cd113cf4"
+          "value": "1de4bc8cde8a0da55f204faddbeafbe2fbede33f90036ae53604885c8626a3d6"
         }
       ]
     },
@@ -81,7 +96,7 @@
         "Mandatory",
         {
           "scheme": "node-path-set-sha256-v1",
-          "value": "85899a19b182c27767ced411152718c9dc0838d8c91f51fa32a9fb035a6e1a8c"
+          "value": "bba21c4d77128e9a608d680263a5d8d81c01b04884416db0bb9e730a9cc7744a"
         }
       ]
     },
@@ -92,7 +107,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "5a1b5f10e6b1b8bdd451618363e668a50d6679c668543fd0556c7e12070dea86"
+          "value": "3b6e61766ee437af5a3ec20ccf92af96176d6b14391ed1e394b05be4f91eba6a"
         }
       ]
     },
@@ -104,12 +119,12 @@
               "scheme": "repo",
               "location": "crates/habeas-sdk/tests/contracts.rs"
             },
-            "selector": "fn[checker_needs_no_validation_and_storage_preserves_nonserializable_metadata]"
+            "selector": "fn[criteria_have_independent_typed_answers_and_cache_negative_results]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "c0b56943808cd044b6b281443bf23388811599f2cdf469fff7a128b8c3c6c722"
+          "value": "f801a7b1a136d5f9447de8c3affe17a43576ca694017a24a592472fbcb3ff6f0"
         }
       ]
     },
@@ -121,12 +136,29 @@
               "scheme": "repo",
               "location": "crates/habeas-sdk/tests/contracts.rs"
             },
-            "selector": "fn[domain_validation_preserves_metadata_reuses_traces_and_propagates_failures]"
+            "selector": "fn[changed_dependencies_precede_decoding_and_execution_records_its_own_reads]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "f9e3986c618e6b2061a8497398e7c970763c8d325fa919bc5191e8176942eaf1"
+          "value": "e7f731e1c0c82c2c3e5b26a6e8cfdb6ac657719595c9e5f378e85cb26a8585fe"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/tests/storage.rs"
+            },
+            "selector": "fn[records_round_trip_and_malformed_or_incompatible_data_is_an_error]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "fc51a8f4ad4e71d55aec287ea9aa55b2fdc0b320ed1ffb9d97019020100bae46"
         }
       ]
     },
@@ -138,12 +170,12 @@
               "scheme": "repo",
               "location": "crates/habeas-sdk/tests/contracts.rs"
             },
-            "selector": "struct[Metadata]"
+            "selector": "struct[Node]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "9bf1eb0050fb3d22f47c9900473be63c106b122201485d91dea3ac2ac9e18e1e"
+          "value": "124c6b0c72fe4c4863e1dac2896d9f0a717336d624cb5e70f269ceedf5969755"
         }
       ]
     },
@@ -155,12 +187,12 @@
               "scheme": "repo",
               "location": "crates/habeas-sdk/tests/contracts.rs"
             },
-            "selector": "struct[GraphOnly]"
+            "selector": "impl[Review<O>/Validation<Application>]/fn[revision]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "f690f146ba5fe03c81ad5bece692ec9f2ab379222cc0109de5482b5f46fc8b64"
+          "value": "3f3adb4b924bf9816615f3495709a2fc83ac82175631ecb8b2b6bf815863bb2d"
         }
       ]
     },
@@ -172,12 +204,12 @@
               "scheme": "repo",
               "location": "crates/habeas-sdk/tests/contracts.rs"
             },
-            "selector": "macro[graph]"
+            "selector": "fn[revision_and_dependency_checks_precede_output_decoding]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "539721e3ea88be73d10a78f363c8a123e122350c396aa7766dd9a7722d2198e1"
+          "value": "dc4ba781fe76ced7fd53e2f5fd9e41a5f9df5791b2e6ab25e6c611340fd04b42"
         }
       ]
     },
@@ -189,12 +221,29 @@
               "scheme": "repo",
               "location": "crates/habeas-sdk/tests/contracts.rs"
             },
-            "selector": "fn[record]"
+            "selector": "fn[concurrent_same_criterion_executions_keep_complete_independent_records]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "05a60a644b9c1fd3a582c5310e6d24591bf5f92405fcecb04af35e6198f2a44c"
+          "value": "1462add7a76db2b9132d8f764dc0fd630cb95d9b8c3c905a124a2399225d2805"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/tests/agent.rs"
+            },
+            "selector": "struct[Node]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "dd4a201006d469e027fb8f7ed4890dc5a8ee7252210ee6df4664916375b672ff"
         }
       ]
     }

@@ -1,8 +1,8 @@
 {
   "requirement": "```rust,ignore\n/// Contents paired with the fingerprint of that same observation.\n#[derive(Clone, Debug)]\npub struct Snapshot<T> {\n    pub content: T,\n    pub fingerprint: Fingerprint,\n}\n```\n\nThis type lives in `habeas_sdk::graph`. For node reads, the SDK constructs it by\npassing the identity and the contents returned by `Graph::node_content` to\n`Fingerprinting::fingerprint`, without another read. For a label-specific edge\nquery, the SDK constructs the snapshot from the returned targets and their\ntarget-set fingerprint, without another query.\n`T` needs no filesystem path or source span.",
   "determination": true,
-  "rationale": "The reviewed tests adequately check `requirements.sdk.graph.fingerprinting.snapshot`. I read the implementation only to confirm how each snapshot is built. In `crates/habeas-sdk/src/graph.rs`, `Snapshot<T>` has `content` and `fingerprint` and derives `Clone` and `Debug`. Node reads go through `prepare_read` and edge reads through `prepare_edges`.\n\n**Node snapshots: fingerprint built from the same content, without another read.**\n- `crates/habeas-sdk/tests/contracts.rs#fn[identities_remain_stable_and_fingerprinting_uses_the_supplied_node_snapshot]` reads a snapshot while the text is \"before\", then changes the graph to \"after\". It asserts `snapshot.fingerprint` equals the fingerprint of \"1:before\", which is what `graph.fingerprint(&Node(1), &snapshot.content)` returns. It also asserts that the same content fingerprinted under a different identity (`Node(2)`) gives a different fingerprint, so the identity is part of the input.\n- `crates/habeas-sdk/tests/validation.rs#fn[snapshots_record_exact_reads_and_retain_distinct_versions]` asserts `read_snapshot(&1).unwrap().fingerprint == fp(\"before\")`. It asserts the recorded reads are exactly `[1, 1, 1, 2]`, one `node_content` call per read and none extra. It also asserts the dependencies keep \"before\" and \"after\" as separate `Dependency::Node` entries.\n- `crates/habeas-sdk/tests/agent.rs#fn[graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery]` asserts the recorded `Dependency::Node` fingerprint matches the delivered 18,000-character content.\n- `src/sdk.rs#mod[tests]/fn[requirement_edges_and_input_freshness_use_the_sdk]` fingerprints a retained `node_content` result. It asserts a pinned fingerprint value and that retained content keeps the old fingerprint.\n\n**Edge snapshots: built from the returned targets and their target-set fingerprint, without another query.**\n- `crates/habeas-sdk/tests/validation.rs#fn[labeled_selections_track_only_target_membership_without_reading_contents]` has stored edges `(7,5),(7,3),(7,5)`. It asserts the recorded dependency is `OutgoingEdges(1, 7, edge_fingerprint(&graph, &[3, 5]))`. It asserts that no node contents were read, and that the recorded fingerprint governs later freshness.\n- `crates/habeas-sdk/tests/validation.rs#fn[explicit_insertions_preserve_order_repetition_and_selection_snapshots]` asserts the edge dependency fingerprint is `edge_fingerprint(.., &[2, 3])`, while the delivered targets keep their order and repeats.\n- `crates/habeas-sdk/tests/agent.rs#fn[agent_edge_tools_record_selections_without_validating_targets]` has a graph whose `outgoing_edges` returns an error on any second lookup for node 1. The test asserts exactly one lookup, that the recorded dependency carries the edge fingerprint, and that the delivered tool result contains the targets.\n- `src/sdk.rs#mod[tests]/fn[requirement_edges_and_input_freshness_use_the_sdk]` checks `outgoing_edges` returns a snapshot whose content is empty and then one node.\n\n**Remaining clauses.**\n- The type location in `habeas_sdk::graph`, the `Clone`/`Debug` derives, and \"`T` needs no path or span\" are structural. They have no conditional or transformation, and the tests use the type through that path. `tests/validation.rs` and `tests/contracts.rs` show different `T` instances (node contents and `Vec<NodeId>`).\n\nI found no plausible violation that these tests would accept.",
-  "references": "122b118951adf1d51f96888367c2a6da02a6936b0d36020683607aab62561f5f",
+  "rationale": "I judge the tests adequate for `requirements.sdk.graph.fingerprinting.snapshot`. I did not read the implementation. I also did not read the `edge_fingerprint` helper, and I assumed it builds the target-set fingerprint.\n\n**Node reads: contents and fingerprint come from one observation**\n- `crates/habeas-sdk/tests/validation.rs#fn[snapshots_record_exact_reads_and_retain_distinct_versions]` calls `read_snapshot`. It asserts that the snapshot fingerprint equals `fp(\"before\")`. It then changes the stored contents and reads again. The recorded dependencies keep both versions, `Node(1, fp(\"before\"))` and `Node(1, fp(\"after\"))`.\n- The same test asserts the graph's read log is exactly `[1, 1, 1, 2]`. That is one `node_content` call per read or snapshot, so no extra read happens when the fingerprint is built. This covers \"without another read\".\n- `crates/habeas-sdk/tests/contracts.rs#fn[identities_remain_stable_and_fingerprinting_uses_the_supplied_snapshot]` takes a snapshot, mutates the graph, and asserts `graph.fingerprint(&Node(1), &snapshot.content) == snapshot.fingerprint`. It also asserts `snapshot.fingerprint.value == \"before\"`. A re-read after the mutation would give \"after\", so this shows the fingerprint comes from the supplied contents and not from a later read.\n- `src/sdk.rs#mod[tests]/fn[requirement_edges_and_input_freshness_use_the_sdk]` shows that a fingerprint is computed from the supplied retained content. It stays equal to the earlier value after the source changes. Only freshly read content gives a different fingerprint.\n- The agent and context tests (`explicit_insertions_preserve_order_repetition_and_selection_snapshots` and `graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery`) assert recorded node dependencies. They check the fingerprint values and that the read log matches `[1, 3, 2, 3, 1]`. The paged 18,000-character case also checks the fingerprint value.\n\n**Edge queries: targets and their fingerprint, without another query**\n- `validation.rs#fn[labeled_selections_track_only_target_membership_without_reading_contents]` shows the snapshot content. `successors` returns `[5, 3, 5]`. The recorded `Dependency::OutgoingEdges` carries `edge_fingerprint(&graph, &[3, 5])`. The test also asserts that no node contents are read and that edge-lookup errors propagate.\n- `crates/habeas-sdk/tests/agent.rs#fn[agent_edge_tools_record_selections_without_validating_targets]` has a graph whose `outgoing_edges` returns an error on any second lookup for the node. It asserts exactly one lookup. The recorded dependency fingerprint matches `[2]`, and the same targets are delivered to the agent. This covers \"without another query\".\n- `src/sdk.rs#mod[tests]/fn[requirement_edges_and_input_freshness_use_the_sdk]` asserts `ctx.outgoing_edges(..).unwrap().content` for the habeas domain.\n\n**Not separately tested, and why that is acceptable**\n- The struct shape, `pub` fields, `Clone` and `Debug` derives, and the `habeas_sdk::graph` location are compile-time properties. The tests use `snapshot.content`, `snapshot.fingerprint`, and the `habeas_sdk::graph` items. These derives have no conditional or transformation logic.\n- \"`T` needs no filesystem path or source span\" is a permission. It is satisfied by the generic `T`, including the `HabeasNode` and `String` contents used in the tests.\n\nI found no plausible violation of the text that these tests would accept.",
+  "references": "86ae59aa916cd9cba23031380bb29ae20cfae3ed4c11419c652f310471200eb2",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.fingerprinting.snapshot",
@@ -32,27 +32,27 @@
     {
       "file": "crates/habeas-sdk/tests/agent.rs",
       "item": "fn[agent_edge_tools_record_selections_without_validating_targets]",
-      "hash": "5245d15ed1a86817a9a6e4422b31137313074d58acbccdf40ca80492086d099c"
+      "hash": "9f5067261557fce342d0962e80846c93d4811f38b619b1b7969fe43e4d9d846f"
     },
     {
       "file": "crates/habeas-sdk/tests/agent.rs",
       "item": "fn[graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery]",
-      "hash": "8fe3978fd85f9c82eaf9187a5458f6091e4d249a33ef43fc3b2aaa6a6a36b6d3"
+      "hash": "0cc3cc096f7c79cc9eef335319713f2332e1664247bc90701c0569a55cf5041d"
     },
     {
       "file": "crates/habeas-sdk/tests/contracts.rs",
-      "item": "fn[identities_remain_stable_and_fingerprinting_uses_the_supplied_node_snapshot]",
-      "hash": "5f7210ae902d30625736318b372307f6c6d16bee430ffe3a22b728f9fb9267f4"
+      "item": "fn[identities_remain_stable_and_fingerprinting_uses_the_supplied_snapshot]",
+      "hash": "7da18bc9142f97369de2f7d5b5633dc59fe69ad6f1a1564292a53d5d1ccea2fc"
     },
     {
       "file": "crates/habeas-sdk/tests/validation.rs",
       "item": "fn[snapshots_record_exact_reads_and_retain_distinct_versions]",
-      "hash": "f772d6023fcc2e320e5d22510f13ec3fed1f7aa85affd530707667e653a61024"
+      "hash": "8757a8cf73b65e3c55eb46c9fceca358dd9b32da2e2387d03700dbc41fc2ae9d"
     },
     {
       "file": "crates/habeas-sdk/tests/validation.rs",
       "item": "fn[labeled_selections_track_only_target_membership_without_reading_contents]",
-      "hash": "680573ac0aaddefeb37511865da0f36a6f39b8e424f9a328ee98d0373ca7e57d"
+      "hash": "4a2856070d4405b5501e24291a6b1639cccf3fedf480815165d0d7ceacdd7ec9"
     },
     {
       "file": "crates/habeas-sdk/tests/validation.rs",
@@ -62,12 +62,7 @@
     {
       "file": "src/sdk.rs",
       "item": "mod[tests]/fn[requirement_edges_and_input_freshness_use_the_sdk]",
-      "hash": "67a49917c103d8cd3434d6248c03b76adfb5340b2f05e5febfb3f6792631c6d0"
-    },
-    {
-      "file": "crates/habeas-sdk/src/graph.rs",
-      "item": "struct[Snapshot]",
-      "hash": "058d311458a7ebfa2177688605eceeaf54635377a637cca3085e351e10af4764"
+      "hash": "5a09b641e83290b83745ccdc8e097c6c61db43f6430e1488e59da188fd4fc4fd"
     },
     {
       "file": "crates/habeas-sdk/src/graph.rs",
@@ -100,7 +95,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "122b118951adf1d51f96888367c2a6da02a6936b0d36020683607aab62561f5f"
+          "value": "86ae59aa916cd9cba23031380bb29ae20cfae3ed4c11419c652f310471200eb2"
         }
       ]
     },
@@ -112,7 +107,7 @@
         "Mandatory",
         {
           "scheme": "node-path-set-sha256-v1",
-          "value": "0c191e90c34982e8242d57d1ba3fa84a450005ccf75f0c204e8d19aaf92d1994"
+          "value": "20c53503c1a2f78bcbfdfbfe85b43feffe0872dc0bcd1f8b6936026a69315a98"
         }
       ]
     },
@@ -140,7 +135,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "8ed391afc8ed65317e4dfe42f5a65390cde547595238b1c86bbe514f49a57f56"
+          "value": "2bfae781f2ee9f3210a5cfad2aed0f5bb2da0c539905d884994fc99214759af3"
         }
       ]
     },
@@ -157,7 +152,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "e8e458b82cf71cb45fde42b226b246776d910d5dabab2a560c1233a85980cba3"
+          "value": "f961a81a288ee4c2ae25c288229723de3a6240b376938292f2de441ac5ec12f6"
         }
       ]
     },
@@ -169,12 +164,12 @@
               "scheme": "repo",
               "location": "crates/habeas-sdk/tests/contracts.rs"
             },
-            "selector": "fn[identities_remain_stable_and_fingerprinting_uses_the_supplied_node_snapshot]"
+            "selector": "fn[identities_remain_stable_and_fingerprinting_uses_the_supplied_snapshot]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "a78ce7704d8769cf10ffd5e442889bc3f7641cbb5b39e7275546b2dd3f290b0e"
+          "value": "0ceb66ceee6863c2efe5fbe00af5885eeb30c3d7be3036937e8517c46fac675f"
         }
       ]
     },
@@ -191,7 +186,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "ba5819670ad459367fbe2f84bb6e4cb98cbeb1eb93cbd8c1e42f8b7102bfdf84"
+          "value": "329cac95e77ab05c06701372789140f0dab06ace8e347a777db7f2c5bda90145"
         }
       ]
     },
@@ -208,7 +203,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "8b18c46a4fcea281c4de8da0ff946c8cf2eb58d8541578235720c89abf5228b7"
+          "value": "ea4b8b38228cc056b5a5c465cf772ebc6a6f51ff921517eca93ef471cc63e4a5"
         }
       ]
     },
@@ -242,24 +237,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "1086a0997ffa5d23cfa495fc41998596b3a78300d6501e9a54c7700e45a95419"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/src/graph.rs"
-            },
-            "selector": "struct[Snapshot]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "1463d02e5e6a0df072ec707f8fbd1ef8484c86527bc688156cb5cda452046c9e"
+          "value": "bb319360ad362793c499ca6908d0bfd6c5a53ba5fca5c6579cddc048231187b6"
         }
       ]
     },

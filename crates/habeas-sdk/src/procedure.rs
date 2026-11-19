@@ -106,14 +106,14 @@ pub trait Agent<D: Graph + Fingerprinting>: Send + Sync {
 }
 
 // {impl}`requirements.sdk.graph.agent-calls.author_procedure`
-pub struct ValidationContext<'d, D: Graph + Fingerprinting> {
+pub struct ValidationContext<'d, D: Domain> {
     node: D::NodeId,
     inspection: InspectionContext<'d, D>,
     agent: Option<&'d dyn Agent<D>>,
     renderer: Option<&'d dyn AgentInputRenderer<D>>,
 }
 
-impl<'d, D: Graph + Fingerprinting> ValidationContext<'d, D> {
+impl<'d, D: Domain> ValidationContext<'d, D> {
     // {cite}`habeas:util`
     pub fn new(graph: &'d D, node: D::NodeId) -> Self {
         Self::configured(graph, node, None, None)
@@ -166,7 +166,7 @@ impl<'d, D: Graph + Fingerprinting> ValidationContext<'d, D> {
     }
 }
 
-impl<'d, D: Validation> ValidationContext<'d, D> {
+impl<'d, D: Domain> ValidationContext<'d, D> {
     pub fn ask<R>(&self) -> Ask<'_, 'd, D, R, ContextPhase>
     where
         R: DeserializeOwned + JsonSchema + Send,
@@ -185,15 +185,15 @@ pub struct ContextPhase;
 /// The reusable prefix is sealed after the first node insertion.
 ///
 /// ```compile_fail
-/// use habeas_sdk::{graph::Validation, procedure::ValidationContext};
-/// fn too_late<D: Validation>(ctx: &ValidationContext<'_, D>) {
+/// use habeas_sdk::{graph::Domain, procedure::ValidationContext};
+/// fn too_late<D: Domain>(ctx: &ValidationContext<'_, D>) {
 ///     ctx.ask::<bool>().current_node_contents().context(String::new());
 /// }
 /// ```
 ///
 /// ```compile_fail
-/// use habeas_sdk::{graph::Validation, procedure::ValidationContext};
-/// fn too_late<D: Validation>(ctx: &ValidationContext<'_, D>, label: D::EdgeLabel)
+/// use habeas_sdk::{graph::Domain, procedure::ValidationContext};
+/// fn too_late<D: Domain>(ctx: &ValidationContext<'_, D>, label: D::EdgeLabel)
 /// where D::EdgeLabel: PartialEq {
 ///     ctx.ask::<bool>().successors_content(label).context(String::new());
 /// }
@@ -208,14 +208,14 @@ enum Insertion<L> {
 }
 
 // {impl}`requirements.sdk.graph.agent-calls.judge`
-pub struct Ask<'a, 'd, D: Validation, R, P> {
+pub struct Ask<'a, 'd, D: Domain, R, P> {
     ctx: &'a ValidationContext<'d, D>,
     contexts: Vec<String>,
     insertions: Vec<Insertion<D::EdgeLabel>>,
     state: PhantomData<fn() -> (R, P)>,
 }
 
-impl<'a, 'd, D: Validation, R> Ask<'a, 'd, D, R, ContextPhase> {
+impl<'a, 'd, D: Domain, R> Ask<'a, 'd, D, R, ContextPhase> {
     // {impl}`requirements.sdk.graph.agent-calls.agent_context`
     pub fn context(mut self, value: impl Context) -> Self {
         self.contexts.push(value.contents().into_owned());
@@ -223,7 +223,7 @@ impl<'a, 'd, D: Validation, R> Ask<'a, 'd, D, R, ContextPhase> {
     }
 }
 
-impl<'a, 'd, D: Validation, R, P> Ask<'a, 'd, D, R, P> {
+impl<'a, 'd, D: Domain, R, P> Ask<'a, 'd, D, R, P> {
     // {cite}`habeas:util`
     fn into_node_phase(self) -> Ask<'a, 'd, D, R, NodePhase> {
         Ask {
@@ -250,7 +250,7 @@ impl<'a, 'd, D: Validation, R, P> Ask<'a, 'd, D, R, P> {
     }
 }
 
-impl<'a, 'd, D: Validation, R, P> Ask<'a, 'd, D, R, P>
+impl<'a, 'd, D: Domain, R, P> Ask<'a, 'd, D, R, P>
 where
     R: DeserializeOwned + JsonSchema + Send + 'a,
     P: 'a,
@@ -323,7 +323,7 @@ where
 
 macro_rules! await_phase {
     ($phase:ty) => {
-        impl<'a, 'd, D: Validation, R> IntoFuture for Ask<'a, 'd, D, R, $phase>
+        impl<'a, 'd, D: Domain, R> IntoFuture for Ask<'a, 'd, D, R, $phase>
         where
             R: DeserializeOwned + JsonSchema + Send + 'a,
             'd: 'a,
