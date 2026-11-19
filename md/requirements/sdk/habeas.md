@@ -66,7 +66,7 @@ sequenceDiagram
 ```
 
 Habeas implements this boundary in `src/authoring/sdk.rs`. Its
-`Validation::validate` callback receives only the context. For a requirement
+`Validation::execute` procedure receives the context. For a requirement
 review, it builds a reusable context prefix from its review instructions and
 question, inserts the subject and its mandatory content inputs, then awaits
 the builder. Implementation references do not automatically supply source.
@@ -122,8 +122,9 @@ and their detailed diagnostics. Habeas loads missing legacy procedure versions
 as `*` under
 {cite}`requirements.sdk.habeas.evidence_conversion.legacy_freshness`; the same
 SDK comparison handles those records and records with concrete versions.
-Checker and validator share the application's procedure-version resolver
-independently of model configuration.
+Habeas's current review uses the criterion path `["review"]` alongside its
+subject identity. The validation value supplies its review revision independently
+of model configuration; the same revision is used for freshness comparison.
 
 The SDK's comparison feeds Habeas's CI policy:
 
@@ -198,7 +199,7 @@ as legacy information.
 
 :::{req} evidence_conversion.writes
 Conversion writes only through a write-capable migration or authoring path.
-Loading for `check_node`, CI, status inspection, or book rendering leaves
+Loading for `check`, CI, status inspection, or book rendering leaves
 evidence files unchanged. Authoring with `--stdout` performs no in-place
 conversion and creates or changes no evidence files or directories under
 {cite}`requirements.authoring.persistence`.
@@ -223,13 +224,13 @@ When loading a supported legacy evidence record that did not capture its
 procedure version, Habeas represents that missing version as `*`.
 In-place conversion preserves this wildcard rather than assigning the current
 version. The wildcard matches any
-configured review version under
+requested review revision under
 {cite}`requirements.sdk.graph.evidence.checking_records.procedure_match`.
 The record is current when its recorded inputs and all existing application
 freshness checks still match. Version matching leaves the subject, reference-set,
 input, determination, citation, and site checks intact.
 
-For new assessments, Habeas's configured resolver supplies a concrete identity
+For new assessments, Habeas's validation value supplies a concrete review revision
 other than `*`, and the assessment records it.
 :::
 
