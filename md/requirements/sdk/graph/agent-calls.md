@@ -189,7 +189,10 @@ pub trait AgentInputRenderer<D: Graph>: Send + Sync {
 ```
 
 The application supplies the renderer through `Validator::with_agent`.
-Rendering errors return `ValidationError::Graph`. Neither `Graph::NodeContent`
+For inputs queued on an ask builder, rendering errors return
+`ValidationError::Graph`. When the SDK's supplied tool harness renders a
+`read_node` result, a rendering failure returns a tool error to the agent,
+which can continue the conversation and recover. Neither `Graph::NodeContent`
 nor `Graph::NodeId` needs serialization or display bounds.
 :::
 
