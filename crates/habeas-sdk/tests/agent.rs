@@ -15,6 +15,14 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+// The test application chooses its own completed-answer format.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+struct Assessment<M> {
+    result: bool,
+    rationale: String,
+    metadata: M,
+}
+
 // Node identities deliberately have no Serde or Hash implementations.
 #[derive(Clone, Eq, PartialEq)]
 struct Node(u8);
@@ -91,7 +99,7 @@ impl Fingerprinting for Memory {
 }
 struct Review(Node);
 impl Criterion<Memory> for Review {
-    type Ok = Judgment<Metadata>;
+    type Ok = Assessment<Metadata>;
     fn source_node_id(&self) -> Node {
         self.0.clone()
     }
@@ -104,12 +112,12 @@ impl Criterion<Memory> for Review {
     async fn execute(
         self,
         ctx: &mut ValidationContext<'_, Memory>,
-    ) -> Result<Judgment<Metadata>, ValidationError<io::Error>> {
+    ) -> Result<Assessment<Metadata>, ValidationError<io::Error>> {
         let text = ctx
             .inspection()
             .read(ctx.node_id())
             .map_err(ValidationError::Graph)?;
-        Ok(Judgment {
+        Ok(Assessment {
             result: false,
             rationale: text.0,
             metadata: Metadata,
@@ -333,7 +341,7 @@ async fn concurrent_tool_agents_isolate_histories_pages_and_submissions_and_shar
         ctx.inspection()
             .finish(
                 "v1".into(),
-                Judgment {
+                Assessment {
                     result: true,
                     rationale: "both calls".into(),
                     metadata: Metadata,
@@ -516,7 +524,7 @@ async fn agent_edge_tools_record_selections_without_validating_targets() {
     }
     struct EdgeReview(u8);
     impl Criterion<GraphWithChangingEdges> for EdgeReview {
-        type Ok = Judgment<()>;
+        type Ok = Assessment<()>;
         fn source_node_id(&self) -> u8 {
             self.0
         }
@@ -529,13 +537,13 @@ async fn agent_edge_tools_record_selections_without_validating_targets() {
         async fn execute(
             self,
             ctx: &mut ValidationContext<'_, GraphWithChangingEdges>,
-        ) -> Result<Judgment<()>, ValidationError<io::Error>> {
+        ) -> Result<Assessment<()>, ValidationError<io::Error>> {
             let result = if *ctx.node_id() == 1 {
                 ctx.ask::<bool>().await?
             } else {
                 true
             };
-            Ok(Judgment {
+            Ok(Assessment {
                 result,
                 rationale: "reviewed".into(),
                 metadata: (),
@@ -692,7 +700,7 @@ async fn graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record
         .inspection()
         .finish(
             "v1".into(),
-            Judgment {
+            Assessment {
                 result: true,
                 rationale: "read".into(),
                 metadata: Metadata,

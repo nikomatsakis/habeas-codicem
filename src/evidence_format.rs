@@ -100,13 +100,11 @@ pub(crate) fn decode(
 ) -> io::Result<Record<HabeasNode, HabeasEdgeLabel>> {
     let metadata = view(value)?;
     check_shape(&metadata, subject)?;
-    let determination =
-        Judgment::from_value(&metadata["determination"]).map_err(io::Error::other)?;
-    let rationale = metadata["rationale"]
+    Judgment::from_value(&metadata["determination"]).map_err(io::Error::other)?;
+    metadata["rationale"]
         .as_str()
         .filter(|rationale| !rationale.trim().is_empty())
-        .ok_or_else(|| io::Error::other("evidence rationale must be nonempty"))?
-        .to_owned();
+        .ok_or_else(|| io::Error::other("evidence rationale must be nonempty"))?;
     let (procedure, dependencies) = if is_versioned(value) {
         versioned_fields(value)?
     } else {
@@ -142,12 +140,7 @@ pub(crate) fn decode(
     Ok(Record {
         revision: procedure,
         dependencies,
-        output: serde_json::to_value(habeas_sdk::graph::Judgment {
-            result: determination != Judgment::False,
-            rationale,
-            metadata,
-        })
-        .map_err(io::Error::other)?,
+        output: metadata,
     })
 }
 
@@ -270,21 +263,17 @@ fn hex_digest(value: &str) -> bool {
 
 // {impl}`requirements.sdk.habeas.evidence_format`
 pub(crate) fn encode(record: &Record<HabeasNode, HabeasEdgeLabel>) -> io::Result<Value> {
-    let output: habeas_sdk::graph::Judgment<Value> =
-        serde_json::from_value(record.output.clone()).map_err(io::Error::other)?;
-    let mut value = output.metadata;
+    let mut value = record.output.clone();
     let object = value
         .as_object_mut()
-        .ok_or_else(|| io::Error::other("Habeas judgment metadata must be an object"))?;
-    let determination = Judgment::from_value(object.get("determination").unwrap_or(&Value::Null))
+        .ok_or_else(|| io::Error::other("Habeas review output must be an object"))?;
+    Judgment::from_value(object.get("determination").unwrap_or(&Value::Null))
         .map_err(io::Error::other)?;
-    if (determination != Judgment::False) != output.result
-        || object.get("rationale").and_then(Value::as_str) != Some(output.rationale.as_str())
-    {
-        return Err(io::Error::other(
-            "SDK judgment and Habeas determination or rationale disagree",
-        ));
-    }
+    object
+        .get("rationale")
+        .and_then(Value::as_str)
+        .filter(|rationale| !rationale.trim().is_empty())
+        .ok_or_else(|| io::Error::other("evidence rationale must be nonempty"))?;
     object.insert("format_version".into(), json!(1));
     object.insert("review_version".into(), json!(record.revision));
     object.insert(
@@ -347,7 +336,7 @@ pub(crate) fn check_native(
     let record = versioned_fields(value).map(|(procedure, dependencies)| Record {
         revision: procedure,
         dependencies,
-        output: json!({"metadata": value}),
+        output: value.clone(),
     });
     match record.and_then(|mut record| {
             let reference_set_changed = match subject {
@@ -356,7 +345,7 @@ pub(crate) fn check_native(
                         matches!(dependency, Dependency::OutgoingEdges(node, HabeasEdgeLabel::Mandatory, _) if node == subject)
                     }) =>
                 {
-                    record.output["metadata"]["references"]
+                    record.output["references"]
                         .as_str()
                         .is_some_and(|references| {
                             domain.reference_set(id).is_ok_and(|current| current != references)
@@ -372,9 +361,9 @@ pub(crate) fn check_native(
                     if matches!(subject, HabeasNode::Requirement(subject_id) if subject_id == id)
                         && fingerprint.scheme == "habeas-reference-set-v1" =>
                 {
-                    record.output["metadata"]["references"].as_str() != Some(&fingerprint.value)
+                    record.output["references"].as_str() != Some(&fingerprint.value)
                 }
-                Dependency::Node(node, fingerprint) => !record.output["metadata"]["inputs"]
+                Dependency::Node(node, fingerprint) => !record.output["inputs"]
                     .as_array()
                     .into_iter()
                     .flatten()
@@ -388,7 +377,7 @@ pub(crate) fn check_native(
                         && matches!(subject, HabeasNode::Requirement(_))
                         && ((_label == &HabeasEdgeLabel::Mandatory && reference_set_changed)
                             || (fingerprint.scheme == "habeas-reference-set-v1"
-                                && record.output["metadata"]["references"].as_str()
+                                && record.output["references"].as_str()
                                     == Some(&fingerprint.value))))
                 }
             });
@@ -462,9 +451,8 @@ mod tests {
             let node = HabeasNode::review_subject(&subject);
             let record = decode(&old, &node).unwrap();
             assert_eq!(record.revision, "*");
-            assert_eq!(record.output["metadata"], old);
+            assert_eq!(record.output, old);
             assert_eq!(record.output["rationale"], "Historical rationale.");
-            assert!(record.output["result"].as_bool().unwrap());
             assert_eq!(
                 record.dependencies[0],
                 Dependency::Node(
@@ -496,22 +484,20 @@ mod tests {
 
     // {test}`requirements.sdk.habeas.evidence_conversion`
     #[test]
-    fn legacy_true_false_and_fixme_determinations_preserve_the_sdk_result() {
+    fn legacy_true_false_and_fixme_determinations_preserve_the_application_answer() {
         let subject = AuthoringSubject::Definition("old.ready".into());
         let node = HabeasNode::review_subject(&subject);
-        for (determination, expected) in [
-            (json!(true), true),
-            (json!(false), false),
-            (json!({"FIXME": ["example/repo#1"]}), true),
+        for determination in [
+            json!(true),
+            json!(false),
+            json!({"FIXME": ["example/repo#1"]}),
         ] {
             let mut old = legacy(&subject);
             old["determination"] = determination;
             let record = decode(&old, &node).unwrap();
-            assert_eq!(record.output["result"], json!(expected));
-            assert_eq!(
-                record.output["metadata"]["determination"],
-                old["determination"]
-            );
+            assert_eq!(record.output, old);
+            assert!(record.output.get("result").is_none());
+            assert!(record.output.get("metadata").is_none());
             let native = encode(&record).unwrap();
             assert_eq!(view(&native).unwrap(), old);
             assert_eq!(decode(&native, &node).unwrap().output, record.output);
@@ -549,9 +535,20 @@ mod tests {
         let mut malformed = legacy(&subject);
         malformed["inputs"][0]["hash"] = json!("not a digest");
         assert!(decode(&malformed, &node).is_err());
-        let mut record = decode(&legacy(&subject), &node).unwrap();
-        record.output["result"] = serde_json::json!(false);
-        assert!(encode(&record).is_err());
+        let record = decode(&legacy(&subject), &node).unwrap();
+        for invalid in [
+            json!(null),
+            json!([]),
+            json!({"determination": "bad", "rationale": "A review."}),
+            json!({"rationale": "A review."}),
+            json!({"determination": true}),
+            json!({"determination": true, "rationale": 7}),
+            json!({"determination": true, "rationale": "   "}),
+        ] {
+            let mut malformed = record.clone();
+            malformed.output = invalid;
+            assert!(encode(&malformed).is_err());
+        }
     }
 
     // {test}`requirements.sdk.habeas.evidence_conversion.atomic`

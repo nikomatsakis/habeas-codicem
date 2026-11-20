@@ -1,7 +1,7 @@
 {
   "requirement": "The provider adapter makes the rendered prefix available to its supported\nprompt-caching mechanism. The prefix includes all context, including the\nquestion, and precedes node contents. A cache hit is not guaranteed.\nThe prefix fingerprint follows\n{cite}`requirements.sdk.graph.agent-calls.agent_context`.",
   "determination": true,
-  "rationale": "The reviewed tests adequately cover `requirements.sdk.graph.agent-calls.judge.caching`.\n\n**Obligations derived from the text**\n1. The provider adapter hands the rendered prefix to the provider's prompt-caching mechanism.\n2. The prefix holds all context, including the question, and comes before node contents.\n3. A cache hit is not guaranteed. This is a non-obligation and needs no test.\n4. The prefix fingerprint follows the cited `requirements.sdk.graph.agent-calls.agent_context`. That means a versioned hash of the exact UTF-8 prefix that preserves order and repetition. The empty prefix has the same fingerprint as an explicitly empty rendered prefix. Node inputs, the result schema and the rest of the request stay outside the fingerprint.\n\n**Mapping to tests**\n- **Adapter handoff and ordering (1, 2).**\n  - The adapters are `ToolAgent`'s `Agent` impl in `crates/habeas-sdk/src/agent/tools.rs` and `ReviewAgent`'s `Agent` impl in `src/authoring/sdk.rs`. The first sets the prefix as the provider preamble. The second sets `prompt.system` to `request.prefix`.\n  - `crates/habeas-sdk/tests/agent.rs#fn[default_tool_accepts_scalar_results_and_keeps_the_exact_prefix]` asks with the question context \"Question é\" and `current_node_contents`. It asserts `chat_history[0] == Message::system(\"Question é\")`, so the prefix is delivered exactly. It asserts the node contents (\"source\") appear only in `chat_history[1]`, so the prefix comes first.\n  - `src/authoring/sdk.rs#mod[tests]/fn[authoring_keeps_the_prepared_subject_snapshot_and_concrete_version]` compares the whole provider request with the expected one. The expected request has the prompt's system text as preamble and the mandatory inputs in the user message. The `Review` criterion passes `graph.system` through `.context(&graph.system)`, so the system text is the prefix. This shows the prefix reaches the system or preamble slot and node inputs follow in the subject message.\n- **Context and question in the prefix (2).** `crates/habeas-sdk/tests/validation.rs#fn[contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text]` checks that several contexts, including a tuple holding a \"question\", become one prefix, \"héllo\\n\\npolicy\\n\\nquestion\". It also checks that repeated elements are kept and that 12-tuples work.\n- **Fingerprint (4).**\n  - The same test asserts that the request fingerprint equals `context_fingerprint` of the delivered prefix. It asserts that no context and an empty `Vec` both give the empty prefix and the empty-prefix fingerprint. It asserts that order matters (\"a\\n\\nb\" differs from \"b\\n\\na\").\n  - `crates/habeas-sdk/tests/validation.rs#fn[string_and_str_contexts_deliver_identical_prefixes_and_fingerprints]` checks that `String`, `&str`, slice, `Vec` and tuple forms give identical prefixes and fingerprints. It checks that the fingerprint stays the same when node contents, the result type (`Answer` or `Value`) and the current node change. Those requests differ in their inputs and schema fingerprints but share the prefix fingerprint. It also checks that the text is captured at call time, so clearing the borrowed source afterwards has no effect.\n  - `crates/habeas-sdk/tests/validation.rs#fn[prefix_hashes_match_known_utf8_sha256_without_normalization]` asserts the scheme name `context-prefix-sha256-v1` and known SHA-256 values for \"\" and \"héllo\". It asserts that no Unicode normalization or whitespace folding happens.\n\n**Other notes**\n- The checkpoint placement for Bedrock models (`src/authoring/providers.rs`) is the CLI's concern. It belongs to `requirements.authoring.cache_checkpoints`, which has its own test, so it is not assessed here.\n- I found no uncovered clause, boundary or failure case, and no `{fixme}` acknowledgments apply.",
+  "rationale": "I found no test-adequacy gap for `requirements.sdk.graph.agent-calls.judge.caching`. The requirement has four obligations.\n\n**1. The adapter makes the rendered prefix available to the provider's caching mechanism.**\n- In the `ToolAgent` adapter (`crates/habeas-sdk/src/agent/tools.rs#impl[ToolAgent<P, R, T>/Agent<D>]`), the prefix becomes the provider's leading preamble, which is the system message.\n- The test `default_tool_accepts_scalar_results_and_keeps_the_exact_prefix` in `crates/habeas-sdk/tests/agent.rs` asserts that `chat_history[0]` equals `Message::system(\"Question é\")`. The non-ASCII text checks that the prefix is delivered exactly.\n- The `ReviewAgent` adapter in `src/authoring/sdk.rs` sets `prompt.system = request.prefix`. The test `authoring_keeps_the_prepared_subject_snapshot_and_concrete_version` compares the complete provider request, including `system`, with the expected prompt request.\n\n**2. The prefix includes all context, including the question.**\n- `contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text` in `crates/habeas-sdk/tests/validation.rs` asserts the delivered prefix `\"héllo\\n\\npolicy\\n\\nquestion\"`. It is built from multiple context calls, including a tuple that contains the question.\n- `string_and_str_contexts_deliver_identical_prefixes_and_fingerprints` asserts the prefix for the same combinations: repeated calls, a tuple, a slice, a `Vec`, and empty text.\n- The `ReviewAgent` test covers the production case, where `ReviewGraph.system` is passed through `.context(&graph.system)`.\n\n**3. The prefix precedes node contents.**\n- The `ToolAgent` test asserts that the system message is at index 0 and that the node text `source` appears in the later user message at index 1.\n- The tests in `validation.rs` show node inputs travelling separately from the prefix. Those node inputs are the current node, `successors_content`, and a different node.\n\n**4. A cache hit is not guaranteed.** This is a disclaimer and adds nothing to test.\n\n**5. The fingerprint follows `agent_context` (cited).**\n- `prefix_hashes_match_known_utf8_sha256_without_normalization` pins the scheme `context-prefix-sha256-v1`. It pins the empty-string SHA-256 value and a known hash of non-ASCII text. It also checks that the fingerprint is deterministic and does not normalize: `é` differs from `e\\u0301`, and `a b` differs from `a  b`.\n- Two tests assert that each delivered request's fingerprint equals `context_fingerprint(prefix)`: `contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text` and `string_and_str_contexts_deliver_identical_prefixes_and_fingerprints`.\n- Order is checked with `assert_ne!` on `\"a\\n\\nb\"` and `\"b\\n\\na\"`. Repetition is checked with the rendered `\"a\\n\\na\\n\\nb\"`.\n- The empty prefix and the fingerprint of an explicit empty string match.\n- Fingerprints stay equal across different node inputs and result schemas. The `Answer` and `Value` requests carry the same prefix fingerprint, and their other fingerprints differ.\n\n**Residual observation.** No test sends a multi-part prefix through a real `ToolAgent` provider request. The adapter passes the already-rendered string through unchanged, and `validation.rs` covers multi-part rendering, so this is not a gap.\n\nAll tests carry `{test}` references to the subject.",
   "references": "773a4041e8f9f311039156790e72bd7b11fff32f068b4aae4048c511860e6dbc",
   "inputs": [
     {
@@ -96,9 +96,34 @@
       "hash": "9487396c0ebbb11d772a176f8617ce3998b44bd670368200f55918716beebf5d"
     },
     {
+      "file": "crates/habeas-sdk/src/agent/tools.rs",
+      "item": "impl[ToolAgent<P,%20R,%20T>/Agent<D>]/fn[run]",
+      "hash": "1993420bad7db10719f3283041a9fe808b9de83c1e3868061ffb132bfa0f8045"
+    },
+    {
+      "file": "crates/habeas-sdk/src/procedure.rs",
+      "item": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#2/fn[execute]",
+      "hash": "aedd2f760b939b86826623595099983227061911fe7a6718c148dda60c0c4b43"
+    },
+    {
+      "file": "crates/habeas-sdk/src/procedure.rs",
+      "item": "fn[context_fingerprint]",
+      "hash": "e2837292dbb5dbab5fc27750f37b14f30aae3dc12a5d444eb830aa6fc7ae1cd6"
+    },
+    {
+      "file": "src/authoring/sdk.rs",
+      "item": "impl[Review/Criterion<ReviewGraph<'_>>]/fn[execute]",
+      "hash": "615b470c3b923128ef1fc3c9146dec459267eaca516b2633248702c77427a2c6"
+    },
+    {
       "file": "src/authoring/sdk.rs",
       "item": "impl[ReviewAgent<P>/Agent<ReviewGraph<'_>>]/fn[run]",
       "hash": "708d996b9ac4c05ca33dbc1ee6a1dba052669ae2e51bf362e079ceeee1fa8c28"
+    },
+    {
+      "file": "src/authoring/sdk.rs",
+      "item": "struct[ReviewGraph]",
+      "hash": "be1953744e2ec9e6a7acf45cabcf61fe8d56ed3f6c7d640aaca4a902a80aebeb"
     },
     {
       "file": "src/authoring/sdk.rs",
@@ -106,24 +131,9 @@
       "hash": "09c424da895ad59b638884c76082b27ec1e97da0cbf1ce10c676d93db1bcedec"
     },
     {
-      "file": "crates/habeas-sdk/src/agent/tools.rs",
-      "item": "impl[ToolAgent<P,%20R,%20T>/Agent<D>]/fn[run]",
-      "hash": "1993420bad7db10719f3283041a9fe808b9de83c1e3868061ffb132bfa0f8045"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "impl[Prompt]/fn[request]",
-      "hash": "f9ffe120e04b612858150221d3adda1aaa7b5cf606a62ddabd7a7f0f6a7f66e9"
-    },
-    {
       "file": "src/authoring/providers.rs",
       "item": "mod[tests]/fn[cache_checkpoints_are_requested_for_caching_models]",
       "hash": "bf1d467d486bbc62b611a7680d8d2e17f6f1fbddd30ac916a1534ce1aabc1c41"
-    },
-    {
-      "file": "src/authoring/sdk.rs",
-      "item": "impl[Review/Criterion<ReviewGraph<'_>>]/fn[execute]",
-      "hash": "362e1be83ae104805f360a75cb8c29f1e605543e94f629fcbd0423902e03012f"
     }
   ],
   "format_version": 1,
@@ -299,6 +309,74 @@
           "Source": {
             "resource": {
               "scheme": "repo",
+              "location": "crates/habeas-sdk/src/agent/tools.rs"
+            },
+            "selector": "impl[ToolAgent<P,%20R,%20T>/Agent<D>]/fn[run]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "4e82fd008209241377a4d1d5204438164fd73b4d1a7d72a4da2ab3c33a57ef7d"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/src/procedure.rs"
+            },
+            "selector": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#2/fn[execute]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "ebbd49dc4f18694b32394174702c4b15412356a6b47f3d64fad5dd091ade5004"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/src/procedure.rs"
+            },
+            "selector": "fn[context_fingerprint]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "a0c7f7af5e12b9a8beafe604e69ab328c07429fe9d4adc87f395c81caa270fbb"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/sdk.rs"
+            },
+            "selector": "impl[Review/Criterion<ReviewGraph<'_>>]/fn[execute]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "9f9efb42cb4d61be272efadde9b0a9311d8b76081f9e571fe729dc3155947e60"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
               "location": "src/authoring/sdk.rs"
             },
             "selector": "impl[ReviewAgent<P>/Agent<ReviewGraph<'_>>]/fn[run]"
@@ -307,6 +385,23 @@
         {
           "scheme": "habeas-input-v1",
           "value": "1eddb7100c580ce54af00e6493d2c8da6d7d3b1da09b7f41499b073cd4259d78"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/sdk.rs"
+            },
+            "selector": "struct[ReviewGraph]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "1eb845da7f0713637642500d5424c30eb477f0486733f0a6808cd00b3649f652"
         }
       ]
     },
@@ -333,40 +428,6 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/habeas-sdk/src/agent/tools.rs"
-            },
-            "selector": "impl[ToolAgent<P,%20R,%20T>/Agent<D>]/fn[run]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "4e82fd008209241377a4d1d5204438164fd73b4d1a7d72a4da2ab3c33a57ef7d"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/authoring/mod.rs"
-            },
-            "selector": "impl[Prompt]/fn[request]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "7a9c85331c423e73d9012b3c96f460b72c545a088732732217212a5772f6dbcd"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
               "location": "src/authoring/providers.rs"
             },
             "selector": "mod[tests]/fn[cache_checkpoints_are_requested_for_caching_models]"
@@ -375,23 +436,6 @@
         {
           "scheme": "habeas-input-v1",
           "value": "bd92b76465534d7984117efb777c4c47d008a0fd113ac0dada4ce86b6da04f62"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/authoring/sdk.rs"
-            },
-            "selector": "impl[Review/Criterion<ReviewGraph<'_>>]/fn[execute]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "52da53acecdc310db84b0ff4a5167b8db11dc51da65b7a38c62e6113a3184200"
         }
       ]
     }

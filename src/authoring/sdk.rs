@@ -174,7 +174,7 @@ struct Review {
 }
 
 impl Criterion<ReviewGraph<'_>> for Review {
-    type Ok = habeas_sdk::graph::Judgment<Value>;
+    type Ok = Value;
 
     fn source_node_id(&self) -> HabeasNode {
         self.node.clone()
@@ -192,14 +192,14 @@ impl Criterion<ReviewGraph<'_>> for Review {
     async fn execute(
         self,
         ctx: &mut ValidationContext<'_, ReviewGraph<'_>>,
-    ) -> Result<habeas_sdk::graph::Judgment<Value>, ValidationError<io::Error>> {
+    ) -> Result<Self::Ok, ValidationError<io::Error>> {
         let graph = ctx.inspection().graph();
         if let HabeasNode::Requirement(id) = ctx.node_id() {
             ctx.inspection()
                 .read(&HabeasNode::ReferenceSet(id.clone()))
                 .map_err(ValidationError::Graph)?;
         }
-        let (judgment, rationale, applies, verification) = match &graph.operation {
+        match &graph.operation {
             Operation::Assess => {
                 let request = ctx
                     .ask::<ReviewAnswer>()
@@ -214,7 +214,18 @@ impl Criterion<ReviewGraph<'_>> for Review {
                 };
                 let judgment =
                     Judgment::from_value(&answer.determination).map_err(ValidationError::Agent)?;
-                (judgment, answer.rationale, answer.applies, None)
+                let mut conversation = graph.conversation.lock().expect("review lease lock");
+                let (sources, usage) = conversation
+                    .as_mut()
+                    .expect("conversation returned its lease");
+                usage.record.determination = Some(judgment.kind().into());
+                usage.save().map_err(ValidationError::Graph)?;
+                Ok(record(
+                    sources,
+                    &judgment,
+                    &answer.rationale,
+                    answer.applies,
+                ))
             }
             Operation::Verify(..) => {
                 let request = ctx
@@ -228,36 +239,12 @@ impl Criterion<ReviewGraph<'_>> for Review {
                 } else {
                     request.await?
                 };
-                let metadata = json!({"real":answer.real, "acknowledged":answer.acknowledged,
-                    "acknowledgments":answer.acknowledgments, "rationale":answer.rationale, "applies":answer.applies});
-                (
-                    if !answer.real || answer.acknowledged {
-                        Judgment::True
-                    } else {
-                        Judgment::False
-                    },
-                    answer.rationale,
-                    answer.applies,
-                    Some(metadata),
+                Ok(
+                    json!({"real":answer.real, "acknowledged":answer.acknowledged,
+                    "acknowledgments":answer.acknowledgments, "rationale":answer.rationale, "applies":answer.applies}),
                 )
             }
-        };
-        let mut conversation = graph.conversation.lock().expect("review lease lock");
-        let (sources, usage) = conversation
-            .as_mut()
-            .expect("conversation returned its lease");
-        let metadata = if let Some(metadata) = verification {
-            metadata
-        } else {
-            usage.record.determination = Some(judgment.kind().into());
-            usage.save().map_err(ValidationError::Graph)?;
-            record(sources, &judgment, &rationale, applies)
-        };
-        Ok(habeas_sdk::graph::Judgment {
-            result: judgment != Judgment::False,
-            rationale,
-            metadata,
-        })
+        }
     }
 }
 
@@ -412,7 +399,7 @@ pub(super) async fn verify(
         Operation::Verify(judgment.clone(), rationale.into()),
     )
     .await?;
-    let mut value = record.output["metadata"].clone();
+    let mut value = record.output;
     if !site {
         value
             .as_object_mut()
@@ -638,9 +625,10 @@ mod tests {
         assert!(provider.requests.lock().unwrap().is_empty());
 
         let answer = validator.verify(review()).await.unwrap();
-        assert!(!answer.result);
-        assert_eq!(answer.rationale, "The readiness case is missing.");
-        assert_eq!(answer.metadata["determination"], false);
+        assert_eq!(answer["determination"], false);
+        assert_eq!(answer["rationale"], "The readiness case is missing.");
+        assert!(answer.get("result").is_none());
+        assert!(answer.get("metadata").is_none());
         let saved = fs::read(&path).unwrap();
         let record = graph
             .load_evidence(&node, &review().criterion_path())
@@ -652,16 +640,11 @@ mod tests {
         assert!(!record.dependencies.is_empty());
         match validator.check(&review()).await.unwrap() {
             EvidenceState::Current(cached) => {
-                assert_eq!(cached.result, answer.result);
-                assert_eq!(cached.rationale, answer.rationale);
-                assert_eq!(cached.metadata, answer.metadata);
+                assert_eq!(cached, answer);
             }
             state => panic!("expected a current negative answer, got {state:?}"),
         }
-        assert_eq!(
-            validator.verify(review()).await.unwrap().metadata,
-            answer.metadata
-        );
+        assert_eq!(validator.verify(review()).await.unwrap(), answer);
         assert_eq!(provider.requests.lock().unwrap().len(), 1);
         assert_eq!(fs::read(&path).unwrap(), saved);
 

@@ -1,7 +1,7 @@
 {
   "requirement": "```rust,ignore\n/// Contents paired with the fingerprint of that same observation.\n#[derive(Clone, Debug)]\npub struct Snapshot<T> {\n    pub content: T,\n    pub fingerprint: Fingerprint,\n}\n```\n\nThis type lives in `habeas_sdk::graph`. For node reads, the SDK constructs it by\npassing the identity and the contents returned by `Graph::node_content` to\n`Fingerprinting::fingerprint`, without another read. For a label-specific edge\nquery, the SDK constructs the snapshot from the returned targets and their\ntarget-set fingerprint, without another query.\n`T` needs no filesystem path or source span.",
   "determination": true,
-  "rationale": "The reviewed tests adequately check `requirements.sdk.graph.fingerprinting.snapshot`.\n\n**Obligations derived from the text**\n1. `Snapshot<T>` has `content` and `fingerprint` fields.\n2. A node read builds the snapshot by calling `Fingerprinting::fingerprint` on the identity and the contents returned by `Graph::node_content`, with no extra read.\n3. A label-specific edge query builds the snapshot from the returned targets and their target-set fingerprint, with no extra query.\n4. `T` needs no filesystem path or source span.\n\n**Node reads**\n- `crates/habeas-sdk/tests/validation.rs#fn[snapshots_record_exact_reads_and_retain_distinct_versions]` calls `read_snapshot` and asserts `fingerprint == fp(\"before\")`.\n  - It changes the graph contents and then asserts the exact read log `[1, 1, 1, 2]`. This shows each `read` or `read_snapshot` costs exactly one `node_content` call.\n  - It asserts the recorded dependencies carry the fingerprint of the content actually observed, both \"before\" and \"after\".\n- `crates/habeas-sdk/tests/contracts.rs#fn[identities_remain_stable_and_fingerprinting_uses_the_supplied_snapshot]` mutates the graph after `read_snapshot`. It then asserts that `graph.fingerprint(&node, &snapshot.content)` equals `snapshot.fingerprint` and that the value is still \"before\". A second read would break this.\n- `crates/habeas-sdk/tests/agent.rs#fn[graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery]` and `crates/habeas-sdk/tests/validation.rs#fn[explicit_insertions_preserve_order_repetition_and_selection_snapshots]` check that recorded node dependencies match the delivered snapshots and that the read order is exact (`reads == [1,3,2,3,1]`).\n- `src/sdk.rs#mod[tests]/fn[requirement_edges_and_input_freshness_use_the_sdk]` checks that the fingerprint is computed from the supplied retained content, not a fresh read. It does this with `changed.fingerprint(&references, &retained_references)` and the equivalent call on the source node.\n\n**Edge queries**\n- `crates/habeas-sdk/tests/validation.rs#fn[labeled_selections_track_only_target_membership_without_reading_contents]` asserts the recorded `Dependency::OutgoingEdges` carries `edge_fingerprint(&graph, &[3, 5])`. This is the target-set fingerprint of the returned targets. It also asserts that `reads` is empty, so no content is read.\n- `crates/habeas-sdk/tests/agent.rs#fn[agent_edge_tools_record_selections_without_validating_targets]` makes a second edge lookup on the graph return an error, and asserts exactly one lookup. This shows the snapshot is built from the single query and the SDK does not re-query. The same test asserts the recorded fingerprint equals `edge_fingerprint(&graph, &[2])`.\n- `src/sdk.rs#mod[tests]/fn[requirement_edges_and_input_freshness_use_the_sdk]` exercises `outgoing_edges(...).content` on a real domain.\n\n**Residual notes**\n- No test asserts the edge `Snapshot.fingerprint` field directly. The recorded dependency asserts cover it, because the dependency fingerprint comes from the snapshot, so a wrong value would fail.\n- Two clauses have no direct test:\n  - The `Clone` and `Debug` derives and the `habeas_sdk::graph` location are type-level facts that need no behavioral test. The tests use the type through that path.\n  - \"`T` needs no path or span\" is a permission, not a behavior. The tests exercise `Snapshot` with plain string, `u8` and `Vec` contents.\n\nThe implementation (`crates/habeas-sdk/src/graph.rs`, `prepare_read` and `prepare_edges`) matches this behavior. I did not rely on it to derive expectations.",
+  "rationale": "The reviewed tests adequately check `requirements.sdk.graph.fingerprinting.snapshot`.\n\n**Type shape (`content` and `fingerprint`, in `habeas_sdk::graph`).**\n- Tests read both fields. `contracts.rs#fn[identities_remain_stable_and_fingerprinting_uses_the_supplied_snapshot]` reads `snapshot.content` and `snapshot.fingerprint`.\n- `validation.rs#fn[snapshots_record_exact_reads_and_retain_distinct_versions]` reads `.fingerprint` on a snapshot.\n- `src/sdk.rs#mod[tests]/fn[requirement_edges_and_input_freshness_use_the_sdk]` reads `.content` on an edge snapshot.\n- A missing or renamed field, or a different module, would fail to compile.\n- `T` needs no path or span. Snapshots are built with `String`, `Vec<NodeId>` and custom domain content, and none of them carries a path or span.\n\n**Node reads: fingerprint computed from the returned contents, with no second read.**\n- In `contracts.rs#fn[identities_remain_stable_and_fingerprinting_uses_the_supplied_snapshot]`, contents change from \"before\" to \"after\" after the snapshot is taken. The test asserts that `graph.fingerprint(&Node(1), &snapshot.content) == snapshot.fingerprint` and that `snapshot.fingerprint.value == \"before\"`. The fingerprint therefore comes from the contents that were read. It was not recomputed from a fresh read.\n- In `validation.rs#fn[snapshots_record_exact_reads_and_retain_distinct_versions]`, `read_snapshot` yields `fp(\"before\")`. The graph's read log is exactly `[1, 1, 1, 2]`, which is one `node_content` call per read or snapshot. There is no additional read.\n- `agent.rs#fn[graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery]` checks that a node fingerprint recorded through the agent tools carries the full contents value.\n- `validation.rs#fn[explicit_insertions_preserve_order_repetition_and_selection_snapshots]` asserts the reads `[1, 3, 2, 3, 1]` and that the recorded dependency fingerprints match the contents delivered.\n- `src/sdk.rs#mod[tests]/fn[requirement_edges_and_input_freshness_use_the_sdk]` exercises a custom domain whose `fingerprint` is given the retained content. This confirms that the supplied content is what gets fingerprinted.\n\n**Label-specific edge queries: built from the returned targets and their target-set fingerprint, with no new query.**\n- `validation.rs#fn[labeled_selections_track_only_target_membership_without_reading_contents]` returns targets `[5, 3, 5]` from `successors`. The recorded dependency carries `edge_fingerprint(&graph, &[3, 5])`, which is the target-set fingerprint. It asserts that node contents are never read. It also checks the later freshness outcomes: membership changes flip the result, and unrelated-label edges do not.\n- `agent.rs#fn[agent_edge_tools_record_selections_without_validating_targets]` has a graph that errors on a second `outgoing_edges` lookup. It asserts `lookups == 1`, so there is no re-query. The recorded dependency is `OutgoingEdges(1, (), edge_fingerprint(&graph, &[2]))`. The delivered tool output also contains the targets.\n\n**Implementation consistency.** The `graph.rs` implementations (`prepare_read`, `prepare_edges`, `read_snapshot`, `outgoing_edges`) call the graph once and build the `Snapshot` from that result. This matches what the tests assert. I used the source only to confirm this and did not use it to derive the expected behavior.\n\n**Gaps.** I found none. No acknowledgments apply.",
   "references": "86ae59aa916cd9cba23031380bb29ae20cfae3ed4c11419c652f310471200eb2",
   "inputs": [
     {
@@ -32,12 +32,12 @@
     {
       "file": "crates/habeas-sdk/tests/agent.rs",
       "item": "fn[agent_edge_tools_record_selections_without_validating_targets]",
-      "hash": "cb1dc09049d2c581c40f639a03e73282e465e8b0811d4dd7d4f30505d99bc97d"
+      "hash": "940f43580a994b5cc66a9dff822fa23050115ce1061aca382fc291f9d891b632"
     },
     {
       "file": "crates/habeas-sdk/tests/agent.rs",
       "item": "fn[graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery]",
-      "hash": "0cc3cc096f7c79cc9eef335319713f2332e1664247bc90701c0569a55cf5041d"
+      "hash": "9efb96a27bec6f0cbf5bf87ceae5c702e88e7ccd70e0c95e2beff8609eb526bf"
     },
     {
       "file": "crates/habeas-sdk/tests/contracts.rs",
@@ -47,12 +47,12 @@
     {
       "file": "crates/habeas-sdk/tests/validation.rs",
       "item": "fn[snapshots_record_exact_reads_and_retain_distinct_versions]",
-      "hash": "8757a8cf73b65e3c55eb46c9fceca358dd9b32da2e2387d03700dbc41fc2ae9d"
+      "hash": "5b44bee0e882127ee5897c4ecb659d146d9e640fe6acdd525a44fae4a6af9c1b"
     },
     {
       "file": "crates/habeas-sdk/tests/validation.rs",
       "item": "fn[labeled_selections_track_only_target_membership_without_reading_contents]",
-      "hash": "4a2856070d4405b5501e24291a6b1639cccf3fedf480815165d0d7ceacdd7ec9"
+      "hash": "f7995b9d85cda2d6c134e0ba2367b680613102df70c0bb577f1cf10e214dc7b5"
     },
     {
       "file": "crates/habeas-sdk/tests/validation.rs",
@@ -62,12 +62,7 @@
     {
       "file": "src/sdk.rs",
       "item": "mod[tests]/fn[requirement_edges_and_input_freshness_use_the_sdk]",
-      "hash": "5a09b641e83290b83745ccdc8e097c6c61db43f6430e1488e59da188fd4fc4fd"
-    },
-    {
-      "file": "crates/habeas-sdk/src/graph.rs",
-      "item": "struct[Snapshot]",
-      "hash": "058d311458a7ebfa2177688605eceeaf54635377a637cca3085e351e10af4764"
+      "hash": "41bc695a8afd21b4068dcc3765fc401d14b5d1ed619a5df0f4a84bff7ebdf5c6"
     },
     {
       "file": "crates/habeas-sdk/src/graph.rs",
@@ -81,38 +76,13 @@
     },
     {
       "file": "crates/habeas-sdk/src/graph.rs",
-      "item": "impl[InspectionContext<'d,%20D>]/fn[prepare_edges]",
-      "hash": "68e766136ad846da3a33cb489ff7613fa3c8d1acfa87fe0d26c48c8d08f68242"
-    },
-    {
-      "file": "crates/habeas-sdk/src/graph.rs",
       "item": "impl[InspectionContext<'d,%20D>]/fn[outgoing_edges]",
       "hash": "664f7b18d745ea1b4e5962c384c521546946ebd381b339054fefdb2539212436"
     },
     {
       "file": "crates/habeas-sdk/src/graph.rs",
-      "item": "fn[edge_fingerprint]",
-      "hash": "573c33edd8a8a37234c4b0c3ed8e450f3f381bf107db1505f9fc86c3174d049b"
-    },
-    {
-      "file": "crates/habeas-sdk/src/graph.rs",
-      "item": "trait[Graph]/fn[outgoing_edges]",
-      "hash": "dc0914fd3bb7b7d83b30ac2263c1074bbfdf49e7d211343ccfee032690ee5f5a"
-    },
-    {
-      "file": "crates/habeas-sdk/src/agent/tools.rs",
-      "item": "impl[GraphSession<'_,%20'_,%20D,%20R>/Conversation]/fn[dispatch]",
-      "hash": "062767a854e1b71b51eb217763d92fd884d09e8a363b8c55b4add4ab45aa2442"
-    },
-    {
-      "file": "crates/habeas-sdk/src/procedure.rs",
-      "item": "impl[ValidationContext<'d,%20D>]#1/fn[successors]",
-      "hash": "7efe9e695e53a2b933bb6c31d3f2b290a1c694de461f5fd95e5fa7098b670243"
-    },
-    {
-      "file": "crates/habeas-sdk/src/procedure.rs",
-      "item": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#2/fn[execute]",
-      "hash": "aedd2f760b939b86826623595099983227061911fe7a6718c148dda60c0c4b43"
+      "item": "impl[InspectionContext<'d,%20D>]/fn[prepare_edges]",
+      "hash": "68e766136ad846da3a33cb489ff7613fa3c8d1acfa87fe0d26c48c8d08f68242"
     }
   ],
   "format_version": 1,
@@ -165,7 +135,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "f28e2a3bbe459118c66203477e05ef5cc59bc464107bf41d012893a8b24b2406"
+          "value": "439be0a5e942eb3875e2cd7baf7f6df892b34ede175b2d9fa4185afedcdf6ecb"
         }
       ]
     },
@@ -182,7 +152,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "f961a81a288ee4c2ae25c288229723de3a6240b376938292f2de441ac5ec12f6"
+          "value": "6b339c54ba6857e5e27e0d54b3caa1f476942d1dd725601527e7c957d9dc91c6"
         }
       ]
     },
@@ -216,7 +186,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "329cac95e77ab05c06701372789140f0dab06ace8e347a777db7f2c5bda90145"
+          "value": "9c407ad62b775f66bdb5b1355fd8e498a9ab006bb1b248578e178cd98d98cd20"
         }
       ]
     },
@@ -233,7 +203,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "ea4b8b38228cc056b5a5c465cf772ebc6a6f51ff921517eca93ef471cc63e4a5"
+          "value": "994cbe186ea546809848f1a32485a39ef09200611e949be3277c81ee9d237e4e"
         }
       ]
     },
@@ -267,24 +237,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "bb319360ad362793c499ca6908d0bfd6c5a53ba5fca5c6579cddc048231187b6"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/src/graph.rs"
-            },
-            "selector": "struct[Snapshot]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "1463d02e5e6a0df072ec707f8fbd1ef8484c86527bc688156cb5cda452046c9e"
+          "value": "b7ec834818546ddf97f0f21fa43b659de9724a25dc2446e853065989f9bbaed2"
         }
       ]
     },
@@ -330,23 +283,6 @@
               "scheme": "repo",
               "location": "crates/habeas-sdk/src/graph.rs"
             },
-            "selector": "impl[InspectionContext<'d,%20D>]/fn[prepare_edges]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "30c08e6fab392a904b5b9a5bdc01d8ec99e99762eef85280d45a2989e3d4f841"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/src/graph.rs"
-            },
             "selector": "impl[InspectionContext<'d,%20D>]/fn[outgoing_edges]"
           }
         },
@@ -364,80 +300,12 @@
               "scheme": "repo",
               "location": "crates/habeas-sdk/src/graph.rs"
             },
-            "selector": "fn[edge_fingerprint]"
+            "selector": "impl[InspectionContext<'d,%20D>]/fn[prepare_edges]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "84d3427bdf50fb0027f2cefeffb8296586725bc640ec52dd275a9885ecf4ce7b"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/src/graph.rs"
-            },
-            "selector": "trait[Graph]/fn[outgoing_edges]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "078faee6f7670ed3a08aceaa5e22d5fafd1ed4726e104b99ccc85ccb5af93c3d"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/src/agent/tools.rs"
-            },
-            "selector": "impl[GraphSession<'_,%20'_,%20D,%20R>/Conversation]/fn[dispatch]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "5b5cc34a1e08e1a7dbf6f10af302d83fc2b8980e4fd27e92a6ce66d391674f64"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/src/procedure.rs"
-            },
-            "selector": "impl[ValidationContext<'d,%20D>]#1/fn[successors]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "e048e54069d7cbff161496029889551f2ca10aec7a140871e23c0562206655f0"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/src/procedure.rs"
-            },
-            "selector": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#2/fn[execute]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "ebbd49dc4f18694b32394174702c4b15412356a6b47f3d64fad5dd091ade5004"
+          "value": "30c08e6fab392a904b5b9a5bdc01d8ec99e99762eef85280d45a2989e3d4f841"
         }
       ]
     }

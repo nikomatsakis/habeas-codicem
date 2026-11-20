@@ -1,7 +1,7 @@
 {
   "requirement": "```rust,ignore\n// Method on Validator<D>.\n/// Reuse the current answer, including a negative assessment.\n/// Otherwise execute and save the completed record before returning.\npub fn verify<V: Criterion<D>>(\n    &self,\n    criterion: V,\n) -> impl Future<Output = Result<V::Ok, ValidationError<D::Error>>> + Send;\n```\n\nThe SDK loads the record for this source and criterion and compares its revision\nand dependencies under {cite}`requirements.sdk.graph.evidence.checking_records`.\nCurrent evidence is decoded into `V::Ok` and returned without calling `execute`.\nMissing or stale evidence starts a fresh context identifying the source node,\nexecutes the supplied criterion, and saves its result and captured dependencies.\nOther criteria's records are unaffected.\n\nFreshness checking has a separate observation scope from execution. Reads used\nonly to check old evidence do not become dependencies of the new result. A\nchecked snapshot can be reused if it still represents the current state; when\nexecution explicitly reads or delivers it, its fingerprint enters the new trace.",
   "determination": true,
-  "rationale": "The marked tests cover each obligation in `validate_node`, including the parts it takes from the cited `checking_records`. Coverage by obligation:\n\n- **Current evidence is reused without calling `execute`.**\n  - `contracts.rs#fn[criteria_have_independent_typed_answers_and_cache_negative_results]` re-verifies with a `Review` carrying a different answer (\"must not execute\"). It gets the old negative answer back, and the counters end at `executions == 3` and `writes == 3`.\n  - `validation.rs#fn[runner_reuses_negative_judgments_and_records_only_callback_observations]` verifies twice and checks that `started` is `[9]`, so the second call did not re-execute.\n  - `src/authoring/sdk.rs#mod[tests]/fn[review_graph_persists_and_reuses_a_negative_validation_through_the_sdk]` covers non-empty dependencies. The second `verify` leaves the provider with one request, and the saved file is byte-identical.\n  - `agent.rs#fn[validator_agent_executions_isolate_conversations_and_dependency_traces]` re-verifies \"alpha\" and sees no new agent calls.\n- **A negative assessment is reused.** The three tests above assert this with `result == false` and `Current(!result)`.\n- **Missing evidence starts a fresh context for the source node, executes, and saves the result and dependencies.**\n  - `started` is checked in the `validation.rs` negative-reuse test and in `validation.rs#fn[concurrent_single_node_validations_keep_separate_traces]`.\n  - Saved records are asserted in `contracts.rs#fn[criteria_have_independent_typed_answers_and_cache_negative_results]`.\n  - Per-node dependency traces are asserted in `validation.rs#fn[concurrent_single_node_validations_keep_separate_traces]` and `agent.rs#fn[agent_edge_tools_record_selections_without_validating_targets]`.\n- **Stale evidence is replaced.**\n  - A revision mismatch is covered in the `validation.rs` negative-reuse test. After `v2.verify`, the saved revision is `v2`.\n  - A dependency fingerprint mismatch is covered in `contracts.rs#fn[changed_dependencies_precede_decoding_and_execution_records_its_own_reads]`. It checks that `check` is `Stale`, `verify` returns the new answer, `executions` is 2, and the record holds the new fingerprint.\n  - `contracts.rs#fn[changing_one_criteria_input_does_not_invalidate_another]` replaces the `behavior` record and asserts the new saved dependencies.\n- **Other criteria's records are unaffected.** `changing_one_criteria_input_does_not_invalidate_another` leaves `structure` `Current` after `behavior` goes stale. `criteria_have_independent_typed_answers_and_cache_negative_results` verifies several criteria on one node independently.\n- **Separate observation scopes.**\n  - `validation.rs#fn[historical_freshness_reads_do_not_enter_the_replacement_trace]` reads node 2 during the freshness check. The new trace contains only `Dependency::Node(1, ..)`, which execution itself read.\n  - In `contracts.rs#fn[changed_dependencies_precede_decoding_and_execution_records_its_own_reads]`, reads are `[2, 2]` (\"separate observations\"). The new record has the post-change fingerprint, so a read that execution makes explicitly enters the new trace.\n- **Cited `checking_records`.** Revision-first checking and the early stale return (no decode, no resolution) are exercised by `contracts.rs#fn[revision_and_dependency_checks_precede_output_decoding]`. It is marked for `checking_records`, not `validate_node`, but it also calls `verify`. Dependency-resolution failures during `verify` (read and edge failures returning an error without executing or replacing the saved record) are tested in `dependency_resolution_failures_do_not_execute_or_replace_saved_answers`. That test is marked `validate_node.errors`, the sibling requirement that owns error handling. I treat that obligation as delegated, so it needs no further test here.\n\nI found no clause of `validate_node` with plausible violating behavior that these tests would accept.",
+  "rationale": "The tests marked `{test}` for `requirements.sdk.graph.validation.validate_node` cover each obligation in its text.\n\n**Reuse of current evidence, including negative answers, without calling `execute`**\n- `contracts.rs#fn[criteria_have_independent_typed_answers_and_cache_negative_results]` verifies a negative answer. It verifies again with a different \"must not execute\" payload and gets the original negative answer back. It then asserts `executions == 3` and `writes == 3`.\n- `validation.rs#fn[runner_reuses_negative_judgments_and_records_only_callback_observations]` verifies twice. It asserts a single `started` entry and a negative result from both `check` and `verify`.\n- `src/authoring/sdk.rs#mod[tests]/fn[review_graph_persists_and_reuses_a_negative_validation_through_the_sdk]` does the same through the real SDK graph. It checks one provider request, a second `verify` equal to the saved answer, and an unchanged file on disk.\n- `contracts.rs#fn[validation_and_answer_need_send_without_sync]` decodes into `V::Ok` and asserts one execution.\n\n**Missing or stale evidence executes and saves the completed record**\n- Missing: the contracts test above asserts `writes == 3`, and the saved record outputs are compared.\n- Stale by revision: in the runner test, `v2.check` returns `Stale`. `v2.verify` then re-executes, and the stored record's revision is `v2`.\n- Stale by dependency: `contracts.rs#fn[changed_dependencies_precede_decoding_and_execution_records_its_own_reads]` changes the content of a read node. `check` returns `Stale`, and `verify` returns the new answer with `executions == 2`.\n- `contracts.rs#fn[changing_one_criteria_input_does_not_invalidate_another]` also covers replacement. After a stale `verify`, the saved dependency list holds only the new read.\n\n**Fresh context identifying the source node**\n- `validation.rs#fn[concurrent_single_node_validations_keep_separate_traces]` runs three nodes concurrently. It asserts the `started` nodes and that each record's dependencies belong to its own node.\n- The two `agent.rs` tests assert per-criterion traces and `ctx.node_id`.\n\n**Other criteria's records are unaffected**\n- `changing_one_criteria_input_does_not_invalidate_another` leaves the `structure` record `Current(true)` after the `behavior` input changes.\n- `criteria_have_independent_typed_answers_and_cache_negative_results` keeps separate typed outputs per criterion path.\n- `agent.rs#fn[validator_agent_executions_isolate_conversations_and_dependency_traces]` isolates the `alpha` and `beta` criteria.\n\n**Freshness reads do not become dependencies of the new result; execution reads do**\n- `validation.rs#fn[historical_freshness_reads_do_not_enter_the_replacement_trace]` has freshness read node 2 and execution read node 1. It asserts `reads == [2, 1]` and a saved trace of only `Node(1)`.\n- `changed_dependencies_precede_decoding_and_execution_records_its_own_reads` has both phases read node 2. It asserts `reads == [2, 2]` and a saved fingerprint equal to the \"after\" value. So a snapshot that execution reads enters the new trace with its current fingerprint, and the two observation scopes stay separate.\n- Reuse of a checked snapshot is permissive (\"can be reused\"), so it needs no test.\n\n**Delegated and exempt items**\n- The `check_node` outcomes and the `checking_records` rules (revision checked before dependencies and decoding, early return, and resolution failures) are tested under their own requirements. `contracts.rs#fn[revision_and_dependency_checks_precede_output_decoding]` and `contracts.rs#fn[dependency_resolution_failures_do_not_execute_or_replace_saved_answers]` cover them. The `contracts.rs#fn[loading_execution_resolution_and_saving_failures_do_not_publish_answers]` failure tests are tied to `validate_node.errors`.\n- The subject's text states no error obligation for `validate_node` itself. Those failure tests belong to the refining requirement, so they need no marking here.\n\nI found no requirement-violating behavior that these tests would accept.",
   "references": "3bcd02ed99bcdd33dcfd079704c98276c55bd629dbffe199fa1e7048b3f4e472",
   "inputs": [
     {
@@ -64,12 +64,12 @@
     {
       "file": "crates/habeas-sdk/tests/agent.rs",
       "item": "fn[agent_edge_tools_record_selections_without_validating_targets]",
-      "hash": "cb1dc09049d2c581c40f639a03e73282e465e8b0811d4dd7d4f30505d99bc97d"
+      "hash": "940f43580a994b5cc66a9dff822fa23050115ce1061aca382fc291f9d891b632"
     },
     {
       "file": "crates/habeas-sdk/tests/contracts.rs",
       "item": "fn[criteria_have_independent_typed_answers_and_cache_negative_results]",
-      "hash": "67c4fc430b44473b4e05fa5fd997743ab3a00a4fabe175c6b54f101eec4fcbf2"
+      "hash": "723a863f4d9412eb49df340d9baa993dc8935c612a9097aa8e833355c5cc4edc"
     },
     {
       "file": "crates/habeas-sdk/tests/contracts.rs",
@@ -89,7 +89,7 @@
     {
       "file": "crates/habeas-sdk/tests/validation.rs",
       "item": "fn[historical_freshness_reads_do_not_enter_the_replacement_trace]",
-      "hash": "b48a80f8b5112051fccc7e3a3c286840be9a083b11c630a3b98504dbb19eada7"
+      "hash": "ef5bfcafb60345c0a41c4c9ab83d394d1e7f891f0b51ccedccac1746ad508bcd"
     },
     {
       "file": "crates/habeas-sdk/tests/validation.rs",
@@ -104,22 +104,7 @@
     {
       "file": "src/authoring/sdk.rs",
       "item": "mod[tests]/fn[review_graph_persists_and_reuses_a_negative_validation_through_the_sdk]",
-      "hash": "4508eafda747840d787ab12489f3b841445c0054a0ca550f41c59d2c410f8245"
-    },
-    {
-      "requirements": "requirements.sdk.graph.validation.validate_node.errors",
-      "matches": [
-        "requirements.sdk.graph.validation.validate_node.errors"
-      ],
-      "text": [
-        ":::{req} validate_node.errors",
-        "Storage, dependency-resolution, output-encoding, and current-output decoding",
-        "failures return errors rather than missing or stale states. An execution error",
-        "is never stored as a completed result. A serialization failure does not replace",
-        "an existing record. A save failure is returned rather than reporting successful",
-        "verification.",
-        ":::"
-      ]
+      "hash": "c5cd5cd6ef7ba186ecdaff2becd4e345c6e53ead33db4a38e3148185001ee723"
     },
     {
       "file": "crates/habeas-sdk/tests/contracts.rs",
@@ -215,7 +200,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "f28e2a3bbe459118c66203477e05ef5cc59bc464107bf41d012893a8b24b2406"
+          "value": "439be0a5e942eb3875e2cd7baf7f6df892b34ede175b2d9fa4185afedcdf6ecb"
         }
       ]
     },
@@ -232,7 +217,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "d2f04095b3210a152b8b4f6c0b37b36adc6362c56a2302c1dfae936d8500921b"
+          "value": "814765a617e90675df163fee56259168a097cc05888c9bef715b197a5fe32900"
         }
       ]
     },
@@ -300,7 +285,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "91363b9cfa1d480eae187336f78d198998ae40eea8c995926d547f1e7be9bde6"
+          "value": "5c633e20475340d0d778969461b3eed8444a85c754bb73eda5d125684b834cb3"
         }
       ]
     },
@@ -351,18 +336,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "d9efc1044cc16a02c0662eee3f33d0e24580707c5648c1cebc4378db691cd7c4"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Requirement": "requirements.sdk.graph.validation.validate_node.errors"
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "2580f69ab4f9c21fccc4ed78497dfda08936e2d6b019cc7009c13eac3f2aa0b3"
+          "value": "65fb7036e0984654ecc19d48a5c06d7ef243234080bdd33705ef245ccad8e187"
         }
       ]
     },

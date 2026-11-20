@@ -396,7 +396,7 @@ pub(crate) fn resolve_input(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use habeas_sdk::graph::{Dependency, EvidenceStorage, Judgment, Record};
+    use habeas_sdk::graph::{Dependency, EvidenceStorage, Record};
     use std::fs;
 
     // {test}`requirements.sdk.graph.node_path_method`
@@ -610,12 +610,7 @@ mod tests {
                             value: "retained".into(),
                         },
                     )],
-                    output: serde_json::to_value(Judgment {
-                        result,
-                        rationale: "fixture review".into(),
-                        metadata: metadata.clone(),
-                    })
-                    .unwrap(),
+                    output: metadata.clone(),
                 };
                 domain
                     .store_evidence(&node, &crate::sdk::review_criterion(), &record)
@@ -648,7 +643,7 @@ mod tests {
                 );
                 assert_eq!(fs::read(&path).unwrap(), original);
                 let mut inconsistent = record.clone();
-                inconsistent.output["result"] = serde_json::json!(!result);
+                inconsistent.output["determination"] = serde_json::json!("invalid");
                 assert!(
                     domain
                         .store_evidence(&node, &crate::sdk::review_criterion(), &inconsistent)
@@ -683,15 +678,10 @@ mod tests {
         let record = Record {
             revision: "test-review-v2".into(),
             dependencies: vec![],
-            output: serde_json::to_value(Judgment {
-                result: true,
-                rationale: "fixture review".into(),
-                metadata: serde_json::json!({
-                    "requirement":"ready", "references":"0".repeat(64), "inputs":[],
-                    "determination":true, "rationale":"fixture review"
-                }),
-            })
-            .unwrap(),
+            output: serde_json::json!({
+                "requirement":"ready", "references":"0".repeat(64), "inputs":[],
+                "determination":true, "rationale":"fixture review"
+            }),
         };
         assert!(
             domain
@@ -767,11 +757,7 @@ mod tests {
         let record = ctx
             .finish(
                 "test-review-v1".into(),
-                habeas_sdk::graph::Judgment {
-                    result: true,
-                    rationale: "ready".into(),
-                    metadata: serde_json::Value::Null,
-                },
+                serde_json::json!({"determination": true, "rationale": "ready"}),
             )
             .unwrap();
         assert!(habeas_sdk::graph::record_is_current(&domain, "test-review-v1", &record).unwrap());

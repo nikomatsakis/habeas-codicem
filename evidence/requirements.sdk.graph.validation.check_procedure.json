@@ -1,7 +1,7 @@
 {
   "requirement": "```rust,ignore\nuse serde::{Serialize, de::DeserializeOwned};\nuse std::future::Future;\n\n// Defined in habeas_sdk::graph.\npub enum ValidationError<E> {\n    Graph(E),\n    NoAgentConfigured,\n    Agent(String),\n    Output(serde_json::Error),\n}\n\npub trait Criterion<D: Domain>: Send + Sized {\n    /// The completed answer, including any negative assessment.\n    /// The SDK serializes it for storage and reconstructs it when reused.\n    /// Its Serde JSON representation must reconstruct the completed answer.\n    type Ok: Serialize + DeserializeOwned + Send;\n\n    /// The node this question is about.\n    fn source_node_id(&self) -> D::NodeId;\n\n    /// Identify this question within the source node's saved evidence.\n    fn criterion_path(&self) -> CriterionPath;\n\n    /// Version of these review rules and the result's encoding.\n    /// Change it when an old answer should no longer be reused.\n    fn revision(&self) -> String;\n\n    /// Select inputs through cx and compute the completed answer.\n    fn execute(\n        self,\n        cx: &mut ValidationContext<'_, D>,\n    ) -> impl Future<Output = Result<Self::Ok, ValidationError<D::Error>>> + Send;\n}\n```\n\nThe source identity, criterion path, and revision identify the same question for\nchecking and execution. Parameters that change which question is being asked\nbelong in its identity or revision.",
   "determination": true,
-  "rationale": "The reviewed tests adequately check `requirements.sdk.graph.validation.check_procedure`.\n\nThe requirement has three kinds of obligation. I mapped each to marked tests.\n\n**1. `Criterion` contract.**\n- The trait needs a serializable `Ok` and the three identity methods, `source_node_id`, `criterion_path` and `revision`. It also needs an `execute` method whose future is `Send`.\n- `crates/habeas-sdk/tests/contracts.rs#fn[criteria_have_independent_typed_answers_and_cache_negative_results]` verifies several `Ok` types.\n  - These are a struct, a `Vec<String>`, a `Judgment` and a `json!(null)` descriptor.\n  - Each is serialized to storage (the asserted stored JSON for `behavior` and `judgment`) and reconstructed on reuse.\n  - Negative answers are reused, and the test asserts that no execution happens on reuse (`executions == 3`).\n- `crates/habeas-sdk/tests/contracts.rs#fn[validation_and_answer_need_send_without_sync]` checks the `Send` future bound. It uses a `Cell`, which is `Send` but not `Sync`, as the `Ok` type. The `send(...)` helper enforces the bound at compile time. The test also checks that a stored `Cell` answer round-trips.\n- `src/authoring/sdk.rs#mod[tests]/fn[review_graph_persists_and_reuses_a_negative_validation_through_the_sdk]` is a real downstream implementation, `Review`. It asserts `source_node_id`, `criterion_path().segments()` and `revision()`. It also checks persistence and reuse of a negative answer.\n\n**2. \"Identify the same question for checking and execution.\"**\n- The marked tests run `verify` and then `check` with the same descriptor and get `Current`.\n- A different criterion path (`text`) gives `Missing`.\n- A different source node (node 8) gives `Missing`, and a different revision (`v2`) gives `Stale`, in `crates/habeas-sdk/tests/validation.rs#fn[runner_reuses_negative_judgments_and_records_only_callback_observations]`.\n- Changing the stored revision to the wildcard `*` makes the record match, and the test asserts this.\n- Execution stores under the same identity that `check` later finds. Records are stored under the criterion path, and the revision is checked (`records[&9].revision == \"v2\"`).\n- Parameters that are not part of the identity, such as the differing answer payload with the same path, do not create a new question. The test asserts the cached `negative` answer is returned instead of executing again. This matches \"parameters that change which question is being asked belong in identity or revision\".\n- `crates/habeas-sdk/tests/agent.rs#fn[deterministic_validation_uses_required_storage_without_an_agent]` covers a deterministic criterion with the empty criterion path `CriterionPath::new(vec![])`. It also covers storage without an agent.\n\n**3. `ValidationError` shape.**\n- `crates/habeas-sdk/tests/validation.rs#fn[agent_errors_expose_the_agreed_string_payload]` pins `Agent(String)`.\n  - It asserts the display text and the absence of a `source`.\n  - It asserts the payload is a `String`.\n  - It asserts that `Graph(E)` exposes the inner error as its `source`.\n- The `Output(serde_json::Error)` and `NoAgentConfigured` variants are matched in other tests: `crates/habeas-sdk/tests/contracts.rs#fn[serialization_failure_leaves_the_existing_record_unchanged]`, `crates/habeas-sdk/tests/storage.rs#fn[malformed_records_are_storage_errors_and_current_bad_outputs_are_output_errors]` and `crates/habeas-sdk/tests/validation.rs#fn[runner_does_not_store_a_missing_agent_error_and_supports_intermediate_calls]`.\n  - Those tests are marked for the requirements that govern when these errors arise, namely `validate_node.errors` and the `agent-calls` requirements.\n  - The `check_procedure` text only declares the enum's shape. It does not state when each variant is produced, so no behavioral test is required here beyond the shape checks.\n\nI found no plausible requirement-violating behavior that the marked tests would accept. I found no acknowledgments or fixmes to consider.",
+  "rationale": "**Obligations derived from `requirements.sdk.graph.validation.check_procedure`**\n- A `Criterion` has a serializable `Ok` type, and its JSON form must reconstruct the completed answer, negative answers included.\n- It exposes `source_node_id`, `criterion_path` and `revision`.\n- `execute` returns `Result<Ok, ValidationError>`.\n- `ValidationError` has the variants `Graph`, `NoAgentConfigured`, `Agent(String)` and `Output`.\n- The source identity, criterion path and revision identify the same question for both checking and execution.\n- A new revision means an old answer is no longer reused.\n- Parameters that change which question is asked belong in the identity or revision.\n\n**Test mapping**\n- **Accessors, concrete criterion:** `src/authoring/sdk.rs#mod[tests]/fn[review_graph_persists_and_reuses_a_negative_validation_through_the_sdk]` asserts `source_node_id`, `criterion_path().segments()` and `revision()` for the real `Review` criterion. It also checks that `check` returns Missing before `verify`, then Current, and that `verify` does not re-run the agent and the saved file is unchanged. The stored output equals the serialized answer, and a different criterion path finds no record.\n- **Accessors, test criteria, and same identity for check and execution:** `crates/habeas-sdk/tests/contracts.rs#fn[criteria_have_independent_typed_answers_and_cache_negative_results]` covers these.\n  - Criteria with different paths on the same node (`behavior`, `structure`, `text`) keep independent answers.\n  - A negative answer is stored and reused: the second `verify` returns the first answer, `check` returns Current, and there are exactly 3 executions and 3 writes.\n  - Stored JSON is asserted for the negative answer and for the unit/null answer.\n  - A non-matching path gives Missing.\n  - The `()` answer round-trips.\n- **Send without Sync, and Serde round trip of a non-Sync answer:** `validation_and_answer_need_send_without_sync` uses a `Cell` answer through `verify` and `check`.\n- **Node and revision identity, and revision change:** `crates/habeas-sdk/tests/validation.rs#fn[runner_reuses_negative_judgments_and_records_only_callback_observations]` covers these.\n  - The same node and revision reuse the answer.\n  - A different node gives Missing.\n  - A new revision gives Stale.\n  - `verify` at the new revision re-executes and records `v2`.\n- **Deterministic criterion needing no agent:** `crates/habeas-sdk/tests/agent.rs#fn[deterministic_validation_uses_required_storage_without_an_agent]`.\n- **`ValidationError::Agent(String)` payload, plus `Graph` source and Display:** `agent_errors_expose_the_agreed_string_payload`.\n\n**Other points**\n- `NoAgentConfigured` and `Output` are only exercised by tests that do not reference this requirement. These are `tests/validation.rs` for the missing agent, and `tests/contracts.rs` and `tests/storage.rs` for output errors. The requirement states only that these variants exist, not when they are produced, so the existence of the variants is not a missing obligation. Those tests also compile-check their presence, and their behavior belongs to other requirements.\n- The design guidance that parameters belong in identity or revision is covered by the tests above. They show different paths, nodes and revisions giving independent or stale evidence.\n- I found no unacknowledged gap.",
   "references": "994b117f6f00d6a8bf936dd8a7fd3f4516f9372a073af4d9a1e4cbd3a07a4290",
   "inputs": [
     {
@@ -61,7 +61,7 @@
     {
       "file": "crates/habeas-sdk/tests/contracts.rs",
       "item": "fn[criteria_have_independent_typed_answers_and_cache_negative_results]",
-      "hash": "67c4fc430b44473b4e05fa5fd997743ab3a00a4fabe175c6b54f101eec4fcbf2"
+      "hash": "723a863f4d9412eb49df340d9baa993dc8935c612a9097aa8e833355c5cc4edc"
     },
     {
       "file": "crates/habeas-sdk/tests/contracts.rs",
@@ -81,7 +81,32 @@
     {
       "file": "src/authoring/sdk.rs",
       "item": "mod[tests]/fn[review_graph_persists_and_reuses_a_negative_validation_through_the_sdk]",
-      "hash": "4508eafda747840d787ab12489f3b841445c0054a0ca550f41c59d2c410f8245"
+      "hash": "c5cd5cd6ef7ba186ecdaff2becd4e345c6e53ead33db4a38e3148185001ee723"
+    },
+    {
+      "file": "crates/habeas-sdk/tests/contracts.rs",
+      "item": "fn[revision_and_dependency_checks_precede_output_decoding]",
+      "hash": "09825dec15bbb774ef42189297febabe33f9f165409b63ae02597d633e07c7f0"
+    },
+    {
+      "file": "crates/habeas-sdk/tests/contracts.rs",
+      "item": "fn[serialization_failure_leaves_the_existing_record_unchanged]",
+      "hash": "8e92f3226b8e4f111c563fe1790381a644a3cb397e32c991126c5a754ad81f21"
+    },
+    {
+      "file": "crates/habeas-sdk/tests/storage.rs",
+      "item": "fn[malformed_records_are_storage_errors_and_current_bad_outputs_are_output_errors]",
+      "hash": "ea61d3e9190eec2cfa5575fcf94446cc6e9f5f9a72955dd32b7ad9b0e3b1847c"
+    },
+    {
+      "file": "crates/habeas-sdk/tests/validation.rs",
+      "item": "fn[runner_does_not_store_a_missing_agent_error_and_supports_intermediate_calls]",
+      "hash": "60ebee46a29ec80f9ddf03a74bbda6e7ee214ceacf61740d8a491d8cb873b0b1"
+    },
+    {
+      "file": "crates/habeas-sdk/tests/validation.rs",
+      "item": "fn[dropped_builders_and_missing_agents_do_not_resolve_queued_inputs]",
+      "hash": "fbf8834a52c0582d32ea3ce5e786c95b49b0bfe96240a6213deb32f22f66bac8"
     }
   ],
   "format_version": 1,
@@ -151,7 +176,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "d2f04095b3210a152b8b4f6c0b37b36adc6362c56a2302c1dfae936d8500921b"
+          "value": "814765a617e90675df163fee56259168a097cc05888c9bef715b197a5fe32900"
         }
       ]
     },
@@ -219,7 +244,92 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "d9efc1044cc16a02c0662eee3f33d0e24580707c5648c1cebc4378db691cd7c4"
+          "value": "65fb7036e0984654ecc19d48a5c06d7ef243234080bdd33705ef245ccad8e187"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/tests/contracts.rs"
+            },
+            "selector": "fn[revision_and_dependency_checks_precede_output_decoding]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "7665377242de5e616d73f7971008ec838cb7b73c167db0ceb8c1f1f8d88b587b"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/tests/contracts.rs"
+            },
+            "selector": "fn[serialization_failure_leaves_the_existing_record_unchanged]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "8f263b9db41382746519e73799f2a08293620c1a716ce6e9c85b484afa6b855d"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/tests/storage.rs"
+            },
+            "selector": "fn[malformed_records_are_storage_errors_and_current_bad_outputs_are_output_errors]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "df6557c608602106f039832689a62b9188d3cbab26fc402897650b3b7866383e"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/tests/validation.rs"
+            },
+            "selector": "fn[runner_does_not_store_a_missing_agent_error_and_supports_intermediate_calls]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "7627d7d2730f860e83bcb444765894dc4ad1ffe6fca57fe4d8d6f38f671af4e0"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/tests/validation.rs"
+            },
+            "selector": "fn[dropped_builders_and_missing_agents_do_not_resolve_queued_inputs]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "811195f2940d9a325c8961574a1669dbaa941d940c629784e2d03f9a7ac53a4e"
         }
       ]
     }

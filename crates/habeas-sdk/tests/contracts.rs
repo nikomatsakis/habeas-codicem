@@ -189,7 +189,6 @@ fn send<T: Send>(value: T) -> T {
 // {test}`requirements.sdk.graph.validation.validate_node`
 // {test}`requirements.sdk.graph.validation.procedure_identity`
 // {test}`requirements.sdk.graph.validation.check_node`
-// {test}`requirements.sdk.graph.validation.judgment`
 // {test}`requirements.sdk.graph.validation.deterministic_procedures`
 // {test}`requirements.sdk.graph.evidence.record`
 // {test}`requirements.sdk.graph.evidence.record.output`
@@ -234,21 +233,14 @@ async fn criteria_have_independent_typed_answers_and_cache_negative_results() {
             .unwrap(),
         EvidenceState::Missing
     ));
-    let judgment = Judgment {
-        result: false,
-        rationale: "a negative judgment".to_owned(),
-        metadata: answer(true, "metadata need not agree with the result"),
-    };
     assert_eq!(
-        validator
-            .verify(Review::new(&["judgment"], judgment.clone()))
-            .await
-            .unwrap(),
-        judgment
+        validator.verify(Review::new(&["text"], ())).await.unwrap(),
+        ()
     );
-    assert!(
-        matches!(validator.check(&Review::new(&["judgment"], judgment.clone())).await.unwrap(), EvidenceState::Current(value) if value == judgment)
-    );
+    assert!(matches!(
+        validator.check(&Review::new(&["text"], ())).await.unwrap(),
+        EvidenceState::Current(())
+    ));
     let state = domain.0.lock().unwrap();
     assert_eq!(state.executions, 3);
     assert_eq!(state.writes, 3);
@@ -266,11 +258,11 @@ async fn criteria_have_independent_typed_answers_and_cache_negative_results() {
         state
             .records
             .iter()
-            .find(|(_, criterion, _)| criterion == &path(&["judgment"]))
+            .find(|(_, criterion, _)| criterion == &path(&["text"]))
             .unwrap()
             .2
             .output,
-        serde_json::to_value(&judgment).unwrap(),
+        json!(null),
     );
     assert!(
         state.reads.is_empty(),

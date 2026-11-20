@@ -102,14 +102,6 @@ pub trait Fingerprinting: Graph {
     fn fingerprint(&self, node: &Self::NodeId, content: &Self::NodeContent) -> Fingerprint;
 }
 
-// {impl}`requirements.sdk.graph.validation.judgment`
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Judgment<M> {
-    pub result: bool,
-    pub rationale: String,
-    pub metadata: M,
-}
-
 // {impl}`requirements.sdk.graph.evidence.dependencies`
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Dependency<N, L = ()> {

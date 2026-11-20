@@ -20,6 +20,14 @@ use std::{
     },
 };
 
+// The test application chooses its own completed-answer format.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+struct Assessment<M> {
+    result: bool,
+    rationale: String,
+    metadata: M,
+}
+
 #[derive(Default)]
 struct State {
     contents: BTreeMap<u8, String>,
@@ -123,7 +131,7 @@ struct Review {
     revision: &'static str,
 }
 impl Criterion<Memory> for Review {
-    type Ok = Judgment<()>;
+    type Ok = Assessment<()>;
     fn source_node_id(&self) -> u8 {
         self.node
     }
@@ -145,7 +153,7 @@ impl Memory {
     async fn run_review<'a, 'd>(
         &'a self,
         ctx: &'a ValidationContext<'d, Self>,
-    ) -> Result<Judgment<()>, ValidationError<&'static str>>
+    ) -> Result<Assessment<()>, ValidationError<&'static str>>
     where
         'd: 'a,
     {
@@ -174,7 +182,7 @@ impl Memory {
         }
         self.active.fetch_sub(1, Ordering::SeqCst);
         self.state.lock().unwrap().finished.push(node);
-        Ok(Judgment {
+        Ok(Assessment {
             result: node != 9,
             rationale: format!("review {node}"),
             metadata: (),
@@ -199,7 +207,7 @@ async fn historical_freshness_reads_do_not_enter_the_replacement_trace() {
             Record {
                 revision: "v1".into(),
                 dependencies: vec![Dependency::Node(2, fp("old"))],
-                output: serde_json::to_value(Judgment {
+                output: serde_json::to_value(Assessment {
                     result: true,
                     rationale: "historical".into(),
                     metadata: (),
@@ -374,7 +382,7 @@ fn snapshots_record_exact_reads_and_retain_distinct_versions() {
     let record = inspection
         .finish(
             "v1".into(),
-            Judgment {
+            Assessment {
                 result: true,
                 rationale: "ok".into(),
                 metadata: (),
@@ -389,6 +397,42 @@ fn snapshots_record_exact_reads_and_retain_distinct_versions() {
         ]
     );
     assert!(!record_is_current(&graph, "v1", &record).unwrap());
+}
+
+// {test}`requirements.sdk.graph.evidence.checking_records`
+#[test]
+fn a_matching_dependency_does_not_hide_a_later_changed_dependency() {
+    for edge_dependency in [false, true] {
+        let graph = Memory::default();
+        {
+            let mut state = graph.state.lock().unwrap();
+            state
+                .contents
+                .extend([(1, "first".into()), (2, "second".into())]);
+            state.edges.insert(1, vec![(7, 2)]);
+        }
+        let later = if edge_dependency {
+            Dependency::OutgoingEdges(1, 7, edge_fingerprint(&graph, &[2]))
+        } else {
+            Dependency::Node(2, fp("second"))
+        };
+        let record = Record {
+            revision: "v1".into(),
+            dependencies: vec![Dependency::Node(1, fp("first")), later],
+            output: json!(false),
+        };
+        assert!(record_is_current(&graph, "v1", &record).unwrap());
+        {
+            let mut state = graph.state.lock().unwrap();
+            if edge_dependency {
+                state.edges.get_mut(&1).unwrap().push((7, 3));
+            } else {
+                state.contents.insert(2, "changed".into());
+            }
+            assert_eq!(state.contents[&1], "first");
+        }
+        assert!(!record_is_current(&graph, "v1", &record).unwrap());
+    }
 }
 
 // {test}`requirements.sdk.graph.evidence.checking_records.procedure_match`
@@ -406,7 +450,7 @@ fn wildcard_versions_still_check_inputs_and_errors() {
     let mut record = Record {
         revision: "*".into(),
         dependencies: vec![Dependency::Node(1, fp("same"))],
-        output: serde_json::to_value(Judgment {
+        output: serde_json::to_value(Assessment {
             result: false,
             rationale: "negative".into(),
             metadata: (),
@@ -456,7 +500,7 @@ fn labeled_selections_track_only_target_membership_without_reading_contents() {
     let ctx = ValidationContext::new(&graph, 1);
     assert_eq!(ctx.node_id(), &1);
     assert!(ctx.successors(&7).unwrap().is_empty());
-    let output = || Judgment {
+    let output = || Assessment {
         result: true,
         rationale: "selection".into(),
         metadata: (),
@@ -586,7 +630,6 @@ async fn runner_reuses_negative_judgments_and_records_only_callback_observations
 // {test}`requirements.sdk.graph.validation.validate_node.errors`
 // {test}`requirements.sdk.graph.validation.check_node`
 // {test}`requirements.sdk.graph.validation.procedure_identity`
-// {test}`requirements.sdk.graph.validation.judgment`
 #[tokio::test]
 async fn resolution_storage_and_callback_errors_are_not_judgments() {
     let graph = Memory::default();
@@ -1111,7 +1154,7 @@ async fn later_lighter_agent_calls_preserve_the_contexts_existing_trace() {
         ctx.inspection()
             .finish(
                 "v1".into(),
-                Judgment {
+                Assessment {
                     result: true,
                     rationale: "retained".into(),
                     metadata: (),
