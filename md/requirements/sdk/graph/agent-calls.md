@@ -39,6 +39,8 @@ The SDK implements this trait for the following combinations:
 
 | Value | Rendering |
 | --- | --- |
+| `String` | Use its text directly. |
+| `str` | Use its text directly; `&str` works through the reference implementation. |
 | `&C`, where `C: Context + ?Sized` | Forward to the referenced value. |
 | `[C]` and `Vec<C>`, where `C: Context` | Render elements in order, separated by two newlines. An empty collection renders an empty string. |
 | Heterogeneous tuples of 2 through 12 `Context` values | Render elements in order, separated by two newlines. |
