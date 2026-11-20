@@ -10,8 +10,8 @@ The validation context creates a builder for each call:
 let answer: ExpirationAssessment = ctx.ask()
     .context((&review_policy, &project_conventions))
     .context(&question)
-    .current_node_contents()
-    .successors_content(HabeasEdgeLabel::Tests)
+    .contents_of_current_node()
+    .contents_of_successors(HabeasEdgeLabel::Tests)
     .await?;
 ```
 
@@ -122,10 +122,10 @@ impl<'a, 'd, D: Domain, R> Ask<'a, 'd, D, R, ContextPhase> {
 
 impl<'a, 'd, D: Domain, R, P> Ask<'a, 'd, D, R, P> {
     /// Queue the current node's contents and enter the node phase.
-    pub fn current_node_contents(self) -> Ask<'a, 'd, D, R, NodePhase>;
+    pub fn contents_of_current_node(self) -> Ask<'a, 'd, D, R, NodePhase>;
 
     /// Queue contents of successors with this label and enter the node phase.
-    pub fn successors_content(
+    pub fn contents_of_successors(
         self,
         label: D::EdgeLabel,
     ) -> Ask<'a, 'd, D, R, NodePhase>
@@ -145,7 +145,7 @@ insertions. Building it does not invoke an agent.
 An ask builder begins in `ContextPhase`. Only that state exposes `context`,
 composing the reusable prefix under
 {cite}`requirements.sdk.graph.agent-calls.agent_context`. The first
-`current_node_contents` or `successors_content` call enters `NodePhase`, even
+`contents_of_current_node` or `contents_of_successors` call enters `NodePhase`, even
 with an empty successor selection. This state allows further node insertions
 and awaiting, with no `context` method or transition back. The builder's types
 enforce the restriction.
@@ -159,8 +159,8 @@ Awaiting with a configured agent resolves these selections in call order:
 
 | Insertion | Contents delivered |
 | --- | --- |
-| `current_node_contents()` | The node identified by `ValidationContext::node_id`. |
-| `successors_content(label)` | Targets of edges whose labels equal `label`, in returned edge order, including duplicate targets. |
+| `contents_of_current_node()` | The node identified by `ValidationContext::node_id`. |
+| `contents_of_successors(label)` | Targets of edges whose labels equal `label`, in returned edge order, including duplicate targets. |
 
 Each successful successor selection records its source, label, and target-set
 fingerprint, even when nothing matches. Only selected targets have their contents

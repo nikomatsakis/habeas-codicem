@@ -16,7 +16,7 @@ struct BehavioralAdequacy {
     review_policy: String,
 }
 
-/// The criterion's answer, submitted by the agent and saved by the validator.
+/// The criterion's answer, submitted by the agent.
 #[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 struct TestReview {
     adequate: bool,
@@ -49,17 +49,20 @@ Evaluate an instance using a validator. Here `agent` and `renderer` are configur
 let validator = Validator::new(domain.clone())
     .with_agent(agent.clone(), renderer.clone());
 
-let assessment: TestReview = validator.verify(BehavioralAdequacy {
+let inputs = validator.verify(BehavioralAdequacy {
     requirement: requirement.clone(),
     review_policy: test_review_policy.clone(),
 }).await?;
 
+validator.store_evidence(&inputs).await?;
+let assessment: &TestReview = inputs.output();
 println!("{}: {}", assessment.adequate, assessment.rationale);
 ```
 
-The validator returns a saved answer when its inputs and review rules are current.
-Otherwise it calls `execute` and saves the completed answer with its observed
-inputs. Several criteria can examine the same node and keep independent answers.
+`verify` evaluates the question and returns `Fingerprinted<D, TestReview>`, containing
+the answer and its recorded inputs. `store_evidence` saves that value. Loading
+evidence and checking its inputs are separate operations, so the application
+decides whether to reuse an answer or evaluate the criterion again.
 
 ## Define the criterion's interface
 
@@ -138,8 +141,8 @@ impl<'cx, D: Domain> ValidationContext<'cx, D> {
 ```
 
 Continue the `BehavioralAdequacy` application example from the overview.
-Its agent examines the requirement and its tests and submits the `TestReview`
-that the validator saves. Here is the `execute` method from
+Its agent examines the requirement and its tests and submits a `TestReview`.
+Here is the `execute` method from
 `impl Criterion<HabeasDomain> for BehavioralAdequacy`:
 
 ```rust,ignore
@@ -150,20 +153,27 @@ async fn execute(
     cx.ask()
         .context(&self.review_policy)
         .context("Check whether these tests cover the requirement's behavior and edge cases.")
-        .current_node_contents()
-        .successors_content(HabeasEdgeLabel::Tests)
+        .contents_of_current_node()
+        .contents_of_successors(HabeasEdgeLabel::Tests)
         .await
 }
 ```
 
-The policy and question form a reusable prompt prefix; the requirement and
-tests supply the changing inputs.
+The builder methods determine what is given to the agent:
 
-A structural review can use `successors_content(HabeasEdgeLabel::Implements)`
-to examine implementation items. A criterion checking the prose can read the
-requirement and its cited definitions. Each criterion records the observations
-made during its own execution. Inspecting an empty edge selection records it
-too, so newly added inputs can invalidate the answer.
+- `context` provides common context, including the question. These calls come
+  first so the provider can cache the shared prompt prefix.
+- `contents_of_current_node()` provides the contents of the criterion's source
+  node: here, the requirement.
+- `contents_of_successors(label)` provides the contents of its successors with
+  that label: here, the requirement's tests.
+
+The context records the contents supplied in the prompt. The agent also has
+tools for requesting additional contents, which are recorded when delivered.
+Awaiting the ask builder returns the submitted `TestReview`; `verify` returns
+a `Fingerprinted` containing the criterion's completed answer and the identity and
+fingerprint of each input used during execution. Those fingerprints let the
+application check when the answer may be stale.
 
 Habeas currently runs one combined `Review` criterion at `["review"]`; its
 execution selects the requirement and mandatory inputs and applies Habeas's
@@ -220,8 +230,9 @@ an evidence record; the context's source remains the graph node.
 
 ## Run criteria with a validator
 
-A `Validator<D>` owns a cloneable domain and agent configuration. Submit a
-criterion to `verify` to reuse its saved answer or run its `execute` method.
+A `Validator<D>` owns a cloneable domain and agent configuration. It supplies
+four operations: load evidence, check its inputs, execute a criterion, and
+store the resulting evidence. Applications compose these into their workflows.
 
 :::{req} validator
 ```rust,ignore
@@ -253,21 +264,21 @@ within one execution share its synchronized trace through context inspection
 and agent calls.
 
 Concurrent verifications of the same source and criterion run independently,
-each with its own context and trace. They can both execute when evidence is
-missing or stale.
+each with its own context and trace. The storage backend handles atomic
+replacement when their results are saved.
 :::
 
 The overview passed a `BehavioralAdequacy` value to this validator. Other
 questions about the same requirement can use their own criterion paths and
 result types; their answers are saved independently.
 
-## Check or reuse saved evidence
+## Execute a criterion
 
 :::{req} procedure_identity
-Checking and verification obtain the source node, criterion path, and revision
-from the same `Criterion` value. There is no node-wide revision resolver.
-The pair of source and criterion selects a record; the revision determines
-whether that record still answers the current question.
+`load_evidence` selects a saved record using the source node and criterion path
+from the supplied `Criterion`. `verify` captures those values and the criterion's
+revision in its returned `Fingerprinted`. The pair of source and criterion selects a
+record; its saved revision identifies the review rules used to produce it.
 
 Changing review instructions, deterministic rules, input-selection policy, or
 result encoding in a way that invalidates an old answer requires a changed
@@ -279,20 +290,19 @@ cache fingerprint. A stored legacy revision `*` retains the matching behavior of
 :::{req} validate_node
 ```rust,ignore
 // Method on Validator<D>.
-/// Reuse the current answer, including a negative assessment.
-/// Otherwise execute and save the completed record before returning.
+/// Execute the criterion and return its completed answer and observed inputs.
+/// Use store_evidence to save the returned value.
 pub fn verify<V: Criterion<D>>(
     &self,
     criterion: V,
-) -> impl Future<Output = Result<V::Ok, ValidationError<D::Error>>> + Send;
+) -> impl Future<Output = Result<Fingerprinted<D, V::Ok>, ValidationError<D::Error>>> + Send;
 ```
 
-The SDK loads the record for this source and criterion and compares its revision
-and dependencies under {cite}`requirements.sdk.graph.evidence.checking_records`.
-Current evidence is decoded into `V::Ok` and returned without calling `execute`.
-Missing or stale evidence starts a fresh context identifying the source node,
-executes the supplied criterion, and saves its result and captured dependencies.
-Other criteria's records are unaffected.
+Every call starts a fresh context identifying the source node and calls
+`Criterion::execute`. Its completed answer, including a negative assessment,
+and captured dependencies form the returned `Fingerprinted` under
+{cite}`requirements.sdk.graph.evidence.inputs`. Loading and saving records are
+separate operations.
 
 Freshness checking has a separate observation scope from execution. Reads used
 only to check old evidence do not become dependencies of the new result. A
@@ -301,52 +311,83 @@ execution explicitly reads or delivers it, its fingerprint enters the new trace.
 :::
 
 :::{req} validate_node.errors
-Storage, dependency-resolution, output-encoding, and current-output decoding
-failures return errors rather than missing or stale states. An execution error
-is never stored as a completed result. A serialization failure does not replace
-an existing record. A save failure is returned rather than reporting successful
-verification.
+An execution error returns `Err` rather than a `Fingerprinted` containing a completed
+answer. The caller can store only a completed verification.
 :::
 
-## Inspect saved evidence
+## Load and store evidence
 
-CI needs to distinguish missing, stale, and current evidence. It supplies the
-same criterion value to `check`:
+Loading returns the saved answer and its input trace, if a record exists.
+The caller can then compare the revision and inputs or inspect the answer.
+
+:::{req} check_node
+```rust,ignore
+// Method on Validator<D>.
+/// Load this criterion's evidence and decode its answer as V::Ok.
+/// Ok(None) means no saved record exists.
+pub fn load_evidence<V: Criterion<D>>(
+    &self,
+    criterion: &V,
+) -> impl Future<Output = Result<Option<Fingerprinted<D, V::Ok>>, ValidationError<D::Error>>> + Send;
+```
+
+`load_evidence` captures the source identity and criterion path while constructing
+its future. It retains no reference to the criterion value while storage is
+pending, so the criterion needs no `Sync` bound. It loads the complete record and
+decodes its output under {cite}`requirements.sdk.graph.evidence.record.output`.
+Revision and input comparison are separate steps.
+:::
+
+:::{req} store_evidence
+```rust,ignore
+// Method on Validator<D>.
+/// Encode the answer and atomically replace this source/criterion's record.
+pub fn store_evidence<O: serde::Serialize>(
+    &self,
+    inputs: &Fingerprinted<D, O>,
+) -> impl Future<Output = Result<(), ValidationError<D::Error>>> + Send;
+```
+
+The method saves under the source identity and criterion path captured in
+`Fingerprinted`, preserving its revision, input trace, and completed answer. Encoding follows
+{cite}`requirements.sdk.graph.evidence.record.output`; atomic replacement follows
+{cite}`requirements.sdk.graph.evidence.evidence_storage`. The result type needs
+no `Sync` bound: the method encodes the answer and captures the record and
+storage key before constructing the storage future.
+:::
+
+## Compose a reuse workflow
+
+The application decides when to reuse a saved answer. For example, it can
+compare the saved revision and recorded inputs before choosing whether to
+execute and store a new review:
 
 ```rust,ignore
 let review = BehavioralAdequacy {
     requirement,
     review_policy: test_review_policy,
 };
-let state = validator.check(&review).await?;
+
+let inputs = match validator.load_evidence(&review).await? {
+    Some(saved)
+        if procedure_matches(saved.revision(), &review.revision())
+            && validator.check_inputs(&saved)? => saved,
+    _ => {
+        let inputs = validator.verify(review).await?;
+        validator.store_evidence(&inputs).await?;
+        inputs
+    }
+};
+
+let assessment = inputs.output();
+println!("{}: {}", assessment.adequate, assessment.rationale);
 ```
 
-:::{req} check_node
-```rust,ignore
-// Defined in habeas_sdk::graph.
-pub enum EvidenceState<O> {
-    Current(O),
-    Missing,
-    Stale,
-}
-
-// Method on Validator<D>.
-pub fn check<V: Criterion<D>>(
-    &self,
-    criterion: &V,
-) -> impl Future<Output = Result<EvidenceState<V::Ok>, ValidationError<D::Error>>> + Send;
-```
-
-`check` uses the same identity, revision, and freshness comparison as `verify`.
-It reads the descriptor before awaiting; it does not retain a reference to the
-criterion value across asynchronous storage or dependency operations. Checking
-invokes neither `execute` nor a model and writes no evidence. It needs no
-configured agent. Storage, dependency-resolution, and current-output decoding
-failures are errors, not missing or stale evidence.
-:::
-
-A current negative assessment is still current. Habeas decides which results
-make CI pass and how to report the results of its separate criteria.
+[Evidence storage](evidence.md#compare-the-saved-observations) defines
+`check_inputs` and `procedure_matches`. The revision comparison checks whether
+the saved answer was produced using compatible review rules; `check_inputs`
+compares only its recorded observations. A current negative assessment is still
+current. Habeas decides which answers make CI pass.
 
 ## Use tracked inputs directly
 

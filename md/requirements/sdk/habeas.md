@@ -30,7 +30,7 @@ flowchart TD
     end
     subgraph Core["SDK: mechanisms used during a review"]
         Context["ValidationContext and typed ask builders"] --> Trace["Track delivered reads and observed edge selections"]
-        Trace --> Record["Finish with output and dependencies"]
+        Trace --> Record["Return Fingerprinted with answer and dependencies"]
     end
     Run --> Context
     Record --> Confirm
@@ -199,7 +199,7 @@ as legacy information.
 
 :::{req} evidence_conversion.writes
 Conversion writes only through a write-capable migration or authoring path.
-Loading for `check`, CI, status inspection, or book rendering leaves
+Loading for `load_evidence`, CI, status inspection, or book rendering leaves
 evidence files unchanged. Authoring with `--stdout` performs no in-place
 conversion and creates or changes no evidence files or directories under
 {cite}`requirements.authoring.persistence`.

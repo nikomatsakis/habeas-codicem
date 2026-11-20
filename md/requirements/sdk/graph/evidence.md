@@ -4,9 +4,49 @@ The domain provides storage for each verification's evidence. A record belongs
 to a source node and a `CriterionPath`, so several criteria can assess the same
 contents without replacing one another's answers.
 
-The SDK constructs the record from the completed result and the observations
-captured during execution. Storage is a required domain capability; the
-application chooses its backend.
+`Validator::verify` returns a `Fingerprinted` containing the completed result and the
+observations captured during execution. The application calls `store_evidence`
+to save it, and `load_evidence` to retrieve a typed answer later. Storage is a
+required domain capability; the application chooses its backend.
+
+## Keep the answer with its inputs
+
+`Fingerprinted<D, O>` keeps a criterion's answer together with the observations used to
+produce it. It also retains the source identity, criterion path, and revision
+needed to save the evidence. `D` supplies the node and edge-label types; `O` is
+the criterion's answer type.
+
+:::{req} inputs
+```rust,ignore
+// Defined in habeas_sdk::graph.
+/// A completed answer and the inputs used to produce it.
+pub struct Fingerprinted<D: Domain, O> { /* private fields */ }
+
+impl<D: Domain, O> Fingerprinted<D, O> {
+    /// The source node this answer concerns.
+    pub fn source_node_id(&self) -> &D::NodeId;
+
+    /// The question's path relative to that source.
+    pub fn criterion_path(&self) -> &CriterionPath;
+
+    /// The review rules used to produce this answer.
+    pub fn revision(&self) -> &str;
+
+    /// Recorded node-content and successor-set observations.
+    pub fn dependencies(&self) -> &[Dependency<D::NodeId, D::EdgeLabel>];
+
+    /// Borrow the completed answer.
+    pub fn output(&self) -> &O;
+
+    /// Take ownership of the completed answer.
+    pub fn into_output(self) -> O;
+}
+```
+
+`verify` constructs this value from the criterion's completed answer and
+execution trace. `load_evidence` reconstructs it from the selected saved record.
+Its node identities and edge labels keep their domain-defined types.
+:::
 
 ## Look up a source and criterion
 
@@ -36,7 +76,7 @@ pub trait EvidenceStorage: Graph {
 }
 ```
 
-The runner passes the source identity and criterion path to both methods. The
+The validator passes the source identity and criterion path to both methods. The
 key preserves both parts: source paths `["a"]` and `["a", "b"]` with criteria
 `["b", "c"]` and `["c"]` identify different records, even though flattening each
 pair would produce the same segments.
@@ -57,9 +97,8 @@ storage](../filesystem-storage.md) supplies a JSON-backed helper.
 
 ## Retain the completed result and its observations
 
-The validation's `Ok` type is serializable and deserializable. The stored record
-keeps its output as a JSON value so freshness can be checked before decoding it
-as the current validation's result type.
+The criterion's `Ok` type is serializable and deserializable. The storage
+interface uses `Record` to hold its encoded answer and input trace.
 
 :::{req} record
 ```rust,ignore
@@ -75,27 +114,28 @@ pub struct Record<N, L = ()> {
 }
 ```
 
-The SDK constructs the dependencies from execution's trace and encodes the
-completed result using its Serde JSON representation; there is no required
-boolean, rationale, or metadata shape. `Record`, `Dependency`, and
-`Fingerprint` support Serde when their type parameters do. The graph's node
+Saving encodes the completed result using its Serde JSON representation and
+preserves the dependencies captured in `Fingerprinted`; there is no required boolean,
+rationale, or metadata shape. `Record`, `Dependency`, and `Fingerprint` support
+Serde when their type parameters do. The graph's node
 identities and edge labels need not implement Serde unless its storage backend
 requires those bounds.
 :::
 
-## Decode only a current answer
+## Encode and decode the answer
 
 :::{req} record.output
-`verify` serializes a completed `Criterion::Ok` before saving its record.
-`check` and `verify` first compare a loaded record's revision and dependencies.
-Only a current record's output is decoded into the requested `Criterion::Ok`.
-A changed revision can therefore make an old result stale even if that old
-result would not decode as the new result type.
+`Validator::store_evidence` serializes the answer in `Fingerprinted` before passing
+the complete record to storage. A serialization failure returns
+`ValidationError::Output` and leaves the existing record unchanged. A storage
+failure returns `ValidationError::Graph`.
 
-Malformed stored records are storage errors. An output that cannot decode for a
-current revision is an output error, not missing evidence or a reason to execute
-validation again. A different output encoding requires a different revision
-under {cite}`requirements.sdk.graph.validation.procedure_identity`.
+`Validator::load_evidence` decodes a loaded record's output into the requested
+`Criterion::Ok`. An output that cannot decode returns `ValidationError::Output`,
+including when the saved revision or inputs are stale. Missing evidence returns
+`Ok(None)`; malformed stored records and storage failures return
+`ValidationError::Graph`. Revision and input comparison belong to the caller's
+reuse workflow under {cite}`requirements.sdk.graph.validation.procedure_identity`.
 :::
 
 The SDK does not infer validity from the returned Rust value. A completed
@@ -131,8 +171,8 @@ pub enum Dependency<N, L = ()> {
 :::
 
 :::{req} node_inputs
-Finishing a validation includes every successful tracked node read in its
-record, whether ordinary code or a model tool requested it. Each observation
+Finishing a verification includes every successful tracked node read in its
+`Fingerprinted`, whether ordinary code or a model tool requested it. Each observation
 contains the node identity and the fingerprint of the contents actually supplied.
 
 A failed read returns an error without inventing a successful observation.
@@ -154,25 +194,41 @@ invalidate another criterion that did not observe it.
 
 ## Compare the saved observations
 
-The SDK owns freshness comparison. It reads current contents and edge selections
-through the domain, computes their fingerprints, and compares them with the
-saved observations. Storage does not supply a freshness callback.
+`Validator::check_inputs` reads current contents and edge selections through the
+domain, computes their fingerprints, and compares them with the observations in
+`Fingerprinted`. Revision comparison is a separate operation: the caller has the
+current criterion and decides which review rules remain compatible.
 
 :::{req} checking_records
-The SDK checks the loaded record's revision first. A mismatch establishes
-staleness without resolving saved dependencies or decoding its output. Otherwise
-it resolves the saved dependencies through graph operations and fingerprints,
-comparing each with its saved observation. A fingerprint mismatch establishes
-staleness and permits an early return; it need not resolve later dependencies.
-An encountered dependency-resolution failure returns an error.
+```rust,ignore
+// Method on Validator<D>.
+/// Compare each recorded input with the current domain state.
+/// Return true when every fingerprint still matches, including an empty trace.
+pub fn check_inputs<O>(
+    &self,
+    inputs: &Fingerprinted<D, O>,
+) -> Result<bool, D::Error>;
+```
 
-Checking executes no validation or model and writes no evidence. It uses the
-current state that the caller intends to inspect, rather than reusing source
-snapshots from an earlier invocation without establishing that they remain
-current.
+The method resolves the recorded dependencies through graph operations and
+fingerprinting, comparing each with its saved observation. A fingerprint
+mismatch returns `Ok(false)` and permits an early return; it need not resolve
+later dependencies. An encountered dependency-resolution failure returns an
+error.
+
+It uses the current state that the caller intends to inspect, rather than
+reusing source snapshots from an earlier invocation without establishing that
+they remain current. These reads are separate from a criterion execution's
+dependency trace.
 :::
 
 :::{req} checking_records.procedure_match
+```rust,ignore
+// Defined in habeas_sdk::graph.
+/// Compare the saved review-rule revision with the currently requested revision.
+pub fn procedure_matches(stored: &str, requested: &str) -> bool;
+```
+
 The revision matches when the stored `Record::revision` is `*` or equals the
 requested revision exactly. Only the complete stored value `*` is a wildcard;
 other values compare literally. A wildcard leaves dependency comparison and
@@ -184,8 +240,8 @@ The wildcard represents a supported legacy record that did not capture its
 review-rule version. It does not certify a criterion that was never assessed.
 Habeas chooses how to map its legacy assessments to the corresponding criteria.
 
-A current record need not contain a favorable assessment. The SDK answers whether
-its answer can be reused; Habeas owns its acceptance policy.
+A current record need not contain a favorable assessment. The SDK supplies the
+comparisons; Habeas owns its reuse and acceptance policies.
 
 ## Reuse the filesystem storage helper
 
@@ -197,5 +253,6 @@ path and preserves segment boundaries under
 {cite}`requirements.sdk.filesystem-storage.keys`.
 :::
 
-[Criteria](validation.md) defines `verify` and `check`. [Filesystem evidence
+[Criteria](validation.md) defines loading, verification, and saving, then
+composes them with these comparisons. [Filesystem evidence
 storage](../filesystem-storage.md) defines the helper and its encoding.

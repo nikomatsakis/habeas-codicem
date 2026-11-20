@@ -85,7 +85,7 @@ inspection tool. Its SDK default name is `submit_result`; Habeas retains the
 submission names and acceptance checks of its existing harness. It ends the
 call with the typed result described in [Agent calls](agent-calls.md).
 Awaiting an ask builder starts an agent interaction. Its
-`current_node_contents()` and `successors_content(label)` calls explicitly
+`contents_of_current_node()` and `contents_of_successors(label)` calls explicitly
 insert tracked contents after the reusable context prefix.
 
 ## Search tools use a fixed dependency policy

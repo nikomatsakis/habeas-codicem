@@ -5,7 +5,9 @@ Habeas you already know and ask how to express its verification work as a graph.
 A node identifies a thing: a requirement, a function, a test, or a GitHub issue.
 The application can ask several questions about the same node. Each criterion
 value identifies a question and supplies its execution procedure. The SDK
-tracks and reuses each criterion's answer independently.
+tracks each criterion's answer independently and supplies operations for loading,
+checking, executing, and saving evidence. The application decides when to reuse
+an answer.
 
 ## Start with one requirement and its inputs
 
