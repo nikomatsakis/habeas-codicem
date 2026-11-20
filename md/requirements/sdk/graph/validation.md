@@ -16,9 +16,15 @@ struct BehavioralAdequacy {
     review_policy: String,
 }
 
+/// The criterion's answer, submitted by the agent and saved by the validator.
+#[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+struct TestReview {
+    adequate: bool,
+    rationale: String,
+}
+
 impl Criterion<HabeasDomain> for BehavioralAdequacy {
-    // A completed assessment: boolean, rationale, and no extra metadata.
-    type Ok = Judgment<()>;
+    type Ok = TestReview;
 
     fn source_node_id(&self) -> HabeasNodeId {
         self.requirement.clone()
@@ -43,12 +49,12 @@ Evaluate an instance using a validator. Here `agent` and `renderer` are configur
 let validator = Validator::new(domain.clone())
     .with_agent(agent.clone(), renderer.clone());
 
-let assessment: Judgment<()> = validator.verify(BehavioralAdequacy {
+let assessment: TestReview = validator.verify(BehavioralAdequacy {
     requirement: requirement.clone(),
     review_policy: test_review_policy.clone(),
 }).await?;
 
-println!("{}: {}", assessment.result, assessment.rationale);
+println!("{}: {}", assessment.adequate, assessment.rationale);
 ```
 
 The validator returns a saved answer when its inputs and review rules are current.
@@ -102,33 +108,10 @@ checking and execution. Parameters that change which question is being asked
 belong in its identity or revision.
 :::
 
-## Return a completed answer
-
-`BehavioralAdequacy` chose `Judgment<()>` as its `Ok` type in the overview. This
-SDK helper packages its boolean assessment and rationale; `()` means the example
-has no additional metadata. A criterion can also define its own serializable
-result type.
-
-:::{req} judgment
-```rust,ignore
-// Defined in habeas_sdk::graph.
-#[derive(serde::Serialize, serde::Deserialize)]
-pub struct Judgment<M> {
-    pub result: bool,
-    pub rationale: String,
-    pub metadata: M,
-}
-```
-
-A criterion can use `Judgment<M>` as its `Ok` type when the metadata satisfies
-its bounds, or use another serializable result. `Graph` has no judgment-metadata
-associated type. The SDK does not interpret these fields or implement Habeas's
-FIXME acknowledgment policy.
-:::
-
-For this example, a completed assessment finding a gap is an `Ok(Judgment {
-result: false, ... })`. It can be saved and reused. An `Err` means execution
-failed and produces no completed record.
+The criterion defines its answer through `Ok`. Here, an `Ok(TestReview {
+adequate: false, ... })` is a completed assessment finding a gap. The validator
+can save and reuse that answer; an `Err` means execution failed and produces no
+completed record.
 
 ## Execute the criterion with a context
 
@@ -155,43 +138,26 @@ impl<'cx, D: Domain> ValidationContext<'cx, D> {
 ```
 
 Continue the `BehavioralAdequacy` application example from the overview.
-Its agent examines the requirement and its tests and submits a typed `TestReview`:
-
-```rust,ignore
-#[derive(serde::Deserialize, schemars::JsonSchema)]
-struct TestReview {
-    adequate: bool,
-    rationale: String,
-}
-```
-
-Here is the `execute` method from `impl Criterion<HabeasDomain> for
-BehavioralAdequacy`. It asks for that review, then returns the `Judgment<()>`
-that the validator saves:
+Its agent examines the requirement and its tests and submits the `TestReview`
+that the validator saves. Here is the `execute` method from
+`impl Criterion<HabeasDomain> for BehavioralAdequacy`:
 
 ```rust,ignore
 async fn execute(
     self,
     cx: &mut ValidationContext<'_, HabeasDomain>,
 ) -> Result<Self::Ok, ValidationError<std::io::Error>> {
-    let review: TestReview = cx.ask()
+    cx.ask()
         .context(&self.review_policy)
         .context("Check whether these tests cover the requirement's behavior and edge cases.")
         .current_node_contents()
         .successors_content(HabeasEdgeLabel::Tests)
-        .await?;
-
-    Ok(Judgment {
-        result: review.adequate,
-        rationale: review.rationale,
-        metadata: (),
-    })
+        .await
 }
 ```
 
-`TestReview` describes the agent's reply; `Judgment<()>` is the criterion's
-completed answer. The policy and question form a reusable prompt prefix; the
-requirement and tests supply the changing inputs.
+The policy and question form a reusable prompt prefix; the requirement and
+tests supply the changing inputs.
 
 A structural review can use `successors_content(HabeasEdgeLabel::Implements)`
 to examine implementation items. A criterion checking the prose can read the

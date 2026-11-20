@@ -91,8 +91,8 @@ include their own headings when those help the agent. The question is another
 context value, independent of the particular nodes being reviewed. The prefix
 precedes node contents, allowing the provider adapter to use supported prompt
 caching. There is no separate prompt argument or send method. The application
-chooses the result type independently for each builder; it need not be
-`Judgment`, and can be inferred from the receiving variable or supplied as
+chooses the result type independently for each builder. It can be inferred
+from the receiving variable or supplied as
 `ctx.ask::<ExpirationAssessment>()`.
 
 ## Build the request, then await it

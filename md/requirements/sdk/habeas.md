@@ -61,7 +61,7 @@ sequenceDiagram
     M-->>J: Tool requests or judgment
     J->>S: Record snapshots actually delivered
     J-->>S: Structured judgment
-    S-->>H: Judgment result
+    S-->>H: Typed review answer
     H->>H: Interpret result, continue or finish
 ```
 
@@ -163,7 +163,7 @@ information needed for requirement, example, citation, and site reviews.
 | Recorded input information | Check the inputs applicable to that review kind. |
 
 Equivalent information receives the same application validation in both legacy
-and versioned records. Versioned fields can live in judgment metadata and SDK
+and versioned records. Versioned fields can live in application-owned output and SDK
 dependencies instead of the legacy top-level layout. Outline inputs retain no
 source text in the versioned representation.
 :::
