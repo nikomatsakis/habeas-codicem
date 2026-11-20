@@ -1,17 +1,12 @@
 # Criteria
 
-A criterion asks a question about a node and defines how to answer it. Its value
-carries the source identity and any application state needed for the question.
-Several criteria can use the same source node and select different inputs.
+In the Habeas SDK, a criterion is a question about a node that can be evaluated.
+Define it with your own struct implementing `Criterion<D>`, then evaluate it
+with a `Validator<D>`.
 
-For example, a Habeas requirement can have questions about its prose, its tests,
-and its implementation. The application defines those questions; the SDK
-executes each criterion and saves its answer with the inputs it observed.
-
-## Define the question as a value
-
-Start with an application-defined struct. Here is an illustrative question about
-whether tests adequately cover a requirement:
+The following application example asks whether a requirement's tests cover its
+behavior. The excerpts build one `BehavioralAdequacy` criterion throughout this
+chapter; the marked requirement blocks define the SDK interfaces it uses.
 
 ```rust,ignore
 /// Determine whether the requirement's tests cover its observable behavior
@@ -20,7 +15,47 @@ struct BehavioralAdequacy {
     requirement: HabeasNodeId,
     review_policy: String,
 }
+
+impl Criterion<HabeasDomain> for BehavioralAdequacy {
+    // A completed assessment: boolean, rationale, and no extra metadata.
+    type Ok = Judgment<()>;
+
+    fn source_node_id(&self) -> HabeasNodeId {
+        self.requirement.clone()
+    }
+
+    async fn execute(
+        self,
+        cx: &mut ValidationContext<'_, HabeasDomain>,
+    ) -> Result<Self::Ok, ValidationError<std::io::Error>> {
+        // Evaluation code goes here; we fill it in below.
+        todo!()
+    }
+
+    // ... criterion_path and revision are described below ...
+}
 ```
+
+Evaluate an instance using a validator. Here `agent` and `renderer` are configured
+`Arc` handles, and `domain` supplies Habeas's graph and evidence storage:
+
+```rust,ignore
+let validator = Validator::new(domain.clone())
+    .with_agent(agent.clone(), renderer.clone());
+
+let assessment: Judgment<()> = validator.verify(BehavioralAdequacy {
+    requirement: requirement.clone(),
+    review_policy: test_review_policy.clone(),
+}).await?;
+
+println!("{}: {}", assessment.result, assessment.rationale);
+```
+
+The validator returns a saved answer when its inputs and review rules are current.
+Otherwise it calls `execute` and saves the completed answer with its observed
+inputs. Several criteria can examine the same node and keep independent answers.
+
+## Define the criterion's interface
 
 All criterion structs implement `Criterion<D>`, a trait that defines what a
 successful result is and how it is evaluated.
@@ -67,6 +102,34 @@ checking and execution. Parameters that change which question is being asked
 belong in its identity or revision.
 :::
 
+## Return a completed answer
+
+`BehavioralAdequacy` chose `Judgment<()>` as its `Ok` type in the overview. This
+SDK helper packages its boolean assessment and rationale; `()` means the example
+has no additional metadata. A criterion can also define its own serializable
+result type.
+
+:::{req} judgment
+```rust,ignore
+// Defined in habeas_sdk::graph.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct Judgment<M> {
+    pub result: bool,
+    pub rationale: String,
+    pub metadata: M,
+}
+```
+
+A criterion can use `Judgment<M>` as its `Ok` type when the metadata satisfies
+its bounds, or use another serializable result. `Graph` has no judgment-metadata
+associated type. The SDK does not interpret these fields or implement Habeas's
+FIXME acknowledgment policy.
+:::
+
+For this example, a completed assessment finding a gap is an `Ok(Judgment {
+result: false, ... })`. It can be saved and reused. An `Err` means execution
+failed and produces no completed record.
+
 ## Execute the criterion with a context
 
 `execute` receives a `ValidationContext` for its source node. Its `ask` method
@@ -91,27 +154,44 @@ impl<'cx, D: Domain> ValidationContext<'cx, D> {
 }
 ```
 
-For Habeas, a behavioral review selects the requirement's text and its test
-inputs. Here is an illustrative `execute` method from
-`impl Criterion<HabeasDomain> for BehavioralAdequacy`:
+Continue the `BehavioralAdequacy` application example from the overview.
+Its agent examines the requirement and its tests and submits a typed `TestReview`:
+
+```rust,ignore
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct TestReview {
+    adequate: bool,
+    rationale: String,
+}
+```
+
+Here is the `execute` method from `impl Criterion<HabeasDomain> for
+BehavioralAdequacy`. It asks for that review, then returns the `Judgment<()>`
+that the validator saves:
 
 ```rust,ignore
 async fn execute(
     self,
     cx: &mut ValidationContext<'_, HabeasDomain>,
-) -> Result<ExpirationAssessment, ValidationError<std::io::Error>> {
-    cx.ask()
+) -> Result<Self::Ok, ValidationError<std::io::Error>> {
+    let review: TestReview = cx.ask()
         .context(&self.review_policy)
-        .context("Check the expiration boundary and earlier/later times.")
+        .context("Check whether these tests cover the requirement's behavior and edge cases.")
         .current_node_contents()
         .successors_content(HabeasEdgeLabel::Tests)
-        .await
+        .await?;
+
+    Ok(Judgment {
+        result: review.adequate,
+        rationale: review.rationale,
+        metadata: (),
+    })
 }
 ```
 
-`ExpirationAssessment` is an application-defined result implementing Serde and
-`schemars::JsonSchema`. The policy and question form a reusable prompt prefix;
-the requirement and tests supply the changing inputs.
+`TestReview` describes the agent's reply; `Judgment<()>` is the criterion's
+completed answer. The policy and question form a reusable prompt prefix; the
+requirement and tests supply the changing inputs.
 
 A structural review can use `successors_content(HabeasEdgeLabel::Implements)`
 to examine implementation items. A criterion checking the prose can read the
@@ -121,9 +201,9 @@ too, so newly added inputs can invalidate the answer.
 
 Habeas currently runs one combined `Review` criterion at `["review"]`; its
 execution selects the requirement and mandatory inputs and applies Habeas's
-review policy. The separate criteria above illustrate how that harness can be
-reused for more specific questions. [Putting it together in Habeas](../habeas.md)
-follows the current review.
+review policy. This `BehavioralAdequacy` example illustrates how that harness can
+be reused for a more specific question.
+[Putting it together in Habeas](../habeas.md) follows the current review.
 
 [Agent calls](agent-calls.md) explains the `ask()` builder, prompt construction,
 and typed submissions. [Context tools](context-tools.md) explains tracked
@@ -172,32 +252,6 @@ preserves the boundary between the two paths so different pairs cannot collide.
 The [evidence chapter](evidence.md) defines that lookup. The criterion path names
 an evidence record; the context's source remains the graph node.
 
-## Return a completed answer
-
-The result type belongs to the criterion. The SDK preserves it; the application
-interprets the answer. For applications wanting a boolean and explanation, the
-SDK provides this convenient result type:
-
-:::{req} judgment
-```rust,ignore
-// Defined in habeas_sdk::graph.
-#[derive(serde::Serialize, serde::Deserialize)]
-pub struct Judgment<M> {
-    pub result: bool,
-    pub rationale: String,
-    pub metadata: M,
-}
-```
-
-A criterion can use `Judgment<M>` as its `Ok` type when the metadata satisfies
-its bounds, or use another serializable result. `Graph` has no judgment-metadata
-associated type. The SDK does not interpret these fields or implement Habeas's
-FIXME acknowledgment policy.
-:::
-
-A completed assessment finding a gap is an `Ok` value and can be saved and reused.
-An `Err` means execution failed and produces no completed record.
-
 ## Run criteria with a validator
 
 A `Validator<D>` owns a cloneable domain and agent configuration. Submit a
@@ -237,27 +291,9 @@ each with its own context and trace. They can both execute when evidence is
 missing or stale.
 :::
 
-Here are illustrative application-defined criteria for one requirement. `agent`
-and `renderer` are configured `Arc` handles:
-
-```rust,ignore
-let validator = Validator::new(domain.clone())
-    .with_agent(agent.clone(), renderer.clone());
-
-let text = validator.verify(TextualQuality {
-    requirement: expiration.clone(),
-}).await?;
-let behavior = validator.verify(BehavioralAdequacy {
-    requirement: expiration.clone(),
-    review_policy: test_review_policy,
-}).await?;
-let structure = validator.verify(StructuralConformance {
-    requirement: expiration,
-}).await?;
-```
-
-Each value supplies its own criterion path and result type. Their answers are
-saved independently.
+The overview passed a `BehavioralAdequacy` value to this validator. Other
+questions about the same requirement can use their own criterion paths and
+result types; their answers are saved independently.
 
 ## Check or reuse saved evidence
 
@@ -313,7 +349,7 @@ same criterion value to `check`:
 
 ```rust,ignore
 let review = BehavioralAdequacy {
-    requirement: expiration,
+    requirement,
     review_policy: test_review_policy,
 };
 let state = validator.check(&review).await?;
