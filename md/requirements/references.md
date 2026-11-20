@@ -122,21 +122,22 @@ count anywhere.
 :::
 
 :::{req} builtin_definitions
-Habeas MUST provide built-in definitions named `habeas:<name>`, available in
-every project without a declaration. Each built-in MUST have fixed text, which
-states its obligations and is documented in Habeas's reference documentation, and
-MUST state which reference roles may use it. References MUST resolve built-in
-names alongside project definitions. So that every book stands alone, the book
-MUST render a reference to a built-in as a badge without a link whose hover text
-gives the built-in's full text. Built-ins themselves MUST NOT require or permit
-definition evidence files and MUST NOT appear as definitions in the requirements
-index, `habeas status`, or the missing-evidence check of
+Habeas provides built-in definitions named `habeas:<name>`, available in
+every project without a declaration. Each built-in has fixed text, which
+states its obligations and is documented in Habeas's reference documentation,
+and states which reference roles may use it. References resolve built-in
+names alongside project definitions. So that every book stands alone, a
+built-in reference displayed under {cite}`requirements.references.book_badges`
+uses a badge without a link whose hover text gives the built-in's full text.
+Built-ins themselves neither require nor permit definition evidence files and
+do not appear as definitions in the requirements index, `habeas status`, or the
+missing-evidence check of
 {cite}`requirements.ci.coverage`. Per-source citation reviews under
-{cite}`requirements.references.citation_review` MAY be required for references
-to a built-in. A project definition
-MUST NOT use a full name beginning with `habeas:`; validation MUST report one,
+{cite}`requirements.references.citation_review` may be required for references
+to a built-in. A project definition cannot use a full name beginning with
+`habeas:`; validation reports one,
 and the `:` character already makes such names invalid under
-{cite}`requirements.ci.identifiers`. Validation MUST report a reference to a
+{cite}`requirements.ci.identifiers`. Validation reports a reference to a
 built-in in a role the built-in does not permit, or that breaks the built-in's
 stated form.
 :::
@@ -205,7 +206,33 @@ Agents SHOULD NOT anchor a file under {cite}`requirements.references.anchors` wh
 
 :::{req} book_badges
 :impl: md/habeas.css
-In a book chapter, each valid `{impl}`, `{cite}`, or `{test}` reference, inline or fenced, MUST render as a Shields.io static badge image with meaningful alt text that displays its role and full name and links to the badge at the corresponding `{req}` or `{example}` definition. Links MUST work across chapters, including nested chapters. A fenced reference MUST render its badge followed by its body as Markdown. Each fenced `{req}` or `{example}` directive MUST render as a Shields.io definition badge image identifying its kind; text outside a directive MUST remain literal. Badge text MUST remain legible regardless of whether its link has been visited. A badge link MUST show a visible indicator when it has keyboard focus and MAY brighten on hover. Badges MAY be laid out inline with the surrounding text, a fenced reference's badge and body MAY be visually set apart from the surrounding text as one block, and a built-in's unlinked badge MAY show a help cursor to signal its hover text. These badges use the syntax defined by {cite}`requirements.references.roles`.
+In a book chapter, each valid `{impl}`, `{cite}`, or `{test}` reference, inline
+or fenced, renders as a Shields.io static badge image, apart from the
+citation paragraphs described below. The badge has meaningful alt text displaying
+its role and full name, and links to the badge at the corresponding `{req}` or
+`{example}` definition. Links work across chapters, including nested
+chapters. A fenced reference renders its badge followed by its body as Markdown.
+
+Inside any prose-bearing colon-fenced section, top-level paragraphs containing
+one or more valid inline `{cite}` references and otherwise only whitespace are
+omitted from the chapter. This applies to requirements, examples, definitions,
+reference fences, and other prose containers, including nested sections.
+Requirement and example detail pages still render those citations.
+Citations within explanatory prose, lists or blockquotes, unfenced chapter
+prose, and references of other roles retain their usual rendering.
+Escaped roles, code, raw HTML, and unresolvable references remain literal.
+The original declaration, reference discovery, and authoring inputs retain the
+citations.
+
+Each fenced `{req}` or `{example}` directive renders as a Shields.io definition
+badge image identifying its kind; text outside a directive remains literal.
+Badge text remains legible regardless of whether its link has been visited.
+A badge link shows a visible indicator when it has keyboard focus and may
+brighten on hover. Badges may be laid out inline with the surrounding text, a
+fenced reference's badge and body may be visually set apart from the surrounding
+text as one block, and a built-in's unlinked badge may show a help cursor to
+signal its hover text. These badges use the syntax defined by
+{cite}`requirements.references.roles`.
 :::
 
 :::{req} evidence_coverage

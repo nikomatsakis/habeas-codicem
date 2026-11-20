@@ -14,7 +14,7 @@ Suppose the application's specification contains this requirement in
 
 ```markdown
 :::{req} expiration
-The application MUST reject all expired tokens. A token is expired when the
+The application rejects all expired tokens. A token is expired when the
 current time is greater than or equal to its expiration time.
 :::
 ```
@@ -53,7 +53,7 @@ the application chooses which criteria, if any, to verify for it. Each criterion
 has its own inputs and saved evidence. The application defines how contents are
 fetched and how each criterion is executed.
 
-In our example, the requirement `requirements.auth.expiration` has a node, as does the Rust function `check_token` and the Rust test `expired_token_is_rejected`. The source for the requirement is the requirement text itself (*"The application MUST..."*). The source for the Rust nodes are their source content. These 3 nodes are connected by labeled edges, like so:
+In our example, the requirement `requirements.auth.expiration` has a node, as does the Rust function `check_token` and the Rust test `expired_token_is_rejected`. The source for the requirement is the requirement text itself (*"The application rejects..."*). The source for the Rust nodes are their source content. These 3 nodes are connected by labeled edges, like so:
 
 ```mermaid
 flowchart TD
@@ -78,7 +78,8 @@ combines three subtraits that capture different aspects of the domain.
 Validation is implemented by the values submitted to a validator:
 
 :::{req} domain
-The SDK MUST expose a `Domain` trait with a blanket implementation and a number of subtraits that cover disjoint aspects of defining an application domain:
+The SDK exposes `Domain` and its blanket implementation. Its subtraits define
+the graph, fingerprints, and evidence storage:
 
 ```rust,ignore
 /// Every validation uses a domain with graph access, fingerprints, and storage.

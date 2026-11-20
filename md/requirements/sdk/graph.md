@@ -12,7 +12,8 @@ structured value. The graph can use enums to represent several node kinds.
 Reading a node does not validate it.
 
 :::{req} domain_types
-`habeas_sdk::graph` MUST expose the graph's associated types and content lookup operation:
+`habeas_sdk::graph` defines the graph's associated types and content lookup
+operation:
 
 ```rust,ignore
 pub trait Graph: Send + Sync {
@@ -90,7 +91,7 @@ fn test_something() {
 The `NodeId` type that identifies a particular node in the graph is defined by the application domain, which allows the application domain to use a precise and well-typed definition. However some parts of the SDK want to have a transparent structure that they can use for diagnostics and other purposes.
 
 :::{req} node_path_struct
-The `habeas_sdk::graph` MUST expose a `NodePath` type defined as follows
+`habeas_sdk::graph::NodePath` describes the logical structure of a node identity:
 
 ```rust
 /// Defines the logical structure of a node-id.
@@ -104,7 +105,7 @@ pub struct NodePath {
 The application provides a method that converts from a `NodeId` to a `NodePath`:
 
 :::{req} node_path_method
-The `habeas_sdk::graph::Graph` trait MUST include the following method:
+`habeas_sdk::graph::Graph::node_path` converts a node identity to its stable path:
 ```rust,ignore
 
 
