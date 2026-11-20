@@ -257,17 +257,162 @@ pub fn preprocess_book(book: &mut Book, root: &Path) -> io::Result<()> {
             .or(chapter.path.as_deref())
             .map(chapter_namespace)
             .unwrap_or_default();
-        chapter.content = replace_definitions(
-            &chapter.content,
-            &namespace,
-            chapter.path.as_deref(),
-            Some(&plan),
-        );
+        let content = omit_fenced_citation_paragraphs(&chapter.content, &namespace, &definitions);
+        chapter.content =
+            replace_definitions(&content, &namespace, chapter.path.as_deref(), Some(&plan));
         if let Some(path) = chapter.path.as_deref() {
             chapter.content = replace_references(&chapter.content, path, &definitions);
         }
     });
     Ok(())
+}
+
+/// Hide citation metadata only in authored chapter presentation. Definitions,
+/// detail pages, discovery, and authoring keep the original source.
+// {impl}`requirements.references.book_badges`
+fn omit_fenced_citation_paragraphs(
+    content: &str,
+    namespace: &str,
+    definitions: &BTreeMap<String, Definition>,
+) -> String {
+    if !content.contains("{cite}`") || !content.contains(":::") {
+        return content.to_owned();
+    }
+    // Reuse the SDK's Markdown grammar for nesting, literal contexts, and
+    // unclosed containers instead of recognizing another set of fence rules.
+    let Ok(outline) = outline::parse(Path::new("chapter.md"), content) else {
+        return content.to_owned();
+    };
+    let blocks = definition_blocks(content);
+    let mut literal_definitions = blocks
+        .iter()
+        .filter(|block| {
+            !block.closed || !valid_name(&full_requirement_name(namespace, &block.name))
+        })
+        .map(|block| block.start..block.end)
+        .collect::<Vec<_>>();
+    let mut masked = content.as_bytes().to_vec();
+    let mut bodies = Vec::new();
+    for block in &blocks {
+        for option in &block.options {
+            for byte in &mut masked[option.start..option.end] {
+                if !matches!(*byte, b'\r' | b'\n') {
+                    *byte = b' ';
+                }
+            }
+        }
+        if block.kind == DefinitionKind::Term {
+            let body = &content[block.body_start..block.body_end];
+            if terms::declaration(body).is_ok() {
+                let start = block.body_start + body.len() - body.trim_start().len();
+                let end = content[start..block.body_end]
+                    .find('\n')
+                    .map_or(block.body_end, |offset| start + offset);
+                masked[start..end].fill(b' ');
+            }
+        }
+    }
+    for node in &outline.nodes {
+        if node.kind != "block" {
+            continue;
+        }
+        let source = &content[node.byte_start..node.byte_end];
+        let opening = source.lines().next().unwrap_or_default();
+        let Some((suffix, length)) = colon_fence(opening) else {
+            continue;
+        };
+        if suffix.trim().is_empty() {
+            continue;
+        }
+        if let Some(name) = ["{req}", "{example}", "{definition}"]
+            .iter()
+            .find_map(|kind| suffix.strip_prefix(kind))
+            && (!name.starts_with(char::is_whitespace)
+                || !valid_name(&full_requirement_name(namespace, name.trim())))
+        {
+            literal_definitions.push(node.byte_start..node.byte_end);
+            continue;
+        }
+        let body_start =
+            node.byte_start + source.find('\n').map_or(source.len(), |offset| offset + 1);
+        let end = node.byte_start + source.trim_end_matches(['\r', '\n']).len();
+        let last_line = content[..end].rfind('\n').map_or(0, |offset| offset + 1);
+        let closing = &content[last_line..end];
+        let prefix = closing.len() - closing.trim_start_matches([' ', '\t', '>']).len();
+        let body_end = if last_line >= body_start
+            && colon_fence(&closing[prefix..])
+                .is_some_and(|(suffix, count)| suffix.trim().is_empty() && count >= length)
+        {
+            // Preserve any Markdown list/quote prefix; mask only the fence.
+            masked[last_line + prefix..end].fill(b' ');
+            last_line
+        } else {
+            node.byte_end
+        };
+        if body_start <= body_end {
+            bodies.push(body_start..body_end);
+        }
+        // Blank delimiters let CommonMark identify top-level paragraphs while
+        // retaining the original byte offsets and list/blockquote structure.
+        for byte in &mut masked[node.byte_start..body_start] {
+            if !matches!(*byte, b'\r' | b'\n') {
+                *byte = b' ';
+            }
+        }
+    }
+    let masked = String::from_utf8(masked).expect("only complete fence lines are blanked");
+    let references = reference_roles(content, true);
+    let mut omitted = Vec::new();
+    let mut depth = 0;
+    for (event, range) in Parser::new(&masked).into_offset_iter() {
+        match event {
+            Event::Start(tag) => {
+                if tag == Tag::Paragraph
+                    && depth == 0
+                    && bodies
+                        .iter()
+                        .any(|body| body.start <= range.start && range.end <= body.end)
+                    && !overlaps_protected(range.start, range.end, &literal_definitions)
+                {
+                    let mut cursor = range.start;
+                    let mut count = 0;
+                    for reference in references.iter().filter(|reference| {
+                        range.start <= reference.start && reference.end <= range.end
+                    }) {
+                        if reference.kind != ReferenceKind::Cite
+                            || !content[cursor..reference.start].trim().is_empty()
+                            || reference_badge(
+                                reference.kind,
+                                reference.name,
+                                Path::new("chapter.md"),
+                                definitions,
+                            )
+                            .is_none()
+                        {
+                            count = 0;
+                            break;
+                        }
+                        count += 1;
+                        cursor = reference.end;
+                    }
+                    if count > 0 && content[cursor..range.end].trim().is_empty() {
+                        omitted.push(range);
+                    }
+                }
+                depth += 1;
+            }
+            Event::End(_) => depth -= 1,
+            _ => {}
+        }
+    }
+    let mut result = String::with_capacity(content.len());
+    let mut cursor = 0;
+    for range in omitted {
+        result.push_str(&content[cursor..range.start]);
+        cursor = range.end;
+    }
+    result.push_str(&content[cursor..]);
+    result
 }
 
 fn chapter_namespace(path: &Path) -> String {
@@ -921,6 +1066,191 @@ mod tests {
         std::fs::create_dir(root.path().join("md")).unwrap();
         std::fs::write(root.path().join("book.toml"), "[book]\nsrc = 'md'\n").unwrap();
         root
+    }
+
+    // {test}`requirements.references.book_badges`
+    // {test}`requirements.references.builtin_definitions`
+    // {test}`requirements.index.navigation`
+    // {test}`requirements.examples.authoring_inputs`
+    #[test]
+    fn citation_metadata_is_hidden_in_fenced_sections_and_preserved_in_details() {
+        let citations = "{cite}`rules.ready` \t {cite}`rules.other`\n{cite}`habeas:util`";
+        for (opening, options, definition) in [
+            (":::{req} case", "", Some("guide.case")),
+            (":::{req} case", ":test: md/rules.md\n", Some("guide.case")),
+            (":::{example} case", "", Some("guide.case")),
+            (":::{definition} case", ":phrase: case\n", None),
+            (":::{note} Any prose container", "", None),
+            (":::{cite} rules.ready", "", None),
+            (":::{impl} rules.ready", "", None),
+            (":::{test} rules.ready", "", None),
+        ] {
+            let root = book_root();
+            let rules = ":::{req} ready\nReady.\n:::\n\n:::{req} other\nOther.\n:::\n";
+            let original = format!("{opening}\n{options}{citations}\n\nA concrete case.\n:::\n");
+            std::fs::write(root.path().join("md/rules.md"), rules).unwrap();
+            std::fs::write(root.path().join("md/guide.md"), &original).unwrap();
+            let mut book = Book::new();
+            book.push_item(Chapter::new("Rules", rules.into(), "rules.md", Vec::new()));
+            book.push_item(Chapter::new(
+                "Guide",
+                original.clone(),
+                "guide.md",
+                Vec::new(),
+            ));
+            let declarations = crate::evidence::load_definitions(root.path()).unwrap();
+            if let Some(name) = definition {
+                assert!(declarations[name].text.contains(citations), "{opening}");
+                let sources =
+                    crate::authoring::inputs::AssessmentSources::prepare(root.path(), name)
+                        .unwrap();
+                assert!(sources.subject_text.contains(citations), "{opening}");
+                assert!(
+                    sources.mandatory_inputs().iter().any(|input| {
+                        input["text"].as_array().is_some_and(|lines| {
+                            lines
+                                .iter()
+                                .filter_map(|line| line.as_str())
+                                .collect::<Vec<_>>()
+                                .join("\n")
+                                .contains(citations)
+                        })
+                    }),
+                    "{opening}"
+                );
+            }
+            let references = super::text_references(&original, true);
+            preprocess_book(&mut book, root.path()).unwrap();
+            let guide = book
+                .chapters()
+                .find(|chapter| chapter.name == "Guide")
+                .unwrap();
+            assert!(guide.content.contains("A concrete case."), "{opening}");
+            assert!(
+                !guide.content.contains("alt=\"cite rules.other\""),
+                "{opening}"
+            );
+            assert!(
+                !guide.content.contains("alt=\"cite habeas:util\""),
+                "{opening}"
+            );
+            assert_eq!(
+                guide.content.matches("alt=\"cite rules.ready\"").count(),
+                usize::from(opening.starts_with(":::{cite}")),
+                "{opening}: {}",
+                guide.content
+            );
+            if let Some(name) = definition {
+                let detail = book
+                    .chapters()
+                    .find(|chapter| chapter.name == name)
+                    .unwrap();
+                assert!(
+                    detail.content.contains("alt=\"cite rules.ready\""),
+                    "{opening}"
+                );
+                assert!(
+                    detail.content.contains("alt=\"cite rules.other\""),
+                    "{opening}"
+                );
+                assert!(
+                    detail.content.contains("alt=\"cite habeas:util\""),
+                    "{opening}"
+                );
+                assert!(guide.content.contains("habeas-detail-icon"), "{opening}");
+                assert!(
+                    guide
+                        .content
+                        .contains(&format!("href=\"requirements-index/{name}.html\"")),
+                    "{opening}: {}",
+                    guide.content
+                );
+            }
+            assert_eq!(
+                std::fs::read_to_string(root.path().join("md/guide.md")).unwrap(),
+                original
+            );
+            assert_eq!(super::text_references(&original, true), references);
+            for (name, declaration) in declarations {
+                assert_eq!(
+                    crate::evidence::load_definitions(root.path()).unwrap()[&name].text,
+                    declaration.text
+                );
+            }
+        }
+    }
+
+    // {test}`requirements.references.book_badges`
+    // {test}`requirements.references.markdown_literals`
+    // {test}`requirements.ci.identifiers`
+    #[test]
+    fn citation_metadata_preserves_prose_other_roles_and_literal_contexts() {
+        let definitions = std::collections::BTreeMap::from([(
+            "rules.ready".into(),
+            super::Definition {
+                path: "rules.md".into(),
+                text: "Ready.".into(),
+                kind: DefinitionKind::Requirement,
+            },
+        )]);
+        let cite = "{cite}`rules.ready`";
+        for body in [
+            format!("See {cite}."),
+            format!("{cite} {{test}}`rules.ready`"),
+            format!("{cite} {{impl}}`rules.ready`"),
+            format!("{cite} {{term}}`terms.ready`"),
+            format!("{cite} {{cite}}`rules.unknown`"),
+            format!("{cite} {{cite}}`habeas:unknown`"),
+            format!("{cite} {{cite}}`habeas:invalid name`"),
+            format!("{cite} punctuation"),
+            format!("\\{cite}"),
+            format!("`{cite}`"),
+            format!("    {cite}"),
+            format!("```text\n{cite}\n```"),
+            format!("~~~text\n{cite}\n~~~"),
+            format!("> {cite}"),
+            format!("- {cite}"),
+            format!("- First.\n\n  {cite}"),
+            format!("<div>\n{cite}\n</div>"),
+            format!("<!-- {cite} -->"),
+            format!("<span>{cite}</span>"),
+        ] {
+            let source = format!(":::{{note}} A section\n{body}\n:::\n");
+            assert_eq!(
+                super::omit_fenced_citation_paragraphs(&source, "guide", &definitions),
+                source,
+                "{body}"
+            );
+        }
+        for source in [
+            cite.into(),
+            format!("Outside.\n\n{cite}\n\n:::{{note}} Empty.\n:::\n"),
+            format!("::{{note}} Not a fence\n{cite}\n::\n"),
+            format!(":::{{req}} invalid name\n{cite}\n:::\n"),
+            format!(":::{{example}} invalid name\n{cite}\n:::\n"),
+            format!(":::{{req}} unclosed\n{cite}\n"),
+            format!("```text\n:::{{note}} Literal\n{cite}\n:::\n```"),
+            format!("<div>\n:::{{note}} Literal\n{cite}\n:::\n</div>"),
+            format!("> :::{{note}} Quoted\n> {cite}\n> :::\n"),
+        ] {
+            assert_eq!(
+                super::omit_fenced_citation_paragraphs(&source, "guide", &definitions),
+                source
+            );
+        }
+        let source = format!(
+            "{cite}\r\n\r\n::::{{req}} outer\r\n{cite}\r\n\r\n:::{{note}} Nésted\r\n{cite}\r\n\r\nNested.\r\n:::\r\n\r\nOuter.\r\n::::\r\n\r\n{cite}\r\n"
+        );
+        let rendered = super::omit_fenced_citation_paragraphs(&source, "guide", &definitions);
+        assert_eq!(rendered.matches(cite).count(), 2, "{rendered}");
+        assert!(rendered.contains("Nésted\r\n"), "{rendered}");
+        assert!(rendered.contains("Nested.\r\n"), "{rendered}");
+        assert!(rendered.contains("Outer.\r\n"), "{rendered}");
+        let unclosed = format!(":::{{note}} Retained through EOF\n{cite}\n\nBody.\n");
+        assert_eq!(
+            super::omit_fenced_citation_paragraphs(&unclosed, "guide", &definitions),
+            ":::{note} Retained through EOF\n\nBody.\n"
+        );
     }
 
     // {test}`requirements.references.book_badges`
@@ -1827,6 +2157,7 @@ mod tests {
 
     // {test}`requirements.references.markdown_literals`
     // {test}`requirements.references.discovery`
+    // {test}`requirements.references.book_badges`
     #[test]
     fn markdown_examples_and_escaped_references_stay_literal() {
         let marker = "{impl}`requirements.ready`".to_owned();
@@ -1856,6 +2187,7 @@ mod tests {
     }
 
     // {test}`requirements.references.markdown_literals`
+    // {test}`requirements.references.book_badges`
     #[test]
     fn roles_in_raw_html_stay_literal() {
         let marker = "{impl}`requirements.ready`".to_owned();
@@ -1868,6 +2200,28 @@ mod tests {
         assert!(content[references[0].start..].starts_with(&format!("{marker}</em>")));
         // Outside Markdown, HTML-looking text does not protect roles.
         assert_eq!(reference_roles(&content, false).len(), 5);
+
+        let mut book = Book::new();
+        book.push_item(Chapter::new(
+            "Requirements",
+            ":::{req} ready\nReady.\n:::".into(),
+            "requirements.md",
+            Vec::new(),
+        ));
+        book.push_item(Chapter::new("Guide", content, "guide.md", Vec::new()));
+        let root = book_root();
+        preprocess_book(&mut book, root.path()).unwrap();
+        let rendered = &book
+            .chapters()
+            .find(|chapter| chapter.name == "Guide")
+            .unwrap()
+            .content;
+        assert!(rendered.contains(&format!("<div>\n{marker}\n</div>")));
+        assert_eq!(rendered.matches(&format!("<!-- {marker} -->")).count(), 2);
+        assert!(rendered.contains(&format!("<span title=\"{marker}\">tag</span>")));
+        assert_eq!(rendered.matches(&marker).count(), 4);
+        assert_eq!(rendered.matches("habeas-req-ref-impl").count(), 1);
+        assert!(rendered.contains("Between <em><a class=\"habeas-req-badge"));
     }
 
     // {test}`requirements.references.book_badges`
