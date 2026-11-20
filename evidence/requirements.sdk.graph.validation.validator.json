@@ -1,7 +1,7 @@
 {
-  "requirement": "```rust,ignore\nuse std::sync::Arc;\n\n// Defined in habeas_sdk::graph.\n/// Domain access and configuration shared by criterion executions.\n/// Evidence storage is required through Domain.\npub struct Validator<D: Domain> { /* private fields */ }\n\nimpl<D: Domain> Validator<D> {\n    /// Own the domain used to check and execute criteria.\n    pub fn new(domain: D) -> Self;\n\n    /// Share this agent and input renderer with execution contexts.\n    pub fn with_agent(\n        self,\n        agent: Arc<dyn Agent<D>>,\n        renderer: Arc<dyn AgentInputRenderer<D>>,\n    ) -> Self;\n}\n```\n\n`Agent` and `AgentInputRenderer` are supplied by `habeas_sdk::procedure`.\nIndependent verifications share a validator through `&self`. Cached observations\ncan be reused when they still represent the state being checked. Each execution\nhas its own context, dependency trace, and agent conversation state. Operations\nwithin one execution share its synchronized trace through context inspection\nand agent calls.\n\nConcurrent verifications of the same source and criterion run independently,\neach with its own context and trace. They can both execute when evidence is\nmissing or stale.",
+  "requirement": "```rust,ignore\nuse std::sync::Arc;\n\n// Defined in habeas_sdk::graph.\n/// Domain access and configuration shared by criterion executions.\n/// Evidence storage is required through Domain.\npub struct Validator<D: Domain> { /* private fields */ }\n\nimpl<D: Domain> Validator<D> {\n    /// Own the domain used to check and execute criteria.\n    pub fn new(domain: D) -> Self;\n\n    /// Share this agent and input renderer with execution contexts.\n    pub fn with_agent(\n        self,\n        agent: Arc<dyn Agent<D>>,\n        renderer: Arc<dyn AgentInputRenderer<D>>,\n    ) -> Self;\n}\n```\n\n`Agent` and `AgentInputRenderer` are supplied by `habeas_sdk::procedure`.\nIndependent verifications share a validator through `&self`. Cached observations\ncan be reused when they still represent the state being checked. Each execution\nhas its own context, dependency trace, and agent conversation state. Operations\nwithin one execution share its synchronized trace through context inspection\nand agent calls.\n\nConcurrent verifications of the same source and criterion run independently,\neach with its own context and trace. The storage backend handles atomic\nreplacement when their results are saved.",
   "determination": true,
-  "rationale": "The reviewed tests adequately cover the obligations in `requirements.sdk.graph.validation.validator`.\n\n- **Construction and agent sharing.** Three tests cover `Validator::new` and `with_agent`. `validation.rs#fn[runner_does_not_store_a_missing_agent_error_and_supports_intermediate_calls]` builds a validator with `Validator::new` and shows that no agent gives `NoAgentConfigured` with nothing stored. It then attaches an agent and renderer with `with_agent` and shows the agent receives the requests, including an intermediate call. `agent.rs#fn[validator_agent_executions_isolate_conversations_and_dependency_traces]` shares one `Arc` agent and renderer across executions. `contracts.rs#fn[validation_and_answer_need_send_without_sync]` runs `Validator::new` with a domain.\n- **Shared through `&self`, each execution isolated.** In `agent.rs#fn[validator_agent_executions_isolate_conversations_and_dependency_traces]`, two verifications run concurrently through `futures::join!` on one `&validator`. A `Barrier` inside a timeout forces them to overlap. The test asserts three agent calls per conversation (\"alpha\" and \"beta\"), so conversation state stays separate. It then checks each stored record's dependency trace. Alpha's trace holds only `Node(1)`. Beta's holds `OutgoingEdges` plus `Node(2)`. Neither trace leaks into the other.\n- **Trace shared within one execution through inspection and agent calls.** The same test's stored dependencies come from agent tool calls that inspect the context. Beta's trace combines the edge and node reads made across its calls. `validation.rs#fn[runner_does_not_store_a_missing_agent_error_and_supports_intermediate_calls]` shows the record's dependencies contain the node read made during agent calls.\n- **Cached observations reused when still valid.** The final assertions of the `agent.rs` test re-verify \"alpha\" and find the call count still 3. In `contracts.rs#fn[validation_and_answer_need_send_without_sync]`, `check` returns `EvidenceState::Current` with only one execution. Both show reuse of current evidence.\n- **Concurrent same-source, same-criterion runs independent.** `contracts.rs#fn[concurrent_same_criterion_executions_keep_complete_independent_records]` runs two verifications of the same node and criterion path under a two-party barrier, so each must progress without waiting on the other. It asserts that both executed (`executions == 2`, `writes == 2`). It also asserts that the single stored record is internally consistent: the output, revision and dependencies all come from the same execution, with no mixing.\n\nI found no uncovered obligation. The only \"can\" clauses (reuse of cached observations, and both executions running when evidence is missing or stale) are covered anyway.",
+  "rationale": "I judge the tests adequate for `requirements.sdk.graph.validation.validator`. One partial caveat: the concurrent-within-one-execution scenario is covered only by tests that don't cite this requirement (see below).\n\nObligations I derived from the text, and the marked tests that check them:\n\n- **`Validator::new(domain)` and `with_agent(agent, renderer)`.**\n  - `runner_does_not_store_a_missing_agent_error_and_supports_intermediate_calls` in `tests/validation.rs` first runs a validator with no agent. It gets `NoAgentConfigured`, and nothing is stored or read.\n  - The same test then calls `with_agent` and runs again. The agent is used (two requests, including an intermediate call). The trace is recorded as `Dependency::Node(1, ..)`, and storage succeeds.\n  - `validator_agent_executions_isolate_conversations_and_dependency_traces` in `tests/agent.rs` builds the validator with `with_agent(agent.clone(), Arc::new(DistinctPages))`. The shared agent and renderer reach each execution's context.\n- **Independent verifications share a validator through `&self`.**\n  - `validator_agent_executions_isolate_conversations_and_dependency_traces` runs two `verify` calls concurrently on one validator, then stores both through `&self`.\n  - `concurrent_same_criterion_executions_keep_complete_independent_records` does the same with two executions of the same criterion.\n- **Each execution has its own context, dependency trace and agent conversation state.**\n  - In `validator_agent_executions_isolate_conversations_and_dependency_traces`, a barrier forces the two executions to overlap. `ParallelConversations` asserts that each history has the right length and contains only its own contents. It also asserts that the page delivered on later turns contains only its own contents, even though both conversations use the same page IDs and tool-call ID.\n  - The test then checks the stored traces. Alpha has exactly `[Node(1)]`. Beta has exactly `[OutgoingEdges(Node(1), Label, ..), Node(2)]`. Neither trace leaks into the other.\n- **Concurrent verifications of the same source and criterion run independently, and storage handles atomic replacement.**\n  - `concurrent_same_criterion_executions_keep_complete_independent_records` uses a barrier of 2 under a timeout, so an implementation that serialized them would fail.\n  - Both executions are given different revisions and different reads. The test asserts that each result and trace is complete and separate.\n  - The test then stores both concurrently. It asserts that the final record is wholly one of the two, with no mixing of revision, output and dependencies. It also asserts `executions == 2`, `writes == 2`, and one record.\n- **Operations within one execution share its trace through context inspection and agent calls.**\n  - In the beta execution, successive tool calls (reading the successors, then the node page) both land in the single stored trace.\n  - `Review.reads` in the contracts test records dependencies through context inspection.\n  - The intermediate agent call in the validation runner test records its dependency in the same execution trace.\n  - `concurrent_single_node_validations_keep_separate_traces` also exercises concurrent verifications on one validator, but it is cited for other requirements.\n- **Cached observations can be reused.** This is permissive (\"can\"), so it imposes nothing to check. `validation_and_answer_need_send_without_sync` nevertheless checks `store_evidence`, `load_evidence`, and `executions == 1`.\n\nCaveat: truly concurrent operations within one execution, sharing a synchronized trace, are exercised by `shared_context_allows_independent_concurrent_agent_calls` and `concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads`. Those tests cite other requirements (agent-calls, context-tools) rather than this one. I treat the intra-execution sharing as adequately covered by the marked tests, which show a single execution's trace accumulating results from several operations. I do not treat the missing citations as a gap here.\n\nNo gaps found, and there are no {fixme} acknowledgments.",
   "references": "a2801bc65f6bcdd213c428b761a751d7c722b51bc741be7f582e4399bd734f47",
   "inputs": [
     {
@@ -40,30 +40,70 @@
         "and agent calls.",
         "",
         "Concurrent verifications of the same source and criterion run independently,",
-        "each with its own context and trace. They can both execute when evidence is",
-        "missing or stale.",
+        "each with its own context and trace. The storage backend handles atomic",
+        "replacement when their results are saved.",
         ":::"
       ]
     },
     {
       "file": "crates/habeas-sdk/tests/agent.rs",
       "item": "fn[validator_agent_executions_isolate_conversations_and_dependency_traces]",
-      "hash": "727c1c6c0cfeef10c76253a3c36506308ec494f3ac19697d545a16fb301b7191"
+      "hash": "0165c651fc9e6c08696c99bfe7d146cbc0d06dbe9b2dcd9d4669cb33be5b627f"
     },
     {
       "file": "crates/habeas-sdk/tests/contracts.rs",
       "item": "fn[validation_and_answer_need_send_without_sync]",
-      "hash": "53b6158651ebe976d773035d4ad6e7783c8ea3098189952828c0b3d925d77843"
+      "hash": "c4fa44e942678b92bc1d2617afc25c4497e9e81652229f3fa4466926431137d3"
     },
     {
       "file": "crates/habeas-sdk/tests/contracts.rs",
       "item": "fn[concurrent_same_criterion_executions_keep_complete_independent_records]",
-      "hash": "d093a4f1700f0ff4b06ebbb5d409dfb079537f54d98e8215fbeebfcea960ca55"
+      "hash": "9cd7a0f494e813c977501868d9ceddbea588be0e5868b07c98f1393f1674aab5"
     },
     {
       "file": "crates/habeas-sdk/tests/validation.rs",
       "item": "fn[runner_does_not_store_a_missing_agent_error_and_supports_intermediate_calls]",
-      "hash": "60ebee46a29ec80f9ddf03a74bbda6e7ee214ceacf61740d8a491d8cb873b0b1"
+      "hash": "a149021cf8f489a22bc4ed8ae2d759ece65c5d1e70c6ecd33e5f4fe76ee6a3d7"
+    },
+    {
+      "file": "crates/habeas-sdk/tests/agent.rs",
+      "item": "impl[Question/Criterion<Memory>]",
+      "hash": "2cca12a35669576bc6591ceba9cae8cf813088f6f2ce40973c2e33ddc3d0e60b"
+    },
+    {
+      "file": "crates/habeas-sdk/tests/agent.rs",
+      "item": "impl[ParallelConversations/CompletionProvider]",
+      "hash": "d426e081a91f37facb763b194696eb8f08f79aae8a1e78b2b622852869f0dd8e"
+    },
+    {
+      "file": "crates/habeas-sdk/tests/validation.rs",
+      "item": "fn[shared_context_allows_independent_concurrent_agent_calls]",
+      "hash": "599a1e89b1f82bbd22b815488c8d99f6c0b489061e34cbea967ff9201acc9270"
+    },
+    {
+      "file": "crates/habeas-sdk/tests/agent.rs",
+      "item": "fn[concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads]",
+      "hash": "e402ef3e7791ad9c68a9ee38753d0e1c3e1c533e0329871ec0f0bb6f37595358"
+    },
+    {
+      "file": "crates/habeas-sdk/tests/validation.rs",
+      "item": "fn[concurrent_single_node_validations_keep_separate_traces]",
+      "hash": "115849fed971c0f86fe91027c5874818c0a7a0d3e2f9137ac0bd76f1e9b73367"
+    },
+    {
+      "file": "crates/habeas-sdk/tests/agent.rs",
+      "item": "impl[DistinctPages/AgentInputRenderer<Memory>]",
+      "hash": "e7fd1e5b0df47861d423e2b4952f9531ab299ef5f5f05aea25f983bff0ca62d1"
+    },
+    {
+      "file": "crates/habeas-sdk/tests/agent.rs",
+      "item": "struct[DistinctPages]",
+      "hash": "34089a6bdd3a011d42787b0dfcdba1bed70e2d3f64bb39f41b36164f6e66b026"
+    },
+    {
+      "file": "crates/habeas-sdk/tests/agent.rs",
+      "item": "struct[ParallelConversations]",
+      "hash": "1bdc6269de579c6be8df018df323ddb04cde0b13d9464d994d5316e08bde0013"
     }
   ],
   "format_version": 1,
@@ -99,7 +139,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "fa6c2c52724ad434337b3ca415a070b66242eab3ca49da95fed486b74857c41e"
+          "value": "df032e4ea208f8367654d13b5e04316fd90ffd936be90c09ec54f4642fe444b9"
         }
       ]
     },
@@ -116,7 +156,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "cd1a71f0aa84f9d9cda7ed409e8da6cb0a4cbd98c4d374280bd49c84e10747dd"
+          "value": "b4ce3892a2cdd252f4d19f50143202efc967659fe71089492205f4eed722e9d0"
         }
       ]
     },
@@ -133,7 +173,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "8e70164c36c5a4f1b6aef41caf2ce5ca2742488e6a12ae5d64411891646b752a"
+          "value": "69e15685d1653f94368c90e2cf9429d5e111c4bd932df9434721685a80e4b55a"
         }
       ]
     },
@@ -150,7 +190,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "c963a4d8a4d35e911d46249dfe7c111e432f03107da0e61a0a709ecc066401d8"
+          "value": "e62749abd6a567b03f3f0dcf20a0a027e8b40e15d589853695f6d1b30b407295"
         }
       ]
     },
@@ -167,7 +207,143 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "7627d7d2730f860e83bcb444765894dc4ad1ffe6fca57fe4d8d6f38f671af4e0"
+          "value": "af6dc90ce4d17b42c2d798e43eb0a52ede07467ab2025f47aa97aae4156bdf5d"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/tests/agent.rs"
+            },
+            "selector": "impl[Question/Criterion<Memory>]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "4c43c1aaabf080a3c3c6ff42cb0fd88ebf783802f86ab97ef76ba09f42bba769"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/tests/agent.rs"
+            },
+            "selector": "impl[ParallelConversations/CompletionProvider]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "dbb1d95af1f77fa680a1bc763a31e521792078c2c50fd60befacbfadcb81bd46"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/tests/validation.rs"
+            },
+            "selector": "fn[shared_context_allows_independent_concurrent_agent_calls]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "98f7c2c42ea1705317aa36ade731be75c75533196fcf49b4039d8e45ca58105d"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/tests/agent.rs"
+            },
+            "selector": "fn[concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "cf144e41cefee9aac9a13dafe93655a10d8a718d0e28493830fde9ff81470fbf"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/tests/validation.rs"
+            },
+            "selector": "fn[concurrent_single_node_validations_keep_separate_traces]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "8c465be4fc0956d99d8f378ca08d771bb6fc111e5b9d498621fa52a1844fdd55"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/tests/agent.rs"
+            },
+            "selector": "impl[DistinctPages/AgentInputRenderer<Memory>]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "09f206d43d0072b36642b20a81abe688050952fac0b0c3e8e0b76d5e7d35a0ec"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/tests/agent.rs"
+            },
+            "selector": "struct[DistinctPages]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "fa96c59a6d63b836eb2b8a56c1f52f5c5f5829a0332e33757204b88a37416921"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/tests/agent.rs"
+            },
+            "selector": "struct[ParallelConversations]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "dc2537d6f8e5eb7819fa1ee967783aec1ed35d266ed1fc3bf150661183feef38"
         }
       ]
     }

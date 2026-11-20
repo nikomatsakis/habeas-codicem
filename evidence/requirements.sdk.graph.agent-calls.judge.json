@@ -1,7 +1,7 @@
 {
-  "requirement": "`habeas_sdk::procedure` exposes `Ask` and its public `ContextPhase` and\n`NodePhase` state types. The validation context starts a builder:\n\n```rust,ignore\n/// Create an independent request borrowing this context through a shared reference.\npub fn ask<R>(&self) -> Ask<'_, 'd, D, R, ContextPhase>\nwhere\n    R: serde::de::DeserializeOwned + schemars::JsonSchema + Send;\n```\n\nIts operations are:\n\n```rust,ignore\nimpl<'a, 'd, D: Domain, R> Ask<'a, 'd, D, R, ContextPhase> {\n    /// Append reusable text to the prefix.\n    pub fn context(self, value: impl Context) -> Self;\n}\n\nimpl<'a, 'd, D: Domain, R, P> Ask<'a, 'd, D, R, P> {\n    /// Queue the current node's contents and enter the node phase.\n    pub fn current_node_contents(self) -> Ask<'a, 'd, D, R, NodePhase>;\n\n    /// Queue contents of successors with this label and enter the node phase.\n    pub fn successors_content(\n        self,\n        label: D::EdgeLabel,\n    ) -> Ask<'a, 'd, D, R, NodePhase>\n    where\n        D::EdgeLabel: PartialEq;\n}\n```\n\nBoth states implement `std::future::IntoFuture` with\n`Output = Result<R, ValidationError<D::Error>>` and a `Send` future for\n`R: serde::de::DeserializeOwned + schemars::JsonSchema + Send`.\nAwaiting executes the assembled request, even with no contexts or node\ninsertions. Building it does not invoke an agent.",
+  "requirement": "`habeas_sdk::procedure` exposes `Ask` and its public `ContextPhase` and\n`NodePhase` state types. The validation context starts a builder:\n\n```rust,ignore\n/// Create an independent request borrowing this context through a shared reference.\npub fn ask<R>(&self) -> Ask<'_, 'd, D, R, ContextPhase>\nwhere\n    R: serde::de::DeserializeOwned + schemars::JsonSchema + Send;\n```\n\nIts operations are:\n\n```rust,ignore\nimpl<'a, 'd, D: Domain, R> Ask<'a, 'd, D, R, ContextPhase> {\n    /// Append reusable text to the prefix.\n    pub fn context(self, value: impl Context) -> Self;\n}\n\nimpl<'a, 'd, D: Domain, R, P> Ask<'a, 'd, D, R, P> {\n    /// Queue the current node's contents and enter the node phase.\n    pub fn contents_of_current_node(self) -> Ask<'a, 'd, D, R, NodePhase>;\n\n    /// Queue contents of successors with this label and enter the node phase.\n    pub fn contents_of_successors(\n        self,\n        label: D::EdgeLabel,\n    ) -> Ask<'a, 'd, D, R, NodePhase>\n    where\n        D::EdgeLabel: PartialEq;\n}\n```\n\nBoth states implement `std::future::IntoFuture` with\n`Output = Result<R, ValidationError<D::Error>>` and a `Send` future for\n`R: serde::de::DeserializeOwned + schemars::JsonSchema + Send`.\nAwaiting executes the assembled request, even with no contexts or node\ninsertions. Building it does not invoke an agent.",
   "determination": true,
-  "rationale": "The reviewed tests cover each obligation in the `requirements.sdk.graph.agent-calls.judge` text. I did not request implementation source. The sub-requirements `node_contents`, `phases`, `rendering`, `submission` and `caching` are marked on these tests but are separate requirements, so I did not assess them here.\n\n- **Entry point and independence.** `ask::<R>()` borrows the context through a shared reference and creates independent requests. `shared_context_allows_independent_concurrent_agent_calls` runs two `ctx.ask::<Answer>()` requests concurrently on one `&ctx` under a `Barrier`. Each request returns its own answer (7 and 11), and the agent sees two requests.\n- **`context` on `ContextPhase`.** `contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text` appends several contexts, and `explicit_insertions_preserve_order_repetition_and_selection_snapshots` calls `.context(...)` before node insertions. Both assert the resulting prefix text the agent receives.\n- **Node insertions from both phases.**\n  - `current_node_contents` is called from `ContextPhase` (after `.context`) and from `NodePhase` (after `successors_content`).\n  - `successors_content` is called from `ContextPhase` (`ctx.ask().successors_content(7)`) and from `NodePhase` (after `current_node_contents`).\n  - The tests assert the result order and repetition, and the reads and dependencies.\n- **`IntoFuture` for both states.**\n  - `NodePhase` is awaited directly and through `.into_future()`. `ContextPhase` is awaited and used with `.into_future()` in the contexts test and the concurrency test.\n  - The `assert_send` helper is applied to the `NodePhase` future (explicit-insertions test) and to the `ContextPhase` future (contexts test).\n  - The output is `Result<R, ValidationError<_>>`. Success is checked through `answer.n`. Failures are checked through `Err(ValidationError::Graph(\"read\"|\"edges\"|\"render\"))` and `Err(ValidationError::NoAgentConfigured)`.\n- **Awaiting with no contexts or insertions.** `ctx.ask::<Answer>().await.unwrap()` in the contexts test sends an empty prefix and no node insertions to the agent. A request with only an empty `Vec` context is also covered.\n- **Building does not invoke an agent.** `queued_reads_selection_and_rendering_fail_before_agent_invocation` drops `current_node_contents()` and asserts that no agent requests exist. `dropped_builders_and_missing_agents_do_not_resolve_queued_inputs` drops a builder and asserts that no dependencies are recorded, and it makes no graph reads. The latter test also covers the no-agent case.\n\nI found no input class or boundary in the subject's text that these tests would let a violating implementation pass.",
+  "rationale": "The reviewed tests in `crates/habeas-sdk/tests/validation.rs` cover each obligation of `requirements.sdk.graph.agent-calls.judge`. Sub-requirements such as `judge.node_contents`, `judge.phases`, `judge.rendering`, `judge.submission` and `judge.caching` refine it and are assessed on their own, so I did not reassess them here.\n\n- **`ask::<R>()` builder on a shared reference:** `shared_context_allows_independent_concurrent_agent_calls` builds two independent requests from one `&ValidationContext` and awaits them concurrently with `futures::join!`, both succeeding. A `Barrier(2)` plus a 1-second timeout makes the test fail if the requests are serialized.\n- **`context(...)` appends reusable text:** `contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text` chains two `context` calls and asserts the prefix `\"héllo\\n\\npolicy\\n\\nquestion\"` and its fingerprint. `explicit_insertions_preserve_order_repetition_and_selection_snapshots` asserts the prefix `\"question\"`.\n- **`contents_of_current_node` and `contents_of_successors`, from either phase:**\n  - Both are called on a `ContextPhase` builder: directly after `ask` in `dropped_builders_and_missing_agents_do_not_resolve_queued_inputs` and `queued_reads_selection_and_rendering_fail_before_agent_invocation`, and after `.context(...)` in `explicit_insertions_preserve_order_repetition_and_selection_snapshots`.\n  - Both are called on a `NodePhase` builder when chained, in `explicit_insertions_preserve_order_repetition_and_selection_snapshots`, where repeated insertions are asserted in order.\n- **`IntoFuture` for both states, with `Output = Result<R, ValidationError<_>>`:**\n  - The `ContextPhase` future is converted with `into_future` and awaited in `contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text`. The `NodePhase` future is awaited in `explicit_insertions_preserve_order_repetition_and_selection_snapshots`.\n  - Success values are asserted (`answer.n == 7`). Error results are asserted: `NoAgentConfigured`, `Graph(\"read\")`, `Graph(\"edges\")` and `Graph(\"render\")`.\n- **`Send` future for both states:** `assert_send(&future)` is called on the `ContextPhase` future, built from a non-Send `Rc` context, and on the `NodePhase` future.\n- **Awaiting executes even with no contexts or node insertions:** `ctx.ask::<Answer>().await` and an `.await` after `.context(Vec::<String>::new())` both produce agent requests with an empty prefix and no nodes.\n- **Building does not invoke an agent:** `queued_reads_selection_and_rendering_fail_before_agent_invocation` drops a built builder and asserts that `agent.requests` is empty. `dropped_builders_and_missing_agents_do_not_resolve_queued_inputs` asserts that dropping a builder records no dependencies, and that awaiting without an agent reads nothing and selects nothing.\n\nI found no plausible violating behavior that these tests would accept.",
   "references": "f08d82e1631a950aad7a90ff601a7e3c2dedc80b3a6bc733a80d88dc0548bb7c",
   "inputs": [
     {
@@ -31,10 +31,10 @@
         "",
         "impl<'a, 'd, D: Domain, R, P> Ask<'a, 'd, D, R, P> {",
         "    /// Queue the current node's contents and enter the node phase.",
-        "    pub fn current_node_contents(self) -> Ask<'a, 'd, D, R, NodePhase>;",
+        "    pub fn contents_of_current_node(self) -> Ask<'a, 'd, D, R, NodePhase>;",
         "",
         "    /// Queue contents of successors with this label and enter the node phase.",
-        "    pub fn successors_content(",
+        "    pub fn contents_of_successors(",
         "        self,",
         "        label: D::EdgeLabel,",
         "    ) -> Ask<'a, 'd, D, R, NodePhase>",
@@ -54,12 +54,12 @@
     {
       "file": "crates/habeas-sdk/tests/validation.rs",
       "item": "fn[dropped_builders_and_missing_agents_do_not_resolve_queued_inputs]",
-      "hash": "fbf8834a52c0582d32ea3ce5e786c95b49b0bfe96240a6213deb32f22f66bac8"
+      "hash": "0bef1453e65529ffb17488f667e0e9bfcba471deb1a5a46006ca1da2e0b56a0e"
     },
     {
       "file": "crates/habeas-sdk/tests/validation.rs",
       "item": "fn[explicit_insertions_preserve_order_repetition_and_selection_snapshots]",
-      "hash": "9a6b72ef8f4ab1f035d1496f253b31cf6d8b7d2ed05ba4aaba6353caacb881af"
+      "hash": "4f3bc79738694f72d472c8bf93492a0af2ce5de481452d4453b53340dc8d9e95"
     },
     {
       "file": "crates/habeas-sdk/tests/validation.rs",
@@ -69,12 +69,12 @@
     {
       "file": "crates/habeas-sdk/tests/validation.rs",
       "item": "fn[shared_context_allows_independent_concurrent_agent_calls]",
-      "hash": "d602058ea2493bd7a8fc38ee269b9efc39a06013cf1c27b14df0a3baf7b2194f"
+      "hash": "599a1e89b1f82bbd22b815488c8d99f6c0b489061e34cbea967ff9201acc9270"
     },
     {
       "file": "crates/habeas-sdk/tests/validation.rs",
       "item": "fn[queued_reads_selection_and_rendering_fail_before_agent_invocation]",
-      "hash": "d33558c06f234497a33cceb1ab7960d2f4964ec436f573dd4516405293712db6"
+      "hash": "04cf8be19658ebbcb945e246334c0025a46173c59f777f3b3b82b59a4f0adcce"
     }
   ],
   "format_version": 1,
@@ -110,7 +110,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "993bfa29d89260a4113122f9861af62504ab0d75aa96a41cb6d796f88d95fa6e"
+          "value": "0629b57ad895a667ce08faae9d519bff3d68e32cfa765249a504b07d97152988"
         }
       ]
     },
@@ -127,7 +127,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "811195f2940d9a325c8961574a1669dbaa941d940c629784e2d03f9a7ac53a4e"
+          "value": "fc3a03ef7a82f6a54b059f014fb3954b6ed80a1ea90b4183af66460ca8c5ad1a"
         }
       ]
     },
@@ -144,7 +144,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "45c2d02fa9f6bb9d6c750a6d7c176dbc8eacd66db73d3387e1a97212d76ea5f7"
+          "value": "52a76e0328cd6ae89103ac76cbfef3ed403dcf6b7da5b01a5b03ca704710c5d5"
         }
       ]
     },
@@ -178,7 +178,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "00b06ce6abc9db24c5d8c9bf649686798fe393ba48ff5bd01bf3ba3d9e2b2a37"
+          "value": "98f7c2c42ea1705317aa36ade731be75c75533196fcf49b4039d8e45ca58105d"
         }
       ]
     },
@@ -195,7 +195,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "88bdbf276325c907398445ca6cd71a0cd865599653bd262bb56c54422d2b9fe1"
+          "value": "11bc37406e1d0d0dd137d3e8fe9c758f5a4e572566335d8271b81f996ef78997"
         }
       ]
     }

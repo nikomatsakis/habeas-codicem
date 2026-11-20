@@ -173,7 +173,7 @@ impl Memory {
             ctx.successors(&1).map_err(ValidationError::Graph)?;
         }
         if self.ask_in_callback {
-            let first: Answer = ctx.ask().current_node_contents().await?;
+            let first: Answer = ctx.ask().contents_of_current_node().await?;
             let second: Answer = ctx
                 .ask()
                 .context(format!("Check intermediate result {}", first.n))
@@ -216,13 +216,15 @@ async fn historical_freshness_reads_do_not_enter_the_replacement_trace() {
             },
         );
     }
-    Validator::new(graph.clone())
-        .verify(Review {
-            node: 1,
-            revision: "v1",
-        })
-        .await
-        .unwrap();
+    let validator = Validator::new(graph.clone());
+    let review = || Review {
+        node: 1,
+        revision: "v1",
+    };
+    let old = validator.load_evidence(&review()).await.unwrap().unwrap();
+    assert!(!validator.check_inputs(&old).unwrap());
+    let value = validator.verify(review()).await.unwrap();
+    validator.store_evidence(&value).await.unwrap();
     let state = graph.state.lock().unwrap();
     assert_eq!(state.reads, vec![2, 1]);
     assert_eq!(
@@ -233,6 +235,7 @@ async fn historical_freshness_reads_do_not_enter_the_replacement_trace() {
 
 // {test}`requirements.sdk.graph.agent-calls.model_capability`
 // {test}`requirements.sdk.graph.agent-calls.procedures`
+// {test}`requirements.sdk.graph.validation.store_evidence`
 // {test}`requirements.sdk.graph.validation.validate_node.errors`
 // {test}`requirements.sdk.graph.validation.validator`
 // {test}`requirements.sdk.graph.agent-calls.judge.rendering`
@@ -265,16 +268,15 @@ async fn runner_does_not_store_a_missing_agent_error_and_supports_intermediate_c
     }
     let agent = Arc::new(MockAgent::default());
     let validator = validator.with_agent(agent.clone(), Arc::new(Renderer));
-    assert!(
-        validator
-            .verify(Review {
-                node: 1,
-                revision: "v1"
-            })
-            .await
-            .unwrap()
-            .result
-    );
+    let value = validator
+        .verify(Review {
+            node: 1,
+            revision: "v1",
+        })
+        .await
+        .unwrap();
+    assert!(value.output().result);
+    validator.store_evidence(&value).await.unwrap();
     let state = graph.state.lock().unwrap();
     assert_eq!(
         state.records[&1].dependencies,
@@ -554,29 +556,21 @@ fn labeled_selections_track_only_target_membership_without_reading_contents() {
 // {test}`requirements.sdk.graph.validation.deterministic_procedures`
 // {test}`requirements.sdk.graph.validation.procedure_identity`
 #[tokio::test]
-async fn runner_reuses_negative_judgments_and_records_only_callback_observations() {
+async fn caller_reuses_negative_answers_and_compares_revisions_explicitly() {
     let graph = Memory::default();
     let validator = Validator::new(graph.clone());
-    assert!(
-        !validator
-            .verify(Review {
-                node: 9,
-                revision: "v1"
-            })
-            .await
-            .unwrap()
-            .result
-    );
-    assert!(
-        !validator
-            .verify(Review {
-                node: 9,
-                revision: "v1"
-            })
-            .await
-            .unwrap()
-            .result
-    );
+    let review = || Review {
+        node: 9,
+        revision: "v1",
+    };
+    let value = validator.verify(review()).await.unwrap();
+    assert!(!value.output().result);
+    assert!(graph.state.lock().unwrap().records.is_empty());
+    validator.store_evidence(&value).await.unwrap();
+    let cached = validator.load_evidence(&review()).await.unwrap().unwrap();
+    assert!(!cached.output().result);
+    assert!(procedure_matches(cached.revision(), &review().revision()));
+    assert!(validator.check_inputs(&cached).unwrap());
     {
         let state = graph.state.lock().unwrap();
         assert_eq!(state.started, vec![9]);
@@ -585,34 +579,25 @@ async fn runner_reuses_negative_judgments_and_records_only_callback_observations
         assert!(state.records[&9].dependencies.is_empty());
     }
     assert!(
-        matches!(validator.check(&Review { node: 9, revision: "v1" }).await.unwrap(), EvidenceState::Current(j) if !j.result)
-    );
-    assert!(matches!(
         validator
-            .check(&Review {
+            .load_evidence(&Review {
                 node: 8,
                 revision: "v1"
             })
             .await
-            .unwrap(),
-        EvidenceState::Missing
-    ));
-    let v2 = Validator::new(graph.clone());
-    assert!(matches!(
-        v2.check(&Review {
-            node: 9,
-            revision: "v2"
-        })
-        .await
-        .unwrap(),
-        EvidenceState::Stale
-    ));
-    v2.verify(Review {
+            .unwrap()
+            .is_none()
+    );
+    let v2 = Review {
         node: 9,
         revision: "v2",
-    })
-    .await
-    .unwrap();
+    };
+    let old = validator.load_evidence(&v2).await.unwrap().unwrap();
+    assert_eq!(old.revision(), "v1");
+    assert!(validator.check_inputs(&old).unwrap());
+    assert!(!procedure_matches(old.revision(), &v2.revision()));
+    let replacement = validator.verify(v2).await.unwrap();
+    validator.store_evidence(&replacement).await.unwrap();
     assert_eq!(graph.state.lock().unwrap().records[&9].revision, "v2");
     graph
         .state
@@ -622,14 +607,24 @@ async fn runner_reuses_negative_judgments_and_records_only_callback_observations
         .get_mut(&9)
         .unwrap()
         .revision = "*".into();
-    assert!(
-        matches!(v2.check(&Review { node: 9, revision: "v2" }).await.unwrap(), EvidenceState::Current(j) if !j.result)
-    );
+    let legacy = validator
+        .load_evidence(&Review {
+            node: 9,
+            revision: "v2",
+        })
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(procedure_matches(legacy.revision(), "v2"));
+    assert!(!legacy.output().result);
+    assert!(validator.check_inputs(&legacy).unwrap());
 }
 
+// {test}`requirements.sdk.graph.validation.store_evidence`
 // {test}`requirements.sdk.graph.validation.validate_node.errors`
 // {test}`requirements.sdk.graph.validation.check_node`
 // {test}`requirements.sdk.graph.validation.procedure_identity`
+// {test}`requirements.sdk.graph.evidence.record.output`
 #[tokio::test]
 async fn resolution_storage_and_callback_errors_are_not_judgments() {
     let graph = Memory::default();
@@ -637,22 +632,23 @@ async fn resolution_storage_and_callback_errors_are_not_judgments() {
     graph.state.lock().unwrap().fail_load = true;
     assert!(matches!(
         validator
-            .verify(Review {
+            .load_evidence(&Review {
                 node: 1,
                 revision: "v1"
             })
             .await,
         Err(ValidationError::Graph("load"))
     ));
-    graph.state.lock().unwrap().fail_load = false;
+    let value = validator
+        .verify(Review {
+            node: 1,
+            revision: "v1",
+        })
+        .await
+        .unwrap();
     graph.state.lock().unwrap().fail_store = true;
     assert!(matches!(
-        validator
-            .verify(Review {
-                node: 1,
-                revision: "v1"
-            })
-            .await,
+        validator.store_evidence(&value).await,
         Err(ValidationError::Graph("store"))
     ));
     assert!(graph.state.lock().unwrap().records.is_empty());
@@ -684,14 +680,14 @@ async fn dropped_builders_and_missing_agents_do_not_resolve_queued_inputs() {
     let ctx = ValidationContext::new(&graph, 1);
     drop(
         ctx.ask::<Answer>()
-            .current_node_contents()
-            .successors_content(7),
+            .contents_of_current_node()
+            .contents_of_successors(7),
     );
     assert!(ctx.inspection().dependencies().is_empty());
     assert!(matches!(
         ctx.ask::<Answer>()
-            .successors_content(7)
-            .current_node_contents()
+            .contents_of_successors(7)
+            .contents_of_current_node()
             .await,
         Err(ValidationError::NoAgentConfigured)
     ));
@@ -721,9 +717,9 @@ async fn explicit_insertions_preserve_order_repetition_and_selection_snapshots()
     let future = ctx
         .ask::<Answer>()
         .context(String::from("question"))
-        .current_node_contents()
-        .successors_content(7)
-        .current_node_contents()
+        .contents_of_current_node()
+        .contents_of_successors(7)
+        .contents_of_current_node()
         .into_future();
     fn assert_send<T: Send>(_: &T) {}
     assert_send(&future);
@@ -879,17 +875,17 @@ async fn string_and_str_contexts_deliver_identical_prefixes_and_fingerprints() {
 
     ctx.ask::<Answer>()
         .context("short-lived")
-        .current_node_contents()
+        .contents_of_current_node()
         .await
         .unwrap();
     ctx.ask::<Value>()
         .context("short-lived")
-        .current_node_contents()
+        .contents_of_current_node()
         .await
         .unwrap();
     ctx.ask::<Answer>()
         .context("short-lived")
-        .successors_content(7)
+        .contents_of_successors(7)
         .await
         .unwrap();
     ValidationContext::with_agent(&graph, 2, &agent, &Renderer)
@@ -1100,7 +1096,7 @@ async fn shared_context_allows_independent_concurrent_agent_calls() {
     let ctx = ValidationContext::with_agent(&graph, 1, &agent, &Renderer);
     let (first, second) = tokio::time::timeout(std::time::Duration::from_secs(1), async {
         futures::join!(
-            ctx.ask::<Answer>().current_node_contents().into_future(),
+            ctx.ask::<Answer>().contents_of_current_node().into_future(),
             ctx.ask::<Answer>()
                 .context(String::from("independent"))
                 .into_future()
@@ -1135,8 +1131,8 @@ async fn later_lighter_agent_calls_preserve_the_contexts_existing_trace() {
     assert_send_sync(&ctx);
     let _: Answer = ctx
         .ask()
-        .current_node_contents()
-        .successors_content(7)
+        .contents_of_current_node()
+        .contents_of_successors(7)
         .await
         .unwrap();
     let retained = ctx.inspection().dependencies();
@@ -1200,9 +1196,18 @@ async fn concurrent_single_node_validations_keep_separate_traces() {
             revision: "v1"
         }),
     );
-    assert!(first.unwrap().result);
-    assert!(second.unwrap().result);
-    assert!(third.unwrap().result);
+    let (first, second, third) = (first.unwrap(), second.unwrap(), third.unwrap());
+    assert!(first.output().result);
+    assert!(second.output().result);
+    assert!(third.output().result);
+    let (a, b, c) = futures::join!(
+        validator.store_evidence(&first),
+        validator.store_evidence(&second),
+        validator.store_evidence(&third)
+    );
+    a.unwrap();
+    b.unwrap();
+    c.unwrap();
     assert_eq!(graph.peak.load(Ordering::SeqCst), 3);
     let state = graph.state.lock().unwrap();
     let mut started = state.started.clone();
@@ -1287,12 +1292,12 @@ async fn queued_reads_selection_and_rendering_fail_before_agent_invocation() {
     let graph = Memory::default();
     let agent = MockAgent::default();
     let ctx = ValidationContext::with_agent(&graph, 1, &agent, &Renderer);
-    drop(ctx.ask::<Answer>().current_node_contents());
+    drop(ctx.ask::<Answer>().contents_of_current_node());
     assert!(agent.requests.lock().unwrap().is_empty());
     for edges in [vec![], vec![(8, 99)]] {
         graph.state.lock().unwrap().edges.insert(1, edges.clone());
         let ctx = ValidationContext::with_agent(&graph, 1, &agent, &Renderer);
-        ctx.ask::<Answer>().successors_content(7).await.unwrap();
+        ctx.ask::<Answer>().contents_of_successors(7).await.unwrap();
         assert!(graph.state.lock().unwrap().reads.is_empty());
         assert_eq!(
             ctx.inspection().dependencies(),
@@ -1306,13 +1311,13 @@ async fn queued_reads_selection_and_rendering_fail_before_agent_invocation() {
     let initial_calls = agent.requests.lock().unwrap().len();
     graph.state.lock().unwrap().fail_read = true;
     assert!(matches!(
-        ctx.ask::<Answer>().current_node_contents().await,
+        ctx.ask::<Answer>().contents_of_current_node().await,
         Err(ValidationError::Graph("read"))
     ));
     graph.state.lock().unwrap().fail_read = false;
     graph.state.lock().unwrap().fail_edges = Some(1);
     assert!(matches!(
-        ctx.ask::<Answer>().successors_content(7).await,
+        ctx.ask::<Answer>().contents_of_successors(7).await,
         Err(ValidationError::Graph("edges"))
     ));
     graph.state.lock().unwrap().fail_edges = None;
@@ -1324,7 +1329,7 @@ async fn queued_reads_selection_and_rendering_fail_before_agent_invocation() {
         .insert(1, "root".into());
     let ctx = ValidationContext::with_agent(&graph, 1, &agent, &FailingRenderer);
     assert!(matches!(
-        ctx.ask::<Answer>().current_node_contents().await,
+        ctx.ask::<Answer>().contents_of_current_node().await,
         Err(ValidationError::Graph("render"))
     ));
     assert!(ctx.inspection().dependencies().is_empty());

@@ -204,10 +204,10 @@ impl Criterion<ReviewGraph<'_>> for Review {
                 let request = ctx
                     .ask::<ReviewAnswer>()
                     .context(&graph.system)
-                    .current_node_contents();
+                    .contents_of_current_node();
                 let answer = if matches!(ctx.node_id(), HabeasNode::Requirement(_)) {
                     request
-                        .successors_content(HabeasEdgeLabel::Mandatory)
+                        .contents_of_successors(HabeasEdgeLabel::Mandatory)
                         .await?
                 } else {
                     request.await?
@@ -231,10 +231,10 @@ impl Criterion<ReviewGraph<'_>> for Review {
                 let request = ctx
                     .ask::<VerificationAnswer>()
                     .context(&graph.system)
-                    .current_node_contents();
+                    .contents_of_current_node();
                 let answer = if matches!(ctx.node_id(), HabeasNode::Requirement(_)) {
                     request
-                        .successors_content(HabeasEdgeLabel::Mandatory)
+                        .contents_of_successors(HabeasEdgeLabel::Mandatory)
                         .await?
                 } else {
                     request.await?
@@ -580,7 +580,7 @@ mod tests {
     // {test}`requirements.sdk.habeas.evidence_format.loading`
     #[tokio::test]
     async fn review_graph_persists_and_reuses_a_negative_validation_through_the_sdk() {
-        use habeas_sdk::graph::{EvidenceState, Validator};
+        use habeas_sdk::graph::{Validator, procedure_matches};
 
         let root = inputs::tests::project();
         let state = tempfile::tempdir().unwrap();
@@ -617,18 +617,18 @@ mod tests {
         assert_eq!(review().source_node_id(), node);
         assert_eq!(review().criterion_path().segments(), ["review"]);
         assert_eq!(review().revision(), crate::sdk::REVIEW_VERSION);
-        assert!(matches!(
-            validator.check(&review()).await.unwrap(),
-            EvidenceState::Missing
-        ));
+        assert!(validator.load_evidence(&review()).await.unwrap().is_none());
         assert!(!path.exists());
         assert!(provider.requests.lock().unwrap().is_empty());
 
-        let answer = validator.verify(review()).await.unwrap();
+        let fingerprinted = validator.verify(review()).await.unwrap();
+        let answer = fingerprinted.output();
         assert_eq!(answer["determination"], false);
         assert_eq!(answer["rationale"], "The readiness case is missing.");
         assert!(answer.get("result").is_none());
         assert!(answer.get("metadata").is_none());
+        assert!(!path.exists());
+        validator.store_evidence(&fingerprinted).await.unwrap();
         let saved = fs::read(&path).unwrap();
         let record = graph
             .load_evidence(&node, &review().criterion_path())
@@ -636,15 +636,12 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(record.revision, crate::sdk::REVIEW_VERSION);
-        assert_eq!(record.output, serde_json::to_value(&answer).unwrap());
+        assert_eq!(record.output, *answer);
         assert!(!record.dependencies.is_empty());
-        match validator.check(&review()).await.unwrap() {
-            EvidenceState::Current(cached) => {
-                assert_eq!(cached, answer);
-            }
-            state => panic!("expected a current negative answer, got {state:?}"),
-        }
-        assert_eq!(validator.verify(review()).await.unwrap(), answer);
+        let cached = validator.load_evidence(&review()).await.unwrap().unwrap();
+        assert!(procedure_matches(cached.revision(), &review().revision()));
+        assert!(validator.check_inputs(&cached).unwrap());
+        assert_eq!(cached.output(), answer);
         assert_eq!(provider.requests.lock().unwrap().len(), 1);
         assert_eq!(fs::read(&path).unwrap(), saved);
 

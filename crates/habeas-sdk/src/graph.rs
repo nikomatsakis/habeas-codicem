@@ -6,7 +6,7 @@ use std::{future::Future, sync::Mutex};
 
 mod runtime;
 pub use crate::procedure::ValidationContext;
-pub use runtime::{EvidenceState, Validator};
+pub use runtime::Validator;
 
 // {impl}`requirements.sdk.graph.fingerprinting.fingerprint`
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -115,6 +115,59 @@ pub struct Record<N, L = ()> {
     pub revision: String,
     pub dependencies: Vec<Dependency<N, L>>,
     pub output: serde_json::Value,
+}
+
+/// A computed value and the fingerprints of its dependencies.
+///
+/// The captured evidence metadata is available through read-only accessors.
+///
+/// ```compile_fail
+/// use habeas_sdk::graph::{Domain, Fingerprinted};
+/// fn change_revision<D: Domain>(answer: &mut Fingerprinted<D, bool>) {
+///     answer.revision = "different rules".into();
+/// }
+/// ```
+// {test}`requirements.sdk.graph.evidence.inputs`
+// {impl}`requirements.sdk.graph.evidence.inputs`
+pub struct Fingerprinted<D: Domain, O> {
+    source: D::NodeId,
+    criterion: CriterionPath,
+    revision: String,
+    dependencies: Vec<Dependency<D::NodeId, D::EdgeLabel>>,
+    output: O,
+}
+
+// {impl}`requirements.sdk.graph.evidence.inputs`
+impl<D: Domain, O> Fingerprinted<D, O> {
+    /// The source node this answer concerns.
+    pub fn source_node_id(&self) -> &D::NodeId {
+        &self.source
+    }
+
+    /// The question's path relative to that source.
+    pub fn criterion_path(&self) -> &CriterionPath {
+        &self.criterion
+    }
+
+    /// The review rules used to produce this answer.
+    pub fn revision(&self) -> &str {
+        &self.revision
+    }
+
+    /// Recorded node-content and successor-set observations.
+    pub fn dependencies(&self) -> &[Dependency<D::NodeId, D::EdgeLabel>] {
+        &self.dependencies
+    }
+
+    /// Borrow the completed answer.
+    pub fn output(&self) -> &O {
+        &self.output
+    }
+
+    /// Take ownership of the completed answer.
+    pub fn into_output(self) -> O {
+        self.output
+    }
 }
 
 // {cite}`habeas:util`
@@ -367,7 +420,14 @@ pub fn record_is_current<D: Graph + Fingerprinting>(
     if !procedure_matches(&record.revision, revision) {
         return Ok(false);
     }
-    for dependency in &record.dependencies {
+    dependencies_are_current(graph, &record.dependencies)
+}
+
+fn dependencies_are_current<D: Graph + Fingerprinting>(
+    graph: &D,
+    dependencies: &[Dependency<D::NodeId, D::EdgeLabel>],
+) -> Result<bool, D::Error> {
+    for dependency in dependencies {
         let (current, previous) = match dependency {
             Dependency::Node(node, previous) => {
                 let content = graph.node_content(node)?;

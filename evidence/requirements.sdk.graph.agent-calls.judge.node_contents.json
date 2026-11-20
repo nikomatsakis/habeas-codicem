@@ -1,7 +1,7 @@
 {
-  "requirement": "Node-insertion methods queue selections. They resolve no contents or edges,\nrender no inputs, and record no observations while building.\n\nAwaiting with a configured agent resolves these selections in call order:\n\n| Insertion | Contents delivered |\n| --- | --- |\n| `current_node_contents()` | The node identified by `ValidationContext::node_id`. |\n| `successors_content(label)` | Targets of edges whose labels equal `label`, in returned edge order, including duplicate targets. |\n\nEach successful successor selection records its source, label, and target-set\nfingerprint, even when nothing matches. Only selected targets have their contents\nresolved. Each delivered node is recorded with its supplied snapshot's\nfingerprint under {cite}`requirements.sdk.graph.agent-calls.author_procedure`.\nInput-resolution failures return `ValidationError::Graph`.",
+  "requirement": "Node-insertion methods queue selections. They resolve no contents or edges,\nrender no inputs, and record no observations while building.\n\nAwaiting with a configured agent resolves these selections in call order:\n\n| Insertion | Contents delivered |\n| --- | --- |\n| `contents_of_current_node()` | The node identified by `ValidationContext::node_id`. |\n| `contents_of_successors(label)` | Targets of edges whose labels equal `label`, in returned edge order, including duplicate targets. |\n\nEach successful successor selection records its source, label, and target-set\nfingerprint, even when nothing matches. Only selected targets have their contents\nresolved. Each delivered node is recorded with its supplied snapshot's\nfingerprint under {cite}`requirements.sdk.graph.agent-calls.author_procedure`.\nInput-resolution failures return `ValidationError::Graph`.",
   "determination": true,
-  "rationale": "The three marked tests in `crates/habeas-sdk/tests/validation.rs` cover each obligation in `requirements.sdk.graph.agent-calls.judge.node_contents`. I judged this from the tests alone and did not read the implementation.\n\n- **Queueing only while building.**\n  - `dropped_builders_and_missing_agents_do_not_resolve_queued_inputs` sets `fail_edges` and drops a builder that queued `current_node_contents` and `successors_content(7)`. It asserts that the trace has no dependencies.\n  - The same test awaits a builder with no agent. It gets `NoAgentConfigured`, and the graph's `reads` and `selections` are both empty.\n  - `queued_reads_selection_and_rendering_fail_before_agent_invocation` drops a builder on a context that has an agent. It asserts that the agent received no requests.\n- **Resolution in call order, and what is delivered.**\n  - `explicit_insertions_preserve_order_repetition_and_selection_snapshots` queues current, then `successors_content(7)`, then current again. The edges are `[(7,3),(8,99),(7,2),(7,3)]`.\n  - It asserts that the agent receives `[1, 3, 2, 3, 1]`. That checks call order, the current node (`ValidationContext::node_id`), edge order rather than sorted order, and the duplicate target 3.\n  - The label-8 edge to node 99 is excluded.\n- **Only selected targets are resolved.** The same test asserts that `reads` is `[1,3,2,3,1]`, so node 99 is never read. The empty-edge and non-matching-edge cases assert that `reads` is empty.\n- **Selection recording, including empty matches.**\n  - The main test asserts the trace holds `Dependency::OutgoingEdges(1, 7, edge_fingerprint(&[2,3]))`. That fingerprint is over the deduplicated target set, and it carries the source, the label and the fingerprint.\n  - `queued_reads_selection_and_rendering_fail_before_agent_invocation` loops over empty edges and a non-matching edge. In both cases it asserts `OutgoingEdges(1, 7, edge_fingerprint(&[]))`.\n- **Delivered nodes recorded with snapshot fingerprints.** The main test asserts `Dependency::Node(id, fp(content))` for nodes 1, 3 and 2.\n- **Failures return `ValidationError::Graph`.**\n  - A failing read gives `Graph(\"read\")`.\n  - A failing edge lookup gives `Graph(\"edges\")`.\n  - A failing renderer gives `Graph(\"render\")`.\n  - For the render failure, the test also asserts that no dependencies were recorded and that the agent was not invoked.\n\nI found no required behaviour that these assertions would let a violating implementation pass. The `author_procedure` citation covers fingerprint recording. The tests check that recording directly, so no obligation is left unchecked.",
+  "rationale": "The three supplied tests in `crates/habeas-sdk/tests/validation.rs` cover each obligation in `requirements.sdk.graph.agent-calls.judge.node_contents`. I did not read the `Memory`, `MockAgent` or renderer helpers. I relied on how the tests use them.\n\n- **Queueing only while building.**\n  - `dropped_builders_and_missing_agents_do_not_resolve_queued_inputs` sets `fail_edges` and drops a builder holding both insertions. It asserts that `inspection().dependencies()` is empty. This would catch any edge lookup or observation made at insertion time.\n  - The same test awaits without an agent and gets `NoAgentConfigured`. It asserts that `state.reads` and `state.selections` are empty, so nothing was resolved.\n  - `queued_reads_selection_and_rendering_fail_before_agent_invocation` drops a `contents_of_current_node()` builder on a configured agent. It asserts that no agent request was made.\n  - Rendering at build time cannot be observed separately. Contents are resolved asynchronously, so insertion has nothing to render yet.\n- **Call order, current node and repetition.** `explicit_insertions_preserve_order_repetition_and_selection_snapshots` queues current, successors(7), then current. It asserts that the delivered inputs are `[1, 3, 2, 3, 1]` and that `reads` equals `[1,3,2,3,1]`. This shows call order and repeated insertions. It also shows that the current node is `node_id`.\n- **Successor selection.**\n  - The graph has edges `[(7,3),(8,99),(7,2),(7,3)]`. Delivery is 3, 2, 3, which gives returned edge order, duplicate targets, and filtering by label equality.\n  - Node 99 sits behind label 8 and never appears in `reads`. That shows only selected targets are resolved.\n- **Selection recording.** The first test asserts `Dependency::OutgoingEdges(1, 7, edge_fingerprint(..))` ahead of the `Node` dependencies. This covers source, label and target-set fingerprint. The `queued_reads...` test loops over empty edges and non-matching edges. It asserts that no reads happen and that the `OutgoingEdges` dependency is still recorded with the empty-set fingerprint. That covers \"even when nothing matches\".\n- **Node fingerprints.** The first test asserts `Dependency::Node(id, fp(content))` for nodes 1, 3 and 2. The node 3 dependency appears once even though node 3 was delivered twice.\n- **Failures.** `queued_reads...` injects a read failure, an edges failure and a render failure. Each returns `ValidationError::Graph(\"read\" | \"edges\" | \"render\")`. The agent request count stays unchanged. After the render failure, the dependencies are empty.\n\nThe obligations stated by the text are all asserted. I found no requirement-violating behavior that these tests would accept.",
   "references": "c6f73398a2ed1a2df50592ddbb10fcf4c87132082329cff7693dc8c37442043c",
   "inputs": [
     {
@@ -18,8 +18,8 @@
         "",
         "| Insertion | Contents delivered |",
         "| --- | --- |",
-        "| `current_node_contents()` | The node identified by `ValidationContext::node_id`. |",
-        "| `successors_content(label)` | Targets of edges whose labels equal `label`, in returned edge order, including duplicate targets. |",
+        "| `contents_of_current_node()` | The node identified by `ValidationContext::node_id`. |",
+        "| `contents_of_successors(label)` | Targets of edges whose labels equal `label`, in returned edge order, including duplicate targets. |",
         "",
         "Each successful successor selection records its source, label, and target-set",
         "fingerprint, even when nothing matches. Only selected targets have their contents",
@@ -60,17 +60,17 @@
     {
       "file": "crates/habeas-sdk/tests/validation.rs",
       "item": "fn[dropped_builders_and_missing_agents_do_not_resolve_queued_inputs]",
-      "hash": "fbf8834a52c0582d32ea3ce5e786c95b49b0bfe96240a6213deb32f22f66bac8"
+      "hash": "0bef1453e65529ffb17488f667e0e9bfcba471deb1a5a46006ca1da2e0b56a0e"
     },
     {
       "file": "crates/habeas-sdk/tests/validation.rs",
       "item": "fn[explicit_insertions_preserve_order_repetition_and_selection_snapshots]",
-      "hash": "9a6b72ef8f4ab1f035d1496f253b31cf6d8b7d2ed05ba4aaba6353caacb881af"
+      "hash": "4f3bc79738694f72d472c8bf93492a0af2ce5de481452d4453b53340dc8d9e95"
     },
     {
       "file": "crates/habeas-sdk/tests/validation.rs",
       "item": "fn[queued_reads_selection_and_rendering_fail_before_agent_invocation]",
-      "hash": "d33558c06f234497a33cceb1ab7960d2f4964ec436f573dd4516405293712db6"
+      "hash": "04cf8be19658ebbcb945e246334c0025a46173c59f777f3b3b82b59a4f0adcce"
     }
   ],
   "format_version": 1,
@@ -106,7 +106,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "8cf8c09272d65779c544709604a574f0befcdc368e2921e777e586fd89ecd6bb"
+          "value": "e4db976d73f18a5c982566fed796b7e93a01b7edb44308194e73218de90ae6b1"
         }
       ]
     },
@@ -134,7 +134,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "811195f2940d9a325c8961574a1669dbaa941d940c629784e2d03f9a7ac53a4e"
+          "value": "fc3a03ef7a82f6a54b059f014fb3954b6ed80a1ea90b4183af66460ca8c5ad1a"
         }
       ]
     },
@@ -151,7 +151,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "45c2d02fa9f6bb9d6c750a6d7c176dbc8eacd66db73d3387e1a97212d76ea5f7"
+          "value": "52a76e0328cd6ae89103ac76cbfef3ed403dcf6b7da5b01a5b03ca704710c5d5"
         }
       ]
     },
@@ -168,7 +168,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "88bdbf276325c907398445ca6cd71a0cd865599653bd262bb56c54422d2b9fe1"
+          "value": "11bc37406e1d0d0dd137d3e8fe9c758f5a4e572566335d8271b81f996ef78997"
         }
       ]
     }

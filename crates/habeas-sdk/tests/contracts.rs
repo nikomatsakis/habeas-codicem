@@ -184,6 +184,15 @@ fn send<T: Send>(value: T) -> T {
     value
 }
 
+async fn persist<O: Serialize + serde::de::DeserializeOwned + Send>(
+    validator: &Validator<Application>,
+    review: Review<O>,
+) -> Fingerprinted<Application, O> {
+    let value = validator.verify(review).await.unwrap();
+    validator.store_evidence(&value).await.unwrap();
+    value
+}
+
 // {test}`requirements.sdk.graph.validation.criterion_path`
 // {test}`requirements.sdk.graph.validation.check_procedure`
 // {test}`requirements.sdk.graph.validation.validate_node`
@@ -191,88 +200,122 @@ fn send<T: Send>(value: T) -> T {
 // {test}`requirements.sdk.graph.validation.check_node`
 // {test}`requirements.sdk.graph.validation.deterministic_procedures`
 // {test}`requirements.sdk.graph.evidence.record`
+// {test}`requirements.sdk.graph.validation.store_evidence`
 // {test}`requirements.sdk.graph.evidence.record.output`
 // {test}`requirements.sdk.graph.evidence.evidence_storage`
 // {test}`requirements.sdk.graph.domain_types`
 // {test}`requirements.sdk.domain`
+// {test}`requirements.sdk.graph.evidence.inputs`
+// {test}`requirements.sdk.graph.evidence.checking_records`
 #[tokio::test]
-async fn criteria_have_independent_typed_answers_and_cache_negative_results() {
+async fn criteria_keep_typed_answers_and_persist_only_when_requested() {
     let domain = Application::default();
     let validator = Validator::new(domain.clone());
     let negative = answer(false, "missing edge case");
-    assert_eq!(
+    let descriptor = || Review::new(&["behavior"], negative.clone());
+    assert!(
         validator
-            .verify(Review::new(&["behavior"], negative.clone()))
+            .load_evidence(&descriptor())
             .await
-            .unwrap(),
-        negative
+            .unwrap()
+            .is_none()
     );
+    let value = validator.verify(descriptor()).await.unwrap();
+    assert_eq!(value.output(), &negative);
+    assert_eq!(value.source_node_id(), &Node(1));
+    assert_eq!(value.criterion_path(), &path(&["behavior"]));
+    assert_eq!(value.revision(), "v1");
+    assert!(value.dependencies().is_empty());
+    {
+        let state = domain.0.lock().unwrap();
+        assert_eq!((state.executions, state.writes), (1, 0));
+    }
+    assert!(
+        validator
+            .load_evidence(&descriptor())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    validator.store_evidence(&value).await.unwrap();
+    let loaded = validator
+        .load_evidence(&descriptor())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(loaded.output(), &negative);
+    assert_eq!(loaded.source_node_id(), value.source_node_id());
+    assert_eq!(loaded.criterion_path(), value.criterion_path());
+    assert_eq!(loaded.revision(), value.revision());
+    assert_eq!(loaded.dependencies(), value.dependencies());
+    assert!(validator.check_inputs(&loaded).unwrap());
+    assert_eq!(loaded.into_output(), negative);
     let structure = vec!["both dispatchers use the helper".to_owned()];
     assert_eq!(
-        validator
-            .verify(Review::new(&["structure"], structure.clone()))
+        persist(&validator, Review::new(&["structure"], structure.clone()))
             .await
-            .unwrap(),
+            .into_output(),
         structure
     );
+    // Execution ignores saved records and leaves them unchanged until an explicit save.
+    let replacement = validator
+        .verify(Review::new(&["behavior"], answer(true, "new review")))
+        .await
+        .unwrap();
+    assert!(replacement.output().satisfied);
     assert_eq!(
         validator
-            .verify(Review::new(&["behavior"], answer(true, "must not execute")))
+            .load_evidence(&descriptor())
             .await
-            .unwrap(),
+            .unwrap()
+            .unwrap()
+            .into_output(),
         negative
     );
     assert!(
-        matches!(validator.check(&Review::new(&["behavior"], answer(true, "unused"))).await.unwrap(),
-        EvidenceState::Current(value) if value == negative)
-    );
-    assert!(matches!(
         validator
-            .check(&Review::new(&["text"], json!(null)))
+            .load_evidence(&Review::new(&["text"], ()))
             .await
-            .unwrap(),
-        EvidenceState::Missing
-    ));
-    assert_eq!(
-        validator.verify(Review::new(&["text"], ())).await.unwrap(),
-        ()
+            .unwrap()
+            .is_none()
     );
-    assert!(matches!(
-        validator.check(&Review::new(&["text"], ())).await.unwrap(),
-        EvidenceState::Current(())
-    ));
+    persist(&validator, Review::new(&["text"], ()))
+        .await
+        .into_output();
+    validator
+        .load_evidence(&Review::new(&["text"], ()))
+        .await
+        .unwrap()
+        .unwrap()
+        .into_output();
     let state = domain.0.lock().unwrap();
-    assert_eq!(state.executions, 3);
-    assert_eq!(state.writes, 3);
+    assert_eq!((state.executions, state.writes), (4, 3));
     assert_eq!(
         state
             .records
             .iter()
-            .find(|(_, criterion, _)| criterion == &path(&["behavior"]))
+            .find(|(_, c, _)| c == &path(&["behavior"]))
             .unwrap()
             .2
             .output,
-        json!({"satisfied": false, "details": ["missing edge case"]}),
+        json!({"satisfied":false,"details":["missing edge case"]})
     );
     assert_eq!(
         state
             .records
             .iter()
-            .find(|(_, criterion, _)| criterion == &path(&["text"]))
+            .find(|(_, c, _)| c == &path(&["text"]))
             .unwrap()
             .2
             .output,
-        json!(null),
+        json!(null)
     );
-    assert!(
-        state.reads.is_empty(),
-        "source identity must not imply a content read"
-    );
+    assert!(state.reads.is_empty());
     assert!(
         state
             .records
             .iter()
-            .all(|(_, _, record)| record.dependencies.is_empty())
+            .all(|(_, _, r)| r.dependencies.is_empty())
     );
 }
 
@@ -322,45 +365,35 @@ async fn changing_one_criteria_input_does_not_invalidate_another() {
     let validator = Validator::new(domain.clone());
     let mut behavior = Review::new(&["behavior"], true);
     behavior.reads = vec![Node(2)];
-    validator.verify(behavior).await.unwrap();
+    persist(&validator, behavior).await;
     let mut structure = Review::new(&["structure"], true);
     structure.reads = vec![Node(3)];
-    validator.verify(structure).await.unwrap();
+    persist(&validator, structure).await;
     domain
         .0
         .lock()
         .unwrap()
         .contents
         .insert(2, "changed test".into());
-    assert!(matches!(
-        validator
-            .check(&Review::new(&["behavior"], true))
-            .await
-            .unwrap(),
-        EvidenceState::Stale
-    ));
-    assert!(matches!(
-        validator
-            .check(&Review::new(&["structure"], true))
-            .await
-            .unwrap(),
-        EvidenceState::Current(true)
-    ));
-    assert_eq!(
-        domain.0.lock().unwrap().executions,
-        2,
-        "checking never executes a criterion"
-    );
-    let mut replacement = Review::new(&["behavior"], false);
-    replacement.reads = vec![Node(3)];
-    assert!(!validator.verify(replacement).await.unwrap());
-    let saved = domain
-        .load_evidence(&Node(1), &path(&["behavior"]))
+    let behavior = validator
+        .load_evidence(&Review::new(&["behavior"], true))
         .await
         .unwrap()
         .unwrap();
+    let structure = validator
+        .load_evidence(&Review::new(&["structure"], true))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!validator.check_inputs(&behavior).unwrap());
+    assert!(validator.check_inputs(&structure).unwrap());
+    assert_eq!(domain.0.lock().unwrap().executions, 2);
+    let mut replacement = Review::new(&["behavior"], false);
+    replacement.reads = vec![Node(3)];
+    let value = persist(&validator, replacement).await;
+    assert!(!value.output());
     assert_eq!(
-        saved.dependencies,
+        value.dependencies(),
         [Dependency::Node(
             Node(3),
             Fingerprint {
@@ -369,21 +402,25 @@ async fn changing_one_criteria_input_does_not_invalidate_another() {
             }
         )]
     );
+    let saved = domain
+        .load_evidence(&Node(1), &path(&["behavior"]))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(saved.dependencies, value.dependencies());
 }
 
+// {test}`requirements.sdk.graph.validation.store_evidence`
 // {test}`requirements.sdk.graph.evidence.record.output`
 // {test}`requirements.sdk.graph.validation.procedure_identity`
 // {test}`requirements.sdk.graph.validation.validate_node.errors`
 // {test}`requirements.sdk.graph.validation.check_node`
 // {test}`requirements.sdk.graph.evidence.checking_records`
 #[tokio::test]
-async fn revision_and_dependency_checks_precede_output_decoding() {
+async fn typed_loading_reports_decode_errors_even_for_stale_evidence() {
     let domain = Application::default();
     let validator = Validator::new(domain.clone());
-    validator
-        .verify(Review::new(&["behavior"], json!({"old": true})))
-        .await
-        .unwrap();
+    persist(&validator, Review::new(&["behavior"], json!({"old":true}))).await;
     {
         let mut state = domain.0.lock().unwrap();
         state.records[0].2.dependencies = vec![Dependency::Node(
@@ -398,62 +435,67 @@ async fn revision_and_dependency_checks_precede_output_decoding() {
     let mut changed = Review::new(&["behavior"], String::new());
     changed.revision = "v2".into();
     assert!(matches!(
-        validator.check(&changed).await.unwrap(),
-        EvidenceState::Stale
+        validator.load_evidence(&changed).await,
+        Err(ValidationError::Output(_))
     ));
     assert!(domain.0.lock().unwrap().reads.is_empty());
-    domain.0.lock().unwrap().fail_read = false;
-    domain.0.lock().unwrap().records[0].2.dependencies.clear();
-    let same_revision = Review::new(&["behavior"], String::new());
     assert!(matches!(
-        validator.check(&same_revision).await,
+        validator
+            .load_evidence(&Review::new(&["behavior"], String::new()))
+            .await,
         Err(ValidationError::Output(_))
     ));
-    assert!(matches!(
-        validator.verify(same_revision).await,
-        Err(ValidationError::Output(_))
-    ));
-    assert_eq!(domain.0.lock().unwrap().executions, 1);
-    assert_eq!(domain.0.lock().unwrap().writes, 1);
+    // No saved-input resolution or output decoding happens during a new execution.
     changed.output = "new answer".into();
-    assert_eq!(validator.verify(changed).await.unwrap(), "new answer");
-    assert_eq!(
-        domain.0.lock().unwrap().records.len(),
-        1,
-        "revision changes replace the same criterion"
-    );
+    let value = validator.verify(changed).await.unwrap();
+    assert_eq!(value.output(), "new answer");
+    assert_eq!(value.revision(), "v2");
+    {
+        let state = domain.0.lock().unwrap();
+        assert_eq!((state.executions, state.writes), (2, 1));
+        assert!(state.reads.is_empty());
+        assert_eq!(state.records[0].2.revision, "v1");
+    }
+    validator.store_evidence(&value).await.unwrap();
+    assert_eq!(domain.0.lock().unwrap().records.len(), 1);
 }
 
+// {test}`requirements.sdk.graph.validation.store_evidence`
 // {test}`requirements.sdk.graph.evidence.record.output`
 // {test}`requirements.sdk.graph.validation.validate_node`
 // {test}`requirements.sdk.graph.evidence.record`
 #[tokio::test]
-async fn changed_dependencies_precede_decoding_and_execution_records_its_own_reads() {
+async fn input_checking_and_execution_keep_separate_observations() {
     let domain = Application::default();
     domain.0.lock().unwrap().contents.insert(2, "before".into());
     let validator = Validator::new(domain.clone());
-    let mut old = Review::new(&["behavior"], json!({"old": true}));
+    let mut old = Review::new(&["behavior"], json!({"old":true}));
     old.reads = vec![Node(2)];
-    validator.verify(old).await.unwrap();
+    persist(&validator, old).await;
     {
         let mut state = domain.0.lock().unwrap();
         state.contents.insert(2, "after".into());
         state.reads.clear();
     }
-    let mut new = Review::new(&["behavior"], "new answer".to_owned());
-    new.reads = vec![Node(2)];
+    let loaded = validator
+        .load_evidence(&Review::new(&["behavior"], json!(null)))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!validator.check_inputs(&loaded).unwrap());
     assert!(matches!(
-        validator.check(&new).await.unwrap(),
-        EvidenceState::Stale
+        validator
+            .load_evidence(&Review::new(&["behavior"], String::new()))
+            .await,
+        Err(ValidationError::Output(_))
     ));
     domain.0.lock().unwrap().reads.clear();
-    assert_eq!(validator.verify(new).await.unwrap(), "new answer");
+    let mut new = Review::new(&["behavior"], "new answer".to_owned());
+    new.reads = vec![Node(2)];
+    let value = persist(&validator, new).await;
+    assert_eq!(value.output(), "new answer");
     let state = domain.0.lock().unwrap();
-    assert_eq!(
-        state.reads,
-        [2, 2],
-        "freshness and execution have separate observations"
-    );
+    assert_eq!(state.reads, [2]);
     assert_eq!(state.executions, 2);
     assert_eq!(
         state.records[0].2.dependencies,
@@ -468,7 +510,8 @@ async fn changed_dependencies_precede_decoding_and_execution_records_its_own_rea
 }
 
 // {test}`requirements.sdk.graph.validation.check_node`
-// {test}`requirements.sdk.graph.validation.validate_node.errors`
+// {test}`requirements.sdk.graph.evidence.checking_records`
+// {test}`requirements.sdk.graph.evidence.inputs`
 #[tokio::test]
 async fn dependency_resolution_failures_do_not_execute_or_replace_saved_answers() {
     let domain = Application::default();
@@ -477,29 +520,36 @@ async fn dependency_resolution_failures_do_not_execute_or_replace_saved_answers(
     let mut review = Review::new(&["behavior"], false);
     review.reads = vec![Node(2)];
     review.label = Some(7);
-    validator.verify(review).await.unwrap();
-    let before = domain
-        .load_evidence(&Node(1), &path(&["behavior"]))
-        .await
-        .unwrap()
-        .unwrap();
+    let value = persist(&validator, review).await;
+    let expected = [
+        Dependency::Node(
+            Node(2),
+            Fingerprint {
+                scheme: "text-v1".into(),
+                value: "input".into(),
+            },
+        ),
+        Dependency::OutgoingEdges(Node(1), 7, edge_fingerprint(&domain, &[])),
+    ];
+    assert_eq!(value.dependencies(), expected);
     for (read, edges, message) in [(true, false, "read"), (false, true, "edges")] {
         {
             let mut state = domain.0.lock().unwrap();
             state.fail_read = read;
             state.fail_edges = edges;
         }
-        assert!(
-            matches!(validator.check(&Review::new(&["behavior"], true)).await, Err(ValidationError::Graph(error)) if error == message)
-        );
-        assert!(
-            matches!(validator.verify(Review::new(&["behavior"], true)).await, Err(ValidationError::Graph(error)) if error == message)
-        );
+        // Loading is independent of input resolution, even when inputs cannot resolve.
+        let loaded = validator
+            .load_evidence(&Review::new(&["behavior"], false))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.dependencies(), expected);
+        assert_eq!(validator.check_inputs(&loaded), Err(message));
         let state = domain.0.lock().unwrap();
         assert_eq!((state.executions, state.writes), (1, 1));
-        assert_eq!(state.records[0].2.revision, before.revision);
-        assert_eq!(state.records[0].2.dependencies, before.dependencies);
-        assert_eq!(state.records[0].2.output, before.output);
+        assert_eq!(state.records[0].2.dependencies, value.dependencies());
+        assert_eq!(state.records[0].2.output, json!(false));
     }
 }
 
@@ -510,26 +560,24 @@ async fn dependency_resolution_failures_do_not_execute_or_replace_saved_answers(
 async fn wildcard_revision_does_not_supply_other_criteria_or_nodes() {
     let domain = Application::default();
     let validator = Validator::new(domain.clone());
-    validator.verify(Review::new(&[], false)).await.unwrap();
+    persist(&validator, Review::new(&[], false)).await;
     domain.0.lock().unwrap().records[0].2.revision = "*".into();
     let mut future = Review::new(&[], true);
     future.revision = "future".into();
-    assert!(matches!(
-        validator.check(&future).await.unwrap(),
-        EvidenceState::Current(false)
-    ));
-    assert!(matches!(
+    let loaded = validator.load_evidence(&future).await.unwrap().unwrap();
+    assert!(!loaded.output());
+    assert_eq!(loaded.revision(), "*");
+    assert!(procedure_matches(loaded.revision(), &future.revision()));
+    assert!(validator.check_inputs(&loaded).unwrap());
+    assert!(
         validator
-            .check(&Review::new(&["new"], false))
+            .load_evidence(&Review::new(&["new"], false))
             .await
-            .unwrap(),
-        EvidenceState::Missing
-    ));
+            .unwrap()
+            .is_none()
+    );
     future.source = Node(2);
-    assert!(matches!(
-        validator.check(&future).await.unwrap(),
-        EvidenceState::Missing
-    ));
+    assert!(validator.load_evidence(&future).await.unwrap().is_none());
     assert_eq!(domain.0.lock().unwrap().executions, 1);
 }
 
@@ -537,6 +585,7 @@ async fn wildcard_revision_does_not_supply_other_criteria_or_nodes() {
 // {test}`requirements.sdk.graph.validation.check_node`
 // {test}`requirements.sdk.graph.validation.validate_node`
 // {test}`requirements.sdk.graph.validation.validator`
+// {test}`requirements.sdk.graph.validation.store_evidence`
 #[tokio::test]
 async fn validation_and_answer_need_send_without_sync() {
     let domain = Application::default();
@@ -544,11 +593,14 @@ async fn validation_and_answer_need_send_without_sync() {
     let value = send(validator.verify(Review::new(&["cell"], Cell::new(17u32))))
         .await
         .unwrap();
-    assert_eq!(value.get(), 17);
+    assert_eq!(value.output().get(), 17);
+    send(validator.store_evidence(&value)).await.unwrap();
     let descriptor = Review::new(&["cell"], Cell::new(0u32));
-    assert!(
-        matches!(send(validator.check(&descriptor)).await.unwrap(), EvidenceState::Current(value) if value.get() == 17)
-    );
+    let loaded = send(validator.load_evidence(&descriptor))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(loaded.into_output().get(), 17);
     assert_eq!(descriptor.descriptor_reads.get(), 1);
     assert_eq!(domain.0.lock().unwrap().executions, 1);
 }
@@ -562,23 +614,21 @@ async fn absence_certification_is_invalidated_by_the_first_selected_root() {
     for (name, label) in [("behavior", 1), ("structure", 2)] {
         let mut review = Review::new(&[name], true);
         review.label = Some(label);
-        validator.verify(review).await.unwrap();
+        persist(&validator, review).await;
     }
     domain.0.lock().unwrap().edges.insert((1, 1), vec![Node(2)]);
-    assert!(matches!(
-        validator
-            .check(&Review::new(&["behavior"], true))
-            .await
-            .unwrap(),
-        EvidenceState::Stale
-    ));
-    assert!(matches!(
-        validator
-            .check(&Review::new(&["structure"], true))
-            .await
-            .unwrap(),
-        EvidenceState::Current(true)
-    ));
+    let behavior = validator
+        .load_evidence(&Review::new(&["behavior"], true))
+        .await
+        .unwrap()
+        .unwrap();
+    let structure = validator
+        .load_evidence(&Review::new(&["structure"], true))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!validator.check_inputs(&behavior).unwrap());
+    assert!(validator.check_inputs(&structure).unwrap());
     assert!(domain.0.lock().unwrap().reads.is_empty());
 }
 
@@ -591,15 +641,13 @@ impl Serialize for Unencodable {
 }
 
 // {test}`requirements.sdk.graph.validation.validate_node.errors`
+// {test}`requirements.sdk.graph.validation.store_evidence`
 // {test}`requirements.sdk.graph.evidence.record.output`
 #[tokio::test]
 async fn serialization_failure_leaves_the_existing_record_unchanged() {
     let domain = Application::default();
     let validator = Validator::new(domain.clone());
-    validator
-        .verify(Review::new(&[], "old answer".to_owned()))
-        .await
-        .unwrap();
+    persist(&validator, Review::new(&[], "old answer".to_owned())).await;
     let before = domain
         .load_evidence(&Node(1), &path(&[]))
         .await
@@ -607,7 +655,8 @@ async fn serialization_failure_leaves_the_existing_record_unchanged() {
         .unwrap();
     let mut new = Review::new(&[], Unencodable);
     new.revision = "v2".into();
-    let error = validator.verify(new).await.err().unwrap();
+    let value = validator.verify(new).await.unwrap();
+    let error = validator.store_evidence(&value).await.err().unwrap();
     assert!(matches!(error, ValidationError::Output(_)));
     assert!(error.to_string().contains("cannot encode answer"));
     let after = domain
@@ -623,20 +672,18 @@ async fn serialization_failure_leaves_the_existing_record_unchanged() {
 
 // {test}`requirements.sdk.graph.validation.validate_node.errors`
 // {test}`requirements.sdk.graph.validation.check_node`
+// {test}`requirements.sdk.graph.evidence.record.output`
 #[tokio::test]
 async fn loading_execution_resolution_and_saving_failures_do_not_publish_answers() {
     let domain = Application::default();
     let validator = Validator::new(domain.clone());
     domain.0.lock().unwrap().fail_load = true;
     assert!(matches!(
-        validator.check(&Review::new(&[], true)).await,
+        validator.load_evidence(&Review::new(&[], true)).await,
         Err(ValidationError::Graph("load"))
     ));
-    assert!(matches!(
-        validator.verify(Review::new(&[], true)).await,
-        Err(ValidationError::Graph("load"))
-    ));
-    assert_eq!(domain.0.lock().unwrap().executions, 0);
+    let value = validator.verify(Review::new(&[], true)).await.unwrap();
+    assert!(value.output());
     domain.0.lock().unwrap().fail_load = false;
     let mut review = Review::new(&[], true);
     review.failure = Some("execute");
@@ -659,7 +706,7 @@ async fn loading_execution_resolution_and_saving_failures_do_not_publish_answers
     ));
     domain.0.lock().unwrap().fail_store = true;
     assert!(matches!(
-        validator.verify(Review::new(&[], true)).await,
+        validator.store_evidence(&value).await,
         Err(ValidationError::Graph("store"))
     ));
     let state = domain.0.lock().unwrap();
@@ -670,6 +717,7 @@ async fn loading_execution_resolution_and_saving_failures_do_not_publish_answers
 // {test}`requirements.sdk.graph.validation.validator`
 // {test}`requirements.sdk.graph.evidence.evidence_storage`
 // {test}`requirements.sdk.domain`
+// {test}`requirements.sdk.graph.validation.store_evidence`
 #[tokio::test]
 async fn concurrent_same_criterion_executions_keep_complete_independent_records() {
     let domain = Application::default();
@@ -694,8 +742,15 @@ async fn concurrent_same_criterion_executions_keep_complete_independent_records(
     })
     .await
     .expect("same-criterion executions must not wait for each other");
-    assert_eq!(a.unwrap(), "first");
-    assert_eq!(b.unwrap(), "second");
+    let a = a.unwrap();
+    let b = b.unwrap();
+    assert_eq!(a.output(), "first");
+    assert_eq!(b.output(), "second");
+    assert!(domain.0.lock().unwrap().records.is_empty());
+    let (saved_a, saved_b) =
+        futures::join!(validator.store_evidence(&a), validator.store_evidence(&b));
+    saved_a.unwrap();
+    saved_b.unwrap();
     let saved = domain
         .load_evidence(&Node(1), &path(&["behavior"]))
         .await

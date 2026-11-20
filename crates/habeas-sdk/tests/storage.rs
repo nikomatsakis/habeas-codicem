@@ -474,19 +474,19 @@ impl Criterion<StoredGraph> for StoredReview<'_> {
     }
 }
 
+// {test}`requirements.sdk.graph.validation.store_evidence`
 // {test}`requirements.sdk.graph.evidence.record.output`
 // {test}`requirements.sdk.graph.validation.check_node`
 // {test}`requirements.sdk.graph.validation.validate_node.errors`
 #[tokio::test]
-async fn malformed_records_are_storage_errors_and_current_bad_outputs_are_output_errors() {
+async fn malformed_records_are_storage_errors_and_bad_outputs_are_output_errors() {
     let temp = tempfile::tempdir().unwrap();
     let graph = StoredGraph(FileEvidenceStorage::new(temp.path()));
     let validator = Validator::new(graph.clone());
     let executions = AtomicUsize::new(0);
-    assert_eq!(
-        validator.verify(StoredReview(&executions)).await.unwrap(),
-        "completed answer"
-    );
+    let value = validator.verify(StoredReview(&executions)).await.unwrap();
+    assert_eq!(value.output(), "completed answer");
+    validator.store_evidence(&value).await.unwrap();
     let source = StoredReview(&executions).source_node_id();
     let criterion = StoredReview(&executions).criterion_path();
     let path = graph.0.record_path(&graph.node_path(&source), &criterion);
@@ -497,31 +497,27 @@ async fn malformed_records_are_storage_errors_and_current_bad_outputs_are_output
         .unwrap();
     std::fs::write(&path, "not JSON").unwrap();
     assert!(matches!(
-        validator.check(&StoredReview(&executions)).await,
-        Err(ValidationError::Graph(FileStorageError::Json(_)))
-    ));
-    assert!(matches!(
-        validator.verify(StoredReview(&executions)).await,
+        validator.load_evidence(&StoredReview(&executions)).await,
         Err(ValidationError::Graph(FileStorageError::Json(_)))
     ));
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "not JSON");
     assert_eq!(executions.load(Ordering::SeqCst), 1);
-    saved.output = json!({"not": "a String"});
+    saved.output = json!({"not":"a String"});
+    saved.revision = "obsolete".into();
     graph
         .store_evidence(&source, &criterion, &saved)
         .await
         .unwrap();
     let before = std::fs::read(&path).unwrap();
     assert!(matches!(
-        validator.check(&StoredReview(&executions)).await,
-        Err(ValidationError::Output(_))
-    ));
-    assert!(matches!(
-        validator.verify(StoredReview(&executions)).await,
+        validator.load_evidence(&StoredReview(&executions)).await,
         Err(ValidationError::Output(_))
     ));
     assert_eq!(std::fs::read(&path).unwrap(), before);
-    assert_eq!(executions.load(Ordering::SeqCst), 1);
+    let value = validator.verify(StoredReview(&executions)).await.unwrap();
+    assert_eq!(value.output(), "completed answer");
+    assert_eq!(executions.load(Ordering::SeqCst), 2);
+    assert_eq!(std::fs::read(&path).unwrap(), before);
 }
 
 // {test}`requirements.sdk.graph.evidence.evidence_storage.filesystem`

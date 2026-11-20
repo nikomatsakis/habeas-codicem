@@ -1,8 +1,8 @@
 {
-  "requirement": "Storage, dependency-resolution, output-encoding, and current-output decoding\nfailures return errors rather than missing or stale states. An execution error\nis never stored as a completed result. A serialization failure does not replace\nan existing record. A save failure is returned rather than reporting successful\nverification.",
+  "requirement": "An execution error returns `Err` rather than a `Fingerprinted` containing a completed\nanswer. The caller can store only a completed verification.",
   "determination": true,
-  "rationale": "The reviewed tests cover every clause of `requirements.sdk.graph.validation.validate_node.errors`. Each test asserts an `Err` result and the stored state afterwards. I did not request implementation source.\n\n- **Storage failures return errors, not missing or stale states.**\n  - `loading_execution_resolution_and_saving_failures_do_not_publish_answers` in `tests/contracts.rs` sets `fail_load`. It asserts that both `check` and `verify` return `Err(ValidationError::Graph(\"load\"))` and that no execution happens.\n  - `resolution_storage_and_callback_errors_are_not_judgments` in `tests/validation.rs` asserts the same load error for `verify`.\n  - `malformed_records_are_storage_errors_and_current_bad_outputs_are_output_errors` in `tests/storage.rs` writes \"not JSON\" to a record file. It asserts that `check` and `verify` return `FileStorageError::Json`, that the file is unchanged, and that nothing re-executes.\n- **Dependency-resolution failures return errors.**\n  - `dependency_resolution_failures_do_not_execute_or_replace_saved_answers` in `tests/contracts.rs` makes the read and the edge lookup fail in turn. `check` and `verify` return `Graph(\"read\")` and `Graph(\"edges\")`. The execution and write counts stay at 1, and the saved record is unchanged.\n  - `loading_execution_resolution_and_saving_failures_do_not_publish_answers` covers a missing node and an edge failure.\n  - `resolution_storage_and_callback_errors_are_not_judgments` covers a read made inside a callback.\n- **Output-encoding failures return errors.** `serialization_failure_leaves_the_existing_record_unchanged` uses an `Unencodable` answer. It asserts `ValidationError::Output` with the message \"cannot encode answer\".\n- **Current-output decoding failures return errors.**\n  - `revision_and_dependency_checks_precede_output_decoding` in `tests/contracts.rs` asserts `Output` errors from `check` and `verify`. The execution and write counts show no re-execution.\n  - The `tests/storage.rs` test stores a non-String output and asserts `Output` errors from both calls, with the file bytes unchanged.\n- **An execution error is never stored as a completed result.**\n  - The `failure = Some(\"execute\")` scenario in `loading_execution_resolution_and_saving_failures_do_not_publish_answers` asserts `Graph(\"execute\")`. The final assertion is `records.is_empty()` with `writes == 0`.\n  - `runner_does_not_store_a_missing_agent_error_and_supports_intermediate_calls` in `tests/validation.rs` asserts that `NoAgentConfigured` stores nothing.\n- **A serialization failure does not replace an existing record.** `serialization_failure_leaves_the_existing_record_unchanged` reloads the record afterwards. It asserts that the revision, dependencies and output are unchanged and that `writes == 1`.\n- **A save failure is returned rather than reporting successful verification.** The `fail_store` scenario asserts `Graph(\"store\")` and an empty record set. `resolution_storage_and_callback_errors_are_not_judgments` asserts the same.\n\nI found no unconvered obligation, no marking gap and no unresolved ambiguity.",
-  "references": "77a804c0f965be7d3f7b10c956bdbc2f42c60c515e679305ec08d805c9f6c15b",
+  "rationale": "The requirement has one testable obligation. When execution fails, `verify` must return `Err` and not a `Fingerprinted` holding a completed answer. As a result, nothing incomplete can be stored. The reviewed tests cover this as follows.\n\n- **Execution failure:** `crates/habeas-sdk/tests/contracts.rs#fn[loading_execution_resolution_and_saving_failures_do_not_publish_answers]` makes the review's execute step fail. It asserts that `validator.verify` returns `Err(ValidationError::Graph(\"execute\"))`.\n- **Failures during execution:** The same test checks two more cases and asserts `Err` for each.\n  - A read of a missing node (`review.reads = vec![Node(99)]`) gives `Err(Graph(\"missing\"))`.\n  - A failure while recording edges (`fail_edges`) gives `Err(Graph(\"edges\"))`.\n- **Nothing stored after a failure:** The test ends by asserting that `records` is empty and `writes == 0`. Failed executions therefore leave no stored record.\n- **Missing agent:** `crates/habeas-sdk/tests/validation.rs#fn[runner_does_not_store_a_missing_agent_error_and_supports_intermediate_calls]` asserts that `verify` returns `Err(ValidationError::NoAgentConfigured)`. It also asserts that no records or reads exist afterward. The same test then adds an agent. `verify` then succeeds and `store_evidence` stores the completed verification, so the success path is checked too.\n- **Failure inside a callback:** `crates/habeas-sdk/tests/validation.rs#fn[resolution_storage_and_callback_errors_are_not_judgments]` makes a read inside the execution callback fail (`read_in_callback`). It asserts `Err(Graph(\"missing\"))` and that `records` is empty.\n- **Loading and storing failures:** The same test also covers failures in the load and store steps. These show that errors are not turned into completed judgments.\n- **Stored output errors:**\n  - `crates/habeas-sdk/tests/contracts.rs#fn[serialization_failure_leaves_the_existing_record_unchanged]` has an unencodable answer fail at `store_evidence` with `ValidationError::Output`. It then shows the existing record unchanged.\n  - `crates/habeas-sdk/tests/contracts.rs#fn[typed_loading_reports_decode_errors_even_for_stale_evidence]` and `crates/habeas-sdk/tests/storage.rs#fn[malformed_records_are_storage_errors_and_bad_outputs_are_output_errors]` show that decode and storage errors surface as `Err`. The stored record bytes stay unchanged, and a fresh execution still succeeds and yields a completed answer.\n- **Only completed verifications are storable:** Every failing `verify` returns `Err`, so the caller has no `Fingerprinted` value to pass to `store_evidence`. The tests assert that the store stays empty after failures. Successful `verify` calls are stored in the passing paths.\n\nTogether the tests exercise each execution-failure class (executor error, resolution error, edge error, missing agent, callback error). Each asserts the `Err` outcome and that nothing completed is stored. I found no unacknowledged gap.",
+  "references": "e02350ca1e7a26c803844e14994c818922f03a7da74e229ab10bfe97e826d372",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.validation.validate_node.errors",
@@ -11,48 +11,50 @@
       ],
       "text": [
         ":::{req} validate_node.errors",
-        "Storage, dependency-resolution, output-encoding, and current-output decoding",
-        "failures return errors rather than missing or stale states. An execution error",
-        "is never stored as a completed result. A serialization failure does not replace",
-        "an existing record. A save failure is returned rather than reporting successful",
-        "verification.",
+        "An execution error returns `Err` rather than a `Fingerprinted` containing a completed",
+        "answer. The caller can store only a completed verification.",
         ":::"
       ]
     },
     {
       "file": "crates/habeas-sdk/tests/contracts.rs",
-      "item": "fn[revision_and_dependency_checks_precede_output_decoding]",
-      "hash": "09825dec15bbb774ef42189297febabe33f9f165409b63ae02597d633e07c7f0"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/contracts.rs",
-      "item": "fn[dependency_resolution_failures_do_not_execute_or_replace_saved_answers]",
-      "hash": "33fc8bbddaa15811a8cf9edf2cdd80acd6fee3661763faed46b92616324d4dc0"
+      "item": "fn[typed_loading_reports_decode_errors_even_for_stale_evidence]",
+      "hash": "e3db2860f9bb6f9f4239d559da6f226053de7fe1cc46def2d1865852c799af76"
     },
     {
       "file": "crates/habeas-sdk/tests/contracts.rs",
       "item": "fn[serialization_failure_leaves_the_existing_record_unchanged]",
-      "hash": "8e92f3226b8e4f111c563fe1790381a644a3cb397e32c991126c5a754ad81f21"
+      "hash": "12108456a1974d79568a3fc06024cc0c5b49b2b276c6254f3c115decb1d549fa"
     },
     {
       "file": "crates/habeas-sdk/tests/contracts.rs",
       "item": "fn[loading_execution_resolution_and_saving_failures_do_not_publish_answers]",
-      "hash": "14d67719da40f55345e5e1c662882494be3cec46f85f35d7b5c3f5476ad13945"
+      "hash": "db6170af16f5292cba1647868e17aebe10a6cdfb94e20b3b6d178fea04607906"
     },
     {
       "file": "crates/habeas-sdk/tests/storage.rs",
-      "item": "fn[malformed_records_are_storage_errors_and_current_bad_outputs_are_output_errors]",
-      "hash": "ea61d3e9190eec2cfa5575fcf94446cc6e9f5f9a72955dd32b7ad9b0e3b1847c"
+      "item": "fn[malformed_records_are_storage_errors_and_bad_outputs_are_output_errors]",
+      "hash": "47943a2b52c0c3030786310ca3862a4af80206d1e037a4df4d707f3ec1366514"
     },
     {
       "file": "crates/habeas-sdk/tests/validation.rs",
       "item": "fn[runner_does_not_store_a_missing_agent_error_and_supports_intermediate_calls]",
-      "hash": "60ebee46a29ec80f9ddf03a74bbda6e7ee214ceacf61740d8a491d8cb873b0b1"
+      "hash": "a149021cf8f489a22bc4ed8ae2d759ece65c5d1e70c6ecd33e5f4fe76ee6a3d7"
     },
     {
       "file": "crates/habeas-sdk/tests/validation.rs",
       "item": "fn[resolution_storage_and_callback_errors_are_not_judgments]",
-      "hash": "8745c8a2900c99118fb9409d7e48e81e6c5a8eab84d6c12e9a91210aa72962cc"
+      "hash": "019d9b3dcaf43b538f3a14448e2ca0e42fc6f000972a6af300f11b86fb14e3ac"
+    },
+    {
+      "file": "crates/habeas-sdk/tests/contracts.rs",
+      "item": "impl[Review<O>/Criterion<Application>]/fn[execute]",
+      "hash": "45e6abfee7fbc7d81ac66a1afebac62efd0c77c5ff6a5518dbe8634f3300f406"
+    },
+    {
+      "file": "crates/habeas-sdk/src/graph.rs",
+      "item": "enum[ValidationError]",
+      "hash": "83001857d5c7f10d134bb2a623343707efceced30610479bade12b13ecd395ae"
     }
   ],
   "format_version": 1,
@@ -65,7 +67,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "77a804c0f965be7d3f7b10c956bdbc2f42c60c515e679305ec08d805c9f6c15b"
+          "value": "e02350ca1e7a26c803844e14994c818922f03a7da74e229ab10bfe97e826d372"
         }
       ]
     },
@@ -77,7 +79,7 @@
         "Mandatory",
         {
           "scheme": "node-path-set-sha256-v1",
-          "value": "bf94fd3e47cfc0ebafa9d1ea8fe2e7a3f330bab23f2c8d30e812f868b8c14c45"
+          "value": "52e34c989e4364e66009a56b42d9372c88ff344ce75d34b1bb11751699b8dda7"
         }
       ]
     },
@@ -88,7 +90,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "2580f69ab4f9c21fccc4ed78497dfda08936e2d6b019cc7009c13eac3f2aa0b3"
+          "value": "656386a84c620032a7c522cb6379d50890f7277dc1ea20f6b786b283aca16242"
         }
       ]
     },
@@ -100,29 +102,12 @@
               "scheme": "repo",
               "location": "crates/habeas-sdk/tests/contracts.rs"
             },
-            "selector": "fn[revision_and_dependency_checks_precede_output_decoding]"
+            "selector": "fn[typed_loading_reports_decode_errors_even_for_stale_evidence]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "7665377242de5e616d73f7971008ec838cb7b73c167db0ceb8c1f1f8d88b587b"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/contracts.rs"
-            },
-            "selector": "fn[dependency_resolution_failures_do_not_execute_or_replace_saved_answers]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "4120055a7a6f3df84d7d0871d04f2ab36cb803acdf614ef32b6116fc082210a7"
+          "value": "2e7cf9f68805da6bb5b0efbf9c604ca79ce53963ffe273715ef96530726935b5"
         }
       ]
     },
@@ -139,7 +124,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "8f263b9db41382746519e73799f2a08293620c1a716ce6e9c85b484afa6b855d"
+          "value": "f0a135b67cc0ed403070306574b6eb8021bb8ffabad8475e4c6882354525ddb1"
         }
       ]
     },
@@ -156,7 +141,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "3abee852ac6c1097cc78c779df3896dbe81bb35724143093de5b1b2ab25d875f"
+          "value": "6e862913c1f830ac2eaad91277e7b454b13e1f9d3d2104d73b32545e1108d948"
         }
       ]
     },
@@ -168,12 +153,12 @@
               "scheme": "repo",
               "location": "crates/habeas-sdk/tests/storage.rs"
             },
-            "selector": "fn[malformed_records_are_storage_errors_and_current_bad_outputs_are_output_errors]"
+            "selector": "fn[malformed_records_are_storage_errors_and_bad_outputs_are_output_errors]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "df6557c608602106f039832689a62b9188d3cbab26fc402897650b3b7866383e"
+          "value": "be0794e9fe1f3c5972e5201be7c72e8abcfe517d465609a93d66a4a430b29fe6"
         }
       ]
     },
@@ -190,7 +175,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "7627d7d2730f860e83bcb444765894dc4ad1ffe6fca57fe4d8d6f38f671af4e0"
+          "value": "af6dc90ce4d17b42c2d798e43eb0a52ede07467ab2025f47aa97aae4156bdf5d"
         }
       ]
     },
@@ -207,7 +192,41 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "632fdb1df2ebcb3f692241d0f57d73bd7d42b1bfdbcc9541c44340808dc61e82"
+          "value": "02f9fda59f2f9ec7e0624bd572315891243adb469cab047a4ecd58c949fa3890"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/tests/contracts.rs"
+            },
+            "selector": "impl[Review<O>/Criterion<Application>]/fn[execute]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "b431f44490677f9fb837c1b9589b7d0438d9c78b8a9418f65c5ab1c60844eed9"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/src/graph.rs"
+            },
+            "selector": "enum[ValidationError]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "29cfad37d415e2b9c91fe704d4b262e20d3fe4f8d962bbe5ca115ebff7c6711c"
         }
       ]
     }

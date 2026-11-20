@@ -198,7 +198,7 @@ pub struct ContextPhase;
 /// ```compile_fail
 /// use habeas_sdk::{graph::Domain, procedure::ValidationContext};
 /// fn too_late<D: Domain>(ctx: &ValidationContext<'_, D>) {
-///     ctx.ask::<bool>().current_node_contents().context(String::new());
+///     ctx.ask::<bool>().contents_of_current_node().context(String::new());
 /// }
 /// ```
 ///
@@ -206,7 +206,7 @@ pub struct ContextPhase;
 /// use habeas_sdk::{graph::Domain, procedure::ValidationContext};
 /// fn too_late<D: Domain>(ctx: &ValidationContext<'_, D>, label: D::EdgeLabel)
 /// where D::EdgeLabel: PartialEq {
-///     ctx.ask::<bool>().successors_content(label).context(String::new());
+///     ctx.ask::<bool>().contents_of_successors(label).context(String::new());
 /// }
 /// ```
 // {test}`requirements.sdk.graph.agent-calls.judge.phases`
@@ -246,12 +246,14 @@ impl<'a, 'd, D: Domain, R, P> Ask<'a, 'd, D, R, P> {
     }
 
     // {impl}`requirements.sdk.graph.agent-calls.judge.phases`
-    pub fn current_node_contents(mut self) -> Ask<'a, 'd, D, R, NodePhase> {
+    /// Queue the current node's contents and enter the node phase.
+    pub fn contents_of_current_node(mut self) -> Ask<'a, 'd, D, R, NodePhase> {
         self.insertions.push(Insertion::Current);
         self.into_node_phase()
     }
 
-    pub fn successors_content(mut self, label: D::EdgeLabel) -> Ask<'a, 'd, D, R, NodePhase>
+    /// Queue contents of successors with this label and enter the node phase.
+    pub fn contents_of_successors(mut self, label: D::EdgeLabel) -> Ask<'a, 'd, D, R, NodePhase>
     where
         D::EdgeLabel: PartialEq,
     {

@@ -1,7 +1,7 @@
 {
   "requirement": "```rust,ignore\n// Defined in habeas_sdk::graph.\n/// Input selection and tracked observations for one criterion execution.\npub struct ValidationContext<'cx, D: Domain> { /* private fields */ }\n\nimpl<'cx, D: Domain> ValidationContext<'cx, D> {\n    /// The source node this criterion examines.\n    pub fn node_id(&self) -> &D::NodeId;\n\n    /// Tracked graph reads and edge selections for this execution.\n    pub fn inspection(&self) -> &InspectionContext<'cx, D>;\n\n    /// Select outgoing edges by label, preserving their order and duplicates.\n    /// Record this label's target-set fingerprint even when nothing matches.\n    /// Target contents enter the trace when explicitly read or inserted.\n    pub fn successors(\n        &self,\n        label: &D::EdgeLabel,\n    ) -> Result<Vec<D::NodeId>, D::Error>\n    where\n        D::EdgeLabel: PartialEq;\n}\n```\n\nLabels match by equality. A change to the recorded target set makes prior\nevidence stale, including adding an edge to an empty selection. Target contents\nbecome dependencies through tracked reads or agent insertions. An edge selects a\nrelated source; assessments of that target remain separate.",
   "determination": true,
-  "rationale": "The reviewed tests adequately check `requirements.sdk.graph.validation.root_inputs`.\n\n**Mapping of obligations to tests**\n\n- **`node_id` and `inspection`.** `tests/validation.rs#fn[labeled_selections_track_only_target_membership_without_reading_contents]` asserts `ctx.node_id() == &1`. It also finishes a record through `ctx.inspection()`, which shows that `inspection` returns the tracked context.\n- **Selection by label equality, with order and duplicates preserved.** The same test gives node 1 the edges `[(8,2),(7,5),(7,3),(7,5)]`. It asserts that `successors(&7)` returns `[5,3,5]`. That excludes the label-8 edge, keeps the original order and keeps the duplicate.\n- **Fingerprint recorded even when nothing matches.** The test calls `successors(&7)` on a node with no edges and gets an empty result. It then finishes a record from that context.\n  - Adding only a label-8 edge leaves the record current.\n  - Adding label-7 edges makes it stale.\n  - The empty selection therefore left a label-specific fingerprint in the record.\n- **Stale on a change to the target set, including adding an edge to an empty selection.**\n  - The test above covers the empty-selection case.\n  - `tests/contracts.rs#fn[absence_certification_is_invalidated_by_the_first_selected_root]` covers it end to end through `Validator`. Two criteria use different labels. After an edge is added for label 1, the label-1 criterion is `Stale` and the label-2 criterion stays `Current(true)`.\n  - In the first test, replacing target 5 with 6 makes a recorded set `{3,5}` stale. Unrelated label-8 changes and re-ordering or duplication leave it current.\n- **Recorded dependency shape.** In the first test, the record's dependencies are exactly one `Dependency::OutgoingEdges(1, 7, edge_fingerprint(.. [3,5]))`, even though `successors` was called twice. `fn[concurrent_single_node_validations_keep_separate_traces]` asserts per-node dependencies of one `Node` read plus one `OutgoingEdges` entry. It shows that traces stay separate across concurrent executions.\n- **Target contents enter the trace only when read or inserted.** The first test asserts `reads.is_empty()` after selecting and checking freshness. The absence test asserts the same. Neither the selection nor the freshness check reads target contents.\n- **Assessments of the target stay separate.** The recorded dependency lists contain only the edge fingerprint, plus node reads where the test performs them. Nothing about the target's assessment appears.\n- **Error path.** A failing edge lookup surfaces as `Err(\"edges\")` from both `successors` and the freshness check.\n\n**Agent insertions and tracked reads of targets**\n\n`tests/validation.rs#fn[explicit_insertions_preserve_order_repetition_and_selection_snapshots]` checks this behavior. After `successors_content(7)`, the dependencies are `OutgoingEdges(1,7,..)` plus `Node` entries for the inserted targets. It has no `root_inputs` marker and is marked for the agent-call requirements instead. That is a minor marking observation, not an assertion gap, because the behavior belongs to those requirements and is asserted there.\n\nI found no plausible requirement-violating behavior that these tests would accept.",
+  "rationale": "The reviewed tests cover every obligation in `requirements.sdk.graph.validation.root_inputs`. I did not request implementation source.\n\n**`labeled_selections_track_only_target_membership_without_reading_contents`** (in `crates/habeas-sdk/tests/validation.rs`) covers most of the requirement:\n- **`node_id`:** it asserts that `ctx.node_id()` equals the node, 1.\n- **Empty selection:** `successors(&7)` on a node with no edges returns an empty vector. The test then finishes the context into a record and checks that the record becomes stale when edges are added.\n- **Staleness:** the empty-selection record stays current when only a label-8 edge is added. It becomes stale once a label-7 edge appears, which is the \"adding an edge to an empty selection\" case.\n- **Equality matching:** label-8 edges are excluded from the result. Changing a label-8 edge leaves the record current, so only the selected label matters.\n- **Order and duplicates:** `successors(&7)` returns `[5, 3, 5]` for edges `(7,5),(7,3),(7,5)`.\n- **Recorded fingerprint:** the recorded dependency is exactly `Dependency::OutgoingEdges(1, 7, edge_fingerprint(&graph, &[3, 5]))`. Calling `successors` twice yields a single dependency, and the fingerprint is of the target set.\n- **Target-set change:** a record is still current after the order or unrelated edges change, and stale after target 5 is replaced by 6.\n- **Contents not read:** `reads.is_empty()` shows that target contents are not read or added to the trace.\n- **Error propagation:** with `fail_edges` set, both `successors` and `record_is_current` return `Err(\"edges\")`, which covers the `Result<_, D::Error>` signature.\n\n**`absence_certification_is_invalidated_by_the_first_selected_root`** (in `crates/habeas-sdk/tests/contracts.rs`) is an end-to-end check through the validator with persisted evidence. Adding an edge with a selected label makes the evidence for the review that selected that label stale. Evidence for the other review stays current, and no reads occur.\n\n**`concurrent_single_node_validations_keep_separate_traces`** covers `inspection()` and `successors` use inside a criterion callback. Each concurrent execution's trace contains its own `Node` and `OutgoingEdges` dependencies, so the executions do not share traces. This supports the tracked-observations and separate-assessments clauses.\n\n**Delegated obligations:** the statement that target contents become dependencies through tracked reads or agent insertions describes other requirements' mechanisms (`evidence.node_inputs` and the inspection reads). The reviewed tests assert only that `successors` itself adds no content dependency, which is the obligation in this text.\n\nI found no gap and no acknowledgments are needed.",
   "references": "af81224ae011383e2e984fb24d2a20adb69526ea178b7e8176521df167ef88a3",
   "inputs": [
     {
@@ -45,7 +45,7 @@
     {
       "file": "crates/habeas-sdk/tests/contracts.rs",
       "item": "fn[absence_certification_is_invalidated_by_the_first_selected_root]",
-      "hash": "013cf14d69b922bcc9a24e0f39f20c5bf46697717486f76319ee8c5d32c88113"
+      "hash": "aa112badce29d6d3b837b24ed72b936f518eea81e98369d32d90cc0fbab43d15"
     },
     {
       "file": "crates/habeas-sdk/tests/validation.rs",
@@ -55,12 +55,12 @@
     {
       "file": "crates/habeas-sdk/tests/validation.rs",
       "item": "fn[concurrent_single_node_validations_keep_separate_traces]",
-      "hash": "0e2bd5efb308aa948188f3086dc2c5e1f173bc08e3adf4656665a5bb8d5647a8"
+      "hash": "115849fed971c0f86fe91027c5874818c0a7a0d3e2f9137ac0bd76f1e9b73367"
     },
     {
       "file": "crates/habeas-sdk/tests/validation.rs",
       "item": "fn[explicit_insertions_preserve_order_repetition_and_selection_snapshots]",
-      "hash": "9a6b72ef8f4ab1f035d1496f253b31cf6d8b7d2ed05ba4aaba6353caacb881af"
+      "hash": "4f3bc79738694f72d472c8bf93492a0af2ce5de481452d4453b53340dc8d9e95"
     }
   ],
   "format_version": 1,
@@ -113,7 +113,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "c46de3b53d4552e850872e82967366cc7b961c976a23cde654e6eff076394750"
+          "value": "de1f0bfa2061227736e9730eba259484d62e4504ed301fe7fc6cae48569c293b"
         }
       ]
     },
@@ -147,7 +147,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "dcc9a5872555e1d30347f2ddbbabcbf71a7294ec0beeaac8a8123f0307b92c24"
+          "value": "8c465be4fc0956d99d8f378ca08d771bb6fc111e5b9d498621fa52a1844fdd55"
         }
       ]
     },
@@ -164,7 +164,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "45c2d02fa9f6bb9d6c750a6d7c176dbc8eacd66db73d3387e1a97212d76ea5f7"
+          "value": "52a76e0328cd6ae89103ac76cbfef3ed403dcf6b7da5b01a5b03ca704710c5d5"
         }
       ]
     }

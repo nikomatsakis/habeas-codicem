@@ -192,7 +192,7 @@ async fn default_tool_accepts_scalar_results_and_keeps_the_exact_prefix() {
     assert!(
         ctx.ask::<bool>()
             .context("Question é".to_owned())
-            .current_node_contents()
+            .contents_of_current_node()
             .await
             .unwrap()
     );
@@ -301,11 +301,11 @@ async fn concurrent_tool_agents_isolate_histories_pages_and_submissions_and_shar
         futures::join!(
             ctx.ask::<String>()
                 .context("alpha".to_owned())
-                .current_node_contents()
+                .contents_of_current_node()
                 .into_future(),
             ctx.ask::<String>()
                 .context("beta".to_owned())
-                .successors_content(Label)
+                .contents_of_successors(Label)
                 .into_future(),
         )
     })
@@ -374,9 +374,9 @@ impl Criterion<Memory> for Question {
     ) -> Result<String, ValidationError<io::Error>> {
         let request = ctx.ask::<String>().context(self.name);
         if self.successors {
-            request.successors_content(Label).await
+            request.contents_of_successors(Label).await
         } else {
-            request.current_node_contents().await
+            request.contents_of_current_node().await
         }
     }
 }
@@ -410,8 +410,11 @@ async fn validator_agent_executions_isolate_conversations_and_dependency_traces(
     })
     .await
     .unwrap();
-    assert_eq!(alpha.unwrap(), "alpha");
-    assert_eq!(beta.unwrap(), "beta");
+    let (alpha, beta) = (alpha.unwrap(), beta.unwrap());
+    assert_eq!(alpha.output(), "alpha");
+    assert_eq!(beta.output(), "beta");
+    validator.store_evidence(&alpha).await.unwrap();
+    validator.store_evidence(&beta).await.unwrap();
     {
         let calls = agent.provider.calls.lock().unwrap();
         assert_eq!(calls["alpha"], 3);
@@ -451,7 +454,12 @@ async fn validator_agent_executions_isolate_conversations_and_dependency_traces(
             ]
     );
     assert_eq!(
-        validator.verify(question("alpha", false)).await.unwrap(),
+        validator
+            .load_evidence(&question("alpha", false))
+            .await
+            .unwrap()
+            .unwrap()
+            .into_output(),
         "alpha"
     );
     assert_eq!(agent.provider.calls.lock().unwrap()["alpha"], 3);
@@ -460,6 +468,9 @@ async fn validator_agent_executions_isolate_conversations_and_dependency_traces(
 // {test}`requirements.sdk.graph.context-tools.tracked_inspection`
 // {test}`requirements.sdk.graph.fingerprinting.snapshot`
 // {test}`requirements.sdk.graph.validation.validate_node`
+// {test}`requirements.sdk.graph.validation.check_node`
+// {test}`requirements.sdk.graph.validation.store_evidence`
+// {test}`requirements.sdk.graph.evidence.inputs`
 #[tokio::test]
 async fn agent_edge_tools_record_selections_without_validating_targets() {
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -507,10 +518,16 @@ async fn agent_edge_tools_record_selections_without_validating_targets() {
     impl EvidenceStorage for GraphWithChangingEdges {
         async fn load_evidence(
             &self,
-            _: &u8,
+            node: &u8,
             _: &CriterionPath,
         ) -> io::Result<Option<Record<u8, ()>>> {
-            Ok(None)
+            Ok(self
+                .records
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|(id, _)| id == node)
+                .map(|(_, record)| record.clone()))
         }
         async fn store_evidence(
             &self,
@@ -577,12 +594,24 @@ async fn agent_edge_tools_record_selections_without_validating_targets() {
         Render,
     );
     let agent = Arc::new(agent);
-    let result = Validator::new(graph.clone())
-        .with_agent(agent.clone(), Arc::new(Render))
-        .verify(EdgeReview(1))
+    let validator = Validator::new(graph.clone()).with_agent(agent.clone(), Arc::new(Render));
+    assert!(
+        validator
+            .load_evidence(&EdgeReview(1))
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let result = validator.verify(EdgeReview(1)).await.unwrap();
+    assert!(result.output().result);
+    validator.store_evidence(&result).await.unwrap();
+    let saved = validator
+        .load_evidence(&EdgeReview(1))
         .await
+        .unwrap()
         .unwrap();
-    assert!(result.result);
+    assert!(saved.output().result);
+    assert_eq!(saved.dependencies(), result.dependencies());
     assert_eq!(graph.lookups.load(Ordering::SeqCst), 1);
     let records = graph.records.lock().unwrap();
     assert_eq!(records.len(), 1);
@@ -726,7 +755,7 @@ async fn graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record
         Renderer,
     );
     let ctx = ValidationContext::with_agent(&graph, Node(1), &failed, &failed.renderer);
-    assert!(ctx.ask::<bool>().current_node_contents().await.is_err());
+    assert!(ctx.ask::<bool>().contents_of_current_node().await.is_err());
     assert_eq!(ctx.inspection().dependencies().len(), 1);
 }
 
@@ -784,13 +813,14 @@ async fn deterministic_validation_uses_required_storage_without_an_agent() {
     let graph = Memory::new("ordinary computation".into());
     let validator = Validator::new(graph.clone());
     let result = validator.verify(Review(Node(1))).await.unwrap();
+    validator.store_evidence(&result).await.unwrap();
     let saved = graph
         .load_evidence(&Node(1), &CriterionPath::new(vec![]))
         .await
         .unwrap()
         .unwrap();
-    assert!(!result.result);
-    assert_eq!(result.rationale, "ordinary computation");
+    assert!(!result.output().result);
+    assert_eq!(result.output().rationale, "ordinary computation");
     assert!(
         matches!(&saved.dependencies[0],Dependency::Node(Node(1),fingerprint) if fingerprint.value=="ordinary computation")
     );
@@ -1076,7 +1106,7 @@ async fn retries_and_cut_off_tools_preserve_inputs_and_submission_skips_other_re
     assert!(
         ctx.ask::<bool>()
             .context("review".to_owned())
-            .current_node_contents()
+            .contents_of_current_node()
             .await
             .unwrap()
     );

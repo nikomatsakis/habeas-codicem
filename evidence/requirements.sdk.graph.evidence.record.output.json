@@ -1,8 +1,8 @@
 {
-  "requirement": "`verify` serializes a completed `Criterion::Ok` before saving its record.\n`check` and `verify` first compare a loaded record's revision and dependencies.\nOnly a current record's output is decoded into the requested `Criterion::Ok`.\nA changed revision can therefore make an old result stale even if that old\nresult would not decode as the new result type.\n\nMalformed stored records are storage errors. An output that cannot decode for a\ncurrent revision is an output error, not missing evidence or a reason to execute\nvalidation again. A different output encoding requires a different revision\nunder {cite}`requirements.sdk.graph.validation.procedure_identity`.",
+  "requirement": "`Validator::store_evidence` serializes the answer in `Fingerprinted` before passing\nthe complete record to storage. A serialization failure returns\n`ValidationError::Output` and leaves the existing record unchanged. A storage\nfailure returns `ValidationError::Graph`.\n\n`Validator::load_evidence` decodes a loaded record's output into the requested\n`Criterion::Ok`. An output that cannot decode returns `ValidationError::Output`,\nincluding when the saved revision or inputs are stale. Missing evidence returns\n`Ok(None)`; malformed stored records and storage failures return\n`ValidationError::Graph`. Revision and input comparison belong to the caller's\nreuse workflow under {cite}`requirements.sdk.graph.validation.procedure_identity`.",
   "determination": true,
-  "rationale": "The reviewed tests cover every obligation in `requirements.sdk.graph.evidence.record.output`.\n\n- **Serialization before save.**\n  - `criteria_have_independent_typed_answers_and_cache_negative_results` in `crates/habeas-sdk/tests/contracts.rs` checks the stored `output` JSON. A negative answer is stored as `{\"satisfied\": false, \"details\": [...]}`, and a unit answer is stored as `null`.\n  - `serialization_failure_leaves_the_existing_record_unchanged` verifies with an `Unencodable` answer under a new revision. It asserts a `ValidationError::Output` containing \"cannot encode answer\". It also asserts the existing record's revision, dependencies and output are unchanged and that `writes` is still 1.\n- **Revision and dependencies compared first.**\n  - `revision_and_dependency_checks_precede_output_decoding` stores an old object output, then changes the revision to `v2` with a `String` output type. It also plants a stale dependency and sets `fail_read`. `check` returns `Stale` without decoding the object as a `String`, and `reads` stays empty. That shows the revision comparison runs before any dependency read and before decoding.\n  - In the same test, `verify` with the changed revision re-executes. It returns \"new answer\" and replaces the record.\n  - `changed_dependencies_precede_decoding_and_execution_records_its_own_reads` changes a node's content. With the same revision and an old output that would not decode as a `String`, `check` returns `Stale` rather than an output error. `verify` then executes, returns the new answer, and records the new fingerprint.\n- **Only a current record's output is decoded.** The stale-over-undecodable cases above, and the `Current(value)` cases in `criteria_have_independent_typed_answers_and_cache_negative_results`, cover both sides.\n- **Malformed stored records are storage errors.** `malformed_records_are_storage_errors_and_current_bad_outputs_are_output_errors` in `crates/habeas-sdk/tests/storage.rs` writes \"not JSON\" to the record file. Both `check` and `verify` return `ValidationError::Graph(FileStorageError::Json(_))`. The file is untouched and the execution count stays at 1.\n- **Undecodable output for a current revision is an output error.**\n  - The same storage test stores `{\"not\": \"a String\"}` and asserts `ValidationError::Output` from both `check` and `verify`. It also asserts the file is unchanged and no re-execution happened.\n  - `revision_and_dependency_checks_precede_output_decoding` shows the same for the same revision with an undecodable stored object. It asserts `executions` and `writes` are both still 1, so the result is not `Missing` and validation does not run again.\n- **Different encoding requires a different revision.** This is a `{cite}` of `requirements.sdk.graph.validation.procedure_identity`, which is context only and needs no test here. The changed-revision cases above show the behavior it relies on.\n\nI found no gap.",
-  "references": "21ecc28e64163b1a0b85f619d5f375d2a471e95b59972a3163f2b187a7fdff5c",
+  "rationale": "I judged this from the supplied test sources only and did not request any implementation source. Each obligation in `requirements.sdk.graph.evidence.record.output` maps to at least one marked test with assertions.\n\n- **Serialization before storage, and the complete record.**\n  - `contracts.rs#fn[criteria_keep_typed_answers_and_persist_only_when_requested]` stores a record and then reads the stored `output` values. They are `{\"satisfied\":false,\"details\":[...]}` for the struct answer and `null` for `()`. It also asserts that the saved dependencies are empty and that the loaded revision, source, criterion and dependencies match the stored value.\n  - `contracts.rs#fn[input_checking_and_execution_keep_separate_observations]` asserts the stored dependency fingerprint, so the record carries its inputs.\n- **Serialization failure returns `ValidationError::Output` and leaves the existing record unchanged.**\n  - `contracts.rs#fn[serialization_failure_leaves_the_existing_record_unchanged]` saves an old record. It then stores an `Unencodable` answer at revision v2 and asserts `ValidationError::Output` with the \"cannot encode answer\" message. It compares the record before and after, covering revision, dependencies and output. It also asserts `writes == 1`.\n- **Storage failure on store returns `ValidationError::Graph`.**\n  - `contracts.rs#fn[loading_execution_resolution_and_saving_failures_do_not_publish_answers]` sets `fail_store` and asserts `Graph(\"store\")`, with no records and no writes.\n  - `validation.rs#fn[resolution_storage_and_callback_errors_are_not_judgments]` asserts the same result.\n- **`load_evidence` decodes the output into the requested `Criterion::Ok`.** The struct, `Vec<String>`, `()` and `String` answers round-trip in `criteria_keep_typed_answers_and_persist_only_when_requested`.\n- **An undecodable output returns `ValidationError::Output`, including when the revision or inputs are stale.**\n  - `contracts.rs#fn[typed_loading_reports_decode_errors_even_for_stale_evidence]` loads a `{\"old\":true}` record as a `String`. It does so with a changed revision v2 and with stale dependencies on `Node(99)`, and both loads give `Output`. It also asserts that no input reads happen.\n  - `storage.rs#fn[malformed_records_are_storage_errors_and_bad_outputs_are_output_errors]` uses an \"obsolete\" revision with a non-String output and asserts `Output`. It also asserts that the file is unchanged.\n  - `input_checking_and_execution_keep_separate_observations` gives the same result when stored inputs differ from the current ones.\n- **Missing evidence returns `Ok(None)`.** `criteria_keep_typed_answers_and_persist_only_when_requested` asserts `is_none()` before any save, and again for the `text` criterion before it is saved.\n- **Malformed stored records and storage failures on load return `Graph`.**\n  - `storage.rs#fn[malformed_records_are_storage_errors_and_bad_outputs_are_output_errors]` writes \"not JSON\" to the record file and asserts `Graph(FileStorageError::Json(_))`.\n  - `loading_execution_resolution_and_saving_failures_do_not_publish_answers` and `validation.rs#fn[resolution_storage_and_callback_errors_are_not_judgments]` set `fail_load` and assert `Graph(\"load\")`.\n- **Revision and input comparison belong to the caller.** The stale-evidence tests show that `load_evidence` neither compares nor reads inputs; they assert `reads.is_empty()` and that stale records still decode or fail only on output. `check_inputs` is exercised separately.\n\nI found no plausible violation of the text that these tests would accept. The `requirements.sdk.graph.validation.procedure_identity` citation is context only and needs no separate assessment.",
+  "references": "ebbb4ef415e61ec08302f9d58178e7964d2c35370a6392fdc3f665ae6687e041",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.evidence.record.output",
@@ -11,16 +11,17 @@
       ],
       "text": [
         ":::{req} record.output",
-        "`verify` serializes a completed `Criterion::Ok` before saving its record.",
-        "`check` and `verify` first compare a loaded record's revision and dependencies.",
-        "Only a current record's output is decoded into the requested `Criterion::Ok`.",
-        "A changed revision can therefore make an old result stale even if that old",
-        "result would not decode as the new result type.",
+        "`Validator::store_evidence` serializes the answer in `Fingerprinted` before passing",
+        "the complete record to storage. A serialization failure returns",
+        "`ValidationError::Output` and leaves the existing record unchanged. A storage",
+        "failure returns `ValidationError::Graph`.",
         "",
-        "Malformed stored records are storage errors. An output that cannot decode for a",
-        "current revision is an output error, not missing evidence or a reason to execute",
-        "validation again. A different output encoding requires a different revision",
-        "under {cite}`requirements.sdk.graph.validation.procedure_identity`.",
+        "`Validator::load_evidence` decodes a loaded record's output into the requested",
+        "`Criterion::Ok`. An output that cannot decode returns `ValidationError::Output`,",
+        "including when the saved revision or inputs are stale. Missing evidence returns",
+        "`Ok(None)`; malformed stored records and storage failures return",
+        "`ValidationError::Graph`. Revision and input comparison belong to the caller's",
+        "reuse workflow under {cite}`requirements.sdk.graph.validation.procedure_identity`.",
         ":::"
       ]
     },
@@ -31,10 +32,10 @@
       ],
       "text": [
         ":::{req} procedure_identity",
-        "Checking and verification obtain the source node, criterion path, and revision",
-        "from the same `Criterion` value. There is no node-wide revision resolver.",
-        "The pair of source and criterion selects a record; the revision determines",
-        "whether that record still answers the current question.",
+        "`load_evidence` selects a saved record using the source node and criterion path",
+        "from the supplied `Criterion`. `verify` captures those values and the criterion's",
+        "revision in its returned `Fingerprinted`. The pair of source and criterion selects a",
+        "record; its saved revision identifies the review rules used to produce it.",
         "",
         "Changing review instructions, deterministic rules, input-selection policy, or",
         "result encoding in a way that invalidates an old answer requires a changed",
@@ -46,28 +47,38 @@
     },
     {
       "file": "crates/habeas-sdk/tests/contracts.rs",
-      "item": "fn[criteria_have_independent_typed_answers_and_cache_negative_results]",
-      "hash": "723a863f4d9412eb49df340d9baa993dc8935c612a9097aa8e833355c5cc4edc"
+      "item": "fn[criteria_keep_typed_answers_and_persist_only_when_requested]",
+      "hash": "cb9ff0f749d3c4a516e1ca52aa298ca7e4868a36a4b64b2ed9f2f6158ab6d85d"
     },
     {
       "file": "crates/habeas-sdk/tests/contracts.rs",
-      "item": "fn[revision_and_dependency_checks_precede_output_decoding]",
-      "hash": "09825dec15bbb774ef42189297febabe33f9f165409b63ae02597d633e07c7f0"
+      "item": "fn[typed_loading_reports_decode_errors_even_for_stale_evidence]",
+      "hash": "e3db2860f9bb6f9f4239d559da6f226053de7fe1cc46def2d1865852c799af76"
     },
     {
       "file": "crates/habeas-sdk/tests/contracts.rs",
-      "item": "fn[changed_dependencies_precede_decoding_and_execution_records_its_own_reads]",
-      "hash": "c3718bc3c0bdbe0940277a7e467633ee21908f397afe25afb754c89dcaa3f123"
+      "item": "fn[input_checking_and_execution_keep_separate_observations]",
+      "hash": "0910aac8a6cdaed49b093f86629caf99653a189140e20857149b9c663afe44f2"
     },
     {
       "file": "crates/habeas-sdk/tests/contracts.rs",
       "item": "fn[serialization_failure_leaves_the_existing_record_unchanged]",
-      "hash": "8e92f3226b8e4f111c563fe1790381a644a3cb397e32c991126c5a754ad81f21"
+      "hash": "12108456a1974d79568a3fc06024cc0c5b49b2b276c6254f3c115decb1d549fa"
+    },
+    {
+      "file": "crates/habeas-sdk/tests/contracts.rs",
+      "item": "fn[loading_execution_resolution_and_saving_failures_do_not_publish_answers]",
+      "hash": "db6170af16f5292cba1647868e17aebe10a6cdfb94e20b3b6d178fea04607906"
     },
     {
       "file": "crates/habeas-sdk/tests/storage.rs",
-      "item": "fn[malformed_records_are_storage_errors_and_current_bad_outputs_are_output_errors]",
-      "hash": "ea61d3e9190eec2cfa5575fcf94446cc6e9f5f9a72955dd32b7ad9b0e3b1847c"
+      "item": "fn[malformed_records_are_storage_errors_and_bad_outputs_are_output_errors]",
+      "hash": "47943a2b52c0c3030786310ca3862a4af80206d1e037a4df4d707f3ec1366514"
+    },
+    {
+      "file": "crates/habeas-sdk/tests/validation.rs",
+      "item": "fn[resolution_storage_and_callback_errors_are_not_judgments]",
+      "hash": "019d9b3dcaf43b538f3a14448e2ca0e42fc6f000972a6af300f11b86fb14e3ac"
     }
   ],
   "format_version": 1,
@@ -80,7 +91,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "21ecc28e64163b1a0b85f619d5f375d2a471e95b59972a3163f2b187a7fdff5c"
+          "value": "ebbb4ef415e61ec08302f9d58178e7964d2c35370a6392fdc3f665ae6687e041"
         }
       ]
     },
@@ -92,7 +103,7 @@
         "Mandatory",
         {
           "scheme": "node-path-set-sha256-v1",
-          "value": "644c71ba1ad5dea00b9ba7311b84a3e3036400320faf1c8bdeced64bb4b5d25a"
+          "value": "4ef587028f052a64b638a8551f77f62efc5f8ac880e4e817bb96b775fcc8c001"
         }
       ]
     },
@@ -103,7 +114,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "cf189f6270e2fa8a455a5482fd43b1e4454498738fd018f23f52f2178182ace7"
+          "value": "e8bfc9f35e1ebf1bd327d0cdc33b10505c6eefa209f1ba511eab9ad19e87e83a"
         }
       ]
     },
@@ -114,7 +125,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "defbc4190376856aa9d3f430076b6575c6822661ed9c2bfdcc1c7e7f991258b4"
+          "value": "8528be05b120dba87c115666f65607240da4702ac84c2a0dd1ed95849720303f"
         }
       ]
     },
@@ -126,12 +137,12 @@
               "scheme": "repo",
               "location": "crates/habeas-sdk/tests/contracts.rs"
             },
-            "selector": "fn[criteria_have_independent_typed_answers_and_cache_negative_results]"
+            "selector": "fn[criteria_keep_typed_answers_and_persist_only_when_requested]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "814765a617e90675df163fee56259168a097cc05888c9bef715b197a5fe32900"
+          "value": "0ac2f7a584e17a5e3aa24647210c201e1d72c29838e8e6b2ef90c63a75e915a0"
         }
       ]
     },
@@ -143,12 +154,12 @@
               "scheme": "repo",
               "location": "crates/habeas-sdk/tests/contracts.rs"
             },
-            "selector": "fn[revision_and_dependency_checks_precede_output_decoding]"
+            "selector": "fn[typed_loading_reports_decode_errors_even_for_stale_evidence]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "7665377242de5e616d73f7971008ec838cb7b73c167db0ceb8c1f1f8d88b587b"
+          "value": "2e7cf9f68805da6bb5b0efbf9c604ca79ce53963ffe273715ef96530726935b5"
         }
       ]
     },
@@ -160,12 +171,12 @@
               "scheme": "repo",
               "location": "crates/habeas-sdk/tests/contracts.rs"
             },
-            "selector": "fn[changed_dependencies_precede_decoding_and_execution_records_its_own_reads]"
+            "selector": "fn[input_checking_and_execution_keep_separate_observations]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "03cbac718fa2724ffc41b82dffa56bfcc5a419f44d460100750eb22c636ed677"
+          "value": "446b3c31cffb88246475ef3fdf53f99338cf3de9bdec84a727f62b066cf3cadf"
         }
       ]
     },
@@ -182,7 +193,24 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "8f263b9db41382746519e73799f2a08293620c1a716ce6e9c85b484afa6b855d"
+          "value": "f0a135b67cc0ed403070306574b6eb8021bb8ffabad8475e4c6882354525ddb1"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/tests/contracts.rs"
+            },
+            "selector": "fn[loading_execution_resolution_and_saving_failures_do_not_publish_answers]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "6e862913c1f830ac2eaad91277e7b454b13e1f9d3d2104d73b32545e1108d948"
         }
       ]
     },
@@ -194,12 +222,29 @@
               "scheme": "repo",
               "location": "crates/habeas-sdk/tests/storage.rs"
             },
-            "selector": "fn[malformed_records_are_storage_errors_and_current_bad_outputs_are_output_errors]"
+            "selector": "fn[malformed_records_are_storage_errors_and_bad_outputs_are_output_errors]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "df6557c608602106f039832689a62b9188d3cbab26fc402897650b3b7866383e"
+          "value": "be0794e9fe1f3c5972e5201be7c72e8abcfe517d465609a93d66a4a430b29fe6"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/tests/validation.rs"
+            },
+            "selector": "fn[resolution_storage_and_callback_errors_are_not_judgments]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "02f9fda59f2f9ec7e0624bd572315891243adb469cab047a4ecd58c949fa3890"
         }
       ]
     }
