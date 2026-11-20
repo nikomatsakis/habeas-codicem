@@ -792,6 +792,94 @@ async fn contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text()
 }
 
 // {test}`requirements.sdk.graph.agent-calls.agent_context`
+// {test}`requirements.sdk.graph.agent-calls.judge.caching`
+#[tokio::test]
+async fn string_and_str_contexts_deliver_identical_prefixes_and_fingerprints() {
+    let graph = Memory::default();
+    {
+        let mut state = graph.state.lock().unwrap();
+        state.contents.insert(1, "first source".into());
+        state.contents.insert(2, "second source".into());
+        state.edges.insert(1, vec![(7, 2)]);
+    }
+    let agent = MockAgent::default();
+    let ctx = ValidationContext::with_agent(&graph, 1, &agent, &Renderer);
+    for text in ["", "héllo\0\n\npolicy"] {
+        ctx.ask::<Answer>().context(text.to_owned()).await.unwrap();
+        ctx.ask::<Answer>().context(text).await.unwrap();
+    }
+
+    ctx.ask::<Answer>()
+        .context("policy")
+        .context("question")
+        .await
+        .unwrap();
+    ctx.ask::<Answer>()
+        .context(("policy", String::from("question")))
+        .await
+        .unwrap();
+    let contexts = ["policy", "question"];
+    ctx.ask::<Answer>()
+        .context(contexts.as_slice())
+        .await
+        .unwrap();
+    ctx.ask::<Answer>()
+        .context(contexts.to_vec())
+        .await
+        .unwrap();
+
+    let mut temporary = String::from("short-lived");
+    let request = ctx.ask::<Answer>().context(temporary.as_str());
+    temporary.clear();
+    request.await.unwrap();
+    assert!(ctx.inspection().dependencies().is_empty());
+
+    ctx.ask::<Answer>()
+        .context("short-lived")
+        .current_node_contents()
+        .await
+        .unwrap();
+    ctx.ask::<Value>()
+        .context("short-lived")
+        .current_node_contents()
+        .await
+        .unwrap();
+    ctx.ask::<Answer>()
+        .context("short-lived")
+        .successors_content(7)
+        .await
+        .unwrap();
+    ValidationContext::with_agent(&graph, 2, &agent, &Renderer)
+        .ask::<Answer>()
+        .context("short-lived")
+        .await
+        .unwrap();
+
+    let requests = agent.requests.lock().unwrap();
+    assert_eq!(requests.len(), 13);
+    for (pair, text) in requests[..4].chunks_exact(2).zip(["", "héllo\0\n\npolicy"]) {
+        for request in pair {
+            assert_eq!(request.0, text);
+            assert_eq!(request.1, context_fingerprint(text));
+        }
+    }
+    for request in &requests[4..8] {
+        assert_eq!(request.0, "policy\n\nquestion");
+        assert_eq!(request.1, context_fingerprint("policy\n\nquestion"));
+    }
+    for request in &requests[8..] {
+        assert_eq!(request.0, "short-lived");
+        assert_eq!(request.1, context_fingerprint("short-lived"));
+    }
+    assert!(requests[..9].iter().all(|request| request.2.is_empty()));
+    assert_eq!(requests[9].2, vec![(1, "first source".into())]);
+    assert_eq!(requests[10].2, requests[9].2);
+    assert_ne!(requests[10].3, requests[9].3);
+    assert_eq!(requests[11].2, vec![(2, "second source".into())]);
+    assert!(requests[12].2.is_empty());
+}
+
+// {test}`requirements.sdk.graph.agent-calls.agent_context`
 #[test]
 fn every_heterogeneous_tuple_arity_renders_elements_in_order() {
     let custom = CountingContext {

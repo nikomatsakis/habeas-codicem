@@ -26,6 +26,12 @@ impl Context for String {
         Cow::Borrowed(self)
     }
 }
+impl Context for str {
+    // {impl}`requirements.sdk.graph.agent-calls.agent_context`
+    fn contents(&self) -> Cow<'_, String> {
+        Cow::Owned(self.to_owned())
+    }
+}
 impl<C: Context> Context for [C] {
     // {impl}`requirements.sdk.graph.agent-calls.agent_context`
     fn contents(&self) -> Cow<'_, String> {
@@ -171,6 +177,7 @@ impl<'d, D: Domain> ValidationContext<'d, D> {
 }
 
 impl<'d, D: Domain> ValidationContext<'d, D> {
+    /// Start a request whose submitted answer is decoded into R.
     pub fn ask<R>(&self) -> Ask<'_, 'd, D, R, ContextPhase>
     where
         R: DeserializeOwned + JsonSchema + Send,
