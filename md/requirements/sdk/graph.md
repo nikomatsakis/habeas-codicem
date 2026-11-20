@@ -93,11 +93,19 @@ The `NodeId` type that identifies a particular node in the graph is defined by t
 :::{req} node_path_struct
 `habeas_sdk::graph::NodePath` describes the logical structure of a node identity:
 
-```rust
+```rust,ignore
 /// Defines the logical structure of a node-id.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct NodePath {
-    pub segments: Vec<String>,
+    segments: Vec<String>,
+}
+
+impl NodePath {
+    /// Construct a node path, preserving segment order and boundaries.
+    pub fn new(segments: Vec<String>) -> Self;
+
+    /// Read the ordered path segments.
+    pub fn segments(&self) -> &[String];
 }
 ```
 :::

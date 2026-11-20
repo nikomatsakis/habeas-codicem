@@ -66,7 +66,7 @@ sequenceDiagram
 ```
 
 Habeas implements this boundary in `src/authoring/sdk.rs`. Its
-`Validation::execute` procedure receives the context. For a requirement
+`Criterion::execute` procedure receives the context. For a requirement
 review, it builds a reusable context prefix from its review instructions and
 question, inserts the subject and its mandatory content inputs, then awaits
 the builder. Implementation references do not automatically supply source.

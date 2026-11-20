@@ -70,7 +70,7 @@ pub struct Record<N, L = ()> {
     pub revision: String,
     /// Observations captured by the SDK.
     pub dependencies: Vec<Dependency<N, L>>,
-    /// Serialized Validation::Ok; interpretation belongs to the application.
+    /// Serialized Criterion::Ok; interpretation belongs to the application.
     pub output: serde_json::Value,
 }
 ```
@@ -86,9 +86,9 @@ requires those bounds.
 ## Decode only a current answer
 
 :::{req} record.output
-`verify` serializes a completed `Validation::Ok` before saving its record.
+`verify` serializes a completed `Criterion::Ok` before saving its record.
 `check` and `verify` first compare a loaded record's revision and dependencies.
-Only a current record's output is decoded into the requested `Validation::Ok`.
+Only a current record's output is decoded into the requested `Criterion::Ok`.
 A changed revision can therefore make an old result stale even if that old
 result would not decode as the new result type.
 
@@ -197,5 +197,5 @@ path and preserves segment boundaries under
 {cite}`requirements.sdk.filesystem-storage.keys`.
 :::
 
-[Validation](validation.md) defines `verify` and `check`. [Filesystem evidence
+[Criteria](validation.md) defines `verify` and `check`. [Filesystem evidence
 storage](../filesystem-storage.md) defines the helper and its encoding.

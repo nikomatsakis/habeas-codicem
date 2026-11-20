@@ -251,7 +251,7 @@ serialize complete interactions behind a context-wide lock.
 The trace records the identities and supplied-content fingerprints of inputs
 actually delivered, including tool reads. Awaiting with fewer or no node
 insertions preserves earlier dependencies; an unawaited builder adds no
-agent-delivery dependencies. `Validation::execute` receives its context under
+agent-delivery dependencies. `Criterion::execute` receives its context under
 {cite}`requirements.sdk.graph.validation.check_procedure`; the domain includes
 required evidence storage. This is the same execution interface with or without
 agent calls.
@@ -260,7 +260,7 @@ agent calls.
 :::{req} procedures
 An application-supplied assessment procedure can perform ordinary computation
 and request zero or more typed model answers. It can use intermediate answers
-in later computation and requests, then return its `Validation::Ok` value.
+in later computation and requests, then return its `Criterion::Ok` value.
 :::
 
 An unconfigured agent is an error-returning implementation of the agent

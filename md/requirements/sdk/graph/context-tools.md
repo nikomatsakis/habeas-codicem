@@ -107,7 +107,7 @@ that relies on them would have an incomplete dependency record, so later
 changes could escape the freshness check.
 
 :::{req} tracked_inspection
-Validation callbacks and their agents should use the SDK's context inspection
+Criteria and their agents should use the SDK's context inspection
 operations for information on which a judgment depends.
 The context records successful node-content observations in the enclosing
 validation's trace. The SDK makes no recording claim for arbitrary filesystem,

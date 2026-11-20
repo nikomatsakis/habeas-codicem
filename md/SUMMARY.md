@@ -12,7 +12,7 @@
 - [Requirements](./requirements.md)
   - [SDK](./requirements/sdk.md)
     - [Graph](./requirements/sdk/graph.md)
-    - [Validation](./requirements/sdk/graph/validation.md)
+    - [Criteria](./requirements/sdk/graph/validation.md)
       - [Agent calls](./requirements/sdk/graph/agent-calls.md)
       - [Context tools](./requirements/sdk/graph/context-tools.md)
     - [Fingerprinting](./requirements/sdk/graph/fingerprinting.md)

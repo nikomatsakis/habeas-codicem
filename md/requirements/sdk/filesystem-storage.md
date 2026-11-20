@@ -51,7 +51,7 @@ impl FileEvidenceStorage {
 ```
 
 `Record`, `Dependency`, and `Fingerprint` support Serde when their type
-parameters do. `Validation::Ok` is always serializable; its JSON value is
+parameters do. `Criterion::Ok` is always serializable; its JSON value is
 already in the record. Serialization bounds on node identities and edge labels
 belong to this helper's use, rather than `Graph` itself.
 :::

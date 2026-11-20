@@ -3,8 +3,8 @@
 This chapter is for the implementer of a tool like Habeas. We start with the
 Habeas you already know and ask how to express its verification work as a graph.
 A node identifies a thing: a requirement, a function, a test, or a GitHub issue.
-The application can ask several questions about the same node. Each validation
-value identifies a criterion and supplies its execution procedure. The SDK
+The application can ask several questions about the same node. Each criterion
+value identifies a question and supplies its execution procedure. The SDK
 tracks and reuses each criterion's answer independently.
 
 ## Start with one requirement and its inputs
@@ -75,7 +75,7 @@ validation. Fingerprints determine which changes count as relevant.
 
 The application defines its own domain by implementing `Domain`. This trait
 combines three subtraits that capture different aspects of the domain.
-Validation is implemented by the values submitted to a validator:
+Criteria are implemented by the values submitted to a validator:
 
 :::{req} domain
 The SDK exposes `Domain` and its blanket implementation. Its subtraits define
@@ -84,13 +84,14 @@ the graph, fingerprints, and evidence storage:
 ```rust,ignore
 /// Every validation uses a domain with graph access, fingerprints, and storage.
 ///
-/// Concurrent validations can share a domain by reference. Each validation
-/// has its own dependency trace; operations within it share that trace safely.
+/// A validator owns a cloneable domain; executions can share its state.
+/// Each criterion has its own dependency trace; operations within it share
+/// that trace safely.
 /// Agent calls retain independent conversation and submission state.
 /// Observations never leak between separate validations.
-pub trait Domain: Graph + Fingerprinting + EvidenceStorage {}
+pub trait Domain: Clone + Graph + Fingerprinting + EvidenceStorage {}
 
-impl<T: Graph + Fingerprinting + EvidenceStorage> Domain for T {}
+impl<T: Clone + Graph + Fingerprinting + EvidenceStorage> Domain for T {}
 
 pub trait Graph {
     // Defines the verification graph, including
@@ -113,12 +114,15 @@ pub trait EvidenceStorage: Graph {
 ```
 :::
 
-The domain traits and the separate validation interface have their own chapters:
+Domains with mutable state commonly store it behind `Arc`, so cloned domains
+access the same graph and evidence storage.
+
+The domain traits and the separate criterion interface have their own chapters:
 
 | Trait | Purpose |
 | --- | --- |
 | [Graph](sdk/graph.md) | What nodes and edges represent, and how to obtain their contents and relationships. |
-| [Validation](sdk/graph/validation.md) | A criterion's identity, result type, and execution procedure. |
+| [Criteria](sdk/graph/validation.md) | A criterion's identity, result type, and execution procedure. |
 | [Fingerprinting](sdk/graph/fingerprinting.md) | What parts of a node's contents are significant. |
 | [EvidenceStorage](sdk/graph/evidence.md) | Where and how evidence is saved. |
 
