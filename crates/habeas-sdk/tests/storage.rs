@@ -7,7 +7,7 @@ use std::sync::{
 };
 
 fn criterion() -> CriterionPath {
-    CriterionPath { segments: vec![] }
+    CriterionPath::new(vec![])
 }
 
 fn record(id: &str) -> Record<String> {
@@ -48,13 +48,15 @@ async fn paths_are_injective_and_loading_missing_records_has_no_side_effects() {
         (vec!["a", "b"], "s61/s62/criteria/record.json"),
         (vec!["a/b"], "s612f62/criteria/record.json"),
         (vec![".."], "s2e2e/criteria/record.json"),
+        (vec!["\0"], "s00/criteria/record.json"),
+        (vec!["\t\n\r\x0f"], "s090a0d0f/criteria/record.json"),
+        (vec!["\x01#"], "s0123/criteria/record.json"),
+        (vec!["\x12\x03"], "s1203/criteria/record.json"),
         (vec!["é"], "sc3a9/criteria/record.json"),
         (vec!["e\u{301}"], "s65cc81/criteria/record.json"),
     ];
     for (segments, expected) in cases {
-        let path = NodePath {
-            segments: segments.iter().map(|s| s.to_string()).collect(),
-        };
+        let path = NodePath::new(segments.iter().map(|s| s.to_string()).collect());
         assert_eq!(store.record_path(&path, &criterion()), root.join(expected));
         assert!(
             store
@@ -101,14 +103,22 @@ async fn source_and_criterion_boundaries_preserve_independent_records() {
             vec!["../é"],
             "s61/criteria/s2e2e2fc3a9/record.json",
         ),
+        (vec!["\x01#"], vec!["\0"], "s0123/criteria/s00/record.json"),
+        (
+            vec!["\x12\x03"],
+            vec!["\0"],
+            "s1203/criteria/s00/record.json",
+        ),
+        (vec!["\0"], vec!["\x01#"], "s00/criteria/s0123/record.json"),
+        (
+            vec!["\0"],
+            vec!["\x12\x03"],
+            "s00/criteria/s1203/record.json",
+        ),
     ];
     for (index, (source, segments, expected)) in pairs.iter().enumerate() {
-        let source = NodePath {
-            segments: source.iter().map(|s| (*s).into()).collect(),
-        };
-        let criterion = CriterionPath {
-            segments: segments.iter().map(|s| (*s).into()).collect(),
-        };
+        let source = NodePath::new(source.iter().map(|s| (*s).into()).collect());
+        let criterion = CriterionPath::new(segments.iter().map(|s| (*s).into()).collect());
         assert_eq!(
             store.record_path(&source, &criterion),
             temp.path().join(expected)
@@ -131,12 +141,8 @@ async fn source_and_criterion_boundaries_preserve_independent_records() {
         assert_eq!(entries, vec![std::ffi::OsString::from("record.json")]);
     }
     for (index, (source, segments, _)) in pairs.iter().enumerate() {
-        let source = NodePath {
-            segments: source.iter().map(|s| (*s).into()).collect(),
-        };
-        let criterion = CriterionPath {
-            segments: segments.iter().map(|s| (*s).into()).collect(),
-        };
+        let source = NodePath::new(source.iter().map(|s| (*s).into()).collect());
+        let criterion = CriterionPath::new(segments.iter().map(|s| (*s).into()).collect());
         let saved = store
             .load::<String, ()>(&source, &criterion)
             .await
@@ -156,9 +162,7 @@ async fn source_and_criterion_boundaries_preserve_independent_records() {
 async fn records_round_trip_and_malformed_or_incompatible_data_is_an_error() {
     let temp = tempfile::tempdir().unwrap();
     let store = FileEvidenceStorage::new(temp.path());
-    let path = NodePath {
-        segments: vec!["node".into()],
-    };
+    let path = NodePath::new(vec!["node".into()]);
     store
         .store(&path, &criterion(), &record("A"))
         .await
@@ -236,9 +240,7 @@ async fn send_futures_create_missing_roots_and_nested_paths_without_shortening_k
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("missing").join("root");
     let store = FileEvidenceStorage::new(&root);
-    let path = NodePath {
-        segments: vec!["parent".into(), "".into(), "child".into()],
-    };
+    let path = NodePath::new(vec!["parent".into(), "".into(), "child".into()]);
     assert!(!root.exists());
     let record = record("nested");
     send(store.store(&path, &criterion(), &record))
@@ -255,9 +257,7 @@ async fn send_futures_create_missing_roots_and_nested_paths_without_shortening_k
     );
     // The encoded component exceeds common filesystem name limits. It must
     // fail rather than silently hash or truncate the consumer's key.
-    let too_long = NodePath {
-        segments: vec!["x".repeat(4096)],
-    };
+    let too_long = NodePath::new(vec!["x".repeat(4096)]);
     assert!(matches!(
         store.load::<String, ()>(&too_long, &criterion()).await,
         Err(FileStorageError::Io(_))
@@ -283,9 +283,7 @@ impl Serialize for BadNode {
 async fn failed_serialization_preserves_records_and_failed_replacement_cleans_up() {
     let temp = tempfile::tempdir().unwrap();
     let store = FileEvidenceStorage::new(temp.path());
-    let path = NodePath {
-        segments: Vec::new(),
-    };
+    let path = NodePath::new(Vec::new());
     store
         .store(&path, &criterion(), &record("original"))
         .await
@@ -332,9 +330,7 @@ async fn failed_serialization_preserves_records_and_failed_replacement_cleans_up
 fn concurrent_readers_only_observe_complete_records_from_competing_writes() {
     let temp = tempfile::tempdir().unwrap();
     let store = Arc::new(FileEvidenceStorage::new(temp.path()));
-    let path = NodePath {
-        segments: Vec::new(),
-    };
+    let path = NodePath::new(Vec::new());
     futures::executor::block_on(store.store(&path, &criterion(), &record("A"))).unwrap();
     let barrier = Arc::new(Barrier::new(3));
     let finished = Arc::new(AtomicUsize::new(0));
@@ -397,6 +393,7 @@ fn concurrent_readers_only_observe_complete_records_from_competing_writes() {
     assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 1);
 }
 
+#[derive(Clone)]
 struct StoredGraph(FileEvidenceStorage);
 impl Graph for StoredGraph {
     type NodeId = String;
@@ -414,9 +411,7 @@ impl Graph for StoredGraph {
         panic!("storage operations must not read graph contents")
     }
     fn node_path(&self, node: &String) -> NodePath {
-        NodePath {
-            segments: vec!["consumer".into(), node.clone()],
-        }
+        NodePath::new(vec!["consumer".into(), node.clone()])
     }
     // :::{cite} habeas:coverage
     // Graph requires this callback even for a storage-only consumer. The
@@ -459,15 +454,13 @@ impl Fingerprinting for StoredGraph {
 }
 
 struct StoredReview<'a>(&'a AtomicUsize);
-impl Validation<StoredGraph> for StoredReview<'_> {
+impl Criterion<StoredGraph> for StoredReview<'_> {
     type Ok = String;
     fn source_node_id(&self) -> String {
         "opaque/é".into()
     }
     fn criterion_path(&self) -> CriterionPath {
-        CriterionPath {
-            segments: vec!["review".into()],
-        }
+        CriterionPath::new(vec!["review".into()])
     }
     fn revision(&self) -> String {
         "v1".into()
@@ -488,7 +481,7 @@ impl Validation<StoredGraph> for StoredReview<'_> {
 async fn malformed_records_are_storage_errors_and_current_bad_outputs_are_output_errors() {
     let temp = tempfile::tempdir().unwrap();
     let graph = StoredGraph(FileEvidenceStorage::new(temp.path()));
-    let validator = Validator::new(&graph);
+    let validator = Validator::new(graph.clone());
     let executions = AtomicUsize::new(0);
     assert_eq!(
         validator.verify(StoredReview(&executions)).await.unwrap(),

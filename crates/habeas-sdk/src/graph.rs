@@ -22,16 +22,60 @@ pub struct Snapshot<T> {
     pub fingerprint: Fingerprint,
 }
 
+/// An ordered path with read-only access to its segments.
+///
+/// ```compile_fail
+/// use habeas_sdk::graph::NodePath;
+/// let mut path = NodePath::new(vec!["part".into()]);
+/// path.segments.clear();
+/// ```
+// {test}`requirements.sdk.graph.node_path_struct`
 // {impl}`requirements.sdk.graph.node_path_struct`
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct NodePath {
-    pub segments: Vec<String>,
+    segments: Vec<String>,
 }
 
+impl NodePath {
+    /// Construct a path, preserving segment order and boundaries.
+    // {impl}`requirements.sdk.graph.node_path_struct`
+    pub fn new(segments: Vec<String>) -> Self {
+        Self { segments }
+    }
+
+    /// Read the ordered path segments.
+    // {impl}`requirements.sdk.graph.node_path_struct`
+    pub fn segments(&self) -> &[String] {
+        &self.segments
+    }
+}
+
+/// An ordered path with read-only access to its segments.
+///
+/// ```compile_fail
+/// use habeas_sdk::graph::CriterionPath;
+/// let mut path = CriterionPath::new(vec!["part".into()]);
+/// path.segments.clear();
+/// ```
+// {test}`requirements.sdk.graph.validation.criterion_path`
 // {impl}`requirements.sdk.graph.validation.criterion_path`
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct CriterionPath {
-    pub segments: Vec<String>,
+    segments: Vec<String>,
+}
+
+impl CriterionPath {
+    /// Construct a path, preserving segment order and boundaries.
+    // {impl}`requirements.sdk.graph.validation.criterion_path`
+    pub fn new(segments: Vec<String>) -> Self {
+        Self { segments }
+    }
+
+    /// Read the ordered path segments.
+    // {impl}`requirements.sdk.graph.validation.criterion_path`
+    pub fn segments(&self) -> &[String] {
+        &self.segments
+    }
 }
 
 // {impl}`requirements.sdk.graph.domain_types`
@@ -127,9 +171,10 @@ pub trait EvidenceStorage: Graph {
 }
 
 // {impl}`requirements.sdk.domain`
-pub trait Domain: Graph + Fingerprinting + EvidenceStorage {}
+/// A cloneable verification graph with fingerprints and evidence storage.
+pub trait Domain: Clone + Graph + Fingerprinting + EvidenceStorage {}
 
-impl<T: Graph + Fingerprinting + EvidenceStorage> Domain for T {}
+impl<T: Clone + Graph + Fingerprinting + EvidenceStorage> Domain for T {}
 
 // {impl}`requirements.sdk.graph.validation.check_procedure`
 #[derive(Debug)]
@@ -164,13 +209,19 @@ impl<E: std::error::Error + 'static> std::error::Error for ValidationError<E> {
 }
 
 // {impl}`requirements.sdk.graph.validation.check_procedure`
-pub trait Validation<D: Domain>: Send + Sized {
+pub trait Criterion<D: Domain>: Send + Sized {
+    /// The completed answer, serialized for storage and reconstructed on reuse.
     type Ok: Serialize + serde::de::DeserializeOwned + Send;
 
+    /// The node this question is about.
     fn source_node_id(&self) -> D::NodeId;
+    /// Identify this question within the source node's saved evidence.
     fn criterion_path(&self) -> CriterionPath;
+    /// Version of the review rules and output encoding.
+    /// Change it when an old answer should no longer be reused.
     fn revision(&self) -> String;
 
+    /// Select inputs through the context and compute the completed answer.
     // {impl}`requirements.sdk.graph.validation.check_procedure`
     fn execute(
         self,

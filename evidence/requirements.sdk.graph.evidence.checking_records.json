@@ -1,7 +1,7 @@
 {
   "requirement": "The SDK checks the loaded record's revision first. A mismatch establishes\nstaleness without resolving saved dependencies or decoding its output. Otherwise\nit resolves the saved dependencies through graph operations and fingerprints,\ncomparing each with its saved observation. A fingerprint mismatch establishes\nstaleness and permits an early return; it need not resolve later dependencies.\nAn encountered dependency-resolution failure returns an error.\n\nChecking executes no validation or model and writes no evidence. It uses the\ncurrent state that the caller intends to inspect, rather than reusing source\nsnapshots from an earlier invocation without establishing that they remain\ncurrent.",
   "determination": true,
-  "rationale": "The reviewed tests cover each obligation in `requirements.sdk.graph.evidence.checking_records`. I did not request implementation source.\n\n- **Revision mismatch is stale without resolving dependencies or decoding output.**\n  - `crates/habeas-sdk/tests/contracts.rs#fn[revision_and_dependency_checks_precede_output_decoding]` saves a record with a dependency on `Node(99)` and turns on `fail_read`.\n  - It then checks with a changed revision and an output type that cannot decode the saved JSON. The result is `Stale`, `reads` is empty, and there is no error.\n  - The same test then checks the same revision with dependencies cleared. That yields `ValidationError::Output`, so decoding runs once the revision matches.\n- **A saved dependency is resolved and compared by fingerprint.**\n  - `contracts.rs#fn[changing_one_criteria_input_does_not_invalidate_another]` checks that a changed node makes only the record that depends on it `Stale`. The record that depends on a different node stays `Current(true)`.\n  - `crates/habeas-sdk/tests/validation.rs#fn[wildcard_versions_still_check_inputs_and_errors]` covers a matching fingerprint, a changed value, and a changed scheme.\n  - `validation.rs#fn[labeled_selections_track_only_target_membership_without_reading_contents]` covers outgoing-edge dependencies. A change in a selected label's target set makes the record stale, and an unrelated edge change does not.\n  - `contracts.rs#fn[absence_certification_is_invalidated_by_the_first_selected_root]` covers a new edge invalidating a record that was certified on the absence of edges.\n- **Staleness on mismatch.** The same tests assert `Stale` or `false`. The text only permits an early return, so there is nothing further to test there.\n- **A dependency-resolution failure returns an error.**\n  - `wildcard_versions_still_check_inputs_and_errors` asserts `Err(\"read\")` from `record_is_current` when reading fails.\n  - `labeled_selections_track_only_target_membership_without_reading_contents` asserts `Err(\"edges\")` when the edge lookup fails.\n- **Checking executes no validation or model and writes no evidence.**\n  - `changing_one_criteria_input_does_not_invalidate_another` asserts that `executions` is still 2 after two checks.\n  - `revision_and_dependency_checks_precede_output_decoding` asserts that `executions` and `writes` are both 1 after the checks and the failed `verify`.\n- **Current state is used, not earlier snapshots.**\n  - `validation.rs#fn[historical_freshness_reads_do_not_enter_the_replacement_trace]` shows that freshness reads happen on the current graph state.\n  - `src/sdk.rs#mod[tests]/fn[requirement_edges_and_input_freshness_use_the_sdk]` shows that `record_is_current` with a fresh outline cache sees the changed source. The fingerprint of the retained snapshot differs from the fingerprint of the current content.\n\nI found no untested obligation, so there is no gap.",
+  "rationale": "The reviewed tests cover every obligation in `requirements.sdk.graph.evidence.checking_records`. I found no gap.\n\n**Revision checked first.**\n- `contracts.rs#fn[revision_and_dependency_checks_precede_output_decoding]` saves a record. It then corrupts the saved dependencies and sets `fail_read`.\n- It checks with a changed revision and asserts `EvidenceState::Stale` and that `reads` is empty. So a revision mismatch is stale without resolving dependencies, and it also means no decoding.\n- The same test then checks with the same revision and an undecodable output. `check` returns `ValidationError::Output`, which shows output decoding happens only after the revision and dependency checks pass.\n\n**Dependency resolution and comparison with saved observations.**\n- `contracts.rs#fn[changing_one_criteria_input_does_not_invalidate_another]` changes one input. The record that read it is `Stale`. The record that read a different input stays `Current(true)`.\n- `validation.rs#fn[wildcard_versions_still_check_inputs_and_errors]` covers a matching fingerprint, a changed value and a changed scheme. Each is checked through `record_is_current`.\n- `validation.rs#fn[labeled_selections_track_only_target_membership_without_reading_contents]` covers outgoing-edge dependencies. A fingerprint mismatch gives stale, and an unrelated edge change leaves the record current.\n- `contracts.rs#fn[absence_certification_is_invalidated_by_the_first_selected_root]` covers a new edge invalidating an absence record.\n- `src/sdk.rs#fn[requirement_edges_and_input_freshness_use_the_sdk]` covers the real Habeas domain. The record is current, then stale after the source file changes.\n\n**Early return on mismatch.** This is permitted (\"need not resolve later dependencies\"), not required. The first-selected-root test asserts that `reads` is empty, which is consistent with it.\n\n**Resolution failure returns an error.**\n- `wildcard_versions_still_check_inputs_and_errors` asserts `Err(\"read\")` from `record_is_current` when node reads fail.\n- `labeled_selections_track_only_target_membership_without_reading_contents` asserts `Err(\"edges\")` when edge resolution fails.\n- Both cover the graph-operation kinds, node reads and outgoing edges.\n- `contracts.rs#fn[dependency_resolution_failures_do_not_execute_or_replace_saved_answers]` also covers the failure case at the validator level. It is not marked with a `{test}` reference to the subject, but the marked tests already cover the failure case.\n\n**No validation or model executed, and no evidence written.**\n- `changing_one_criteria_input_does_not_invalidate_another` asserts `executions == 2` after two verifies and several checks.\n- `revision_and_dependency_checks_precede_output_decoding` asserts `executions == 1` and `writes == 1` after multiple checks and a failed verify.\n\n**Current state, not stale snapshots.**\n- In `requirement_edges_and_input_freshness_use_the_sdk`, a retained earlier snapshot keeps its original fingerprint.\n- A fresh `OutlineCache` and domain after the file edit make `record_is_current` return false.\n- The current content's fingerprint differs from the retained one.\n- `validation.rs#fn[historical_freshness_reads_do_not_enter_the_replacement_trace]` shows the freshness reads stay out of the replacement trace.\n\n**Delegated.** The wildcard-revision rule belongs to the refining requirement `requirements.sdk.graph.evidence.checking_records.procedure_match`, so it is not assessed here.",
   "references": "59b80511da08d2f48c0073a02fe38a9baab722bf07b9aaa636295a0a28884832",
   "inputs": [
     {
@@ -28,22 +28,22 @@
     {
       "file": "crates/habeas-sdk/tests/contracts.rs",
       "item": "fn[changing_one_criteria_input_does_not_invalidate_another]",
-      "hash": "0d42fc614241e2d111f072dad8bdee9ece514e6bb2113e4ea797ddfce75ab54f"
+      "hash": "f1fddfe0c564e54c64d804de0262e965cca845f68ca2f0cdb06def635f4c5cb7"
     },
     {
       "file": "crates/habeas-sdk/tests/contracts.rs",
       "item": "fn[revision_and_dependency_checks_precede_output_decoding]",
-      "hash": "037876dd132368f33b90db17538fe87aedbec87244c0fe7f964debcd1a946874"
+      "hash": "09825dec15bbb774ef42189297febabe33f9f165409b63ae02597d633e07c7f0"
     },
     {
       "file": "crates/habeas-sdk/tests/contracts.rs",
       "item": "fn[absence_certification_is_invalidated_by_the_first_selected_root]",
-      "hash": "697fb74af046f676594403f86c6e863dd36a843417ad45e72daf34f80237fb3d"
+      "hash": "013cf14d69b922bcc9a24e0f39f20c5bf46697717486f76319ee8c5d32c88113"
     },
     {
       "file": "crates/habeas-sdk/tests/validation.rs",
       "item": "fn[historical_freshness_reads_do_not_enter_the_replacement_trace]",
-      "hash": "9146955de91179cbabb9f0cdd268f7c7bb4313b2c818070b80f06f277e299e33"
+      "hash": "b48a80f8b5112051fccc7e3a3c286840be9a083b11c630a3b98504dbb19eada7"
     },
     {
       "file": "crates/habeas-sdk/tests/validation.rs",
@@ -63,7 +63,7 @@
     {
       "file": "crates/habeas-sdk/tests/contracts.rs",
       "item": "fn[dependency_resolution_failures_do_not_execute_or_replace_saved_answers]",
-      "hash": "bb351d46de402d029ff54047ceafec38b1646f85241c9b4f7496cc90c8d2b0ac"
+      "hash": "33fc8bbddaa15811a8cf9edf2cdd80acd6fee3661763faed46b92616324d4dc0"
     }
   ],
   "format_version": 1,
@@ -116,7 +116,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "553fed96c09ae7ea8d5285fd4a93d9ac48acb8f98c1cbc2c4c9e4f9662271653"
+          "value": "70f75df790a324019dd3decf46c04a848776bafc788b2f126b3b88f5f0e00649"
         }
       ]
     },
@@ -133,7 +133,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "dc4ba781fe76ced7fd53e2f5fd9e41a5f9df5791b2e6ab25e6c611340fd04b42"
+          "value": "7665377242de5e616d73f7971008ec838cb7b73c167db0ceb8c1f1f8d88b587b"
         }
       ]
     },
@@ -150,7 +150,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "372e7f9203891d0d092a9b86e6123e6e6184083dde76d15aa544b563f248cf28"
+          "value": "c46de3b53d4552e850872e82967366cc7b961c976a23cde654e6eff076394750"
         }
       ]
     },
@@ -167,7 +167,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "60a41a2c898eca3120a539ad832d7b371eb9297cb2bfbc2cccceb2c9f9cd51fd"
+          "value": "91363b9cfa1d480eae187336f78d198998ae40eea8c995926d547f1e7be9bde6"
         }
       ]
     },
@@ -235,7 +235,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "d996907cce19f051fac6e333fefd7ffca8914f905398bb742d905ee537ef4185"
+          "value": "4120055a7a6f3df84d7d0871d04f2ab36cb803acdf614ef32b6116fc082210a7"
         }
       ]
     }

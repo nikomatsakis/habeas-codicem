@@ -32,8 +32,8 @@ struct State {
     fail_read: bool,
     fail_edges: bool,
 }
-#[derive(Default)]
-struct Application(Mutex<State>);
+#[derive(Clone, Default)]
+struct Application(Arc<Mutex<State>>);
 impl Graph for Application {
     type NodeId = Node;
     type NodeContent = Content;
@@ -53,9 +53,7 @@ impl Graph for Application {
             .ok_or("missing")
     }
     fn node_path(&self, node: &Node) -> NodePath {
-        NodePath {
-            segments: vec!["application".into(), node.0.to_string()],
-        }
+        NodePath::new(vec!["application".into(), node.0.to_string()])
     }
     fn outgoing_edges(&self, node: &Node, label: u8) -> Result<Vec<Node>, Self::Error> {
         let state = self.0.lock().unwrap();
@@ -141,7 +139,7 @@ impl<O> Review<O> {
         }
     }
 }
-impl<O: Serialize + serde::de::DeserializeOwned + Send> Validation<Application> for Review<O> {
+impl<O: Serialize + serde::de::DeserializeOwned + Send> Criterion<Application> for Review<O> {
     type Ok = O;
     fn source_node_id(&self) -> Node {
         self.descriptor_reads.set(self.descriptor_reads.get() + 1);
@@ -174,9 +172,7 @@ impl<O: Serialize + serde::de::DeserializeOwned + Send> Validation<Application> 
     }
 }
 fn path(segments: &[&str]) -> CriterionPath {
-    CriterionPath {
-        segments: segments.iter().map(|s| (*s).into()).collect(),
-    }
+    CriterionPath::new(segments.iter().map(|s| (*s).into()).collect())
 }
 fn answer(satisfied: bool, details: &str) -> Answer {
     Answer {
@@ -196,13 +192,14 @@ fn send<T: Send>(value: T) -> T {
 // {test}`requirements.sdk.graph.validation.judgment`
 // {test}`requirements.sdk.graph.validation.deterministic_procedures`
 // {test}`requirements.sdk.graph.evidence.record`
+// {test}`requirements.sdk.graph.evidence.record.output`
 // {test}`requirements.sdk.graph.evidence.evidence_storage`
 // {test}`requirements.sdk.graph.domain_types`
 // {test}`requirements.sdk.domain`
 #[tokio::test]
 async fn criteria_have_independent_typed_answers_and_cache_negative_results() {
     let domain = Application::default();
-    let validator = Validator::new(&domain);
+    let validator = Validator::new(domain.clone());
     let negative = answer(false, "missing edge case");
     assert_eq!(
         validator
@@ -330,7 +327,7 @@ async fn changing_one_criteria_input_does_not_invalidate_another() {
         .unwrap()
         .contents
         .extend([(2, "test".into()), (3, "implementation".into())]);
-    let validator = Validator::new(&domain);
+    let validator = Validator::new(domain.clone());
     let mut behavior = Review::new(&["behavior"], true);
     behavior.reads = vec![Node(2)];
     validator.verify(behavior).await.unwrap();
@@ -390,7 +387,7 @@ async fn changing_one_criteria_input_does_not_invalidate_another() {
 #[tokio::test]
 async fn revision_and_dependency_checks_precede_output_decoding() {
     let domain = Application::default();
-    let validator = Validator::new(&domain);
+    let validator = Validator::new(domain.clone());
     validator
         .verify(Review::new(&["behavior"], json!({"old": true})))
         .await
@@ -442,7 +439,7 @@ async fn revision_and_dependency_checks_precede_output_decoding() {
 async fn changed_dependencies_precede_decoding_and_execution_records_its_own_reads() {
     let domain = Application::default();
     domain.0.lock().unwrap().contents.insert(2, "before".into());
-    let validator = Validator::new(&domain);
+    let validator = Validator::new(domain.clone());
     let mut old = Review::new(&["behavior"], json!({"old": true}));
     old.reads = vec![Node(2)];
     validator.verify(old).await.unwrap();
@@ -484,7 +481,7 @@ async fn changed_dependencies_precede_decoding_and_execution_records_its_own_rea
 async fn dependency_resolution_failures_do_not_execute_or_replace_saved_answers() {
     let domain = Application::default();
     domain.0.lock().unwrap().contents.insert(2, "input".into());
-    let validator = Validator::new(&domain);
+    let validator = Validator::new(domain.clone());
     let mut review = Review::new(&["behavior"], false);
     review.reads = vec![Node(2)];
     review.label = Some(7);
@@ -520,7 +517,7 @@ async fn dependency_resolution_failures_do_not_execute_or_replace_saved_answers(
 #[tokio::test]
 async fn wildcard_revision_does_not_supply_other_criteria_or_nodes() {
     let domain = Application::default();
-    let validator = Validator::new(&domain);
+    let validator = Validator::new(domain.clone());
     validator.verify(Review::new(&[], false)).await.unwrap();
     domain.0.lock().unwrap().records[0].2.revision = "*".into();
     let mut future = Review::new(&[], true);
@@ -551,7 +548,7 @@ async fn wildcard_revision_does_not_supply_other_criteria_or_nodes() {
 #[tokio::test]
 async fn validation_and_answer_need_send_without_sync() {
     let domain = Application::default();
-    let validator = Validator::new(&domain);
+    let validator = Validator::new(domain.clone());
     let value = send(validator.verify(Review::new(&["cell"], Cell::new(17u32))))
         .await
         .unwrap();
@@ -569,7 +566,7 @@ async fn validation_and_answer_need_send_without_sync() {
 #[tokio::test]
 async fn absence_certification_is_invalidated_by_the_first_selected_root() {
     let domain = Application::default();
-    let validator = Validator::new(&domain);
+    let validator = Validator::new(domain.clone());
     for (name, label) in [("behavior", 1), ("structure", 2)] {
         let mut review = Review::new(&[name], true);
         review.label = Some(label);
@@ -606,7 +603,7 @@ impl Serialize for Unencodable {
 #[tokio::test]
 async fn serialization_failure_leaves_the_existing_record_unchanged() {
     let domain = Application::default();
-    let validator = Validator::new(&domain);
+    let validator = Validator::new(domain.clone());
     validator
         .verify(Review::new(&[], "old answer".to_owned()))
         .await
@@ -637,7 +634,7 @@ async fn serialization_failure_leaves_the_existing_record_unchanged() {
 #[tokio::test]
 async fn loading_execution_resolution_and_saving_failures_do_not_publish_answers() {
     let domain = Application::default();
-    let validator = Validator::new(&domain);
+    let validator = Validator::new(domain.clone());
     domain.0.lock().unwrap().fail_load = true;
     assert!(matches!(
         validator.check(&Review::new(&[], true)).await,
@@ -690,7 +687,7 @@ async fn concurrent_same_criterion_executions_keep_complete_independent_records(
         .unwrap()
         .contents
         .extend([(2, "first input".into()), (3, "second input".into())]);
-    let validator = Validator::new(&domain);
+    let validator = Validator::new(domain.clone());
     let barrier = Arc::new(tokio::sync::Barrier::new(2));
     let mut first = Review::new(&["behavior"], "first".to_owned());
     first.revision = "first-revision".into();
@@ -755,15 +752,15 @@ fn hierarchical_requirement_identity_maps_each_component_to_a_path_segment() {
         Requirement(Vec<String>),
     }
     let node_path = |node: &HabeasNodeId| match node {
-        HabeasNodeId::Requirement(parts) => NodePath {
-            segments: std::iter::once("requirement".to_owned())
+        HabeasNodeId::Requirement(parts) => NodePath::new(
+            std::iter::once("requirement".to_owned())
                 .chain(parts.iter().cloned())
                 .collect(),
-        },
+        ),
     };
     let requirement = HabeasNodeId::Requirement(vec!["a".into(), "b".into(), "c".into()]);
     assert_eq!(
-        node_path(&requirement).segments,
+        node_path(&requirement).segments(),
         ["requirement", "a", "b", "c"]
     );
     assert_eq!(node_path(&requirement), node_path(&requirement));
@@ -804,9 +801,7 @@ fn identities_remain_stable_and_fingerprinting_uses_the_supplied_snapshot() {
         vec!["é"],
         vec!["e\u{301}"],
     ]
-    .map(|segments| NodePath {
-        segments: segments.into_iter().map(str::to_owned).collect(),
-    });
+    .map(|segments| NodePath::new(segments.into_iter().map(str::to_owned).collect()));
     for (index, path) in paths.iter().enumerate() {
         assert_eq!(*path, path.clone());
         for other in &paths[index + 1..] {

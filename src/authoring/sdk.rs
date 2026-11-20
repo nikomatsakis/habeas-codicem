@@ -7,12 +7,12 @@ use crate::{
 };
 use habeas_sdk::{
     graph::{
-        CriterionPath, EvidenceStorage, Fingerprint, Fingerprinting, Graph, InspectionContext,
-        NodePath, Validation, ValidationContext, ValidationError,
+        Criterion, CriterionPath, EvidenceStorage, Fingerprint, Fingerprinting, Graph,
+        InspectionContext, NodePath, ValidationContext, ValidationError,
     },
     procedure::{Agent, AgentInput, AgentInputRenderer, AgentRequest},
 };
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 // {cite}`habeas:util`
 #[derive(serde::Deserialize, schemars::JsonSchema)]
@@ -33,6 +33,7 @@ struct VerificationAnswer {
 }
 
 // {cite}`habeas:util`
+#[derive(Clone)]
 enum Operation {
     Assess,
     Verify(Judgment, String),
@@ -40,6 +41,7 @@ enum Operation {
 
 // {cite}`habeas:util`
 /// Immutable snapshots identify the contents used to assemble this review.
+#[derive(Clone)]
 struct ReviewGraph<'a> {
     root: PathBuf,
     node: HabeasNode,
@@ -49,10 +51,10 @@ struct ReviewGraph<'a> {
     reference_set: String,
     system: String,
     operation: Operation,
-    conversation: Mutex<Option<(&'a mut AssessmentSources, &'a mut UsageLog)>>,
+    conversation: Arc<Mutex<Option<(&'a mut AssessmentSources, &'a mut UsageLog)>>>,
     // The public SDK reports an agent error as text. Preserve the provider's
     // original error separately for Habeas's classification and batch policy.
-    agent_failure: Mutex<Option<io::Error>>,
+    agent_failure: Arc<Mutex<Option<io::Error>>>,
 }
 
 impl Graph for ReviewGraph<'_> {
@@ -171,7 +173,7 @@ struct Review {
     node: HabeasNode,
 }
 
-impl Validation<ReviewGraph<'_>> for Review {
+impl Criterion<ReviewGraph<'_>> for Review {
     type Ok = habeas_sdk::graph::Judgment<Value>;
 
     fn source_node_id(&self) -> HabeasNode {
@@ -260,12 +262,16 @@ impl Validation<ReviewGraph<'_>> for Review {
 }
 
 // {cite}`habeas:util`
-struct ReviewAgent<'p, P>(&'p P);
+struct ReviewAgent<P>(P);
 
 // {impl}`requirements.sdk.graph.agent-calls.author_procedure`
 // {impl}`requirements.sdk.graph.agent-calls.judge.caching`
 // {impl}`requirements.sdk.graph.agent-calls.judge.submission`
-impl<P: CompletionProvider> Agent<ReviewGraph<'_>> for ReviewAgent<'_, P> {
+impl<P> Agent<ReviewGraph<'_>> for ReviewAgent<P>
+where
+    P: std::ops::Deref + Send + Sync,
+    P::Target: CompletionProvider + Sized,
+{
     fn run<'a>(
         &'a self,
         request: AgentRequest<HabeasNode>,
@@ -352,7 +358,7 @@ impl<P: CompletionProvider> Agent<ReviewGraph<'_>> for ReviewAgent<'_, P> {
                     Operation::Verify(..) => "submit_verification",
                 };
                 let value = converse_observed(
-                    self.0,
+                    &*self.0,
                     sources,
                     usage,
                     prompt,
@@ -476,8 +482,8 @@ async fn run(
             }
         },
         operation,
-        conversation: Mutex::new(Some((sources, usage))),
-        agent_failure: Mutex::new(None),
+        conversation: Arc::new(Mutex::new(Some((sources, usage)))),
+        agent_failure: Arc::new(Mutex::new(None)),
     };
     let agent = ReviewAgent(provider);
     let review = Review { node: node.clone() };
@@ -531,11 +537,11 @@ mod tests {
             reference_set: "fixture".into(),
             system: "fixture".into(),
             operation: Operation::Assess,
-            conversation: Mutex::new(None),
-            agent_failure: Mutex::new(None),
+            conversation: Arc::new(Mutex::new(None)),
+            agent_failure: Arc::new(Mutex::new(None)),
         };
         assert_eq!(
-            graph.node_path(&subject).segments,
+            graph.node_path(&subject).segments(),
             ["requirement", "requirements.ready"]
         );
         let selector = InputSelector::Outline {
@@ -544,7 +550,7 @@ mod tests {
         };
         let source = HabeasNode::from(&selector);
         assert_eq!(
-            graph.node_path(&source).segments,
+            graph.node_path(&source).segments(),
             ["source", "repo", "src/lib.rs", "fn[helper]"]
         );
         let inspection = InspectionContext::new(&graph);
@@ -610,19 +616,19 @@ mod tests {
             reference_set: sources.reference_set.clone(),
             system: initial_prompt(&sources).unwrap().system,
             operation: Operation::Assess,
-            conversation: Mutex::new(Some((&mut sources, &mut usage))),
-            agent_failure: Mutex::new(None),
+            conversation: Arc::new(Mutex::new(Some((&mut sources, &mut usage)))),
+            agent_failure: Arc::new(Mutex::new(None)),
         };
-        let provider = script(vec![(
+        let provider = Arc::new(script(vec![(
             "submit_judgment",
             json!({"determination":false,"rationale":"The readiness case is missing."}),
-        )]);
-        let agent = ReviewAgent(&provider);
-        let validator = Validator::new(&graph).with_agent(&agent, &Renderer);
+        )]));
+        let agent = Arc::new(ReviewAgent(provider.clone()));
+        let validator = Validator::new(graph.clone()).with_agent(agent, Arc::new(Renderer));
         let review = || Review { node: node.clone() };
         let path = node.evidence_path(root.path()).unwrap();
         assert_eq!(review().source_node_id(), node);
-        assert_eq!(review().criterion_path().segments, ["review"]);
+        assert_eq!(review().criterion_path().segments(), ["review"]);
         assert_eq!(review().revision(), crate::sdk::REVIEW_VERSION);
         assert!(matches!(
             validator.check(&review()).await.unwrap(),
@@ -659,9 +665,7 @@ mod tests {
         assert_eq!(provider.requests.lock().unwrap().len(), 1);
         assert_eq!(fs::read(&path).unwrap(), saved);
 
-        let other = CriterionPath {
-            segments: vec!["another".into(), "review".into()],
-        };
+        let other = CriterionPath::new(vec!["another".into(), "review".into()]);
         assert!(graph.load_evidence(&node, &other).await.unwrap().is_none());
         assert!(graph.store_evidence(&node, &other, &record).await.is_err());
         assert_eq!(fs::read(&path).unwrap(), saved);

@@ -1,8 +1,8 @@
 {
-  "requirement": "```rust,ignore\n// Defined in habeas_sdk::procedure.\npub struct AgentInput<'i, D: Graph> {\n    pub node: &'i D::NodeId,\n    pub contents: &'i D::NodeContent,\n}\n\npub trait AgentInputRenderer<D: Graph>: Send + Sync {\n    /// Present these supplied contents without fetching replacement contents.\n    fn render(&self, input: &AgentInput<'_, D>) -> Result<String, D::Error>;\n}\n```\n\nThe application supplies the renderer through `Validator::with_agent`.\nRendering errors return `ValidationError::Graph`. Neither `Graph::NodeContent`\nnor `Graph::NodeId` needs serialization or display bounds.",
+  "requirement": "```rust,ignore\n// Defined in habeas_sdk::procedure.\npub struct AgentInput<'i, D: Graph> {\n    pub node: &'i D::NodeId,\n    pub contents: &'i D::NodeContent,\n}\n\npub trait AgentInputRenderer<D: Graph>: Send + Sync {\n    /// Present these supplied contents without fetching replacement contents.\n    fn render(&self, input: &AgentInput<'_, D>) -> Result<String, D::Error>;\n}\n```\n\nThe application supplies the renderer through `Validator::with_agent`.\nFor inputs queued on an ask builder, rendering errors return\n`ValidationError::Graph`. When the SDK's supplied tool harness renders a\n`read_node` result, a rendering failure returns a tool error to the agent,\nwhich can continue the conversation and recover. Neither `Graph::NodeContent`\nnor `Graph::NodeId` needs serialization or display bounds.",
   "determination": true,
-  "rationale": "The reviewed tests adequately cover `requirements.sdk.graph.agent-calls.judge.rendering`.\n\nObligations, with the tests that cover each:\n\n- **Render the supplied contents without fetching replacements.**\n  - `validation.rs#fn[explicit_insertions_preserve_order_repetition_and_selection_snapshots]` checks that the contents handed to the agent are the rendered, supplied contents, in order and with repeats. It also asserts the graph's read log is exactly `[1,3,2,3,1]`, one read per insertion, so rendering fetched nothing extra.\n  - `agent.rs#fn[default_tool_accepts_scalar_results_and_keeps_the_exact_prefix]` checks that the rendered text (\"source\") appears in the chat history.\n  - `agent.rs#fn[validator_agent_executions_isolate_conversations_and_dependency_traces]` uses a `DistinctPages` renderer whose output depends on `input.node` and `input.contents`. Two concurrent conversations each get their own rendering, and the recorded dependencies are correct.\n  - `AgentInput` carries only `node` and `contents`, so a renderer cannot fetch anything itself.\n- **The application supplies the renderer through `Validator::with_agent`.** `agent.rs#fn[validator_agent_executions_isolate_conversations_and_dependency_traces]` builds `Validator::new(&graph).with_agent(&agent, &agent.renderer)` and verifies through it. `validation.rs#fn[runner_does_not_store_a_missing_agent_error_and_supports_intermediate_calls]` checks that a validator without an agent returns `NoAgentConfigured` and stores nothing. Once `with_agent(&agent, &Renderer)` is added, the rendered contents work and the dependencies are recorded.\n- **Rendering errors return `ValidationError::Graph`.** `validation.rs#fn[queued_reads_selection_and_rendering_fail_before_agent_invocation]` uses `FailingRenderer`, which returns `Err(\"render\")`. It asserts `Err(ValidationError::Graph(\"render\"))`, that no dependencies are recorded, and that the agent request count is unchanged, so the agent was not invoked.\n- **`NodeContent` and `NodeId` need no serialization or display bounds.** The `Node` type in `agent.rs` deliberately derives only `Clone`, `Eq` and `PartialEq`, with no Serde, Hash or Display. The tests that use it compile and run through rendering and dependency recording, which shows the trait and context work without those bounds.\n\nThe `agent.rs` edge-only test uses a renderer that panics if called. That test shows that rendering happens only for explicitly requested contents, which is consistent with the requirement.\n\nNo test gap was found, and there are no acknowledgments.",
-  "references": "ce598c21f57eca7ac1b06bdbfe846984a4b6be33ce0b6dff069ac85731ec6453",
+  "rationale": "The reviewed tests cover each obligation in `requirements.sdk.graph.agent-calls.judge.rendering`.\n\n- **Queued-input rendering errors map to `ValidationError::Graph`.**\n  - `crates/habeas-sdk/tests/validation.rs#fn[queued_reads_selection_and_rendering_fail_before_agent_invocation]` runs `current_node_contents()` with a `FailingRenderer`.\n  - It asserts `Err(ValidationError::Graph(\"render\"))`.\n  - It asserts no dependencies are recorded.\n  - It asserts the agent request count is unchanged, so the agent is never invoked.\n- **A `read_node` rendering failure becomes a tool error and the agent can recover.**\n  - `crates/habeas-sdk/tests/agent.rs#fn[node_rendering_tool_errors_allow_recovery_without_recording_undelivered_contents]` uses a renderer that returns `Err`.\n  - The script calls `read_node`, then `submit_result`, and the ask succeeds.\n  - It asserts the second request carries a single `ToolResult` with `is_error`, the name `read_node`, and the error text.\n  - It asserts no dependencies are recorded for the undelivered contents.\n- **The renderer is supplied through `Validator::with_agent`.**\n  - `crates/habeas-sdk/tests/agent.rs#fn[validator_agent_executions_isolate_conversations_and_dependency_traces]` and `crates/habeas-sdk/tests/validation.rs#fn[runner_does_not_store_a_missing_agent_error_and_supports_intermediate_calls]` build a `Validator` with `with_agent(agent, Arc::new(renderer))`. They verify that questions run end to end.\n  - The second test also checks the `NoAgentConfigured` case before an agent is supplied.\n- **The renderer presents supplied contents without fetching replacements.**\n  - `crates/habeas-sdk/tests/validation.rs#fn[explicit_insertions_preserve_order_repetition_and_selection_snapshots]` asserts the rendered inputs, in order, as `(id, content)` pairs.\n  - The same test asserts the graph's recorded reads are exactly `[1,3,2,3,1]`. That is one read per queued input, with no extra fetches during rendering.\n  - `crates/habeas-sdk/tests/agent.rs#fn[default_tool_accepts_scalar_results_and_keeps_the_exact_prefix]` asserts the rendered `\"source\"` appears in the chat history.\n- **`NodeContent` and `NodeId` need no serialization or display bounds.** This is a compile-time property, and the test graphs check it.\n  - In `agent.rs`, `Node` is commented as having no Serde or Hash implementations, and `Contents` derives nothing.\n  - In `contracts.rs`, `Node` has no Serialize or Display and `Content` derives nothing.\n  - These types are used with the agent and renderer paths in the tests above, so the code compiles only if no such bounds are required.\n\nI found no untested obligation and no missing scenario. The marked tests have `{test}` references to the subject. The `src/authoring/sdk.rs` test is only tangentially related, but it does no harm.",
+  "references": "48d95242ddb7fce1d88a931e6061b063ad16c2e6cc32a7d163225cf97e75b0d0",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.agent-calls.judge.rendering",
@@ -25,7 +25,10 @@
         "```",
         "",
         "The application supplies the renderer through `Validator::with_agent`.",
-        "Rendering errors return `ValidationError::Graph`. Neither `Graph::NodeContent`",
+        "For inputs queued on an ask builder, rendering errors return",
+        "`ValidationError::Graph`. When the SDK's supplied tool harness renders a",
+        "`read_node` result, a rendering failure returns a tool error to the agent,",
+        "which can continue the conversation and recover. Neither `Graph::NodeContent`",
         "nor `Graph::NodeId` needs serialization or display bounds.",
         ":::"
       ]
@@ -38,12 +41,17 @@
     {
       "file": "crates/habeas-sdk/tests/agent.rs",
       "item": "fn[validator_agent_executions_isolate_conversations_and_dependency_traces]",
-      "hash": "672215059abee2fec7002dab5f063e8c3d60b4ca77d30788685a521447da54a3"
+      "hash": "727c1c6c0cfeef10c76253a3c36506308ec494f3ac19697d545a16fb301b7191"
+    },
+    {
+      "file": "crates/habeas-sdk/tests/agent.rs",
+      "item": "fn[node_rendering_tool_errors_allow_recovery_without_recording_undelivered_contents]",
+      "hash": "6f7de3a9ecf5f8395e05117271112d8b3cdc331faf5fdb33670893e848fb6e11"
     },
     {
       "file": "crates/habeas-sdk/tests/validation.rs",
       "item": "fn[runner_does_not_store_a_missing_agent_error_and_supports_intermediate_calls]",
-      "hash": "273d2ec212043bf2ee9bd66562596785c0c7f853cabd09ecf11ac5eeb64ba742"
+      "hash": "60ebee46a29ec80f9ddf03a74bbda6e7ee214ceacf61740d8a491d8cb873b0b1"
     },
     {
       "file": "crates/habeas-sdk/tests/validation.rs",
@@ -67,53 +75,8 @@
     },
     {
       "file": "crates/habeas-sdk/tests/agent.rs",
-      "item": "struct[Renderer]",
-      "hash": "ebf2d6b6c10f555a223b1ab7e3bf977c8fc63b618cf49d138d57dd591265064b"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/agent.rs",
-      "item": "impl[Renderer/AgentInputRenderer<Memory>]",
-      "hash": "34f8dcb54bb04c44acb0605846cc330233e5c3d3b34aa88982143d56921f3678"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/contracts.rs",
-      "item": "struct[Node]",
-      "hash": "6432ba1c03e5d58df823ea2106175d9c26356019b703ba3906c9d80ba040abd6"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/validation.rs",
-      "item": "struct[Renderer]",
-      "hash": "ebf2d6b6c10f555a223b1ab7e3bf977c8fc63b618cf49d138d57dd591265064b"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/validation.rs",
-      "item": "impl[Renderer/AgentInputRenderer<Memory>]",
-      "hash": "815825a95df8473be3a98f3e41a7642a482b90b50efe511f3bfe22e12193fc37"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/validation.rs",
-      "item": "struct[FailingRenderer]",
-      "hash": "9aa2eff0c4668c09a1371cb741ff255cb30b776c28183e42ee7604bb2aa86ba4"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/validation.rs",
-      "item": "impl[FailingRenderer/AgentInputRenderer<Memory>]",
-      "hash": "53ec6923bd7d258023ecb105d8203c52411f2d1b3292483f1e0eb5fae4cd40db"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/agent.rs",
-      "item": "fn[agent_edge_tools_record_selections_without_validating_targets]",
-      "hash": "9f5067261557fce342d0962e80846c93d4811f38b619b1b7969fe43e4d9d846f"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/agent.rs",
-      "item": "fn[agent_edge_tools_record_selections_without_validating_targets]/impl[Render/AgentInputRenderer<GraphWithChangingEdges>]/fn[render]",
-      "hash": "f2b6575206e50f6891b6e6990d574e744c43aeb0705ec8808a61f585e15e3547"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/agent.rs",
-      "item": "impl[Memory/Graph]/type[NodeId]",
-      "hash": "9518226738c940959600fd33a20d1a1c80ed50e87e28ce5a3854bb0ff708378c"
+      "item": "struct[Contents]",
+      "hash": "57930076d9167dd0e1aac4119d40fcfbecb8157d4a0fa3f371b4c5d2590eb2b5"
     },
     {
       "file": "crates/habeas-sdk/tests/agent.rs",
@@ -121,14 +84,19 @@
       "hash": "f3aa055286d64167255516432b562c4f2d270569d3015af9072c1006e30ba259"
     },
     {
-      "file": "crates/habeas-sdk/tests/agent.rs",
-      "item": "impl[DistinctPages/AgentInputRenderer<Memory>]",
-      "hash": "e7fd1e5b0df47861d423e2b4952f9531ab299ef5f5f05aea25f983bff0ca62d1"
+      "file": "crates/habeas-sdk/tests/contracts.rs",
+      "item": "struct[Node]",
+      "hash": "6432ba1c03e5d58df823ea2106175d9c26356019b703ba3906c9d80ba040abd6"
     },
     {
-      "file": "crates/habeas-sdk/tests/validation.rs",
-      "item": "impl[Memory/Graph]/type[NodeContent]",
-      "hash": "5643d10284f32c086faa0fffc0cffd1d3c2e7c40b69661d7e26af47b9541d9a1"
+      "file": "crates/habeas-sdk/tests/contracts.rs",
+      "item": "struct[Content]",
+      "hash": "1871169283a0c2fff637b91bd9ccfdaa767bdee65f6afede60204936346757e1"
+    },
+    {
+      "file": "crates/habeas-sdk/tests/agent.rs",
+      "item": "impl[Renderer/AgentInputRenderer<Memory>]",
+      "hash": "34f8dcb54bb04c44acb0605846cc330233e5c3d3b34aa88982143d56921f3678"
     }
   ],
   "format_version": 1,
@@ -141,7 +109,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "ce598c21f57eca7ac1b06bdbfe846984a4b6be33ce0b6dff069ac85731ec6453"
+          "value": "48d95242ddb7fce1d88a931e6061b063ad16c2e6cc32a7d163225cf97e75b0d0"
         }
       ]
     },
@@ -153,7 +121,7 @@
         "Mandatory",
         {
           "scheme": "node-path-set-sha256-v1",
-          "value": "cd0093a5e3bf8563dbfaa87d5134ec737d843c345b419f15f124a55f71bf8b15"
+          "value": "19d8d51415014ccb81edd0b2c465bcc7bd0bc93f6044d613a7433c8bb6ac61c8"
         }
       ]
     },
@@ -164,7 +132,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "c7d01c32771fcc75341506fef3a7ee631dbed72f263571abe4a8fd4bd080b07b"
+          "value": "ea160a9d63476d363966a3c0341a9d5c7d46b31c0794161d341757dd9449ad53"
         }
       ]
     },
@@ -198,7 +166,24 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "01a9702fe35a0a6473a6a1985af8bb55f3b74e42dceb7028c8a355bb88510582"
+          "value": "cd1a71f0aa84f9d9cda7ed409e8da6cb0a4cbd98c4d374280bd49c84e10747dd"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/tests/agent.rs"
+            },
+            "selector": "fn[node_rendering_tool_errors_allow_recovery_without_recording_undelivered_contents]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "9ebe1494c332fa8ef6d9b926f43d17f4fcdaeed1511f498d0cab0209e22a7eac"
         }
       ]
     },
@@ -215,7 +200,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "611b4a8460ce7d73ee14dcc162b93992fadfe0d43d6a662e1121ca4b3223788d"
+          "value": "7627d7d2730f860e83bcb444765894dc4ad1ffe6fca57fe4d8d6f38f671af4e0"
         }
       ]
     },
@@ -295,165 +280,12 @@
               "scheme": "repo",
               "location": "crates/habeas-sdk/tests/agent.rs"
             },
-            "selector": "struct[Renderer]"
+            "selector": "struct[Contents]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "bc8f032acf16d39c137672c3f6d67ec6f15ba502a3c818034a826eb80b09e535"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/agent.rs"
-            },
-            "selector": "impl[Renderer/AgentInputRenderer<Memory>]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "b26c4698a3d8bf6149ef1029a4be73aa81893a18bcaa015e31dac6a8bfb5c6db"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/contracts.rs"
-            },
-            "selector": "struct[Node]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "124c6b0c72fe4c4863e1dac2896d9f0a717336d624cb5e70f269ceedf5969755"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/validation.rs"
-            },
-            "selector": "struct[Renderer]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "676fe91c9e338a63ae8b04ca9001937ed49f15e1d996eb39559bd07502334ce9"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/validation.rs"
-            },
-            "selector": "impl[Renderer/AgentInputRenderer<Memory>]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "9cfa1c6adfd7ab43f7abfe56c1b919ba875a94f0da64a509a4bb6ca2498247ad"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/validation.rs"
-            },
-            "selector": "struct[FailingRenderer]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "7fa265bc5af69f97e7cd57fcc216d9786cbabb3ab29517da03dc2954fb566f10"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/validation.rs"
-            },
-            "selector": "impl[FailingRenderer/AgentInputRenderer<Memory>]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "261f4e61080cdc817092627a5d2082ffeeef8a86b907757ceb8bd78dc75f10e2"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/agent.rs"
-            },
-            "selector": "fn[agent_edge_tools_record_selections_without_validating_targets]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "2bfae781f2ee9f3210a5cfad2aed0f5bb2da0c539905d884994fc99214759af3"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/agent.rs"
-            },
-            "selector": "fn[agent_edge_tools_record_selections_without_validating_targets]/impl[Render/AgentInputRenderer<GraphWithChangingEdges>]/fn[render]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "9b51dbc9ef34e7d8766621b42a65138c60d780d2aa5698c1297d00706b55a9b2"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/agent.rs"
-            },
-            "selector": "impl[Memory/Graph]/type[NodeId]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "4d51f6998189c8e2d23a91dd11e133ec8d8d33a372f037ba050d71f2e6780d52"
+          "value": "f7683df2a5b47d111ec376206855d6f9069bc4551f677e2267fc6086e8862656"
         }
       ]
     },
@@ -480,14 +312,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/agent.rs"
+              "location": "crates/habeas-sdk/tests/contracts.rs"
             },
-            "selector": "impl[DistinctPages/AgentInputRenderer<Memory>]"
+            "selector": "struct[Node]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "09f206d43d0072b36642b20a81abe688050952fac0b0c3e8e0b76d5e7d35a0ec"
+          "value": "124c6b0c72fe4c4863e1dac2896d9f0a717336d624cb5e70f269ceedf5969755"
         }
       ]
     },
@@ -497,14 +329,31 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/validation.rs"
+              "location": "crates/habeas-sdk/tests/contracts.rs"
             },
-            "selector": "impl[Memory/Graph]/type[NodeContent]"
+            "selector": "struct[Content]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "0ce731426f55f77f75644b6ca7cc66bd145310a968b38762d4d66505141e3490"
+          "value": "35845f7dbc7ce141b15ea861e647ba66a3d45621e4ebdd4ee1f1a8e6da77225f"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/tests/agent.rs"
+            },
+            "selector": "impl[Renderer/AgentInputRenderer<Memory>]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "b26c4698a3d8bf6149ef1029a4be73aa81893a18bcaa015e31dac6a8bfb5c6db"
         }
       ]
     }

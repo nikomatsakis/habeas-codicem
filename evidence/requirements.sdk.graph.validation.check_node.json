@@ -1,8 +1,8 @@
 {
-  "requirement": "```rust,ignore\n// Defined in habeas_sdk::graph.\npub enum EvidenceState<O> {\n    Current(O),\n    Missing,\n    Stale,\n}\n\n// Method on Validator<'d, D>.\npub fn check<V: Validation<D>>(\n    &self,\n    validation: &V,\n) -> impl Future<Output = Result<EvidenceState<V::Ok>, ValidationError<D::Error>>> + Send;\n```\n\n`check` uses the same identity, revision, and freshness comparison as `verify`.\nIt reads the descriptor before awaiting; it does not retain a reference to the\nvalidation value across asynchronous storage or dependency operations. Checking\ninvokes neither `execute` nor a model and writes no evidence. It needs no\nconfigured agent. Storage, dependency-resolution, and current-output decoding\nfailures are errors, not missing or stale evidence.",
+  "requirement": "```rust,ignore\n// Defined in habeas_sdk::graph.\npub enum EvidenceState<O> {\n    Current(O),\n    Missing,\n    Stale,\n}\n\n// Method on Validator<D>.\npub fn check<V: Criterion<D>>(\n    &self,\n    criterion: &V,\n) -> impl Future<Output = Result<EvidenceState<V::Ok>, ValidationError<D::Error>>> + Send;\n```\n\n`check` uses the same identity, revision, and freshness comparison as `verify`.\nIt reads the descriptor before awaiting; it does not retain a reference to the\ncriterion value across asynchronous storage or dependency operations. Checking\ninvokes neither `execute` nor a model and writes no evidence. It needs no\nconfigured agent. Storage, dependency-resolution, and current-output decoding\nfailures are errors, not missing or stale evidence.",
   "determination": true,
-  "rationale": "The reviewed tests cover every obligation in `requirements.sdk.graph.validation.check_node`, and I found no gap. I did not need implementation source.\n\n- **Same comparison as `verify`.**\n  - The tests assert `Current`, `Missing` and `Stale` outcomes.\n  - `Current` cases: `criteria_have_independent_typed_answers_and_cache_negative_results`, `changing_one_criteria_input_does_not_invalidate_another`, and `runner_reuses_negative_judgments_and_records_only_callback_observations`.\n  - `Missing` cases: a different criterion, a different source node, and an unverified criterion. These are in `wildcard_revision_does_not_supply_other_criteria_or_nodes` and the `criteria_have_independent_typed_answers_and_cache_negative_results` test.\n  - `Stale` cases: a dependency change (`changing_one_criteria_input_does_not_invalidate_another`) and a revision change (`revision_and_dependency_checks_precede_output_decoding` and `runner_reuses_negative_judgments_and_records_only_callback_observations`).\n  - The stored `*` revision case is covered too.\n  - A sibling criterion stays `Current` when another one goes stale.\n- **No retained reference or reads before awaiting.** `validation_and_answer_need_send_without_sync` drives `check` through a `send(...)` helper with a non-`Sync` `Review`. It also asserts `descriptor_reads == 1`.\n- **No `execute`, no model, no writes.** The tests assert execution and write counters after checks. They also assert that a `Missing` check in `src/authoring/sdk.rs#mod[tests]/fn[review_graph_persists_and_reuses_a_negative_validation_through_the_sdk]` leaves the evidence file absent and sends no provider request. They assert the stored bytes are unchanged after a `Current` check. `revision_and_dependency_checks_precede_output_decoding` shows `writes == 1` after a `Stale` check.\n- **No agent needed.** Checks in most of these tests run on validators built without an agent.\n- **Errors, not `Missing` or `Stale`.**\n  - Load failures are covered in `loading_execution_resolution_and_saving_failures_do_not_publish_answers`.\n  - Dependency read and edge failures are covered in `dependency_resolution_failures_do_not_execute_or_replace_saved_answers`.\n  - Malformed storage (a `Json` error) and an undecodable current output (`ValidationError::Output`) are covered in the `storage.rs` test `malformed_records_are_storage_errors_and_current_bad_outputs_are_output_errors`. `revision_and_dependency_checks_precede_output_decoding` covers the `Output` case as well.\n\nAll the tests carry `{test}` references to the subject, so there are no marking gaps.",
-  "references": "29ee8968ac46549f6c9b611d2d5f32cdb3be915d7f71c0f2cca53c46bbb85ccc",
+  "rationale": "The reviewed tests cover every obligation in `requirements.sdk.graph.validation.check_node`.\n\n**Same identity, revision and freshness comparison as `verify`**\n- `criteria_have_independent_typed_answers_and_cache_negative_results` checks that `check` returns `Current` for a saved answer, including a negative one and a judgment. It returns `Missing` for an unsaved criterion path.\n- `changing_one_criteria_input_does_not_invalidate_another` checks that `check` returns `Stale` once a dependency's content changes. It also checks that an unrelated criterion on the same node stays `Current`.\n- `revision_and_dependency_checks_precede_output_decoding` checks that a revision change gives `Stale`. It does this with a failing read and a bogus dependency present, so it also shows the revision check comes first.\n- `wildcard_revision_does_not_supply_other_criteria_or_nodes` covers the `*` revision case. A criterion on another path, or on another source node, gives `Missing`.\n- `runner_reuses_negative_judgments_and_records_only_callback_observations` covers `Current`, `Missing` (a different node) and `Stale` (revision `v2`), plus the wildcard revision case. It covers the same states through the `Judgment` criterion.\n\n**Reads the descriptor before awaiting and keeps no reference across awaits**\n- `validation_and_answer_need_send_without_sync` wraps `validator.check(&descriptor)` in `send(..)`. The descriptor holds a `Cell`, so it is not `Sync`, and `&descriptor` therefore is not `Send`. The future compiles only if it does not hold the criterion reference across an await.\n- The same test asserts `descriptor_reads == 1` after one `check`.\n\n**No `execute`, no model, no evidence writes**\n- The `executions` and `writes` counters are asserted unchanged after `check` calls in several tests:\n  - `criteria_have_independent_typed_answers_and_cache_negative_results` (executions 3, writes 3);\n  - `changing_one_criteria_input_does_not_invalidate_another` (\"checking never executes\");\n  - `revision_and_dependency_checks_precede_output_decoding` (executions 1, writes 1 after Stale and error checks);\n  - `wildcard_revision_does_not_supply_other_criteria_or_nodes`.\n- `review_graph_persists_and_reuses_a_negative_validation_through_the_sdk` asserts that the model provider received no requests after a `Missing` check. It asserts the evidence file does not exist, and that the file is byte-identical after a later `Current` check.\n\n**Needs no configured agent**\n- Every contract and storage test builds `Validator::new(..)` without `with_agent`. All of them call `check` successfully.\n\n**Storage, dependency-resolution and output-decoding failures are errors**\n- Storage load failure: `loading_execution_resolution_and_saving_failures_do_not_publish_answers` gives `Err(Graph(\"load\"))`. `malformed_records_are_storage_errors_and_current_bad_outputs_are_output_errors` gives `Err(Graph(Json))` for a malformed record. The file stays unchanged.\n- Dependency resolution: `dependency_resolution_failures_do_not_execute_or_replace_saved_answers` covers read failure and edge failure. Each gives `Err(Graph(..))`, with the saved record unchanged and no execution.\n- Output decoding: `revision_and_dependency_checks_precede_output_decoding` and the storage test both give `Err(Output)` for a current record whose output cannot be decoded.\n\nI found no unrepresented input class or failure case that the text names. The marking is also in place: every test above carries a `{test}` reference to the subject.",
+  "references": "1682d189a4c5d94a5bf1309459bba3f24e32816fc6e0ce9c126c873e9a260d96",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.validation.check_node",
@@ -19,16 +19,16 @@
         "    Stale,",
         "}",
         "",
-        "// Method on Validator<'d, D>.",
-        "pub fn check<V: Validation<D>>(",
+        "// Method on Validator<D>.",
+        "pub fn check<V: Criterion<D>>(",
         "    &self,",
-        "    validation: &V,",
+        "    criterion: &V,",
         ") -> impl Future<Output = Result<EvidenceState<V::Ok>, ValidationError<D::Error>>> + Send;",
         "```",
         "",
         "`check` uses the same identity, revision, and freshness comparison as `verify`.",
         "It reads the descriptor before awaiting; it does not retain a reference to the",
-        "validation value across asynchronous storage or dependency operations. Checking",
+        "criterion value across asynchronous storage or dependency operations. Checking",
         "invokes neither `execute` nor a model and writes no evidence. It needs no",
         "configured agent. Storage, dependency-resolution, and current-output decoding",
         "failures are errors, not missing or stale evidence.",
@@ -38,57 +38,57 @@
     {
       "file": "crates/habeas-sdk/tests/contracts.rs",
       "item": "fn[criteria_have_independent_typed_answers_and_cache_negative_results]",
-      "hash": "446b6469843c4e83ae2f009708952547195e937e1ba90eb8f96913ae26a0c43f"
+      "hash": "67c4fc430b44473b4e05fa5fd997743ab3a00a4fabe175c6b54f101eec4fcbf2"
     },
     {
       "file": "crates/habeas-sdk/tests/contracts.rs",
       "item": "fn[changing_one_criteria_input_does_not_invalidate_another]",
-      "hash": "0d42fc614241e2d111f072dad8bdee9ece514e6bb2113e4ea797ddfce75ab54f"
+      "hash": "f1fddfe0c564e54c64d804de0262e965cca845f68ca2f0cdb06def635f4c5cb7"
     },
     {
       "file": "crates/habeas-sdk/tests/contracts.rs",
       "item": "fn[revision_and_dependency_checks_precede_output_decoding]",
-      "hash": "037876dd132368f33b90db17538fe87aedbec87244c0fe7f964debcd1a946874"
+      "hash": "09825dec15bbb774ef42189297febabe33f9f165409b63ae02597d633e07c7f0"
     },
     {
       "file": "crates/habeas-sdk/tests/contracts.rs",
       "item": "fn[dependency_resolution_failures_do_not_execute_or_replace_saved_answers]",
-      "hash": "bb351d46de402d029ff54047ceafec38b1646f85241c9b4f7496cc90c8d2b0ac"
+      "hash": "33fc8bbddaa15811a8cf9edf2cdd80acd6fee3661763faed46b92616324d4dc0"
     },
     {
       "file": "crates/habeas-sdk/tests/contracts.rs",
       "item": "fn[wildcard_revision_does_not_supply_other_criteria_or_nodes]",
-      "hash": "4442e9f98d9d487165465ebd604cbf490f9c9b297e687a10cc3208b8108c2fa9"
+      "hash": "a45b6a414798f8b3103291c3bc2f0fcd159d9560d87f585a7af6efb87b2da6b6"
     },
     {
       "file": "crates/habeas-sdk/tests/contracts.rs",
       "item": "fn[validation_and_answer_need_send_without_sync]",
-      "hash": "0ce378b5583d41e3fcd2079a00150fadd52ca290419d739e1c9f8573a87b338b"
+      "hash": "53b6158651ebe976d773035d4ad6e7783c8ea3098189952828c0b3d925d77843"
     },
     {
       "file": "crates/habeas-sdk/tests/contracts.rs",
       "item": "fn[loading_execution_resolution_and_saving_failures_do_not_publish_answers]",
-      "hash": "301df8e21bd6ca369a6b7c91326123f03929703764ac8aa7b68c198ce1975167"
+      "hash": "14d67719da40f55345e5e1c662882494be3cec46f85f35d7b5c3f5476ad13945"
     },
     {
       "file": "crates/habeas-sdk/tests/storage.rs",
       "item": "fn[malformed_records_are_storage_errors_and_current_bad_outputs_are_output_errors]",
-      "hash": "d317d0c3cef248067966e6f29ed76c61321f2179f1ade9a3a4815e0a78710e93"
+      "hash": "ea61d3e9190eec2cfa5575fcf94446cc6e9f5f9a72955dd32b7ad9b0e3b1847c"
     },
     {
       "file": "crates/habeas-sdk/tests/validation.rs",
       "item": "fn[runner_reuses_negative_judgments_and_records_only_callback_observations]",
-      "hash": "d3b76d43c14e6833d007d08c4e0b0c6054d9c835288ef10be2511ae065617f54"
+      "hash": "31b1dc9edc70aa2e47176ba8b6768de76af051148e376fa51d8be5e6272253c8"
     },
     {
       "file": "crates/habeas-sdk/tests/validation.rs",
       "item": "fn[resolution_storage_and_callback_errors_are_not_judgments]",
-      "hash": "41f599af74dee6578d906c9d6ae9e8c8ea2f9e93fa0922338884504511b828de"
+      "hash": "8745c8a2900c99118fb9409d7e48e81e6c5a8eab84d6c12e9a91210aa72962cc"
     },
     {
       "file": "src/authoring/sdk.rs",
       "item": "mod[tests]/fn[review_graph_persists_and_reuses_a_negative_validation_through_the_sdk]",
-      "hash": "be16c5377af91133a7c4919cb62449af45261df967865add92e67da391e6525a"
+      "hash": "4508eafda747840d787ab12489f3b841445c0054a0ca550f41c59d2c410f8245"
     }
   ],
   "format_version": 1,
@@ -101,7 +101,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "29ee8968ac46549f6c9b611d2d5f32cdb3be915d7f71c0f2cca53c46bbb85ccc"
+          "value": "1682d189a4c5d94a5bf1309459bba3f24e32816fc6e0ce9c126c873e9a260d96"
         }
       ]
     },
@@ -124,7 +124,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "37c40695714769f6b0c053f457be4f5ed44341cafa4fccfa2abaacf8d4a429f0"
+          "value": "09eb11ca5f2df0a9702fa87ce686321878efdf7a51db9a2d14bfd472274fa878"
         }
       ]
     },
@@ -141,7 +141,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "f801a7b1a136d5f9447de8c3affe17a43576ca694017a24a592472fbcb3ff6f0"
+          "value": "d2f04095b3210a152b8b4f6c0b37b36adc6362c56a2302c1dfae936d8500921b"
         }
       ]
     },
@@ -158,7 +158,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "553fed96c09ae7ea8d5285fd4a93d9ac48acb8f98c1cbc2c4c9e4f9662271653"
+          "value": "70f75df790a324019dd3decf46c04a848776bafc788b2f126b3b88f5f0e00649"
         }
       ]
     },
@@ -175,7 +175,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "dc4ba781fe76ced7fd53e2f5fd9e41a5f9df5791b2e6ab25e6c611340fd04b42"
+          "value": "7665377242de5e616d73f7971008ec838cb7b73c167db0ceb8c1f1f8d88b587b"
         }
       ]
     },
@@ -192,7 +192,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "d996907cce19f051fac6e333fefd7ffca8914f905398bb742d905ee537ef4185"
+          "value": "4120055a7a6f3df84d7d0871d04f2ab36cb803acdf614ef32b6116fc082210a7"
         }
       ]
     },
@@ -209,7 +209,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "09ec9ebaaf65dc448178fdd2027cabde92a847f1d5457a265f141bcf672675d8"
+          "value": "010c22f1cb6946fa216d704fa869741f3509bd2374790573f1d716a975837e6c"
         }
       ]
     },
@@ -226,7 +226,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "a1e5fdb121e3d73c3e3e8cbbed80895a49d327d0932846489cf50e034c232b15"
+          "value": "8e70164c36c5a4f1b6aef41caf2ce5ca2742488e6a12ae5d64411891646b752a"
         }
       ]
     },
@@ -243,7 +243,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "d4ebba47366c7d701cef20ef5cce8dc7370db50a7ef8fbf12a1a8f8f6a23c0a7"
+          "value": "3abee852ac6c1097cc78c779df3896dbe81bb35724143093de5b1b2ab25d875f"
         }
       ]
     },
@@ -260,7 +260,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "1aa476b1ffa19187d82ceb6ef18ed35f38882bb826e144b98c3ef0566b19960f"
+          "value": "df6557c608602106f039832689a62b9188d3cbab26fc402897650b3b7866383e"
         }
       ]
     },
@@ -277,7 +277,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "73facf7a32a90ceff58f9e1e5c35533d7a3ae16c6ddefc28b35f33828f760abe"
+          "value": "f3019748d85132780da2c93aa9b6d06747b5017af6d3a834ce6be998c93a95ae"
         }
       ]
     },
@@ -294,7 +294,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "720db472550a0996eb74cba219209992995b7dfd0cfbbe2b259e3b66d6e5ee1f"
+          "value": "632fdb1df2ebcb3f692241d0f57d73bd7d42b1bfdbcc9541c44340808dc61e82"
         }
       ]
     },
@@ -311,7 +311,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "ed8a5cc41fa1fc56557c9d01915f360723621f811ac56f4af30648ef43402ea5"
+          "value": "d9efc1044cc16a02c0662eee3f33d0e24580707c5648c1cebc4378db691cd7c4"
         }
       ]
     }

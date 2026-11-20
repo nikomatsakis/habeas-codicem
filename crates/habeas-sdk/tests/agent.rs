@@ -1,7 +1,10 @@
 use habeas_sdk::{agent::*, graph::*, procedure::*, resource::*, sources::*};
 use rig_core::{
     completion::{CompletionRequest, CompletionResponse, FinishReason, ToolDefinition, Usage},
-    message::{AssistantContent, Message, Origin, ToolCall, ToolFunction, ToolName},
+    message::{
+        AssistantContent, Message, Origin, ToolCall, ToolFunction, ToolName, ToolResultContent,
+        UserContent,
+    },
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -23,15 +26,16 @@ struct Contents(String);
 // {cite}`habeas:util`
 #[derive(Serialize, Deserialize)]
 struct Metadata;
+#[derive(Clone)]
 struct Memory {
     contents: Arc<Mutex<String>>,
-    records: Mutex<Vec<(Node, CriterionPath, Record<Node, Label>)>>,
+    records: Arc<Mutex<Vec<(Node, CriterionPath, Record<Node, Label>)>>>,
 }
 impl Memory {
     fn new(contents: String) -> Self {
         Self {
             contents: Arc::new(Mutex::new(contents)),
-            records: Mutex::default(),
+            records: Arc::default(),
         }
     }
 }
@@ -71,9 +75,7 @@ impl Graph for Memory {
         Ok(Contents(self.contents.lock().unwrap().clone()))
     }
     fn node_path(&self, node: &Node) -> NodePath {
-        NodePath {
-            segments: vec![node.0.to_string()],
-        }
+        NodePath::new(vec![node.0.to_string()])
     }
     fn outgoing_edges(&self, node: &Node, _: Label) -> io::Result<Vec<Node>> {
         Ok(if node.0 == 1 { vec![Node(2)] } else { vec![] })
@@ -88,13 +90,13 @@ impl Fingerprinting for Memory {
     }
 }
 struct Review(Node);
-impl Validation<Memory> for Review {
+impl Criterion<Memory> for Review {
     type Ok = Judgment<Metadata>;
     fn source_node_id(&self) -> Node {
         self.0.clone()
     }
     fn criterion_path(&self) -> CriterionPath {
-        CriterionPath { segments: vec![] }
+        CriterionPath::new(vec![])
     }
     fn revision(&self) -> String {
         "v1".into()
@@ -347,15 +349,13 @@ struct Question {
     name: String,
     successors: bool,
 }
-impl Validation<Memory> for Question {
+impl Criterion<Memory> for Question {
     type Ok = String;
     fn source_node_id(&self) -> Node {
         Node(1)
     }
     fn criterion_path(&self) -> CriterionPath {
-        CriterionPath {
-            segments: vec![self.name.clone()],
-        }
+        CriterionPath::new(vec![self.name.clone()])
     }
     fn revision(&self) -> String {
         "v1".into()
@@ -376,6 +376,7 @@ impl Validation<Memory> for Question {
 // {test}`requirements.sdk.graph.validation.validator`
 // {test}`requirements.sdk.graph.validation.validate_node`
 // {test}`requirements.sdk.graph.agent-calls.judge.rendering`
+// {test}`requirements.sdk.graph.agent-calls.author_procedure`
 #[tokio::test]
 async fn validator_agent_executions_isolate_conversations_and_dependency_traces() {
     let graph = Memory::new("source".into());
@@ -386,7 +387,9 @@ async fn validator_agent_executions_isolate_conversations_and_dependency_traces(
         },
         DistinctPages,
     );
-    let validator = Validator::new(&graph).with_agent(&agent, &agent.renderer);
+    let agent = Arc::new(agent);
+    let validator =
+        Validator::new(graph.clone()).with_agent(agent.clone(), Arc::new(DistinctPages));
     let question = |name: &str, successors| Question {
         name: name.into(),
         successors,
@@ -452,9 +455,10 @@ async fn validator_agent_executions_isolate_conversations_and_dependency_traces(
 #[tokio::test]
 async fn agent_edge_tools_record_selections_without_validating_targets() {
     use std::sync::atomic::{AtomicUsize, Ordering};
+    #[derive(Clone)]
     struct GraphWithChangingEdges {
-        lookups: AtomicUsize,
-        records: Mutex<Vec<(u8, Record<u8, ()>)>>,
+        lookups: Arc<AtomicUsize>,
+        records: Arc<Mutex<Vec<(u8, Record<u8, ()>)>>>,
     }
     impl Graph for GraphWithChangingEdges {
         type NodeId = u8;
@@ -472,9 +476,7 @@ async fn agent_edge_tools_record_selections_without_validating_targets() {
             panic!("edge inspection must not read node contents")
         }
         fn node_path(&self, node: &u8) -> NodePath {
-            NodePath {
-                segments: vec![node.to_string()],
-            }
+            NodePath::new(vec![node.to_string()])
         }
         fn outgoing_edges(&self, node: &u8, _: ()) -> io::Result<Vec<u8>> {
             if *node == 1 && self.lookups.fetch_add(1, Ordering::SeqCst) != 0 {
@@ -513,13 +515,13 @@ async fn agent_edge_tools_record_selections_without_validating_targets() {
         }
     }
     struct EdgeReview(u8);
-    impl Validation<GraphWithChangingEdges> for EdgeReview {
+    impl Criterion<GraphWithChangingEdges> for EdgeReview {
         type Ok = Judgment<()>;
         fn source_node_id(&self) -> u8 {
             self.0
         }
         fn criterion_path(&self) -> CriterionPath {
-            CriterionPath { segments: vec![] }
+            CriterionPath::new(vec![])
         }
         fn revision(&self) -> String {
             "v1".into()
@@ -553,8 +555,8 @@ async fn agent_edge_tools_record_selections_without_validating_targets() {
         }
     }
     let graph = GraphWithChangingEdges {
-        lookups: AtomicUsize::new(0),
-        records: Mutex::default(),
+        lookups: Arc::new(AtomicUsize::new(0)),
+        records: Arc::default(),
     };
     let agent = ToolAgent::new(
         Script::new(vec![
@@ -566,8 +568,9 @@ async fn agent_edge_tools_record_selections_without_validating_targets() {
         ]),
         Render,
     );
-    let result = Validator::new(&graph)
-        .with_agent(&agent, &agent.renderer)
+    let agent = Arc::new(agent);
+    let result = Validator::new(graph.clone())
+        .with_agent(agent.clone(), Arc::new(Render))
         .verify(EdgeReview(1))
         .await
         .unwrap();
@@ -767,13 +770,14 @@ async fn source_tools_keep_search_discovery_separate_from_delivered_source_reads
 // {test}`requirements.sdk.graph.domain_types`
 // {test}`requirements.sdk.domain`
 // {test}`requirements.sdk.graph.agent-calls.author_procedure`
+// {test}`requirements.sdk.graph.validation.deterministic_procedures`
 #[tokio::test]
 async fn deterministic_validation_uses_required_storage_without_an_agent() {
     let graph = Memory::new("ordinary computation".into());
-    let validator = Validator::new(&graph);
+    let validator = Validator::new(graph.clone());
     let result = validator.verify(Review(Node(1))).await.unwrap();
     let saved = graph
-        .load_evidence(&Node(1), &CriterionPath { segments: vec![] })
+        .load_evidence(&Node(1), &CriterionPath::new(vec![]))
         .await
         .unwrap()
         .unwrap();
@@ -993,6 +997,44 @@ async fn unknown_tools_return_errors_without_creating_inputs_or_preventing_submi
     assert_eq!(requests.len(), 2);
     let delivered = serde_json::to_string(requests[1].chat_history.last().unwrap()).unwrap();
     assert!(delivered.contains("invented") && delivered.contains("unknown tool"));
+}
+
+// {test}`requirements.sdk.graph.agent-calls.judge.rendering`
+// {test}`requirements.sdk.graph.context-tools.tracked_inspection`
+// {test}`requirements.sdk.graph.agent-calls.author_procedure`
+#[tokio::test]
+async fn node_rendering_tool_errors_allow_recovery_without_recording_undelivered_contents() {
+    struct RejectContents;
+    impl AgentInputRenderer<Memory> for RejectContents {
+        fn render(&self, _: &AgentInput<'_, Memory>) -> io::Result<String> {
+            Err(io::Error::other("unsupported node contents"))
+        }
+    }
+    let graph = Memory::new("source".into());
+    let agent = ToolAgent::new(
+        Script::new(vec![
+            Some(vec![("read_node", json!({"path":{"segments":["1"]}}))]),
+            Some(vec![("submit_result", json!({"result":true}))]),
+        ]),
+        RejectContents,
+    );
+    let ctx = ValidationContext::with_agent(&graph, Node(1), &agent, &agent.renderer);
+    assert!(ctx.ask::<bool>().await.unwrap());
+    assert!(ctx.inspection().dependencies().is_empty());
+    let requests = agent.provider.requests.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    let Message::User { content } = requests[1].chat_history.last().unwrap() else {
+        panic!("expected the tool error to be delivered to the agent");
+    };
+    let [UserContent::ToolResult(result)] = content.as_slice() else {
+        panic!("expected one failed tool result");
+    };
+    assert!(result.is_error);
+    assert_eq!(result.name.as_str(), "read_node");
+    assert_eq!(
+        result.content,
+        vec![ToolResultContent::text("unsupported node contents")]
+    );
 }
 
 // {test}`requirements.authoring.output_limit`

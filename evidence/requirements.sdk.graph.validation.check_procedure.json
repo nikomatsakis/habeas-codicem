@@ -1,8 +1,8 @@
 {
-  "requirement": "```rust,ignore\nuse serde::{Serialize, de::DeserializeOwned};\nuse std::future::Future;\n\n// Defined in habeas_sdk::graph.\npub enum ValidationError<E> {\n    Graph(E),\n    NoAgentConfigured,\n    Agent(String),\n    Output(serde_json::Error),\n}\n\npub trait Validation<D: Domain>: Send + Sized {\n    /// The completed answer, including any negative assessment.\n    /// The SDK serializes it for storage and reconstructs it when reused.\n    /// Its Serde JSON representation must reconstruct the completed answer.\n    type Ok: Serialize + DeserializeOwned + Send;\n\n    fn source_node_id(&self) -> D::NodeId;\n    fn criterion_path(&self) -> CriterionPath;\n\n    /// Version of these review rules and the result's encoding.\n    /// Change it when an old answer should no longer be reused.\n    fn revision(&self) -> String;\n\n    /// Execute this criterion with a private dependency trace.\n    /// Contents are read only when explicitly selected through cx.\n    fn execute(\n        self,\n        cx: &mut ValidationContext<'_, D>,\n    ) -> impl Future<Output = Result<Self::Ok, ValidationError<D::Error>>> + Send;\n}\n```\n\nObtaining the source identity, criterion path, and revision does not execute the\ncriterion, invoke an agent, or record source-content dependencies. These values\nidentify the same question for checking and execution. Parameters that change\nwhich question is being asked belong in its identity or revision.",
+  "requirement": "```rust,ignore\nuse serde::{Serialize, de::DeserializeOwned};\nuse std::future::Future;\n\n// Defined in habeas_sdk::graph.\npub enum ValidationError<E> {\n    Graph(E),\n    NoAgentConfigured,\n    Agent(String),\n    Output(serde_json::Error),\n}\n\npub trait Criterion<D: Domain>: Send + Sized {\n    /// The completed answer, including any negative assessment.\n    /// The SDK serializes it for storage and reconstructs it when reused.\n    /// Its Serde JSON representation must reconstruct the completed answer.\n    type Ok: Serialize + DeserializeOwned + Send;\n\n    /// The node this question is about.\n    fn source_node_id(&self) -> D::NodeId;\n\n    /// Identify this question within the source node's saved evidence.\n    fn criterion_path(&self) -> CriterionPath;\n\n    /// Version of these review rules and the result's encoding.\n    /// Change it when an old answer should no longer be reused.\n    fn revision(&self) -> String;\n\n    /// Select inputs through cx and compute the completed answer.\n    fn execute(\n        self,\n        cx: &mut ValidationContext<'_, D>,\n    ) -> impl Future<Output = Result<Self::Ok, ValidationError<D::Error>>> + Send;\n}\n```\n\nThe source identity, criterion path, and revision identify the same question for\nchecking and execution. Parameters that change which question is being asked\nbelong in its identity or revision.",
   "determination": true,
-  "rationale": "The reviewed tests adequately check `requirements.sdk.graph.validation.check_procedure`. I found no gaps.\n\n**Obligations derived from the text**\n1. The `Validation` trait shape must hold. `Ok` must round-trip through Serde JSON. `source_node_id`, `criterion_path` and `revision` are the question's identity. `execute` returns `ValidationError<D::Error>`.\n2. Obtaining the source identity, criterion path and revision must not execute the criterion, invoke an agent, or record source-content dependencies.\n3. The same values must identify the question for both checking and execution.\n4. Parameters that change the question belong in the identity or the revision.\n5. `ValidationError` has the variants `Graph`, `NoAgentConfigured`, `Agent(String)` and `Output`.\n\n**Mapping to tests**\n- **Trait shape and round-trip.** Every test implements `Validation` for a `Review` type, which compiles against the trait. In `criteria_have_independent_typed_answers_and_cache_negative_results`, negative answers, `Vec<String>`, `Judgment` and `serde_json::Value` all come back equal from `verify` and from `check` as `EvidenceState::Current`. The stored `output` is asserted against the expected JSON. `validation_and_answer_need_send_without_sync` covers a `Send`-but-not-`Sync` `Ok` type (`Cell`) and checks that the answer is reconstructed on reuse.\n- **Identity does not execute, call an agent or record dependencies.**\n  - `criteria_have_independent_typed_answers_and_cache_negative_results` asserts `executions == 3` and `writes == 3` for three distinct verified criteria, even though several `check` and repeat `verify` calls happened. It also asserts `state.reads.is_empty()` (\"source identity must not imply a content read\") and that every record has empty `dependencies`.\n  - `runner_reuses_negative_judgments_and_records_only_callback_observations` asserts a single `started`, no reads or selections, and empty dependencies.\n  - `review_graph_persists_and_reuses_a_negative_validation_through_the_sdk` calls `source_node_id`, `criterion_path` and `revision` directly and asserts the expected node, `[\"review\"]` and `REVIEW_VERSION`. Its `check` returns `Missing`, writes no file and sends no provider request. After `verify`, there is exactly one provider request.\n  - `deterministic_validation_uses_required_storage_without_an_agent` shows that a deterministic criterion runs without an agent and that its dependency is recorded only through the explicit node read.\n- **Same question for check and execute.** `check` and `verify` on equal descriptors yield `Current` with the stored value. A second `verify` with a different payload returns the cached answer and does not execute again.\n- **Identity and revision distinguish questions.**\n  - Criterion paths `behavior`, `structure`, `text` and `judgment` are independent. Each stores its own answer, and `text` is `Missing`.\n  - Node 8 is `Missing` while node 9 is current.\n  - Revision `v2` against a stored `v1` gives `Stale`. After re-verify the stored revision is `v2`.\n  - `review_graph_persists_and_reuses_a_negative_validation_through_the_sdk` shows a different criterion path (`another/review`) does not load the stored record.\n- **Error variants.** `agent_errors_expose_the_agreed_string_payload` checks the `Agent(String)` payload, its display text and `source`, and that `Graph` exposes its source. Other tests assert `ValidationError::NoAgentConfigured` (in `runner_does_not_store_a_missing_agent_error_and_supports_intermediate_calls`) and `ValidationError::Output` (in `serialization_failure_leaves_the_existing_record_unchanged`). The ripgrep search found these tests, but they carry no `{test}` reference to this requirement. That is not a gap, because the enum is only a declared shape here.\n\nI found no plausible behavior that violates the requirement and would pass these tests. A `check` that executed the criterion would break the execution count. An identity accessor that read content would show up in `reads` or `dependencies`. A revision or path that was ignored would break the `Stale` and independence assertions.",
-  "references": "9060d755e568f6264b36539daa550c39195daeae76b32cc9911b510bad128e46",
+  "rationale": "The reviewed tests adequately check `requirements.sdk.graph.validation.check_procedure`.\n\nThe requirement has three kinds of obligation. I mapped each to marked tests.\n\n**1. `Criterion` contract.**\n- The trait needs a serializable `Ok` and the three identity methods, `source_node_id`, `criterion_path` and `revision`. It also needs an `execute` method whose future is `Send`.\n- `crates/habeas-sdk/tests/contracts.rs#fn[criteria_have_independent_typed_answers_and_cache_negative_results]` verifies several `Ok` types.\n  - These are a struct, a `Vec<String>`, a `Judgment` and a `json!(null)` descriptor.\n  - Each is serialized to storage (the asserted stored JSON for `behavior` and `judgment`) and reconstructed on reuse.\n  - Negative answers are reused, and the test asserts that no execution happens on reuse (`executions == 3`).\n- `crates/habeas-sdk/tests/contracts.rs#fn[validation_and_answer_need_send_without_sync]` checks the `Send` future bound. It uses a `Cell`, which is `Send` but not `Sync`, as the `Ok` type. The `send(...)` helper enforces the bound at compile time. The test also checks that a stored `Cell` answer round-trips.\n- `src/authoring/sdk.rs#mod[tests]/fn[review_graph_persists_and_reuses_a_negative_validation_through_the_sdk]` is a real downstream implementation, `Review`. It asserts `source_node_id`, `criterion_path().segments()` and `revision()`. It also checks persistence and reuse of a negative answer.\n\n**2. \"Identify the same question for checking and execution.\"**\n- The marked tests run `verify` and then `check` with the same descriptor and get `Current`.\n- A different criterion path (`text`) gives `Missing`.\n- A different source node (node 8) gives `Missing`, and a different revision (`v2`) gives `Stale`, in `crates/habeas-sdk/tests/validation.rs#fn[runner_reuses_negative_judgments_and_records_only_callback_observations]`.\n- Changing the stored revision to the wildcard `*` makes the record match, and the test asserts this.\n- Execution stores under the same identity that `check` later finds. Records are stored under the criterion path, and the revision is checked (`records[&9].revision == \"v2\"`).\n- Parameters that are not part of the identity, such as the differing answer payload with the same path, do not create a new question. The test asserts the cached `negative` answer is returned instead of executing again. This matches \"parameters that change which question is being asked belong in identity or revision\".\n- `crates/habeas-sdk/tests/agent.rs#fn[deterministic_validation_uses_required_storage_without_an_agent]` covers a deterministic criterion with the empty criterion path `CriterionPath::new(vec![])`. It also covers storage without an agent.\n\n**3. `ValidationError` shape.**\n- `crates/habeas-sdk/tests/validation.rs#fn[agent_errors_expose_the_agreed_string_payload]` pins `Agent(String)`.\n  - It asserts the display text and the absence of a `source`.\n  - It asserts the payload is a `String`.\n  - It asserts that `Graph(E)` exposes the inner error as its `source`.\n- The `Output(serde_json::Error)` and `NoAgentConfigured` variants are matched in other tests: `crates/habeas-sdk/tests/contracts.rs#fn[serialization_failure_leaves_the_existing_record_unchanged]`, `crates/habeas-sdk/tests/storage.rs#fn[malformed_records_are_storage_errors_and_current_bad_outputs_are_output_errors]` and `crates/habeas-sdk/tests/validation.rs#fn[runner_does_not_store_a_missing_agent_error_and_supports_intermediate_calls]`.\n  - Those tests are marked for the requirements that govern when these errors arise, namely `validate_node.errors` and the `agent-calls` requirements.\n  - The `check_procedure` text only declares the enum's shape. It does not state when each variant is produced, so no behavioral test is required here beyond the shape checks.\n\nI found no plausible requirement-violating behavior that the marked tests would accept. I found no acknowledgments or fixmes to consider.",
+  "references": "994b117f6f00d6a8bf936dd8a7fd3f4516f9372a073af4d9a1e4cbd3a07a4290",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.validation.check_procedure",
@@ -23,21 +23,23 @@
         "    Output(serde_json::Error),",
         "}",
         "",
-        "pub trait Validation<D: Domain>: Send + Sized {",
+        "pub trait Criterion<D: Domain>: Send + Sized {",
         "    /// The completed answer, including any negative assessment.",
         "    /// The SDK serializes it for storage and reconstructs it when reused.",
         "    /// Its Serde JSON representation must reconstruct the completed answer.",
         "    type Ok: Serialize + DeserializeOwned + Send;",
         "",
+        "    /// The node this question is about.",
         "    fn source_node_id(&self) -> D::NodeId;",
+        "",
+        "    /// Identify this question within the source node's saved evidence.",
         "    fn criterion_path(&self) -> CriterionPath;",
         "",
         "    /// Version of these review rules and the result's encoding.",
         "    /// Change it when an old answer should no longer be reused.",
         "    fn revision(&self) -> String;",
         "",
-        "    /// Execute this criterion with a private dependency trace.",
-        "    /// Contents are read only when explicitly selected through cx.",
+        "    /// Select inputs through cx and compute the completed answer.",
         "    fn execute(",
         "        self,",
         "        cx: &mut ValidationContext<'_, D>,",
@@ -45,32 +47,31 @@
         "}",
         "```",
         "",
-        "Obtaining the source identity, criterion path, and revision does not execute the",
-        "criterion, invoke an agent, or record source-content dependencies. These values",
-        "identify the same question for checking and execution. Parameters that change",
-        "which question is being asked belong in its identity or revision.",
+        "The source identity, criterion path, and revision identify the same question for",
+        "checking and execution. Parameters that change which question is being asked",
+        "belong in its identity or revision.",
         ":::"
       ]
     },
     {
       "file": "crates/habeas-sdk/tests/agent.rs",
       "item": "fn[deterministic_validation_uses_required_storage_without_an_agent]",
-      "hash": "807367b8ec485c8c1d892200c39ebb5a477f9a84a5ba89d32061d195f6ce69d5"
+      "hash": "70ec30ad199a23dfbd18ee2187bd2c8d854dcce27be0b3b62188a458eb283156"
     },
     {
       "file": "crates/habeas-sdk/tests/contracts.rs",
       "item": "fn[criteria_have_independent_typed_answers_and_cache_negative_results]",
-      "hash": "446b6469843c4e83ae2f009708952547195e937e1ba90eb8f96913ae26a0c43f"
+      "hash": "67c4fc430b44473b4e05fa5fd997743ab3a00a4fabe175c6b54f101eec4fcbf2"
     },
     {
       "file": "crates/habeas-sdk/tests/contracts.rs",
       "item": "fn[validation_and_answer_need_send_without_sync]",
-      "hash": "0ce378b5583d41e3fcd2079a00150fadd52ca290419d739e1c9f8573a87b338b"
+      "hash": "53b6158651ebe976d773035d4ad6e7783c8ea3098189952828c0b3d925d77843"
     },
     {
       "file": "crates/habeas-sdk/tests/validation.rs",
       "item": "fn[runner_reuses_negative_judgments_and_records_only_callback_observations]",
-      "hash": "d3b76d43c14e6833d007d08c4e0b0c6054d9c835288ef10be2511ae065617f54"
+      "hash": "31b1dc9edc70aa2e47176ba8b6768de76af051148e376fa51d8be5e6272253c8"
     },
     {
       "file": "crates/habeas-sdk/tests/validation.rs",
@@ -80,7 +81,7 @@
     {
       "file": "src/authoring/sdk.rs",
       "item": "mod[tests]/fn[review_graph_persists_and_reuses_a_negative_validation_through_the_sdk]",
-      "hash": "be16c5377af91133a7c4919cb62449af45261df967865add92e67da391e6525a"
+      "hash": "4508eafda747840d787ab12489f3b841445c0054a0ca550f41c59d2c410f8245"
     }
   ],
   "format_version": 1,
@@ -93,7 +94,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "9060d755e568f6264b36539daa550c39195daeae76b32cc9911b510bad128e46"
+          "value": "994b117f6f00d6a8bf936dd8a7fd3f4516f9372a073af4d9a1e4cbd3a07a4290"
         }
       ]
     },
@@ -116,7 +117,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "e7511d8cf53cef14bce676b7d96d7d779d86e2098830dcf262ceed50a2c21b3a"
+          "value": "6bd0565a837077f3aa370fb1431320ddadfeb4f77a90b272c4d9f20e82fd4cdc"
         }
       ]
     },
@@ -133,7 +134,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "315c846de178ccfc60149f532872ec5340d00d400861fc9978e33ec3dc9483f5"
+          "value": "428660d5543f264c436efae7aeb6b6faf48b3e1e16d0a85015a12e346d4c8429"
         }
       ]
     },
@@ -150,7 +151,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "f801a7b1a136d5f9447de8c3affe17a43576ca694017a24a592472fbcb3ff6f0"
+          "value": "d2f04095b3210a152b8b4f6c0b37b36adc6362c56a2302c1dfae936d8500921b"
         }
       ]
     },
@@ -167,7 +168,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "a1e5fdb121e3d73c3e3e8cbbed80895a49d327d0932846489cf50e034c232b15"
+          "value": "8e70164c36c5a4f1b6aef41caf2ce5ca2742488e6a12ae5d64411891646b752a"
         }
       ]
     },
@@ -184,7 +185,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "73facf7a32a90ceff58f9e1e5c35533d7a3ae16c6ddefc28b35f33828f760abe"
+          "value": "f3019748d85132780da2c93aa9b6d06747b5017af6d3a834ce6be998c93a95ae"
         }
       ]
     },
@@ -218,7 +219,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "ed8a5cc41fa1fc56557c9d01915f360723621f811ac56f4af30648ef43402ea5"
+          "value": "d9efc1044cc16a02c0662eee3f33d0e24580707c5648c1cebc4378db691cd7c4"
         }
       ]
     }

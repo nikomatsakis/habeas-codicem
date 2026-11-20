@@ -1,8 +1,8 @@
 {
-  "requirement": "`verify` serializes a completed `Validation::Ok` before saving its record.\n`check` and `verify` first compare a loaded record's revision and dependencies.\nOnly a current record's output is decoded into the requested `Validation::Ok`.\nA changed revision can therefore make an old result stale even if that old\nresult would not decode as the new result type.\n\nMalformed stored records are storage errors. An output that cannot decode for a\ncurrent revision is an output error, not missing evidence or a reason to execute\nvalidation again. A different output encoding requires a different revision\nunder {cite}`requirements.sdk.graph.validation.procedure_identity`.",
+  "requirement": "`verify` serializes a completed `Criterion::Ok` before saving its record.\n`check` and `verify` first compare a loaded record's revision and dependencies.\nOnly a current record's output is decoded into the requested `Criterion::Ok`.\nA changed revision can therefore make an old result stale even if that old\nresult would not decode as the new result type.\n\nMalformed stored records are storage errors. An output that cannot decode for a\ncurrent revision is an output error, not missing evidence or a reason to execute\nvalidation again. A different output encoding requires a different revision\nunder {cite}`requirements.sdk.graph.validation.procedure_identity`.",
   "determination": true,
-  "rationale": "The four tests marked `{test}` for `requirements.sdk.graph.evidence.record.output` cover each obligation that can be tested. Every one of them has an assertion that enforces the expected outcome.\n\n- **Serialize before saving.** `contracts.rs#fn[serialization_failure_leaves_the_existing_record_unchanged]` runs `verify` with an `Unencodable` answer at a new revision. It asserts a `ValidationError::Output` containing \"cannot encode answer\". It then asserts that the stored record's revision, dependencies and output are unchanged and that `writes` is still 1, so a failed serialization never reaches storage.\n- **Revision compared first, before decoding.** `contracts.rs#fn[revision_and_dependency_checks_precede_output_decoding]` stores an old object-shaped output. It then checks with revision `v2` and a `String` answer type. The test also corrupts the stored dependencies and sets `fail_read`. It asserts `Stale` and that `reads` is empty, so the revision is compared before decoding and before any dependency read. A later `verify` at `v2` re-executes and replaces the record, which shows `verify` also treats the old record as stale rather than failing to decode it.\n- **Dependencies compared first, before decoding.** `contracts.rs#fn[changed_dependencies_precede_decoding_and_execution_records_its_own_reads]` keeps the revision the same and changes the dependency content. The stored output is an object and the new type is `String`. `check` returns `Stale` rather than an output error. `verify` then re-executes and records fresh dependencies (the test also asserts `executions == 2` and the new fingerprint).\n- **Current record with an undecodable output is an output error.** The same revision with matching dependencies gives `ValidationError::Output` from both `check` and `verify` in `fn[revision_and_dependency_checks_precede_output_decoding]`. `executions` and `writes` stay at 1, so validation is not re-run and the record is not rewritten. `storage.rs#fn[malformed_records_are_storage_errors_and_current_bad_outputs_are_output_errors]` repeats this against file storage. It asserts the file bytes are unchanged and `executions` is still 1.\n- **Malformed stored record is a storage error.** The same storage test writes \"not JSON\" to the record file. Both `check` and `verify` return `ValidationError::Graph(FileStorageError::Json(_))`. The file is untouched and nothing is re-executed. This separates storage errors from output errors and from missing evidence.\n- **Different output encoding needs a different revision.** This is a `{cite}` of `requirements.sdk.graph.validation.procedure_identity`, so it needs no test here.\n\nThe positive path, where a current record's output decodes successfully, is exercised by other tests. For example, `criteria_have_independent_typed_answers_and_cache_negative_results` asserts `EvidenceState::Current(value)`. Those tests don't reference this requirement, but they are not needed to cover its distinguishing obligations: ordering, no re-execution, and the error classification. I found no gap.",
-  "references": "2769ce9d5fecf84fa6b6da181084d6624d559039cfbb4d1c13586d7a45de1b6c",
+  "rationale": "The reviewed tests cover each obligation in `requirements.sdk.graph.evidence.record.output`. I did not request implementation source, because the supplied tests were enough to judge adequacy.\n\n- **`verify` serializes the completed `Criterion::Ok` before saving.**\n  - `contracts.rs#fn[criteria_have_independent_typed_answers_and_cache_negative_results]` checks the stored `output` JSON for the `behavior` and `judgment` criteria. The `behavior` record must equal `{\"satisfied\": false, \"details\": [...]}`. The `judgment` record must equal `serde_json::to_value(&judgment)`.\n  - `contracts.rs#fn[serialization_failure_leaves_the_existing_record_unchanged]` covers the failure case. An `Unencodable` answer gives `ValidationError::Output` with \"cannot encode answer\". The earlier record keeps its revision, dependencies and output, and `writes` stays at 1.\n- **`check` and `verify` compare revision and dependencies before decoding.**\n  - `contracts.rs#fn[revision_and_dependency_checks_precede_output_decoding]` stores an output of `{\"old\": true}`. It then calls `check` with a changed revision `v2` and a `String` result type, which that output cannot decode as. The result is `Stale`, not an output error. The stored dependency is also mismatched and `fail_read` is set, yet `reads` stays empty, so the revision comparison runs first.\n  - The same test then runs `verify` with the changed revision and a `String` answer. It succeeds and replaces the record (still one record), so a stale record with an undecodable output leads to re-execution, not an error.\n  - `contracts.rs#fn[changed_dependencies_precede_decoding_and_execution_records_its_own_reads]` covers dependency changes. The stored output is undecodable as the new `String` type and node 2's content changed. `check` returns `Stale` and `verify` re-executes successfully. The test also asserts that the freshness read and the execution read are separate and that the new dependency fingerprint is stored.\n- **Only a current record's output is decoded, and a decode failure is an output error.**\n  - In `revision_and_dependency_checks_precede_output_decoding`, a same-revision, no-dependency record with an undecodable output makes both `check` and `verify` return `ValidationError::Output`. `executions` and `writes` both stay at 1, so the failure is not treated as missing evidence and validation is not run again.\n  - `storage.rs#fn[malformed_records_are_storage_errors_and_current_bad_outputs_are_output_errors]` repeats this against real file storage. A current record holding `{\"not\": \"a String\"}` gives `Output` from both `check` and `verify`. The file bytes are unchanged and `executions` stays at 1.\n- **Malformed stored records are storage errors.** The same storage test writes \"not JSON\" to the record file. `check` and `verify` both return `ValidationError::Graph(FileStorageError::Json(_))`. The file is not overwritten and no re-execution happens.\n- **A different output encoding requires a different revision.** This is a `{cite}` of `procedure_identity`. Its own review covers it, and the revision-change tests above show the intended behavior.\n\nI found no unrepresented input class or failure case that the requirement names. The stale-before-decode ordering, the output-error/storage-error distinction, and the no-re-execution and no-overwrite behavior are all asserted.",
+  "references": "21ecc28e64163b1a0b85f619d5f375d2a471e95b59972a3163f2b187a7fdff5c",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.evidence.record.output",
@@ -11,9 +11,9 @@
       ],
       "text": [
         ":::{req} record.output",
-        "`verify` serializes a completed `Validation::Ok` before saving its record.",
+        "`verify` serializes a completed `Criterion::Ok` before saving its record.",
         "`check` and `verify` first compare a loaded record's revision and dependencies.",
-        "Only a current record's output is decoded into the requested `Validation::Ok`.",
+        "Only a current record's output is decoded into the requested `Criterion::Ok`.",
         "A changed revision can therefore make an old result stale even if that old",
         "result would not decode as the new result type.",
         "",
@@ -32,7 +32,7 @@
       "text": [
         ":::{req} procedure_identity",
         "Checking and verification obtain the source node, criterion path, and revision",
-        "from the same `Validation` value. There is no node-wide revision resolver.",
+        "from the same `Criterion` value. There is no node-wide revision resolver.",
         "The pair of source and criterion selects a record; the revision determines",
         "whether that record still answers the current question.",
         "",
@@ -46,23 +46,28 @@
     },
     {
       "file": "crates/habeas-sdk/tests/contracts.rs",
+      "item": "fn[criteria_have_independent_typed_answers_and_cache_negative_results]",
+      "hash": "67c4fc430b44473b4e05fa5fd997743ab3a00a4fabe175c6b54f101eec4fcbf2"
+    },
+    {
+      "file": "crates/habeas-sdk/tests/contracts.rs",
       "item": "fn[revision_and_dependency_checks_precede_output_decoding]",
-      "hash": "037876dd132368f33b90db17538fe87aedbec87244c0fe7f964debcd1a946874"
+      "hash": "09825dec15bbb774ef42189297febabe33f9f165409b63ae02597d633e07c7f0"
     },
     {
       "file": "crates/habeas-sdk/tests/contracts.rs",
       "item": "fn[changed_dependencies_precede_decoding_and_execution_records_its_own_reads]",
-      "hash": "7f5a4297c59cf706aa9708abdd6b37783402003fa61ee37740669eb77947302a"
+      "hash": "c3718bc3c0bdbe0940277a7e467633ee21908f397afe25afb754c89dcaa3f123"
     },
     {
       "file": "crates/habeas-sdk/tests/contracts.rs",
       "item": "fn[serialization_failure_leaves_the_existing_record_unchanged]",
-      "hash": "14179ace562b9e0994acf3b21d1c0ff808e3410a80db5b5dcc6455e079453408"
+      "hash": "8e92f3226b8e4f111c563fe1790381a644a3cb397e32c991126c5a754ad81f21"
     },
     {
       "file": "crates/habeas-sdk/tests/storage.rs",
       "item": "fn[malformed_records_are_storage_errors_and_current_bad_outputs_are_output_errors]",
-      "hash": "d317d0c3cef248067966e6f29ed76c61321f2179f1ade9a3a4815e0a78710e93"
+      "hash": "ea61d3e9190eec2cfa5575fcf94446cc6e9f5f9a72955dd32b7ad9b0e3b1847c"
     }
   ],
   "format_version": 1,
@@ -75,7 +80,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "2769ce9d5fecf84fa6b6da181084d6624d559039cfbb4d1c13586d7a45de1b6c"
+          "value": "21ecc28e64163b1a0b85f619d5f375d2a471e95b59972a3163f2b187a7fdff5c"
         }
       ]
     },
@@ -87,7 +92,7 @@
         "Mandatory",
         {
           "scheme": "node-path-set-sha256-v1",
-          "value": "891e0c7cde599a45637e83dc7c34bd1d706a10bd736478b1541d3e7da144fee3"
+          "value": "644c71ba1ad5dea00b9ba7311b84a3e3036400320faf1c8bdeced64bb4b5d25a"
         }
       ]
     },
@@ -98,7 +103,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "0c00e106ef85eb93036168584160e3d0a61f32e742fbafd379974bdb8eb1f3db"
+          "value": "cf189f6270e2fa8a455a5482fd43b1e4454498738fd018f23f52f2178182ace7"
         }
       ]
     },
@@ -109,7 +114,24 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "2bbb36a74e44a47860caff1a4e9df98958901f3f916253d8d4c23e287cc96a69"
+          "value": "defbc4190376856aa9d3f430076b6575c6822661ed9c2bfdcc1c7e7f991258b4"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/tests/contracts.rs"
+            },
+            "selector": "fn[criteria_have_independent_typed_answers_and_cache_negative_results]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "d2f04095b3210a152b8b4f6c0b37b36adc6362c56a2302c1dfae936d8500921b"
         }
       ]
     },
@@ -126,7 +148,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "dc4ba781fe76ced7fd53e2f5fd9e41a5f9df5791b2e6ab25e6c611340fd04b42"
+          "value": "7665377242de5e616d73f7971008ec838cb7b73c167db0ceb8c1f1f8d88b587b"
         }
       ]
     },
@@ -143,7 +165,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "e7f731e1c0c82c2c3e5b26a6e8cfdb6ac657719595c9e5f378e85cb26a8585fe"
+          "value": "03cbac718fa2724ffc41b82dffa56bfcc5a419f44d460100750eb22c636ed677"
         }
       ]
     },
@@ -160,7 +182,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "25a0ec6e2b9c3355f6e1ec1a3106a7d8ed5e0b87ed790a951935d3f83018ce49"
+          "value": "8f263b9db41382746519e73799f2a08293620c1a716ce6e9c85b484afa6b855d"
         }
       ]
     },
@@ -177,7 +199,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "1aa476b1ffa19187d82ceb6ef18ed35f38882bb826e144b98c3ef0566b19960f"
+          "value": "df6557c608602106f039832689a62b9188d3cbab26fc402897650b3b7866383e"
         }
       ]
     }

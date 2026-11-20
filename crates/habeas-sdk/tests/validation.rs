@@ -35,15 +35,15 @@ struct State {
     fail_edges: Option<u8>,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct Memory {
-    state: Mutex<State>,
+    state: Arc<Mutex<State>>,
     read_in_callback: bool,
     edges_in_callback: bool,
     ask_in_callback: bool,
     delay: bool,
-    active: AtomicUsize,
-    peak: AtomicUsize,
+    active: Arc<AtomicUsize>,
+    peak: Arc<AtomicUsize>,
 }
 
 fn fp(value: impl Into<String>) -> Fingerprint {
@@ -69,9 +69,7 @@ impl Graph for Memory {
         state.contents.get(node).cloned().ok_or("missing")
     }
     fn node_path(&self, node: &u8) -> NodePath {
-        NodePath {
-            segments: vec![node.to_string()],
-        }
+        NodePath::new(vec![node.to_string()])
     }
     fn outgoing_edges(&self, node: &u8, label: u8) -> Result<Vec<u8>, Self::Error> {
         let mut state = self.state.lock().unwrap();
@@ -124,13 +122,13 @@ struct Review {
     node: u8,
     revision: &'static str,
 }
-impl Validation<Memory> for Review {
+impl Criterion<Memory> for Review {
     type Ok = Judgment<()>;
     fn source_node_id(&self) -> u8 {
         self.node
     }
     fn criterion_path(&self) -> CriterionPath {
-        CriterionPath { segments: vec![] }
+        CriterionPath::new(vec![])
     }
     fn revision(&self) -> String {
         self.revision.into()
@@ -210,7 +208,7 @@ async fn historical_freshness_reads_do_not_enter_the_replacement_trace() {
             },
         );
     }
-    Validator::new(&graph)
+    Validator::new(graph.clone())
         .verify(Review {
             node: 1,
             revision: "v1",
@@ -242,7 +240,7 @@ async fn runner_does_not_store_a_missing_agent_error_and_supports_intermediate_c
         .unwrap()
         .contents
         .insert(1, "root".into());
-    let validator = Validator::new(&graph);
+    let validator = Validator::new(graph.clone());
     assert!(matches!(
         validator
             .verify(Review {
@@ -257,8 +255,8 @@ async fn runner_does_not_store_a_missing_agent_error_and_supports_intermediate_c
         assert!(state.records.is_empty());
         assert!(state.reads.is_empty());
     }
-    let agent = MockAgent::default();
-    let validator = validator.with_agent(&agent, &Renderer);
+    let agent = Arc::new(MockAgent::default());
+    let validator = validator.with_agent(agent.clone(), Arc::new(Renderer));
     assert!(
         validator
             .verify(Review {
@@ -514,7 +512,7 @@ fn labeled_selections_track_only_target_membership_without_reading_contents() {
 #[tokio::test]
 async fn runner_reuses_negative_judgments_and_records_only_callback_observations() {
     let graph = Memory::default();
-    let validator = Validator::new(&graph);
+    let validator = Validator::new(graph.clone());
     assert!(
         !validator
             .verify(Review {
@@ -555,7 +553,7 @@ async fn runner_reuses_negative_judgments_and_records_only_callback_observations
             .unwrap(),
         EvidenceState::Missing
     ));
-    let v2 = Validator::new(&graph);
+    let v2 = Validator::new(graph.clone());
     assert!(matches!(
         v2.check(&Review {
             node: 9,
@@ -592,7 +590,7 @@ async fn runner_reuses_negative_judgments_and_records_only_callback_observations
 #[tokio::test]
 async fn resolution_storage_and_callback_errors_are_not_judgments() {
     let graph = Memory::default();
-    let validator = Validator::new(&graph);
+    let validator = Validator::new(graph.clone());
     graph.state.lock().unwrap().fail_load = true;
     assert!(matches!(
         validator
@@ -619,7 +617,7 @@ async fn resolution_storage_and_callback_errors_are_not_judgments() {
         read_in_callback: true,
         ..Memory::default()
     };
-    let validator = Validator::new(&graph);
+    let validator = Validator::new(graph.clone());
     assert!(matches!(
         validator
             .verify(Review {
@@ -1056,7 +1054,7 @@ async fn concurrent_single_node_validations_keep_separate_traces() {
             state.edges.insert(node, vec![(1, 99)]);
         }
     }
-    let validator = Validator::new(&graph);
+    let validator = Validator::new(graph.clone());
     let (first, second, third) = futures::join!(
         validator.verify(Review {
             node: 1,

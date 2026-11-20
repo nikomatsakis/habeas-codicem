@@ -99,6 +99,7 @@ pub(crate) enum HabeasEdgeLabel {
 }
 
 // {cite}`habeas:util`
+#[derive(Clone)]
 pub(crate) struct HabeasDomain<'a> {
     pub root: &'a Path,
     pub definitions: &'a BTreeMap<String, Declaration>,
@@ -157,7 +158,7 @@ impl Graph for HabeasDomain<'_> {
                 source.selector.clone(),
             ],
         };
-        NodePath { segments }
+        NodePath::new(segments)
     }
 
     // {cite}`habeas:util`
@@ -301,9 +302,7 @@ pub(crate) const REVIEW_VERSION: &str = "habeas-review-v1";
 
 // {impl}`requirements.sdk.graph.validation.criterion_path`
 pub(crate) fn review_criterion() -> CriterionPath {
-    CriterionPath {
-        segments: vec!["review".into()],
-    }
+    CriterionPath::new(vec!["review".into()])
 }
 
 // {impl}`requirements.sdk.habeas.evidence_format.loading`
@@ -456,7 +455,7 @@ mod tests {
         let mut paths = std::collections::HashSet::new();
         for (node, expected) in cases {
             let path = domain.node_path(&node);
-            assert_eq!(path.segments, expected);
+            assert_eq!(path.segments(), expected);
             assert!(paths.insert(path.clone()));
             let fresh_outlines = OutlineCache::default();
             let reconstructed = HabeasDomain {
@@ -632,9 +631,8 @@ mod tests {
                 assert_eq!(loaded.output, record.output);
                 let path = node.evidence_path(root.path()).unwrap();
                 let original = fs::read(&path).unwrap();
-                let other_criterion = CriterionPath {
-                    segments: vec!["another".into(), "criterion".into()],
-                };
+                let other_criterion =
+                    CriterionPath::new(vec!["another".into(), "criterion".into()]);
                 assert!(
                     domain
                         .load_evidence(&node, &other_criterion)

@@ -1,8 +1,8 @@
 {
-  "requirement": "```rust,ignore\n// Defined in habeas_sdk::graph.\n#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]\npub struct CriterionPath {\n    pub segments: Vec<String>,\n}\n```\n\nA criterion path preserves segment order and boundaries. An empty path is valid,\nas are empty segments. Its identity is stable across runs and changes to input\ncontents. Different questions that need independent records have different\npaths; nested paths can distinguish several questions within one area.",
+  "requirement": "```rust,ignore\n// Defined in habeas_sdk::graph.\n#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]\npub struct CriterionPath {\n    segments: Vec<String>,\n}\n\nimpl CriterionPath {\n    /// Construct a question's path, preserving segment order and boundaries.\n    /// Empty paths and empty segments are valid.\n    pub fn new(segments: Vec<String>) -> Self;\n\n    /// Read the ordered path segments.\n    pub fn segments(&self) -> &[String];\n}\n```\n\nIts identity is stable across runs and changes to input contents. Different\nquestions that need independent records have different paths; nested paths can\ndistinguish several questions within one area.",
   "determination": true,
-  "rationale": "I judged this from the supplied test sources and did not request any implementation source.\n\nThe obligations in `requirements.sdk.graph.validation.criterion_path` and the tests that cover them:\n\n- **Segment order and boundaries.** `crates/habeas-sdk/tests/contracts.rs#fn[criterion_paths_preserve_hierarchy_empty_segments_order_and_unicode]` builds seven paths and asserts every pair is unequal. They include `[\"a\",\"b\"]` vs `[\"a/b\"]` (boundaries), `[\"a\",\"b\"]` vs `[\"b\",\"a\"]` (order), and `é` vs `e\\u{301}` (Unicode). Each path is also checked for a serde JSON round-trip.\n- **Empty path and empty segments are valid.** The same test uses `[]` and `[\"\"]`, and asserts they are distinct from each other and from the other paths. `crates/habeas-sdk/tests/storage.rs#fn[source_and_criterion_boundaries_preserve_independent_records]` stores and loads records under `[]` and `[\"\"]` criteria. It checks that each gets its own distinct record path and that each stored record reads back unchanged.\n- **Stable identity across runs.** The serde round-trip and the equal-hash check in the paths test cover this. The storage test fixes the on-disk record path for each criterion, for example `criteria/s/record.json`. Those paths are the same on every run, so they pin identity across runs. The paths test does not assert an exact serialized form, but the storage test's fixed paths cover that.\n- **Identity does not change with input contents.** In `contracts.rs#fn[criteria_have_independent_typed_answers_and_cache_negative_results]`, a second `verify` on the `[\"behavior\"]` criterion uses a different answer payload. It returns the cached negative result and does not re-execute. That shows the record lookup is keyed by the criterion path and not by the contents. `contracts.rs#fn[wildcard_revision_does_not_supply_other_criteria_or_nodes]` also shows that a different criterion (`[\"new\"]`) is Missing while `[]` is Current.\n- **Different questions get different paths, with independent records.** In the criteria test, `[\"behavior\"]`, `[\"structure\"]` and `[\"judgment\"]` produce separate records. It asserts 3 executions and 3 writes, and it checks each record's output. The storage test shows that `[\"b\",\"c\"]` and `[\"c\"]`, under different source splits, do not collide.\n- **Nested paths distinguish several questions in one area.** `[\"a\",\"b\"]` and `[\"a/b\"]` are tested as distinct, `[\"nested\",\"criterion\"]` is hashed, and the storage test stores nested `[\"b\",\"c\"]` as its own record.\n\nThe tests carry `{test}` references to the requirement and assert the outcomes. I found no unmarked relevant test and no obligation without a test.",
-  "references": "dd769a15235f06fd707227e171291da0de5319e1e029c1f2f94d60efdc16fb59",
+  "rationale": "The tests adequately cover `requirements.sdk.graph.validation.criterion_path`. I found no gap.\n\n**Constructor, order and boundaries, empty paths and segments**\n- `tests/contracts.rs#fn[criterion_paths_preserve_hierarchy_empty_segments_order_and_unicode]` builds these paths: `[]`, `[\"\"]`, `[\"a\",\"b\"]`, `[\"a/b\"]`, `[\"b\",\"a\"]`, `[\"é\"]` and `[\"e\\u{301}\"]`.\n- It asserts that every pair is unequal. That covers segment boundaries (`[\"a\",\"b\"]` against `[\"a/b\"]`), order (`[\"b\",\"a\"]` against `[\"a\",\"b\"]`), and exact Unicode with no normalization.\n- It also checks that the empty path and the empty-segment path are valid and distinct from each other.\n\n**`segments()` read access**\n- `tests/storage.rs#fn[source_and_criterion_boundaries_preserve_independent_records]` asserts exact `record_path` outputs for many criterion paths.\n- In `src/storage.rs`, `record_path` reads `criterion.segments()`, so those exact paths show that `segments()` returns the segments in order, with boundaries and empty segments preserved. I read that call in a ripgrep snippet.\n\n**Identity stable across runs and across changes to input contents**\n- The Serde round-trip equality check and the same-value hash equality check in `criterion_paths_preserve_hierarchy_empty_segments_order_and_unicode` cover identity that depends only on the segments.\n- `tests/contracts.rs#fn[criteria_have_independent_typed_answers_and_cache_negative_results]` verifies the \"changes to input contents\" part. A second review at the same `[\"behavior\"]` path but with different content returns the cached negative result, with no extra execution. `state.executions == 3` and `state.writes == 3` confirm this.\n- `fn[wildcard_revision_does_not_supply_other_criteria_or_nodes]` also uses criterion identity: `[\"new\"]` is `Missing` while `[]` is `Current`.\n\n**Different questions have different paths and independent records**\n- `criteria_have_independent_typed_answers_and_cache_negative_results` covers independent records for `[\"behavior\"]`, `[\"structure\"]`, `[\"judgment\"]` and `[\"text\"]`.\n- The storage test covers independent on-disk records for nested and ambiguous source/criterion splits. Its cases include empty segments, `..` and Unicode, and control characters that could collide in an encoding. Each record is written and read back separately.\n\n**Fields not publicly mutable**\n- The `compile_fail` doctest on `struct[CriterionPath]` checks that `path.segments.clear()` does not compile.\n- A reviewer should confirm that doctests run in CI. I treated that as outside this assessment.\n\nAll the test items listed above carry `{test}` references to the requirement.",
+  "references": "aae0e30e93c5f65de420d0da746b2137683d4aa58293405083fb5806480afe1b",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.validation.criterion_path",
@@ -15,21 +15,34 @@
         "// Defined in habeas_sdk::graph.",
         "#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]",
         "pub struct CriterionPath {",
-        "    pub segments: Vec<String>,",
+        "    segments: Vec<String>,",
+        "}",
+        "",
+        "impl CriterionPath {",
+        "    /// Construct a question's path, preserving segment order and boundaries.",
+        "    /// Empty paths and empty segments are valid.",
+        "    pub fn new(segments: Vec<String>) -> Self;",
+        "",
+        "    /// Read the ordered path segments.",
+        "    pub fn segments(&self) -> &[String];",
         "}",
         "```",
         "",
-        "A criterion path preserves segment order and boundaries. An empty path is valid,",
-        "as are empty segments. Its identity is stable across runs and changes to input",
-        "contents. Different questions that need independent records have different",
-        "paths; nested paths can distinguish several questions within one area.",
+        "Its identity is stable across runs and changes to input contents. Different",
+        "questions that need independent records have different paths; nested paths can",
+        "distinguish several questions within one area.",
         ":::"
       ]
     },
     {
+      "file": "crates/habeas-sdk/src/graph.rs",
+      "item": "struct[CriterionPath]",
+      "hash": "4793c0af8a8b169e2c88587b21294dd1ef9ada8fbb0b9d90f50a24c411b07354"
+    },
+    {
       "file": "crates/habeas-sdk/tests/contracts.rs",
       "item": "fn[criteria_have_independent_typed_answers_and_cache_negative_results]",
-      "hash": "446b6469843c4e83ae2f009708952547195e937e1ba90eb8f96913ae26a0c43f"
+      "hash": "67c4fc430b44473b4e05fa5fd997743ab3a00a4fabe175c6b54f101eec4fcbf2"
     },
     {
       "file": "crates/habeas-sdk/tests/contracts.rs",
@@ -39,12 +52,17 @@
     {
       "file": "crates/habeas-sdk/tests/contracts.rs",
       "item": "fn[wildcard_revision_does_not_supply_other_criteria_or_nodes]",
-      "hash": "4442e9f98d9d487165465ebd604cbf490f9c9b297e687a10cc3208b8108c2fa9"
+      "hash": "a45b6a414798f8b3103291c3bc2f0fcd159d9560d87f585a7af6efb87b2da6b6"
     },
     {
       "file": "crates/habeas-sdk/tests/storage.rs",
       "item": "fn[source_and_criterion_boundaries_preserve_independent_records]",
-      "hash": "0a560e215da10edd8e877dff40e3daabf95785d5cc6b5075cc0081e52f192a43"
+      "hash": "1c3e7204f5bad56b73019830133a1de4f68da5c27c2c737d5ee12146c312b0a9"
+    },
+    {
+      "file": "crates/habeas-sdk/src/storage.rs",
+      "item": "impl[FileEvidenceStorage]/fn[record_path]",
+      "hash": "bc402633bb37560a392f6962f83797e662b6a98d5bca854f69218ebf507fc817"
     }
   ],
   "format_version": 1,
@@ -57,7 +75,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "dd769a15235f06fd707227e171291da0de5319e1e029c1f2f94d60efdc16fb59"
+          "value": "aae0e30e93c5f65de420d0da746b2137683d4aa58293405083fb5806480afe1b"
         }
       ]
     },
@@ -69,7 +87,7 @@
         "Mandatory",
         {
           "scheme": "node-path-set-sha256-v1",
-          "value": "9b9d46fa97443b64de1f47003375f4ef9ba109d6fdf2374ddcb7a7d91b67b6e3"
+          "value": "dc9424f5a8cbd33453afdb24483750aa2063054b7d364d4063808d5b7fb06f88"
         }
       ]
     },
@@ -80,7 +98,24 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "5626ae301b7cc7a6a916f4199bb0b4691b3b84147b6fd588c474f029b3e08a12"
+          "value": "ac5dd355512b07b07c4ecde8403cd34bb1d6f2ac52d827270b18bb51fd912036"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/src/graph.rs"
+            },
+            "selector": "struct[CriterionPath]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "3923268dfcbef72dc861dbdd918aefe35e5f84ce6a49975acb1d97f6438e0e75"
         }
       ]
     },
@@ -97,7 +132,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "f801a7b1a136d5f9447de8c3affe17a43576ca694017a24a592472fbcb3ff6f0"
+          "value": "d2f04095b3210a152b8b4f6c0b37b36adc6362c56a2302c1dfae936d8500921b"
         }
       ]
     },
@@ -131,7 +166,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "09ec9ebaaf65dc448178fdd2027cabde92a847f1d5457a265f141bcf672675d8"
+          "value": "010c22f1cb6946fa216d704fa869741f3509bd2374790573f1d716a975837e6c"
         }
       ]
     },
@@ -148,7 +183,24 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "debbe6278ca936b0029191423bf52dc8fb350233066c682a01df1b187232c195"
+          "value": "38efcf55dc68b67a4f8797ac2730652241c956879e458239eb2fc026e1f8ca1a"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/src/storage.rs"
+            },
+            "selector": "impl[FileEvidenceStorage]/fn[record_path]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "8ad0d4798344aa2809c8102183840d2065d3684c1c1afc49563eb78c44eb777e"
         }
       ]
     }

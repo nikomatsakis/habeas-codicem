@@ -27,6 +27,7 @@ impl std::error::Error for FileStorageError {}
 
 // {impl}`requirements.sdk.filesystem-storage.interface`
 // {impl}`requirements.sdk.graph.evidence.evidence_storage.filesystem`
+#[derive(Clone)]
 pub struct FileEvidenceStorage {
     root: PathBuf,
 }
@@ -40,7 +41,7 @@ impl FileEvidenceStorage {
     // {impl}`requirements.sdk.filesystem-storage.keys`
     pub fn record_path(&self, path: &NodePath, criterion: &CriterionPath) -> PathBuf {
         let mut result = self.root.clone();
-        for (index, segments) in [&path.segments, &criterion.segments]
+        for (index, segments) in [path.segments(), criterion.segments()]
             .into_iter()
             .enumerate()
         {
