@@ -1,5 +1,5 @@
 use super::*;
-use crate::procedure::{Agent, AgentInputRenderer};
+use crate::procedure::Agent;
 use std::sync::Arc;
 
 /// Shared domain and agent access. Each execution owns its dependency trace.
@@ -7,7 +7,6 @@ use std::sync::Arc;
 pub struct Validator<D: Domain> {
     domain: D,
     agent: Option<Arc<dyn Agent<D>>>,
-    renderer: Option<Arc<dyn AgentInputRenderer<D>>>,
 }
 
 impl<D: Domain> Validator<D> {
@@ -17,19 +16,13 @@ impl<D: Domain> Validator<D> {
         Self {
             domain,
             agent: None,
-            renderer: None,
         }
     }
 
     // {impl}`requirements.sdk.graph.validation.validator`
-    /// Share this agent and input renderer with execution contexts.
-    pub fn with_agent(
-        mut self,
-        agent: Arc<dyn Agent<D>>,
-        renderer: Arc<dyn AgentInputRenderer<D>>,
-    ) -> Self {
+    /// Share this agent with execution contexts.
+    pub fn with_agent(mut self, agent: Arc<dyn Agent<D>>) -> Self {
         self.agent = Some(agent);
-        self.renderer = Some(renderer);
         self
     }
 
@@ -86,12 +79,8 @@ impl<D: Domain> Validator<D> {
             let node = criterion.source_node_id();
             let criterion_path = criterion.criterion_path();
             let revision = criterion.revision();
-            let mut ctx = ValidationContext::configured(
-                &self.domain,
-                node.clone(),
-                self.agent.as_deref(),
-                self.renderer.as_deref(),
-            );
+            let mut ctx =
+                ValidationContext::configured(&self.domain, node.clone(), self.agent.as_deref());
             let answer = criterion.execute(&mut ctx).await?;
             Ok(Fingerprinted {
                 source: node,

@@ -475,7 +475,7 @@ fn select_subjects(
         completed: 0,
         total: None,
     });
-    // Every source item outside the book with citations needs a review.
+    // Source items and opted-in book passages share the citation-review lifecycle.
     let outlines = crate::inputs::OutlineCache::default();
     let (definitions, items) = if sites_of.is_some() {
         (Default::default(), Default::default())
@@ -760,6 +760,66 @@ mod tests {
                 (3, Some(3))
             ]
         );
+    }
+
+    // {test}`requirements.references.citation_review.book_commentary`
+    // {test}`requirements.authoring.batch`
+    #[test]
+    fn book_passages_are_selected_refreshed_skipped_and_removed_with_citation_reviews() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        fs::create_dir_all(root.join("md")).unwrap();
+        fs::write(root.join("book.toml"), "[book]\nsrc='md'\n").unwrap();
+        fs::write(
+            root.join("md/requirements.md"),
+            ":::{req} ready\nReady.\n:::\n",
+        )
+        .unwrap();
+        let text = ":::{cite} requirements.ready\nThe project is ready.\n:::\n";
+        fs::write(root.join("md/notes.md"), text).unwrap();
+        let inspect = || crate::evidence::inspect_repository(root).unwrap();
+        let inspection = inspect();
+        let (subjects, unchanged) = select_subjects(root, &inspection, None, false, &mut |_| {});
+        assert_eq!(unchanged, 0);
+        let subject = subjects
+            .into_iter()
+            .find(|s| matches!(s, AuthoringSubject::Citation { .. }))
+            .unwrap();
+        let sources = subject.sources(root).unwrap();
+        let super::super::inputs::AssessmentKind::Citation(item) = &sources.subject_kind else {
+            panic!("expected citation");
+        };
+        let path = subject.evidence_path(root);
+        let fixture = serde_json::json!({
+            "file": item.file, "item": item.item, "citations": item.citations_value(),
+            "determination": true, "rationale": "The passage agrees with its requirement.",
+            "inputs": sources.mandatory_inputs().iter().map(crate::inputs::recorded_input).collect::<Vec<_>>()
+        });
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, serde_json::to_vec(&fixture).unwrap()).unwrap();
+        let inspection = inspect();
+        assert!(subject_is_current(root, &subject).unwrap());
+        let (subjects, unchanged) = select_subjects(root, &inspection, None, false, &mut |_| {});
+        assert_eq!(unchanged, 1);
+        assert!(!subjects.iter().any(|s| s.label() == subject.label()));
+        let (forced, _) = select_subjects(root, &inspection, None, true, &mut |_| {});
+        assert!(forced.iter().any(|s| s.label() == subject.label()));
+        fs::write(
+            root.join("md/notes.md"),
+            text.replace("is ready", "is unready"),
+        )
+        .unwrap();
+        let (subjects, unchanged) = select_subjects(root, &inspect(), None, false, &mut |_| {});
+        assert_eq!(unchanged, 0);
+        assert!(subjects.iter().any(|s| s.label() == subject.label()));
+        fs::write(root.join("md/notes.md"), "Ordinary prose.\n").unwrap();
+        let inspection = inspect();
+        assert!(!subject_is_current(root, &subject).unwrap());
+        assert_eq!(
+            delete_orphaned_reviews(root, &inspection).unwrap(),
+            [crate::evidence::display_path(root, &path)]
+        );
+        assert!(!path.exists());
     }
 
     // {test}`requirements.authoring.batch`

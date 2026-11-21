@@ -217,9 +217,17 @@ pub trait EvidenceStorage: Graph {
 
 // {impl}`requirements.sdk.domain`
 /// A cloneable verification graph with fingerprints and evidence storage.
-pub trait Domain: Clone + Graph + Fingerprinting + EvidenceStorage {}
-
-impl<T: Clone + Graph + Fingerprinting + EvidenceStorage> Domain for T {}
+pub trait Domain: Clone + Graph + Fingerprinting + EvidenceStorage {
+    // {impl}`requirements.sdk.domain`
+    // {impl}`requirements.sdk.graph.agent-calls.judge.rendering`
+    /// Format already-read contents for an agent using their source identity.
+    /// The supplied contents and their recorded fingerprint describe the same read.
+    fn format_node_content(
+        &self,
+        node: &Self::NodeId,
+        contents: &Self::NodeContent,
+    ) -> Result<String, Self::Error>;
+}
 
 // {impl}`requirements.sdk.graph.validation.check_procedure`
 #[derive(Debug)]

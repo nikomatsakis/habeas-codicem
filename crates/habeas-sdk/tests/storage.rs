@@ -395,6 +395,16 @@ fn concurrent_readers_only_observe_complete_records_from_competing_writes() {
 
 #[derive(Clone)]
 struct StoredGraph(FileEvidenceStorage);
+impl Domain for StoredGraph {
+    // :::{cite} habeas:coverage
+    // This storage-only domain verifies output decoding without reading or
+    // presenting node contents. A formatter call would be an unwanted graph
+    // access. Agent fixtures exercise formatting separately.
+    // :::
+    fn format_node_content(&self, _: &String, _: &()) -> Result<String, Self::Error> {
+        panic!("storage operations must not format graph contents")
+    }
+}
 impl Graph for StoredGraph {
     type NodeId = String;
     type NodeContent = ();

@@ -160,8 +160,12 @@ Edge cases:
   asks: the user may want it as a root, and removing it changes what the
   assessment reads.
 
-`{cite}` implements nothing; a citation review checks project citations' roles
-and built-ins' stated criteria. Execution-coverage exceptions use
+`{cite}` implements nothing. For source items outside the book, citation reviews
+check project citations' roles and built-ins' stated criteria. A closed
+`:::{cite} full.name` fence outside a requirement or example opts a book passage
+into concordance review: its claims must be supported by the cited declarations.
+The outermost eligible fence groups nested commentary citations into one review.
+Ordinary inline book citations retain their existing behavior. Execution-coverage exceptions use
 `habeas:coverage` with an assessed prose justification, as the habeas skill's
 "Testing and coverage artifacts" explains. To defer a requirement gap the user agrees to,
 use `{fixme}` as the habeas-evidence skill's `references/fixme.md` describes.

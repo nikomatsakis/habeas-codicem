@@ -1,5 +1,4 @@
-//! Citation reviews: an assessment, for every source item outside the book
-//! that carries a `{cite}` reference, of whether its citations are sensible.
+//! Citation reviews of source items and opted-in explanatory book passages.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -40,9 +39,10 @@ impl Citation {
 }
 
 // {cite}`habeas:util`
-/// A source item outside the book carrying at least one `{cite}` reference.
+/// A source item or book passage carrying citations that need review.
 #[derive(Clone, Debug)]
 pub(crate) struct CitationItem {
+    pub(crate) review_kind: ReviewKind,
     /// Project-relative path.
     pub(crate) file: String,
     /// Outline selector; empty for the root node.
@@ -51,6 +51,21 @@ pub(crate) struct CitationItem {
     pub(crate) line: usize,
     /// Citations in source order.
     pub(crate) citations: Vec<Citation>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ReviewKind {
+    SourceItem,
+    BookCommentary,
+}
+
+impl ReviewKind {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::SourceItem => "source_item",
+            Self::BookCommentary => "book_commentary",
+        }
+    }
 }
 
 impl CitationItem {
@@ -119,45 +134,119 @@ pub(crate) fn subject_label(file: &str, item: &str) -> String {
     format!("citations:{file}#{item}")
 }
 
-/// The source items outside the book whose citations need review, keyed by
-/// file and selector. Citations that do not resolve are reported by
-/// reference validation and are not reviewed.
+/// Discover source items and the outermost opted-in book commentary fences.
+/// Unresolvable citations are reported by reference validation.
 // {impl}`requirements.references.outline_comments`
 // {impl}`requirements.references.builtin_definitions`
 // {impl}`requirements.references.util`
+// {impl}`requirements.references.citation_review.book_commentary`
 pub(crate) fn citation_items(
     root: &Path,
     definitions: &BTreeMap<String, Declaration>,
     references: &[SourceReference],
     outlines: &OutlineCache,
 ) -> BTreeMap<(String, String), CitationItem> {
-    let mut items = BTreeMap::<(String, String), CitationItem>::new();
-    for reference in references {
-        if reference.kind != ReferenceKind::Cite || reference.in_book || !reference.closed {
-            continue;
-        }
-        let resolves = crate::builtins::builtin(&reference.name)
+    let resolves = |reference: &SourceReference| {
+        crate::builtins::builtin(&reference.name)
             .is_some_and(|builtin| builtin.check(reference.kind).is_ok())
             || definitions
                 .get(&reference.name)
-                .is_some_and(|definition| definition.kind != crate::DefinitionKind::Term);
-        if !resolves {
+                .is_some_and(|definition| definition.kind != crate::DefinitionKind::Term)
+    };
+    // Most book citations live in declarations or ordinary unfenced prose.
+    // Outline only files containing a possible opted-in commentary fence.
+    let commentary_files = references
+        .iter()
+        .filter(|r| {
+            r.in_book
+                && !r.in_declaration
+                && r.closed
+                && r.kind == ReferenceKind::Cite
+                && r.commentary.is_some()
+        })
+        .map(|r| &r.file)
+        .collect::<BTreeSet<_>>();
+    let mut items = BTreeMap::<(String, String), CitationItem>::new();
+    // One outline read per file. Each range names a whole commentary container.
+    let mut passages = BTreeMap::<String, Vec<(usize, usize, String)>>::new();
+    for reference in references {
+        if reference.kind != ReferenceKind::Cite
+            || !reference.closed
+            || !resolves(reference)
+            || (reference.in_book
+                && (reference.in_declaration || !commentary_files.contains(&reference.file)))
+        {
             continue;
         }
         let file = display_path(root, &reference.file);
         let parsed = outlines.parse(root, &file);
-        let item = match parsed.as_ref() {
-            Ok(parsed) if parsed.outline.profile.language.is_some() => {
-                let index = parsed.reference_owner_at_line(reference.line);
-                parsed.outline.nodes[index].selector.clone()
-            }
-            // Plain-text files have only a root node; a source that cannot be
-            // outlined is reported elsewhere and is reviewed as a whole file.
-            _ => String::new(),
+        let (item, review_kind) = if reference.in_book {
+            let ranges = passages.entry(file.clone()).or_insert_with(|| {
+                let Ok(parsed) = parsed.as_ref() else {
+                    return Vec::new();
+                };
+                let declarations = crate::definition_blocks(&parsed.source);
+                crate::fenced::markdown_fences(&parsed.source, true)
+                    .into_iter()
+                    .filter(|fence| fence.closed && fence.kind == ReferenceKind::Cite)
+                    .filter(|fence| {
+                        !declarations.iter().any(|block| {
+                            block.kind != crate::DefinitionKind::Term
+                                && block.start < fence.start
+                                && fence.start < block.body_end
+                        })
+                    })
+                    .filter_map(|fence| {
+                        let end = parsed.source[..fence.end]
+                            .bytes()
+                            .filter(|&b| b == b'\n')
+                            .count()
+                            + 1;
+                        // Utility-only commentary is exempt, including nested citations.
+                        let eligible = references.iter().any(|r| {
+                            r.file == reference.file
+                                && r.kind == ReferenceKind::Cite
+                                && r.closed
+                                && !r.in_declaration
+                                && r.line >= fence.line
+                                && r.line < end
+                                && r.name != "habeas:util"
+                                && resolves(r)
+                        });
+                        eligible.then(|| {
+                            let owner = parsed.reference_owner_at_line(fence.line);
+                            (
+                                fence.line,
+                                end,
+                                parsed.outline.nodes[owner].selector.clone(),
+                            )
+                        })
+                    })
+                    .collect()
+            });
+            // The earliest containing opener owns nested commentary citations.
+            let Some((_, _, item)) = ranges
+                .iter()
+                .filter(|(start, end, _)| *start <= reference.line && reference.line < *end)
+                .min_by_key(|(start, _, _)| *start)
+            else {
+                continue;
+            };
+            (item.clone(), ReviewKind::BookCommentary)
+        } else {
+            let item = match parsed.as_ref() {
+                Ok(parsed) if parsed.outline.profile.language.is_some() => {
+                    let index = parsed.reference_owner_at_line(reference.line);
+                    parsed.outline.nodes[index].selector.clone()
+                }
+                _ => String::new(),
+            };
+            (item, ReviewKind::SourceItem)
         };
         let entry = items
             .entry((file.clone(), item.clone()))
             .or_insert_with(|| CitationItem {
+                review_kind,
                 file,
                 item,
                 line: reference.line,
@@ -169,7 +258,6 @@ pub(crate) fn citation_items(
             commentary: reference.commentary.clone().unwrap_or_default(),
         });
     }
-    // An item whose only citations are of `habeas:util` needs no review.
     items.retain(|_, item| {
         item.citations
             .iter()
@@ -258,7 +346,7 @@ pub(crate) fn validate(
     for file in files {
         if !expected.contains(file) {
             errors.push(format!(
-                "{}: orphaned citation review: no source item outside the book with {{cite}} references matches it",
+                "{}: orphaned citation review: no reviewed source item or book passage with {{cite}} references matches it",
                 display_path(root, file)
             ));
         }
@@ -477,4 +565,131 @@ pub(crate) fn is_review_path(evidence_root: &Path, path: &Path) -> bool {
         .ok()
         .and_then(|relative| relative.components().next())
         .is_some_and(|first| first.as_os_str() == CITATIONS_DIR)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::evidence::{collect_references, load_definitions};
+
+    fn project() -> tempfile::TempDir {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join("md")).unwrap();
+        fs::write(root.path().join("book.toml"), "[book]\nsrc='md'\n").unwrap();
+        fs::write(
+            root.path().join("md/requirements.md"),
+            ":::{req} ready\nThe project is ready.\n:::\n",
+        )
+        .unwrap();
+        root
+    }
+
+    // {test}`requirements.references.citation_review.book_commentary`
+    // {test}`requirements.references.outline_comments`
+    // {test}`requirements.references.util`
+    #[test]
+    fn book_commentary_groups_nested_citations_but_excludes_declarations_and_literals() {
+        let root = project();
+        let cite = |name: &str| format!("{{{}}}`{name}`", "cite");
+        let commentary = format!(
+            "# Notes\n\nUnfenced {}.\n\n:::::{{cite}} habeas:util\nOuter passage. {}\n\n::::{{cite}} requirements.ready\nNested passage.\n::::\n\n::::{{req}} nested\nNested requirement. {}\n::::\n\n::::{{example}} illustration\n{}\nNested example.\n::::\n\n```text\n:::{{cite}} requirements.ready\nLiteral.\n:::\n```\n\n\\{}\n{}\n{}\n{}\n:::::\n\n:::{{cite}} habeas:util\nUtility-only passage.\n:::\n\n:::{{cite}} requirements.missing\nUnresolved.\n:::\n\n:::{{req}} outer\n:::{{cite}} requirements.ready\nDeclaration commentary.\n:::\n:::\n\n:::{{cite}} requirements.ready\nUnclosed.\n",
+            cite("requirements.ready"),
+            cite("requirements.ready"),
+            cite("requirements.ready"),
+            cite("requirements.ready"),
+            cite("requirements.ready"),
+            cite("notes.nested"),
+            cite("notes.illustration"),
+            cite("habeas:coverage"),
+        );
+        fs::write(root.path().join("md/notes.md"), &commentary).unwrap();
+        // The same fence outside the book is an ordinary source-item review.
+        fs::write(
+            root.path().join("notes.md"),
+            ":::{cite} requirements.ready\nSource commentary.\n:::\n",
+        )
+        .unwrap();
+        let definitions = load_definitions(root.path()).unwrap();
+        let mut errors = Vec::new();
+        let references = collect_references(root.path(), &mut errors);
+        assert!(errors.is_empty(), "{errors:?}");
+        let outlines = OutlineCache::default();
+        let items = citation_items(root.path(), &definitions, &references, &outlines);
+        let book = items
+            .values()
+            .filter(|item| item.file == "md/notes.md")
+            .collect::<Vec<_>>();
+        assert_eq!(book.len(), 1, "{items:#?}");
+        let book = book[0];
+        assert_eq!(book.review_kind, ReviewKind::BookCommentary);
+        assert_eq!(book.line, 5);
+        assert_eq!(
+            book.citations
+                .iter()
+                .map(|c| c.name.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "habeas:util",
+                "requirements.ready",
+                "requirements.ready",
+                "notes.nested",
+                "notes.illustration",
+                "habeas:coverage"
+            ]
+        );
+        let parsed = outlines.parse(root.path(), &book.file);
+        let parsed = parsed.as_ref().as_ref().unwrap();
+        let owner = parsed.resolve(&book.file, &book.item).unwrap();
+        let node = &parsed.outline.nodes[owner];
+        assert_eq!(node.kind, "block");
+        let text = &parsed.source[node.byte_start..node.byte_end];
+        assert!(text.starts_with(":::::{cite} habeas:util"), "{text}");
+        assert!(text.contains("Outer passage") && text.contains("Nested passage"));
+        assert!(!text.contains("Unfenced") && !text.contains("Utility-only passage"));
+        assert_eq!(
+            items
+                .values()
+                .find(|item| item.file == "notes.md")
+                .unwrap()
+                .review_kind,
+            ReviewKind::SourceItem
+        );
+    }
+
+    // {test}`requirements.references.citation_review.book_commentary`
+    #[test]
+    fn separate_closed_passages_have_independent_subjects_and_empty_book_cites_stay_exempt() {
+        let root = project();
+        fs::write(root.path().join("md/notes.md"), "# Notes\n\n:::{cite} requirements.ready\nFirst passage.\n:::\n\n:::{cite} requirements.ready\nSecond passage.\n:::\n\n<div>\n:::{cite} requirements.ready\nHTML literal.\n:::\n</div>\n").unwrap();
+        let definitions = load_definitions(root.path()).unwrap();
+        let references = collect_references(root.path(), &mut Vec::new());
+        let items = citation_items(
+            root.path(),
+            &definitions,
+            &references,
+            &OutlineCache::default(),
+        );
+        let passages = items.values().collect::<Vec<_>>();
+        assert_eq!(passages.len(), 2, "{items:#?}");
+        assert_ne!(passages[0].item, passages[1].item);
+        assert_ne!(passages[0].review_path(), passages[1].review_path());
+        assert!(passages.iter().all(
+            |item| item.review_kind == ReviewKind::BookCommentary && item.citations.len() == 1
+        ));
+        fs::write(
+            root.path().join("md/notes.md"),
+            "Only an inline citation: {cite}`requirements.ready`.\n",
+        )
+        .unwrap();
+        let references = collect_references(root.path(), &mut Vec::new());
+        assert!(
+            citation_items(
+                root.path(),
+                &definitions,
+                &references,
+                &OutlineCache::default()
+            )
+            .is_empty()
+        );
+    }
 }

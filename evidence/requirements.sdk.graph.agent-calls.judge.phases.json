@@ -1,7 +1,7 @@
 {
   "requirement": "An ask builder begins in `ContextPhase`. Only that state exposes `context`,\ncomposing the reusable prefix under\n{cite}`requirements.sdk.graph.agent-calls.agent_context`. The first\n`contents_of_current_node` or `contents_of_successors` call enters `NodePhase`, even\nwith an empty successor selection. This state allows further node insertions\nand awaiting, with no `context` method or transition back. The builder's types\nenforce the restriction.",
   "determination": true,
-  "rationale": "The tests adequately cover `requirements.sdk.graph.agent-calls.judge.phases`.\n\n**Obligations and tests**\n- **`context` exists only in `ContextPhase`, and the first node insertion seals it.**\n  - `crates/habeas-sdk/src/procedure.rs#struct[NodePhase]` carries two `compile_fail` doctests marked `{test}` for this requirement.\n  - One calls `.contents_of_current_node().context(..)` and the other calls `.contents_of_successors(label).context(..)`.\n  - Both fail to compile only because `Ask<.., NodePhase>` has no `context` method, which is the \"no `context` method or transition back\" clause.\n  - I checked that both snippets are otherwise valid. `ask::<bool>()` is available on `ValidationContext<'_, D: Domain>`, `bool` satisfies `DeserializeOwned + JsonSchema + Send`, and the second snippet includes the `D::EdgeLabel: PartialEq` bound that `contents_of_successors` needs. The `compile_fail` therefore comes from the missing method, not from an unrelated error.\n  - The \"types enforce the restriction\" clause is verified at compile time by these doctests.\n- **Both node insertions enter `NodePhase`, including a successor selection that may be empty.**\n  - `contents_of_current_node` and `contents_of_successors` each have their own `compile_fail` doctest.\n  - Entering `NodePhase` is a static type transition. It does not depend on whether the selection is empty at run time, so the `contents_of_successors` doctest covers the empty-selection clause.\n  - `fn[queued_reads_selection_and_rendering_fail_before_agent_invocation]` in `tests/validation.rs` calls `.contents_of_successors(7).await` and then asserts that no reads happen. This confirms the first-call transition and awaiting are used on that path.\n- **The builder begins in `ContextPhase` and `context` composes the prefix.**\n  - `fn[explicit_insertions_preserve_order_repetition_and_selection_snapshots]` runs `ask().context(..)` and then the node insertions.\n  - Other tests in `tests/validation.rs` chain several `.context(..)` calls and then await in `ContextPhase`. These include `string_and_str_contexts_deliver_identical_prefixes_and_fingerprints` and `contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text`.\n  - Context composition itself is governed by `agent_context`, which is cited. I did not reassess it.\n- **`NodePhase` allows further node insertions and awaiting.**\n  - `fn[explicit_insertions_preserve_order_repetition_and_selection_snapshots]` chains `contents_of_current_node`, `contents_of_successors(7)` and `contents_of_current_node` again after entering `NodePhase`.\n  - It then awaits the future and asserts the order of the inserted nodes (`requests[0].2`), the read order and the recorded dependencies. It also asserts the future is `Send`.\n  - A regression that dropped, reordered or blocked insertions or awaiting in `NodePhase` would fail it.\n\n**Gaps:** none found. The `compile_fail` doctests would accept any compile error, but the snippets are otherwise valid, so I do not treat this as a gap.",
+  "rationale": "**Obligations from `judge.phases`**\n1. The builder starts in `ContextPhase`, and only that state exposes `context`.\n2. The first `contents_of_current_node` or `contents_of_successors` call moves the builder to `NodePhase`, even with an empty successor selection.\n3. `NodePhase` allows further node insertions and awaiting. It has no `context` method and no way back to `ContextPhase`.\n4. The builder's types enforce this, so the restriction is checked at compile time.\n\n**Test mapping**\n- **`context` unavailable after `contents_of_current_node`:** The first `compile_fail` doctest on `crates/habeas-sdk/src/procedure.rs#struct[NodePhase]` calls `ctx.ask::<bool>().contents_of_current_node().context(String::new())`. Its only plausible error is that `NodePhase` has no `context`. `bool` satisfies the `ask` bounds, and the `ask` and `contents_of_current_node` signatures are generic over the phase, so the failure comes from the sealed phase and not from an unrelated error. Any implementation that kept `context` available after this call would make the doctest compile, so the doctest would fail.\n- **`context` unavailable after `contents_of_successors`:** The second doctest does the same with `contents_of_successors(label)`, including the `D::EdgeLabel: PartialEq` bound. Both entry points into `NodePhase` are covered.\n- **Empty successor selection:** The phase transition is a type-level property. `contents_of_successors` returns `Ask<…, NodePhase>` whatever the label selects at runtime, so the doctest covers the \"even with an empty selection\" clause. A runtime test with an empty selection would add nothing to the type check.\n- **`ContextPhase` to `NodePhase` flow:** `explicit_insertions_preserve_order_repetition_and_selection_snapshots` in `crates/habeas-sdk/tests/validation.rs` calls `.ask::<Answer>().context(...)`, which is the `ContextPhase` method. It then chains `contents_of_current_node().contents_of_successors(7).contents_of_current_node()`, so a `NodePhase` builder accepts further insertions of both kinds. It awaits via `into_future()` and asserts the future is `Send`. It also asserts the request prefix, the insertion order and repetition, the reads, and the recorded dependencies.\n- **No transition back:** `NodePhase` has no method other than the node insertions and awaiting, so a missing transition back is exercised by the compile-fail doctests. They show `context` cannot be reached after either insertion call.\n\n**Gaps**\nNone found. Awaiting directly from `ContextPhase` is not part of this requirement's text. The `context` rendering and fingerprint rules belong to the cited `agent_context` requirement and are not reassessed here. There are no `{fixme}` acknowledgments, and none are needed.",
   "references": "c36b8fc4590acac4b0f616f8d6d605a9310de7736e4b73e8c7328b9af1aa0ccb",
   "inputs": [
     {
@@ -33,6 +33,7 @@
         "",
         "/// Reusable agent instructions, defined in habeas_sdk::procedure.",
         "pub trait Context {",
+        "    /// Supply reusable text for the beginning of the agent's prompt.",
         "    fn contents(&self) -> Cow<'_, String>;",
         "}",
         "```",
@@ -70,27 +71,7 @@
     {
       "file": "crates/habeas-sdk/tests/validation.rs",
       "item": "fn[explicit_insertions_preserve_order_repetition_and_selection_snapshots]",
-      "hash": "4f3bc79738694f72d472c8bf93492a0af2ce5de481452d4453b53340dc8d9e95"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/validation.rs",
-      "item": "fn[queued_reads_selection_and_rendering_fail_before_agent_invocation]",
-      "hash": "04cf8be19658ebbcb945e246334c0025a46173c59f777f3b3b82b59a4f0adcce"
-    },
-    {
-      "file": "crates/habeas-sdk/src/procedure.rs",
-      "item": "impl[ValidationContext<'d,%20D>]#2/fn[ask]",
-      "hash": "d9a60d50f0b840ec20b6a28f2f101abb5fe48bf743b7a81ba471cfb1b7de3f20"
-    },
-    {
-      "file": "crates/habeas-sdk/src/graph.rs",
-      "item": "trait[Graph]/type[EdgeLabel]",
-      "hash": "be6dfaba2800323828f3623e86c6c3d321c4d5a2c5ffd63a062b23b2076736bc"
-    },
-    {
-      "file": "crates/habeas-sdk/src/graph.rs",
-      "item": "trait[Domain]",
-      "hash": "eb3120f48c8aceeb3ea08d6bd5d3eb770a17b4940486fc390fa60b44644dbdf9"
+      "hash": "0610eb8340c13104b553c1cc7a312492818e7617c248a60fe259516c1976f252"
     },
     {
       "file": "crates/habeas-sdk/src/procedure.rs",
@@ -101,6 +82,31 @@
       "file": "crates/habeas-sdk/src/procedure.rs",
       "item": "impl[Ask<'a,%20'd,%20D,%20R,%20P>]#1/fn[contents_of_successors]",
       "hash": "5259c05f216ee5bd0897d540a7486136bd73a6de17eda5a90f89b7484188fa1d"
+    },
+    {
+      "file": "crates/habeas-sdk/src/procedure.rs",
+      "item": "macro@0541b668e173",
+      "hash": "0541b668e17328ea03bcea26c84b8ba0d033a8e4e79a8b4983dffadf0126cffa"
+    },
+    {
+      "file": "crates/habeas-sdk/src/procedure.rs",
+      "item": "macro@5781c4abb394",
+      "hash": "5781c4abb394b89553efd9c5558d9526bebec071676accc0fa6d63b012625b42"
+    },
+    {
+      "file": "crates/habeas-sdk/src/procedure.rs",
+      "item": "impl[ValidationContext<'d,%20D>]#2/fn[ask]",
+      "hash": "d9a60d50f0b840ec20b6a28f2f101abb5fe48bf743b7a81ba471cfb1b7de3f20"
+    },
+    {
+      "file": "crates/habeas-sdk/src/graph.rs",
+      "item": "use@8dacb4bcbf7a",
+      "hash": "8dacb4bcbf7a5953c2413ffa2aab28e64d4efeda4da9e4142aae06219092fcee"
+    },
+    {
+      "file": "crates/habeas-sdk/src/graph.rs",
+      "item": "trait[Domain]",
+      "hash": "94cea30bf36da4de09812cf20b90acd9da65731e8896503ecbcadcebaf1180b2"
     }
   ],
   "format_version": 1,
@@ -147,7 +153,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "257fb81c5fb346cc12da971e29b7920cbd4d7f6333d82799721e517659b8f141"
+          "value": "d52c5f0aa6362a201a36d2b4e62c9325aa6c3612351141b8741d91c1c4204bdd"
         }
       ]
     },
@@ -181,75 +187,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "52a76e0328cd6ae89103ac76cbfef3ed403dcf6b7da5b01a5b03ca704710c5d5"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/validation.rs"
-            },
-            "selector": "fn[queued_reads_selection_and_rendering_fail_before_agent_invocation]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "11bc37406e1d0d0dd137d3e8fe9c758f5a4e572566335d8271b81f996ef78997"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/src/procedure.rs"
-            },
-            "selector": "impl[ValidationContext<'d,%20D>]#2/fn[ask]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "d1b1ea6a1a8401ffa1eab0cdcaa1b9e612b4584ec6edbbca508e6000d9068399"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/src/graph.rs"
-            },
-            "selector": "trait[Graph]/type[EdgeLabel]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "07800419b884526a29e1543b4822e2a58209a84c0a22c4acf8682c59c373ae55"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/src/graph.rs"
-            },
-            "selector": "trait[Domain]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "2cdccb0cc9230cf71264fb21865f0b772b49d9840323faf1d3aa25f79f35fbfd"
+          "value": "b45ea148e5b3abde4caf677bcab060d49fdeff20e73f8494e27d3b95a44c38c9"
         }
       ]
     },
@@ -284,6 +222,91 @@
         {
           "scheme": "habeas-input-v1",
           "value": "e6f14d7e5cc03529dd179fe1ebfbf638e1f057461cf1db7fad3b98d22906948a"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/src/procedure.rs"
+            },
+            "selector": "macro@0541b668e173"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "7f1bf9941cc59d229d18c9eb728ab5ff670a25e66b26733f4e927fbac0e1b3d0"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/src/procedure.rs"
+            },
+            "selector": "macro@5781c4abb394"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "71c0f75bbf0177a7e688db5d32a6e9d977bfce0e1cbc8a1f4ad83f07f64c9fc4"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/src/procedure.rs"
+            },
+            "selector": "impl[ValidationContext<'d,%20D>]#2/fn[ask]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "d1b1ea6a1a8401ffa1eab0cdcaa1b9e612b4584ec6edbbca508e6000d9068399"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/src/graph.rs"
+            },
+            "selector": "use@8dacb4bcbf7a"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "fa45ac89e66fb8055b2a7b5ccd79f573adb7267bbededdba4144f8ed774cf39a"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/src/graph.rs"
+            },
+            "selector": "trait[Domain]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "eb241665a3505849361d372f9787e60d53895ac40f3539af6fd306b7f75a40ef"
         }
       ]
     }

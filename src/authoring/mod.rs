@@ -68,7 +68,7 @@ pub struct AuthoringOptions {
 #[derive(Clone, Debug)]
 pub(crate) enum AuthoringSubject {
     Definition(String),
-    /// The citation review of one source item outside the book.
+    /// The citation review of a source item or opted-in book passage.
     Citation {
         file: String,
         item: String,
@@ -946,6 +946,7 @@ fn initial_prompt_with_inputs(sources: &AssessmentSources, inputs: &[Value]) -> 
         AssessmentKind::Citation(item) => {
             let citations = serde_json::to_string(&item.model_citations_value())?;
             values.extend([
+                ("review_kind", item.review_kind.label()),
                 ("item_file", item.file.as_str()),
                 ("item_selector", item.selector_label()),
                 ("citations", &citations),
@@ -3976,7 +3977,7 @@ mod tests {
             (
                 "citations:src/lib.rs#fn[helper]",
                 "The reviewer judged citation review citations:src/lib.rs#fn[helper] as false.",
-                "Item under review: src/lib.rs fn[helper]\nCitations to check:",
+                "Item under review: src/lib.rs fn[helper]\nReview kind: source_item\nCitations to check:",
             ),
         ] {
             let sources = AuthoringSubject::parse(subject)
@@ -4180,6 +4181,149 @@ mod tests {
         );
     }
 
+    // {test}`requirements.references.citation_review.book_commentary`
+    // {test}`requirements.authoring.citation_prompt`
+    // {test}`requirements.authoring.mandatory_inputs`
+    #[tokio::test]
+    async fn book_commentary_reviews_supply_the_whole_passage_and_check_concordance() {
+        let project = inputs::tests::project();
+        fs::write(
+            project.path().join("md/terms.md"),
+            ":::{definition} unit\n:phrase: unit\nA unit.\n:::\n",
+        )
+        .unwrap();
+        fs::write(
+            project.path().join("md/requirements.md"),
+            ":::{req} ready\nReadiness is measured in {term}`terms.unit`.\n:::\n",
+        )
+        .unwrap();
+        let body = "# Notes\n\nUnrelated chapter text.\n\n:::{cite} requirements.ready\nReadiness is measured in units.\n:::\n\nAdjacent prose.\n";
+        fs::write(project.path().join("md/notes.md"), body).unwrap();
+        let definitions = crate::evidence::load_definitions(project.path()).unwrap();
+        let references = crate::evidence::collect_references(project.path(), &mut Vec::new());
+        let items = crate::citations::citation_items(
+            project.path(),
+            &definitions,
+            &references,
+            &crate::inputs::OutlineCache::default(),
+        );
+        let item = items
+            .values()
+            .find(|item| item.file == "md/notes.md")
+            .unwrap();
+        let subject =
+            AuthoringSubject::parse(&crate::citations::subject_label(&item.file, &item.item));
+        let mut sources = subject.sources(project.path()).unwrap();
+        let mandatory = sources.mandatory_inputs();
+        assert_eq!(mandatory[0]["file"], "md/notes.md");
+        assert_eq!(mandatory[0]["item"], item.item);
+        assert!(
+            mandatory
+                .iter()
+                .any(|input| input["requirements"] == "requirements.ready")
+        );
+        assert!(
+            mandatory
+                .iter()
+                .any(|input| input["definition"] == "terms.unit")
+        );
+        let state = tempfile::tempdir().unwrap();
+        let mut usage = UsageLog::start(state.path(), project.path(), &subject.label()).unwrap();
+        let provider =
+            RecordingProvider::new(vec![judgment(json!(true), "The explanation is supported.")]);
+        let (_, record) = assess(&provider, &mut sources, &mut usage).await.unwrap();
+        let prompt = provider.prompts()[0].0.clone();
+        for text in [
+            "Review kind: book_commentary",
+            "Readiness is measured in units.",
+            "Readiness is measured in",
+            "A unit.",
+            "Contradicting or unsupported claims are gaps",
+        ] {
+            assert!(prompt.contains(text), "{text}: {prompt}");
+        }
+        assert!(!prompt.contains("Unrelated chapter text") && !prompt.contains("Adjacent prose"));
+        assert!(!prompt.contains("{{review_kind}}"));
+        assert_eq!(record["file"], "md/notes.md");
+        assert_eq!(record["item"], item.item);
+        assert_eq!(record["determination"], true);
+        assert!(
+            record["inputs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|input| input["file"] == "md/notes.md" && input["item"] == item.item)
+        );
+        let path = subject.evidence_path(project.path());
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
+        let validate = |current: &crate::citations::CitationItem| {
+            let mut errors = Vec::new();
+            crate::citations::validate_review(
+                project.path(),
+                &current.review_path(),
+                current,
+                &definitions,
+                &crate::inputs::OutlineCache::default(),
+                &mut errors,
+            );
+            errors
+        };
+        assert!(validate(item).is_empty());
+        // A text change in the same passage invalidates its recorded read.
+        fs::write(
+            project.path().join("md/notes.md"),
+            body.replace(
+                "Readiness is measured in units.",
+                "Readiness is measured in seconds.",
+            ),
+        )
+        .unwrap();
+        let stale = validate(item);
+        assert!(
+            stale.iter().any(|error| error.contains("hash")),
+            "{stale:?}"
+        );
+        let mut changed = subject.sources(project.path()).unwrap();
+        let provider = RecordingProvider::new(vec![judgment(
+            json!(false),
+            "Seconds contradicts the cited unit description.",
+        )]);
+        let (determination, record) = assess(&provider, &mut changed, &mut usage).await.unwrap();
+        assert_eq!(determination, Judgment::False);
+        assert_eq!(record["determination"], false);
+        assert!(
+            provider.prompts()[0]
+                .0
+                .contains("Readiness is measured in seconds.")
+        );
+        fs::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
+        assert!(
+            validate(item)
+                .iter()
+                .any(|error| error.contains("determination is false"))
+        );
+        // Removing the opt-in passage orphans its existing review.
+        fs::write(project.path().join("md/notes.md"), "Ordinary prose.\n").unwrap();
+        let mut errors = Vec::new();
+        let references = crate::evidence::collect_references(project.path(), &mut errors);
+        crate::citations::validate(
+            project.path(),
+            &definitions,
+            &references,
+            &crate::inputs::OutlineCache::default(),
+            &[path],
+            &mut errors,
+            &mut |_| {},
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("orphaned citation review")),
+            "{errors:?}"
+        );
+    }
+
     // {test}`requirements.authoring.citation_prompt`
     // {test}`requirements.references.citation_review`
     // {test}`requirements.authoring.mandatory_inputs`
@@ -4246,6 +4390,7 @@ mod tests {
                 .contains("exactly once")
         );
         let prompt = &prompts[0].0;
+        assert!(prompt.contains("Review kind: source_item"), "{prompt}");
         assert!(
             prompt.contains("Review one source item's citations."),
             "{prompt}"

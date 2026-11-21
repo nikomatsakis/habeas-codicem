@@ -1,7 +1,7 @@
 {
   "requirement": "Node-insertion methods queue selections. They resolve no contents or edges,\nrender no inputs, and record no observations while building.\n\nAwaiting with a configured agent resolves these selections in call order:\n\n| Insertion | Contents delivered |\n| --- | --- |\n| `contents_of_current_node()` | The node identified by `ValidationContext::node_id`. |\n| `contents_of_successors(label)` | Targets of edges whose labels equal `label`, in returned edge order, including duplicate targets. |\n\nEach successful successor selection records its source, label, and target-set\nfingerprint, even when nothing matches. Only selected targets have their contents\nresolved. Each delivered node is recorded with its supplied snapshot's\nfingerprint under {cite}`requirements.sdk.graph.agent-calls.author_procedure`.\nInput-resolution failures return `ValidationError::Graph`.",
   "determination": true,
-  "rationale": "The three supplied tests in `crates/habeas-sdk/tests/validation.rs` cover each obligation in `requirements.sdk.graph.agent-calls.judge.node_contents`. I did not read the `Memory`, `MockAgent` or renderer helpers. I relied on how the tests use them.\n\n- **Queueing only while building.**\n  - `dropped_builders_and_missing_agents_do_not_resolve_queued_inputs` sets `fail_edges` and drops a builder holding both insertions. It asserts that `inspection().dependencies()` is empty. This would catch any edge lookup or observation made at insertion time.\n  - The same test awaits without an agent and gets `NoAgentConfigured`. It asserts that `state.reads` and `state.selections` are empty, so nothing was resolved.\n  - `queued_reads_selection_and_rendering_fail_before_agent_invocation` drops a `contents_of_current_node()` builder on a configured agent. It asserts that no agent request was made.\n  - Rendering at build time cannot be observed separately. Contents are resolved asynchronously, so insertion has nothing to render yet.\n- **Call order, current node and repetition.** `explicit_insertions_preserve_order_repetition_and_selection_snapshots` queues current, successors(7), then current. It asserts that the delivered inputs are `[1, 3, 2, 3, 1]` and that `reads` equals `[1,3,2,3,1]`. This shows call order and repeated insertions. It also shows that the current node is `node_id`.\n- **Successor selection.**\n  - The graph has edges `[(7,3),(8,99),(7,2),(7,3)]`. Delivery is 3, 2, 3, which gives returned edge order, duplicate targets, and filtering by label equality.\n  - Node 99 sits behind label 8 and never appears in `reads`. That shows only selected targets are resolved.\n- **Selection recording.** The first test asserts `Dependency::OutgoingEdges(1, 7, edge_fingerprint(..))` ahead of the `Node` dependencies. This covers source, label and target-set fingerprint. The `queued_reads...` test loops over empty edges and non-matching edges. It asserts that no reads happen and that the `OutgoingEdges` dependency is still recorded with the empty-set fingerprint. That covers \"even when nothing matches\".\n- **Node fingerprints.** The first test asserts `Dependency::Node(id, fp(content))` for nodes 1, 3 and 2. The node 3 dependency appears once even though node 3 was delivered twice.\n- **Failures.** `queued_reads...` injects a read failure, an edges failure and a render failure. Each returns `ValidationError::Graph(\"read\" | \"edges\" | \"render\")`. The agent request count stays unchanged. After the render failure, the dependencies are empty.\n\nThe obligations stated by the text are all asserted. I found no requirement-violating behavior that these tests would accept.",
+  "rationale": "The three supplied tests in `crates/habeas-sdk/tests/validation.rs` cover each obligation of `requirements.sdk.graph.agent-calls.judge.node_contents`. I judged this from the test text alone and did not request implementation source.\n\n- **Queue only while building.**\n  - `dropped_builders_and_missing_agents_do_not_resolve_queued_inputs` drops a builder that has both insertions queued. It asserts that `ctx.inspection().dependencies()` is empty.\n  - The same test awaits a builder with no agent configured. That returns `NoAgentConfigured`, `state.reads` is empty, and `state.selections` is empty. Edge listing is set to fail, so any resolution would have shown up.\n  - `queued_reads_selection_and_rendering_fail_before_agent_invocation` drops a builder and asserts that the agent saw no requests.\n- **Resolve in call order.** `explicit_insertions_preserve_order_repetition_and_selection_snapshots` queues current, then successors(7), then current. It asserts the delivered contents are 1, 3, 2, 3, 1. It also asserts that the graph read order is `[1, 3, 2, 3, 1]`.\n- **`contents_of_current_node`.** The same test delivers node 1, the context's `node_id`, with its content.\n- **`contents_of_successors(label)`.**\n  - The edges are `[(7,3),(8,99),(7,2),(7,3)]`.\n  - The test asserts that only label-7 targets are delivered, in edge order, with the duplicate target 3 kept.\n  - Node 99, which carries a different label, is excluded.\n- **Records source, label and target-set fingerprint, even when nothing matches.**\n  - The explicit-insertions test asserts `Dependency::OutgoingEdges(1, 7, edge_fingerprint(.., &[2,3]))`.\n  - `queued_reads_selection_and_rendering_fail_before_agent_invocation` loops over an empty edge list and a list with only a non-matching label. In both cases it asserts the recorded dependency is `OutgoingEdges(1, 7, fingerprint of [])`.\n- **Only selected targets are resolved.** The reads vector contains no unselected node, and the empty and non-matching cases assert `reads.is_empty()`.\n- **Each delivered node is recorded with the snapshot fingerprint.** The explicit-insertions test asserts `Dependency::Node(1|3|2, fp(..))`, once per distinct node. The test's own `Memory` graph serves as the supplied snapshot source.\n- **Input-resolution failures return `ValidationError::Graph`.** The failure test covers a read failure (`Graph(\"read\")`), an edge-listing failure (`Graph(\"edges\")`), and a render failure (`Graph(\"render\")`). For the render failure it also asserts that no dependencies were recorded and that the agent was not invoked.\n\nThe `author_procedure` clause is only cited, and its own tests cover it. I found no untested obligation and no wrong expected result.",
   "references": "c6f73398a2ed1a2df50592ddbb10fcf4c87132082329cff7693dc8c37442043c",
   "inputs": [
     {
@@ -36,24 +36,27 @@
       ],
       "text": [
         ":::{req} author_procedure",
-        "`habeas_sdk::procedure` provides a `Send + Sync` per-validation",
+        "A `Criterion::execute` invocation receives one `Send + Sync`",
         "`ValidationContext<'d, D>` for `D: Domain`, with tracked `inspection(&self)`",
         "and the `ask(&self)` builder under",
         "{cite}`requirements.sdk.graph.agent-calls.judge`.",
         "",
-        "Inspection works through shared references. Concurrent calls keep independent",
-        "builder, conversation, and submission state, with a shared synchronized trace.",
-        "The trace belongs to the enclosing validation.",
-        "They require no exclusive context borrow across an agent call and do not",
-        "serialize complete interactions behind a context-wide lock.",
+        "Each awaited ask builder runs its own conversation and returns its own submitted",
+        "answer. The context combines delivered node contents, tool reads, direct",
+        "inspection reads, and recorded edge selections into one dependency trace for",
+        "the criterion. It records the node identities and fingerprints of the supplied",
+        "contents. A later call that selects fewer nodes, or none, preserves earlier",
+        "inputs. An unawaited builder contributes no",
+        "agent-delivery dependencies.",
         "",
-        "The trace records the identities and supplied-content fingerprints of inputs",
-        "actually delivered, including tool reads. Awaiting with fewer or no node",
-        "insertions preserves earlier dependencies; an unawaited builder adds no",
-        "agent-delivery dependencies. `Criterion::execute` receives its context under",
-        "{cite}`requirements.sdk.graph.validation.check_procedure`; the domain includes",
-        "required evidence storage. This is the same execution interface with or without",
-        "agent calls.",
+        "Shared references support concurrent calls: builders, conversations, and",
+        "submission state remain independent, while updates to the trace are synchronized.",
+        "Calls can run concurrently without holding an exclusive context borrow across",
+        "an agent interaction or locking the whole context for the conversation.",
+        "",
+        "The context is the same interface used by deterministic criteria under",
+        "{cite}`requirements.sdk.graph.validation.check_procedure`; its domain includes",
+        "evidence storage.",
         ":::"
       ]
     },
@@ -65,12 +68,12 @@
     {
       "file": "crates/habeas-sdk/tests/validation.rs",
       "item": "fn[explicit_insertions_preserve_order_repetition_and_selection_snapshots]",
-      "hash": "4f3bc79738694f72d472c8bf93492a0af2ce5de481452d4453b53340dc8d9e95"
+      "hash": "0610eb8340c13104b553c1cc7a312492818e7617c248a60fe259516c1976f252"
     },
     {
       "file": "crates/habeas-sdk/tests/validation.rs",
       "item": "fn[queued_reads_selection_and_rendering_fail_before_agent_invocation]",
-      "hash": "04cf8be19658ebbcb945e246334c0025a46173c59f777f3b3b82b59a4f0adcce"
+      "hash": "fd110523e4e752b05cfe7dcb5228f94fd6d979f9dd26cb5c0d57d9d98407dc4d"
     }
   ],
   "format_version": 1,
@@ -117,7 +120,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "8720a281cd4e4a3d07cd5ac250f285d73230804b07a61ae0562e89be5255a98b"
+          "value": "b1f3e6e7092770a0cf197e7365621fe521aa300185aca5545545923dd8c8329b"
         }
       ]
     },
@@ -151,7 +154,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "52a76e0328cd6ae89103ac76cbfef3ed403dcf6b7da5b01a5b03ca704710c5d5"
+          "value": "b45ea148e5b3abde4caf677bcab060d49fdeff20e73f8494e27d3b95a44c38c9"
         }
       ]
     },
@@ -168,7 +171,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "11bc37406e1d0d0dd137d3e8fe9c758f5a4e572566335d8271b81f996ef78997"
+          "value": "7f1bfa7adae1f9d11b91c40ee5c64b10950910c16e9426d01dab22f3f49783a9"
         }
       ]
     }

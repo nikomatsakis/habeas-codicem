@@ -71,17 +71,6 @@ tuple_context!(A:0, B:1, C:2, D:3, E:4, F:5, G:6, H:7, I:8, J:9);
 tuple_context!(A:0, B:1, C:2, D:3, E:4, F:5, G:6, H:7, I:8, J:9, K:10);
 tuple_context!(A:0, B:1, C:2, D:3, E:4, F:5, G:6, H:7, I:8, J:9, K:10, L:11);
 
-// {impl}`requirements.sdk.graph.agent-calls.judge.rendering`
-pub struct AgentInput<'i, D: Graph> {
-    pub node: &'i D::NodeId,
-    pub contents: &'i D::NodeContent,
-}
-
-pub trait AgentInputRenderer<D: Graph>: Send + Sync {
-    // {impl}`requirements.sdk.graph.agent-calls.judge.rendering`
-    fn render(&self, input: &AgentInput<'_, D>) -> Result<String, D::Error>;
-}
-
 // {cite}`habeas:util`
 pub struct PreparedInput<N> {
     pub node: N,
@@ -116,23 +105,17 @@ pub struct ValidationContext<'d, D: Domain> {
     node: D::NodeId,
     inspection: InspectionContext<'d, D>,
     agent: Option<&'d dyn Agent<D>>,
-    renderer: Option<&'d dyn AgentInputRenderer<D>>,
 }
 
 impl<'d, D: Domain> ValidationContext<'d, D> {
     // {cite}`habeas:util`
     pub fn new(graph: &'d D, node: D::NodeId) -> Self {
-        Self::configured(graph, node, None, None)
+        Self::configured(graph, node, None)
     }
 
     // {cite}`habeas:util`
-    pub fn with_agent(
-        graph: &'d D,
-        node: D::NodeId,
-        agent: &'d dyn Agent<D>,
-        renderer: &'d dyn AgentInputRenderer<D>,
-    ) -> Self {
-        Self::configured(graph, node, Some(agent), Some(renderer))
+    pub fn with_agent(graph: &'d D, node: D::NodeId, agent: &'d dyn Agent<D>) -> Self {
+        Self::configured(graph, node, Some(agent))
     }
 
     // {cite}`habeas:util`
@@ -140,13 +123,11 @@ impl<'d, D: Domain> ValidationContext<'d, D> {
         graph: &'d D,
         node: D::NodeId,
         agent: Option<&'d dyn Agent<D>>,
-        renderer: Option<&'d dyn AgentInputRenderer<D>>,
     ) -> Self {
         Self {
             node,
             inspection: InspectionContext::new(graph),
             agent,
-            renderer,
         }
     }
 
@@ -270,13 +251,10 @@ where
     'd: 'a,
 {
     // {impl}`requirements.sdk.graph.agent-calls.judge.node_contents`
+    // {impl}`requirements.sdk.graph.agent-calls.judge.rendering`
     // {impl}`requirements.sdk.graph.agent-calls.model_capability`
     async fn execute(self) -> Result<R, ValidationError<D::Error>> {
         let agent = self.ctx.agent.ok_or(ValidationError::NoAgentConfigured)?;
-        let renderer = self
-            .ctx
-            .renderer
-            .ok_or(ValidationError::NoAgentConfigured)?;
         let mut inputs = Vec::new();
         for insertion in self.insertions {
             let nodes = match insertion {
@@ -302,11 +280,11 @@ where
                     .inspection
                     .prepare_read(&node)
                     .map_err(ValidationError::Graph)?;
-                let text = renderer
-                    .render(&AgentInput {
-                        node: &node,
-                        contents: &snapshot.content,
-                    })
+                let text = self
+                    .ctx
+                    .inspection
+                    .graph()
+                    .format_node_content(&node, &snapshot.content)
                     .map_err(ValidationError::Graph)?;
                 inputs.push(PreparedInput {
                     node,

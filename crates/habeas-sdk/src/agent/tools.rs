@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
-    graph::{Dependency, Fingerprinting, Graph, InspectionContext, NodePath},
-    procedure::{Agent, AgentInput, AgentInputRenderer, AgentRequest},
+    graph::{Dependency, Domain, Graph, InspectionContext, NodePath},
+    procedure::{Agent, AgentRequest},
 };
 use futures::future::BoxFuture;
 use serde_json::json;
@@ -60,29 +60,28 @@ impl<D: Graph> ToolSession<D> for NoTools {
     }
 }
 
-// {cite}`habeas:util`
+// {impl}`requirements.sdk.graph.agent-harness.tool_agent`
 /// The default typed harness, with tracked graph tools and optional source tools.
-pub struct ToolAgent<P, R, T = NoTools> {
+pub struct ToolAgent<P, T = NoTools> {
     pub provider: P,
-    pub renderer: R,
     pub tools: T,
 }
-impl<P, R> ToolAgent<P, R> {
-    // {cite}`habeas:util`
-    pub fn new(provider: P, renderer: R) -> Self {
+impl<P> ToolAgent<P> {
+    // {impl}`requirements.sdk.graph.agent-harness.tool_agent`
+    /// Use this provider with graph tools and no extra application tools.
+    pub fn new(provider: P) -> Self {
         Self {
             provider,
-            renderer,
             tools: NoTools,
         }
     }
 }
-impl<P, R, T> ToolAgent<P, R, T> {
-    // {cite}`habeas:util`
-    pub fn with_tools<U>(self, tools: U) -> ToolAgent<P, R, U> {
+impl<P, T> ToolAgent<P, T> {
+    // {impl}`requirements.sdk.graph.agent-harness.tool_agent`
+    /// Replace the extra-tool factory; every call creates a fresh tool session.
+    pub fn with_tools<U>(self, tools: U) -> ToolAgent<P, U> {
         ToolAgent {
             provider: self.provider,
-            renderer: self.renderer,
             tools,
         }
     }
@@ -91,13 +90,13 @@ impl<P, R, T> ToolAgent<P, R, T> {
 // {impl}`requirements.sdk.graph.agent-calls.judge.submission`
 // {impl}`requirements.sdk.graph.agent-calls.judge.caching`
 // {impl}`requirements.sdk.graph.agent-calls.author_procedure`
-impl<D, P, R, T> Agent<D> for ToolAgent<P, R, T>
+// {impl}`requirements.sdk.graph.agent-harness.tool_agent`
+impl<D, P, T> Agent<D> for ToolAgent<P, T>
 where
-    D: Graph + Fingerprinting,
+    D: Domain,
     D::EdgeLabel: serde::de::DeserializeOwned + schemars::JsonSchema + PartialEq,
     D::Error: std::fmt::Display,
     P: CompletionProvider,
-    R: AgentInputRenderer<D>,
     T: ToolFactory<D>,
 {
     fn run<'a>(
@@ -135,7 +134,6 @@ where
             }
             let mut session = GraphSession {
                 inspection,
-                renderer: &self.renderer,
                 tools: self.tools.session(),
                 known,
                 pending,
@@ -153,9 +151,8 @@ where
 }
 
 // {cite}`habeas:util`
-struct GraphSession<'a, 'd, D: Graph + Fingerprinting, R> {
+struct GraphSession<'a, 'd, D: Domain> {
     inspection: &'a InspectionContext<'d, D>,
-    renderer: &'a R,
     tools: Box<dyn ToolSession<D> + 'a>,
     known: Vec<D::NodeId>,
     pending: Vec<Dependency<D::NodeId, D::EdgeLabel>>,
@@ -163,12 +160,11 @@ struct GraphSession<'a, 'd, D: Graph + Fingerprinting, R> {
     pages: Vec<(String, Dependency<D::NodeId, D::EdgeLabel>)>,
 }
 
-impl<D, R> GraphSession<'_, '_, D, R>
+impl<D> GraphSession<'_, '_, D>
 where
-    D: Graph + Fingerprinting,
+    D: Domain,
     D::EdgeLabel: serde::de::DeserializeOwned + schemars::JsonSchema + PartialEq,
     D::Error: std::fmt::Display,
-    R: AgentInputRenderer<D>,
 {
     // {cite}`habeas:util`
     fn node(&self, arguments: &Value) -> io::Result<D::NodeId> {
@@ -193,12 +189,11 @@ where
     }
 }
 
-impl<D, R> Conversation for GraphSession<'_, '_, D, R>
+impl<D> Conversation for GraphSession<'_, '_, D>
 where
-    D: Graph + Fingerprinting,
+    D: Domain,
     D::EdgeLabel: serde::de::DeserializeOwned + schemars::JsonSchema + PartialEq,
     D::Error: std::fmt::Display,
-    R: AgentInputRenderer<D>,
 {
     type Output = Value;
     // {cite}`habeas:util`
@@ -226,6 +221,7 @@ where
         Ok(Submission::Accepted(object["result"].clone()))
     }
     // {cite}`habeas:util`
+    // {impl}`requirements.sdk.graph.agent-calls.judge.rendering`
     async fn dispatch(&mut self, name: &str, arguments: &Value) -> io::Result<String> {
         match name {
             "read_node" => {
@@ -235,11 +231,9 @@ where
                     .prepare_read(&node)
                     .map_err(|error| io::Error::other(error.to_string()))?;
                 let text = self
-                    .renderer
-                    .render(&AgentInput {
-                        node: &node,
-                        contents: &snapshot.content,
-                    })
+                    .inspection
+                    .graph()
+                    .format_node_content(&node, &snapshot.content)
                     .map_err(|error| io::Error::other(error.to_string()))?;
                 let observation = Dependency::Node(node, snapshot.fingerprint);
                 // Split on character boundaries; every page retains the same snapshot.

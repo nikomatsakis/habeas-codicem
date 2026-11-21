@@ -314,7 +314,7 @@ impl AssessmentSources {
         })
     }
 
-    /// Prepares a citation review of one source item outside the book. Its
+    /// Prepares a citation review of a source item or opted-in book passage. Its
     /// mandatory inputs are the item's outline node, each cited declaration
     /// or built-in text, and the terminology they use; the citations and
     /// their commentary are supplied in the prompt.
@@ -340,7 +340,7 @@ impl AssessmentSources {
         .remove(&(file.to_owned(), item.to_owned()))
         .ok_or_else(|| {
             io::Error::other(format!(
-                "{subject_name}: no source item outside the book with {{cite}} references matches"
+                "{subject_name}: no reviewed source item or book passage with {{cite}} references matches"
             ))
         })?;
         let mut mandatory = vec![source_input(

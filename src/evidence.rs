@@ -1146,7 +1146,7 @@ pub(crate) struct SourceReference {
     pub(crate) closed: bool,
     /// Whether the source lies in the book's source directory.
     pub(crate) in_book: bool,
-    /// Whether a fenced reference lies in the body of a requirement or
+    /// Whether this reference lies in the body of a requirement or
     /// example declaration.
     pub(crate) in_declaration: bool,
 }
@@ -1967,6 +1967,11 @@ fn file_references(file: &Path, content: &str, in_book: bool) -> Vec<SourceRefer
     } else {
         reference_contexts(file, content)
     };
+    let declarations = if markdown {
+        declaration_line_ranges(content)
+    } else {
+        Vec::new()
+    };
     for role in roles {
         if !in_reference_context(contexts.as_deref(), role.start) {
             continue;
@@ -1984,16 +1989,12 @@ fn file_references(file: &Path, content: &str, in_book: bool) -> Vec<SourceRefer
             commentary: None,
             closed: true,
             in_book,
-            in_declaration: false,
+            in_declaration: declarations
+                .iter()
+                .any(|&(start, end)| start < line && line < end),
         });
     }
     let fences = crate::fenced::source_fences(file, content);
-    // Declarations are found only where a `{fixme}` needs them.
-    let declarations = if markdown && fences.iter().any(|f| f.kind == ReferenceKind::Fixme) {
-        declaration_line_ranges(content)
-    } else {
-        Vec::new()
-    };
     for fence in fences {
         references.push(SourceReference {
             in_declaration: declarations

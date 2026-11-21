@@ -6,7 +6,9 @@ use crate::{
     inputs::{InputSelector, OutlineCache, ResolvedInput},
 };
 use habeas_sdk::{
-    graph::{CriterionPath, Fingerprint, Fingerprinting, Graph, InspectionContext, NodePath},
+    graph::{
+        CriterionPath, Domain, Fingerprint, Fingerprinting, Graph, InspectionContext, NodePath,
+    },
     resource::{OutlineId, ResourceId},
 };
 use std::{collections::BTreeMap, path::Path};
@@ -104,6 +106,18 @@ pub(crate) struct HabeasDomain<'a> {
     pub root: &'a Path,
     pub definitions: &'a BTreeMap<String, Declaration>,
     pub outlines: &'a OutlineCache,
+}
+
+impl Domain for HabeasDomain<'_> {
+    // {impl}`requirements.sdk.graph.agent-calls.judge.rendering`
+    fn format_node_content(
+        &self,
+        node: &HabeasNode,
+        contents: &ResolvedInput,
+    ) -> std::io::Result<String> {
+        serde_json::to_string(&node.selector()?.to_model_input(contents))
+            .map_err(std::io::Error::other)
+    }
 }
 
 // {impl}`requirements.sdk.graph.domain_types`
@@ -398,6 +412,46 @@ mod tests {
     use super::*;
     use habeas_sdk::graph::{Dependency, EvidenceStorage, Record};
     use std::fs;
+
+    // {test}`requirements.sdk.domain`
+    // {test}`requirements.sdk.graph.agent-calls.judge.rendering`
+    #[test]
+    fn domain_formats_supplied_contents_without_resolving_a_replacement() {
+        let root = tempfile::tempdir().unwrap();
+        let definitions = BTreeMap::new();
+        let outlines = OutlineCache::default();
+        let domain = HabeasDomain {
+            root: root.path(),
+            definitions: &definitions,
+            outlines: &outlines,
+        };
+        let node = HabeasNode::from(&InputSelector::Outline {
+            file: "missing.rs".into(),
+            item: "fn[old]".into(),
+        });
+        let contents = ResolvedInput {
+            text: vec!["already read source".into()],
+            matches: vec![],
+            ranges: vec![],
+            node: Some(crate::inputs::ResolvedNode {
+                path: root.path().join("missing.rs"),
+                index: 0,
+                kind: "fn",
+                hash: "supplied-snapshot".into(),
+            }),
+        };
+        let text = domain.format_node_content(&node, &contents).unwrap();
+        assert!(text.contains("already read source"));
+        assert!(text.contains("missing.rs"));
+        assert!(
+            domain
+                .format_node_content(
+                    &HabeasNode::ReferenceSet(RequirementId("r".into())),
+                    &contents
+                )
+                .is_err()
+        );
+    }
 
     // {test}`requirements.sdk.graph.node_path_method`
     // {test}`requirements.sdk.graph.node_path_struct`

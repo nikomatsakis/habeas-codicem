@@ -1,7 +1,7 @@
 {
   "requirement": "```rust,ignore\n// Method on Validator<D>.\n/// Encode the answer and atomically replace this source/criterion's record.\npub fn store_evidence<O: serde::Serialize>(\n    &self,\n    inputs: &Fingerprinted<D, O>,\n) -> impl Future<Output = Result<(), ValidationError<D::Error>>> + Send;\n```\n\nThe method saves under the source identity and criterion path captured in\n`Fingerprinted`, preserving its revision, input trace, and completed answer. Encoding follows\n{cite}`requirements.sdk.graph.evidence.record.output`; atomic replacement follows\n{cite}`requirements.sdk.graph.evidence.evidence_storage`. The result type needs\nno `Sync` bound: the method encodes the answer and captures the record and\nstorage key before constructing the storage future.",
   "determination": true,
-  "rationale": "The reviewed tests adequately check `requirements.sdk.graph.validation.store_evidence`.\n\n**Save under the captured key, preserving revision, input trace and answer.**\n- `contracts.rs#fn[criteria_keep_typed_answers_and_persist_only_when_requested]` stores a verified value and loads it back. It compares output, source id, criterion path, revision and dependencies.\n- The same test shows `verify` does not persist (`writes == 0`) and that `store_evidence` writes the raw record. The saved output is `{\"satisfied\":false,...}` for the `behavior` criterion and `null` for the `text` criterion. The `behavior`, `structure` and `text` criteria are stored under distinct paths.\n- `contracts.rs#fn[input_checking_and_execution_keep_separate_observations]` stores a value that has a non-empty `Dependency::Node` trace. It asserts the stored dependency fingerprint equals the one the new execution observed, and that the stored output is the new one.\n- `contracts.rs#fn[concurrent_same_criterion_executions_keep_complete_independent_records]` shows revision, dependencies and output are saved together. It also covers the atomic-replacement clause: after two competing saves, one complete record remains, `records.len() == 1`, and its revision, dependencies and output all belong to the same save.\n- `agent.rs#fn[agent_edge_tools_record_selections_without_validating_targets]` stores an edge-selection dependency. It asserts that `records[0].0 == 1` and that the stored dependencies equal the expected `OutgoingEdges` entry.\n- `storage.rs#fn[malformed_records_are_storage_errors_and_bad_outputs_are_output_errors]` stores under a non-trivial source id (`\"opaque/é\"`) through a file backend and then reads the record back.\n- The `Criterion` implementations in these tests supply varied source ids: `u8` in the `agent.rs` and `validation.rs` tests, a configurable `source` in `contracts.rs`, and a string in `storage.rs`. The key is therefore not hard-wired to a single node.\n\n**Serialization failure returns `ValidationError::Output` and leaves the existing record unchanged.**\n- `contracts.rs#fn[serialization_failure_leaves_the_existing_record_unchanged]` persists an old record. It then stores an `Unencodable` answer under a new revision.\n- The test asserts `ValidationError::Output` with the \"cannot encode answer\" message. It asserts the stored revision, dependencies and output are identical before and after, and that `writes` is still 1.\n\n**Storage failure returns `ValidationError::Graph`.**\n- `validation.rs#fn[resolution_storage_and_callback_errors_are_not_judgments]` sets `fail_store`. It asserts `Err(ValidationError::Graph(\"store\"))` and that no record was written.\n\n**Result needs `Send` but not `Sync`.**\n- `contracts.rs#fn[validation_and_answer_need_send_without_sync]` uses a `Cell<u32>` answer, which is `Send` but not `Sync`. It passes `validator.store_evidence(&value)` through a `send` helper and then loads the answer back.\n- I did not read the `send` helper. I assumed from its name and use that it requires the future to be `Send`.\n\n**Not assessed here.** Key-flattening behaviour and storage-level atomic semantics belong to the cited `requirements.sdk.graph.evidence.evidence_storage`. Encoding rules and load behaviour belong to the cited `requirements.sdk.graph.evidence.record.output`. The two tests that mention `store_evidence` incidentally (`validation.rs#fn[runner_does_not_store_a_missing_agent_error_and_supports_intermediate_calls]` and `contracts.rs#fn[typed_loading_reports_decode_errors_even_for_stale_evidence]`) add further confirmation. Each stores a verified value and checks the resulting dependencies or the single remaining record.\n\nI found no obligation of the subject that lacks a test with a relevant assertion.",
+  "rationale": "The reviewed tests cover every obligation in `requirements.sdk.graph.validation.store_evidence`. I judged this from the supplied test sources and did not request implementation source.\n\n- **Saves under the captured source identity and criterion path, preserving revision, input trace and answer.**\n  - `criteria_keep_typed_answers_and_persist_only_when_requested` saves a verified value. It then loads it back through the validator and compares the output, source node id, criterion path, revision and dependencies with the original.\n  - The same test inspects the stored raw records for two criteria, `behavior` and `text`. It checks the encoded outputs, the dependencies and the write count (3 writes), and that no reads occurred.\n  - `input_checking_and_execution_keep_separate_observations` and `concurrent_same_criterion_executions_keep_complete_independent_records` assert that stored dependencies hold the node fingerprints.\n  - The concurrent test also asserts the stored revision and answer.\n  - `agent_edge_tools_record_selections_without_validating_targets` asserts that a saved record keeps the `Dependency::OutgoingEdges` input trace and the answer.\n- **Encoding failure returns `ValidationError::Output` and leaves the existing record unchanged** (via `record.output`). `serialization_failure_leaves_the_existing_record_unchanged` stores an `Unencodable` answer over an existing record. It asserts `Output` with the \"cannot encode answer\" message. It also asserts the record's revision, dependencies and output are unchanged, and that only one write happened.\n- **Storage failure returns `ValidationError::Graph`.** `resolution_storage_and_callback_errors_are_not_judgments` sets `fail_store` and asserts `Graph(\"store\")`, with no record written. `runner_does_not_store_a_missing_agent_error_and_supports_intermediate_calls` asserts that no record is written when execution fails.\n- **Atomic replacement of one complete record.**\n  - `concurrent_same_criterion_executions_keep_complete_independent_records` runs two concurrent `store_evidence` calls for the same key. It asserts a single record whose revision, dependencies and output all come from the same save.\n  - `typed_loading_reports_decode_errors_even_for_stale_evidence` asserts that a store replaces the single record (`records.len() == 1`).\n- **No `Sync` bound on the result type.** `validation_and_answer_need_send_without_sync` stores and reloads a `Cell<u32>` answer through the `send(...)` helper, which requires a `Send` future. The answer type is not `Sync`.\n\nI found no obligation that lacks a test with a relevant assertion, and no marking gap. Each of these tests carries a `{test}` reference to the subject.",
   "references": "8e33ac85a20b563a55d309676c6dc74e14308b10a5a4cc7b94b85799c6b9f515",
   "inputs": [
     {
@@ -101,7 +101,7 @@
     {
       "file": "crates/habeas-sdk/tests/agent.rs",
       "item": "fn[agent_edge_tools_record_selections_without_validating_targets]",
-      "hash": "35e1750f1862165b4a5be409ef5f8c2a035935024023a56e1308015acf8a9599"
+      "hash": "0194638271b25cfd6c1203da86cd9ddd42197e72cd7542c4c70e02cf17e1d200"
     },
     {
       "file": "crates/habeas-sdk/tests/contracts.rs",
@@ -141,7 +141,7 @@
     {
       "file": "crates/habeas-sdk/tests/validation.rs",
       "item": "fn[runner_does_not_store_a_missing_agent_error_and_supports_intermediate_calls]",
-      "hash": "a149021cf8f489a22bc4ed8ae2d759ece65c5d1e70c6ecd33e5f4fe76ee6a3d7"
+      "hash": "03bbeba9aa6e6dc1423becfc64bb7626634686ad6796b76933524293f12d1135"
     },
     {
       "file": "crates/habeas-sdk/tests/validation.rs",
@@ -149,29 +149,9 @@
       "hash": "019d9b3dcaf43b538f3a14448e2ca0e42fc6f000972a6af300f11b86fb14e3ac"
     },
     {
-      "file": "crates/habeas-sdk/tests/agent.rs",
-      "item": "impl[Review/Criterion<Memory>]/fn[source_node_id]",
-      "hash": "b6c2b51bfeb14efd26e4ff7c8e5948ae0ee03f4089504b784186017dc94c1bc7"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/agent.rs",
-      "item": "fn[agent_edge_tools_record_selections_without_validating_targets]/impl[EdgeReview/Criterion<GraphWithChangingEdges>]/fn[source_node_id]",
-      "hash": "5801a9dd2d85629bd9f19db415405b6f4c10f9d21fc6741f452e4e51b69c8193"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/contracts.rs",
-      "item": "impl[Review<O>/Criterion<Application>]/fn[source_node_id]",
-      "hash": "535e981a869f261457c6f27c290b9c961da07791d9cc63840cfc68753249695f"
-    },
-    {
       "file": "crates/habeas-sdk/tests/storage.rs",
       "item": "impl[StoredReview<'_>/Criterion<StoredGraph>]/fn[source_node_id]",
       "hash": "9a8d80cc4b652fc6ef1c65c90729366a4feb74bd278ff2353800f1184d70985c"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/validation.rs",
-      "item": "impl[Review/Criterion<Memory>]/fn[source_node_id]",
-      "hash": "9fca287776078ad3c119b1fbcd3b1a47661985df3fc763b32a61fefcc56f9164"
     }
   ],
   "format_version": 1,
@@ -246,7 +226,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "51e08d0aa5a386d2613fafe02466fd0fb9b5a790aadb1779827a511036cd5392"
+          "value": "89524f764c128c93ae86bdd0c10627ca41ae1c1a5c3dffd4d7c485e5390e4524"
         }
       ]
     },
@@ -382,7 +362,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "af6dc90ce4d17b42c2d798e43eb0a52ede07467ab2025f47aa97aae4156bdf5d"
+          "value": "e6cb5a1ba0c1c9ac526c6f2fe7f02b1f56c16b9c7e1a7a34d6f540216a97e9d2"
         }
       ]
     },
@@ -409,57 +389,6 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/agent.rs"
-            },
-            "selector": "impl[Review/Criterion<Memory>]/fn[source_node_id]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "dc4723e1690337dc03ed9277cdf016e42299b94b05abd9c12ded13958f0fcc7b"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/agent.rs"
-            },
-            "selector": "fn[agent_edge_tools_record_selections_without_validating_targets]/impl[EdgeReview/Criterion<GraphWithChangingEdges>]/fn[source_node_id]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "d6bb4d12a8b4950f160bc0b934980c92ff0ca18f2a8d6ebe56b113d509520839"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/contracts.rs"
-            },
-            "selector": "impl[Review<O>/Criterion<Application>]/fn[source_node_id]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "49cc45fcde1f5cb4ab6ea1cef1ff91fa9ea352a9a56ab519822374ac3c646540"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
               "location": "crates/habeas-sdk/tests/storage.rs"
             },
             "selector": "impl[StoredReview<'_>/Criterion<StoredGraph>]/fn[source_node_id]"
@@ -468,23 +397,6 @@
         {
           "scheme": "habeas-input-v1",
           "value": "17889049d44372e5deae3fdcc45e5c23d9ec0fe2a602a1ecbc4add5d0bc283e6"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/validation.rs"
-            },
-            "selector": "impl[Review/Criterion<Memory>]/fn[source_node_id]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "2a6623c94c5f7bae5fb145b012d18ef0594c5758eea6671338ae503e7cb393ef"
         }
       ]
     }

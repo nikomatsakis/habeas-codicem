@@ -1,9 +1,7 @@
 use futures::future::BoxFuture;
 use habeas_sdk::{
     graph::*,
-    procedure::{
-        Agent, AgentInput, AgentInputRenderer, AgentRequest, Context, context_fingerprint,
-    },
+    procedure::{Agent, AgentRequest, Context, context_fingerprint},
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -38,6 +36,7 @@ struct State {
     started: Vec<u8>,
     finished: Vec<u8>,
     fail_read: bool,
+    fail_format: bool,
     fail_load: bool,
     fail_store: bool,
     fail_edges: Option<u8>,
@@ -267,7 +266,7 @@ async fn runner_does_not_store_a_missing_agent_error_and_supports_intermediate_c
         assert!(state.reads.is_empty());
     }
     let agent = Arc::new(MockAgent::default());
-    let validator = validator.with_agent(agent.clone(), Arc::new(Renderer));
+    let validator = validator.with_agent(agent.clone());
     let value = validator
         .verify(Review {
             node: 1,
@@ -288,10 +287,13 @@ async fn runner_does_not_store_a_missing_agent_error_and_supports_intermediate_c
     assert!(requests[1].2.is_empty());
 }
 
-struct Renderer;
-impl AgentInputRenderer<Memory> for Renderer {
-    fn render(&self, input: &AgentInput<'_, Memory>) -> Result<String, &'static str> {
-        Ok(input.contents.clone())
+impl Domain for Memory {
+    fn format_node_content(&self, _: &u8, contents: &String) -> Result<String, &'static str> {
+        if self.state.lock().unwrap().fail_format {
+            Err("render")
+        } else {
+            Ok(contents.clone())
+        }
     }
 }
 
@@ -713,7 +715,7 @@ async fn explicit_insertions_preserve_order_repetition_and_selection_snapshots()
         state.edges.insert(1, vec![(7, 3), (8, 99), (7, 2), (7, 3)]);
     }
     let agent = MockAgent::default();
-    let ctx = ValidationContext::with_agent(&graph, 1, &agent, &Renderer);
+    let ctx = ValidationContext::with_agent(&graph, 1, &agent);
     let future = ctx
         .ask::<Answer>()
         .context(String::from("question"))
@@ -770,7 +772,7 @@ impl Context for CountingContext {
 async fn contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text() {
     let graph = Memory::default();
     let agent = MockAgent::default();
-    let ctx = ValidationContext::with_agent(&graph, 1, &agent, &Renderer);
+    let ctx = ValidationContext::with_agent(&graph, 1, &agent);
     let renders = Rc::new(Cell::new(0));
     let mut context = CountingContext {
         renders: renders.clone(),
@@ -842,7 +844,7 @@ async fn string_and_str_contexts_deliver_identical_prefixes_and_fingerprints() {
         state.edges.insert(1, vec![(7, 2)]);
     }
     let agent = MockAgent::default();
-    let ctx = ValidationContext::with_agent(&graph, 1, &agent, &Renderer);
+    let ctx = ValidationContext::with_agent(&graph, 1, &agent);
     for text in ["", "héllo\0\n\npolicy"] {
         ctx.ask::<Answer>().context(text.to_owned()).await.unwrap();
         ctx.ask::<Answer>().context(text).await.unwrap();
@@ -888,7 +890,7 @@ async fn string_and_str_contexts_deliver_identical_prefixes_and_fingerprints() {
         .contents_of_successors(7)
         .await
         .unwrap();
-    ValidationContext::with_agent(&graph, 2, &agent, &Renderer)
+    ValidationContext::with_agent(&graph, 2, &agent)
         .ask::<Answer>()
         .context("short-lived")
         .await
@@ -1093,7 +1095,7 @@ async fn shared_context_allows_independent_concurrent_agent_calls() {
         prefix_result: true,
         ..MockAgent::default()
     };
-    let ctx = ValidationContext::with_agent(&graph, 1, &agent, &Renderer);
+    let ctx = ValidationContext::with_agent(&graph, 1, &agent);
     let (first, second) = tokio::time::timeout(std::time::Duration::from_secs(1), async {
         futures::join!(
             ctx.ask::<Answer>().contents_of_current_node().into_future(),
@@ -1126,7 +1128,7 @@ async fn later_lighter_agent_calls_preserve_the_contexts_existing_trace() {
         .contents
         .insert(1, "retained".into());
     let agent = MockAgent::default();
-    let ctx = ValidationContext::with_agent(&graph, 1, &agent, &Renderer);
+    let ctx = ValidationContext::with_agent(&graph, 1, &agent);
     fn assert_send_sync<T: Send + Sync>(_: &T) {}
     assert_send_sync(&ctx);
     let _: Answer = ctx
@@ -1233,7 +1235,7 @@ async fn invalid_typed_submission_is_an_agent_error() {
         invalid: true,
         ..MockAgent::default()
     };
-    let ctx = ValidationContext::with_agent(&graph, 1, &agent, &Renderer);
+    let ctx = ValidationContext::with_agent(&graph, 1, &agent);
     assert!(matches!(
         ctx.ask::<Answer>().await,
         Err(ValidationError::Agent(_))
@@ -1276,13 +1278,6 @@ fn agent_errors_expose_the_agreed_string_payload() {
     assert_eq!(graph.source().unwrap().to_string(), "graph detail");
 }
 
-struct FailingRenderer;
-impl AgentInputRenderer<Memory> for FailingRenderer {
-    fn render(&self, _: &AgentInput<'_, Memory>) -> Result<String, &'static str> {
-        Err("render")
-    }
-}
-
 // {test}`requirements.sdk.graph.agent-calls.judge`
 // {test}`requirements.sdk.graph.agent-calls.judge.node_contents`
 // {test}`requirements.sdk.graph.agent-calls.judge.rendering`
@@ -1291,12 +1286,12 @@ impl AgentInputRenderer<Memory> for FailingRenderer {
 async fn queued_reads_selection_and_rendering_fail_before_agent_invocation() {
     let graph = Memory::default();
     let agent = MockAgent::default();
-    let ctx = ValidationContext::with_agent(&graph, 1, &agent, &Renderer);
+    let ctx = ValidationContext::with_agent(&graph, 1, &agent);
     drop(ctx.ask::<Answer>().contents_of_current_node());
     assert!(agent.requests.lock().unwrap().is_empty());
     for edges in [vec![], vec![(8, 99)]] {
         graph.state.lock().unwrap().edges.insert(1, edges.clone());
-        let ctx = ValidationContext::with_agent(&graph, 1, &agent, &Renderer);
+        let ctx = ValidationContext::with_agent(&graph, 1, &agent);
         ctx.ask::<Answer>().contents_of_successors(7).await.unwrap();
         assert!(graph.state.lock().unwrap().reads.is_empty());
         assert_eq!(
@@ -1327,7 +1322,8 @@ async fn queued_reads_selection_and_rendering_fail_before_agent_invocation() {
         .unwrap()
         .contents
         .insert(1, "root".into());
-    let ctx = ValidationContext::with_agent(&graph, 1, &agent, &FailingRenderer);
+    graph.state.lock().unwrap().fail_format = true;
+    let ctx = ValidationContext::with_agent(&graph, 1, &agent);
     assert!(matches!(
         ctx.ask::<Answer>().contents_of_current_node().await,
         Err(ValidationError::Graph("render"))

@@ -7,10 +7,10 @@ use crate::{
 };
 use habeas_sdk::{
     graph::{
-        Criterion, CriterionPath, EvidenceStorage, Fingerprint, Fingerprinting, Graph,
+        Criterion, CriterionPath, Domain, EvidenceStorage, Fingerprint, Fingerprinting, Graph,
         InspectionContext, NodePath, ValidationContext, ValidationError,
     },
-    procedure::{Agent, AgentInput, AgentInputRenderer, AgentRequest},
+    procedure::{Agent, AgentRequest},
 };
 use std::sync::{Arc, Mutex};
 
@@ -157,12 +157,11 @@ fn model_recorded_input(value: &Value) -> Value {
     recorded_input(&value)
 }
 
-// {cite}`habeas:util`
-struct Renderer;
-impl AgentInputRenderer<ReviewGraph<'_>> for Renderer {
-    // {cite}`habeas:util`
-    fn render(&self, input: &AgentInput<'_, ReviewGraph<'_>>) -> io::Result<String> {
-        serde_json::to_string(input.contents).map_err(io::Error::other)
+// {impl}`requirements.sdk.domain`
+impl Domain for ReviewGraph<'_> {
+    // {impl}`requirements.sdk.graph.agent-calls.judge.rendering`
+    fn format_node_content(&self, _: &HabeasNode, contents: &Value) -> io::Result<String> {
+        serde_json::to_string(contents).map_err(io::Error::other)
     }
 }
 
@@ -475,7 +474,7 @@ async fn run(
     let agent = ReviewAgent(provider);
     let review = Review { node: node.clone() };
     let revision = review.revision();
-    let mut ctx = ValidationContext::with_agent(&graph, node.clone(), &agent, &Renderer);
+    let mut ctx = ValidationContext::with_agent(&graph, node.clone(), &agent);
     let judgment = match review.execute(&mut ctx).await {
         Ok(judgment) => judgment,
         Err(ValidationError::Graph(error)) => return Err(error),
@@ -611,7 +610,7 @@ mod tests {
             json!({"determination":false,"rationale":"The readiness case is missing."}),
         )]));
         let agent = Arc::new(ReviewAgent(provider.clone()));
-        let validator = Validator::new(graph.clone()).with_agent(agent, Arc::new(Renderer));
+        let validator = Validator::new(graph.clone()).with_agent(agent);
         let review = || Review { node: node.clone() };
         let path = node.evidence_path(root.path()).unwrap();
         assert_eq!(review().source_node_id(), node);

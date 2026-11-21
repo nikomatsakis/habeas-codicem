@@ -1,8 +1,8 @@
 {
-  "requirement": "`habeas_sdk::procedure` provides a `Send + Sync` per-validation\n`ValidationContext<'d, D>` for `D: Domain`, with tracked `inspection(&self)`\nand the `ask(&self)` builder under\n{cite}`requirements.sdk.graph.agent-calls.judge`.\n\nInspection works through shared references. Concurrent calls keep independent\nbuilder, conversation, and submission state, with a shared synchronized trace.\nThe trace belongs to the enclosing validation.\nThey require no exclusive context borrow across an agent call and do not\nserialize complete interactions behind a context-wide lock.\n\nThe trace records the identities and supplied-content fingerprints of inputs\nactually delivered, including tool reads. Awaiting with fewer or no node\ninsertions preserves earlier dependencies; an unawaited builder adds no\nagent-delivery dependencies. `Criterion::execute` receives its context under\n{cite}`requirements.sdk.graph.validation.check_procedure`; the domain includes\nrequired evidence storage. This is the same execution interface with or without\nagent calls.",
+  "requirement": "A `Criterion::execute` invocation receives one `Send + Sync`\n`ValidationContext<'d, D>` for `D: Domain`, with tracked `inspection(&self)`\nand the `ask(&self)` builder under\n{cite}`requirements.sdk.graph.agent-calls.judge`.\n\nEach awaited ask builder runs its own conversation and returns its own submitted\nanswer. The context combines delivered node contents, tool reads, direct\ninspection reads, and recorded edge selections into one dependency trace for\nthe criterion. It records the node identities and fingerprints of the supplied\ncontents. A later call that selects fewer nodes, or none, preserves earlier\ninputs. An unawaited builder contributes no\nagent-delivery dependencies.\n\nShared references support concurrent calls: builders, conversations, and\nsubmission state remain independent, while updates to the trace are synchronized.\nCalls can run concurrently without holding an exclusive context borrow across\nan agent interaction or locking the whole context for the conversation.\n\nThe context is the same interface used by deterministic criteria under\n{cite}`requirements.sdk.graph.validation.check_procedure`; its domain includes\nevidence storage.",
   "determination": true,
-  "rationale": "The reviewed tests cover each obligation of `requirements.sdk.graph.agent-calls.author_procedure`. I did not request implementation source.\n\n- **`Send + Sync` context.** `later_lighter_agent_calls_preserve_the_contexts_existing_trace` in `crates/habeas-sdk/tests/validation.rs` calls `assert_send_sync(&ctx)` on a `ValidationContext`.\n- **Shared-reference inspection and `ask(&self)`.** The tests build the context once and call `ctx.ask()` and `ctx.inspection()` through `&ctx`. This happens in `shared_context_allows_independent_concurrent_agent_calls` and in `concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads`.\n- **Independent concurrent state and a shared trace.**\n  - `concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads` runs two builders on one context with `futures::join!`. One uses `contents_of_current_node` and the other `contents_of_successors`.\n  - The agent's `ParallelConversations` provider holds a `Barrier(2)` under a 2-second timeout. A context-wide lock or exclusive borrow would therefore hang or time out.\n  - The test asserts each conversation's results (\"alpha\" and \"beta\"), each conversation's per-name call count, and that the shared trace has all three dependencies.\n  - `shared_context_allows_independent_concurrent_agent_calls` makes the same concurrency check with a barrier mock agent. It asserts distinct results, two requests, and the shared trace.\n- **Trace belongs to the enclosing validation.**\n  - `validator_agent_executions_isolate_conversations_and_dependency_traces` runs two `Validator::verify` calls concurrently.\n  - It asserts that the stored evidence for each validation holds only that validation's dependencies. Alpha has only `Node(1)`, and beta has the edge fingerprint plus `Node(2)`.\n- **Delivered inputs and tool reads recorded with fingerprints.**\n  - `graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery` checks the recorded `OutgoingEdges` and `Node` dependencies after the `outgoing_edges`, `read_node`, and page tool calls. The `Node` fingerprint value is the full 18,000-character content.\n  - That test also checks that a failed conversation records no tool reads. A failed conversation with queued node contents records exactly one dependency.\n  - `node_rendering_tool_errors_allow_recovery_without_recording_undelivered_contents` shows that a failed render delivers an error to the agent and records no dependency.\n  - `confirmed_evidence_retains_reads_from_both_assessments_and_the_verifier` in `src/authoring/sdk.rs` checks that reads from three agent runs all appear in the stored evidence.\n- **Fewer or no insertions preserve earlier dependencies.** `later_lighter_agent_calls_preserve_the_contexts_existing_trace` makes a heavy call, then a context-only call, and asserts the dependencies are unchanged. It also checks that `finish` returns the same dependencies.\n- **Unawaited builder adds nothing.** `dropped_builders_and_missing_agents_do_not_resolve_queued_inputs` drops a builder and asserts the trace is empty. It also asserts that no reads or selections happened. `queued_reads_selection_and_rendering_fail_before_agent_invocation` asserts that no agent request was made.\n- **Same `Criterion::execute` interface with and without agent calls, and required storage.**\n  - `deterministic_validation_uses_required_storage_without_an_agent` runs a criterion with no agent through `Validator`. It stores and loads evidence and checks the saved dependency.\n  - The agent-using criteria in the `Validator` tests go through the same path.\n\nI found no obligation that lacks a test or an assertion. The tests only try \"fewer\" insertions with zero node insertions. A nonzero reduction would be the same input class.",
-  "references": "9ef0b44d3b926674c397c549235f84bf69f1c0160d3d713086c4b7e08ad4d87f",
+  "rationale": "The reviewed tests cover every obligation in `requirements.sdk.graph.agent-calls.author_procedure`. I found no adequacy gap. The cited requirements `judge` and `check_procedure` were treated as context only.\n\n- **Context is `Send + Sync`.** `tests/validation.rs#fn[later_lighter_agent_calls_preserve_the_contexts_existing_trace]` calls `assert_send_sync(&ctx)`. `tests/validation.rs#fn[contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text]` asserts that the builder's `into_future()` is `Send`.\n- **Each awaited builder runs its own conversation and returns its own answer.**\n  - `tests/agent.rs#fn[concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads]` joins two asks on one shared `&ctx`. It asserts that each gets its own answer (\"alpha\" and \"beta\") and that each conversation made 3 provider calls.\n  - `tests/agent.rs#fn[validator_agent_executions_isolate_conversations_and_dependency_traces]` runs two validator executions concurrently. It asserts separate answers and separate stored dependency traces.\n  - `tests/validation.rs#fn[shared_context_allows_independent_concurrent_agent_calls]` asserts distinct answers (7 and 11) and two separate agent requests.\n- **One combined trace with node identities and fingerprints.**\n  - The concurrent test asserts that the context trace holds exactly the three expected entries: `OutgoingEdges(Node(1), Label, …)` and `Node(1)` and `Node(2)`, each with its content fingerprint. It also asserts that `finish` returns the same dependencies.\n  - `tests/agent.rs#fn[graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery]` covers tool reads and tool edge selections. It asserts the exact `OutgoingEdges` and `Node` entries and the fingerprint value.\n  - Direct inspection reads go through the same `ctx.inspection()` object. `tests/validation.rs#fn[snapshots_record_exact_reads_and_retain_distinct_versions]`, which is marked for other requirements, covers them. `tests/agent.rs#fn[deterministic_validation_uses_required_storage_without_an_agent]` checks the stored dependencies of a deterministic criterion.\n  - I found no single test that mixes a direct read with an agent delivery in one context. Both write to the same inspection, so I judged this adequate rather than a gap.\n- **A later call selecting fewer nodes, or none, preserves earlier inputs.** `later_lighter_agent_calls_preserve_the_contexts_existing_trace` makes a heavy call, then a call with no node selections. It asserts that the trace is unchanged and that `finish` retains it.\n- **An unawaited builder contributes no dependencies.**\n  - `tests/validation.rs#fn[dropped_builders_and_missing_agents_do_not_resolve_queued_inputs]` drops a builder. It asserts that the trace is empty and that no reads or selections happened.\n  - `tests/validation.rs#fn[queued_reads_selection_and_rendering_fail_before_agent_invocation]` covers a dropped builder and failing reads, edges and rendering. It asserts that no agent request was made and that nothing was recorded when rendering failed.\n  - The failure paths in `graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery` and `node_rendering_tool_errors_allow_recovery_without_recording_undelivered_contents` show that undelivered contents are not recorded.\n- **Concurrent calls via shared references, with no exclusive borrow and no whole-context lock.** Both concurrent tests use a 2-party `Barrier` inside a `timeout`, so the test would hang and fail if the context were locked across a conversation. The two builders are created from `&ctx` at the same time, which a held exclusive borrow would not compile. The assertions on the combined trace show the synchronized updates.\n- **Same interface as deterministic criteria, with evidence storage in the domain.** `deterministic_validation_uses_required_storage_without_an_agent` runs a criterion through `ValidationContext`. It stores evidence and loads it back from the graph.\n\nOther tests marked for this requirement, such as `src/authoring/sdk.rs#mod[tests]/fn[confirmed_evidence_retains_reads_from_both_assessments_and_the_verifier]`, add extra coverage that the trace retains reads across multiple conversations.",
+  "references": "f00683efca542de86bfa3c19304e97372f109f57f39449276bf44d4779d26051",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.agent-calls.author_procedure",
@@ -11,24 +11,27 @@
       ],
       "text": [
         ":::{req} author_procedure",
-        "`habeas_sdk::procedure` provides a `Send + Sync` per-validation",
+        "A `Criterion::execute` invocation receives one `Send + Sync`",
         "`ValidationContext<'d, D>` for `D: Domain`, with tracked `inspection(&self)`",
         "and the `ask(&self)` builder under",
         "{cite}`requirements.sdk.graph.agent-calls.judge`.",
         "",
-        "Inspection works through shared references. Concurrent calls keep independent",
-        "builder, conversation, and submission state, with a shared synchronized trace.",
-        "The trace belongs to the enclosing validation.",
-        "They require no exclusive context borrow across an agent call and do not",
-        "serialize complete interactions behind a context-wide lock.",
+        "Each awaited ask builder runs its own conversation and returns its own submitted",
+        "answer. The context combines delivered node contents, tool reads, direct",
+        "inspection reads, and recorded edge selections into one dependency trace for",
+        "the criterion. It records the node identities and fingerprints of the supplied",
+        "contents. A later call that selects fewer nodes, or none, preserves earlier",
+        "inputs. An unawaited builder contributes no",
+        "agent-delivery dependencies.",
         "",
-        "The trace records the identities and supplied-content fingerprints of inputs",
-        "actually delivered, including tool reads. Awaiting with fewer or no node",
-        "insertions preserves earlier dependencies; an unawaited builder adds no",
-        "agent-delivery dependencies. `Criterion::execute` receives its context under",
-        "{cite}`requirements.sdk.graph.validation.check_procedure`; the domain includes",
-        "required evidence storage. This is the same execution interface with or without",
-        "agent calls.",
+        "Shared references support concurrent calls: builders, conversations, and",
+        "submission state remain independent, while updates to the trace are synchronized.",
+        "Calls can run concurrently without holding an exclusive context borrow across",
+        "an agent interaction or locking the whole context for the conversation.",
+        "",
+        "The context is the same interface used by deterministic criteria under",
+        "{cite}`requirements.sdk.graph.validation.check_procedure`; its domain includes",
+        "evidence storage.",
         ":::"
       ]
     },
@@ -131,17 +134,17 @@
     {
       "file": "crates/habeas-sdk/tests/agent.rs",
       "item": "fn[concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads]",
-      "hash": "e402ef3e7791ad9c68a9ee38753d0e1c3e1c533e0329871ec0f0bb6f37595358"
+      "hash": "fafa2e8f5995a8c2c867d4cd32c42a224ab6e393e2d2238b20e023b5abecc89f"
     },
     {
       "file": "crates/habeas-sdk/tests/agent.rs",
       "item": "fn[validator_agent_executions_isolate_conversations_and_dependency_traces]",
-      "hash": "0165c651fc9e6c08696c99bfe7d146cbc0d06dbe9b2dcd9d4669cb33be5b627f"
+      "hash": "e39e00db9a2c71613240e7bae59a9807f9865a74a3563130001f2563ff15d8d8"
     },
     {
       "file": "crates/habeas-sdk/tests/agent.rs",
       "item": "fn[graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery]",
-      "hash": "349c78fff708135d3c148d34c5802f2b2d02c7ade0a6aa4ded49210dd49591d6"
+      "hash": "05a5ed0c298379e40279a1ce59ffcda7a5ae7a612fdae2d20039e69b3f942e45"
     },
     {
       "file": "crates/habeas-sdk/tests/agent.rs",
@@ -151,7 +154,7 @@
     {
       "file": "crates/habeas-sdk/tests/agent.rs",
       "item": "fn[node_rendering_tool_errors_allow_recovery_without_recording_undelivered_contents]",
-      "hash": "6f7de3a9ecf5f8395e05117271112d8b3cdc331faf5fdb33670893e848fb6e11"
+      "hash": "b7e2426eba927a9c3c2aa8341c7d8ee427cc3be544f451c891da0f445dcb6f0b"
     },
     {
       "file": "crates/habeas-sdk/tests/agent.rs",
@@ -166,22 +169,22 @@
     {
       "file": "crates/habeas-sdk/tests/validation.rs",
       "item": "fn[contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text]",
-      "hash": "1eaea9f011ab04839fd926d10a67f14e6ebc9aa9f5f1cb79c785f906c2eef3a5"
+      "hash": "502a9b96c8c750f3f26714ed0698e2edd5bcc644f1fc52b9152ece44614b6bb5"
     },
     {
       "file": "crates/habeas-sdk/tests/validation.rs",
       "item": "fn[shared_context_allows_independent_concurrent_agent_calls]",
-      "hash": "599a1e89b1f82bbd22b815488c8d99f6c0b489061e34cbea967ff9201acc9270"
+      "hash": "92c89afde36eef96f39e05c174040c1258d84e79cefa84123ab52d7abfd8b743"
     },
     {
       "file": "crates/habeas-sdk/tests/validation.rs",
       "item": "fn[later_lighter_agent_calls_preserve_the_contexts_existing_trace]",
-      "hash": "a4d186001d60352f7e1efa4b50ce81f75bb473cc52bcce924fcb819c7341b85f"
+      "hash": "eef2170c7efd843afaf48457e6ef74f16726626d2a285a2c0572b2d08850c8f6"
     },
     {
       "file": "crates/habeas-sdk/tests/validation.rs",
       "item": "fn[queued_reads_selection_and_rendering_fail_before_agent_invocation]",
-      "hash": "04cf8be19658ebbcb945e246334c0025a46173c59f777f3b3b82b59a4f0adcce"
+      "hash": "fd110523e4e752b05cfe7dcb5228f94fd6d979f9dd26cb5c0d57d9d98407dc4d"
     },
     {
       "file": "src/authoring/sdk.rs",
@@ -199,7 +202,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "9ef0b44d3b926674c397c549235f84bf69f1c0160d3d713086c4b7e08ad4d87f"
+          "value": "f00683efca542de86bfa3c19304e97372f109f57f39449276bf44d4779d26051"
         }
       ]
     },
@@ -222,7 +225,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "8720a281cd4e4a3d07cd5ac250f285d73230804b07a61ae0562e89be5255a98b"
+          "value": "b1f3e6e7092770a0cf197e7365621fe521aa300185aca5545545923dd8c8329b"
         }
       ]
     },
@@ -261,7 +264,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "cf144e41cefee9aac9a13dafe93655a10d8a718d0e28493830fde9ff81470fbf"
+          "value": "726a5f29a590fbe20135afc83b8e57c3f349194a6317a8988baad5909682a8c5"
         }
       ]
     },
@@ -278,7 +281,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "b4ce3892a2cdd252f4d19f50143202efc967659fe71089492205f4eed722e9d0"
+          "value": "1a97e526e190c34b43bec034a83701645bca0a852bb550d4fcedb9341bd57753"
         }
       ]
     },
@@ -295,7 +298,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "a7ef0f0bd7fabc550c7461e2d0f56553c82af74b12ee4f0bdba5ed9a75c32b89"
+          "value": "05a8614cec7e6d06c416ea60a72f1f87eebc4b118bec453b02eb5717ed100514"
         }
       ]
     },
@@ -329,7 +332,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "9ebe1494c332fa8ef6d9b926f43d17f4fcdaeed1511f498d0cab0209e22a7eac"
+          "value": "85634904971a778d5c49894dd3f9f2b213eed866a22202d43d071a069af608c7"
         }
       ]
     },
@@ -380,7 +383,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "63369d28161b345ae1efa8496c4f8cd452b0502cc71f6b246441f18a0823ebf5"
+          "value": "9c85189ec3784b2674a9f541e46570fc79e22a29225088b702c3de709be7a484"
         }
       ]
     },
@@ -397,7 +400,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "98f7c2c42ea1705317aa36ade731be75c75533196fcf49b4039d8e45ca58105d"
+          "value": "716bcc5549527ca808a236da7819a19cef8942107035db4f077d8d3ba0f2c870"
         }
       ]
     },
@@ -414,7 +417,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "153b0905a7046b413e2415ee371ebe8775382d4786c5d4ab130e191360e50970"
+          "value": "640affa5375ac21a4a88d81dc440ef70dc38b437228ab30058580dfcd2166c8d"
         }
       ]
     },
@@ -431,7 +434,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "11bc37406e1d0d0dd137d3e8fe9c758f5a4e572566335d8271b81f996ef78997"
+          "value": "7f1bfa7adae1f9d11b91c40ee5c64b10950910c16e9426d01dab22f3f49783a9"
         }
       ]
     },

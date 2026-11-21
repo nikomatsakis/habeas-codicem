@@ -1,7 +1,7 @@
 {
   "requirement": "```rust,ignore\nuse std::future::Future;\n\n// Defined in habeas_sdk::graph.\npub trait EvidenceStorage: Graph {\n    /// Ok(None) means absent; Err means loading failed.\n    fn load_evidence(\n        &self,\n        source: &Self::NodeId,\n        criterion: &CriterionPath,\n    ) -> impl Future<Output = Result<\n        Option<Record<Self::NodeId, Self::EdgeLabel>>,\n        Self::Error,\n    >> + Send;\n\n    /// Atomically replace only this source/criterion pair's complete record.\n    fn store_evidence(\n        &self,\n        source: &Self::NodeId,\n        criterion: &CriterionPath,\n        record: &Record<Self::NodeId, Self::EdgeLabel>,\n    ) -> impl Future<Output = Result<(), Self::Error>> + Send;\n}\n```\n\nThe validator passes the source identity and criterion path to both methods. The\nkey preserves both parts: source paths `[\"a\"]` and `[\"a\", \"b\"]` with criteria\n`[\"b\", \"c\"]` and `[\"c\"]` identify different records, even though flattening each\npair would produce the same segments.\n\nDifferent criteria of a source have independent records. A revision change\ninvalidates the same criterion's record rather than creating another key.\nThe interface requires neither filesystem paths nor global evidence listing.\n\nSuccessful loads observe either an old or new complete record, or absence\nbefore the first save. Successful competing saves leave one complete record;\nits revision, dependencies, and output all belong to that save. No ordering\nbetween competing saves is guaranteed.",
   "determination": true,
-  "rationale": "I judged the supplied tests adequate for `requirements.sdk.graph.evidence.evidence_storage`. I did not request any implementation source, because the supplied tests and their assertions were enough to map each obligation.\n\n- **Load returns `Ok(None)` for absent records and `Err` for failures.**\n  - Absence is asserted in `crates/habeas-sdk/tests/contracts.rs#fn[criteria_keep_typed_answers_and_persist_only_when_requested]`. That test also checks that a load returns `None` before an explicit save and that another criterion is absent.\n  - Absence is asserted in `crates/habeas-sdk/tests/storage.rs#fn[consumer_delegates_evidence_storage_using_only_the_requested_nodes_path]`. That test also asserts `Err(FileStorageError::Json(_))` when the stored file is corrupt, so a load failure is not reported as absence.\n  - Absence is asserted in `src/sdk.rs#mod[tests]/fn[domain_storage_round_trips_each_review_kind_and_preserves_records_on_errors]`, and in `src/authoring/sdk.rs#mod[tests]/fn[review_graph_persists_and_reuses_a_negative_validation_through_the_sdk]`.\n- **Store replaces only this pair's record.**\n  - `crates/habeas-sdk/tests/storage.rs#fn[source_and_criterion_boundaries_preserve_independent_records]` stores many source/criterion pairs, then reloads all of them. Each reload returns its own output, so storing one pair leaves the others untouched.\n  - The `src/sdk.rs` domain test and the `src/authoring/sdk.rs` review-graph test show that failed stores leave the existing bytes unchanged.\n- **Key preserves both source and criterion parts.**\n  - The pairs `[\"a\"]`/`[\"b\",\"c\"]` and `[\"a\",\"b\"]`/`[\"c\"]` are tested directly in `source_and_criterion_boundaries_preserve_independent_records`.\n  - That test adds empty, empty-string and escape-sensitive segments. It asserts the distinct record paths and that each pair reloads its own output.\n- **Different criteria of a source have independent records.**\n  - The same boundary test has pairs that share a source (`[]`) but differ in criterion, and they keep separate records.\n  - `criteria_keep_typed_answers_and_persist_only_when_requested` stores `behavior`, `structure` and `text` criteria for the same source and checks each stored output.\n- **A revision change invalidates the same key instead of creating another.**\n  - `concurrent_same_criterion_executions_keep_complete_independent_records` saves two records with different revisions for the same source and criterion. It asserts `records.len() == 1` afterwards.\n  - The filesystem writer test saves records with differing revisions and checks that the directory still holds a single entry.\n- **Loads observe a complete old or new record.**\n  - `crates/habeas-sdk/tests/storage.rs#fn[concurrent_readers_only_observe_complete_records_from_competing_writes]` runs two writers against a reader loop. Each loaded record must be internally consistent: id, 8192-byte padding, revision and dependencies all match one writer, or the initial record.\n- **Competing saves leave one complete record.**\n  - The contracts test joins two concurrent saves. It then asserts that the surviving record's output, revision and dependencies all come from the same save, with no assumption about which save wins.\n- **Interface needs no filesystem paths or global listing.**\n  - This is a negative interface property. `consumer_delegates_evidence_storage_using_only_the_requested_nodes_path` uses opaque string node ids through the trait.\n\nI found no unacknowledged gap, and there are no {fixme} acknowledgments.",
+  "rationale": "I judged the tests adequate for `requirements.sdk.graph.evidence.evidence_storage`. I did not request any implementation source, because the supplied tests were enough to map each obligation. The one weak spot is noted at the end.\n\n**Absence versus failure (`Ok(None)` versus `Err`)**\n- Absence is checked before the first save in several tests: `criteria_keep_typed_answers_and_persist_only_when_requested`, `consumer_delegates_evidence_storage_using_only_the_requested_nodes_path`, `source_and_criterion_boundaries_preserve_independent_records` and `domain_storage_round_trips_each_review_kind_and_preserves_records_on_errors`. Each asserts `Ok(None)`.\n- A loading failure is checked in `consumer_delegates_evidence_storage_using_only_the_requested_nodes_path`. It overwrites the record file with bad JSON and asserts `Err(FileStorageError::Json(_))`.\n\n**Key preserves both parts**\n- `source_and_criterion_boundaries_preserve_independent_records` uses the exact case from the text. It stores source `[\"a\"]` with criterion `[\"b\",\"c\"]` and source `[\"a\",\"b\"]` with criterion `[\"c\"]`.\n- It also covers empty segments, the segment `\"criteria\"`, and encoding edge cases.\n- It stores a distinct record for every pair, then loads every pair back and asserts each output matches its own index. A key collision would therefore fail.\n\n**Source identity and criterion path are passed to both methods**\n- `consumer_delegates_evidence_storage_using_only_the_requested_nodes_path` checks that another node with the same criterion loads as `None`.\n- `domain_storage_round_trips_each_review_kind_and_preserves_records_on_errors` checks that a different criterion loads as `None`.\n\n**Different criteria of a source are independent**\n- `criteria_keep_typed_answers_and_persist_only_when_requested` saves the criteria `behavior`, `structure` and `text` for the same `Node(1)`. It asserts that each stored record keeps its own output.\n- `source_and_criterion_boundaries_preserve_independent_records` also uses the same empty source with different criteria.\n\n**A revision change invalidates the same record rather than creating another key**\n- `concurrent_same_criterion_executions_keep_complete_independent_records` saves two different revisions for one criterion and asserts that `records.len() == 1`.\n- `concurrent_readers_only_observe_complete_records_from_competing_writes` replaces a `v1` record with new revisions and asserts that the directory still holds one entry.\n\n**Atomic replace of only this pair's record**\n- `domain_storage_round_trips_each_review_kind_and_preserves_records_on_errors` makes `store_evidence` fail in several ways: an unsupported criterion, an inconsistent output, a node with no record, and a path that is a directory. After each failure it asserts that the original bytes are unchanged and that no stray files remain.\n- The boundary test shows that storing one pair leaves the other pairs' records unchanged.\n\n**Loads see an old or a new complete record**\n- `concurrent_readers_only_observe_complete_records_from_competing_writes` runs real threads: two writers repeat 30 saves each with large payloads. A reader loops during the writes and asserts three things on every read:\n  - The record is complete and its padding length is intact.\n  - The revision, dependencies and output all come from the same writer.\n  - The initial `A` record is only seen with the `v1` revision.\n\n**Competing saves leave one complete record, with no ordering guaranteed**\n- `concurrent_same_criterion_executions_keep_complete_independent_records` stores two competing records and loads the survivor. It asserts that its revision, dependencies and output all belong to the same save (a `match` on the output covers either winner). It does not assert which save wins.\n- The filesystem concurrency test above covers the same property with real threads.\n\n**No filesystem paths or global listing in the interface**\n- This is a structural property. The tests use an in-memory `Application` domain and `HabeasDomain` implementations, so the interface is exercised without filesystem paths or listing.\n\n**Weak spot**\n- The filesystem concurrency test does not load the final record after both writers finish. The record observed during the writes, plus the single-entry directory check, covers it well enough that I do not count this as a gap.",
   "references": "ce1fbbdca046130160146df43d6ee8e1428bdef594d2f8aaca89a685424eaf8e",
   "inputs": [
     {
@@ -80,12 +80,17 @@
     {
       "file": "src/authoring/sdk.rs",
       "item": "mod[tests]/fn[review_graph_persists_and_reuses_a_negative_validation_through_the_sdk]",
-      "hash": "aac933885a2d8207e24126c68370ca67d2990ff2dd7f0674b714aab0fc85df32"
+      "hash": "6426d95b392ae74058473af88d994f9dd6a2993915433e15429b98f06b7ab0b7"
     },
     {
       "file": "src/sdk.rs",
       "item": "mod[tests]/fn[domain_storage_round_trips_each_review_kind_and_preserves_records_on_errors]",
       "hash": "470839164406353e72c7925e2d7bd4007109cce24d71ecd5dcde39bb53f9d4a6"
+    },
+    {
+      "file": "crates/habeas-sdk/tests/validation.rs",
+      "item": "fn[caller_reuses_negative_answers_and_compares_revisions_explicitly]",
+      "hash": "e7e2db5ecf6df7409f9b32cf275f1d1ea45d5497fc96e47d477899e751c90a16"
     }
   ],
   "format_version": 1,
@@ -223,7 +228,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "a082a1dd4c3291d4549141a50dda5047c21b8b38231999b1ff91faa6089a9a8a"
+          "value": "f1cdb79d160311c2d6a955c6528706284187c4a29e84a0232268f92c70afa4e3"
         }
       ]
     },
@@ -241,6 +246,23 @@
         {
           "scheme": "habeas-input-v1",
           "value": "898b06d550bcc265441940d7ee6b0044ab8da28ea13b515eb54ee598f87741b3"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/tests/validation.rs"
+            },
+            "selector": "fn[caller_reuses_negative_answers_and_compares_revisions_explicitly]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "7f032f6d39d4589efb476cdb64588b1c32bbdb1f7a7ab13362a08a412ce3a592"
         }
       ]
     }

@@ -4801,7 +4801,10 @@ fn bundled_skills_direct_behavior_review_against_requirements() {
         &[
             "1. A test designed to verify it gets `{test}`",
             "2. Otherwise a root gets `{impl}`. Leave what it reaches unmarked",
-            "`{cite}` implements nothing; a citation review checks project citations' roles and built-ins' stated criteria",
+            "`{cite}` implements nothing. For source items outside the book, citation reviews check project citations' roles and built-ins' stated criteria",
+            "fence outside a requirement or example opts a book passage into concordance review",
+            "its claims must be supported by the cited declarations",
+            "The outermost eligible fence groups nested commentary citations into one review",
         ],
     );
     assert_phrases(

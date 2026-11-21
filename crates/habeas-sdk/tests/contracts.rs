@@ -34,6 +34,11 @@ struct State {
 }
 #[derive(Clone, Default)]
 struct Application(Arc<Mutex<State>>);
+impl Domain for Application {
+    fn format_node_content(&self, _: &Node, content: &Content) -> Result<String, Self::Error> {
+        Ok(content.0.clone())
+    }
+}
 impl Graph for Application {
     type NodeId = Node;
     type NodeContent = Content;
@@ -824,6 +829,12 @@ fn identities_remain_stable_and_fingerprinting_uses_the_supplied_snapshot() {
     let snapshot = InspectionContext::new(&graph)
         .read_snapshot(&Node(1))
         .unwrap();
+    assert_eq!(
+        graph
+            .format_node_content(&Node(1), &snapshot.content)
+            .unwrap(),
+        "before"
+    );
     let path = graph.node_path(&Node(1));
     graph.0.lock().unwrap().contents.insert(1, "after".into());
     assert_eq!(
