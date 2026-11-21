@@ -75,8 +75,8 @@ validation. Fingerprints determine which changes count as relevant.
 
 ## Defining the application domain
 
-The application defines its domain by implementing `Graph`, `NodeContents`, and
-`EvidenceStorage`. `Domain` combines those traits for criterion execution.
+The application defines its domain by implementing `Graph`, `Contents`, and
+`Storage`. `Domain` combines those traits for criterion execution.
 Criteria are implemented by the values submitted to a validator:
 
 :::{req} domain
@@ -91,29 +91,29 @@ Every cloneable application implementing the three domain traits implements
 /// that trace safely.
 /// Agent calls retain independent conversation and submission state.
 /// Observations never leak between separate validations.
-pub trait Domain: Clone + Graph + NodeContents + EvidenceStorage {}
+pub trait Domain: Clone + Graph + Contents + Storage {}
 
-impl<T: Clone + Graph + NodeContents + EvidenceStorage> Domain for T {}
+impl<T: Clone + Graph + Contents + Storage> Domain for T {}
 
 pub trait Graph {
     // Defines node identities, labeled edges, and successors.
     /* ... members defined in the Graph chapter ... */
 }
 
-pub trait NodeContents: Graph {
+pub trait Contents: Graph {
     // Reads node contents, fingerprints them, and formats them for an agent.
-    /* ... members defined in the Node contents chapter ... */
+    /* ... members defined in the Contents chapter ... */
 }
 
-pub trait EvidenceStorage: Graph {
+pub trait Storage: Graph {
     // Defines how evidence is stored and loaded.
-    /* ... members defined in the Evidence storage chapter ... */
+    /* ... members defined in the Storage chapter ... */
 }
 ```
 :::
 
 Domains with mutable state commonly store it behind `Arc`, so cloned domains
-access the same graph and evidence storage. Formatting belongs to `NodeContents`.
+access the same graph and evidence storage. Formatting belongs to `Contents`.
 The [agent calls
 chapter](sdk/graph/agent-calls.md#format-node-contents-for-the-agent) explains how
 the SDK uses this method.
@@ -124,8 +124,8 @@ The domain traits and the separate criterion interface have their own chapters:
 | --- | --- |
 | [Graph](sdk/graph.md) | Node identities, labeled edges, and successors. |
 | [Criteria](sdk/graph/validation.md) | A criterion's identity, result type, and execution procedure. |
-| [NodeContents](sdk/graph/fingerprinting.md) | Reading, fingerprinting, and formatting node contents. |
-| [EvidenceStorage](sdk/graph/evidence.md) | Where and how evidence is saved. |
+| [Contents](sdk/graph/fingerprinting.md) | Reading, fingerprinting, and formatting node contents. |
+| [Storage](sdk/graph/evidence.md) | Where and how evidence is saved. |
 
 
 ## Building blocks

@@ -200,17 +200,17 @@ Input-resolution failures return `ValidationError::Graph`.
 
 ## Format node contents for the agent
 
-`NodeContents::node_content` returns the application's `NodeContent`. Its
+`Contents::node_content` returns the application's `NodeContent`. Its
 formatter converts that value into text for the prompt. For example, Habeas
 presents requirement text and parsed functions as source excerpts. The SDK uses
 the identity and fingerprint from the same read to track that input.
 
 :::{req} judge.rendering
-The SDK formats node inputs using `NodeContents::format_node_content`,
+The SDK formats node inputs using `Contents::format_node_content`,
 defined by {cite}`requirements.sdk.graph.fingerprinting.fingerprint_content`:
 
 ```rust,ignore
-// Method on NodeContents. Both arguments describe the already-read snapshot.
+// Method on Contents. Both arguments describe the already-read snapshot.
 /// Present these supplied contents as text for an agent.
 fn format_node_content(
     &self,

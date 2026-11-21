@@ -1,6 +1,6 @@
 # Filesystem evidence storage
 
-Use `FileEvidenceStorage` to implement `EvidenceStorage` with a directory of
+Use `FileEvidenceStorage` to implement `Storage` with a directory of
 JSON records. The application chooses the directory and uses `Graph::node_path` to obtain
 a stable [`NodePath`](graph.md#give-nodes-a-stable-path), paired with the validation's
 `CriterionPath`. The helper handles serialization, file access, and replacing
@@ -127,7 +127,7 @@ no temporary file belonging to that operation.
 
 Atomic replacement does not promise durability across power loss or recovery
 of temporary files after a process crash. Applications needing transactions
-across several nodes can implement `EvidenceStorage` with another backend.
+across several nodes can implement `Storage` with another backend.
 
 The SDK still owns [freshness checking](graph/evidence.md#compare-the-saved-observations).
 A successfully loaded record may be stale or contain a negative judgment.

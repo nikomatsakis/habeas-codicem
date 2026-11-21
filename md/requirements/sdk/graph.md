@@ -1,7 +1,7 @@
 # Graph
 
 Define the nodes, labeled edges, and successors of the application's graph.
-[Node contents](graph/fingerprinting.md) adds the contents associated with those
+[Contents](graph/fingerprinting.md) adds the contents associated with those
 nodes.
 
 ## Identify nodes and relationships

@@ -1,4 +1,4 @@
-# Evidence storage
+# Storage
 
 The domain provides storage for each verification's evidence. A record belongs
 to a source node and a `CriterionPath`, so several criteria can assess the same
@@ -55,7 +55,7 @@ Its node identities and edge labels keep their domain-defined types.
 use std::future::Future;
 
 // Defined in habeas_sdk::graph.
-pub trait EvidenceStorage: Graph {
+pub trait Storage: Graph {
     /// Ok(None) means absent; Err means loading failed.
     fn load_evidence(
         &self,
@@ -145,7 +145,7 @@ encoding and meaning.
 
 ## Remember what a procedure actually reads
 
-Calling `NodeContents::node_content` directly resolves a node. Reading through the
+Calling `Contents::node_content` directly resolves a node. Reading through the
 context's inspection interface also records the observation:
 
 ```rust,ignore

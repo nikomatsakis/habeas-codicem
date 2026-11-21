@@ -69,7 +69,7 @@ let agent = Arc::new(ToolAgent::new(provider));
 let validator = Validator::new(domain).with_agent(agent);
 ```
 
-The application implements `NodeContents::format_node_content` to present its node
+The application implements `Contents::format_node_content` to present its node
 contents; the harness obtains that formatter through the execution's domain.
 :::
 

@@ -400,7 +400,7 @@ let assessment = inputs.output();
 println!("{}: {}", assessment.adequate, assessment.rationale);
 ```
 
-[Evidence storage](evidence.md#compare-the-saved-observations) defines
+[Storage](evidence.md#compare-the-saved-observations) defines
 `check_inputs` and `procedure_matches`. The revision comparison checks whether
 the saved answer was produced using compatible review rules; `check_inputs`
 compares only its recorded observations. A current negative assessment is still

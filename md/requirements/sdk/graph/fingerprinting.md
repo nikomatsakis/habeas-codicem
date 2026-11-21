@@ -1,13 +1,13 @@
-# Node contents
+# Contents
 
-`Graph` describes nodes and their relationships. Implement `NodeContents` to
+`Graph` describes nodes and their relationships. Implement `Contents` to
 give those nodes contents: text, parsed source, issue data, or another structured
 value. The same trait defines which changes to those contents matter and how to
 present them to an agent.
 
 :::{req} fingerprint_content
 ```rust,ignore
-pub trait NodeContents: Graph {
+pub trait Contents: Graph {
     /// The application's representation of a node's contents.
     type NodeContent: Send + Sync;
 
@@ -92,8 +92,8 @@ fingerprints or automatically rerun a review.
 
 ## Read content together with its fingerprint
 
-To read `check_token`, the SDK calls `NodeContents::node_content`. It then passes the returned
-contents and node identity to `NodeContents::fingerprint`, then packages the
+To read `check_token`, the SDK calls `Contents::node_content`. It then passes the returned
+contents and node identity to `Contents::fingerprint`, then packages the
 contents and fingerprint in a
 `Snapshot`. The procedure receives the contents; the SDK retains the fingerprint
 so it can check freshness later. Conceptually, the tracked context does this:
@@ -126,8 +126,8 @@ pub struct Snapshot<T> {
 ```
 
 This type lives in `habeas_sdk::graph`. For node reads, the SDK constructs it by
-passing the identity and the contents returned by `NodeContents::node_content` to
-`NodeContents::fingerprint`, without another read. For a label-specific edge
+passing the identity and the contents returned by `Contents::node_content` to
+`Contents::fingerprint`, without another read. For a label-specific edge
 query, the SDK constructs the snapshot from the returned targets and their
 target-set fingerprint, without another query.
 `T` needs no filesystem path or source span.
