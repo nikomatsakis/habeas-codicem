@@ -59,7 +59,7 @@ impl<D: Domain> Validator<D> {
         }
     }
 
-    // {impl}`requirements.sdk.graph.evidence.checking_records`
+    // {impl}`requirements.sdk.graph.validation.checking_records`
     /// Compare recorded input fingerprints with the current domain state.
     pub fn check_inputs<O>(&self, inputs: &Fingerprinted<D, O>) -> Result<bool, D::Error> {
         dependencies_are_current(&self.domain, &inputs.dependencies)

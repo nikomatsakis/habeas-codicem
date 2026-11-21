@@ -803,7 +803,7 @@ async fn source_tools_keep_search_discovery_separate_from_delivered_source_reads
 // {test}`requirements.sdk.graph.domain_types`
 // {test}`requirements.sdk.domain`
 // {test}`requirements.sdk.graph.agent-calls.author_procedure`
-// {test}`requirements.sdk.graph.validation.deterministic_procedures`
+// {test}`requirements.sdk.graph.execution.deterministic_procedures`
 #[tokio::test]
 async fn deterministic_validation_uses_required_storage_without_an_agent() {
     let graph = Memory::new("ordinary computation".into());
@@ -1277,7 +1277,7 @@ impl Criterion<Memory> for BehavioralAdequacy {
     }
 }
 
-// {test}`requirements.sdk.graph.validation.behavioral_adequacy`
+// {test}`requirements.sdk.graph.execution.behavioral_adequacy`
 // {test}`requirements.sdk.graph.agent-harness.setup`
 // {test}`requirements.sdk.graph.agent-harness.tool_agent`
 // {test}`requirements.sdk.domain`

@@ -13,6 +13,7 @@
   - [SDK](./requirements/sdk.md)
     - [Graph](./requirements/sdk/graph.md)
     - [Criteria](./requirements/sdk/graph/validation.md)
+      - [Evaluating criteria](./requirements/sdk/graph/execution.md)
       - [Agent calls](./requirements/sdk/graph/agent-calls.md)
       - [Agent harness](./requirements/sdk/graph/agent-harness.md)
       - [Context tools](./requirements/sdk/graph/context-tools.md)

@@ -133,18 +133,18 @@ impl<'d, D: Domain> ValidationContext<'d, D> {
 
     // {impl}`requirements.sdk.graph.agent-calls.author_procedure`
     /// Tracked graph reads and edge selections for this execution.
-    // {impl}`requirements.sdk.graph.validation.root_inputs`
+    // {impl}`requirements.sdk.graph.execution.root_inputs`
     pub fn inspection(&self) -> &InspectionContext<'d, D> {
         &self.inspection
     }
 
-    // {impl}`requirements.sdk.graph.validation.root_inputs`
+    // {impl}`requirements.sdk.graph.execution.root_inputs`
     /// The source node this criterion examines.
     pub fn node_id(&self) -> &D::NodeId {
         &self.node
     }
 
-    // {impl}`requirements.sdk.graph.validation.root_inputs`
+    // {impl}`requirements.sdk.graph.execution.root_inputs`
     /// Select this source's successors and record their target-set fingerprint.
     pub fn successors(&self, label: &D::EdgeLabel) -> Result<Vec<D::NodeId>, D::Error>
     where

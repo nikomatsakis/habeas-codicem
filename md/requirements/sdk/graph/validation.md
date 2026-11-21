@@ -42,6 +42,50 @@ impl Criterion<HabeasDomain> for BehavioralAdequacy {
 }
 ```
 
+## Run criteria with a validator
+
+A `Validator<D>` owns a cloneable domain and agent configuration. It supplies
+four operations: load evidence, check its inputs, execute a criterion, and
+store the resulting evidence. Applications compose these into their workflows.
+
+:::{req} validator
+```rust,ignore
+use std::sync::Arc;
+
+// Defined in habeas_sdk::graph.
+/// Domain access and configuration shared by criterion executions.
+/// Evidence storage is required through Domain.
+pub struct Validator<D: Domain> { /* private fields */ }
+
+impl<D: Domain> Validator<D> {
+    /// Own the domain used to check and execute criteria.
+    pub fn new(domain: D) -> Self;
+
+    /// Share this agent with execution contexts.
+    pub fn with_agent(
+        self,
+        agent: Arc<dyn Agent<D>>,
+    ) -> Self;
+}
+```
+
+`Agent` is supplied by `habeas_sdk::procedure`; the domain formats node contents.
+[Agent harness](agent-harness.md) shows how to configure a provider and tools.
+Independent verifications share a validator through `&self`. Cached observations
+can be reused when they still represent the state being checked. Each execution
+has its own context, dependency trace, and agent conversation state. Operations
+within one execution share its synchronized trace through context inspection
+and agent calls.
+
+Concurrent verifications of the same source and criterion run independently,
+each with its own context and trace. The storage backend handles atomic
+replacement when their results are saved.
+:::
+
+The overview passed a `BehavioralAdequacy` value to this validator. Other
+questions about the same requirement can use their own criterion paths and
+result types; their answers are saved independently.
+
 Evaluate an instance using a validator. Here `agent` is a configured `Arc`
 handle, and `domain` supplies Habeas's graph, evidence storage, and node
 formatting:
@@ -117,98 +161,6 @@ adequate: false, ... })` is a completed assessment finding a gap. The validator
 can save and reuse that answer; an `Err` means execution failed and produces no
 completed record.
 
-## Execute the criterion with a context
-
-`execute` receives a `ValidationContext` for its source node. Its `ask` method
-starts a typed agent request. Add instructions and node contents to the builder,
-then await the answer. The context records the inputs the agent reads so the SDK
-can tell when a saved answer needs to be recomputed.
-
-```rust,ignore
-use habeas_sdk::procedure::{Ask, ContextPhase};
-
-// Defined in habeas_sdk::graph.
-/// Tracked observations and agent calls for one criterion execution.
-pub struct ValidationContext<'cx, D: Domain> { /* private fields */ }
-
-impl<'cx, D: Domain> ValidationContext<'cx, D> {
-    /// Start a request whose submitted answer is decoded into R.
-    pub fn ask<R>(&self) -> Ask<'_, 'cx, D, R, ContextPhase>
-    where
-        R: serde::de::DeserializeOwned + schemars::JsonSchema + Send;
-
-    // ... other tools ...
-}
-```
-
-The `BehavioralAdequacy` criterion from the overview asks the agent to examine
-the requirement and its tests and submit a `TestReview`. Its `execute` method is
-an application example of the SDK's request builder:
-
-:::{example} behavioral_adequacy
-{cite}`requirements.sdk.graph.agent-calls.judge`
-{cite}`requirements.sdk.graph.agent-calls.judge.node_contents`
-{cite}`requirements.sdk.graph.evidence.inputs`
-
-Here is the `execute` method from
-`impl Criterion<HabeasDomain> for BehavioralAdequacy`:
-
-```rust,ignore
-async fn execute(
-    self,
-    cx: &mut ValidationContext<'_, HabeasDomain>,
-) -> Result<Self::Ok, ValidationError<std::io::Error>> {
-    cx.ask()
-        .context(&self.review_policy)
-        .context("Check whether these tests cover the requirement's behavior and edge cases.")
-        .contents_of_current_node()
-        .contents_of_successors(HabeasEdgeLabel::Tests)
-        .await
-}
-```
-
-The builder methods determine what is given to the agent:
-
-- `context` provides common context, including the question. These calls come
-  first so the provider can cache the shared prompt prefix.
-- `contents_of_current_node()` provides the contents of the criterion's source
-  node: here, the requirement.
-- `contents_of_successors(label)` provides the contents of its successors with
-  that label: here, the requirement's tests.
-
-:::
-
-:::{cite} requirements.sdk.graph.agent-calls.author_procedure
-The context records the contents supplied in the prompt. The agent also has
-tools for requesting additional contents, which are recorded when delivered.
-Awaiting the ask builder returns the submitted `TestReview`; `verify` returns
-a `Fingerprinted` containing the criterion's completed answer and the identity and
-fingerprint of each input used during execution. Those fingerprints let the
-application check when the answer may be stale.
-
-{cite}`requirements.sdk.graph.agent-calls.judge.submission`
-{cite}`requirements.sdk.graph.validation.validate_node`
-{cite}`requirements.sdk.graph.evidence.inputs`
-:::
-
-Habeas currently runs one combined `Review` criterion at `["review"]`; its
-execution selects the requirement and mandatory inputs and applies Habeas's
-review policy. This `BehavioralAdequacy` example illustrates how that harness can
-be reused for a more specific question.
-[Putting it together in Habeas](../habeas.md) follows the current review.
-
-[Agent calls](agent-calls.md) explains the `ask()` builder, prompt construction,
-and typed answers. [Agent harness](agent-harness.md) explains how providers and
-tools are configured. [Context tools](context-tools.md) explains tracked
-source discovery and content reads. Use tracked operations for information the
-answer relies on, including filesystem or network inputs.
-
-:::{req} deterministic_procedures
-`Criterion::execute` can compute an answer without a configured model provider.
-A criterion can compute its answer directly using tracked inputs; deterministic
-execution needs no configured agent. Evidence storage is still required.
-:::
-
 ## Give the question a stable path
 
 A `NodeId` and its stable `NodePath` identify the source. `CriterionPath`
@@ -245,50 +197,6 @@ preserves the boundary between the two paths so different pairs cannot collide.
 The [evidence chapter](evidence.md) defines that lookup. The criterion path names
 an evidence record; the context's source remains the graph node.
 
-## Run criteria with a validator
-
-A `Validator<D>` owns a cloneable domain and agent configuration. It supplies
-four operations: load evidence, check its inputs, execute a criterion, and
-store the resulting evidence. Applications compose these into their workflows.
-
-:::{req} validator
-```rust,ignore
-use std::sync::Arc;
-
-// Defined in habeas_sdk::graph.
-/// Domain access and configuration shared by criterion executions.
-/// Evidence storage is required through Domain.
-pub struct Validator<D: Domain> { /* private fields */ }
-
-impl<D: Domain> Validator<D> {
-    /// Own the domain used to check and execute criteria.
-    pub fn new(domain: D) -> Self;
-
-    /// Share this agent with execution contexts.
-    pub fn with_agent(
-        self,
-        agent: Arc<dyn Agent<D>>,
-    ) -> Self;
-}
-```
-
-`Agent` is supplied by `habeas_sdk::procedure`; the domain formats node contents.
-[Agent harness](agent-harness.md) shows how to configure a provider and tools.
-Independent verifications share a validator through `&self`. Cached observations
-can be reused when they still represent the state being checked. Each execution
-has its own context, dependency trace, and agent conversation state. Operations
-within one execution share its synchronized trace through context inspection
-and agent calls.
-
-Concurrent verifications of the same source and criterion run independently,
-each with its own context and trace. The storage backend handles atomic
-replacement when their results are saved.
-:::
-
-The overview passed a `BehavioralAdequacy` value to this validator. Other
-questions about the same requirement can use their own criterion paths and
-result types; their answers are saved independently.
-
 ## Execute a criterion
 
 :::{req} procedure_identity
@@ -301,7 +209,7 @@ Changing review instructions, deterministic rules, input-selection policy, or
 result encoding in a way that invalidates an old answer requires a changed
 revision. This is independent of model selection and the agent's context-prefix
 cache fingerprint. A stored legacy revision `*` retains the matching behavior of
-{cite}`requirements.sdk.graph.evidence.checking_records.procedure_match`.
+{cite}`requirements.sdk.graph.validation.checking_records.procedure_match`.
 :::
 
 :::{req} validate_node
@@ -373,6 +281,57 @@ no `Sync` bound: the method encodes the answer and captures the record and
 storage key before constructing the storage future.
 :::
 
+## Compare the saved observations
+
+`Validator::check_inputs` reads current contents and edge selections through the
+domain, computes their fingerprints, and compares them with the observations in
+`Fingerprinted`. Revision comparison is a separate operation: the caller has the
+current criterion and decides which review rules remain compatible.
+
+:::{req} checking_records
+```rust,ignore
+// Method on Validator<D>.
+/// Compare each recorded input with the current domain state.
+/// Return true when every fingerprint still matches, including an empty trace.
+pub fn check_inputs<O>(
+    &self,
+    inputs: &Fingerprinted<D, O>,
+) -> Result<bool, D::Error>;
+```
+
+The method resolves the recorded dependencies through graph operations and
+fingerprinting, comparing each with its saved observation. A fingerprint
+mismatch returns `Ok(false)` and permits an early return; it need not resolve
+later dependencies. An encountered dependency-resolution failure returns an
+error.
+
+It uses the current state that the caller intends to inspect, rather than
+reusing source snapshots from an earlier invocation without establishing that
+they remain current. These reads are separate from a criterion execution's
+dependency trace.
+:::
+
+:::{req} checking_records.procedure_match
+```rust,ignore
+// Defined in habeas_sdk::graph.
+/// Compare the saved review-rule revision with the currently requested revision.
+pub fn procedure_matches(stored: &str, requested: &str) -> bool;
+```
+
+The revision matches when the stored `Record::revision` is `*` or equals the
+requested revision exactly. Only the complete stored value `*` is a wildcard;
+other values compare literally. A wildcard leaves dependency comparison and
+result decoding unchanged. It matches revisions for the selected source and
+criterion only, and does not supply evidence for other criteria.
+:::
+
+The wildcard represents a supported legacy record that did not capture its
+review-rule version. It does not certify a criterion that was never assessed.
+Habeas chooses how to map its legacy assessments to the corresponding criteria.
+
+A current record need not contain a favorable assessment. The SDK supplies the
+comparisons; Habeas owns its reuse and acceptance policies.
+
 ## Compose a reuse workflow
 
 The application decides when to reuse a saved answer. For example, it can
@@ -405,42 +364,3 @@ println!("{}: {}", assessment.adequate, assessment.rationale);
 the saved answer was produced using compatible review rules; `check_inputs`
 compares only its recorded observations. A current negative assessment is still
 current. Habeas decides which answers make CI pass.
-
-## Use tracked inputs directly
-
-A criterion can also read inputs and compute part or all of its answer directly.
-The context exposes the source identity and tracked graph operations:
-
-:::{req} root_inputs
-```rust,ignore
-// Defined in habeas_sdk::graph.
-/// Input selection and tracked observations for one criterion execution.
-pub struct ValidationContext<'cx, D: Domain> { /* private fields */ }
-
-impl<'cx, D: Domain> ValidationContext<'cx, D> {
-    /// The source node this criterion examines.
-    pub fn node_id(&self) -> &D::NodeId;
-
-    /// Tracked graph reads and edge selections for this execution.
-    pub fn inspection(&self) -> &InspectionContext<'cx, D>;
-
-    /// Select outgoing edges by label, preserving their order and duplicates.
-    /// Record this label's target-set fingerprint even when nothing matches.
-    /// Target contents enter the trace when explicitly read or inserted.
-    pub fn successors(
-        &self,
-        label: &D::EdgeLabel,
-    ) -> Result<Vec<D::NodeId>, D::Error>
-    where
-        D::EdgeLabel: PartialEq;
-}
-```
-
-Labels match by equality. A change to the recorded target set makes prior
-evidence stale, including adding an edge to an empty selection. Target contents
-become dependencies through tracked reads or agent insertions. An edge selects a
-related source; assessments of that target remain separate.
-:::
-
-[Context tools](context-tools.md) covers content reads, filesystem exploration,
-and source search.

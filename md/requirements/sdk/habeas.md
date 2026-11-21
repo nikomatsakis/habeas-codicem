@@ -225,7 +225,7 @@ procedure version, Habeas represents that missing version as `*`.
 In-place conversion preserves this wildcard rather than assigning the current
 version. The wildcard matches any
 requested review revision under
-{cite}`requirements.sdk.graph.evidence.checking_records.procedure_match`.
+{cite}`requirements.sdk.graph.validation.checking_records.procedure_match`.
 The record is current when its recorded inputs and all existing application
 freshness checks still match. Version matching leaves the subject, reference-set,
 input, determination, citation, and site checks intact.

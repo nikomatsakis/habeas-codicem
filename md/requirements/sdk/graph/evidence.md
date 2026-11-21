@@ -192,57 +192,6 @@ obligations; adding the first implementation root can invalidate the analogous
 structural assessment. Changing an input observed by one criterion does not
 invalidate another criterion that did not observe it.
 
-## Compare the saved observations
-
-`Validator::check_inputs` reads current contents and edge selections through the
-domain, computes their fingerprints, and compares them with the observations in
-`Fingerprinted`. Revision comparison is a separate operation: the caller has the
-current criterion and decides which review rules remain compatible.
-
-:::{req} checking_records
-```rust,ignore
-// Method on Validator<D>.
-/// Compare each recorded input with the current domain state.
-/// Return true when every fingerprint still matches, including an empty trace.
-pub fn check_inputs<O>(
-    &self,
-    inputs: &Fingerprinted<D, O>,
-) -> Result<bool, D::Error>;
-```
-
-The method resolves the recorded dependencies through graph operations and
-fingerprinting, comparing each with its saved observation. A fingerprint
-mismatch returns `Ok(false)` and permits an early return; it need not resolve
-later dependencies. An encountered dependency-resolution failure returns an
-error.
-
-It uses the current state that the caller intends to inspect, rather than
-reusing source snapshots from an earlier invocation without establishing that
-they remain current. These reads are separate from a criterion execution's
-dependency trace.
-:::
-
-:::{req} checking_records.procedure_match
-```rust,ignore
-// Defined in habeas_sdk::graph.
-/// Compare the saved review-rule revision with the currently requested revision.
-pub fn procedure_matches(stored: &str, requested: &str) -> bool;
-```
-
-The revision matches when the stored `Record::revision` is `*` or equals the
-requested revision exactly. Only the complete stored value `*` is a wildcard;
-other values compare literally. A wildcard leaves dependency comparison and
-result decoding unchanged. It matches revisions for the selected source and
-criterion only, and does not supply evidence for other criteria.
-:::
-
-The wildcard represents a supported legacy record that did not capture its
-review-rule version. It does not certify a criterion that was never assessed.
-Habeas chooses how to map its legacy assessments to the corresponding criteria.
-
-A current record need not contain a favorable assessment. The SDK supplies the
-comparisons; Habeas owns its reuse and acceptance policies.
-
 ## Reuse the filesystem storage helper
 
 :::{req} evidence_storage.filesystem
