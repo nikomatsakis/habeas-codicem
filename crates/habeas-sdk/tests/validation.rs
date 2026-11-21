@@ -85,7 +85,7 @@ impl Graph for Memory {
             .collect())
     }
 }
-impl NodeContents for Memory {
+impl Contents for Memory {
     type NodeContent = String;
 
     fn node_content(&self, node: &u8) -> Result<String, Self::Error> {
@@ -109,7 +109,7 @@ impl NodeContents for Memory {
         }
     }
 }
-impl EvidenceStorage for Memory {
+impl Storage for Memory {
     async fn load_evidence(
         &self,
         node: &u8,

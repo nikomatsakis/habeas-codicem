@@ -95,7 +95,7 @@ pub trait Graph: Send + Sync {
 }
 
 // {impl}`requirements.sdk.graph.fingerprinting.fingerprint_content`
-pub trait NodeContents: Graph {
+pub trait Contents: Graph {
     /// The application's representation of a node's contents.
     type NodeContent: Send + Sync;
 
@@ -212,7 +212,7 @@ impl<T: PartialEq> Trace<T> {
 }
 
 // {impl}`requirements.sdk.graph.evidence.evidence_storage`
-pub trait EvidenceStorage: Graph {
+pub trait Storage: Graph {
     // {impl}`requirements.sdk.graph.evidence.evidence_storage`
     fn load_evidence(
         &self,
@@ -231,10 +231,10 @@ pub trait EvidenceStorage: Graph {
 
 // {impl}`requirements.sdk.domain`
 /// A cloneable verification graph with fingerprints and evidence storage.
-pub trait Domain: Clone + Graph + NodeContents + EvidenceStorage {}
+pub trait Domain: Clone + Graph + Contents + Storage {}
 
 // {impl}`requirements.sdk.domain`
-impl<T: Clone + Graph + NodeContents + EvidenceStorage> Domain for T {}
+impl<T: Clone + Graph + Contents + Storage> Domain for T {}
 
 // {impl}`requirements.sdk.graph.validation.check_procedure`
 #[derive(Debug)]
@@ -291,12 +291,12 @@ pub trait Criterion<D: Domain>: Send + Sized {
 
 /// The trace lock only protects observations, never graph or agent operations.
 // {impl}`requirements.sdk.graph.context-tools.tracked_inspection`
-pub struct InspectionContext<'d, D: NodeContents> {
+pub struct InspectionContext<'d, D: Contents> {
     graph: &'d D,
     observations: Mutex<Vec<Dependency<D::NodeId, D::EdgeLabel>>>,
 }
 
-impl<'d, D: NodeContents> InspectionContext<'d, D> {
+impl<'d, D: Contents> InspectionContext<'d, D> {
     // {cite}`habeas:util`
     pub fn new(graph: &'d D) -> Self {
         Self {
@@ -427,7 +427,7 @@ pub fn procedure_matches(stored: &str, requested: &str) -> bool {
 
 /// Freshness-only reads do not enter a new assessment's trace.
 // {impl}`requirements.sdk.graph.evidence.checking_records`
-pub fn record_is_current<D: NodeContents>(
+pub fn record_is_current<D: Contents>(
     graph: &D,
     revision: &str,
     record: &Record<D::NodeId, D::EdgeLabel>,
@@ -438,7 +438,7 @@ pub fn record_is_current<D: NodeContents>(
     dependencies_are_current(graph, &record.dependencies)
 }
 
-fn dependencies_are_current<D: NodeContents>(
+fn dependencies_are_current<D: Contents>(
     graph: &D,
     dependencies: &[Dependency<D::NodeId, D::EdgeLabel>],
 ) -> Result<bool, D::Error> {

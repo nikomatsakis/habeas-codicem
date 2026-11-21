@@ -55,7 +55,7 @@ impl Graph for Application {
             .unwrap_or_default())
     }
 }
-impl NodeContents for Application {
+impl Contents for Application {
     type NodeContent = Content;
 
     fn node_content(&self, node: &Node) -> Result<Content, Self::Error> {
@@ -83,7 +83,7 @@ impl NodeContents for Application {
         Ok(content.0.clone())
     }
 }
-impl EvidenceStorage for Application {
+impl Storage for Application {
     async fn load_evidence(
         &self,
         node: &Node,

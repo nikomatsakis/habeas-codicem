@@ -7,8 +7,8 @@ use crate::{
 };
 use habeas_sdk::{
     graph::{
-        Criterion, CriterionPath, EvidenceStorage, Fingerprint, Graph, InspectionContext,
-        NodeContents, NodePath, ValidationContext, ValidationError,
+        Contents, Criterion, CriterionPath, Fingerprint, Graph, InspectionContext, NodePath,
+        Storage, ValidationContext, ValidationError,
     },
     procedure::{Agent, AgentRequest},
 };
@@ -96,7 +96,7 @@ impl ReviewGraph<'_> {
     }
 }
 
-impl EvidenceStorage for ReviewGraph<'_> {
+impl Storage for ReviewGraph<'_> {
     // {impl}`requirements.sdk.graph.evidence.evidence_storage`
     async fn load_evidence(
         &self,
@@ -120,7 +120,7 @@ impl EvidenceStorage for ReviewGraph<'_> {
 }
 
 // {impl}`requirements.sdk.domain`
-impl NodeContents for ReviewGraph<'_> {
+impl Contents for ReviewGraph<'_> {
     type NodeContent = Value;
 
     // {cite}`habeas:util`
@@ -908,7 +908,7 @@ mod tests {
     // {test}`requirements.ci.requirement_text`
     #[tokio::test]
     async fn every_review_kind_loads_both_formats_and_reports_each_application_failure_once() {
-        use habeas_sdk::graph::EvidenceStorage;
+        use habeas_sdk::graph::Storage;
         let source = format!(
             "{}\n// {{cite}}`requirements.rule`\nfn helper() {{}}\n// {{test}}`requirements.sample`\n#[test]\nfn sample() {{}}\n",
             crate::sites::tests::SOURCE

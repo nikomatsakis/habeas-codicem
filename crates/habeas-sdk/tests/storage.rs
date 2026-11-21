@@ -406,7 +406,7 @@ impl Graph for StoredGraph {
         NodePath::new(vec!["consumer".into(), node.clone()])
     }
     // :::{cite} habeas:coverage
-    // NodeContents requires this callback even for a storage-only consumer. The
+    // Contents requires this callback even for a storage-only consumer. The
     // delegation test must use only node_path; discovering edges would be
     // an unwanted graph access, which this guard rejects. Traversal fixtures
     // separately exercise edge discovery.
@@ -415,7 +415,7 @@ impl Graph for StoredGraph {
         panic!("storage operations must not discover graph edges")
     }
 }
-impl EvidenceStorage for StoredGraph {
+impl Storage for StoredGraph {
     async fn load_evidence(
         &self,
         node: &String,
@@ -433,12 +433,12 @@ impl EvidenceStorage for StoredGraph {
     }
 }
 
-impl NodeContents for StoredGraph {
+impl Contents for StoredGraph {
     type NodeContent = ();
 
     // :::{cite} habeas:coverage
     // This storage-only consumer must delegate load/store using node_path
-    // without resolving contents. NodeContents requires the callback, but invoking
+    // without resolving contents. Contents requires the callback, but invoking
     // this guard would violate the no-content-read invariant of the test.
     // Other graph fixtures exercise content resolution.
     // :::

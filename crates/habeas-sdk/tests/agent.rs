@@ -30,7 +30,7 @@ struct Node(u8);
 #[derive(Clone, PartialEq, Eq, Deserialize, JsonSchema)]
 struct Label;
 // {cite}`habeas:util`
-struct Contents(String);
+struct Content(String);
 // {cite}`habeas:util`
 #[derive(Serialize, Deserialize)]
 struct Metadata;
@@ -39,7 +39,7 @@ struct Memory {
     contents: Arc<Mutex<String>>,
     node_contents: Arc<Mutex<std::collections::BTreeMap<u8, String>>>,
     reads: Arc<Mutex<Vec<u8>>>,
-    formatter: fn(&Node, &Contents) -> io::Result<String>,
+    formatter: fn(&Node, &Content) -> io::Result<String>,
     records: Arc<Mutex<Vec<(Node, CriterionPath, Record<Node, Label>)>>>,
 }
 impl Memory {
@@ -53,7 +53,7 @@ impl Memory {
         }
     }
 }
-impl EvidenceStorage for Memory {
+impl Storage for Memory {
     async fn load_evidence(
         &self,
         node: &Node,
@@ -93,12 +93,12 @@ impl Graph for Memory {
     }
 }
 // {cite}`habeas:util`
-impl NodeContents for Memory {
-    type NodeContent = Contents;
+impl Contents for Memory {
+    type NodeContent = Content;
 
-    fn node_content(&self, node: &Node) -> io::Result<Contents> {
+    fn node_content(&self, node: &Node) -> io::Result<Content> {
         self.reads.lock().unwrap().push(node.0);
-        Ok(Contents(
+        Ok(Content(
             self.node_contents
                 .lock()
                 .unwrap()
@@ -108,14 +108,14 @@ impl NodeContents for Memory {
         ))
     }
 
-    fn fingerprint(&self, _: &Node, value: &Contents) -> Fingerprint {
+    fn fingerprint(&self, _: &Node, value: &Content) -> Fingerprint {
         Fingerprint {
             scheme: "content".into(),
             value: value.0.clone(),
         }
     }
 
-    fn format_node_content(&self, node: &Node, contents: &Contents) -> io::Result<String> {
+    fn format_node_content(&self, node: &Node, contents: &Content) -> io::Result<String> {
         (self.formatter)(node, contents)
     }
 }
@@ -232,7 +232,7 @@ async fn default_tool_accepts_scalar_results_and_keeps_the_exact_prefix() {
 }
 
 // {cite}`habeas:util`
-fn distinct_pages(node: &Node, contents: &Contents) -> io::Result<String> {
+fn distinct_pages(node: &Node, contents: &Content) -> io::Result<String> {
     let label = if node.0 == 1 {
         "ALPHA-CONTENTS"
     } else {
@@ -506,12 +506,12 @@ async fn agent_edge_tools_record_selections_without_validating_targets() {
         }
     }
 
-    impl NodeContents for GraphWithChangingEdges {
+    impl Contents for GraphWithChangingEdges {
         type NodeContent = String;
 
         // :::{cite} habeas:coverage
         // This edge-only validation regression deliberately supplies no node
-        // contents. Its records assert selection dependencies only. NodeContents
+        // contents. Its records assert selection dependencies only. Contents
         // requires this callback, but reaching it would introduce an unwanted
         // content read and fail this guard.
         // :::
@@ -520,7 +520,7 @@ async fn agent_edge_tools_record_selections_without_validating_targets() {
         }
 
         // :::{cite} habeas:coverage
-        // NodeContents is required by validation, but this regression
+        // Contents is required by validation, but this regression
         // observes only the outgoing-edge selection. No node contents
         // are read, so producing a content fingerprint would violate the
         // asserted selection-only dependencies.
@@ -531,7 +531,7 @@ async fn agent_edge_tools_record_selections_without_validating_targets() {
 
         // :::{cite} habeas:coverage
         // The agent asks only for outgoing edges and submits without reading
-        // contents. NodeContents requires a formatter, but any
+        // contents. Contents requires a formatter, but any
         // rendering would imply an unwanted content input. Other agent tests
         // exercise rendering with explicitly requested contents.
         // :::
@@ -539,7 +539,7 @@ async fn agent_edge_tools_record_selections_without_validating_targets() {
             panic!("edge-only conversation must not render contents")
         }
     }
-    impl EvidenceStorage for GraphWithChangingEdges {
+    impl Storage for GraphWithChangingEdges {
         async fn load_evidence(
             &self,
             node: &u8,

@@ -393,7 +393,7 @@ pub(crate) fn check_native(
 mod tests {
     use super::*;
     use crate::{authoring::AuthoringSubject, inputs::OutlineCache};
-    use habeas_sdk::graph::{EvidenceStorage, NodeContents};
+    use habeas_sdk::graph::{Contents, Storage};
     use std::collections::BTreeMap;
 
     fn legacy(subject: &AuthoringSubject) -> Value {

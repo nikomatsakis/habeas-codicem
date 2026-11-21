@@ -6,7 +6,7 @@ use crate::{
     inputs::{InputSelector, OutlineCache, ResolvedInput},
 };
 use habeas_sdk::{
-    graph::{CriterionPath, Fingerprint, Graph, InspectionContext, NodeContents, NodePath},
+    graph::{Contents, CriterionPath, Fingerprint, Graph, InspectionContext, NodePath},
     resource::{OutlineId, ResourceId},
 };
 use std::{collections::BTreeMap, path::Path};
@@ -291,7 +291,7 @@ pub(crate) fn review_criterion() -> CriterionPath {
 }
 
 // {impl}`requirements.sdk.habeas.evidence_format.loading`
-impl habeas_sdk::graph::EvidenceStorage for HabeasDomain<'_> {
+impl habeas_sdk::graph::Storage for HabeasDomain<'_> {
     async fn load_evidence(
         &self,
         node: &HabeasNode,
@@ -330,7 +330,7 @@ impl habeas_sdk::graph::EvidenceStorage for HabeasDomain<'_> {
 }
 
 // {impl}`requirements.sdk.graph.fingerprinting.fingerprint_content`
-impl NodeContents for HabeasDomain<'_> {
+impl Contents for HabeasDomain<'_> {
     type NodeContent = ResolvedInput;
 
     // {cite}`habeas:util`
@@ -408,7 +408,7 @@ pub(crate) fn resolve_input(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use habeas_sdk::graph::{Dependency, EvidenceStorage, Record};
+    use habeas_sdk::graph::{Dependency, Record, Storage};
     use std::fs;
 
     // {test}`requirements.sdk.domain`
