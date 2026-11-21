@@ -1,12 +1,17 @@
-# Criteria
+# Criteria and validators
 
 In the Habeas SDK, a criterion is a question about a node that can be evaluated.
 Define it with your own struct implementing `Criterion<D>`, then evaluate it
 with a `Validator<D>`.
 
 The following application example asks whether a requirement's tests cover its
-behavior. The excerpts build one `BehavioralAdequacy` criterion throughout this
-chapter; the marked requirement blocks define the SDK interfaces it uses.
+behavior. This chapter defines the `BehavioralAdequacy` criterion and shows how
+to evaluate it and manage its evidence. [Evaluating criteria](execution.md)
+fills in its execution method.
+
+:::{example} criterion_definition
+{cite}`requirements.sdk.graph.validation.check_procedure`
+{cite}`requirements.sdk.graph.validation.criterion_path`
 
 ```rust,ignore
 /// Determine whether the requirement's tests cover its observable behavior
@@ -34,13 +39,14 @@ impl Criterion<HabeasDomain> for BehavioralAdequacy {
         self,
         cx: &mut ValidationContext<'_, HabeasDomain>,
     ) -> Result<Self::Ok, ValidationError<std::io::Error>> {
-        // Evaluation code goes here; we fill it in below.
+        // Evaluation code goes here; the next chapter fills it in.
         todo!()
     }
 
     // ... criterion_path and revision are described below ...
 }
 ```
+:::
 
 ## Run criteria with a validator
 
@@ -82,13 +88,16 @@ each with its own context and trace. The storage backend handles atomic
 replacement when their results are saved.
 :::
 
-The overview passed a `BehavioralAdequacy` value to this validator. Other
-questions about the same requirement can use their own criterion paths and
-result types; their answers are saved independently.
+The validator can now evaluate an instance of `BehavioralAdequacy`.
 
-Evaluate an instance using a validator. Here `agent` is a configured `Arc`
-handle, and `domain` supplies Habeas's graph, evidence storage, and node
-formatting:
+:::{example} evaluate_criterion
+{cite}`requirements.sdk.graph.validation.validator`
+{cite}`requirements.sdk.graph.validation.validate_node`
+{cite}`requirements.sdk.graph.validation.store_evidence`
+{cite}`requirements.sdk.graph.evidence.inputs`
+
+Here `agent` is a configured `Arc` handle, and `domain` is Habeas's implementation
+of the SDK's `Graph`, `Contents`, and `Storage` traits:
 
 ```rust,ignore
 let validator = Validator::new(domain.clone())
@@ -108,6 +117,7 @@ println!("{}: {}", assessment.adequate, assessment.rationale);
 the answer and its recorded inputs. `store_evidence` saves that value. Loading
 evidence and checking its inputs are separate operations, so the application
 decides whether to reuse an answer or evaluate the criterion again.
+:::
 
 ## Define the criterion's interface
 
@@ -194,10 +204,10 @@ distinguish several questions within one area.
 The complete identity is the pair of source node and criterion path. Appending
 criterion segments to a source `NodePath` gives a useful display path; storage
 preserves the boundary between the two paths so different pairs cannot collide.
-The [evidence chapter](evidence.md) defines that lookup. The criterion path names
+The [Storage chapter](evidence.md) defines that lookup. The criterion path names
 an evidence record; the context's source remains the graph node.
 
-## Execute a criterion
+## Verify a criterion
 
 :::{req} procedure_identity
 `load_evidence` selects a saved record using the source node and criterion path
@@ -359,8 +369,7 @@ let assessment = inputs.output();
 println!("{}: {}", assessment.adequate, assessment.rationale);
 ```
 
-[Storage](evidence.md#compare-the-saved-observations) defines
-`check_inputs` and `procedure_matches`. The revision comparison checks whether
-the saved answer was produced using compatible review rules; `check_inputs`
-compares only its recorded observations. A current negative assessment is still
-current. Habeas decides which answers make CI pass.
+Of the [comparisons above](#compare-the-saved-observations), `procedure_matches`
+checks whether the saved answer was produced using compatible review rules;
+`check_inputs` compares only its recorded observations. A current negative
+assessment is still current. Habeas decides which answers make CI pass.

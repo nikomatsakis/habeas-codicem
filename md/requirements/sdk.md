@@ -123,7 +123,7 @@ The domain traits and the separate criterion interface have their own chapters:
 | Trait | Purpose |
 | --- | --- |
 | [Graph](sdk/graph.md) | Node identities, labeled edges, and successors. |
-| [Criteria](sdk/graph/validation.md) | A criterion's identity, result type, and execution procedure. |
+| [Criteria and validators](sdk/graph/validation.md) | Defining a criterion and composing validator operations. |
 | [Contents](sdk/graph/fingerprinting.md) | Reading, fingerprinting, and formatting node contents. |
 | [Storage](sdk/graph/evidence.md) | Where and how evidence is saved. |
 
@@ -135,6 +135,7 @@ functionality. The linked chapters describe each one:
 
 | Chapter | What it provides |
 | --- | --- |
+| [Evaluating criteria](sdk/graph/execution.md) | Using a criterion's context to ask an agent and read tracked inputs. |
 | [Source providers](sdk/sources.md#the-application-supplies-a-source-provider) | Resource access, including a filesystem provider. |
 | [Parsing and outlining](sdk/sources.md#register-the-languages-that-interpret-those-resources) | Language-aware source structure and selectors for individual items. |
 | [Context tools](sdk/graph/context-tools.md) | Source discovery and tracked content reads. |

@@ -202,6 +202,7 @@ path and preserves segment boundaries under
 {cite}`requirements.sdk.filesystem-storage.keys`.
 :::
 
-[Criteria](validation.md) defines loading, verification, and saving, then
-composes them with these comparisons. [Filesystem evidence
+[Criteria and validators](validation.md) defines loading, input comparison,
+verification, and saving, then composes them into a reuse workflow.
+[Filesystem evidence
 storage](../filesystem-storage.md) defines the helper and its encoding.

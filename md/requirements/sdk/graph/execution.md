@@ -1,5 +1,10 @@
 # Evaluating criteria
 
+A criterion's `execute` method defines how its question is answered.
+`Validator::verify` calls it with a `ValidationContext` that records the inputs
+used during execution. This chapter completes the `BehavioralAdequacy` example
+from [Criteria and validators](validation.md).
+
 ## Execute the criterion with a context
 
 `execute` receives a `ValidationContext` for its source node. Its `ask` method
@@ -24,7 +29,7 @@ impl<'cx, D: Domain> ValidationContext<'cx, D> {
 }
 ```
 
-The `BehavioralAdequacy` criterion from the overview asks the agent to examine
+The `BehavioralAdequacy` criterion asks the agent to examine
 the requirement and its tests and submit a `TestReview`. Its `execute` method is
 an application example of the SDK's request builder:
 
@@ -54,10 +59,10 @@ The builder methods determine what is given to the agent:
 
 - `context` provides common context, including the question. These calls come
   first so the provider can cache the shared prompt prefix.
-- `contents_of_current_node()` provides the contents of the criterion's source
-  node: here, the requirement.
-- `contents_of_successors(label)` provides the contents of its successors with
-  that label: here, the requirement's tests.
+- `contents_of_current_node()` provides the [contents](fingerprinting.md) of the
+  criterion's source node: here, the requirement.
+- `contents_of_successors(label)` provides the [contents](fingerprinting.md) of
+  its successors with that label: here, the requirement's tests.
 
 :::
 
