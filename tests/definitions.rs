@@ -562,9 +562,7 @@ fn references_to_a_definition_of_another_kind_are_reported() {
         format!("{source}fn uses() {{}}\n"),
     )
     .unwrap();
-    let mut errors = validate_repository(temp.path()).unwrap().errors;
-    // Coverage is warned about, not a validation error.
-    errors.extend(habeas::coverage_warnings(temp.path()).unwrap().items);
+    let errors = validate_repository(temp.path()).unwrap().errors;
     for (line, role) in [(1, "impl"), (2, "cite"), (3, "test")] {
         let expected = format!(
             "src/lib.rs:{line}: {{{role}}}`glossary.a` has no matching requirement or example"
@@ -579,10 +577,11 @@ fn references_to_a_definition_of_another_kind_are_reported() {
             .contains("src/lib.rs:4: term cases.case has no matching named definition")),
         "{errors:#?}"
     );
-    // A reference to a term does not cover the Rust item.
+    // Invalid roles are errors, but ordinary functions need no annotation.
     assert!(
-        errors.iter().any(|error| error
-            .contains("src/lib.rs:5: function uses has no recent coverage: it has no requirement or example reference, and no recent evidence record or review read it")),
+        !errors
+            .iter()
+            .any(|error| error.contains("function uses has no recent coverage")),
         "{errors:#?}"
     );
 }
@@ -970,18 +969,32 @@ fn outline_inputs_capture_terms_without_counting_them_as_citations() {
     );
     fs::write(
         root.join("src/lib.rs"),
-        "// {term}`glossary.a`\npub fn run() {}\n",
+        "// {term}`glossary.a`\n#[test]\nfn run() {}\n",
     )
     .unwrap();
-    // Removing a citation comment leaves the node's hash unchanged, so the
-    // record reading it would still cover it.
     fs::remove_file(&path).unwrap();
+    fs::create_dir_all(root.join("examples")).unwrap();
+    fs::write(
+        root.join("examples/termed.rs"),
+        "// {term}`glossary.a`\nfn main() {}\n",
+    )
+    .unwrap();
+    let errors = validate_repository(root).unwrap().errors;
     assert!(
-        habeas::coverage_warnings(root)
-            .unwrap()
-            .items
+        errors
             .iter()
-            .any(|e| e.contains("run") && e.contains("has no recent coverage"))
+            .any(|error| error.contains("test function run has no {test}")),
+        "{errors:?}"
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.contains("examples/termed.rs: Cargo example does not {cite}")),
+        "{errors:?}"
+    );
+    assert!(
+        !errors.iter().any(|e| e.contains("has no recent coverage")),
+        "{errors:?}"
     );
 }
 

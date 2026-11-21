@@ -10,10 +10,256 @@ use std::sync::{
 };
 
 use super::progress::Progress;
+use super::store::{CollectorLock, Store, TestIdentity};
 use super::{
     Attempt, FunctionExecution, Process, Run, configuration, digest, input_hashes, load, now, save,
     walk, workspace_inputs,
 };
+
+// Uncommitted preparation must not leave a saved coverage invocation behind.
+// {cite}`habeas:util`
+struct PreparationDirectory {
+    path: PathBuf,
+    committed: bool,
+}
+
+impl Drop for PreparationDirectory {
+    // {cite}`habeas:util`
+    fn drop(&mut self) {
+        if !self.committed {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+}
+
+// {impl}`requirements.test-coverage.storage.selection`
+fn nextest_args(args: &[OsString], prepared: bool, listing: bool) -> Vec<OsString> {
+    let mut result = Vec::new();
+    let mut index = 2; // cargo nextest run
+    while index < args.len() && args[index] != "--" {
+        let arg = args[index].to_string_lossy();
+        let name = arg.split('=').next().unwrap();
+        let run_value = matches!(
+            name,
+            "-j" | "--test-threads"
+                | "--retries"
+                | "--flaky-result"
+                | "--max-fail"
+                | "--debugger"
+                | "--tracer"
+                | "--no-tests"
+                | "--stress-count"
+                | "--stress-duration"
+                | "--failure-output"
+                | "--success-output"
+                | "--status-level"
+                | "--final-status-level"
+                | "--max-progress-running"
+                | "--message-format"
+                | "--message-format-version"
+        );
+        let run_flag = matches!(
+            name,
+            "--no-run"
+                | "--fail-fast"
+                | "--ff"
+                | "--no-fail-fast"
+                | "--nff"
+                | "--no-capture"
+                | "--nocapture"
+                | "--no-output-indent"
+                | "--hide-progress-bar"
+                | "--no-input-handler"
+        );
+        let cargo_value = matches!(
+            name,
+            "-p" | "--package"
+                | "--exclude"
+                | "--bin"
+                | "--example"
+                | "--test"
+                | "--bench"
+                | "-F"
+                | "--features"
+                | "--build-jobs"
+                | "--cargo-profile"
+                | "--target"
+                | "--target-dir"
+                | "--cargo-message-format"
+                | "-Z"
+        );
+        let cargo_flag = matches!(
+            name,
+            "--workspace"
+                | "--all"
+                | "--lib"
+                | "--bins"
+                | "--examples"
+                | "--tests"
+                | "--benches"
+                | "--all-targets"
+                | "--all-features"
+                | "--no-default-features"
+                | "-r"
+                | "--release"
+                | "--unit-graph"
+                | "--timings"
+                | "--frozen"
+                | "--locked"
+                | "--offline"
+                | "--cargo-quiet"
+                | "--cargo-verbose"
+                | "--ignore-rust-version"
+                | "--future-incompat-report"
+        );
+        let attached_run = arg.starts_with("-j") && arg.len() > 2;
+        let attached_cargo = ["-p", "-F", "-Z"]
+            .iter()
+            .any(|prefix| arg.starts_with(prefix) && arg.len() > 2);
+        if listing && (run_flag || attached_run) || prepared && (cargo_flag || attached_cargo) {
+            index += 1;
+        } else if listing && run_value || prepared && cargo_value {
+            index += if arg.contains('=') { 1 } else { 2 };
+        } else {
+            result.push(args[index].clone());
+            index += 1;
+        }
+    }
+    result.extend_from_slice(&args[index.min(args.len())..]);
+    result
+}
+
+// {impl}`requirements.test-coverage.storage.selection`
+fn selected_tests(value: &str) -> io::Result<Vec<TestIdentity>> {
+    let value: serde_json::Value = serde_json::from_str(value)?;
+    let suites = value["rust-suites"]
+        .as_object()
+        .ok_or_else(|| io::Error::other("Nextest did not return test selection metadata."))?;
+    let mut selected = BTreeMap::new();
+    for suite in suites.values() {
+        let binary = suite["binary-id"]
+            .as_str()
+            .ok_or_else(|| io::Error::other("Missing nextest binary identity."))?;
+        if suite["status"] != "listed" {
+            return Err(io::Error::other(
+                "Nextest could not list a prepared test binary.",
+            ));
+        }
+        let tests = suite["testcases"]
+            .as_object()
+            .ok_or_else(|| io::Error::other("Missing nextest test identities."))?;
+        for (test, metadata) in tests {
+            match metadata["filter-match"]["status"].as_str() {
+                Some("matches") => {
+                    selected.insert((binary.to_owned(), test.clone()), ());
+                }
+                Some("mismatch") => {}
+                _ => return Err(io::Error::other("Unknown nextest selection result.")),
+            }
+        }
+    }
+    Ok(selected
+        .into_keys()
+        .map(|(binary, test)| TestIdentity { binary, test })
+        .collect())
+}
+
+// Classify explicit selection, not nextest's native default filters.
+// {impl}`requirements.test-coverage.storage.replace`
+fn filtered(args: &[String]) -> bool {
+    let mut index = 0;
+    let mut after_separator = false;
+    while index < args.len() {
+        let arg = &args[index];
+        let name = arg.split('=').next().unwrap();
+        if arg == "--" {
+            after_separator = true;
+        } else if after_separator {
+            if arg == "--ignored" || arg == "--skip" || !arg.starts_with('-') {
+                return true;
+            }
+        } else if matches!(
+            name,
+            "-p" | "--package"
+                | "--exclude"
+                | "--lib"
+                | "--bin"
+                | "--bins"
+                | "--example"
+                | "--examples"
+                | "--test"
+                | "--tests"
+                | "--bench"
+                | "--benches"
+                | "--platform-filter"
+                | "-E"
+                | "--filterset"
+                | "--partition"
+        ) || ["-p", "-E"]
+            .iter()
+            .any(|prefix| arg.starts_with(prefix) && arg.len() > 2)
+        {
+            return true;
+        } else if name == "--run-ignored" {
+            let value = arg
+                .split_once('=')
+                .map(|(_, value)| value)
+                .or_else(|| args.get(index + 1).map(String::as_str));
+            if value == Some("only") {
+                return true;
+            }
+            if !arg.contains('=') {
+                index += 1;
+            }
+        } else if !arg.starts_with('-') {
+            // Values of non-selection options are handled below.
+            return true;
+        } else if !arg.contains('=')
+            && matches!(
+                name,
+                "--color"
+                    | "-F"
+                    | "--features"
+                    | "--build-jobs"
+                    | "--cargo-profile"
+                    | "--target"
+                    | "--target-dir"
+                    | "--manifest-path"
+                    | "--cargo-message-format"
+                    | "--config"
+                    | "-Z"
+                    | "--run-ignored"
+                    | "-j"
+                    | "--test-threads"
+                    | "--retries"
+                    | "--flaky-result"
+                    | "--max-fail"
+                    | "--debugger"
+                    | "--tracer"
+                    | "--no-tests"
+                    | "--stress-count"
+                    | "--stress-duration"
+                    | "--failure-output"
+                    | "--success-output"
+                    | "--status-level"
+                    | "--final-status-level"
+                    | "--show-progress"
+                    | "--max-progress-running"
+                    | "--message-format"
+                    | "--message-format-version"
+                    | "--config-file"
+                    | "--user-config-file"
+                    | "-P"
+                    | "--profile"
+            )
+        {
+            index += 1;
+        }
+        index += 1;
+    }
+    // Native Cargo package defaults can select a subset without an explicit -p.
+    !has(args, "--workspace") && !has(args, "--all")
+}
 
 // {cite}`habeas:util`
 fn output(command: &mut Command) -> io::Result<String> {
@@ -133,6 +379,7 @@ impl Drop for Interrupts {
     }
 }
 
+// {cite}`habeas:util`
 fn options(args: &[String], names: &[&str]) -> Vec<String> {
     let mut result = Vec::new();
     for (index, arg) in args
@@ -530,12 +777,18 @@ pub fn run(project: &Path, supplied: &[String]) -> io::Result<i32> {
     };
     fs::create_dir_all(&target)?;
     let target = fs::canonicalize(target)?;
-    let dir = target
-        .join("habeas/coverage")
-        .join(uuid::Uuid::new_v4().to_string());
+    let storage = target.join("habeas/coverage");
+    let _collector_lock = CollectorLock::acquire(&storage)?;
+    let mut store = Store::open(&storage)?;
+    store.cleanup(None)?;
+    let dir = storage.join(uuid::Uuid::new_v4().to_string());
     fs::create_dir_all(dir.join("attempts"))?;
     fs::create_dir_all(dir.join("tools"))?;
     fs::create_dir_all(dir.join("setup"))?;
+    let mut artifacts = PreparationDirectory {
+        path: dir.clone(),
+        committed: false,
+    };
     // A per-run copy avoids races with concurrent builds of the CLI itself.
     let executable = std::env::current_exe()?;
     // Keep the compiler-wrapper path stable for identical CLI builds, so a
@@ -586,7 +839,7 @@ pub fn run(project: &Path, supplied: &[String]) -> io::Result<i32> {
         command: std::iter::once("cargo nextest run".into())
             .chain(args.iter().cloned())
             .collect(),
-        selection: args.clone(),
+        selection: Vec::new(),
         configuration: digest(&serde_json::to_vec(&config)?),
         configuration_inputs: config,
         sources: BTreeMap::new(),
@@ -608,7 +861,6 @@ pub fn run(project: &Path, supplied: &[String]) -> io::Result<i32> {
         outcome: "interrupted".into(),
         diagnostics: Vec::new(),
     };
-    save(&dir.join("run.json"), &run)?;
     let interrupts = Interrupts::new()?;
     let instrumented = target.join("habeas/instrumented").join(&run.configuration);
     let mut paths = vec![collector.parent().unwrap().to_path_buf()];
@@ -713,7 +965,6 @@ pub fn run(project: &Path, supplied: &[String]) -> io::Result<i32> {
             run.outcome = "failed".into();
             run.diagnostics
                 .push(format!("Cannot start instrumented compilation: {error}"));
-            save(&dir.join("run.json"), &run)?;
             return Err(error);
         }
     };
@@ -725,9 +976,71 @@ pub fn run(project: &Path, supplied: &[String]) -> io::Result<i32> {
         }
         .into();
         run.diagnostics.push("Instrumented compilation or nextest configuration validation failed before test startup.".into());
-        save(&dir.join("run.json"), &run)?;
         return Ok(code(build_status));
     }
+    if has(&args, "--no-run") {
+        eprintln!("coverage: Compilation-only run (--no-run): saved coverage is unchanged.");
+        return Ok(0);
+    }
+    // Freeze the prepared binaries, then use that same metadata for selection
+    // and execution. Neither can rebuild between capturing inputs and testing.
+    let original_args = command.get_args().map(OsString::from).collect::<Vec<_>>();
+    let mut binaries = Command::new(command.get_program());
+    binaries
+        .args([
+            "nextest",
+            "list",
+            "--list-type=binaries-only",
+            "--message-format=json",
+        ])
+        .args(nextest_args(&original_args, false, true))
+        .current_dir(&invocation);
+    for (key, value) in command.get_envs() {
+        if let Some(value) = value {
+            binaries.env(key, value);
+        } else {
+            binaries.env_remove(key);
+        }
+    }
+    let binaries_json = output(&mut binaries).map_err(|error| {
+        io::Error::other(format!("Coverage selection discovery failed: {error}"))
+    })?;
+    let binaries_path = dir.join("binaries.json");
+    fs::write(&binaries_path, &binaries_json)?;
+    let mut listing = Command::new(command.get_program());
+    listing
+        .args(["nextest", "list", "--message-format=json"])
+        .arg("--binaries-metadata")
+        .arg(&binaries_path)
+        .args(nextest_args(&original_args, true, true))
+        .current_dir(&invocation);
+    for (key, value) in command.get_envs() {
+        if let Some(value) = value {
+            listing.env(key, value);
+        } else {
+            listing.env_remove(key);
+        }
+    }
+    let selected = selected_tests(&output(&mut listing).map_err(|error| {
+        io::Error::other(format!("Coverage selection discovery failed: {error}"))
+    })?)?;
+    run.selection = selected.clone();
+    // Keep all native run options while removing only Cargo build arguments.
+    let mut execution = Command::new(command.get_program());
+    execution
+        .args(["nextest", "run"])
+        .arg("--binaries-metadata")
+        .arg(&binaries_path)
+        .args(nextest_args(&original_args, true, false))
+        .current_dir(&invocation);
+    for (key, value) in command.get_envs() {
+        if let Some(value) = value {
+            execution.env(key, value);
+        } else {
+            execution.env_remove(key);
+        }
+    }
+    command = execution;
     let preparation: io::Result<()> = (|| {
         let progress = Progress::preparation();
         capture_inputs(&root, &target, &instrumented, &mut run)?;
@@ -751,12 +1064,24 @@ pub fn run(project: &Path, supplied: &[String]) -> io::Result<i32> {
         .into();
         let message = format!("Coverage preparation failed before test startup: {error}");
         run.diagnostics.push(message.clone());
-        save(&dir.join("run.json"), &run)?;
         return Err(io::Error::other(message));
     }
-    save(&dir.join("run.json"), &run)?;
     if interrupts.happened() {
         return Ok(130);
+    }
+    if store.replace(&run, &selected, filtered(&args))? {
+        artifacts.committed = true;
+    } else {
+        store.record_empty(&run)?;
+        artifacts.committed = true;
+    }
+    if let Err(error) = store.cleanup(Some(&run.id)) {
+        run.outcome = "failed".into();
+        run.diagnostics.push(format!(
+            "Coverage cleanup failed before test execution: {error}"
+        ));
+        store.update_run(&run)?;
+        return Err(error);
     }
     let execution = interrupts.execute(&mut command);
     let status = match execution {
@@ -788,7 +1113,7 @@ pub fn run(project: &Path, supplied: &[String]) -> io::Result<i32> {
             run.outcome = "failed".into();
         }
     }
-    if fs::read_dir(dir.join("attempts"))?.next().is_none() {
+    if selected.is_empty() {
         run.diagnostics.push(
             if has(&args, "--no-run") {
                 "Compilation-only run (--no-run): no test attempt started."
@@ -801,7 +1126,13 @@ pub fn run(project: &Path, supplied: &[String]) -> io::Result<i32> {
             .into(),
         );
     }
-    save(&dir.join("run.json"), &run)?;
+    store.update_run(&run)?;
+    if let Err(error) = store.cleanup(None) {
+        run.outcome = "failed".into();
+        run.diagnostics
+            .push(format!("Coverage cleanup failed: {error}"));
+        store.update_run(&run)?;
+    }
     eprintln!("Coverage retained in {}", dir.display());
     for diagnostic in &run.diagnostics {
         eprintln!("coverage: {diagnostic}");
@@ -825,11 +1156,18 @@ pub fn collect_process(args: &[OsString]) -> io::Result<i32> {
     let Some(run) = std::env::var_os("HABEAS_COVERAGE_RUN") else {
         return Ok(code(Command::new(executable).args(&args[1..]).status()?));
     };
-    let dir = PathBuf::from(run)
-        .join("attempts")
-        .join(uuid::Uuid::new_v4().to_string());
+    let run = PathBuf::from(run);
+    let run_id = run
+        .file_name()
+        .and_then(|id| id.to_str())
+        .ok_or_else(|| io::Error::other("Invalid coverage invocation directory."))?;
+    let store = Store::open(
+        run.parent()
+            .ok_or_else(|| io::Error::other("Missing coverage store."))?,
+    )?;
+    let dir = run.join("attempts").join(uuid::Uuid::new_v4().to_string());
     fs::create_dir_all(&dir)?;
-    let mut attempt = Attempt {
+    let mut attempt: Attempt = Attempt {
         id: dir.file_name().unwrap().to_string_lossy().into_owned(),
         binary: std::env::var("NEXTEST_BINARY_ID").map_err(io::Error::other)?,
         test: std::env::var("NEXTEST_TEST_NAME").map_err(io::Error::other)?,
@@ -840,11 +1178,12 @@ pub fn collect_process(args: &[OsString]) -> io::Result<i32> {
             .iter()
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect(),
-        outcome: "interrupted".into(),
+        outcome: "running".into(),
         processes: Vec::new(),
         diagnostics: Vec::new(),
     };
-    save(&dir.join("attempt.json"), &attempt)?;
+    // Supersede a retry before launching its process, even if startup fails.
+    store.start_attempt(run_id, &attempt)?;
     let mut command = Command::new(executable);
     command
         .args(&args[1..])
@@ -877,12 +1216,12 @@ pub fn collect_process(args: &[OsString]) -> io::Result<i32> {
             attempt
                 .diagnostics
                 .push(format!("Cannot start test process: {error}"));
-            save(&dir.join("attempt.json"), &attempt)?;
+            store.update_attempt(run_id, &attempt, false)?;
             return Err(error);
         }
     };
     attempt.pid = child.id();
-    save(&dir.join("attempt.json"), &attempt)?;
+    store.update_attempt(run_id, &attempt, false)?;
     let status = match child.wait() {
         Ok(status) => status,
         Err(error) => {
@@ -890,7 +1229,7 @@ pub fn collect_process(args: &[OsString]) -> io::Result<i32> {
             attempt
                 .diagnostics
                 .push(format!("Cannot wait for test process: {error}"));
-            save(&dir.join("attempt.json"), &attempt)?;
+            store.update_attempt(run_id, &attempt, false)?;
             return Err(error);
         }
     };
@@ -902,12 +1241,13 @@ pub fn collect_process(args: &[OsString]) -> io::Result<i32> {
         "failed"
     }
     .into();
-    save(&dir.join("attempt.json"), &attempt)?;
+    store.update_attempt(run_id, &attempt, false)?;
     Ok(code(status))
 }
 
 type EnvironmentInputs = BTreeMap<String, Option<String>>;
 
+// {cite}`habeas:util`
 fn dependency_inputs(
     instrumented: &Path,
     root: &Path,
@@ -1164,10 +1504,14 @@ fn capture_inputs(
 // {impl}`requirements.test-coverage.processes.progress`
 fn finish(root: &Path, dir: &Path, cov: &Path, profdata: &Path, run: &mut Run) -> io::Result<()> {
     let maps: Vec<Map> = load(&dir.join("maps.json"))?;
-    let mut attempts = fs::read_dir(dir.join("attempts"))?
-        .map(|entry| entry.map(|entry| entry.path()))
-        .collect::<io::Result<Vec<_>>>()?;
-    attempts.sort();
+    let mut store = Store::read(dir.parent().unwrap())?;
+    let snapshot = store.snapshot(false)?;
+    let attempts: Vec<_> = snapshot
+        .tests
+        .into_iter()
+        .filter(|test| test.run == run.id && test.metadata.outcome != "pending")
+        .map(|test| test.metadata)
+        .collect();
     let progress = Progress::conversion(attempts.len());
     // Parallelize across attempts using the available CPUs. Each LLVM command
     // uses one thread so its own pool does not multiply this concurrency.
@@ -1177,16 +1521,26 @@ fn finish(root: &Path, dir: &Path, cov: &Path, profdata: &Path, run: &mut Run) -
     let results = parallel_collect(
         &attempts,
         workers,
-        |attempt| finish_attempt(attempt, dir, &maps, cov, profdata, root, &run.sources),
+        |attempt| {
+            finish_attempt(
+                attempt.clone(),
+                dir,
+                &maps,
+                cov,
+                profdata,
+                root,
+                &run.sources,
+            )
+        },
         |_| progress.completed(),
     );
     let mut failed = false;
-    for (attempt_dir, result) in attempts.iter().zip(results) {
+    for (attempt, result) in attempts.iter().zip(results) {
         match result {
             Ok(complete) => failed |= !complete,
             Err(error) => {
                 run.diagnostics
-                    .push(format!("{}: {error}", attempt_dir.display()));
+                    .push(format!("{} / {}: {error}", attempt.binary, attempt.test));
                 failed = true;
             }
         }
@@ -1241,7 +1595,7 @@ fn parallel_collect<T: Sync, R: Send>(
 
 // {cite}`habeas:util`
 fn finish_attempt(
-    attempt_dir: &Path,
+    mut attempt: Attempt,
     dir: &Path,
     maps: &[Map],
     cov: &Path,
@@ -1249,10 +1603,13 @@ fn finish_attempt(
     root: &Path,
     sources: &BTreeMap<String, String>,
 ) -> io::Result<bool> {
-    let mut attempt: Attempt = load(&attempt_dir.join("attempt.json"))?;
+    let attempt_dir = dir.join("attempts").join(&attempt.id);
+    if attempt.outcome == "running" {
+        attempt.outcome = "interrupted".into();
+    }
     let mut failed = false;
     let mut profiles: BTreeMap<u32, Vec<PathBuf>> = BTreeMap::new();
-    for path in walk(attempt_dir, &[])? {
+    for path in walk(&attempt_dir, &[])? {
         if path
             .extension()
             .is_some_and(|extension| extension == "profraw")
@@ -1331,7 +1688,8 @@ fn finish_attempt(
         );
         failed = true;
     }
-    save(&attempt_dir.join("attempt.json"), &attempt)?;
+    let store = Store::open(dir.parent().unwrap())?;
+    store.update_attempt(dir.file_name().unwrap().to_str().unwrap(), &attempt, true)?;
     Ok(!failed)
 }
 
@@ -1477,6 +1835,162 @@ fn function_counts(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // {test}`requirements.test-coverage.storage.selection`
+    #[test]
+    fn listing_preserves_native_filters_and_prepared_execution_keeps_run_options() {
+        let args: Vec<OsString> = [
+            "nextest",
+            "run",
+            "--workspace",
+            "-Falpha",
+            "-p",
+            "fixture",
+            "--target-dir=instrumented",
+            "--profile",
+            "focused",
+            "--partition",
+            "hash:1/2",
+            "--run-ignored",
+            "all",
+            "-E",
+            "test(selected)",
+            "--retries=2",
+            "-j4",
+            "--no-fail-fast",
+            "--max-fail",
+            "2",
+            "--status-level=all",
+            "--",
+            "--exact",
+            "selected",
+        ]
+        .into_iter()
+        .map(OsString::from)
+        .collect();
+        let listing = nextest_args(&args, true, true);
+        let expected: Vec<OsString> = [
+            "--profile",
+            "focused",
+            "--partition",
+            "hash:1/2",
+            "--run-ignored",
+            "all",
+            "-E",
+            "test(selected)",
+            "--",
+            "--exact",
+            "selected",
+        ]
+        .into_iter()
+        .map(OsString::from)
+        .collect();
+        assert_eq!(listing, expected);
+        let binaries = nextest_args(&args, false, true);
+        assert!(binaries.contains(&"--workspace".into()));
+        assert!(binaries.contains(&"-Falpha".into()));
+        assert!(binaries.contains(&"--target-dir=instrumented".into()));
+        assert!(binaries.windows(2).any(|pair| pair == ["-p", "fixture"]));
+        assert!(!binaries.contains(&"--retries=2".into()));
+        assert!(!binaries.contains(&"-j4".into()));
+        let execution = nextest_args(&args, true, false);
+        assert!(execution.contains(&"--retries=2".into()));
+        assert!(execution.contains(&"-j4".into()));
+        assert!(execution.contains(&"--status-level=all".into()));
+        assert!(execution.contains(&"--no-fail-fast".into()));
+        assert!(execution.contains(&"--max-fail".into()));
+        assert!(!execution.contains(&"--workspace".into()));
+        assert!(!execution.contains(&"-p".into()));
+        assert_eq!(&execution[execution.len() - 3..], &args[args.len() - 3..]);
+    }
+
+    // {test}`requirements.test-coverage.storage.selection`
+    #[test]
+    fn selected_identities_use_nextests_filter_results_and_reject_incomplete_metadata() {
+        let listed = serde_json::json!({"rust-suites": {
+            "lib": {"binary-id":"lib", "status":"listed", "testcases": {
+                "same": {"filter-match":{"status":"matches"}},
+                "ignored": {"filter-match":{"status":"mismatch"}},
+            }},
+            "integration": {"binary-id":"integration", "status":"listed", "testcases": {
+                "same": {"filter-match":{"status":"matches"}},
+                "other": {"filter-match":{"status":"mismatch"}},
+            }}
+        }});
+        assert_eq!(
+            selected_tests(&listed.to_string()).unwrap(),
+            vec![
+                TestIdentity {
+                    binary: "integration".into(),
+                    test: "same".into()
+                },
+                TestIdentity {
+                    binary: "lib".into(),
+                    test: "same".into()
+                },
+            ]
+        );
+        for missing in [
+            "/rust-suites",
+            "/rust-suites/lib/binary-id",
+            "/rust-suites/lib/testcases",
+            "/rust-suites/lib/testcases/same/filter-match/status",
+        ] {
+            let mut invalid = listed.clone();
+            *invalid.pointer_mut(missing).unwrap() = serde_json::Value::Null;
+            assert!(selected_tests(&invalid.to_string()).is_err(), "{missing}");
+        }
+        assert!(selected_tests("{").is_err());
+        let mut failed = listed;
+        failed["rust-suites"]["lib"]["status"] = serde_json::json!("failed");
+        assert!(selected_tests(&failed.to_string()).is_err());
+    }
+
+    // {test}`requirements.test-coverage.storage.replace`
+    #[test]
+    fn explicit_filters_are_distinguished_from_workspace_run_settings() {
+        for args in [
+            vec!["--workspace"],
+            vec!["--all"],
+            vec!["--workspace", "--run-ignored", "all"],
+            vec![
+                "--workspace",
+                "--run-ignored=default",
+                "--retries",
+                "2",
+                "-j2",
+            ],
+            vec![
+                "--workspace",
+                "-Pfocused",
+                "--features=alpha",
+                "--ignore-default-filter",
+            ],
+            vec!["--workspace", "--", "--include-ignored", "--nocapture"],
+        ] {
+            assert!(
+                !filtered(&args.iter().map(|arg| (*arg).into()).collect::<Vec<_>>()),
+                "{args:?}"
+            );
+        }
+        for args in [
+            vec!["--workspace", "-p", "fixture"],
+            vec!["--workspace", "-pfixture"],
+            vec!["--workspace", "--lib"],
+            vec!["--workspace", "--exclude=member"],
+            vec!["--workspace", "--run-ignored=only"],
+            vec!["--workspace", "--partition", "hash:1/2"],
+            vec!["--workspace", "-Etest(selected)"],
+            vec!["--workspace", "selected"],
+            vec!["--workspace", "--", "--ignored"],
+            vec!["--workspace", "--", "--skip", "skipped"],
+        ] {
+            assert!(
+                filtered(&args.iter().map(|arg| (*arg).into()).collect::<Vec<_>>()),
+                "{args:?}"
+            );
+        }
+    }
 
     // {test}`requirements.test-coverage.run`
     // {test}`requirements.test-coverage.storage.configuration`

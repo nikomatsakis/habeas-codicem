@@ -668,6 +668,8 @@ mod tests {
     // {test}`requirements.authoring.finish_search.completion`
     // {test}`requirements.authoring.finish_search.invalid`
     // {test}`requirements.authoring.result_pages`
+    // {test}`requirements.authoring.structural_search`
+    // {test}`requirements.authoring.finish_search.inputs`
     #[test]
     fn search_pages_are_accounted_only_when_delivered_and_replay_stays_closed() {
         let root = project();

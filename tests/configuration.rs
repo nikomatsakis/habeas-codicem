@@ -5,9 +5,8 @@ use std::path::Path;
 
 use habeas::config::{
     BackendConfig, BackendKind, ConfigPlatform, ProjectConfig, UserConfig, WorkspaceConfig,
-    load_coverage_reauthorings, load_user_config, load_workspace_config, load_workspace_evidence,
-    resolve_authoring_from, resolve_authoring_with_workspace_from, state_root_from,
-    user_config_path_from,
+    load_user_config, load_workspace_config, load_workspace_evidence, resolve_authoring_from,
+    resolve_authoring_with_workspace_from, state_root_from, user_config_path_from,
 };
 
 // {test}`requirements.configuration.user_location`
@@ -1111,24 +1110,17 @@ fn workspace_diagnostics_identify_the_file_and_setting() {
             assert!(error.starts_with(&format!("{file}: {setting}")), "{error}");
         }
     }
-    // Only the coverage report decodes `[coverage]`; authoring ignores it.
-    for (source, setting) in [
-        (
-            "version = 1\n[coverage]\nreauthorings = 'many'",
-            "coverage.reauthorings",
-        ),
-        ("version = 1\n[coverage]\nbogus = 1", "coverage.bogus"),
+    fs::write(&path, "version = 1\n[coverage]\nreauthorings = 3\n").unwrap();
+    for error in [
+        load_workspace_config(temp.path()).map(|_| ()),
+        load_workspace_evidence(temp.path()).map(|_| ()),
     ] {
-        fs::write(&path, source).unwrap();
-        let errors = [
-            load_coverage_reauthorings(temp.path()).map(|_| ()),
-            WorkspaceConfig::parse(source, &path).map(|_| ()),
-        ];
-        for error in errors {
-            let error = error.unwrap_err().to_string();
-            assert!(error.starts_with(&format!("{file}: {setting}")), "{error}");
-        }
-        load_workspace_config(temp.path()).unwrap().unwrap();
+        assert!(
+            error
+                .unwrap_err()
+                .to_string()
+                .contains("coverage: unknown workspace configuration field")
+        );
     }
     // The evidence loader decodes only the `[evidence]` table it uses.
     for (source, setting) in [
@@ -1215,16 +1207,8 @@ fn feature_sections_are_scoped_and_absent_sections_use_defaults() {
         assert!(policy.evidence.allow.is_empty() && policy.evidence.disallow.is_empty());
     }
     let config = WorkspaceConfig::parse("version = 1\n", &path).unwrap();
-    assert!(config.authoring.is_none() && config.evidence.is_none() && config.coverage.is_none());
-    let config =
-        WorkspaceConfig::parse("version = 1\n[coverage]\nreauthorings = 5\n", &path).unwrap();
-    assert_eq!(config.coverage.unwrap().reauthorings, Some(5));
-    // The one positivity rule applies to the whole-file parse too.
-    let error = WorkspaceConfig::parse("version = 1\n[coverage]\nreauthorings = 0\n", &path)
-        .unwrap_err()
-        .to_string();
-    assert!(error.contains("coverage.reauthorings"), "{error}");
-    // Feature settings must stay within their sections.
+    assert!(config.authoring.is_none() && config.evidence.is_none());
+    assert!(WorkspaceConfig::parse("version = 1\n[coverage]\nreauthorings = 5\n", &path).is_err());
     for source in [
         "version = 1\nallow = ['generated']\n",
         "version = 1\ndefault = 'cloud'\n",
@@ -1285,7 +1269,7 @@ fn configuration_documentation_covers_locations_structure_editing_and_removal() 
         "The nearest enclosing `habeas.toml` supplies workspace settings",
         // Structure and schema version.
         "Each must start with the schema version `version = 1`",
-        "the top level may contain only feature tables",
+        "the top level may contain only feature tables: `[authoring]` in either file, and `[evidence]` in `habeas.toml`.",
         // Editing by hand, without a management command or generated state.
         "you create and edit both by hand with a text editor; there is no configuration-management command",
         "Habeas never creates, repairs, or rewrites them",
@@ -1297,7 +1281,6 @@ fn configuration_documentation_covers_locations_structure_editing_and_removal() 
         "Paths name literal files or directory subtrees, not globs",
         "An omitted `allow` or `disallow` means an empty list",
         "delete the whole `[evidence]` table to restore the default source-access rules",
-        "`reauthorings` must be a positive integer; without it, the last 3 commits",
         "$XDG_STATE_HOME/habeas/authoring/usage",
         "$HOME/.local/state/habeas/authoring/usage",
         "%LOCALAPPDATA%/habeas/state/authoring/usage",
@@ -1338,9 +1321,8 @@ fn documented_configuration_examples_are_complete_valid_files() {
         for block in blocks {
             let source = block.split("\n```").next().unwrap();
             let path = Path::new(document);
-            // Workspace files are the only ones with `[evidence]` or
-            // `[coverage]` tables.
-            let parsed = if source.contains("[evidence]") || source.contains("[coverage]") {
+            // Workspace files are the only ones with `[evidence]` tables.
+            let parsed = if source.contains("[evidence]") {
                 WorkspaceConfig::parse(source, path).map(|_| ())
             } else {
                 UserConfig::parse(source, path).map(|_| ())
@@ -1528,6 +1510,19 @@ fn authoring_documentation_shows_each_configuration_task() {
     assert!(reference.contains("[authoring.configs.cloud.options]"));
     assert!(reference.contains("`num_ctx`"));
     let chapter = chapter.split_whitespace().collect::<Vec<_>>().join(" ");
+    // The authoring chapter documents the resolution rules, not only the
+    // syntax and editing tasks for saved configurations.
+    for phrase in [
+        "The nearest enclosing file wins",
+        "Those records override same-named user records as a whole",
+        "A user's explicit project selection takes precedence over a workspace default; `--config` takes precedence over both",
+        "Remove the workspace default or configuration table to fall back to the user settings",
+    ] {
+        assert!(
+            chapter.contains(phrase),
+            "missing resolution rule: {phrase}"
+        );
+    }
     for phrase in [
         "Bedrock and OpenAI default to the available logical CPU count; Ollama defaults to one",
         "OpenAI defaults to `policy = \"once\"`",

@@ -1,8 +1,8 @@
 {
   "requirement": "Ordinary evidence validation, status inspection, and book rendering MUST continue\nto check evidence using the existing rules without invoking models, contacting\nproviders, or requiring authoring configuration or credentials. Missing or stale\nevidence MUST remain a validation failure rather than trigger authoring.",
   "determination": true,
-  "rationale": "I found no gaps. I did not exhaustively trace `habeas::preprocess_book` or `status_markdown_with_github`; I relied on the tests that exercise them end to end and on a search of `src` for calls into the authoring module.\n\n**Obligations**\n1. Ordinary validation, status and book rendering keep checking evidence with the existing rules.\n2. They do not invoke models.\n3. They do not contact providers.\n4. They do not require authoring configuration or credentials.\n5. Missing or stale evidence stays a validation failure rather than triggering authoring.\n\n**Implementation**\n- `src/evidence.rs#fn[inspect_repository_with_progress]` is the shared inspection path. It collects missing evidence as `evidence/{name}.json: missing for ...` errors and its comment says it never starts authoring. It calls no model, provider or authoring-configuration code.\n- Its only authoring-module use is `DiscoverySources` (via `discovered_files`, `validate_committed_credentials` and `untracked_reference_files`). That type is marked `{impl}` on this requirement and loads only the Git index and the workspace `[evidence]` rules. An invalid workspace file falls back to `PathPolicy::default()`, so it needs no authoring configuration. See `src/authoring/access.rs#struct[DiscoverySources]` and `impl[DiscoverySources]/fn[load]`.\n- `src/config.rs#fn[load_workspace_evidence]` decodes only the `[evidence]` table. It reads `[authoring]` only to record whether credentials appear in it, and it does not validate that section.\n- `src/main.rs#fn[main]` does the same for every command except `author`: it loads only the evidence settings, so status and book rendering never need authoring configuration or credentials. `status` and `info` skip that early load and report an invalid workspace file as a finding instead.\n- The only authoring-module calls I found in `src/main.rs` are for the authoring commands.\n\n**Tests**\n- `tests/authoring_cli.rs#fn[missing_or_stale_evidence_fails_validation_without_contacting_the_provider]` covers obligation 5 and the no-provider obligations.\n  - `validate_repository` must report \"missing for requirement\" or \"changed\" for the subject, and this is run with the full authoring configuration and with a bare `version = 1` configuration.\n  - `status --all` and `mdbook` rendering succeed with the model key removed from the environment.\n  - A listening socket sees no connection, no usage state is written, and the evidence file is unchanged.\n- `tests/authoring_cli.rs#fn[ordinary_status_ignores_invalid_user_authoring_configuration]` shows status works with an unparsable user authoring configuration, writes no state and does not modify evidence.\n- `tests/evidence_boundaries.rs#fn[validation_checks_workspace_common_config_without_loading_unused_authoring_settings]` shows validation ignores unused or invalid workspace `[authoring]` settings while still checking the common workspace configuration.\n- `tests/commands.rs#fn[status_loads_nearest_workspace_file_without_validating_authoring]` and `fn[status_applies_workspace_disallow_to_existing_evidence]` cover the existing evidence rules still applying under status.\n- `tests/authoring_cli.rs#impl[Fixture]/fn[run]` carries a `{test}` reference as a helper.",
-  "references": "9bd15355d7419b8944ea31b1e205c31392da2cd68aa859108fd80d27544fee5f",
+  "rationale": "**Obligations derived from `requirements.authoring.deterministic_validation`**\n1. Validation, status, and book rendering still check evidence with the existing rules.\n2. None of the three invokes models or contacts providers.\n3. None of the three needs authoring configuration or credentials.\n4. Missing or stale evidence stays a validation failure and does not trigger authoring.\n\n**Mapping to tests**\n- `tests/authoring_cli.rs#fn[missing_or_stale_evidence_fails_validation_without_contacting_the_provider]` covers obligations 1–4 with the following scenarios:\n  - It binds a real `TcpListener` as the configured provider endpoint.\n  - It runs both a missing-evidence case and a stale-evidence case. The stale case changes the requirement text.\n  - It runs each case under two configs: the full authoring config and a minimal `version = 1` config with no authoring settings.\n  - It calls `habeas::validate_repository`. It asserts that the report errors contain the subject name and \"missing for requirement\" or \"changed\". This shows the existing rules still fail the evidence.\n  - It runs CLI `status --all` and the `mdbook` preprocessor with `HABEAS_TEST_MODEL_KEY` removed. It asserts both succeed and that the output mentions the subject. This shows no credentials are needed.\n  - After all cases it asserts the listener's `accept` returns `WouldBlock`, so no provider was contacted.\n  - It asserts that the usage state does not exist, so no authoring was recorded.\n  - It asserts the evidence file is byte-identical to the original. A missing or stale record therefore did not trigger authoring.\n- `tests/authoring_cli.rs#fn[ordinary_status_ignores_invalid_user_authoring_configuration]` runs status with a malformed user config. It asserts success and the subject in the output. It also asserts no state is created and the evidence is unchanged. This covers not requiring valid authoring configuration.\n- `tests/evidence_boundaries.rs#fn[validation_checks_workspace_common_config_without_loading_unused_authoring_settings]` checks that validation still enforces the common workspace config rules. It also checks that an invalid `[authoring]` section raises no validation errors.\n- `tests/commands.rs#fn[status_loads_nearest_workspace_file_without_validating_authoring]` shows status ignoring invalid authoring settings. It still reports the other validation findings.\n- `tests/commands.rs#fn[status_applies_workspace_disallow_to_existing_evidence]` shows status still applying the existing evidence rules, here the disallow path rule.\n- `tests/authoring_cli.rs#impl[Fixture]/fn[run]` is the shared helper behind these CLI tests.\n\n**Gaps considered**\n- Ordinary validation is exercised through the library `validate_repository` function. It is the only validation entry point I found. The other tool surface I saw is the CLI subcommands, and the tests cover `status` and `mdbook` through the CLI.\n- I found no plausible requirement-violating behavior that these tests would accept.",
+  "references": "53c2cdde41d8c1d42f691bda2c67bf7669f34207e7208e6f7be4567837a6610d",
   "inputs": [
     {
       "requirements": "requirements.authoring.deterministic_validation",
@@ -17,31 +17,6 @@
         "evidence MUST remain a validation failure rather than trigger authoring.",
         ":::"
       ]
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "struct[DiscoverySources]",
-      "hash": "d41ede64ceca6cda2eedddc6f88391e3b8f5a84145ae93206993582d0e5b6bc5"
-    },
-    {
-      "file": "src/authoring/access.rs",
-      "item": "impl[DiscoverySources]/fn[load]",
-      "hash": "56207181948908057dd7fc60fb1b8920bb421d522f64b255914bf4c95eb0ed67"
-    },
-    {
-      "file": "src/config.rs",
-      "item": "fn[load_workspace_evidence]",
-      "hash": "55a4844bf88c98810c76d5486185af127d895626d83a9de141ce59be82bbd93d"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[inspect_repository_with_progress]",
-      "hash": "942aec34a5ae01793fbc22717e0cc1a7adfd88921d561d9283d23a87fc9262e2"
-    },
-    {
-      "file": "src/main.rs",
-      "item": "fn[main]/use@118842506675",
-      "hash": "1188425066753adbc843c210d52e91685623838c7019aff619a61ce6f920a749"
     },
     {
       "file": "tests/authoring_cli.rs",
@@ -72,6 +47,200 @@
       "file": "tests/evidence_boundaries.rs",
       "item": "fn[validation_checks_workspace_common_config_without_loading_unused_authoring_settings]",
       "hash": "ef6d907936f39ecf4c5d86b96a84c9519988f9370c0b695ec10d690c785f4a98"
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "item": "impl[Fixture]",
+      "hash": "65cbc759d57b58ef69e35ab60fbf9b1fb526bf37d647786c40aff1959c20bd88"
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "item": "impl[Fixture]/fn[new]",
+      "hash": "d04a4f21e7e85c0a2983a8174051481751cb4b851c39bd67ed69064de859dcc1"
+    },
+    {
+      "file": "tests/authoring_cli.rs",
+      "item": "impl[Fixture]/fn[command]",
+      "hash": "04b3b298ba6a090e89f3af768db69bdf575501b913250b494652bfebee232071"
+    }
+  ],
+  "format_version": 1,
+  "review_version": "habeas-review-v1",
+  "dependencies": [
+    {
+      "OutgoingEdges": [
+        {
+          "Requirement": "requirements.authoring.deterministic_validation"
+        },
+        {
+          "scheme": "habeas-reference-set-v1",
+          "value": "53c2cdde41d8c1d42f691bda2c67bf7669f34207e7208e6f7be4567837a6610d"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Requirement": "requirements.authoring.deterministic_validation"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "3123141b591384441875e509d1d98012e7a9a5ec15cfa49ff2c528afed8ff2aa"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "tests/authoring_cli.rs"
+            },
+            "selector": "impl[Fixture]/fn[run]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "ccf714262b20ff0f050387e6ea4762eb283f0be5587e22186fc4ca61553b853f"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "tests/authoring_cli.rs"
+            },
+            "selector": "fn[ordinary_status_ignores_invalid_user_authoring_configuration]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "9a78c81aae829098c1153872c369e02a42e86cb2dd590ec8412612482f8b65b8"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "tests/authoring_cli.rs"
+            },
+            "selector": "fn[missing_or_stale_evidence_fails_validation_without_contacting_the_provider]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "a339f8d69a7b306c4a3057193cebf2f55347dd88a4e45ba2acc1ef4948d9cd42"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "tests/commands.rs"
+            },
+            "selector": "fn[status_loads_nearest_workspace_file_without_validating_authoring]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "19974df458d921be4c081cbdc3b67acd7f547254d4056557b31bba8e32360a99"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "tests/commands.rs"
+            },
+            "selector": "fn[status_applies_workspace_disallow_to_existing_evidence]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "029c05e940f1722c96c6f528a5cb0c780cab4002b13ba385edde68a62f10362d"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "tests/evidence_boundaries.rs"
+            },
+            "selector": "fn[validation_checks_workspace_common_config_without_loading_unused_authoring_settings]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "d48ecd5b4a54f8a4ffdfb4d6439654dcd7d56a1748f451d4326b4fad8a34d9a5"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "tests/authoring_cli.rs"
+            },
+            "selector": "impl[Fixture]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "e06564066ae1496d96496bc71ca3d855c583c24727584815c11ecdde5eb7c473"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "tests/authoring_cli.rs"
+            },
+            "selector": "impl[Fixture]/fn[new]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "691efb76cb48d4c5bbaa97485f723778a4e8d2c48c1c846ea8300fac8452c0a7"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "tests/authoring_cli.rs"
+            },
+            "selector": "impl[Fixture]/fn[command]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "1c9a4d9c0852d1546fe29d489ae7afa4bcb6afdaab9a51c52bdda5f6ac0e0b05"
+        }
+      ]
     }
   ]
 }

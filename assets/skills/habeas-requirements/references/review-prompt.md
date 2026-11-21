@@ -10,6 +10,10 @@ noted. Don't re-raise those. The drafts are uncommitted edits in the book:
 every requirement the group cites or overlaps. Don't edit files; make your
 changes in the revised text you return.
 
+Follow "Writing chapters" in the habeas-requirements skill. Review prose, API
+declarations, comments, and examples together for a clear explanation and
+checkable promises; illustrative examples do not automatically create promises.
+
 Each requirement gets its own model assessment of whether tests adequately check
 it, and editing a requirement makes its evidence stale. So a requirement should
 be as small as it can be while still standing on its own: it costs less to
@@ -21,8 +25,10 @@ assess, and editing it makes only its own evidence stale.
 them as questions.
 
 - Split a compound requirement (see "Criteria").
-- Choose MUST, SHOULD, or MAY when the draft's intent is clear. Default to MUST;
-  keep a SHOULD or MAY the draft already chose.
+- Clarify an obligation whose intent is clear while preserving whether behavior
+  is required, recommended, or permitted. Do not automatically convert ordinary
+  prose or commented API declarations to RFC keywords, or strengthen or weaken
+  what the draft promises.
 - Fix wording whose resolution is obvious: vague terms, inconsistent terms, an
   ambiguity with one sensible reading.
 - Add an `{example}` where a concrete case pins an obligation down.
@@ -38,7 +44,8 @@ resolve. List every new name.
 
 - A gap: a case the text says nothing about, where either answer is plausible.
 - A conflict with another requirement; cite it by full name.
-- MUST or SHOULD when the choice depends on the user's intent, not wording.
+- Whether behavior is required, recommended, or permitted, when the choice
+  depends on the user's intent.
 - An obligation nothing could check, where any fix changes what is promised.
 
 For each question give why it matters, the options, and your recommendation.
@@ -55,14 +62,19 @@ mechanically if only one answer is sensible, otherwise ask.
 ## Criteria
 
 - **Compound:** a requirement that lists several independent forms, checks, or
-  outputs is usually one requirement per item. A sentence beginning "It MUST
-  also" is a strong hint. Test: could one part be implemented, change, or fail
+  outputs is usually one requirement per item. An additional promise introduced
+  with "also" is a hint, regardless of whether the text uses RFC keywords.
+  Several members of one coherent API declaration do not by themselves make it
+  compound. Test: could one part be implemented, change, or fail
   while another holds? Then split it. Move shared detail, such as a template or
   a format, into its own requirement that the others cite.
 - **Checkable:** a reviewer can judge the obligation from the requirement text,
   the code, and the tests, and something would fail if it were broken.
 - **One reading:** text a careful reviewer could read two ways is a finding.
-- **Outcome, not implementation:** the text says what must hold, not how.
+- **Outcome, not implementation:** the text says what holds. Public API
+  declarations specify an observable interface; their accompanying comments can
+  specify semantic guarantees. Distinguish these from prescribing internal
+  implementation details that the contract does not need.
 - **Distributed:** for a requirement with `{sites}` or `{violations}` queries,
   apply the Do and Don't lists in the habeas skill's
   `references/distributed-requirements.md`.
@@ -71,16 +83,16 @@ mechanically if only one answer is sensible, otherwise ask.
 
 Compound, with a mechanical fix:
 
-> The `refactor` command MUST accept file, node, and definition mappings, MUST
-> reject overlapping mappings, and MUST rewrite references and anchors. It MUST
-> also update evidence rationales.
+> The `refactor` command accepts file, node, and definition mappings, rejects
+> overlapping mappings, and rewrites references and anchors. It also updates
+> evidence rationales.
 
 Split into `mappings.file`, `mappings.node`, `mappings.definition`,
 `mappings.overlap`, `rewrite.references`, and `rewrite.rationale`. Not a
 question.
 
-Not questions, just change them: "Should 'shall' be 'MUST'?"; "Consider
-calling 'the tool' `habeas refactor`."
+A mechanical wording fix: replace "the tool" with `habeas refactor` when that is
+the command the draft clearly describes.
 
 A design question:
 

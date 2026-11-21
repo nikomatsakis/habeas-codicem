@@ -86,6 +86,7 @@ pub(crate) fn definitions() -> Vec<Value> {
 }
 
 /// The parameter schema of a `referencing` argument.
+// {cite}`habeas:util`
 fn reference_scope_schema() -> Value {
     json!({"type":"object","properties":{
         "selection":{"type":"string"},
@@ -180,7 +181,7 @@ fn with_not_listed(
     let requested_path = project_path(sources, optional_path(arguments)?)?;
     let requested = relative_path(&sources.root, &requested_path)?;
     let requested = requested.trim_end_matches('/');
-    let untracked = super::access::DiscoverySources::load(&sources.root)?.untracked()?;
+    let untracked = super::access::load_discovery_sources(&sources.root)?.untracked()?;
     let mut named = BTreeSet::new();
     for file in untracked {
         let Ok(relative) = file.strip_prefix(&sources.root) else {
@@ -329,6 +330,7 @@ fn marked_lines<'a>(
 /// Dispatches one tool call in an assessment of its own, whose pages are
 /// dropped once the call returns.
 #[cfg(test)]
+// {cite}`habeas:util`
 pub(crate) fn dispatch(
     sources: &AssessmentSources,
     name: &str,
@@ -560,7 +562,7 @@ fn references(sources: &AssessmentSources, args: &Map<String, Value>) -> io::Res
         let file = relative_path(&sources.root, &reference.file)?;
         let parsed = sources.outlines.parse(&sources.root, &file);
         let item = parsed.as_ref().as_ref().ok().map(|parsed| {
-            let index = parsed.outline.owner_at_line(reference.line);
+            let index = parsed.reference_owner_at_line(reference.line);
             parsed.outline.nodes[index].selector.clone()
         });
         sites.push((
@@ -1077,7 +1079,8 @@ fn referencing(
             let parsed = sources.outlines.parse(&sources.root, &file);
             match parsed.as_ref() {
                 Ok(parsed) => {
-                    let node = &parsed.outline.nodes[parsed.outline.owner_at_line(reference.line)];
+                    let node =
+                        &parsed.outline.nodes[parsed.reference_owner_at_line(reference.line)];
                     Some((node.line_start, node.line_end))
                 }
                 Err(_) => None,

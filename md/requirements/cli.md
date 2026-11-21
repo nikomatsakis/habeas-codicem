@@ -13,7 +13,7 @@ Running `habeas setup` in an existing Cargo and mdBook project MUST add Habeas a
 :::
 
 :::{req} status
-`habeas status [<selection>] [--all] [--verbose] [--coverage]` MUST consider requirements and named examples matched by the {term}`requirements.references.definition_selection`; without a selection it MUST consider every definition. By default, it MUST list matching definitions in full-name order when their evidence is missing, has a false determination, or fails the same evidence and reference checks as `habeas::validate()`. It MUST summarize FIXME judgments under {cite}`requirements.cli.fixme_summary`, with accepted FIXME subjects listed individually only when `--verbose` or `--all` is selected. `--all` MUST list every matching definition with its kind and evidence state. Every form MUST show validation findings, the coverage report under {cite}`requirements.references.coverage.report`, using its node-count summary by default and showing individual warnings and coverage-history details only with `--coverage`, work from within a Cargo and mdBook project, and report invalid arguments or a supplied selection matching no definition clearly. When files that reference discovery does not consider because they are untracked in a Git worktree contain references, `habeas status` MUST list them with a reminder to stage them with `git add`. Every form MUST also list, in a "Disagreements" section, each selected definition, citation review, and site review whose recorded rationale states that its assessments disagreed under {cite}`requirements.authoring.confirmation`, so those findings are visible although validation accepts them.
+`habeas status [<selection>] [--all] [--verbose]` MUST consider requirements and named examples matched by the {term}`requirements.references.definition_selection`; without a selection it MUST consider every definition. By default, it MUST list matching definitions in full-name order when their evidence is missing, has a false determination, or fails the same evidence and reference checks as `habeas::validate()`. It MUST summarize FIXME judgments under {cite}`requirements.cli.fixme_summary`, with accepted FIXME subjects listed individually only when `--verbose` or `--all` is selected. `--all` MUST list every matching definition with its kind and evidence state. Every form MUST show validation findings, work from within a Cargo and mdBook project, and report invalid arguments or a supplied selection matching no definition clearly. When files that reference discovery does not consider because they are untracked in a Git worktree contain references, `habeas status` MUST list them with a reminder to stage them with `git add`. Every form MUST also list, in a "Disagreements" section, each selected definition, citation review, and site review whose recorded rationale states that its assessments disagreed under {cite}`requirements.authoring.confirmation`, so those findings are visible although validation accepts them.
 :::
 
 :::{req} fixme_summary
@@ -54,14 +54,28 @@ When `habeas status` or `habeas status --all` displays a Markdown table, it MUST
 :::
 
 :::{req} shared_status_rendering
-`habeas status` and the mdBook requirements index MUST generate their Definition/Evidence Markdown tables through the same renderer. That renderer MUST calculate column widths, align the columns, and display the same evidence-state labels in both outputs. Callers MAY select different definitions and supply different kind-labeled name cells so mdBook can link to detail pages.
+`habeas status` and the mdBook requirements index use the same renderer for
+their Definition/Evidence Markdown tables. The renderer calculates column
+widths and aligns the columns. Each caller supplies its state labels:
+`habeas status` reports checked evidence states, while the book reports
+recorded assessments under {cite}`requirements.index.state`. The CLI keeps
+its checked labels: Valid, Missing, Determination false, FIXME, and Invalid.
+Callers may select different definitions and supply kind-labeled name cells
+so mdBook can link to detail pages.
 :::
 
 :::{req} info
 :impl: assets/skills/habeas/SKILL.md
 :impl: assets/skills/habeas-requirements/SKILL.md
 :impl: assets/skills/habeas-evidence/SKILL.md
-`habeas info <selection>` MUST show the requirements and named examples matched by the {term}`requirements.references.definition_selection`. It MUST print matches in full-name order as Markdown with the same kind-labeled definition, Validation findings, Rationale, and Inputs structure and evidence states as mdBook detail pages, including readable output for missing or invalid evidence. It MUST work without a requirements index directive and report an invalid selection or no matches clearly. Habeas's bundled agent guidance MUST tell agents they can use this command to inspect a requirement or named example.
+`habeas info <selection>` shows the requirements and named examples matched
+by the {term}`requirements.references.definition_selection`, in full-name
+order. It uses the book detail layout for the kind-labeled definition,
+Rationale, and Inputs, while checking evidence and showing its checked state,
+Validation findings, and input hash mismatches. Missing or invalid evidence
+produces readable output. The command works without a requirements index
+directive and reports an invalid selection or no matches clearly. Bundled
+agent guidance tells agents to use it to inspect requirements and examples.
 :::
 
 :::{req} bootstrap_skill
@@ -261,13 +275,19 @@ The review prompt MUST direct the reviewer not to re-raise the decisions and ope
 
 :::{req} requirements_review_skill.review_prompt.mechanical
 :impl: assets/skills/habeas-requirements/references/review-prompt.md
-The review prompt MUST count the following as mechanical changes, which the reviewer makes in the revised text and never phrases as questions:
+The review prompt treats the following as mechanical changes, which the reviewer
+makes in the revised text and never phrases as questions:
 
 - splitting a compound requirement;
-- choosing between MUST, SHOULD, and MAY when the draft's intent is clear, defaulting to MUST and keeping a SHOULD or MAY the draft already chose;
+- clarifying an obligation whose intent is clear while preserving whether the
+  behavior is required, recommended, or permitted;
 - rewording vague or inconsistent terms, or an ambiguity, where only one resolution is sensible;
 - adding an `{example}` that pins an obligation down;
 - updating other requirements that a change makes stale.
+
+Ordinary prose and commented API declarations can express obligations. The reviewer
+does not automatically convert them to RFC keywords or strengthen or weaken
+what the draft promises.
 :::
 
 :::{req} requirements_review_skill.review_prompt.names
@@ -277,17 +297,24 @@ The review prompt MUST direct the reviewer never to rename or move a committed r
 
 :::{req} requirements_review_skill.review_prompt.design
 :impl: assets/skills/habeas-requirements/references/review-prompt.md
-The review prompt MUST direct the reviewer to return the following as design questions, each with why it matters, the options, and a recommendation:
+The review prompt directs the reviewer to return the following as design
+questions, each with why it matters, the options, and a recommendation:
 
 - gaps where more than one answer is plausible;
 - conflicts with other requirements, citing them by full name;
-- MUST versus SHOULD where the choice depends on the user's intent;
+- whether behavior is required, recommended, or permitted, when the choice
+  depends on the user's intent;
 - obligations nothing could check, where any fix changes what is promised.
 :::
 
 :::{req} requirements_review_skill.review_prompt.compound
 :impl: assets/skills/habeas-requirements/references/review-prompt.md
-The review prompt's criteria MUST count as compound a requirement that lists several independent forms, checks, or outputs. They MUST count a sentence beginning "It MUST also" as a sign of a compound requirement. They MUST direct the reviewer to split a compound requirement into one requirement for each obligation that could be implemented, could change, or could fail on its own, and to move shared detail, such as a template or format, into its own requirement that the others cite.
+The review prompt's criteria count as compound a requirement that lists several
+independent forms, checks, or outputs. An additional promise introduced with
+"also" is a hint, regardless of whether the text uses RFC keywords. The reviewer
+splits independent obligations that could be implemented, change, or fail on
+their own, and moves shared detail, such as a template or format, into its own
+requirement that the others cite.
 :::
 
 :::{req} requirements_review_skill.review_prompt.criteria
@@ -296,7 +323,9 @@ The review prompt's criteria MUST direct the reviewer to find each of the follow
 
 - text that a careful reviewer could read two ways;
 - obligations that a reviewer could not judge from the requirement text, the code, and the tests, or that nothing would fail for if they were broken;
-- text that prescribes an implementation instead of an outcome.
+- text that prescribes an implementation instead of an outcome. Public API
+  declarations specify an observable interface and are appropriate contract
+  text; their accompanying comments can specify semantic guarantees.
 :::
 
 :::{req} requirements_review_skill.review_prompt.distributed
@@ -333,7 +362,7 @@ The review prompt MUST tell the reviewer that a report with only wording changes
 :impl: assets/skills/habeas-requirements/SKILL.md
 :impl: assets/skills/habeas-bootstrap-requirements/SKILL.md
 :impl: assets/skills/habeas-evidence/SKILL.md
-Habeas's bundled agent skills MUST direct agents reviewing code against requirements to inspect every end-user-observable result and branch, including errors and input handling, and verify both that the code fulfills each applicable requirement and that it introduces no additional end-user-observable behavior without an agreed requirement. They MUST explain the requirement and example review criteria in {cite}`requirements.ci.review_criteria`, including test adequacy and justified absence of tests for requirements, and the three outcomes and documented-gap convention in {cite}`requirements.ci.outcomes`. Agents MUST mark the roots of a requirement's implementation with `{impl}` and the tests that verify it with `{test}`, leaving code reached from those items unmarked, and use `{cite}` only for related code that does neither, under {cite}`requirements.references.procedure`. When Habeas warns that an item has no recent coverage under {cite}`requirements.references.coverage.report`, they MUST choose its references by that procedure, and for an item no other code reaches, determine whether it is dead code before changing anything. Where requirements interact, agents MUST mark every requirement implemented at the relevant point and explain how their texts jointly account for the behavior. A citation alone MUST NOT count as that explanation.
+Habeas's bundled agent skills MUST direct agents reviewing code against requirements to inspect every end-user-observable result and branch, including errors and input handling, and verify both that the code fulfills each applicable requirement and that it introduces no additional end-user-observable behavior without an agreed requirement. They MUST explain the requirement and example review criteria in {cite}`requirements.ci.review_criteria`, including test adequacy and justified absence of tests for requirements, and the three outcomes and documented-gap convention in {cite}`requirements.ci.outcomes`. Agents MUST mark the roots of a requirement's implementation with `{impl}` and the tests that verify it with `{test}`, leaving code reached from those items unmarked, and use `{cite}` only for related code that does neither, under {cite}`requirements.references.procedure`. Where requirements interact, agents MUST mark every requirement implemented at the relevant point and explain how their texts jointly account for the behavior. A citation alone MUST NOT count as that explanation.
 :::
 
 :::{req} internal_detail_guidance
@@ -343,9 +372,8 @@ Habeas's bundled agent skills MUST direct agents reviewing code against requirem
 Habeas's bundled agent skills MUST direct agents to choose references by the
 procedure in {cite}`requirements.references.procedure`. For internal code, they
 MUST direct agents to state any invariant worth checking as an ordinary
-requirement and implement it, to cite the built-in `habeas:util` under
-{cite}`requirements.references.util` on an item that only serves other code, and
-to report to the user an item that does neither. They MUST
+requirement and implement it. Helpers need no individual annotation or recorded
+assessment read merely because they serve other code. They MUST
 NOT suggest grouping requirements, such as `internal.config_parsing`, that state
 no checkable obligation.
 :::
@@ -477,7 +505,7 @@ Under {cite}`requirements.cli.skill_structure`, the `habeas-requirements` skill 
 :impl: assets/skills/habeas-evidence/references/authoring-failures.md
 :impl: assets/skills/habeas-evidence/references/fixme.md
 :impl: assets/skills/habeas-evidence/references/reviews.md
-Under {cite}`requirements.cli.skill_structure`, the `habeas-evidence` skill MUST be the home of the authoring workflow, fixing validation findings, including uncovered Rust items, outcomes and FIXME judgments, citation and site reviews, disagreeing assessments, and the commit message for a change to agreed requirement text.
+Under {cite}`requirements.cli.skill_structure`, the `habeas-evidence` skill MUST be the home of the authoring workflow, fixing validation findings, outcomes and FIXME judgments, citation and site reviews, disagreeing assessments, and the commit message for a change to agreed requirement text.
 :::
 
 :::{req} skill_structure.bootstrap

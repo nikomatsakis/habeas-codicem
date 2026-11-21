@@ -4,8 +4,7 @@ use std::path::{Path, PathBuf};
 
 use mdbook_preprocessor::book::Chapter;
 
-use crate::citations::{CitationItem, citation_items, validate_review};
-use crate::evidence::Declaration;
+use crate::citations::{CitationItem, citation_items};
 use crate::inputs::{OutlineCache, ParsedSource};
 
 // {cite}`habeas:util`
@@ -21,31 +20,50 @@ pub(super) fn path(index: &Path, file: &str) -> PathBuf {
         .join(format!("{}.md", super::digest(file.as_bytes())))
 }
 
+// {impl}`requirements.test-coverage.index.file_map.combined`
+pub(super) struct DocumentedFile {
+    pub file: String,
+    pub items: Vec<DocumentedItem>,
+    pub diagnostics: Vec<String>,
+    pub chapter: Chapter,
+}
+
+// {impl}`requirements.test-coverage.index.gaps.details`
+pub(super) struct DocumentedItem {
+    pub selector: String,
+    pub line: usize,
+    pub html: String,
+}
+
 // {impl}`requirements.test-coverage.index.file_map.notes`
 // {impl}`requirements.test-coverage.index.file_map.notes.justifications`
 // {impl}`requirements.test-coverage.index.file_map.notes.current`
 // {impl}`requirements.test-coverage.index.file_map.notes.availability`
 // {impl}`requirements.test-coverage.index.file_map.notes.reviews`
 // {impl}`requirements.test-coverage.index.file_map.notes.render_only`
-pub(super) fn pages(root: &Path, files: &BTreeSet<String>, index: &Path) -> Vec<Chapter> {
+pub(super) fn pages(root: &Path, files: &BTreeSet<String>, index: &Path) -> Vec<DocumentedFile> {
     let outlines = OutlineCache::default();
     let mut diagnostics = Vec::new();
     let references = crate::evidence::collect_references(root, &mut diagnostics);
-    let definitions = crate::evidence::load_definitions(root).unwrap_or_else(|error| {
-        diagnostics.push(error.to_string());
-        BTreeMap::new()
-    });
-    let items = citation_items(root, &definitions, &references, &outlines);
+    // Only coverage annotations are needed; unrelated citation reviews do not
+    // participate in this documentation view.
+    let references: Vec<_> = references
+        .into_iter()
+        .filter(|reference| reference.name == "habeas:coverage")
+        .collect();
+    let items = citation_items(root, &BTreeMap::new(), &references, &outlines);
     files
         .iter()
         .map(|file| {
             let path = path(index, file);
+            let mut entries = Vec::new();
+            let mut failures = diagnostics.clone();
             let mut content = format!(
-                "# Coverage explanations\n\n[Back to coverage index]({})\n\nFile: <code>{}</code>.\n\n**Current workspace source notes**, read at book-render time. These explanations and review states describe the current source.\n\n",
+                "# Coverage explanations\n\n[Back to coverage index]({})\n\nFile: <code>{}</code>.\n\n**Current workspace source notes**, read at book-render time. Explanations describe current source; reviews show last recorded assessments.\n\n",
                 crate::chapter_href(&path, index, None), escaped(file),
             );
             match outlines.parse(root, file).as_ref() {
-                Err(error) => diagnostic(&mut content, error),
+                Err(error) => { diagnostic(&mut content, error); failures.push(error.clone()); },
                 Ok(parsed) => {
                     for error in &diagnostics {
                             diagnostic(&mut content, error);
@@ -54,15 +72,22 @@ pub(super) fn pages(root: &Path, files: &BTreeSet<String>, index: &Path) -> Vec<
                         for item in items.values().filter(|item| item.file == *file) {
                             let Ok(node) = parsed.resolve(file, &item.item) else {
                                 diagnostic(&mut content, "Cannot resolve the cited source item.");
+                                failures.push(format!("{file}: cannot resolve {}", item.item));
                                 continue;
                             };
-                            if !(item.item.is_empty() || parsed.outline.nodes[node].kind == "fn")
+                            if !(item.item.is_empty() || matches!(parsed.outline.nodes[node].kind, "fn" | "def" | "function" | "method"))
                                 || !item.citations.iter().any(|cite| cite.name == "habeas:coverage")
                             {
                                 continue;
                             }
                             count += 1;
-                            entry(&mut content, root, parsed, node, item, &definitions, &outlines);
+                            let mut explanation = String::new();
+                            entry(&mut explanation, root, parsed, node, item);
+                            content.push_str(&format!("<a id=\"coverage-note-{}\"></a>\n\n", count));
+                            content.push_str(&explanation);
+                            let mut html = String::new();
+                            pulldown_cmark::html::push_html(&mut html, pulldown_cmark::Parser::new(&explanation));
+                            entries.push(DocumentedItem { selector: item.item.clone(), line: parsed.outline.nodes[node].line_start, html });
                         }
                     if count == 0 && diagnostics.is_empty() {
                             content.push_str("No coverage explanations are present on this file's root or explicitly declared functions and methods.\n");
@@ -71,7 +96,7 @@ pub(super) fn pages(root: &Path, files: &BTreeSet<String>, index: &Path) -> Vec<
             }
             let mut chapter = Chapter::new(&format!("File notes: {file}"), content, path, vec![]);
             chapter.source_path = None;
-            chapter
+            DocumentedFile { file: file.clone(), items: entries, diagnostics: failures, chapter }
         })
         .collect()
 }
@@ -118,8 +143,6 @@ fn entry(
     parsed: &ParsedSource,
     node: usize,
     item: &CitationItem,
-    definitions: &BTreeMap<String, Declaration>,
-    outlines: &OutlineCache,
 ) {
     let label = if item.item.is_empty() {
         "File root".to_owned()
@@ -164,26 +187,27 @@ fn entry(
     if commentary.is_empty() && docs.trim().is_empty() {
         content.push_str("**No tracked justification is present.**\n\n");
     }
-    let review = item.review_path();
-    let mut findings = Vec::new();
-    validate_review(root, &review, item, definitions, outlines, &mut findings);
-    if findings.is_empty() {
-        content.push_str("Review: **current and accepted**.\n\n");
-    } else {
-        let state = if root
-            .join(&review)
-            .symlink_metadata()
-            .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
-        {
-            "missing"
-        } else {
-            "not accepted"
-        };
-        content.push_str(&format!("Review: **{state}**.\n\n"));
-        for finding in findings {
-            content.push_str(&format!("- {}\n", escaped(&finding)));
-        }
-        content.push('\n');
+    let review = crate::index::LoadedDetailEvidence::load_record_path(root, &item.review_path());
+    content.push_str(&format!(
+        "Recorded review: **{}**.\n\n",
+        review.state().label()
+    ));
+    if let Some(rationale) = review.rationale() {
+        content.push_str(&format!("### Recorded rationale\n\n<pre style=\"white-space:pre-wrap;overflow-wrap:anywhere\">{}</pre>\n\n", escaped(&crate::redaction::redact_text(&rationale))));
+    }
+    if !review.fixme_entries().is_empty() {
+        content.push_str(&format!(
+            "### Recorded FIXME references\n\n<pre>{}</pre>\n\n",
+            escaped(&crate::redaction::redact_text(
+                &review.fixme_entries().join("\n")
+            ))
+        ));
+    }
+    for error in review.errors() {
+        content.push_str(&format!(
+            "- {}\n",
+            escaped(&crate::redaction::redact_text(error))
+        ));
     }
 }
 
@@ -210,10 +234,10 @@ mod tests {
         );
         assert_eq!(chapters.len(), 1);
         assert_eq!(
-            chapters[0].path.as_ref().unwrap(),
+            chapters[0].chapter.path.as_ref().unwrap(),
             &path(Path::new("reports/index.md"), "code.rs")
         );
-        chapters.into_iter().next().unwrap().content
+        chapters.into_iter().next().unwrap().chapter.content
     }
 
     // Synthetic fixture reviews only; production evidence is model-authored.
@@ -308,14 +332,13 @@ mod tests {
         assert!(!content.contains("Nested module must"));
         assert!(!content.contains("Child documentation"));
         assert!(!content.contains("<unsafe>"));
-        assert_eq!(content.matches("Review: **missing**").count(), 4);
+        assert_eq!(content.matches("Recorded review: **Missing**").count(), 4);
         assert_eq!(
             content
                 .matches("No tracked justification is present.")
                 .count(),
             1
         );
-        assert!(content.contains("cannot read citation review"));
         let unexplained = content
             .split("## <code>fn[unexplained]")
             .nth(1)
@@ -416,11 +439,12 @@ mod tests {
             Path::new("coverage.md"),
         );
         assert_eq!(chapters.len(), 2); // one failure does not abort other chapters
-        assert!(
-            chapters
-                .iter()
-                .all(|chapter| chapter.content.contains("Coverage notes unavailable"))
-        );
+        assert!(chapters.iter().all(|chapter| {
+            chapter
+                .chapter
+                .content
+                .contains("Coverage notes unavailable")
+        }));
     }
 
     // {test}`requirements.test-coverage.index.file_map.notes.availability`
@@ -440,7 +464,7 @@ mod tests {
 
     // {test}`requirements.test-coverage.index.file_map.notes.reviews`
     #[test]
-    fn notes_distinguish_accepted_missing_rejected_stale_invalid_and_unreadable_reviews() {
+    fn notes_show_recorded_outcomes_even_after_source_changes() {
         let source = "// :::{cite} habeas:coverage\n// Only supported on another platform.\n// :::\nfn other() { let value = 1; }\n";
         for state in [
             "accepted",
@@ -470,37 +494,35 @@ mod tests {
             }
             let content = render(temp.path());
             let expected = match state {
-                "accepted" => "Review: **current and accepted**",
-                "missing" => "Review: **missing**",
-                _ => "Review: **not accepted**",
+                "accepted" | "stale" => "Recorded review: **Recorded true**",
+                "missing" => "Recorded review: **Missing**",
+                "rejected" => "Recorded review: **Recorded false**",
+                _ => "Recorded review: **Unreadable**",
             };
             assert!(content.contains(expected), "{state}: {content}");
-            let finding = match state {
-                "rejected" => "determination is false",
-                "stale" => "hash",
-                "invalid" => "invalid JSON",
-                "unreadable" | "missing" => "cannot read citation review",
-                _ => "current and accepted",
-            };
-            assert!(content.contains(finding), "{state}: {content}");
-            if state != "accepted" {
-                assert!(
-                    !content.contains("current and accepted"),
-                    "{state}: {content}"
-                );
+            if matches!(state, "accepted" | "stale" | "rejected") {
+                assert!(content.contains("Synthetic review outcome for this test fixture."));
             }
+            if state == "invalid" {
+                assert!(content.contains("invalid JSON"));
+            }
+            if state == "unreadable" {
+                assert!(content.contains("cannot read evidence"));
+            }
+            assert!(!content.contains("current and accepted"));
+            assert!(!content.contains("hash no longer matches"));
         }
     }
 
     // {test}`requirements.test-coverage.index.file_map.notes.current`
     // {test}`requirements.test-coverage.index.file_map.notes.render_only`
     #[test]
-    fn each_render_reads_current_notes_and_validates_saved_reviews_without_writing() {
+    fn each_render_reads_current_notes_and_keeps_recorded_reviews_without_writing() {
         let source = "// :::{cite} habeas:coverage\n// Original platform explanation.\n// :::\nfn other() {}\n";
         let temp = fixture(source);
         let reviews = write_reviews(temp.path(), true);
         let saved_review = fs::read(&reviews[0]).unwrap();
-        assert!(render(temp.path()).contains("current and accepted"));
+        assert!(render(temp.path()).contains("Recorded review: **Recorded true**"));
         fs::write(
             temp.path().join("code.rs"),
             source.replace("Original platform", "Updated platform"),
@@ -516,8 +538,8 @@ mod tests {
                 .contains("Original platform explanation.")
         );
         assert!(content.contains("Current workspace source notes"));
-        assert!(content.contains("Review: **not accepted**"));
-        assert!(content.contains("citations changed"));
+        assert!(content.contains("Recorded review: **Recorded true**"));
+        assert!(!content.contains("citations changed"));
         assert_eq!(fs::read(&reviews[0]).unwrap(), saved_review);
         assert!(!temp.path().join("target").exists());
     }

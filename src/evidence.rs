@@ -134,14 +134,9 @@ pub(crate) struct RepositoryInspection {
     pub(crate) references: Vec<SourceReference>,
     /// The sites of each distributed requirement.
     pub(crate) sites: crate::sites::Sites,
-    /// The Rust items reported uncovered, in report order.
-    pub(crate) uncovered: Vec<crate::rust_coverage::UncoveredItem>,
-    /// The evidence files found, for the coverage history to reuse.
-    pub(crate) evidence_files: Vec<PathBuf>,
-    /// Whether every evidence directory could be listed.
-    pub(crate) evidence_listed: bool,
     pub(crate) report: EvidenceReport,
     pub(crate) discovery_errors: Vec<String>,
+    pub(crate) outlines: OutlineCache,
 }
 
 // {cite}`habeas:util`
@@ -213,19 +208,12 @@ pub(crate) fn inspect_repository_with_progress(
     if let Err(error) = crate::execution_coverage::validate_setup(&root) {
         errors.push(error.to_string());
     }
-    // Only the coverage report uses `[coverage]`, so an invalid table is a
-    // finding but not a discovery failure, and authoring still proceeds.
-    if let Some(error) = crate::config::coverage_error(&root) {
-        errors.push(error.to_string());
-    }
     let evidence_root = root.join("evidence");
-    let listing_errors = errors.len();
     let evidence_files = if evidence_root.is_dir() {
         files_with_extension(&root, &evidence_root, "json", &mut errors)
     } else {
         Vec::new()
     };
-    let evidence_listed = errors.len() == listing_errors;
     let mut present = BTreeSet::new();
     let outlines = OutlineCache::default();
     // Citation reviews are validated against their source items below.
@@ -346,14 +334,10 @@ pub(crate) fn inspect_repository_with_progress(
         &references,
         &mut errors,
     );
-    // An item an evidence record or review read is covered.
-    // {impl}`requirements.references.rust_item_coverage`
-    let reads = crate::rust_coverage::EvidenceReads::load(&evidence_files);
-    let uncovered = crate::rust_coverage::validate_rust_functions(
+    crate::rust_coverage::validate_rust_functions(
         &root,
         &files,
         &definitions,
-        &reads,
         &mut errors,
         &mut discovery_errors,
         &mut progress,
@@ -378,10 +362,8 @@ pub(crate) fn inspect_repository_with_progress(
         definitions,
         references,
         sites,
-        uncovered,
-        evidence_files,
-        evidence_listed,
         discovery_errors,
+        outlines,
     })
 }
 
@@ -699,6 +681,26 @@ fn validate_evidence_file(
             return;
         }
     };
+    let subject = crate::sdk::HabeasNode::Requirement(crate::sdk::RequirementId(
+        path.file_stem()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned(),
+    ));
+    let domain = crate::sdk::HabeasDomain {
+        root,
+        definitions,
+        outlines,
+    };
+    let native = value.clone();
+    let value = match crate::evidence_format::view(&value) {
+        Ok(value) => value,
+        Err(error) => {
+            errors.push(format!("{label}: invalid evidence format: {error}"));
+            return;
+        }
+    };
+    crate::evidence_format::check_native(&native, &subject, &domain, &label, errors);
     let Some(object) = value.as_object() else {
         errors.push(format!("{label}: expected a JSON object"));
         return;
@@ -859,12 +861,13 @@ pub(crate) fn validate_input(
                 }
             }
             // Duplicates among the string entries are a separate failure.
-            if names.iter().collect::<BTreeSet<_>>().len() != names.len() {
+            let distinct = names.iter().collect::<BTreeSet<_>>().len() == names.len();
+            if !distinct {
                 errors.push(format!(
                     "{label}: matches must have distinct definition names"
                 ));
             }
-            (names.len() == values.len()).then_some(names)
+            (distinct && names.len() == values.len()).then_some(names)
         });
         let text = text_field(object, label, errors);
         // Resolving the selection depends only on `requirements`; each
@@ -926,7 +929,7 @@ fn validate_outline_input(
         file: file.to_owned(),
         item: item.to_owned(),
     };
-    let resolved = match selector.resolve(root, definitions, outlines) {
+    let resolved = match crate::sdk::resolve_input(root, definitions, outlines, &selector) {
         Ok(resolved) => resolved,
         Err(error) => {
             errors.push(format!("{label}: {error}"));
@@ -963,7 +966,7 @@ fn text_field(
             None => errors.push(format!("{label}: text[{index}] must be a string")),
         }
     }
-    (text.len() == values.len()).then_some(text)
+    (!values.is_empty() && text.len() == values.len()).then_some(text)
 }
 
 // {impl}`requirements.authoring.redaction`
@@ -979,7 +982,7 @@ fn validate_resolved_input(
     label: &str,
     errors: &mut Vec<String>,
 ) -> Option<ResolvedInput> {
-    let resolved = match selector.resolve(root, definitions, outlines) {
+    let resolved = match crate::sdk::resolve_input(root, definitions, outlines, &selector) {
         Ok(resolved) => resolved,
         Err(error) => {
             errors.push(format!("{label}: {error}"));
@@ -1120,6 +1123,7 @@ pub(crate) fn array_field<'a>(
     }
 }
 
+// {cite}`habeas:util`
 pub(crate) fn display_path(root: &Path, path: &Path) -> String {
     path.strip_prefix(root)
         .unwrap_or(path)
@@ -1127,6 +1131,7 @@ pub(crate) fn display_path(root: &Path, path: &Path) -> String {
         .to_string()
 }
 
+// {cite}`habeas:util`
 #[derive(Clone, Debug)]
 pub(crate) struct SourceReference {
     pub(crate) name: String,
@@ -1141,7 +1146,7 @@ pub(crate) struct SourceReference {
     pub(crate) closed: bool,
     /// Whether the source lies in the book's source directory.
     pub(crate) in_book: bool,
-    /// Whether a fenced reference lies in the body of a requirement or
+    /// Whether this reference lies in the body of a requirement or
     /// example declaration.
     pub(crate) in_declaration: bool,
 }
@@ -1185,7 +1190,7 @@ pub(crate) fn fixme_acknowledgments<'a>(
             let parsed = outlines.parse(root, &file);
             let parsed = parsed.as_ref().as_ref().map_err(Clone::clone)?;
             let item = if parsed.outline.profile.language.is_some() {
-                let index = parsed.outline.owner_at_line(reference.line);
+                let index = parsed.reference_owner_at_line(reference.line);
                 parsed.outline.nodes[index].selector.as_str()
             } else {
                 ""
@@ -1263,7 +1268,7 @@ pub(crate) fn reference_set_entries<'a>(
         let parsed = outlines.parse(root, &file);
         let item = match parsed.as_ref() {
             Ok(parsed) if parsed.outline.profile.language.is_some() => {
-                let index = parsed.outline.owner_at_line(reference.line);
+                let index = parsed.reference_owner_at_line(reference.line);
                 parsed.outline.nodes[index].selector.clone()
             }
             // Plain-text files have only a root node; a source that cannot be
@@ -1820,7 +1825,7 @@ pub(crate) fn collect_references(root: &Path, errors: &mut Vec<String>) -> Vec<S
 /// policy, reporting a failure to read the Git index as a discovery error.
 // {impl}`requirements.ci.errors`
 pub(crate) fn discovered_files(root: &Path, errors: &mut Vec<String>) -> Vec<PathBuf> {
-    match crate::authoring::access::DiscoverySources::load(root) {
+    match crate::authoring::access::load_discovery_sources(root) {
         Ok(sources) => sources.files(errors),
         Err(error) => {
             errors.push(format!("cannot discover reference sources: {error}"));
@@ -1836,7 +1841,7 @@ pub(crate) fn discovered_files(root: &Path, errors: &mut Vec<String>) -> Vec<Pat
 // {impl}`requirements.authoring.credentials`
 // {impl}`requirements.ci.errors`
 fn validate_committed_credentials(root: &Path, errors: &mut Vec<String>) {
-    let Ok(sources) = crate::authoring::access::DiscoverySources::load(root) else {
+    let Ok(sources) = crate::authoring::access::load_discovery_sources(root) else {
         return;
     };
     for file in sources
@@ -1870,7 +1875,7 @@ fn validate_committed_credentials(root: &Path, errors: &mut Vec<String>) {
 pub(crate) fn untracked_reference_files(root: &Path) -> io::Result<Vec<PathBuf>> {
     let root = fs::canonicalize(root)?;
     let md_root = book_source_dir(&root, &mut Vec::new());
-    let untracked = crate::authoring::access::DiscoverySources::load(&root)?.untracked()?;
+    let untracked = crate::authoring::access::load_discovery_sources(&root)?.untracked()?;
     Ok(untracked
         .into_iter()
         .filter(|file| {
@@ -1928,8 +1933,8 @@ pub(crate) fn collect_references_with_progress(
 /// The inline and fenced references in one text file, in line order.
 /// Where roles count as references in a file's content: the byte ranges of
 /// its comments when it has a language outline, or `None` where roles count
-/// anywhere: Markdown, which has its own rules, plain text, and a file that
-/// cannot be parsed, which is reported elsewhere.
+/// anywhere: Markdown, which has its own rules, and plain text. Syntax errors
+/// do not expand the grammar's comment ranges.
 // {impl}`requirements.references.reference_contexts`
 pub(crate) fn reference_contexts(
     file: &Path,
@@ -1940,14 +1945,7 @@ pub(crate) fn reference_contexts(
     }
     let profile = crate::outline::profile_for_path(file);
     profile.language?;
-    let outline = crate::outline::parse_with(profile, content).ok()?;
-    Some(
-        outline
-            .comments
-            .iter()
-            .map(|comment| comment.byte_start..comment.byte_end)
-            .collect(),
-    )
+    crate::outline::comment_ranges(profile, content).ok()
 }
 
 /// Whether a role at byte `start` counts under [`reference_contexts`].
@@ -1969,6 +1967,11 @@ fn file_references(file: &Path, content: &str, in_book: bool) -> Vec<SourceRefer
     } else {
         reference_contexts(file, content)
     };
+    let declarations = if markdown {
+        declaration_line_ranges(content)
+    } else {
+        Vec::new()
+    };
     for role in roles {
         if !in_reference_context(contexts.as_deref(), role.start) {
             continue;
@@ -1986,16 +1989,12 @@ fn file_references(file: &Path, content: &str, in_book: bool) -> Vec<SourceRefer
             commentary: None,
             closed: true,
             in_book,
-            in_declaration: false,
+            in_declaration: declarations
+                .iter()
+                .any(|&(start, end)| start < line && line < end),
         });
     }
     let fences = crate::fenced::source_fences(file, content);
-    // Declarations are found only where a `{fixme}` needs them.
-    let declarations = if markdown && fences.iter().any(|f| f.kind == ReferenceKind::Fixme) {
-        declaration_line_ranges(content)
-    } else {
-        Vec::new()
-    };
     for fence in fences {
         references.push(SourceReference {
             in_declaration: declarations
@@ -2114,6 +2113,59 @@ pub(crate) mod tests {
                 )
             ),
             ["c.comment"]
+        );
+        for file in ["script.ts", "component.tsx"] {
+            assert_eq!(
+                names(
+                    file,
+                    format!(
+                        "// {}\n/** {} */\n/* {} */\nconst s = \"{}\";\nconst t = `${{\"{}\"}}`;\n",
+                        role("ts.line"),
+                        role("ts.doc"),
+                        role("ts.block"),
+                        role("ts.string"),
+                        role("ts.template")
+                    )
+                ),
+                ["ts.line", "ts.doc", "ts.block"]
+            );
+        }
+        assert_eq!(
+            names(
+                "style.css",
+                format!(
+                    "/* {} */\na {{ content: \"{}\"; }}\n",
+                    role("css.comment"),
+                    role("css.string")
+                )
+            ),
+            ["css.comment"]
+        );
+        for file in ["config.yaml", "config.yml"] {
+            assert_eq!(
+                names(
+                    file,
+                    format!(
+                        "# {}\na: \"{}\"\nb: |\n  {}\n",
+                        role("yaml.comment"),
+                        role("yaml.string"),
+                        role("yaml.block")
+                    )
+                ),
+                ["yaml.comment"]
+            );
+        }
+        // Parser recovery must still distinguish comments from strings.
+        assert_eq!(
+            names(
+                "broken.rs",
+                format!(
+                    "// {}\nfn f() {{ let s = \"{}\";\n",
+                    role("broken.comment"),
+                    role("broken.string")
+                )
+            ),
+            ["broken.comment"]
         );
         // A fenced role spanning lines of a string literal is literal too.
         assert_eq!(
@@ -2362,15 +2414,8 @@ pub(crate) mod tests {
                 for error in ["invalid JSON", "cannot parse Rust source"] {
                     assert!(errors.contains(error), "missing {error:?}: {errors}");
                 }
-                // An uncovered item is reported, not a validation error.
+                // Ordinary helpers have no annotation obligation.
                 assert!(!errors.contains("retained"), "{errors}");
-                assert!(
-                    inspected.uncovered.iter().any(|item| item
-                        .error
-                        .starts_with("src/lib.rs:1: function retained has no recent coverage")),
-                    "{:?}",
-                    inspected.uncovered
-                );
                 let discovery = inspected.discovery_errors.join("\n");
                 assert!(
                     discovery.contains("src/broken.rs")
@@ -2643,7 +2688,8 @@ pub(crate) mod tests {
         for detail in [
             "no matching requirement",
             "invalid JSON",
-            "missing for requirement",
+            "evidence/requirements.two.json: missing for requirement at md/requirements.md:7",
+            "evidence/requirements.empty.json: missing for requirement at md/requirements.md:19",
             "requirement text changed",
             "- Old text.",
             "+ First.",
@@ -2976,6 +3022,7 @@ pub(crate) mod tests {
 
     // {test}`requirements.ci.errors`
     // {test}`requirements.definitions.inputs`
+    // {test}`requirements.ci.coverage`
     #[test]
     fn configuration_and_dependency_failures_do_not_stop_later_checks() {
         let temp = fixture();
@@ -3037,7 +3084,7 @@ pub(crate) mod tests {
             "{errors}"
         );
 
-        // Coverage setup and coverage-history configuration failures must
+        // Coverage setup and unknown configuration failures must
         // also leave independent later evidence and reference checks running.
         fs::write(temp.path().join("book.toml"), "[book]\nsrc = 'md'\n").unwrap();
         let (path, valid) = crate::execution_coverage::configure(temp.path()).unwrap();
@@ -3046,7 +3093,7 @@ pub(crate) mod tests {
             (
                 "version = 1\n[coverage]\nreauthorings = 0\n",
                 "",
-                "coverage.reauthorings",
+                "coverage",
             ),
         ] {
             fs::write(temp.path().join("habeas.toml"), configuration).unwrap();
@@ -3068,6 +3115,7 @@ pub(crate) mod tests {
     }
 
     // {test}`requirements.ci.errors`
+    // {test}`requirements.ci.coverage`
     #[test]
     fn git_index_failure_is_reported_once_and_later_checks_still_run() {
         let temp = fixture();
@@ -3101,6 +3149,7 @@ pub(crate) mod tests {
 
     // {test}`requirements.ci.schema`
     #[test]
+    // {test}`requirements.ci.errors`
     fn schema_rejects_each_malformed_field_and_input_form() {
         let temp = fixture();
         fs::write(
@@ -3179,6 +3228,21 @@ pub(crate) mod tests {
         }
         // The well-formed definition input is accepted.
         assert!(!errors.contains("inputs[0]"), "{errors}");
+        // Malformed fields cannot support changed-content comparisons,
+        // while the independent, well-formed stale text is still checked.
+        assert!(
+            !errors.contains("inputs[2]: input text changed"),
+            "{errors}"
+        );
+        assert!(
+            report
+                .errors
+                .iter()
+                .filter(|error| error.contains("inputs[4]:"))
+                .all(|error| !error.contains("matches changed")),
+            "{errors}"
+        );
+        assert!(errors.contains("inputs[4]: input text changed"), "{errors}");
     }
 
     // {test}`requirements.ci.determination`
@@ -3297,6 +3361,7 @@ pub(crate) mod tests {
     }
 
     // {test}`requirements.ci.identifiers`
+    // {test}`requirements.ci.coverage`
     #[test]
     fn invalid_full_names_from_chapter_paths_are_reported_and_not_defined() {
         let temp = fixture();
@@ -3503,6 +3568,7 @@ pub(crate) mod tests {
     // {test}`requirements.ci.requirements_inputs`
     // {test}`requirements.ci.orphans`
     #[test]
+    // {test}`requirements.ci.orphans`
     fn cited_example_with_a_test_and_matching_evidence_validates() {
         let temp = fixture();
         let chapter = "# Rules\n\n:::{req} ready\nReady.\n:::\n\n:::{example} case\nGiven ready, it succeeds. {cite}`rules.ready` {test}`rules.ready`\n:::\n";

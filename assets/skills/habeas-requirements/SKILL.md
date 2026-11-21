@@ -27,8 +27,9 @@ has the directive and reference syntax.
       compound, or incomplete. Cover each observable outcome and failure case
       of the change without committing to an implementation. Reuse existing
       requirements by full name, and propose a new one only for behavior none
-      covers; one general requirement, such as "invalid arguments MUST be
-      reported with usage", can cover many branches. Note the open product
+      covers; one general requirement, such as "invalid arguments are
+      reported with usage", can cover many branches. Follow "Writing chapters"
+      below. Note the open product
       choices; reviewers get them in step 3.
 - [ ] 3. Review. Sort the new and changed requirements into groups that one
       reviewer should see together: requirements that cite each other or
@@ -84,6 +85,32 @@ place, including renaming an item, needs no requirement review, but references
 move with the code and the evidence is reassessed; moving code to another file
 or outline node is a habeas-refactor task.
 
+## Writing chapters
+
+Write chapters as explanations of the program, connecting its purpose and
+design to the interfaces, code, and tests. A useful progression for API chapters
+is purpose, commented API declaration, then a concrete example; adapt it to the
+reader and the subject.
+
+- Explain the whole abstraction before its parts. Introduce one concept at a
+  time and explain why it exists before detailing its constraints.
+- Let code express signatures, type relationships, and structure. Put meaning
+  and relevant semantic guarantees in comments beside the declaration; use prose
+  for motivation and connections instead of repeating facts the code expresses.
+- Use examples to show how an application maps its concepts into the API, such
+  as an application node identity becoming a path. Mark illustrative or omitted
+  code clearly so it cannot be mistaken for a promised interface.
+- Reduce conceptual overhead rather than aiming for fewer words. Keep a
+  coherent API declaration together; split independently meaningful obligations.
+  Put detailed operational guarantees in the section that explains the
+  operation, preserving guarantees that signatures cannot express.
+
+Express obligations clearly in ordinary prose or commented API declarations.
+RFC-style `MUST`, `SHOULD`, and `MAY` are optional: use them when they clarify a
+distinction or fit the project's chosen style. Do not add them just to make text
+look like a requirement. Preserve whether behavior is required, recommended,
+or permitted; prose and code can be precise without capitalized keywords.
+
 ## Choosing references
 
 The reviewer starts from a requirement's `{impl}` and `{test}` items and follows
@@ -104,11 +131,9 @@ several):
 2. Otherwise a root gets `{impl}`. Leave what it reaches unmarked.
 3. Otherwise, code that should be re-checked when the requirement changes gets
    `{cite}`.
-4. Otherwise, if the item is still uncovered after `habeas author` has run
-   (see Gotchas), and it serves other code and carries out no requirement
-   itself, it gets
-   `` // {cite}`habeas:util` ``. That includes code a library calls, such as a
-   trait implementation it requires.
+4. Otherwise, leave it unmarked. An optional
+   `` // {cite}`habeas:util` `` can explain that an item serves other code;
+   it is not required bookkeeping.
 
 Edge cases:
 
@@ -135,8 +160,12 @@ Edge cases:
   asks: the user may want it as a root, and removing it changes what the
   assessment reads.
 
-`{cite}` implements nothing; a citation review checks project citations' roles
-and built-ins' stated criteria. Execution-coverage exceptions use
+`{cite}` implements nothing. For source items outside the book, citation reviews
+check project citations' roles and built-ins' stated criteria. A closed
+`:::{cite} full.name` fence outside a requirement or example opts a book passage
+into concordance review: its claims must be supported by the cited declarations.
+The outermost eligible fence groups nested commentary citations into one review.
+Ordinary inline book citations retain their existing behavior. Execution-coverage exceptions use
 `habeas:coverage` with an assessed prose justification, as the habeas skill's
 "Testing and coverage artifacts" explains. To defer a requirement gap the user agrees to,
 use `{fixme}` as the habeas-evidence skill's `references/fixme.md` describes.
@@ -155,7 +184,7 @@ requirement's assessment treats as a gap:
   too weak to rule out plausible requirement-violating behavior;
 - a standalone test designed to verify the subject without `{test}`; helpers
   reached from marked tests need no reference of their own;
-- an applicable SHOULD with inadequate tests, and text with two equally
+- an applicable recommendation with inadequate tests, and text with two equally
   supported readings that lead to different testing judgments.
 
 An example's review checks that tests' setup and assertions cover its scenario
@@ -180,11 +209,7 @@ agreed requirement.
 
 ## Gotchas
 
-- In Rust, every explicit function or method, including trait methods and test
-  helpers, and every struct, enum, and union must be covered: by
-  its own reference, or by a current assessment that read it or an enclosing
-  item. A reference on an enclosing module or `impl` is not the item's own.
-- Search results only locate code; they cover nothing.
-- Reads exist only after `habeas author`, so author before treating an item as
-  uncovered, and before giving it `habeas:util`. For an item still uncovered
-  after that, see "Uncovered Rust items" in the habeas-evidence skill.
+- In Rust, every runnable test needs a `{test}` reference. Ordinary functions,
+  types, trait methods, and test helpers need no individual book connection.
+- Search results locate code. Recorded reads track evidence freshness; they do
+  not satisfy a separate obligation to index every Rust item.

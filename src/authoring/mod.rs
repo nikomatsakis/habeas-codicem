@@ -3,25 +3,24 @@
 pub(crate) mod access;
 mod adaptive;
 mod batch;
-mod inputs;
+pub(crate) mod inputs;
 mod line_numbers;
 mod pages;
 mod progress;
 mod providers;
+mod sdk;
 mod searches;
 mod tools;
 mod usage;
 
 pub use batch::{BatchOutcome, author_all, author_all_with_options, author_sites_with_options};
 
+use rig_core::completion::{CompletionRequest, ToolDefinition};
+use rig_core::message::{Message, ToolResultContent, UserContent};
+use serde_json::{Value, json};
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::time::Instant;
-
-use rig_core::completion::{CompletionRequest, FinishReason, ToolDefinition};
-use rig_core::message::{Message, ToolResultContent, UserContent, turn_failure};
-use serde_json::{Value, json};
 use tokio::sync::watch;
 
 use crate::DefinitionKind;
@@ -30,10 +29,6 @@ use crate::judgment::Judgment;
 use inputs::{AssessmentKind, AssessmentSources};
 use providers::{CompletionProvider, RigProvider};
 use usage::UsageLog;
-
-/// How long a completion request may go without a response.
-// {impl}`requirements.authoring.provider_backoff`
-const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
 
 // {impl}`requirements.authoring.invocation`
 pub struct AuthoringOutcome {
@@ -73,7 +68,7 @@ pub struct AuthoringOptions {
 #[derive(Clone, Debug)]
 pub(crate) enum AuthoringSubject {
     Definition(String),
-    /// The citation review of one source item outside the book.
+    /// The citation review of a source item or opted-in book passage.
     Citation {
         file: String,
         item: String,
@@ -280,6 +275,11 @@ pub async fn author_evidence_with_options(
     let root = fs::canonicalize(root)?;
     let force = options.force || matches!(output, EvidenceOutput::Stdout);
     if !force && batch::subject_is_current(&root, &AuthoringSubject::parse(subject))? {
+        let subject = AuthoringSubject::parse(subject);
+        crate::evidence_format::convert_file(
+            &subject.evidence_path(&root),
+            &crate::sdk::HabeasNode::review_subject(&subject),
+        )?;
         return Ok(None);
     }
     let state = usage_state_root(&root)?;
@@ -456,8 +456,7 @@ async fn configured_assessment(
     let evidence_path = match output {
         EvidenceOutput::File => {
             let path = parsed.evidence_path(root);
-            fs::create_dir_all(path.parent().expect("evidence parent"))?;
-            fs::write(&path, json)?;
+            crate::evidence_format::write_atomic(&path, &evidence)?;
             Some(path)
         }
         EvidenceOutput::Stdout => {
@@ -566,6 +565,8 @@ async fn assess_subject(
     // A site review's assessments also disagree when only `applies` differs.
     let applies = |assessment: &(Judgment, Value)| assessment.1["applies"].as_bool();
     if first.0.kind() == second.0.kind() && applies(&first) == applies(&second) {
+        let mut first = first;
+        merge_review_inputs(&mut first.1, &[&second.1], &[], &[]);
         return Ok(first);
     }
     let describe = |assessment: &(Judgment, Value)| match applies(assessment) {
@@ -619,6 +620,7 @@ fn confirmed_record(
     less_kind: &str,
     verification: Verification,
 ) -> (Judgment, Value) {
+    let dependent = [less.1.clone(), more.1.clone()];
     let applies = |assessment: &(Judgment, Value)| assessment.1["applies"].as_bool();
     let (mut chosen, conclusion) = if !verification.real {
         // A verifier deciding `applies` otherwise than the more favorable
@@ -662,7 +664,46 @@ fn confirmed_record(
         chosen.1["rationale"].as_str().unwrap_or_default().trim()
     );
     chosen.1["rationale"] = Value::String(rationale);
+    merge_review_inputs(
+        &mut chosen.1,
+        &dependent.iter().collect::<Vec<_>>(),
+        &verification.dependencies,
+        &verification.inputs,
+    );
     chosen
+}
+
+// {cite}`habeas:util`
+fn merge_review_inputs(
+    value: &mut Value,
+    assessments: &[&Value],
+    extra: &[habeas_sdk::graph::Dependency<crate::sdk::HabeasNode, crate::sdk::HabeasEdgeLabel>],
+    extra_inputs: &[Value],
+) {
+    for field in ["dependencies", "inputs"] {
+        let mut all = value[field].as_array().cloned().unwrap_or_default();
+        for source in assessments
+            .iter()
+            .flat_map(|record| record[field].as_array().into_iter().flatten())
+        {
+            if !all.contains(source) {
+                all.push(source.clone());
+            }
+        }
+        let added = if field == "dependencies" {
+            serde_json::to_value(extra).expect("dependency JSON")
+        } else {
+            Value::Array(extra_inputs.to_vec())
+        };
+        for source in added.as_array().expect("array") {
+            if !all.contains(source) {
+                all.push(source.clone());
+            }
+        }
+        if field == "inputs" || value.get("format_version").is_some() {
+            value[field] = Value::Array(all);
+        }
+    }
 }
 
 /// Orders assessments: `false` is less favorable than FIXME, and FIXME
@@ -881,7 +922,11 @@ impl Prompt {
 // {impl}`requirements.authoring.judgment_rules`
 // {impl}`requirements.authoring.credentials`
 fn initial_prompt(sources: &AssessmentSources) -> io::Result<Prompt> {
-    let mandatory = serde_json::to_string_pretty(&sources.model_mandatory_inputs())?;
+    initial_prompt_with_inputs(sources, &sources.model_mandatory_inputs())
+}
+
+fn initial_prompt_with_inputs(sources: &AssessmentSources, inputs: &[Value]) -> io::Result<Prompt> {
+    let mandatory = serde_json::to_string_pretty(inputs)?;
     let mut values = shared_blocks().to_vec();
     values.push(("mandatory_inputs", &mandatory));
     Ok(match &sources.subject_kind {
@@ -901,6 +946,7 @@ fn initial_prompt(sources: &AssessmentSources) -> io::Result<Prompt> {
         AssessmentKind::Citation(item) => {
             let citations = serde_json::to_string(&item.model_citations_value())?;
             values.extend([
+                ("review_kind", item.review_kind.label()),
                 ("item_file", item.file.as_str()),
                 ("item_selector", item.selector_label()),
                 ("citations", &citations),
@@ -963,9 +1009,23 @@ fn verification_prompt(
     determination: &Judgment,
     rationale: &str,
 ) -> io::Result<Prompt> {
+    verification_prompt_with_inputs(
+        sources,
+        determination,
+        rationale,
+        &sources.model_mandatory_inputs(),
+    )
+}
+
+fn verification_prompt_with_inputs(
+    sources: &AssessmentSources,
+    determination: &Judgment,
+    rationale: &str,
+    inputs: &[Value],
+) -> io::Result<Prompt> {
     let site = matches!(sources.subject_kind, AssessmentKind::Site(..));
-    let instructions = review_instructions(&initial_prompt(sources)?, site);
-    let mandatory = serde_json::to_string_pretty(&sources.model_mandatory_inputs())?;
+    let instructions = review_instructions(&initial_prompt_with_inputs(sources, inputs)?, site);
+    let mandatory = serde_json::to_string_pretty(inputs)?;
     let determination = determination.to_value().to_string();
     let mut values = shared_blocks().to_vec();
     if site {
@@ -985,6 +1045,7 @@ fn verification_prompt(
     Ok(Prompt::filled("verifier_prompt", &values))
 }
 
+// {cite}`habeas:util`
 fn submission(arguments: &Value) -> io::Result<(Judgment, String)> {
     let object = arguments
         .as_object()
@@ -1042,6 +1103,9 @@ struct Verification {
     acknowledgments: Vec<String>,
     rationale: String,
     applies: Option<bool>,
+    dependencies:
+        Vec<habeas_sdk::graph::Dependency<crate::sdk::HabeasNode, crate::sdk::HabeasEdgeLabel>>,
+    inputs: Vec<Value>,
 }
 
 /// Parses a `submit_verification` call: exactly booleans `real` and
@@ -1092,6 +1156,8 @@ fn verification(arguments: &Value) -> io::Result<Verification> {
         acknowledgments,
         rationale: rationale.to_owned(),
         applies: None,
+        dependencies: Vec::new(),
+        inputs: Vec::new(),
     })
 }
 
@@ -1251,50 +1317,6 @@ fn record(
     }
 }
 
-// {impl}`requirements.authoring.submission`
-// {impl}`requirements.authoring.initial_prompt`
-// {impl}`requirements.authoring.persistence`
-// {impl}`requirements.authoring.mandatory_inputs`
-// {impl}`requirements.ci.reference_set`
-// {impl}`requirements.ci.schema`
-// {impl}`requirements.authoring.citation_prompt`
-// {impl}`requirements.authoring.site_prompt`
-async fn assess(
-    provider: &impl CompletionProvider,
-    sources: &mut AssessmentSources,
-    usage: &mut UsageLog,
-) -> io::Result<(Judgment, Value)> {
-    let prompt = initial_prompt(sources)?;
-    let site = matches!(sources.subject_kind, AssessmentKind::Site(..));
-    let (judgment, rationale, applies) = if site {
-        let (judgment, rationale, applies) = converse(
-            provider,
-            sources,
-            usage,
-            prompt,
-            ("submit_judgment", true),
-            site_submission,
-        )
-        .await?;
-        (judgment, rationale, Some(applies))
-    } else {
-        let (judgment, rationale) = converse(
-            provider,
-            sources,
-            usage,
-            prompt,
-            ("submit_judgment", false),
-            submission,
-        )
-        .await?;
-        (judgment, rationale, None)
-    };
-    usage.record.determination = Some(judgment.kind().into());
-    usage.save()?;
-    let evidence = record(sources, &judgment, &rationale, applies);
-    Ok((judgment, evidence))
-}
-
 /// Verifies a determination and its rationale in its own conversation,
 /// returning the verifier's findings.
 // {impl}`requirements.authoring.verifier_prompt`
@@ -1305,22 +1327,10 @@ async fn verify(
     determination: &Judgment,
     rationale: &str,
 ) -> io::Result<Verification> {
-    let prompt = verification_prompt(sources, determination, rationale)?;
-    let site = matches!(sources.subject_kind, AssessmentKind::Site(..));
-    converse(
-        provider,
-        sources,
-        usage,
-        prompt,
-        ("submit_verification", site),
-        if site {
-            site_verification
-        } else {
-            verification
-        },
-    )
-    .await
+    sdk::verify(provider, sources, usage, determination, rationale).await
 }
+
+type InputObserver<'a> = dyn Fn(&[Value]) + Send + Sync + 'a;
 
 /// One conversation: sends the prompt with the source tools and the named
 /// submission tool, delivers tool results until a submission is accepted,
@@ -1349,242 +1359,148 @@ async fn verify(
 // {impl}`requirements.authoring.submission.searches.recovery`
 // {impl}`requirements.authoring.submission.searches.line_numbers`
 // {impl}`requirements.authoring.submission.searches.accompanying_calls`
-async fn converse<T>(
+async fn converse_observed<T: Send>(
     provider: &impl CompletionProvider,
     sources: &mut AssessmentSources,
     usage: &mut UsageLog,
     prompt: Prompt,
     (submit, site): (&str, bool),
-    parse: impl Fn(&Value) -> io::Result<T>,
+    parse: impl Fn(&Value) -> io::Result<T> + Send,
+    observer: Option<&InputObserver<'_>>,
 ) -> io::Result<T> {
-    let mut request = prompt.request();
-    request.tools = tool_definitions_with(submit, site)?;
-    let mut pending = sources.mandatory_inputs().to_vec();
-    let mut backoff = providers::ProviderBackoff::default();
-    // Pages are kept only until this assessment finishes.
-    let mut pages = pages::ResultPages::default();
-    // Whether the one continuation after a cut-off response has been used.
-    let mut continued = false;
-    // The one rejection of a rationale citing line numbers.
-    let mut rejection = line_numbers::Rejection::default();
-    // Whether the one reminder to submit has been sent.
-    let mut reminded = false;
-    loop {
-        let index = usage.begin_request()?;
-        let started = Instant::now();
-        // An abandoned request is retried like any other transient failure.
-        let response =
-            match tokio::time::timeout(REQUEST_TIMEOUT, provider.complete(request.clone())).await {
-                Ok(response) => response,
-                Err(_) => Err(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    "provider request had no response within ten minutes",
-                )),
-            };
-        let failure = response.as_ref().err().map(providers::failure_codes);
-        usage.end_request(
-            index,
-            started.elapsed().as_millis(),
-            response.as_ref().ok().map(|r| &r.usage),
-            failure,
-        )?;
-        let response = match response {
-            Ok(response) => response,
-            // Tokio's clock, so a paused test clock reaches the limit too.
-            Err(error) => match backoff.retry(error, tokio::time::Instant::now().into_std()) {
-                providers::Retry::Wait(delay) => {
-                    usage.retried(index)?;
-                    tokio::time::sleep(delay).await;
-                    continue;
-                }
-                providers::Retry::Stop(error) => return Err(error),
-            },
-        };
-        backoff = providers::ProviderBackoff::default();
-        sources.record_inputs(&pending);
-        pending.clear();
-        if matches!(response.finish_reason(), Some(FinishReason::Length)) {
-            // Rig reports a context-window overflow as `Length` too; Bedrock's
-            // raw reply tells the two apart, and continuing would only grow
-            // the conversation further.
-            if response.raw.get("stopReason").and_then(Value::as_str)
-                == Some("model_context_window_exceeded")
-            {
-                return Err(io::Error::other(
-                    "the model's response was incomplete: the conversation exceeded the model's context window",
-                ));
-            }
-            if continued {
-                return Err(io::Error::other(
-                    "the model's response was incomplete: it reached the output limit again after one continuation",
-                ));
-            }
-            let limit = provider.output_limit().ok_or_else(|| {
-                io::Error::other(
-                    "the model's response was incomplete: it reached an output limit the configuration does not set",
+    let pending = sources.mandatory_inputs().to_vec();
+    let mut adapter = HabeasConversation {
+        sources,
+        usage,
+        site,
+        submit,
+        parse,
+        pending,
+        observer,
+        pages: pages::ResultPages::default(),
+        rejection: line_numbers::Rejection::default(),
+    };
+    habeas_sdk::agent::converse(provider, &mut adapter, prompt.request(), submit).await
+}
+
+// {cite}`habeas:util`
+struct HabeasConversation<'a, F> {
+    sources: &'a mut AssessmentSources,
+    usage: &'a mut UsageLog,
+    site: bool,
+    submit: &'a str,
+    parse: F,
+    pending: Vec<Value>,
+    observer: Option<&'a InputObserver<'a>>,
+    pages: pages::ResultPages,
+    rejection: line_numbers::Rejection,
+}
+
+impl<T: Send, F: Fn(&Value) -> io::Result<T> + Send> habeas_sdk::agent::Conversation
+    for HabeasConversation<'_, F>
+{
+    type Output = T;
+
+    // {cite}`habeas:util`
+    fn tools(&self) -> io::Result<Vec<ToolDefinition>> {
+        tool_definitions_with(self.submit, self.site)
+    }
+    fn submit(
+        &mut self,
+        submit: &str,
+        arguments: &Value,
+    ) -> io::Result<habeas_sdk::agent::Submission<T>> {
+        use habeas_sdk::agent::Submission;
+        let resubmitted = self.rejection.resubmitted(arguments);
+        let result = (self.parse)(resubmitted.as_ref().unwrap_or(arguments))?;
+        let outstanding = self.pages.outstanding_searches();
+        if !outstanding.is_empty() {
+            return Ok(Submission::Retry(format!(
+                "Submission not accepted: outstanding searches: {}. Call finish_search for every listed search_id, using used:[] when no snippets qualify, then resubmit.",
+                outstanding.join(", ")
+            )));
+        }
+        if resubmitted.is_some() {
+            return Ok(Submission::Accepted(result));
+        }
+        match self
+            .rejection
+            .decide(submit, arguments, location_guidance())
+        {
+            line_numbers::Outcome::Accept => Ok(Submission::Accepted(result)),
+            line_numbers::Outcome::Fail(error) => Err(io::Error::other(error)),
+            line_numbers::Outcome::Reject(message) => Ok(Submission::Retry(message)),
+        }
+    }
+    async fn dispatch(&mut self, name: &str, arguments: &Value) -> io::Result<String> {
+        let delivery = tools::dispatch_paged(self.sources, &mut self.pages, name, arguments)
+            .map_err(|error| {
+                io::Error::new(
+                    error.kind(),
+                    line_numbers::without_source_lines(&error.to_string()),
                 )
             })?;
-            continued = true;
-            request
-                .chat_history
-                .extend(cut_off_continuation(&response, limit, usage));
-            usage.save()?;
-            continue;
+        if name == "finish_search" {
+            self.sources.record_inputs(&delivery.inputs);
+            if let Some(observer) = self.observer {
+                observer(&delivery.inputs);
+            }
+        } else {
+            self.usage.prepared(name, &delivery.inputs);
+            self.pending.extend(delivery.inputs);
         }
-        if let Some(error) = turn_failure(
-            &response.choice,
-            Some(&response.stop()),
-            response.finish_reason().as_ref(),
-        ) {
-            return Err(io::Error::other(error));
+        self.usage.search_result(&delivery.result);
+        Ok(delivery.result.to_string())
+    }
+    // {cite}`habeas:util`
+    fn delivered(&mut self) -> io::Result<()> {
+        self.sources.record_inputs(&self.pending);
+        if let Some(observer) = self.observer {
+            observer(&self.pending);
         }
-        let calls: Vec<_> = response.tool_calls().cloned().collect();
-        let submissions: Vec<_> = calls
-            .iter()
-            .filter(|call| call.function.name.as_str() == submit)
-            .collect();
-        if !submissions.is_empty() {
-            for call in &calls {
-                if call.function.name.as_str() != submit {
-                    usage.skipped_tool(call.function.name.as_str());
-                }
-            }
-            if submissions.len() != 1 {
-                for _ in &submissions {
-                    usage.tool(submit, true);
-                }
-                return Err(io::Error::other(format!(
-                    "{submit} must be invoked exactly once; multiple submissions received"
-                )));
-            }
-            let arguments = Value::Object(submissions[0].function.arguments.clone());
-            let resubmitted = rejection.resubmitted(&arguments);
-            let result = parse(resubmitted.as_ref().unwrap_or(&arguments));
-            if result.is_err() {
-                usage.tool(submit, true);
-                return result;
-            }
-            let outstanding = pages.outstanding_searches();
-            if !outstanding.is_empty() {
-                usage.tool(submit, true);
-                let message = format!(
-                    "Submission not accepted: outstanding searches: {}. Call finish_search for every listed search_id, using used:[] when no snippets qualify, then resubmit.",
-                    outstanding.join(", ")
-                );
-                request.chat_history.push(
-                    response
-                        .message()
-                        .ok_or_else(|| io::Error::other("model returned an empty response"))?,
-                );
-                let results = calls
-                    .iter()
-                    .map(|call| {
-                        let text = if call.function.name.as_str() == submit {
-                            message.clone()
-                        } else {
-                            "not run: the response also made a submission".to_owned()
-                        };
-                        call.error_result(vec![ToolResultContent::text(text)])
-                    })
-                    .collect();
-                usage.save()?;
-                request.chat_history.push(Message::tool_results(results));
-                continue;
-            }
-            if resubmitted.is_some() {
-                usage.tool(submit, false);
-                return result;
-            }
-            match rejection.decide(submit, &arguments, location_guidance()) {
-                line_numbers::Outcome::Accept => {
-                    usage.tool(submit, false);
-                    return result;
-                }
-                line_numbers::Outcome::Fail(error) => {
-                    usage.tool(submit, true);
-                    return Err(io::Error::other(error));
-                }
-                line_numbers::Outcome::Reject(message) => {
-                    usage.tool(submit, true);
-                    request.chat_history.push(
-                        response
-                            .message()
-                            .ok_or_else(|| io::Error::other("model returned an empty response"))?,
-                    );
-                    let results = calls
-                        .iter()
-                        .map(|call| {
-                            let text = if call.function.name.as_str() == submit {
-                                message.clone()
-                            } else {
-                                "not run: the response also made a submission".to_owned()
-                            };
-                            call.error_result(vec![ToolResultContent::text(text)])
-                        })
-                        .collect();
-                    usage.save()?;
-                    request.chat_history.push(Message::tool_results(results));
-                    continue;
-                }
-            }
-        }
-        if calls.is_empty() {
-            if reminded {
-                return Err(io::Error::other(format!(
-                    "model finished without invoking {submit}, even after a reminder"
-                )));
-            }
-            reminded = true;
-            request.chat_history.extend(response.message());
-            request.chat_history.push(Message::User {
-                content: vec![UserContent::text(format!(
-                    "Reminder: you MUST submit your result with the {submit} tool."
-                ))],
-            });
-            usage.save()?;
-            continue;
-        }
-        request.chat_history.push(
-            response
-                .message()
-                .ok_or_else(|| io::Error::other("model returned an empty response"))?,
-        );
-        let mut results = Vec::new();
-        for call in calls {
-            match tools::dispatch_paged(
-                sources,
-                &mut pages,
-                call.function.name.as_str(),
-                &Value::Object(call.function.arguments.clone()),
-            ) {
-                Ok(delivery) => {
-                    usage.tool(call.function.name.as_str(), false);
-                    if call.function.name.as_str() == "finish_search" {
-                        // These dependencies describe snippets already delivered,
-                        // not a new source read. Record them before acknowledgment.
-                        sources.record_inputs(&delivery.inputs);
-                    } else {
-                        usage.prepared(call.function.name.as_str(), &delivery.inputs);
-                        pending.extend(delivery.inputs);
-                    }
-                    usage.search_result(&delivery.result);
-                    results.push(
-                        call.result(vec![ToolResultContent::text(delivery.result.to_string())]),
-                    );
-                }
-                // A denied read is an ordinary tool error the model can see;
-                // only a denied mandatory input aborts, before any request.
-                // {impl}`requirements.authoring.read_denial`
-                Err(error) => {
-                    usage.tool(call.function.name.as_str(), true);
-                    results.push(call.error_result(vec![ToolResultContent::text(
-                        line_numbers::without_source_lines(&error.to_string()),
-                    )]));
-                }
-            }
-        }
-        usage.save()?;
-        request.chat_history.push(Message::tool_results(results));
+        self.pending.clear();
+        Ok(())
+    }
+    // {cite}`habeas:util`
+    fn begin_request(&mut self) -> io::Result<usize> {
+        self.usage.begin_request()
+    }
+    fn end_request(
+        &mut self,
+        index: usize,
+        elapsed: std::time::Duration,
+        response: &io::Result<rig_core::completion::CompletionResponse>,
+    ) -> io::Result<()> {
+        self.usage.end_request(
+            index,
+            elapsed.as_millis(),
+            response.as_ref().ok().map(|r| &r.usage),
+            response.as_ref().err().map(providers::failure_codes),
+        )
+    }
+    // {cite}`habeas:util`
+    fn retried(&mut self, index: usize) -> io::Result<()> {
+        self.usage.retried(index)
+    }
+    // {cite}`habeas:util`
+    fn skipped_tool(&mut self, name: &str) {
+        self.usage.skipped_tool(name);
+    }
+    // {cite}`habeas:util`
+    fn tool(&mut self, name: &str, failed: bool) {
+        self.usage.tool(name, failed);
+    }
+    // {cite}`habeas:util`
+    fn save(&mut self) -> io::Result<()> {
+        self.usage.save()
+    }
+    // {cite}`habeas:util`
+    fn cut_off(
+        &mut self,
+        response: &rig_core::completion::CompletionResponse,
+        limit: u64,
+    ) -> Vec<Message> {
+        cut_off_continuation(response, limit, self.usage)
     }
 }
 
@@ -1618,7 +1534,7 @@ fn cut_off_continuation(
 
 #[cfg(test)]
 mod tests {
-    use std::cell::RefCell;
+    use std::sync::Mutex;
     use std::time::Duration;
 
     use rig_core::completion::{CompletionResponse, FinishReason, Usage};
@@ -1745,10 +1661,10 @@ mod tests {
     // {test}`requirements.authoring.output_limit`
     #[tokio::test]
     async fn a_cut_off_response_without_a_known_output_limit_fails_without_continuing() {
-        struct CutOffProvider(std::cell::Cell<usize>);
+        struct CutOffProvider(std::sync::atomic::AtomicUsize);
         impl CompletionProvider for CutOffProvider {
             async fn complete(&self, request: CompletionRequest) -> io::Result<CompletionResponse> {
-                self.0.set(self.0.get() + 1);
+                self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 Ok(JudgmentProvider(json!(true))
                     .complete(request)
                     .await?
@@ -1760,7 +1676,7 @@ mod tests {
         let mut sources = AssessmentSources::prepare(project.path(), "requirements.ready").unwrap();
         let mut usage =
             UsageLog::start(state.path(), project.path(), &sources.subject_name).unwrap();
-        let provider = CutOffProvider(std::cell::Cell::new(0));
+        let provider = CutOffProvider(std::sync::atomic::AtomicUsize::new(0));
         let error = assess(&provider, &mut sources, &mut usage)
             .await
             .unwrap_err();
@@ -1771,7 +1687,7 @@ mod tests {
             "{message}"
         );
         assert_eq!(
-            provider.0.get(),
+            provider.0.load(std::sync::atomic::Ordering::Relaxed),
             1,
             "an unknown limit must not start a continuation"
         );
@@ -1807,16 +1723,17 @@ mod tests {
         failures: usize,
         status: u16,
         code: &'static str,
-        requests: RefCell<Vec<Value>>,
+        requests: Mutex<Vec<Value>>,
     }
 
     impl CompletionProvider for ThrottledProvider {
         // {cite}`habeas:util`
         async fn complete(&self, request: CompletionRequest) -> io::Result<CompletionResponse> {
             self.requests
-                .borrow_mut()
+                .lock()
+                .unwrap()
                 .push(serde_json::to_value(&request).unwrap());
-            if self.requests.borrow().len() <= self.failures {
+            if self.requests.lock().unwrap().len() <= self.failures {
                 return Err(io::Error::other(
                     rig_core::error::ProviderError::from_provider_body("Too many tokens")
                         .with_provider_status(Some(self.status.try_into().unwrap()))
@@ -1831,16 +1748,17 @@ mod tests {
     // {cite}`habeas:util`
     struct ReadingProvider {
         read: Value,
-        requests: RefCell<Vec<Value>>,
+        requests: Mutex<Vec<Value>>,
     }
 
     impl CompletionProvider for ReadingProvider {
         // {cite}`habeas:util`
         async fn complete(&self, request: CompletionRequest) -> io::Result<CompletionResponse> {
             self.requests
-                .borrow_mut()
+                .lock()
+                .unwrap()
                 .push(serde_json::to_value(&request).unwrap());
-            if self.requests.borrow().len() > 1 {
+            if self.requests.lock().unwrap().len() > 1 {
                 return JudgmentProvider(json!(true)).complete(request).await;
             }
             Ok(CompletionResponse::new(
@@ -1883,7 +1801,7 @@ mod tests {
             UsageLog::start(state.path(), project.path(), &sources.subject_name).unwrap();
         let provider = ReadingProvider {
             read: json!({"file": "src/lib.rs", "item": "fn[work]"}),
-            requests: RefCell::default(),
+            requests: Mutex::default(),
         };
         let (_, evidence) = assess(&provider, &mut sources, &mut usage).await.unwrap();
 
@@ -1907,7 +1825,7 @@ mod tests {
             assert!(text[1].as_str().unwrap().starts_with(":phrase: "));
         }
         // The submission came after the definitions were delivered.
-        let requests = provider.requests.borrow();
+        let requests = provider.requests.lock().unwrap();
         assert_eq!(requests.len(), 2);
         let delivered = requests[1].to_string();
         assert!(delivered.contains("A unit of"), "{delivered}");
@@ -1918,15 +1836,15 @@ mod tests {
     /// token the first carried, and then submits.
     // {cite}`habeas:util`
     struct PagingProvider {
-        requests: RefCell<Vec<String>>,
+        requests: Mutex<Vec<String>>,
     }
 
     impl CompletionProvider for PagingProvider {
         // {cite}`habeas:util`
         async fn complete(&self, request: CompletionRequest) -> io::Result<CompletionResponse> {
             let last = serde_json::to_string(request.chat_history.last().unwrap()).unwrap();
-            self.requests.borrow_mut().push(last.clone());
-            let turn = self.requests.borrow().len();
+            self.requests.lock().unwrap().push(last.clone());
+            let turn = self.requests.lock().unwrap().len();
             let (name, arguments) = match turn {
                 1 => ("habeas", json!({"file": "src/lib.rs", "line_start": 1})),
                 2 => {
@@ -1967,10 +1885,10 @@ mod tests {
         let mut usage =
             UsageLog::start(state.path(), project.path(), &sources.subject_name).unwrap();
         let provider = PagingProvider {
-            requests: RefCell::default(),
+            requests: Mutex::default(),
         };
         let (_, evidence) = assess(&provider, &mut sources, &mut usage).await.unwrap();
-        let requests = provider.requests.borrow();
+        let requests = provider.requests.lock().unwrap();
         assert_eq!(requests.len(), 3);
         let delivered = |request: &str| {
             (0..600)
@@ -2036,10 +1954,10 @@ mod tests {
             UsageLog::start(state.path(), project.path(), &sources.subject_name).unwrap();
         let provider = ReadingProvider {
             read,
-            requests: RefCell::default(),
+            requests: Mutex::default(),
         };
         assess(&provider, &mut sources, &mut usage).await.unwrap();
-        let delivered = provider.requests.borrow()[1].to_string();
+        let delivered = provider.requests.lock().unwrap()[1].to_string();
         assert!(delivered.contains("cannot parse"), "{delivered}");
         assert!(
             !regex::Regex::new(r"line \d+: ")
@@ -2070,7 +1988,7 @@ mod tests {
                 UsageLog::start(state.path(), project.path(), &sources.subject_name).unwrap();
             let provider = ReadingProvider {
                 read: read.clone(),
-                requests: RefCell::default(),
+                requests: Mutex::default(),
             };
             let failure = tools::dispatch(&sources, "habeas", &read)
                 .err()
@@ -2081,7 +1999,7 @@ mod tests {
                 .unwrap_or_else(|error| panic!("{read}: {error}"));
             // The failure went back to the model as a tool error, and the model
             // then submitted in a second request.
-            let requests = provider.requests.borrow();
+            let requests = provider.requests.lock().unwrap();
             assert_eq!(requests.len(), 2, "{read}");
             let message =
                 serde_json::to_string(&line_numbers::without_source_lines(&failure.to_string()))
@@ -2121,12 +2039,12 @@ mod tests {
             UsageLog::start(state.path(), project.path(), &sources.subject_name).unwrap();
         let provider = ReadingProvider {
             read: json!({"file": "src/escape.rs", "line_start": 1}),
-            requests: RefCell::default(),
+            requests: Mutex::default(),
         };
         let (_, evidence) = assess(&provider, &mut sources, &mut usage).await.unwrap();
         // The denial went back to the model, naming the path and the reason,
         // and the assessment continued without recording the file.
-        let requests = provider.requests.borrow();
+        let requests = provider.requests.lock().unwrap();
         assert_eq!(requests.len(), 2);
         let delivered = requests[1].to_string();
         assert!(delivered.contains("src/escape.rs"), "{delivered}");
@@ -2237,12 +2155,12 @@ mod tests {
             failures: 5,
             status: 429,
             code: "ThrottlingException",
-            requests: RefCell::default(),
+            requests: Mutex::default(),
         };
         let started = tokio::time::Instant::now();
         let (_, record) = assess(&provider, &mut sources, &mut usage).await.unwrap();
         assert!(started.elapsed() >= Duration::from_millis(500));
-        let requests = provider.requests.borrow();
+        let requests = provider.requests.lock().unwrap();
         assert_eq!(requests.len(), 6);
         assert!(requests.iter().all(|request| request == &requests[0]));
         assert_eq!(record["inputs"], json!(sources.mandatory_inputs()));
@@ -2275,7 +2193,7 @@ mod tests {
             failures: 8,
             status: 400,
             code: "ValidationException",
-            requests: RefCell::default(),
+            requests: Mutex::default(),
         };
         let started = tokio::time::Instant::now();
         let error = assess(&provider, &mut sources, &mut usage)
@@ -2283,7 +2201,7 @@ mod tests {
             .unwrap_err();
         assert!(error.to_string().contains("Too many tokens"));
         assert_eq!(started.elapsed(), Duration::ZERO);
-        assert_eq!(provider.requests.borrow().len(), 1);
+        assert_eq!(provider.requests.lock().unwrap().len(), 1);
         // The failure is recorded as not retried.
         let log: Value = serde_json::from_slice(&fs::read(&usage.path).unwrap()).unwrap();
         assert_eq!(
@@ -2300,7 +2218,7 @@ mod tests {
             failures: usize::MAX,
             status: 503,
             code: "ServiceUnavailableException",
-            requests: RefCell::default(),
+            requests: Mutex::default(),
         };
         let started = tokio::time::Instant::now();
         let error = assess(&provider, &mut sources, &mut usage)
@@ -2312,7 +2230,7 @@ mod tests {
             "{:?}",
             started.elapsed()
         );
-        let attempts = provider.requests.borrow().len();
+        let attempts = provider.requests.lock().unwrap().len();
         assert!(attempts > 3, "{attempts}");
         assert!(
             error.contains(&format!(
@@ -2332,7 +2250,7 @@ mod tests {
             failures: 8,
             status: 429,
             code: "ThrottlingException",
-            requests: RefCell::default(),
+            requests: Mutex::default(),
         };
         assert!(
             tokio::time::timeout(
@@ -2343,7 +2261,7 @@ mod tests {
             .is_err()
         );
         tokio::time::advance(Duration::from_secs(120)).await;
-        assert_eq!(provider.requests.borrow().len(), 1);
+        assert_eq!(provider.requests.lock().unwrap().len(), 1);
         assert!(sources.recorded_inputs().is_empty());
         let log: Value = serde_json::from_slice(&fs::read(&usage.path).unwrap()).unwrap();
         assert_eq!(log["request_count"], 1);
@@ -2352,14 +2270,14 @@ mod tests {
 
     // {cite}`habeas:util`
     struct HangingProvider {
-        requests: RefCell<usize>,
+        requests: Mutex<usize>,
     }
 
     impl CompletionProvider for HangingProvider {
         // {cite}`habeas:util`
         async fn complete(&self, request: CompletionRequest) -> io::Result<CompletionResponse> {
-            *self.requests.borrow_mut() += 1;
-            if *self.requests.borrow() == 1 {
+            *self.requests.lock().unwrap() += 1;
+            if *self.requests.lock().unwrap() == 1 {
                 std::future::pending::<()>().await;
             }
             JudgmentProvider(json!(true)).complete(request).await
@@ -2372,7 +2290,7 @@ mod tests {
     async fn unanswered_requests_are_abandoned_and_retried() {
         let (_project, _state, mut sources, mut usage) = retry_fixture();
         let provider = HangingProvider {
-            requests: RefCell::default(),
+            requests: Mutex::default(),
         };
         let started = tokio::time::Instant::now();
         let (judgment, _) = assess(&provider, &mut sources, &mut usage).await.unwrap();
@@ -2382,7 +2300,7 @@ mod tests {
             "{:?}",
             started.elapsed()
         );
-        assert_eq!(*provider.requests.borrow(), 2);
+        assert_eq!(*provider.requests.lock().unwrap(), 2);
         let log: Value = serde_json::from_slice(&fs::read(&usage.path).unwrap()).unwrap();
         assert_eq!(log["request_count"], 2);
         assert_eq!(log["requests"][0]["outcome"], "failed");
@@ -2392,14 +2310,14 @@ mod tests {
     /// recovered request with a source read and the second with a judgment.
     // {cite}`habeas:util`
     struct ThrottledToolProvider {
-        requests: RefCell<Vec<(tokio::time::Instant, Value)>>,
+        requests: Mutex<Vec<(tokio::time::Instant, Value)>>,
     }
 
     impl CompletionProvider for ThrottledToolProvider {
         // {cite}`habeas:util`
         async fn complete(&self, request: CompletionRequest) -> io::Result<CompletionResponse> {
-            let attempt = self.requests.borrow().len();
-            self.requests.borrow_mut().push((
+            let attempt = self.requests.lock().unwrap().len();
+            self.requests.lock().unwrap().push((
                 tokio::time::Instant::now(),
                 serde_json::to_value(&request).unwrap(),
             ));
@@ -2433,10 +2351,10 @@ mod tests {
         let (project, _state, mut sources, mut usage) = retry_fixture();
         fs::write(project.path().join("src/lib.rs"), "fn run() {}\n").unwrap();
         let provider = ThrottledToolProvider {
-            requests: RefCell::default(),
+            requests: Mutex::default(),
         };
         let (_, record) = assess(&provider, &mut sources, &mut usage).await.unwrap();
-        let requests = provider.requests.borrow();
+        let requests = provider.requests.lock().unwrap();
         assert_eq!(requests.len(), 4);
         // Each throttled request waits within the initial one-second window:
         // the successful tool turn reset the window doubled by the first failure.
@@ -2610,14 +2528,14 @@ mod tests {
     // {cite}`habeas:util`
     struct ScriptedProvider {
         turns: Vec<Vec<(&'static str, Value)>>,
-        requests: RefCell<usize>,
+        requests: Mutex<usize>,
     }
 
     impl CompletionProvider for ScriptedProvider {
         // {cite}`habeas:util`
         async fn complete(&self, _request: CompletionRequest) -> io::Result<CompletionResponse> {
-            let turn = *self.requests.borrow();
-            *self.requests.borrow_mut() += 1;
+            let turn = *self.requests.lock().unwrap();
+            *self.requests.lock().unwrap() += 1;
             let calls = self.turns[turn]
                 .iter()
                 .enumerate()
@@ -2647,7 +2565,7 @@ mod tests {
     struct SearchProvider {
         submit: &'static str,
         turns: Vec<Vec<SearchAction>>,
-        requests: RefCell<Vec<Value>>,
+        requests: Mutex<Vec<Value>>,
     }
 
     fn delivered_searches(value: &Value, results: &mut Vec<Value>) {
@@ -2678,8 +2596,8 @@ mod tests {
     impl CompletionProvider for SearchProvider {
         async fn complete(&self, request: CompletionRequest) -> io::Result<CompletionResponse> {
             let history = serde_json::to_value(&request.chat_history).unwrap();
-            let turn = self.requests.borrow().len();
-            self.requests.borrow_mut().push(history.clone());
+            let turn = self.requests.lock().unwrap().len();
+            self.requests.lock().unwrap().push(history.clone());
             if self.turns[turn].is_empty() {
                 return Ok(CompletionResponse::new(
                     vec![AssistantContent::text("The review is complete.")],
@@ -2784,7 +2702,7 @@ mod tests {
                     vec![Finish(1, vec![])],
                     vec![Call(submit, arguments)],
                 ],
-                requests: RefCell::default(),
+                requests: Mutex::default(),
             };
             if submit == "submit_judgment" {
                 let (_, evidence) = assess(&provider, &mut sources, &mut usage).await.unwrap();
@@ -2807,7 +2725,7 @@ mod tests {
                 .unwrap();
                 assert!(!result.real);
             }
-            let requests = provider.requests.borrow();
+            let requests = provider.requests.lock().unwrap();
             assert_eq!(requests.len(), 6);
             let mut searches = Vec::new();
             delivered_searches(&requests[1], &mut searches);
@@ -2866,12 +2784,12 @@ mod tests {
         }
         impl CompletionProvider for Provider {
             async fn complete(&self, request: CompletionRequest) -> io::Result<CompletionResponse> {
-                if self.fail_after_finish && self.scripted.requests.borrow().len() == 2 {
+                if self.fail_after_finish && self.scripted.requests.lock().unwrap().len() == 2 {
                     let history = serde_json::to_value(&request.chat_history).unwrap();
                     let acknowledgment = history.as_array().unwrap().last().unwrap().to_string();
                     assert!(acknowledgment.contains("finished"));
                     assert!(!acknowledgment.contains("fn first"));
-                    self.scripted.requests.borrow_mut().push(history);
+                    self.scripted.requests.lock().unwrap().push(history);
                     return Err(io::Error::other("fixture stopped after acknowledgment"));
                 }
                 self.scripted.complete(request).await
@@ -2904,7 +2822,7 @@ mod tests {
                             "rationale":"Both selected snippets contain assertions."}),
                         )],
                     ],
-                    requests: RefCell::default(),
+                    requests: Mutex::default(),
                 },
             };
             let outcome = assess(&provider, &mut sources, &mut usage).await;
@@ -2938,7 +2856,7 @@ mod tests {
                     .iter()
                     .any(|input| input["item"] == "fn[unused]")
             );
-            assert_eq!(provider.scripted.requests.borrow().len(), 3);
+            assert_eq!(provider.scripted.requests.lock().unwrap().len(), 3);
         }
     }
 
@@ -2965,10 +2883,10 @@ mod tests {
                 vec![Finish(0, vec![])],
                 vec![Call("submit_judgment", submit)],
             ],
-            requests: RefCell::default(),
+            requests: Mutex::default(),
         };
         let (_, evidence) = assess(&provider, &mut sources, &mut usage).await.unwrap();
-        let requests = provider.requests.borrow();
+        let requests = provider.requests.lock().unwrap();
         assert!(requests[2].to_string().contains("unknown tag"));
         assert!(requests[3].to_string().contains("outstanding searches"));
         assert_eq!(requests.len(), 5);
@@ -3008,12 +2926,12 @@ mod tests {
                 vec![Finish(1, vec![])],
                 vec![RetainRejected],
             ],
-            requests: RefCell::default(),
+            requests: Mutex::default(),
         };
         let (judgment, evidence) = assess(&provider, &mut sources, &mut usage).await.unwrap();
         assert_eq!(judgment, Judgment::False);
         assert_eq!(evidence["rationale"], "src/lib.rs:1 needs work.");
-        let requests = provider.requests.borrow();
+        let requests = provider.requests.lock().unwrap();
         assert!(requests[2].to_string().contains("outstanding searches"));
         assert!(!requests[2].to_string().contains("rationale set to exactly"));
         assert!(requests[4].to_string().contains("rationale set to exactly"));
@@ -3058,14 +2976,14 @@ mod tests {
                 vec![Finish(0, vec![])],
                 vec![Call("submit_judgment", second)],
             ],
-            requests: RefCell::default(),
+            requests: Mutex::default(),
         };
         let error = assess(&provider, &mut sources, &mut usage)
             .await
             .unwrap_err()
             .to_string();
         assert!(error.contains("after a rejection"), "{error}");
-        let requests = provider.requests.borrow();
+        let requests = provider.requests.lock().unwrap();
         assert_eq!(requests.len(), 5);
         assert!(
             requests[1]
@@ -3129,20 +3047,20 @@ mod tests {
             let provider = SearchProvider {
                 submit: "submit_judgment",
                 turns,
-                requests: RefCell::default(),
+                requests: Mutex::default(),
             };
             let result = assess(&provider, &mut sources, &mut usage).await;
             if malformed {
                 let error = result.unwrap_err().to_string();
                 assert!(error.contains("rationale"), "{error}");
                 assert!(!error.contains("outstanding searches"), "{error}");
-                assert_eq!(provider.requests.borrow().len(), 2);
+                assert_eq!(provider.requests.lock().unwrap().len(), 2);
                 assert!(usage.record.determination.is_none());
             } else {
                 assert_eq!(result.unwrap().0, Judgment::True);
-                assert_eq!(provider.requests.borrow().len(), 5);
+                assert_eq!(provider.requests.lock().unwrap().len(), 5);
                 assert!(
-                    provider.requests.borrow()[3]
+                    provider.requests.lock().unwrap()[3]
                         .to_string()
                         .contains("Reminder:")
                 );
@@ -3186,7 +3104,7 @@ mod tests {
                     "rationale":"The assert_refusal snippet asserts refusal and byte preservation."}),
                 )],
             ],
-            requests: RefCell::default(),
+            requests: Mutex::default(),
         };
         let (_, evidence) = assess(&provider, &mut sources, &mut usage).await.unwrap();
         let inputs = evidence["inputs"].as_array().unwrap();
@@ -3240,15 +3158,15 @@ mod tests {
     struct ResubmittingProvider {
         first: Value,
         next: fn(&str) -> Value,
-        requests: RefCell<Vec<String>>,
+        requests: Mutex<Vec<String>>,
     }
 
     impl CompletionProvider for ResubmittingProvider {
         // {cite}`habeas:util`
         async fn complete(&self, request: CompletionRequest) -> io::Result<CompletionResponse> {
             let history = serde_json::to_string(&request.chat_history).unwrap();
-            let turn = self.requests.borrow().len();
-            self.requests.borrow_mut().push(history.clone());
+            let turn = self.requests.lock().unwrap().len();
+            self.requests.lock().unwrap().push(history.clone());
             let arguments = if turn == 0 {
                 self.first.clone()
             } else {
@@ -3312,10 +3230,10 @@ mod tests {
             let provider = ResubmittingProvider {
                 first: cited.clone(),
                 next,
-                requests: RefCell::default(),
+                requests: Mutex::default(),
             };
             let result = assess(&provider, &mut sources, &mut usage).await;
-            let requests = provider.requests.borrow();
+            let requests = provider.requests.lock().unwrap();
             assert_eq!(requests.len(), 2);
             // The rejection quotes the citation and repeats the guidance.
             assert!(requests[1].contains("src/lib.rs:1"), "{}", requests[1]);
@@ -3393,10 +3311,10 @@ mod tests {
         let provider = ResubmittingProvider {
             first: json!({"determination": true, "rationale": "`src/lib.rs` is fine."}),
             next: |_| unreachable!(),
-            requests: RefCell::default(),
+            requests: Mutex::default(),
         };
         assess(&provider, &mut sources, &mut usage).await.unwrap();
-        assert_eq!(provider.requests.borrow().len(), 1);
+        assert_eq!(provider.requests.lock().unwrap().len(), 1);
     }
 
     // {cite}`habeas:util`
@@ -3404,15 +3322,16 @@ mod tests {
     /// scripted tool calls.
     struct RemindedProvider {
         turns: Vec<Vec<(&'static str, Value)>>,
-        requests: RefCell<Vec<String>>,
+        requests: Mutex<Vec<String>>,
     }
 
     impl CompletionProvider for RemindedProvider {
         // {cite}`habeas:util`
         async fn complete(&self, request: CompletionRequest) -> io::Result<CompletionResponse> {
-            let turn = self.requests.borrow().len();
+            let turn = self.requests.lock().unwrap().len();
             self.requests
-                .borrow_mut()
+                .lock()
+                .unwrap()
                 .push(serde_json::to_string(&request.chat_history).unwrap());
             let mut content: Vec<AssistantContent> = self.turns[turn]
                 .iter()
@@ -3468,10 +3387,10 @@ mod tests {
                 UsageLog::start(state.path(), project.path(), &sources.subject_name).unwrap();
             let provider = RemindedProvider {
                 turns,
-                requests: RefCell::default(),
+                requests: Mutex::default(),
             };
             let result = assess(&provider, &mut sources, &mut usage).await;
-            let requests = provider.requests.borrow();
+            let requests = provider.requests.lock().unwrap();
             assert_eq!(requests.len(), count);
             assert!(!requests[0].contains("Reminder:"));
             assert!(
@@ -3579,10 +3498,10 @@ mod tests {
                 UsageLog::start(state.path(), project.path(), &sources.subject_name).unwrap();
             let provider = ScriptedProvider {
                 turns: turns.clone(),
-                requests: RefCell::default(),
+                requests: Mutex::default(),
             };
             let result = assess(&provider, &mut sources, &mut usage).await;
-            assert_eq!(*provider.requests.borrow(), requests, "{turns:?}");
+            assert_eq!(*provider.requests.lock().unwrap(), requests, "{turns:?}");
             let record = serde_json::to_value(&usage.record).unwrap();
             if accepted {
                 let (judgment, evidence) = result.unwrap();
@@ -3625,7 +3544,7 @@ mod tests {
     // {cite}`habeas:util`
     struct RecordingProvider {
         turns: Vec<(&'static str, Value)>,
-        requests: RefCell<Vec<Value>>,
+        requests: Mutex<Vec<Value>>,
     }
 
     impl RecordingProvider {
@@ -3633,7 +3552,7 @@ mod tests {
         fn new(turns: Vec<(&'static str, Value)>) -> Self {
             Self {
                 turns,
-                requests: RefCell::default(),
+                requests: Mutex::default(),
             }
         }
 
@@ -3641,7 +3560,8 @@ mod tests {
         // {cite}`habeas:util`
         fn prompts(&self) -> Vec<(String, Vec<String>)> {
             self.requests
-                .borrow()
+                .lock()
+                .unwrap()
                 .iter()
                 .map(|request| {
                     let text = request.to_string();
@@ -3660,9 +3580,10 @@ mod tests {
     impl CompletionProvider for RecordingProvider {
         // {cite}`habeas:util`
         async fn complete(&self, request: CompletionRequest) -> io::Result<CompletionResponse> {
-            let turn = self.requests.borrow().len();
+            let turn = self.requests.lock().unwrap().len();
             self.requests
-                .borrow_mut()
+                .lock()
+                .unwrap()
                 .push(serde_json::to_value(&request).unwrap());
             let (name, arguments) = self.turns[turn].clone();
             Ok(CompletionResponse::new(
@@ -3743,7 +3664,7 @@ mod tests {
             let (result, provider, logs) = confirmed(turns.clone(), confirm).await;
             let (_, record) = result.unwrap();
             assert_eq!(record["rationale"], turns[0].1["rationale"]);
-            assert_eq!(provider.requests.borrow().len(), 1);
+            assert_eq!(provider.requests.lock().unwrap().len(), 1);
             assert_eq!(logs.len(), 1);
         }
     }
@@ -4056,7 +3977,7 @@ mod tests {
             (
                 "citations:src/lib.rs#fn[helper]",
                 "The reviewer judged citation review citations:src/lib.rs#fn[helper] as false.",
-                "Item under review: src/lib.rs fn[helper]\nCitations to check:",
+                "Item under review: src/lib.rs fn[helper]\nReview kind: source_item\nCitations to check:",
             ),
         ] {
             let sources = AuthoringSubject::parse(subject)
@@ -4116,6 +4037,8 @@ mod tests {
                 acknowledgments: vec!["example/queue#1".into()],
                 rationale: "Checked.".into(),
                 applies: None,
+                dependencies: Vec::new(),
+                inputs: Vec::new(),
             }
         );
         assert!(
@@ -4258,6 +4181,149 @@ mod tests {
         );
     }
 
+    // {test}`requirements.references.citation_review.book_commentary`
+    // {test}`requirements.authoring.citation_prompt`
+    // {test}`requirements.authoring.mandatory_inputs`
+    #[tokio::test]
+    async fn book_commentary_reviews_supply_the_whole_passage_and_check_concordance() {
+        let project = inputs::tests::project();
+        fs::write(
+            project.path().join("md/terms.md"),
+            ":::{definition} unit\n:phrase: unit\nA unit.\n:::\n",
+        )
+        .unwrap();
+        fs::write(
+            project.path().join("md/requirements.md"),
+            ":::{req} ready\nReadiness is measured in {term}`terms.unit`.\n:::\n",
+        )
+        .unwrap();
+        let body = "# Notes\n\nUnrelated chapter text.\n\n:::{cite} requirements.ready\nReadiness is measured in units.\n:::\n\nAdjacent prose.\n";
+        fs::write(project.path().join("md/notes.md"), body).unwrap();
+        let definitions = crate::evidence::load_definitions(project.path()).unwrap();
+        let references = crate::evidence::collect_references(project.path(), &mut Vec::new());
+        let items = crate::citations::citation_items(
+            project.path(),
+            &definitions,
+            &references,
+            &crate::inputs::OutlineCache::default(),
+        );
+        let item = items
+            .values()
+            .find(|item| item.file == "md/notes.md")
+            .unwrap();
+        let subject =
+            AuthoringSubject::parse(&crate::citations::subject_label(&item.file, &item.item));
+        let mut sources = subject.sources(project.path()).unwrap();
+        let mandatory = sources.mandatory_inputs();
+        assert_eq!(mandatory[0]["file"], "md/notes.md");
+        assert_eq!(mandatory[0]["item"], item.item);
+        assert!(
+            mandatory
+                .iter()
+                .any(|input| input["requirements"] == "requirements.ready")
+        );
+        assert!(
+            mandatory
+                .iter()
+                .any(|input| input["definition"] == "terms.unit")
+        );
+        let state = tempfile::tempdir().unwrap();
+        let mut usage = UsageLog::start(state.path(), project.path(), &subject.label()).unwrap();
+        let provider =
+            RecordingProvider::new(vec![judgment(json!(true), "The explanation is supported.")]);
+        let (_, record) = assess(&provider, &mut sources, &mut usage).await.unwrap();
+        let prompt = provider.prompts()[0].0.clone();
+        for text in [
+            "Review kind: book_commentary",
+            "Readiness is measured in units.",
+            "Readiness is measured in",
+            "A unit.",
+            "Contradicting or unsupported claims are gaps",
+        ] {
+            assert!(prompt.contains(text), "{text}: {prompt}");
+        }
+        assert!(!prompt.contains("Unrelated chapter text") && !prompt.contains("Adjacent prose"));
+        assert!(!prompt.contains("{{review_kind}}"));
+        assert_eq!(record["file"], "md/notes.md");
+        assert_eq!(record["item"], item.item);
+        assert_eq!(record["determination"], true);
+        assert!(
+            record["inputs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|input| input["file"] == "md/notes.md" && input["item"] == item.item)
+        );
+        let path = subject.evidence_path(project.path());
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
+        let validate = |current: &crate::citations::CitationItem| {
+            let mut errors = Vec::new();
+            crate::citations::validate_review(
+                project.path(),
+                &current.review_path(),
+                current,
+                &definitions,
+                &crate::inputs::OutlineCache::default(),
+                &mut errors,
+            );
+            errors
+        };
+        assert!(validate(item).is_empty());
+        // A text change in the same passage invalidates its recorded read.
+        fs::write(
+            project.path().join("md/notes.md"),
+            body.replace(
+                "Readiness is measured in units.",
+                "Readiness is measured in seconds.",
+            ),
+        )
+        .unwrap();
+        let stale = validate(item);
+        assert!(
+            stale.iter().any(|error| error.contains("hash")),
+            "{stale:?}"
+        );
+        let mut changed = subject.sources(project.path()).unwrap();
+        let provider = RecordingProvider::new(vec![judgment(
+            json!(false),
+            "Seconds contradicts the cited unit description.",
+        )]);
+        let (determination, record) = assess(&provider, &mut changed, &mut usage).await.unwrap();
+        assert_eq!(determination, Judgment::False);
+        assert_eq!(record["determination"], false);
+        assert!(
+            provider.prompts()[0]
+                .0
+                .contains("Readiness is measured in seconds.")
+        );
+        fs::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
+        assert!(
+            validate(item)
+                .iter()
+                .any(|error| error.contains("determination is false"))
+        );
+        // Removing the opt-in passage orphans its existing review.
+        fs::write(project.path().join("md/notes.md"), "Ordinary prose.\n").unwrap();
+        let mut errors = Vec::new();
+        let references = crate::evidence::collect_references(project.path(), &mut errors);
+        crate::citations::validate(
+            project.path(),
+            &definitions,
+            &references,
+            &crate::inputs::OutlineCache::default(),
+            &[path],
+            &mut errors,
+            &mut |_| {},
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("orphaned citation review")),
+            "{errors:?}"
+        );
+    }
+
     // {test}`requirements.authoring.citation_prompt`
     // {test}`requirements.references.citation_review`
     // {test}`requirements.authoring.mandatory_inputs`
@@ -4313,7 +4379,7 @@ mod tests {
                 ("submit_judgment", duplicate.clone()),
                 ("submit_judgment", duplicate),
             ]],
-            requests: RefCell::default(),
+            requests: Mutex::default(),
         };
         let mut duplicate_sources = subject.sources(project.path()).unwrap();
         assert!(
@@ -4324,6 +4390,7 @@ mod tests {
                 .contains("exactly once")
         );
         let prompt = &prompts[0].0;
+        assert!(prompt.contains("Review kind: source_item"), "{prompt}");
         assert!(
             prompt.contains("Review one source item's citations."),
             "{prompt}"
@@ -4916,7 +4983,7 @@ no_match:
                 ("submit_judgment", duplicate.clone()),
                 ("submit_judgment", duplicate),
             ]],
-            requests: RefCell::default(),
+            requests: Mutex::default(),
         };
         let mut duplicate_sources = subject.sources(root).unwrap();
         assert!(
@@ -4926,7 +4993,7 @@ no_match:
                 .to_string()
                 .contains("exactly once")
         );
-        let submit = provider.requests.borrow()[0]["tools"]
+        let submit = provider.requests.lock().unwrap()[0]["tools"]
             .as_array()
             .unwrap()
             .iter()
@@ -5077,7 +5144,7 @@ no_match:
         ])
         .await;
         assert_eq!(result.unwrap().1["rationale"], "Reports problems.");
-        assert_eq!(provider.requests.borrow().len(), 2);
+        assert_eq!(provider.requests.lock().unwrap().len(), 2);
 
         for (turns, recorded, applies, kept) in [
             // The verifier finds the requirement does not apply, unlike the
@@ -5192,4 +5259,12 @@ no_match:
             assert!(tools.contains(&"submit_verification".to_owned()));
         }
     }
+}
+
+async fn assess(
+    provider: &impl CompletionProvider,
+    sources: &mut AssessmentSources,
+    usage: &mut UsageLog,
+) -> io::Result<(Judgment, Value)> {
+    sdk::assess(provider, sources, usage).await
 }

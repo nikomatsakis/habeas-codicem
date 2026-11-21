@@ -1,10 +1,10 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::BTreeMap;
 use std::fs;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 use crate::evidence::{Declaration, InspectionProgress};
-use crate::outline::{self, OutlineError};
+use crate::outline;
 use crate::reference_roles;
 
 /// The inspection phase label for Rust function coverage.
@@ -128,129 +128,35 @@ pub(crate) fn comments(source: &str) -> Vec<Range<usize>> {
     ranges
 }
 
-// {cite}`habeas:util`
-/// The outline inputs recorded by every evidence record, citation review,
-/// and site review, as `file -> item -> hashes`, read once per validation.
-/// An item is covered when its node or an enclosing node is recorded here
-/// with its current hash.
-#[derive(Default)]
-pub(crate) struct EvidenceReads(HashMap<String, HashMap<String, HashSet<String>>>);
-
-impl EvidenceReads {
-    /// Reads the outline inputs of the given evidence files. A file that
-    /// cannot be read or parsed contributes nothing; evidence validation
-    /// reports it.
-    pub(crate) fn load(files: &[PathBuf]) -> Self {
-        let mut reads = Self::default();
-        for file in files {
-            let Ok(text) = fs::read_to_string(file) else {
-                continue;
-            };
-            let Ok(record) = serde_json::from_str::<serde_json::Value>(&text) else {
-                continue;
-            };
-            reads.add_record(&record);
-        }
-        reads
-    }
-
-    /// Adds the outline inputs of one record.
-    pub(crate) fn add_record(&mut self, record: &serde_json::Value) {
-        for (file, item, hash) in outline_inputs(record) {
-            if let Some(hash) = hash {
-                self.0
-                    .entry(file.to_owned())
-                    .or_default()
-                    .entry(item.to_owned())
-                    .or_default()
-                    .insert(hash.to_owned());
-            }
-        }
-    }
-
-    /// Whether node `index` of `file`'s outline, or a node containing it, is
-    /// recorded with its current hash.
-    pub(crate) fn covers(&self, file: &str, outline: &outline::Outline, index: usize) -> bool {
-        let Some(items) = self.0.get(file) else {
-            return false;
-        };
-        let mut current = Some(index);
-        while let Some(index) = current {
-            let node = &outline.nodes[index];
-            if items
-                .get(&node.selector)
-                .is_some_and(|hashes| hashes.contains(&node.structural_hash))
-            {
-                return true;
-            }
-            current = node.parent;
-        }
-        false
-    }
-}
-
-// {cite}`habeas:util`
-/// The outline inputs of an evidence record or review, as `(file, item,
-/// hash)`; an input without a recorded hash has none.
-pub(crate) fn outline_inputs(
-    record: &serde_json::Value,
-) -> impl Iterator<Item = (&str, &str, Option<&str>)> {
-    record
-        .get("inputs")
-        .and_then(serde_json::Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|input| {
-            let field = |name: &str| input.get(name).and_then(serde_json::Value::as_str);
-            Some((field("file")?, field("item")?, field("hash")))
-        })
-}
-
-// {cite}`habeas:util`
-/// An item Rust item coverage reports: its file, the outline selectors of
-/// its node and of each node containing it, innermost first, and the
-/// validation error naming it.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct UncoveredItem {
-    pub(crate) file: String,
-    pub(crate) selectors: Vec<String>,
-    /// How the item is reported.
-    pub(crate) error: String,
-    /// Whether it lies inside a module named `tests`, which is not reported.
-    pub(crate) in_tests: bool,
-}
-
-/// The validation error for an uncovered item.
-fn uncovered_error(label: &str, line: usize, kind: &str, name: &str) -> String {
-    format!(
-        "{label}:{line}: {kind} {name} has no recent coverage: it has no requirement or example reference, and no recent evidence record or review read it"
-    )
-}
-
-/// Lists functions, methods, structs, enums, and unions with no valid
-/// reference in a comment belonging to them, as `(line, kind, name)`.
-// {impl}`requirements.references.rust_item_coverage`
-#[cfg(test)]
-fn missing_function_references(
-    source: &str,
-    definitions: &BTreeMap<String, Declaration>,
-) -> Result<Vec<(usize, &'static str, String)>, OutlineError> {
-    let (_, missing) = unreferenced_items(source, definitions)?;
-    Ok(missing
-        .into_iter()
-        .map(|(_, line, kind, name)| (line, kind, name))
-        .collect())
-}
-
-/// Items without a valid reference, as `(node, line, kind, name)`.
-type Unreferenced = Vec<(usize, usize, &'static str, String)>;
-
 /// A test attribute: `#[test]`, or one whose path ends in `test`, such as
 /// `#[tokio::test]`.
 static TEST_ATTRIBUTE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-    regex::Regex::new(r"(?m)^\s*#\[\s*(?:[A-Za-z_][A-Za-z0-9_]*\s*::\s*)*test\s*[\](]")
+    regex::Regex::new(r"^#\[\s*(?:[A-Za-z_][A-Za-z0-9_]*\s*::\s*)*test\s*[\](]")
         .expect("test attribute pattern")
 });
+
+// {impl}`requirements.references.coverage.tests`
+fn has_test_attribute(prefix: &str) -> bool {
+    let comment_ranges = comments(prefix);
+    let bytes = prefix.as_bytes();
+    let mut position = 0;
+    while position < bytes.len() {
+        if let Some(comment) = comment_ranges.iter().find(|range| range.start == position) {
+            position = comment.end;
+            continue;
+        }
+        match bytes[position] {
+            b'#' if TEST_ATTRIBUTE.is_match(&prefix[position..]) => return true,
+            b'r' | b'b' | b'c' => {
+                position = raw_string_end(bytes, position).unwrap_or(position + 1);
+            }
+            b'"' => position = quoted_end(bytes, position),
+            b'\'' => position = char_end(prefix, position).unwrap_or(position + 1),
+            _ => position += 1,
+        }
+    }
+    false
+}
 
 /// Test functions of a Rust source without a valid `{test}` reference, as
 /// `(node, line, name)`.
@@ -260,7 +166,7 @@ pub(crate) fn untested_tests(
     outline: &outline::Outline,
     definitions: &BTreeMap<String, Declaration>,
 ) -> Vec<(usize, usize, String)> {
-    // The same rule as item coverage, restricted to `{test}`.
+    // Only an explicit, valid `{test}` reference supplies a test obligation.
     let counts = |kind: crate::ReferenceKind, name: &str| {
         kind == crate::ReferenceKind::Test && covering_reference(kind, name, definitions)
     };
@@ -281,20 +187,14 @@ pub(crate) fn untested_tests(
             tested[owner] = true;
         }
     }
-    let lines: Vec<&str> = source.lines().collect();
     outline
         .nodes
         .iter()
         .enumerate()
         .filter(|(index, node)| node.kind == "fn" && !tested[*index])
-        .filter(|(_, node)| {
-            // Attributes are attached before the declaration line.
-            let start = node.line_start.saturating_sub(1);
-            let end = node.declaration_line.min(lines.len());
-            lines
-                .get(start..end)
-                .is_some_and(|attached| TEST_ATTRIBUTE.is_match(&attached.join("\n")))
-        })
+        // Use attached byte ranges, so a same-line attribute belongs only to
+        // its following function, even when several items share a line.
+        .filter(|(_, node)| has_test_attribute(&source[node.source_start..node.byte_start]))
         .filter_map(|(index, node)| Some((index, node.declaration_line, node.display_name()?)))
         .collect()
 }
@@ -330,67 +230,9 @@ fn covering_reference(
     })
 }
 
-/// The functions, methods, structs, enums, and unions of a Rust source with
-/// no valid reference in a comment belonging to them, with the source's
-/// outline.
-// {impl}`requirements.references.builtin_definitions`
-// {impl}`requirements.references.procedure`
-// {impl}`requirements.references.outline_comments`
-// {impl}`requirements.references.roles`
-// {impl}`requirements.definitions.references`
-// {impl}`requirements.references.util`
-pub(crate) fn unreferenced_items(
-    source: &str,
-    definitions: &BTreeMap<String, Declaration>,
-) -> Result<(outline::Outline, Unreferenced), OutlineError> {
-    let outline = outline::parse_with(&outline::RUST_PROFILE, source)?;
-    let mut cited = vec![false; outline.nodes.len()];
-    let counts =
-        |kind: crate::ReferenceKind, name: &str| covering_reference(kind, name, definitions);
-    for comment in &outline.comments {
-        if reference_roles(&source[comment.byte_start..comment.byte_end], false)
-            .iter()
-            .any(|role| counts(role.kind, role.name))
-        {
-            cited[comment.owner] = true;
-        }
-    }
-    for fence in crate::fenced::comment_fences(source, &outline) {
-        if let Some(owner) = fence.owner
-            && fence.closed
-            && counts(fence.kind, &fence.name)
-        {
-            cited[owner] = true;
-        }
-    }
-    let missing = outline
-        .nodes
-        .iter()
-        .zip(cited)
-        .enumerate()
-        .filter_map(|(index, (node, cited))| {
-            let kind = item_kind(node.kind)?;
-            let name = node.display_name()?;
-            (!cited).then_some((index, node.declaration_line, kind, name))
-        })
-        .collect();
-    Ok((outline, missing))
-}
-
-/// The kind coverage reports for an outline node kind that must be covered:
-/// functions and methods, structs, enums, and unions.
-pub(crate) fn item_kind(kind: &str) -> Option<&'static str> {
-    Some(match kind {
-        "fn" => "function",
-        "struct" => "struct",
-        "enum" => "enum",
-        "union" => "union",
-        _ => return None,
-    })
-}
-
 /// The first-party Rust files among the sources reference discovery
 /// considers: every `.rs` file outside the project-root `vendor` directory.
+// {cite}`habeas:util`
 pub(crate) fn rust_files(root: &Path, sources: &[PathBuf]) -> Vec<PathBuf> {
     let vendor = root.join("vendor");
     sources
@@ -474,16 +316,16 @@ pub(crate) fn validate_cargo_examples(
 
 // {impl}`requirements.ci.errors`
 // {impl}`requirements.references.procedure`
+// {impl}`requirements.references.rust_item_coverage.parsing`
+// {impl}`requirements.references.coverage.tests`
 pub(crate) fn validate_rust_functions(
     root: &Path,
     sources: &[PathBuf],
     definitions: &BTreeMap<String, Declaration>,
-    reads: &EvidenceReads,
     errors: &mut Vec<String>,
     discovery_errors: &mut Vec<String>,
     progress: &mut impl FnMut(InspectionProgress),
-) -> Vec<UncoveredItem> {
-    let mut uncovered = Vec::new();
+) {
     progress(InspectionProgress {
         stage: RUST_COVERAGE_STAGE,
         completed: 0,
@@ -507,32 +349,10 @@ pub(crate) fn validate_rust_functions(
                 continue;
             }
         };
-        match unreferenced_items(&source, definitions) {
-            Ok((outline, missing)) => {
-                // Only a test without `{test}` fails validation; other items
-                // without coverage are reported, not errors.
-                // {impl}`requirements.references.coverage.tests`
-                let untested = untested_tests(&source, &outline, definitions);
-                for (_, line, name) in &untested {
-                    errors.push(format!(
-                        "{label}:{line}: test function {name} has no {{test}} reference to a requirement or example"
-                    ));
-                }
-                for (index, line, kind, name) in missing {
-                    // A test without `{test}` is already a validation error,
-                    // so it is not also a coverage warning.
-                    if reads.covers(&label, &outline, index)
-                        || untested.iter().any(|(node, _, _)| *node == index)
-                    {
-                        continue;
-                    }
-                    uncovered.push(UncoveredItem {
-                        file: label.clone(),
-                        selectors: crate::coverage_history::enclosing_selectors(&outline, index),
-                        error: uncovered_error(&label, line, kind, &name),
-                        in_tests: crate::coverage_history::in_tests_module(&outline, index)
-                            || crate::coverage_history::in_tests_file(Path::new(&label)),
-                    });
+        match outline::parse_with(&outline::RUST_PROFILE, &source) {
+            Ok(outline) => {
+                for (_, line, name) in untested_tests(&source, &outline, definitions) {
+                    errors.push(format!("{label}:{line}: test function {name} has no {{test}} reference to a requirement or example"));
                 }
             }
             Err(error) => {
@@ -550,7 +370,6 @@ pub(crate) fn validate_rust_functions(
         completed: total,
         total: Some(total),
     });
-    uncovered
 }
 
 // {cite}`habeas:util`
@@ -568,7 +387,7 @@ mod tests {
 
     use tempfile::TempDir;
 
-    use super::{comments, missing_function_references, validate_rust_functions};
+    use super::{comments, validate_rust_functions};
     use crate::DefinitionKind;
     use crate::evidence::Declaration;
 
@@ -663,50 +482,6 @@ mod tests {
         ])
     }
 
-    // {test}`requirements.references.rust_item_coverage`
-    #[test]
-    fn a_read_covers_an_item_only_with_its_current_hash() {
-        let source = "fn read() {}\n";
-        let outline = crate::outline::parse_with(&crate::outline::RUST_PROFILE, source).unwrap();
-        let index = outline
-            .nodes
-            .iter()
-            .position(|node| node.selector == "fn[read]")
-            .unwrap();
-        let record = |hash: &str| serde_json::json!({"inputs": [{"file": "src/lib.rs", "item": "fn[read]", "hash": hash}]});
-        let mut current = super::EvidenceReads::default();
-        current.add_record(&record(&outline.nodes[index].structural_hash));
-        assert!(current.covers("src/lib.rs", &outline, index));
-        let mut stale = super::EvidenceReads::default();
-        stale.add_record(&record(&"0".repeat(64)));
-        assert!(!stale.covers("src/lib.rs", &outline, index));
-    }
-
-    // {test}`requirements.references.rust_item_coverage`
-    #[test]
-    fn a_containing_read_covers_nested_items_only_with_its_current_hash() {
-        let outline = crate::outline::parse_with(
-            &crate::outline::RUST_PROFILE,
-            "struct Thing; impl Thing { fn run(&self) {} } fn unrelated() {}",
-        )
-        .unwrap();
-        let parent = outline.resolve("impl[Thing]").unwrap();
-        let child = outline.resolve("impl[Thing]/fn[run]").unwrap();
-        let unrelated = outline.resolve("fn[unrelated]").unwrap();
-        for (hash, covered) in [
-            (outline.nodes[parent].structural_hash.clone(), true),
-            ("0".repeat(64), false),
-        ] {
-            let mut reads = super::EvidenceReads::default();
-            reads.add_record(&serde_json::json!({"inputs": [{
-                "file": "src/lib.rs", "item": "impl[Thing]", "hash": hash
-            }]}));
-            assert_eq!(reads.covers("src/lib.rs", &outline, child), covered);
-            assert!(!reads.covers("src/lib.rs", &outline, unrelated));
-            assert!(!reads.covers("other.rs", &outline, child));
-        }
-    }
-
     // {test}`requirements.references.coverage.tests`
     // {test}`requirements.references.procedure`
     #[test]
@@ -714,12 +489,18 @@ mod tests {
         let source = concat!(
             "// {test}`requirements.example`\n#[test]\nfn tested() {}\n\n",
             "#[test]\nfn tested_in_body() {\n    // {test}`requirements.example`\n}\n\n",
+            "// :::{test} requirements.example\n// Closed fenced reference.\n// :::\n#[test]\nfn tested_with_fence() {}\n\n",
+            "// :::{test} requirements.example\n// Unclosed fenced reference.\n#[test]\nfn unclosed_fence() {}\n\n",
+            "// :::{test} requirements.missing\n// :::\n#[test]\nfn unknown_fenced_target() {}\n\n",
             "#[test]\nfn untested() {}\n\n",
             "// {cite}`requirements.example`\n#[tokio::test]\nasync fn only_cited() {}\n\n",
             "#[tokio::test(flavor = \"multi_thread\")]\nasync fn untested_async() {}\n\n",
             "#[cfg(test)]\nfn not_a_test() {}\n\n",
             "#[rstest]\nfn other_attribute() {}\n\n",
             "mod tests {\n    #[test]\n    fn nested_untested() {}\n}\n",
+            "mod inline { #[cfg(test)] #[tokio::test] async fn inline_test() {} fn helper() {} }\n",
+            "// {impl}`requirements.example`\n#[test] fn only_implemented() {}\n",
+            "#[doc = \"a ] #[test] string\"] fn documented_helper() {}\n",
         );
         let outline = crate::outline::parse_with(&crate::outline::RUST_PROFILE, source).unwrap();
         let names: Vec<String> = super::untested_tests(source, &outline, &definitions())
@@ -729,10 +510,14 @@ mod tests {
         assert_eq!(
             names,
             [
+                "unclosed_fence",
+                "unknown_fenced_target",
                 "untested",
                 "only_cited",
                 "untested_async",
-                "nested_untested"
+                "nested_untested",
+                "inline_test",
+                "only_implemented"
             ]
         );
     }
@@ -760,14 +545,12 @@ mod tests {
             .map(|(_, _, name)| name)
             .collect();
         assert_eq!(names, ["orphan"]);
-        let missing = missing_function_references(source, &definitions).unwrap();
-        assert_eq!(missing, [(7, "function", "orphan".to_owned())]);
     }
 
     // {test}`requirements.references.coverage.tests`
-    // {test}`requirements.references.coverage.report`
+    // {test}`requirements.references.procedure`
     #[test]
-    fn a_test_without_a_test_reference_is_an_error_not_a_coverage_warning() {
+    fn test_reference_errors_ignore_unannotated_helpers() {
         let project = TempDir::new().unwrap();
         fs::create_dir_all(project.path().join("tests")).unwrap();
         fs::write(
@@ -776,11 +559,10 @@ mod tests {
         )
         .unwrap();
         let mut errors = Vec::new();
-        let uncovered = validate_rust_functions(
+        validate_rust_functions(
             project.path(),
             &crate::evidence::discovered_files(project.path(), &mut Vec::new()),
             &definitions(),
-            &super::EvidenceReads::default(),
             &mut errors,
             &mut Vec::new(),
             &mut |_| {},
@@ -790,9 +572,6 @@ mod tests {
             errors[0].contains("tests/foo.rs:2: test function bare"),
             "{errors:?}"
         );
-        let warned: Vec<&str> = uncovered.iter().map(|item| item.error.as_str()).collect();
-        assert_eq!(warned.len(), 1, "{warned:?}");
-        assert!(warned[0].contains("function helper"), "{warned:?}");
     }
 
     // {test}`requirements.references.coverage.examples`
@@ -843,185 +622,34 @@ mod tests {
                 "extra/listed.rs: Cargo example does not {cite} a named example of the book",
             ]
         );
+        for file in [
+            "examples/demo/main.rs",
+            "extra/listed.rs",
+            "examples/requirement.rs",
+        ] {
+            fs::write(
+                root.join(file),
+                "// {cite}`requirements.case`\nfn main() {}\n",
+            )
+            .unwrap();
+        }
+        for file in [
+            "examples/demo/helper.rs",
+            "examples/a/b/main.rs",
+            "examples/data.txt",
+        ] {
+            let path = root.join(file);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, "fn helper() {}\n").unwrap();
+        }
+        let references = crate::evidence::collect_references(&root, &mut found);
+        let files = crate::evidence::discovered_files(&root, &mut found);
+        let mut errors = Vec::new();
+        super::validate_cargo_examples(&root, &files, &definitions, &references, &mut errors);
+        assert!(errors.is_empty(), "{errors:?}");
     }
 
-    // {test}`requirements.references.rust_item_coverage`
-    // {test}`requirements.references.outline_comments`
-    #[test]
-    fn finds_uncited_functions_without_using_enclosing_or_string_references() {
-        let source = r##"
-// {impl}`requirements.example`
-mod feature {
-    // {impl}`requirements.example`
-    impl Widget {
-        fn missing_method() {}
-    }
-
-    struct Widget;
-    impl Widget {
-        // {impl}`requirements.example`
-        fn cited_method() {}
-    }
-
-    fn containing_string() {
-        let _ = "// {impl}`requirements.example`";
-        let _ = r#"/* {impl}`requirements.example` */"#;
-        let _ = '/';
-    }
-
-    fn unknown_reference() {
-        // {impl}`requirements.unknown`
-    }
-
-    fn body_reference() {
-        /* {impl}`requirements.example` */
-    }
-
-    // A comment run belongs to the next item even across a blank line.
-    // {impl}`requirements.example`
-
-    fn after_blank_line() {}
-
-    // {impl}`requirements.example`
-    fn previous() {} // {impl}`requirements.example`
-    fn after_trailing_comment() {}
-}
-
-mod inner_docs {
-    //! {impl}`requirements.example`
-    fn after_inner_doc() {}
-}
-
-/// {impl}`requirements.example`
-fn cited_by_outer_doc() {}
-"##;
-        let missing = missing_function_references(source, &definitions()).unwrap();
-        assert_eq!(
-            missing
-                .into_iter()
-                .map(|(_, _, name)| name)
-                .collect::<Vec<_>>(),
-            [
-                "missing_method",
-                "Widget",
-                "containing_string",
-                "unknown_reference",
-                "after_trailing_comment",
-                "after_inner_doc"
-            ]
-        );
-    }
-
-    // {test}`requirements.references.rust_item_coverage`
-    #[test]
-    fn checks_trait_test_helper_and_nested_functions_separately() {
-        let source = r#"
-trait Work {
-    fn uncited_trait_method(&self);
-    // {impl}`requirements.example`
-    fn cited_trait_method(&self);
-}
-fn outer() {
-    // {impl}`requirements.example`
-    fn inner() {}
-    inner();
-}
-// {test}`requirements.example`
-#[test]
-fn tagged_test() {}
-// {test}`requirements.case`
-#[test]
-fn named_example_test() {}
-fn test_helper() {}
-"#;
-        let missing = missing_function_references(source, &definitions()).unwrap();
-        assert_eq!(
-            missing
-                .into_iter()
-                .map(|(_, _, name)| name)
-                .collect::<Vec<_>>(),
-            ["uncited_trait_method", "outer", "test_helper"]
-        );
-    }
-
-    // {test}`requirements.references.rust_item_coverage`
-    #[test]
-    fn an_example_counts_only_when_it_references_a_requirement() {
-        let mut definitions = definitions();
-        let example = |text: &str| Declaration {
-            kind: DefinitionKind::Example,
-            text: text.to_owned(),
-            source: "md/requirements.md:9".to_owned(),
-            file: "md/requirements.md".to_owned(),
-            line_start: 9,
-            line_end: 9,
-            raw_lines: vec![],
-            anchors: vec![],
-        };
-        definitions.insert(
-            "requirements.tested".to_owned(),
-            example("A tested case. {test}`requirements.example`"),
-        );
-        definitions.insert("requirements.orphan".to_owned(), example("No requirement."));
-        definitions.insert(
-            "requirements.chained".to_owned(),
-            example("Only another example. {cite}`requirements.case`"),
-        );
-        definitions.insert(
-            "terms.word".to_owned(),
-            Declaration {
-                kind: DefinitionKind::Term,
-                ..example("A word.")
-            },
-        );
-        definitions.insert(
-            "requirements.termed".to_owned(),
-            example("Only a term. {cite}`terms.word`"),
-        );
-        let source = r#"
-// {test}`requirements.case`
-fn cites_example() {}
-// {test}`requirements.tested`
-fn tests_example() {}
-// {test}`requirements.orphan`
-fn orphan_example() {}
-// {test}`requirements.chained`
-fn chained_example() {}
-// {test}`requirements.termed`
-fn termed_example() {}
-// {impl}`terms.word`
-fn names_a_term() {}
-"#;
-        let missing = missing_function_references(source, &definitions).unwrap();
-        assert_eq!(
-            missing
-                .into_iter()
-                .map(|(_, _, name)| name)
-                .collect::<Vec<_>>(),
-            [
-                "orphan_example",
-                "chained_example",
-                "termed_example",
-                "names_a_term"
-            ]
-        );
-    }
-
-    // {test}`requirements.references.rust_item_coverage`
-    #[test]
-    fn locates_functions_after_unicode_text() {
-        let source = r#"
-// {impl}`requirements.example`
-fn outer() {
-    let _ = "é";
-    /* {impl}`requirements.example` */ fn cited_inner() {}
-    fn missing_inner() {}
-}
-"#;
-        let missing = missing_function_references(source, &definitions()).unwrap();
-        assert_eq!(missing, [(6, "function", "missing_inner".to_owned())]);
-    }
-
+    // {test}`requirements.references.rust_item_coverage.parsing`
     // {test}`requirements.references.rust_item_coverage`
     #[test]
     fn reports_all_files_and_parse_failures() {
@@ -1032,31 +660,19 @@ fn outer() {
         fs::create_dir_all(project.path().join("target")).unwrap();
         fs::create_dir_all(project.path().join("evidence")).unwrap();
         fs::write(project.path().join("src/lib.rs"), "fn uncited() {}\n").unwrap();
-        fs::write(
-            project.path().join("src/evidence/check.rs"),
-            "fn nested_source() {}\n",
-        )
-        .unwrap();
+        fs::write(project.path().join("src/evidence/check.rs"), "fn {").unwrap();
         fs::write(project.path().join("tests/broken.rs"), "fn unfinished( {\n").unwrap();
-        fs::write(
-            project.path().join("target/generated.rs"),
-            "fn ignored() {}\n",
-        )
-        .unwrap();
-        fs::write(
-            project.path().join("evidence/fixture.rs"),
-            "fn ignored() {}\n",
-        )
-        .unwrap();
+        fs::write(project.path().join("target/generated.rs"), "fn {").unwrap();
+        fs::write(project.path().join("evidence/fixture.rs"), "fn {").unwrap();
         // Build output and repository metadata are skipped at any depth; the
         // book, evidence, and vendored sources only at the project root.
         for (file, source) in [
-            ("crates/sub/target/debug/build.rs", "fn ignored() {}\n"),
-            (".git/hooks/hook.rs", "fn ignored() {}\n"),
-            ("vendor/dep/lib.rs", "fn ignored() {}\n"),
-            ("book/listing.rs", "fn ignored() {}\n"),
-            ("src/vendor/own.rs", "fn own_vendor() {}\n"),
-            ("src/book/own.rs", "fn own_book() {}\n"),
+            ("crates/sub/target/debug/build.rs", "fn {"),
+            (".git/hooks/hook.rs", "fn {"),
+            ("vendor/dep/lib.rs", "fn {"),
+            ("book/listing.rs", "fn {"),
+            ("src/vendor/own.rs", "fn {"),
+            ("src/book/own.rs", "fn {"),
         ] {
             let path = project.path().join(file);
             fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -1064,44 +680,28 @@ fn outer() {
         }
 
         let mut errors = Vec::new();
-        let uncovered = validate_rust_functions(
+        validate_rust_functions(
             project.path(),
             &crate::evidence::discovered_files(project.path(), &mut Vec::new()),
             &definitions(),
-            &super::EvidenceReads::default(),
             &mut errors,
             &mut Vec::new(),
             &mut |_| {},
         );
-        // Uncovered items are reported; only the parse failure is an error.
-        assert_eq!(errors.len(), 1, "{errors:?}");
-        assert_eq!(uncovered.len(), 4, "{uncovered:?}");
-        let errors: Vec<String> = errors
-            .into_iter()
-            .chain(uncovered.into_iter().map(|item| item.error))
-            .collect();
-        for expected in [
-            "src/vendor/own.rs:1: function own_vendor",
-            "src/book/own.rs:1: function own_book",
+        assert_eq!(errors.len(), 4, "{errors:?}");
+        for file in [
+            "tests/broken.rs",
+            "src/evidence/check.rs",
+            "src/vendor/own.rs",
+            "src/book/own.rs",
         ] {
             assert!(
-                errors.iter().any(|error| error.contains(expected)),
-                "{expected}: {errors:?}"
+                errors
+                    .iter()
+                    .any(|error| error.contains(&format!("{file}:1: cannot parse Rust source"))),
+                "{errors:?}"
             );
         }
-        assert!(errors.iter().any(|error| {
-            error.contains("src/lib.rs:1: function uncited has no recent coverage: it has no requirement or example reference, and no recent evidence record or review read it")
-        }));
-        assert!(errors.iter().any(|error| {
-            error.contains(
-                "src/evidence/check.rs:1: function nested_source has no recent coverage: it has no requirement or example reference, and no recent evidence record or review read it",
-            )
-        }));
-        assert!(
-            errors
-                .iter()
-                .any(|error| error.contains("tests/broken.rs:1: cannot parse Rust source"))
-        );
     }
 
     // {test}`requirements.authoring.progress`
@@ -1117,7 +717,6 @@ fn outer() {
             project.path(),
             &crate::evidence::discovered_files(project.path(), &mut Vec::new()),
             &definitions(),
-            &super::EvidenceReads::default(),
             &mut Vec::new(),
             &mut Vec::new(),
             &mut |update| updates.push((update.stage, update.completed, update.total)),
@@ -1131,54 +730,6 @@ fn outer() {
                 (stage, 1, Some(3)),
                 (stage, 2, Some(3)),
                 (stage, 3, Some(3)),
-            ]
-        );
-    }
-
-    // {test}`requirements.references.rust_item_coverage`
-    #[test]
-    fn structs_enums_and_unions_need_references_attached_or_inside() {
-        let source = r##"
-// {impl}`requirements.example`
-#[derive(Debug)]
-struct Attached {
-    field: u8,
-}
-
-struct Inside {
-    // {impl}`requirements.example`
-    #[allow(dead_code)]
-    field: u8,
-}
-
-enum Variants {
-    // {cite}`requirements.example`
-    One,
-}
-
-struct Missing;
-
-enum MissingEnum {
-    One,
-}
-
-union MissingUnion {
-    value: u8,
-}
-
-// {impl}`requirements.example`
-fn outer() {
-    struct Nested;
-}
-"##;
-        let missing = missing_function_references(source, &definitions()).unwrap();
-        assert_eq!(
-            missing,
-            vec![
-                (19, "struct", "Missing".to_owned()),
-                (21, "enum", "MissingEnum".to_owned()),
-                (25, "union", "MissingUnion".to_owned()),
-                (31, "struct", "Nested".to_owned()),
             ]
         );
     }

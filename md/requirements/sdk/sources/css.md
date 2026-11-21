@@ -1,0 +1,34 @@
+# CSS outline definition
+
+Consider this source:
+
+```css
+.token { color: red; }
+```
+
+The `habeas-language-css` crate supplies this outline definition. The default
+registry selects it for `css` files.
+
+The selector `rule[.token]` identifies the item in this example.
+The resource address identifies the file separately from this selector.
+
+## Outline rules
+
+The selector's kind describes the CSS construct; its name comes from the
+selector or prelude:
+
+| Construct | Outline kind | Name |
+| --- | --- | --- |
+| Rule set | `rule` | Normalized selector, such as `.token` |
+| Media or supports statement | `media` or `supports` | Normalized prelude |
+| Keyframes | `keyframes` | Animation name |
+
+## Comments and fingerprints
+
+CSS comments are excluded from structural fingerprints.
+
+The [shared source machinery](../sources.md) defines selector encoding, duplicate
+names, and the distinction between node contents and structural fingerprints.
+These rules describe the current provider. Their existing requirements live
+in [References and Rust items](../../references.md) pending the
+[requirements reorganization](../requirements-map.md).

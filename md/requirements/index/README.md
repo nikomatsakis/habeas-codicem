@@ -1,5 +1,19 @@
 # Book rendering
 
+The book trusts the annotations and connects them into browsable documentation.
+It presents recorded reviews alongside current source. Use `habeas status`
+and `habeas author` to check those annotations and reviews.
+
+:::{req} render_only
+`habeas mdbook` reads annotations and stored reviews to render their connections.
+It does not audit repository evidence, check review freshness or dependency
+hashes, enforce reference coverage, or assess citation and site reviews.
+It does not load saved execution measurements, run tests, collect coverage,
+or invoke an assessment model. Source-input and stored-record read or parse
+failures produce readable rendering diagnostics rather than a repository
+validation verdict.
+:::
+
 :::{req} chapter
 An mdBook chapter MAY contain one standalone `{requirements-index}` directive with an empty body, opened by at least three colons and closed by at least as many. A book MUST contain no more than one such directive. `habeas mdbook` MUST render a requirements index listing all requirements defined in rendered chapters, each linking to its evidence detail page under {cite}`requirements.index.detail_pages`. When a directive is present, it MUST replace the directive with the index table; otherwise, it MUST generate the chapter specified by {cite}`requirements.index.chapter.default`.
 :::
@@ -19,11 +33,43 @@ sidebar until a reader expands the index chapter.
 :::
 
 :::{req} state
-The requirements index MUST show each requirement's evidence state as Valid, Missing, Determination false, FIXME, or Invalid. Valid MUST mean its determination is true and its record passes the same evidence and reference coverage checks as `habeas::validate()`. A false or FIXME determination MUST have its distinct state when the record passes all other checks. The FIXME state MUST pass validation while retaining its distinct label. Malformed or stale evidence MUST remain Invalid regardless of its determination. Each detail page MUST show any validation findings.
+The requirements index and its detail pages describe the last recorded
+assessment as Recorded true, Recorded false, or Recorded FIXME. A missing
+record is shown as Missing; an unreadable record or determination is shown as
+Unreadable with a readable explanation. Recorded FIXME includes its recorded
+acknowledgments.
+
+These labels describe stored results, without claiming that the record is
+current or that repository validation passes. `habeas status` and
+`habeas author` check the annotations and evidence.
 :::
 
 :::{req} detail_format
-Each evidence detail page MUST display its state as a Shields.io static badge image with meaningful alt text and the current requirement or example body as a Markdown block quote labeled by kind. It MUST render the recorded rationale as Markdown in a Rationale section and display the recorded FIXME strings when the determination is FIXME. Inputs MUST be grouped under headings in this order, each input appearing once, in the first group that applies to it: Implementation, for sources reached by an `{impl}` edge from the definition, including anchored files; Tests, for sources reached by a `{test}` edge, including tests, examples, and anchored files; Referenced definitions, for declarations the definition cites and their terminology; and Other sources, for the remaining inputs the assessment consulted. Edges MUST be determined from the current references under {cite}`requirements.references.roles` and {cite}`requirements.references.anchors`. Each group and each input MUST be a collapsible disclosure element, with groups expanded and inputs collapsed by default, so readers can move between groups and open individual sources. Each input MUST have its own subsection identifying its selector. An outline input MUST show its file, selector, kind, and current inclusive line range. A requirements input MUST show its selection and each matched definition's full name, file, and inclusive line range. Each outline input subsection MUST show the node's current source text in a fenced code block and say when its hash no longer matches; a requirements or definition input subsection MUST show its recorded text. Code fences MUST request Rust highlighting for `.rs` files and language-aware highlighting for Markdown, JSON, TOML, Java, JavaScript, TypeScript, and Python files; TOML MAY use INI highlighting when native TOML highlighting is unavailable.
+Each evidence detail page displays its recorded state as a Shields.io static
+badge with meaningful alt text and the current requirement or example body
+as a Markdown block quote labeled by kind. It renders the recorded rationale
+as Markdown in a Rationale section and the recorded acknowledgments for FIXME.
+
+Inputs appear once, in the first applicable group: Implementation, Tests,
+Referenced definitions, then Other sources. Implementation uses `{impl}`
+connections and Tests uses `{test}` connections. Referenced definitions
+contains definition inputs and requirement selections wholly covered by the
+subject's citations; remaining inputs go to Other sources. Current annotations,
+including anchored files, determine these connections
+under {cite}`requirements.references.roles` and
+{cite}`requirements.references.anchors`. Groups are expanded disclosures;
+individual inputs are collapsed disclosures identifying their selectors.
+
+An outline input shows its file, selector, kind, current inclusive line range,
+and current source text in a fenced code block. A requirements input shows
+its selection and each matched definition's full name, file, and inclusive
+line range. Requirements and definition inputs show their recorded text.
+The book presents current source alongside the recorded review without
+comparing input hashes.
+
+Code fences use Rust highlighting for `.rs` and language-aware highlighting
+for Markdown, JSON, TOML, Java, JavaScript, TypeScript, and Python; TOML may use
+INI highlighting when native TOML highlighting is unavailable.
 :::
 
 :::{req} navigation
@@ -40,5 +86,9 @@ The mdBook preprocessor MUST report an error when a generated requirements index
 :::
 
 :::{req} invalid_detail
-An evidence detail page MUST continue to show the current requirement or example and validation findings when evidence is missing or invalid. It MUST show readable placeholders for missing rationale or inputs and expose the contents of an unreadable JSON record.
+An evidence detail page continues to show the current requirement or example
+when its stored record is missing or unreadable. It shows readable placeholders
+for missing rationale or inputs and the available raw contents of malformed
+JSON. A source input that cannot be read or resolved shows a readable
+diagnostic while the rest of the page remains browsable.
 :::

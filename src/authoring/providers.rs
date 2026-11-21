@@ -1,4 +1,5 @@
 use std::io;
+#[cfg(test)]
 use std::time::{Duration, Instant, SystemTime};
 
 use rig_core::completion::{CacheRetention, CompletionRequest, CompletionResponse};
@@ -9,149 +10,14 @@ use serde_json::{Map, Value};
 
 use crate::config::{BackendConfig, BedrockConfig};
 
-pub(super) trait CompletionProvider {
-    /// Sends one request and returns the model's response.
-    // {cite}`habeas:util`
-    async fn complete(&self, request: CompletionRequest) -> io::Result<CompletionResponse>;
+pub(super) use habeas_sdk::agent::{CompletionProvider, failure_codes};
+#[cfg(test)]
+pub(super) use habeas_sdk::agent::{ProviderBackoff, RETRY_LIMIT, Retry, retry_after};
 
-    /// The output-token limit each request asks for, when one is known.
-    // {cite}`habeas:util`
-    fn output_limit(&self) -> Option<u64> {
-        None
-    }
-}
-
-pub(super) struct ProviderBackoff {
-    window: Duration,
-    /// When the first of the current consecutive transient failures came,
-    /// and how many attempts have failed since.
-    failing: Option<(Instant, u32)>,
-}
-
-impl Default for ProviderBackoff {
-    fn default() -> Self {
-        Self {
-            window: Duration::from_secs(1),
-            failing: None,
-        }
-    }
-}
-
-/// How long a request may keep failing transiently before retrying stops.
-// {impl}`requirements.authoring.provider_backoff.limit`
-pub(super) const RETRY_LIMIT: Duration = Duration::from_secs(60);
-
+/// Preserve the provider report for the shared harness's retry classifier.
 // {cite}`habeas:util`
-/// What to do after a failed request.
-pub(super) enum Retry {
-    /// Wait this long, then retry.
-    Wait(Duration),
-    /// Stop: the failure is permanent, or retrying would pass the limit.
-    Stop(io::Error),
-}
-
-/// A failed request's HTTP status and provider error code, when reported.
-// {impl}`requirements.authoring.usage_requests.failures`
-pub(super) fn failure_codes(error: &io::Error) -> (Option<u16>, Option<String>) {
-    error
-        .get_ref()
-        .and_then(|inner| inner.downcast_ref::<ProviderError>())
-        .map_or((None, None), |provider| {
-            let report = provider.report();
-            (report.http_status, report.code)
-        })
-}
-
-impl ProviderBackoff {
-    /// Decides whether to retry a failed request at `now`: after a
-    /// transient failure while the next attempt still starts within
-    /// [`RETRY_LIMIT`] of the first consecutive failure.
-    // {impl}`requirements.authoring.provider_backoff.limit`
-    pub(super) fn retry(&mut self, error: io::Error, now: Instant) -> Retry {
-        let Some(delay) = self.next_delay(&error) else {
-            return Retry::Stop(error);
-        };
-        let (first, attempts) = self.failing.get_or_insert((now, 0));
-        *attempts += 1;
-        if now + delay > *first + RETRY_LIMIT {
-            let (status, code) = failure_codes(&error);
-            let last = match (status, code) {
-                (Some(status), Some(code)) => format!("HTTP {status} {code}"),
-                (Some(status), None) => format!("HTTP {status}"),
-                (None, Some(code)) => code,
-                (None, None) => error.to_string(),
-            };
-            return Retry::Stop(io::Error::new(
-                io::ErrorKind::TimedOut,
-                format!(
-                    "the provider kept failing for a minute after {attempts} attempts; last failure: {last}"
-                ),
-            ));
-        }
-        Retry::Wait(delay)
-    }
-
-    pub(super) fn next_delay(&mut self, error: &io::Error) -> Option<Duration> {
-        // Rig preserves HTTP status and Bedrock's exception code. Do not infer
-        // throttling from "tokens" in a message: a too-large input cannot be
-        // fixed by resending the same request.
-        let provider = error
-            .get_ref()
-            .and_then(|inner| inner.downcast_ref::<ProviderError>());
-        let transient = if error.kind() == io::ErrorKind::TimedOut {
-            true
-        } else {
-            // Either signal is enough: AWS JSON services may report a
-            // throttling or unavailability code with another status, such as
-            // `ThrottlingException` with HTTP 400.
-            let report = provider?.report();
-            matches!(report.http_status, Some(429 | 500 | 502 | 503 | 504))
-                || matches!(
-                    report.code.as_deref(),
-                    Some(
-                        "ThrottlingException"
-                            | "ServiceUnavailableException"
-                            | "InternalServerException"
-                            | "ModelNotReadyException"
-                    )
-                )
-        };
-        if !transient {
-            return None;
-        }
-
-        let millis = self.window.as_millis() as u64;
-        self.window = (self.window * 2).min(Duration::from_secs(60));
-        // Equal jitter keeps parallel assessments from retrying in lockstep,
-        // while ensuring each retry waits at least half the current window.
-        let jittered = Duration::from_millis(fastrand::u64(millis / 2..=millis));
-        let minimum = provider
-            .and_then(|provider| retry_after(provider, SystemTime::now()))
-            .unwrap_or_default();
-        Some(jittered.max(minimum))
-    }
-}
-
-// {cite}`habeas:util`
-/// Wraps Rig's error unchanged, so `ProviderBackoff::next_delay` can read its
-/// HTTP status, provider code, and `Retry-After` header.
 fn provider_failure(error: ProviderError) -> io::Error {
     io::Error::other(error)
-}
-
-fn retry_after(error: &ProviderError, now: SystemTime) -> Option<Duration> {
-    let header = error
-        .provider_response_headers()?
-        .get("retry-after")?
-        .to_str()
-        .ok()?
-        .trim();
-    if let Ok(seconds) = header.parse() {
-        return Some(Duration::from_secs(seconds));
-    }
-    httpdate::parse_http_date(header)
-        .ok()
-        .map(|deadline| deadline.duration_since(now).unwrap_or_default())
 }
 
 // :::{impl} requirements.authoring.provider
@@ -406,6 +272,7 @@ fn place_cache_checkpoints(request: &mut CompletionRequest) {
     request.options.cache = Some(CacheRetention::Short);
 }
 
+// {cite}`habeas:util`
 fn option_type(name: &str, expected: &str) -> io::Error {
     io::Error::new(
         io::ErrorKind::InvalidInput,

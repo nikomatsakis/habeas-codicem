@@ -49,12 +49,18 @@ fn fixture() -> TempDir {
 
 // {cite}`habeas:util`
 fn coverage(root: &Path, args: &[&str]) -> Output {
+    coverage_with_environment(root, args, &[])
+}
+
+// {cite}`habeas:util`
+fn coverage_with_environment(root: &Path, args: &[&str], environment: &[(&str, &str)]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_habeas"))
         .arg("coverage")
         .arg("--")
         .args(args)
         .current_dir(root)
         .env("CARGO_NET_OFFLINE", "true")
+        .envs(environment.iter().copied())
         .env_remove("CARGO_TARGET_DIR")
         .env_remove("CARGO_BUILD_TARGET_DIR")
         .env_remove("RUSTC_WORKSPACE_WRAPPER")
@@ -66,29 +72,79 @@ fn coverage(root: &Path, args: &[&str]) -> Output {
 }
 
 // {cite}`habeas:util`
-fn runs(root: &Path) -> Vec<(std::path::PathBuf, Value)> {
-    let mut runs = fs::read_dir(root.join("target/habeas/coverage"))
-        .unwrap()
-        .map(|entry| {
-            let path = entry.unwrap().path();
-            let value: Value =
-                serde_json::from_slice(&fs::read(path.join("run.json")).unwrap()).unwrap();
-            (path, value)
+fn runs_in(storage: &Path) -> Vec<(std::path::PathBuf, Value)> {
+    let connection = rusqlite::Connection::open_with_flags(
+        storage.join("current.sqlite"),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .unwrap();
+    let mut query = connection
+        .prepare("SELECT id,data FROM invocations ORDER BY json_extract(data,'$.started')")
+        .unwrap();
+    query
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })
-        .collect::<Vec<_>>();
-    runs.sort_by_key(|(_, value)| value["started"].as_u64().unwrap());
-    runs
+        .unwrap()
+        .map(|row| {
+            let (id, data) = row.unwrap();
+            (storage.join(id), serde_json::from_str(&data).unwrap())
+        })
+        .collect()
+}
+
+// {cite}`habeas:util`
+fn runs(root: &Path) -> Vec<(std::path::PathBuf, Value)> {
+    runs_in(&root.join("target/habeas/coverage"))
 }
 
 // {cite}`habeas:util`
 fn attempts(run: &Path) -> Vec<Value> {
-    fs::read_dir(run.join("attempts"))
+    let connection = rusqlite::Connection::open_with_flags(
+        run.parent().unwrap().join("current.sqlite"),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .unwrap();
+    let mut query = connection
+        .prepare("SELECT metadata,measurements FROM tests WHERE invocation=?1 ORDER BY binary,test")
+        .unwrap();
+    query
+        .query_map([run.file_name().unwrap().to_str().unwrap()], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+        })
         .unwrap()
-        .map(|entry| {
-            serde_json::from_slice(&fs::read(entry.unwrap().path().join("attempt.json")).unwrap())
-                .unwrap()
+        .map(|row| {
+            let (data, measurements) = row.unwrap();
+            let mut attempt: Value = serde_json::from_str(&data).unwrap();
+            attempt["processes"] = measurements
+                .map(|data| serde_json::from_str(&data).unwrap())
+                .unwrap_or(serde_json::json!([]));
+            attempt
         })
         .collect()
+}
+
+// {cite}`habeas:util`
+fn assert_profiles_present(run: &Path, attempt: &Value) {
+    let profiles: Vec<_> = attempt["processes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|process| process["profiles"].as_array().unwrap())
+        .collect();
+    assert!(
+        !profiles.is_empty(),
+        "expected retained raw profiles for {}",
+        attempt["test"]
+    );
+    for profile in profiles {
+        let path = run
+            .join("attempts")
+            .join(attempt["id"].as_str().unwrap())
+            .join(profile.as_str().unwrap());
+        assert_eq!(path.extension().unwrap(), "profraw");
+        assert!(fs::metadata(&path).unwrap().len() > 0, "{}", path.display());
+    }
 }
 
 // {cite}`habeas:util`
@@ -291,7 +347,10 @@ fn coverage_progress_on_a_pty_preserves_reports_and_plain_output_policy() {
     assert!(!text[diagnostic..].contains("\x1b["), "{text}");
     let saved = runs(root);
     assert_eq!(saved.last().unwrap().1["outcome"], "failed");
-    assert!(attempts(&saved.last().unwrap().0).is_empty());
+    assert!(
+        !attempts(&saved.last().unwrap().0).is_empty(),
+        "earlier current results survive preparation failure"
+    );
 }
 
 // {cite}`habeas:util`
@@ -461,7 +520,7 @@ fn failed_suite_stops_full_flow_before_the_coverage_check() {
 }
 
 // {cite}`habeas:util`
-fn retained_files(root: &Path) -> std::collections::BTreeMap<std::path::PathBuf, Vec<u8>> {
+fn retained_files(root: &Path) -> std::collections::BTreeMap<std::path::PathBuf, git2::Oid> {
     let mut files = std::collections::BTreeMap::new();
     let mut pending = vec![root.to_owned()];
     while let Some(dir) = pending.pop() {
@@ -469,10 +528,18 @@ fn retained_files(root: &Path) -> std::collections::BTreeMap<std::path::PathBuf,
             let path = entry.unwrap().path();
             if path.is_dir() {
                 pending.push(path);
+            } else if matches!(
+                path.file_name().unwrap().to_str(),
+                Some("current.sqlite-wal" | "current.sqlite-shm")
+            ) {
+                // SQLite may create coordination files for a read-only WAL
+                // snapshot. They are not captured coverage or a selection cache.
+                continue;
             } else {
                 files.insert(
                     path.strip_prefix(root).unwrap().to_owned(),
-                    fs::read(path).unwrap(),
+                    git2::Oid::hash_object(git2::ObjectType::Blob, &fs::read(path).unwrap())
+                        .unwrap(),
                 );
             }
         }
@@ -589,10 +656,10 @@ fn book_rendering_preserves_retained_coverage_and_never_launches_tests() {
     assert!(
         rendered
             .chapters()
-            .find(|chapter| chapter.name == "Coverage gaps")
+            .find(|chapter| chapter.name == "Documented coverage gaps")
             .unwrap()
             .content
-            .contains("Unresolved coverage gaps")
+            .contains("No documented coverage gaps are present.")
     );
     assert!(
         fs::read_to_string(calls)
@@ -616,9 +683,6 @@ fn book_rendering_preserves_retained_coverage_and_never_launches_tests() {
 // {test}`requirements.test-coverage.index.freshness`
 #[test]
 fn real_build_captures_dependency_files_and_environment_for_read_only_freshness_checks() {
-    use mdbook_preprocessor::book::{Book, Chapter};
-    use std::io::Write;
-    use std::process::Stdio;
     let temp = fixture();
     let root = temp.path();
     fs::write(root.join("included data.txt"), "included").unwrap();
@@ -678,62 +742,40 @@ fn real_build_captures_dependency_files_and_environment_for_read_only_freshness_
         saved[0].1["environment_inputs"]["HABEAS_FIXTURE_BUILD_ENV"],
         "build-value"
     );
-    let render = |compiler: &str, build: &str| {
-        let mut book = Book::new();
-        book.push_item(Chapter::new(
-            "Coverage",
-            ":::{coverage-index}\n:::\n".into(),
-            "coverage.md",
-            vec![],
-        ));
-        let input = serde_json::json!([{
-            "root": root, "config": {"book":{"src":"md"}}, "renderer":"html", "mdbook_version":"0.5.3"
-        }, book]);
-        let mut child = Command::new(env!("CARGO_BIN_EXE_habeas"))
-            .arg("mdbook")
+    let check = |compiler: &str, build: &str| {
+        let output = Command::new(env!("CARGO_BIN_EXE_habeas"))
+            .arg("coverage-check")
             .current_dir(root)
             .env("HABEAS_FIXTURE_RUST_ENV", compiler)
             .env("HABEAS_FIXTURE_BUILD_ENV", build)
             .env("CARGO_NET_OFFLINE", "true")
             .env_remove("CARGO_TARGET_DIR")
             .env_remove("CARGO_BUILD_TARGET_DIR")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
+            .output()
             .unwrap();
-        child
-            .stdin
-            .take()
-            .unwrap()
-            .write_all(input.to_string().as_bytes())
-            .unwrap();
-        let output = child.wait_with_output().unwrap();
-        assert_success(&output);
-        serde_json::from_slice::<Book>(&output.stdout)
-            .unwrap()
-            .chapters()
-            .find(|chapter| chapter.name == "Coverage gaps")
-            .unwrap()
-            .content
-            .clone()
+        assert!(
+            output.stderr.is_empty(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).unwrap()
     };
     let storage = root.join("target/habeas/coverage");
     let before = retained_files(&storage);
-    assert!(!render("compiler-value", "build-value").contains("stale test attempts"));
+    assert!(!check("compiler-value", "build-value").contains("stale coverage"));
     for file in ["included data.txt", "build-input.data"] {
         let path = root.join(file);
         let original = fs::read(&path).unwrap();
         fs::write(&path, "changed").unwrap();
         assert!(
-            render("compiler-value", "build-value").contains("1 stale test attempts"),
+            check("compiler-value", "build-value").contains("stale coverage"),
             "{file}"
         );
         fs::write(path, original).unwrap();
-        assert!(!render("compiler-value", "build-value").contains("stale test attempts"));
+        assert!(!check("compiler-value", "build-value").contains("stale coverage"));
     }
     for (compiler, build) in [("changed", "build-value"), ("compiler-value", "changed")] {
-        assert!(render(compiler, build).contains("1 stale test attempts"));
+        assert!(check(compiler, build).contains("stale coverage"));
     }
     assert_eq!(retained_files(&storage), before);
 }
@@ -745,18 +787,61 @@ fn real_build_captures_dependency_files_and_environment_for_read_only_freshness_
 // {test}`requirements.test-coverage.storage.provenance`
 // {test}`requirements.test-coverage.storage.configuration`
 // {test}`requirements.test-coverage.storage.outcomes`
+// {test}`requirements.test-coverage.storage.current`
+// {test}`requirements.test-coverage.storage.cleanup`
+// {test}`requirements.test-coverage.storage.selection`
 // {test}`requirements.test-coverage.failures`
+// {test}`requirements.test-coverage.failures.profiles`
 #[test]
 fn real_parallel_processes_retries_child_profiles_and_filtered_reruns() {
     let temp = fixture();
     let root = temp.path();
-    assert_success(&coverage(
+    let source = fs::read_to_string(root.join("src/lib.rs")).unwrap();
+    fs::write(
+        root.join("src/lib.rs"),
+        format!(
+            "{source}\n{}",
+            r#"
+#[cfg(test)] fn overlap(own: &str, other: &str) {
+    if std::env::var_os("HABEAS_FIXTURE_OVERLAP").is_none() { return; }
+    std::fs::write(own, "started").unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !std::path::Path::new(other).exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(std::path::Path::new(other).exists(), "other test did not overlap");
+}
+"#
+        )
+        .replace(
+            "fn same_name() {",
+            "fn same_name() { overlap(\"same.started\", \"second.started\");",
+        )
+        .replace(
+            "fn second() {",
+            "fn second() { overlap(\"second.started\", \"same.started\");",
+        ),
+    )
+    .unwrap();
+    let processes = fs::read_to_string(root.join("tests/processes.rs")).unwrap();
+    fs::write(
+        root.join("tests/processes.rs"),
+        processes.replace(
+            "#[test] fn retries() {",
+            "#[test] fn retries() { coverage_fixture::value(std::env::var(\"NEXTEST_ATTEMPT\").unwrap() == \"1\");",
+        ),
+    ).unwrap();
+    assert_success(&coverage_with_environment(
         root,
         &["--workspace", "--retries", "1", "-j", "2", "--no-fail-fast"],
+        &[("HABEAS_FIXTURE_OVERLAP", "1")],
     ));
+    assert!(root.join("same.started").is_file());
+    assert!(root.join("second.started").is_file());
     let saved = runs(root);
     assert_eq!(saved.len(), 1);
-    let first = &saved[0].0;
+    let first = saved[0].0.clone();
+    let first_configuration = saved[0].1["configuration"].clone();
     assert_eq!(
         saved[0].1["id"],
         first.file_name().unwrap().to_str().unwrap()
@@ -764,11 +849,22 @@ fn real_parallel_processes_retries_child_profiles_and_filtered_reruns() {
     assert!(saved[0].1["started"].as_u64().unwrap() > 0);
     assert_eq!(saved[0].1["command"][0], "cargo nextest run");
     assert!(
-        saved[0].1["selection"]
+        saved[0].1["command"]
             .as_array()
             .unwrap()
-            .iter()
-            .any(|arg| arg == "--workspace")
+            .contains(&serde_json::json!("--workspace"))
+    );
+    assert_eq!(saved[0].1["outcome"], "success");
+    assert_eq!(saved[0].1["selection"].as_array().unwrap().len(), 5);
+    assert_eq!(
+        saved[0].1["selection"],
+        serde_json::json!([
+            {"binary":"coverage-fixture", "test":"same_name"},
+            {"binary":"coverage-fixture", "test":"second"},
+            {"binary":"coverage-fixture::processes", "test":"child_process"},
+            {"binary":"coverage-fixture::processes", "test":"retries"},
+            {"binary":"coverage-fixture::processes", "test":"same_name"},
+        ])
     );
     assert!(saved[0].1["revision"].is_null());
     assert!(saved[0].1["dirty"].is_null());
@@ -777,68 +873,107 @@ fn real_parallel_processes_retries_child_profiles_and_filtered_reruns() {
             .get(root.join("src/lib.rs").to_str().unwrap())
             .is_some()
     );
-    let records = attempts(first);
-    assert_eq!(records.len(), 6); // five tests, one retried
-    let retry = records
-        .iter()
-        .filter(|record| record["test"] == "retries")
-        .collect::<Vec<_>>();
-    assert_eq!(retry.len(), 2);
     assert!(
-        retry
-            .iter()
-            .any(|record| record["outcome"] == "failed" && record["attempt"] == "1")
+        saved[0].1["configuration_inputs"]["rustc"]
+            .as_str()
+            .unwrap()
+            .contains("LLVM version:")
     );
     assert!(
-        retry
-            .iter()
-            .any(|record| record["outcome"] == "success" && record["attempt"] == "2")
+        !saved[0].1["configuration_inputs"]["target"]
+            .as_str()
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(saved[0].1["configuration_inputs"]["cargo-profile"], "test");
+    assert!(
+        saved[0].1["sources"]["src/lib.rs"]
+            .as_str()
+            .unwrap()
+            .contains("pub fn value")
+    );
+    assert!(first.join("maps.json").is_file());
+    assert!(!first.join("run.json").exists());
+    let records = attempts(&first);
+    assert_eq!(records.len(), 5);
+    let retry = records
+        .iter()
+        .find(|record| record["test"] == "retries")
+        .unwrap();
+    assert_eq!(retry["attempt"], "2");
+    assert_eq!(retry["outcome"], "success");
+    assert_eq!(
+        retry["processes"].as_array().unwrap().len(),
+        1,
+        "retry processes are not combined"
+    );
+    assert_eq!(retry["processes"][0]["pid"], retry["pid"]);
+    assert_eq!(retry["processes"][0]["lines"]["src/lib.rs"]["3"], 0);
+    assert!(
+        retry["processes"][0]["lines"]["src/lib.rs"]["5"]
+            .as_u64()
+            .unwrap()
+            > 0
     );
     let child = records
         .iter()
         .find(|record| record["test"] == "child_process")
         .unwrap();
     assert_eq!(child["processes"].as_array().unwrap().len(), 2);
-    assert!(
-        child["processes"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|process| process["diagnostic"].is_null()
-                && !process["lines"].as_object().unwrap().is_empty())
-    );
-    assert!(
-        records
-            .iter()
-            .all(|record| !record["processes"].as_array().unwrap().is_empty())
-    );
-    assert_eq!(
-        records
-            .iter()
-            .filter(|record| record["test"].as_str().unwrap().ends_with("same_name"))
-            .count(),
-        2
-    );
-    let same_named = records
+    let binaries = records
         .iter()
-        .filter(|record| record["test"].as_str().unwrap().ends_with("same_name"))
-        .collect::<Vec<_>>();
-    let binaries = same_named
-        .iter()
+        .filter(|record| record["test"] == "same_name")
         .map(|record| record["binary"].as_str().unwrap())
         .collect::<std::collections::BTreeSet<_>>();
     assert_eq!(
         binaries,
         std::collections::BTreeSet::from(["coverage-fixture", "coverage-fixture::processes"])
     );
-    let identities = records
-        .iter()
-        .map(|record| record["id"].as_str().unwrap())
-        .collect::<std::collections::BTreeSet<_>>();
-    assert_eq!(identities.len(), records.len());
+    assert_eq!(
+        fs::read_dir(first.join("attempts")).unwrap().count(),
+        5,
+        "superseded retry profiles are removed"
+    );
+    for record in records.iter().filter(|record| {
+        record["binary"] == "coverage-fixture"
+            && matches!(record["test"].as_str(), Some("same_name" | "second"))
+    }) {
+        let counts = &record["processes"][0]["lines"]["src/lib.rs"];
+        let true_branch = counts["3"].as_u64().unwrap();
+        let false_branch = counts["5"].as_u64().unwrap();
+        if record["test"] == "same_name" {
+            assert!(true_branch > 0);
+            assert_eq!(false_branch, 0);
+        } else {
+            assert_eq!(true_branch, 0);
+            assert!(false_branch > 0);
+        }
+    }
+    let mut profile_paths = std::collections::BTreeSet::new();
     for record in &records {
+        assert_profiles_present(&first, record);
+        assert!(
+            !first
+                .join("attempts")
+                .join(record["id"].as_str().unwrap())
+                .join("attempt.json")
+                .exists()
+        );
         for process in record["processes"].as_array().unwrap() {
+            assert!(process["diagnostic"].is_null());
+            assert!(!process["lines"].as_object().unwrap().is_empty());
             for profile in process["profiles"].as_array().unwrap() {
+                assert!(
+                    profile_paths.insert(profile.as_str().unwrap()),
+                    "distinct processes cannot share a raw profile"
+                );
+                assert!(
+                    profile
+                        .as_str()
+                        .unwrap()
+                        .starts_with(&format!("{}-", process["pid"].as_u64().unwrap())),
+                    "profile belongs to a different process"
+                );
                 assert!(
                     first
                         .join("attempts")
@@ -849,39 +984,20 @@ fn real_parallel_processes_retries_child_profiles_and_filtered_reruns() {
             }
         }
     }
-    let configuration = &saved[0].1["configuration_inputs"];
-    assert!(
-        configuration["rustc"]
-            .as_str()
-            .unwrap()
-            .contains("LLVM version:")
-    );
-    assert!(!configuration["target"].as_str().unwrap().is_empty());
-    assert_eq!(configuration["cargo-profile"], "test");
-    assert!(
-        configuration["instrumentation"]
-            .as_str()
-            .unwrap()
-            .contains("-C instrument-coverage")
-    );
-    assert!(first.join("maps.json").is_file());
-    assert!(
-        saved[0].1["sources"]["src/lib.rs"]
-            .as_str()
-            .unwrap()
-            .contains("pub fn value")
-    );
-
+    let old_second = records
+        .iter()
+        .find(|record| record["test"] == "second")
+        .unwrap()["id"]
+        .as_str()
+        .unwrap();
     assert_success(&coverage(root, &["-E", "test(second)"]));
     let saved = runs(root);
     assert_eq!(saved.len(), 2);
+    assert_eq!(attempts(&first).len(), 4);
     assert_eq!(attempts(&saved[1].0).len(), 1);
-    assert_eq!(saved[0].1["configuration"], saved[1].1["configuration"]);
-    assert_eq!(
-        saved[1].1["selection"],
-        serde_json::json!(["-E", "test(second)"])
-    );
-    // A scheduling profile doesn't split build compatibility.
+    assert!(!first.join("attempts").join(old_second).exists());
+    assert_eq!(saved[1].1["configuration"], first_configuration);
+    let replaced_run = saved[1].0.clone();
     let config = root.join(".config/nextest.toml");
     let mut source = fs::read_to_string(&config).unwrap();
     source.push_str("\n[profile.focused]\ntest-threads = 1\n");
@@ -891,55 +1007,67 @@ fn real_parallel_processes_retries_child_profiles_and_filtered_reruns() {
         &["--profile", "focused", "-E", "test(second)"],
     ));
     let saved = runs(root);
-    assert_eq!(saved[0].1["configuration"], saved[2].1["configuration"]);
-    assert_eq!(attempts(&saved[0].0).len(), 6); // historical profiles were retained
-    // Collection must preserve failure, including a retry's attempt outcome.
+    assert_eq!(saved.len(), 2);
+    assert_eq!(
+        saved.last().unwrap().1["configuration"],
+        first_configuration
+    );
+    assert!(!replaced_run.exists());
     let failed = coverage(root, &["-E", "test(retries)", "--retries", "0"]);
     assert!(!failed.status.success());
     let saved = runs(root);
     let newest = saved.last().unwrap();
     assert_eq!(newest.1["outcome"], "failed");
-    assert_eq!(attempts(&newest.0)[0]["outcome"], "failed");
-    // Empty selection has nextest's own exit result and a visible run diagnostic.
-    let empty = coverage(
-        root,
-        &["-E", "test(definitely_missing)", "--no-tests", "pass"],
-    );
-    assert_success(&empty);
-    let saved = runs(root);
-    assert!(attempts(&saved.last().unwrap().0).is_empty());
+    let failed_attempt = attempts(&newest.0)[0].clone();
+    assert_eq!(failed_attempt["outcome"], "failed");
+    assert_profiles_present(&newest.0, &failed_attempt);
+    let failed_run = newest.0.clone();
+    assert_eq!(attempts(&first).len(), 3);
+    assert_success(&coverage(root, &["-E", "test(retries)", "--retries", "1"]));
     assert!(
-        saved.last().unwrap().1["diagnostics"][0]
-            .as_str()
-            .unwrap()
-            .contains("Empty test selection")
-    );
-    let empty_failure = coverage(root, &["-E", "test(definitely_missing)"]);
-    assert_eq!(
-        empty_failure.status.code(),
-        Some(4),
-        "{}",
-        String::from_utf8_lossy(&empty_failure.stderr)
+        !failed_run.exists(),
+        "a later attempt replaces retained failure profiles"
     );
     let saved = runs(root);
-    let newest = saved.last().unwrap();
-    assert_eq!(newest.1["outcome"], "failed");
-    assert!(attempts(&newest.0).is_empty());
-    assert!(
-        newest.1["diagnostics"][0]
-            .as_str()
-            .unwrap()
-            .contains("Empty test selection")
-    );
+    let before_empty: Vec<_> = saved.iter().flat_map(|(run, _)| attempts(run)).collect();
+    for empty_args in [
+        vec!["-E", "test(definitely_missing)", "--no-tests", "pass"],
+        vec!["-E", "test(definitely_missing)"],
+    ] {
+        let output = coverage(root, &empty_args);
+        assert_eq!(
+            output.status.code(),
+            Some(if empty_args.len() == 4 { 0 } else { 4 })
+        );
+        let saved = runs(root);
+        assert_eq!(
+            saved
+                .iter()
+                .flat_map(|(run, _)| attempts(run))
+                .collect::<Vec<_>>(),
+            before_empty
+        );
+        assert!(
+            saved.last().unwrap().1["diagnostics"][0]
+                .as_str()
+                .unwrap()
+                .contains("Empty test selection")
+        );
+    }
     assert_success(&coverage(
         root,
         &["--features", "alpha", "-Fbeta", "-E", "test(second)"],
     ));
     let saved = runs(root);
-    let newest = saved.last().unwrap();
-    assert_ne!(newest.1["configuration"], saved[0].1["configuration"]);
+    assert_eq!(
+        saved.len(),
+        1,
+        "incompatible configuration drops every previous result"
+    );
+    assert_ne!(saved[0].1["configuration"], first_configuration);
+    assert!(!first.exists());
     let enabled: Value = serde_json::from_str(
-        newest.1["configuration_inputs"]["enabled-features"]
+        saved[0].1["configuration_inputs"]["enabled-features"]
             .as_str()
             .unwrap(),
     )
@@ -963,61 +1091,31 @@ fn real_parallel_processes_retries_child_profiles_and_filtered_reruns() {
             "test(second)",
         ],
     ));
-    let saved = runs(root);
-    assert_eq!(attempts(&saved.last().unwrap().0).len(), 1);
     assert!(!root.join("custom-build").exists());
-    assert_success(&coverage(root, &["--no-run", "-E", "test(second)"]));
-    let saved = runs(root);
-    let newest = saved.last().unwrap();
-    assert_eq!(newest.1["outcome"], "success");
-    assert!(attempts(&newest.0).is_empty());
-    assert!(
-        newest.1["diagnostics"][0]
-            .as_str()
-            .unwrap()
-            .contains("Compilation-only")
+    let before_no_run = runs(root);
+    let prior_attempt = attempts(&before_no_run[0].0);
+    let output = coverage(
+        root,
+        &["--features", "alpha", "--no-run", "-E", "test(second)"],
     );
-    assert!(
-        !newest.1["diagnostics"][0]
-            .as_str()
-            .unwrap()
-            .contains("Empty")
-    );
-    // Compilation failures also retain run identity and all earlier process data.
+    assert_success(&output);
+    assert!(String::from_utf8_lossy(&output.stderr).contains("Compilation-only"));
+    assert_eq!(runs(root), before_no_run);
+    assert_eq!(attempts(&before_no_run[0].0), prior_attempt);
     fs::write(
         root.join("src/lib.rs"),
         "compile_error!(\"deliberate build failure\");\n",
     )
     .unwrap();
-    let failed_build = coverage(root, &["-E", "test(second)"]);
-    assert!(!failed_build.status.success());
-    let saved = runs(root);
-    let newest = saved.last().unwrap();
-    assert_eq!(newest.1["outcome"], "failed");
-    assert!(attempts(&newest.0).is_empty());
-    assert!(
-        newest.1["diagnostics"][0]
-            .as_str()
-            .unwrap()
-            .contains("Instrumented compilation")
-    );
-    assert_eq!(attempts(first).len(), 6);
-    for record in &records {
-        for process in record["processes"].as_array().unwrap() {
-            for profile in process["profiles"].as_array().unwrap() {
-                assert!(
-                    first
-                        .join("attempts")
-                        .join(record["id"].as_str().unwrap())
-                        .join(profile.as_str().unwrap())
-                        .is_file()
-                );
-            }
-        }
-    }
+    let output = coverage(root, &["--features", "alpha", "-E", "test(second)"]);
+    assert!(!output.status.success());
+    assert_eq!(runs(root), before_no_run);
+    assert_eq!(attempts(&before_no_run[0].0), prior_attempt);
 }
 
 // {test}`requirements.test-coverage.run`
+// {test}`requirements.test-coverage.storage`
+// {test}`requirements.test-coverage.storage.selection`
 #[test]
 fn configured_retries_filters_profiles_and_libtest_arguments_are_preserved() {
     let temp = fixture();
@@ -1031,9 +1129,9 @@ fn configured_retries_filters_profiles_and_libtest_arguments_are_preserved() {
     assert_success(&coverage(root, &[]));
     let saved = runs(root);
     let records = attempts(&saved[0].0);
-    assert_eq!(records.len(), 2, "{records:?}");
+    assert_eq!(records.len(), 1, "{records:?}");
+    assert_eq!(records[0]["attempt"], "2");
     assert!(records.iter().all(|attempt| attempt["test"] == "retries"));
-    assert!(records.iter().any(|attempt| attempt["outcome"] == "failed"));
     assert!(
         records
             .iter()
@@ -1049,16 +1147,300 @@ fn configured_retries_filters_profiles_and_libtest_arguments_are_preserved() {
     assert_eq!(records[0]["test"], "second");
     assert_eq!(
         saved.last().unwrap().1["selection"],
-        serde_json::json!(["--profile", "focused", "--", "--exact", "second"])
+        serde_json::json!([{"binary":"coverage-fixture", "test":"second"}])
     );
     assert_eq!(saved[0].1["configuration"], saved[1].1["configuration"]);
+}
+
+// {test}`requirements.test-coverage.storage.selection`
+// {test}`requirements.test-coverage.storage`
+// {test}`requirements.test-coverage.storage.replace`
+#[test]
+fn package_binary_partition_and_ignored_selection_replace_only_their_actual_test_identities() {
+    let temp = fixture();
+    let root = temp.path();
+    let manifest = fs::read_to_string(root.join("Cargo.toml")).unwrap();
+    fs::write(
+        root.join("Cargo.toml"),
+        format!("{manifest}\n[workspace]\nmembers=['member']\n"),
+    )
+    .unwrap();
+    fs::create_dir_all(root.join("member/src")).unwrap();
+    fs::write(
+        root.join("member/Cargo.toml"),
+        "[package]\nname='workspace-member'\nversion='0.1.0'\nedition='2024'\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("member/src/lib.rs"),
+        "#[test] fn member_runs() {}\n",
+    )
+    .unwrap();
+    let source = fs::read_to_string(root.join("src/lib.rs")).unwrap();
+    fs::write(
+        root.join("src/lib.rs"),
+        format!("{source}\n#[test] #[ignore] fn ignored_only() {{}}\n"),
+    )
+    .unwrap();
+    assert_success(&coverage(root, &["--workspace", "--retries", "1"]));
+    let baseline = runs(root);
+    let original: Vec<Value> = baseline.iter().flat_map(|(run, _)| attempts(run)).collect();
+    assert_eq!(original.len(), 6);
+    let mut expected = original.clone();
+    for (args, identities) in [
+        (
+            vec!["-p", "workspace-member"],
+            serde_json::json!([{"binary":"workspace-member", "test":"member_runs"}]),
+        ),
+        (
+            vec!["--workspace", "--lib", "-E", "test(second)"],
+            serde_json::json!([{"binary":"coverage-fixture", "test":"second"}]),
+        ),
+        (
+            vec![
+                "--workspace",
+                "--test",
+                "processes",
+                "-E",
+                "test(same_name)",
+            ],
+            serde_json::json!([{"binary":"coverage-fixture::processes", "test":"same_name"}]),
+        ),
+        (
+            vec!["--workspace", "--run-ignored", "only"],
+            serde_json::json!([{"binary":"coverage-fixture", "test":"ignored_only"}]),
+        ),
+    ] {
+        assert_success(&coverage(root, &args));
+        let saved = runs(root);
+        let latest = saved.last().unwrap();
+        assert_eq!(latest.1["selection"], identities, "arguments: {args:?}");
+        let replacements = attempts(&latest.0);
+        assert_eq!(replacements.len(), identities.as_array().unwrap().len());
+        for replacement in &replacements {
+            expected.retain(|old| {
+                old["binary"] != replacement["binary"] || old["test"] != replacement["test"]
+            });
+            expected.push(replacement.clone());
+        }
+        let mut actual: Vec<_> = saved.iter().flat_map(|(run, _)| attempts(run)).collect();
+        let key = |value: &Value| {
+            (
+                value["binary"].as_str().unwrap().to_owned(),
+                value["test"].as_str().unwrap().to_owned(),
+            )
+        };
+        expected.sort_by_key(key);
+        actual.sort_by_key(key);
+        assert_eq!(
+            actual, expected,
+            "unselected metadata and measurements must remain unchanged"
+        );
+        assert_eq!(latest.1["configuration"], baseline[0].1["configuration"]);
+    }
+    let mut partitions = std::collections::BTreeSet::new();
+    for partition in ["hash:1/2", "hash:2/2"] {
+        assert_success(&coverage(
+            root,
+            &[
+                "--workspace",
+                "--partition",
+                partition,
+                "--retries",
+                "1",
+                "--no-tests",
+                "pass",
+            ],
+        ));
+        let saved = runs(root);
+        let latest = saved.last().unwrap();
+        let actual = attempts(&latest.0);
+        assert_eq!(
+            latest.1["selection"],
+            serde_json::Value::Array(
+                actual
+                    .iter()
+                    .map(|record| {
+                        serde_json::json!({"binary":record["binary"], "test":record["test"]})
+                    })
+                    .collect()
+            )
+        );
+        for identity in latest.1["selection"].as_array().unwrap() {
+            assert!(
+                partitions.insert((
+                    identity["binary"].as_str().unwrap().to_owned(),
+                    identity["test"].as_str().unwrap().to_owned()
+                )),
+                "partitions must be disjoint"
+            );
+        }
+    }
+    assert_eq!(
+        partitions,
+        original
+            .iter()
+            .map(|record| (
+                record["binary"].as_str().unwrap().to_owned(),
+                record["test"].as_str().unwrap().to_owned(),
+            ))
+            .collect(),
+        "the two partitions together select all non-ignored workspace tests"
+    );
+    assert_eq!(
+        runs(root).iter().flat_map(|(run, _)| attempts(run)).count(),
+        7,
+        "partition reruns preserve the unselected ignored-test result"
+    );
+}
+
+// {test}`requirements.test-coverage.storage.selection`
+// {test}`requirements.test-coverage.storage.replace`
+// {test}`requirements.test-coverage.storage.outcomes`
+// {test}`requirements.test-coverage.check.measurement`
+#[test]
+fn fail_fast_leaves_every_unstarted_selected_test_pending_without_old_measurements() {
+    let temp = fixture();
+    let root = temp.path();
+    fs::write(root.join("tests/processes.rs"), "").unwrap();
+    fs::write(
+        root.join("src/lib.rs"),
+        r#"
+#[test] fn a_failure() {
+    assert!(std::env::var_os("HABEAS_FAIL_FIXTURE").is_none());
+}
+#[test] fn b_selected() { assert_eq!(std::hint::black_box(1), 1); }
+#[test] fn c_selected() { assert_eq!(std::hint::black_box(2), 2); }
+"#,
+    )
+    .unwrap();
+    let config = root.join(".config/nextest.toml");
+    let source = fs::read_to_string(&config).unwrap();
+    fs::write(
+        &config,
+        format!(
+            "{source}\n[[profile.default.overrides]]\nfilter='test(a_failure)'\npriority=100\n"
+        ),
+    )
+    .unwrap();
+    assert_success(&coverage(root, &["--workspace", "-j1"]));
+    let old = runs(root)[0].0.clone();
+    assert!(
+        attempts(&old)
+            .iter()
+            .all(|attempt| !attempt["processes"].as_array().unwrap().is_empty())
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_habeas"))
+        .args(["coverage", "--", "--workspace", "-j1", "--fail-fast"])
+        .current_dir(root)
+        .env("HABEAS_FAIL_FIXTURE", "1")
+        .env("CARGO_NET_OFFLINE", "true")
+        .env_remove("CARGO_TARGET_DIR")
+        .env_remove("CARGO_BUILD_TARGET_DIR")
+        .env_remove("RUSTC_WORKSPACE_WRAPPER")
+        .env_remove("HABEAS_COVERAGE_RUN")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(!old.exists());
+    let saved = runs(root);
+    assert_eq!(saved.len(), 1);
+    let records = attempts(&saved[0].0);
+    assert_eq!(records.len(), 3);
+    for record in records {
+        if record["test"] == "a_failure" {
+            assert_eq!(record["outcome"], "failed");
+        } else {
+            assert_eq!(record["outcome"], "pending", "{record}");
+            assert!(record["processes"].as_array().unwrap().is_empty());
+        }
+    }
+    let checked = saved_check(root);
+    assert!(!checked.status.success());
+    let text = String::from_utf8_lossy(&checked.stdout);
+    assert!(text.contains("pending"), "{text}");
+    assert!(
+        !text.contains("100.0%"),
+        "partial results must not be presented as complete"
+    );
+}
+
+// {test}`requirements.test-coverage.storage.selection`
+// {test}`requirements.test-coverage.storage.replace`
+#[cfg(unix)]
+#[test]
+fn selection_discovery_failure_preserves_existing_results_and_configuration() {
+    use std::os::unix::fs::PermissionsExt;
+    let temp = fixture();
+    let root = temp.path();
+    assert_success(&coverage(root, &["-E", "test(second)"]));
+    let before = runs(root);
+    let measurements = attempts(&before[0].0);
+    let tools = root.join("failing-list");
+    fs::create_dir(&tools).unwrap();
+    let cargo = tools.join("cargo");
+    fs::write(&cargo, "#!/bin/sh\nif [ \"$1\" = nextest ] && [ \"$2\" = list ]; then\n  echo 'synthetic selection discovery failure' >&2\n  exit 63\nfi\nexec \"$HABEAS_REAL_CARGO\" \"$@\"\n").unwrap();
+    fs::set_permissions(cargo, fs::Permissions::from_mode(0o755)).unwrap();
+    let mut paths = vec![tools];
+    paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
+    let output = Command::new(env!("CARGO_BIN_EXE_habeas"))
+        .args([
+            "coverage",
+            "--",
+            "--features",
+            "alpha",
+            "-E",
+            "test(second)",
+        ])
+        .current_dir(root)
+        .env("PATH", std::env::join_paths(paths).unwrap())
+        .env("HABEAS_REAL_CARGO", env!("CARGO"))
+        .env("CARGO_NET_OFFLINE", "true")
+        .env_remove("CARGO_TARGET_DIR")
+        .env_remove("CARGO_BUILD_TARGET_DIR")
+        .env_remove("RUSTC_WORKSPACE_WRAPPER")
+        .env_remove("HABEAS_COVERAGE_RUN")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("selection discovery failed"));
+    assert_eq!(runs(root), before);
+    assert_eq!(attempts(&before[0].0), measurements);
+}
+
+// {test}`requirements.test-coverage.storage.cleanup`
+// {test}`requirements.test-coverage.failures`
+// {test}`requirements.test-coverage.failures.profiles`
+#[cfg(unix)]
+#[test]
+fn cleanup_failure_is_reported_and_next_collection_removes_orphans() {
+    use std::os::unix::fs::PermissionsExt;
+    let temp = fixture();
+    let root = temp.path();
+    assert_success(&coverage(root, &["-E", "test(second)"]));
+    let before = runs(root);
+    let original = attempts(&before[0].0);
+    let orphan = root
+        .join("target/habeas/coverage")
+        .join(uuid::Uuid::new_v4().to_string());
+    fs::create_dir(&orphan).unwrap();
+    fs::write(orphan.join("obsolete.profraw"), "orphaned profile").unwrap();
+    fs::set_permissions(&orphan, fs::Permissions::from_mode(0o000)).unwrap();
+    let output = coverage(root, &["-E", "test(second)"]);
+    fs::set_permissions(&orphan, fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("Permission denied"));
+    assert_eq!(runs(root), before);
+    assert_eq!(attempts(&before[0].0), original);
+    assert_success(&coverage(root, &["-E", "test(second)"]));
+    assert!(!orphan.exists());
 }
 
 // {test}`requirements.test-coverage.failures`
 // {test}`requirements.test-coverage.storage.outcomes`
 #[cfg(unix)]
 #[test]
-fn a_build_that_cannot_start_retains_failed_run_metadata() {
+fn a_build_that_cannot_start_preserves_the_current_set() {
     use std::os::unix::{fs::PermissionsExt, fs::symlink};
     let temp = fixture();
     let root = temp.path();
@@ -1097,15 +1479,9 @@ fn a_build_that_cannot_start_retains_failed_run_metadata() {
         .output()
         .unwrap();
     assert!(!output.status.success());
-    let saved = runs(root);
-    assert_eq!(saved.len(), 1);
-    assert_eq!(saved[0].1["outcome"], "failed");
-    assert!(attempts(&saved[0].0).is_empty());
     assert!(
-        saved[0].1["diagnostics"][0]
-            .as_str()
-            .unwrap()
-            .contains("Cannot start instrumented compilation")
+        runs(root).is_empty(),
+        "failed preparation does not establish a new coverage set"
     );
 }
 
@@ -1187,16 +1563,12 @@ fn rendezvous(own: &str, other: &str) {
     assert_success(&coverage(root, &[]));
     assert!(!root.join("target/habeas/coverage").exists());
     let storage = root.join("custom-target/habeas/coverage");
-    let run_path = fs::read_dir(&storage)
-        .unwrap()
-        .next()
-        .unwrap()
-        .unwrap()
-        .path();
-    let run: Value = serde_json::from_slice(&fs::read(run_path.join("run.json")).unwrap()).unwrap();
+    let saved = runs_in(&storage);
+    let run_path = saved[0].0.clone();
+    let run = &saved[0].1;
     assert_eq!(run["revision"], revision.to_string());
     assert_eq!(run["dirty"], true);
-    assert_eq!(run["selection"], serde_json::json!(["--workspace"]));
+    assert_eq!(run["selection"].as_array().unwrap().len(), 3);
     let records = attempts(&run_path);
     assert_eq!(records.len(), 3);
     assert!(
@@ -1211,16 +1583,8 @@ fn rendezvous(own: &str, other: &str) {
     );
     fs::write(root.join("src/lib.rs"), source).unwrap();
     assert_success(&coverage(root, &["--workspace", "-E", "test(member_runs)"]));
-    let clean_run = fs::read_dir(&storage)
-        .unwrap()
-        .map(|entry| {
-            serde_json::from_slice::<Value>(
-                &fs::read(entry.unwrap().path().join("run.json")).unwrap(),
-            )
-            .unwrap()
-        })
-        .max_by_key(|run| run["started"].as_u64().unwrap())
-        .unwrap();
+    let saved = runs_in(&storage);
+    let clean_run = &saved.last().unwrap().1;
     assert_eq!(clean_run["revision"], revision.to_string());
     assert_eq!(clean_run["dirty"], false);
 }
@@ -1228,6 +1592,7 @@ fn rendezvous(own: &str, other: &str) {
 // {test}`requirements.test-coverage.failures`
 // {test}`requirements.test-coverage.storage.outcomes`
 // {test}`requirements.test-coverage.processes.reports`
+// {test}`requirements.test-coverage.failures.profiles`
 // {test}`requirements.test-coverage.test`
 #[cfg(unix)]
 #[test]
@@ -1304,6 +1669,7 @@ unsafe extern "C" { fn _exit(status: i32) -> !; }
             .is_empty()
     );
     for attempt in [&good, &corrupt] {
+        assert_profiles_present(&saved[0].0, attempt);
         for profile in attempt["processes"]
             .as_array()
             .unwrap()
@@ -1326,21 +1692,25 @@ unsafe extern "C" { fn _exit(status: i32) -> !; }
 // {test}`requirements.test-coverage.failures`
 #[test]
 fn a_process_that_cannot_start_is_failed_with_retained_attempt_metadata() {
-    let temp = tempfile::tempdir().unwrap();
-    let run = temp.path().join("run");
+    let temp = fixture();
+    let root = temp.path();
+    assert_success(&coverage(root, &["-E", "test(second)"]));
+    let run = runs(root)[0].0.clone();
     let output = Command::new(env!("CARGO_BIN_EXE_habeas"))
         .arg("coverage-process")
-        .arg(temp.path().join("nonexistent-test-program"))
+        .arg(root.join("nonexistent-test-program"))
         .env("HABEAS_COVERAGE_RUN", &run)
-        .env("NEXTEST_BINARY_ID", "fixture::lib")
-        .env("NEXTEST_TEST_NAME", "cannot_start")
-        .env("NEXTEST_ATTEMPT", "1")
+        .env("NEXTEST_BINARY_ID", "coverage-fixture")
+        .env("NEXTEST_TEST_NAME", "second")
+        .env("NEXTEST_ATTEMPT", "2")
         .output()
         .unwrap();
     assert!(!output.status.success());
     let records = attempts(&run);
     assert_eq!(records.len(), 1);
     assert_eq!(records[0]["outcome"], "failed");
+    assert_eq!(records[0]["attempt"], "2");
+    assert!(records[0]["processes"].as_array().unwrap().is_empty());
     assert!(
         records[0]["diagnostics"][0]
             .as_str()
@@ -1351,6 +1721,7 @@ fn a_process_that_cannot_start_is_failed_with_retained_attempt_metadata() {
 
 // {test}`requirements.test-coverage.storage.outcomes`
 // {test}`requirements.test-coverage.storage.provenance`
+// {test}`requirements.test-coverage.storage.selection`
 // {test}`requirements.test-coverage.failures`
 #[cfg(unix)]
 #[test]
@@ -1364,35 +1735,55 @@ fn unreadable_build_inputs_fail_preparation_before_any_tests_start() {
     )
     .unwrap();
     fs::write(root.join("input.data"), "private build input").unwrap();
+    assert_success(&coverage(root, &["-E", "test(second)"]));
+    let before = runs(root);
+    let measurements = attempts(&before[0].0);
     fs::set_permissions(root.join("input.data"), fs::Permissions::from_mode(0o000)).unwrap();
-    let output = coverage(root, &["-E", "test(second)"]);
+    let output = coverage(root, &["--features", "alpha", "-E", "test(second)"]);
     fs::set_permissions(root.join("input.data"), fs::Permissions::from_mode(0o600)).unwrap();
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("Coverage preparation failed"));
-    let saved = runs(root);
-    assert_eq!(saved[0].1["outcome"], "failed");
-    assert!(attempts(&saved[0].0).is_empty());
-    assert!(
-        saved[0].1["diagnostics"][0]
-            .as_str()
-            .unwrap()
-            .contains("before test startup")
-    );
+    assert_eq!(runs(root), before);
+    assert_eq!(attempts(&before[0].0), measurements);
 }
 
 // {test}`requirements.test-coverage.storage.outcomes`
+// {test}`requirements.test-coverage.storage.replace`
 // {test}`requirements.test-coverage.failures`
 #[cfg(unix)]
 #[test]
 fn interrupting_the_parent_preserves_started_attempt_metadata() {
     let temp = fixture();
     let root = temp.path();
-    fs::write(root.join("src/lib.rs"), "#[test] fn waits() { std::fs::write(\"started\", \"ready\").unwrap(); loop { std::thread::sleep(std::time::Duration::from_millis(20)); } }\n").unwrap();
+    fs::write(
+        root.join("src/lib.rs"),
+        r#"
+#[test] fn waits() {
+    if std::env::var_os("HABEAS_WAIT_FIXTURE").is_none() { return; }
+    std::fs::write("started", "ready").unwrap();
+    loop { std::thread::sleep(std::time::Duration::from_millis(20)); }
+}
+#[test] fn unstarted() { std::fs::write("unstarted", "ran").unwrap(); }
+"#,
+    )
+    .unwrap();
     fs::write(root.join("tests/processes.rs"), "").unwrap();
+    let config = root.join(".config/nextest.toml");
+    let source = fs::read_to_string(&config).unwrap();
+    fs::write(
+        &config,
+        format!("{source}\n[[profile.default.overrides]]\nfilter='test(waits)'\npriority=100\n"),
+    )
+    .unwrap();
+    assert_success(&coverage(root, &["--workspace", "-j1"]));
+    let old = runs(root)[0].0.clone();
+    assert_eq!(attempts(&old).len(), 2);
+    fs::remove_file(root.join("unstarted")).unwrap();
     let mut child = Command::new(env!("CARGO_BIN_EXE_habeas"))
-        .args(["coverage", "--", "-E", "test(waits)"])
+        .args(["coverage", "--", "--workspace", "-j1"])
         .current_dir(root)
         .env("CARGO_NET_OFFLINE", "true")
+        .env("HABEAS_WAIT_FIXTURE", "1")
         .env_remove("CARGO_TARGET_DIR")
         .env_remove("CARGO_BUILD_TARGET_DIR")
         .env_remove("RUSTC_WORKSPACE_WRAPPER")
@@ -1434,11 +1825,183 @@ fn interrupting_the_parent_preserves_started_attempt_metadata() {
     };
     assert_eq!(status.code(), Some(130));
     let saved = runs(root);
+    assert_eq!(saved.len(), 1);
+    assert!(!old.exists());
     assert_eq!(saved[0].1["outcome"], "interrupted");
     let records = attempts(&saved[0].0);
+    assert_eq!(records.len(), 2);
+    let started = records
+        .iter()
+        .find(|record| record["test"] == "waits")
+        .unwrap();
+    assert_eq!(started["outcome"], "interrupted");
+    let pending = records
+        .iter()
+        .find(|record| record["test"] == "unstarted")
+        .unwrap();
+    assert_eq!(pending["outcome"], "pending");
+    assert_eq!(pending["pid"], 0);
+    assert!(pending["processes"].as_array().unwrap().is_empty());
+    assert!(!root.join("unstarted").exists());
+    let result = saved_check(root);
+    assert!(!result.status.success());
+    assert!(String::from_utf8_lossy(&result.stdout).contains("pending"));
+    assert!(!String::from_utf8_lossy(&result.stdout).contains("100.0%"));
+}
+
+// {test}`requirements.test-coverage.storage.replace`
+// {test}`requirements.test-coverage.storage.outcomes`
+// {test}`requirements.test-coverage.failures`
+#[cfg(unix)]
+#[test]
+fn execution_startup_failure_leaves_prior_selected_results_pending_without_measurements() {
+    use std::os::unix::{fs::PermissionsExt, fs::symlink};
+    let temp = fixture();
+    let root = temp.path();
+    assert_success(&coverage(root, &["-E", "test(second)"]));
+    let old = runs(root)[0].0.clone();
+    assert!(
+        !attempts(&old)[0]["processes"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    let tools = root.join("disappearing-cargo");
+    fs::create_dir(&tools).unwrap();
+    let cargo = tools.join("cargo");
+    fs::write(
+        &cargo,
+        r#"#!/bin/sh
+if [ "$1" = nextest ] && [ "$2" = list ]; then
+  for arg in "$@"; do
+    if [ "$arg" = --binaries-metadata ]; then
+      "$HABEAS_REAL_CARGO" "$@"
+      result=$?
+      /bin/rm "$0"
+      exit "$result"
+    fi
+  done
+fi
+exec "$HABEAS_REAL_CARGO" "$@"
+"#,
+    )
+    .unwrap();
+    fs::set_permissions(&cargo, fs::Permissions::from_mode(0o755)).unwrap();
+    let rustc = std::env::split_paths(&std::env::var_os("PATH").unwrap())
+        .map(|path| path.join("rustc"))
+        .find(|path| path.is_file())
+        .unwrap();
+    let nextest = std::env::split_paths(&std::env::var_os("PATH").unwrap())
+        .map(|path| path.join("cargo-nextest"))
+        .find(|path| path.is_file())
+        .unwrap();
+    symlink(rustc, tools.join("rustc")).unwrap();
+    symlink(nextest, tools.join("cargo-nextest")).unwrap();
+    let result = Command::new(env!("CARGO_BIN_EXE_habeas"))
+        .args(["coverage", "--", "-E", "test(second)"])
+        .current_dir(root)
+        .env("HABEAS_REAL_CARGO", env!("CARGO"))
+        .env("CARGO_NET_OFFLINE", "true")
+        .env(
+            "PATH",
+            std::env::join_paths([tools.as_path(), Path::new("/usr/bin"), Path::new("/bin")])
+                .unwrap(),
+        )
+        .env_remove("CARGO_TARGET_DIR")
+        .env_remove("CARGO_BUILD_TARGET_DIR")
+        .env_remove("RUSTC_WORKSPACE_WRAPPER")
+        .env_remove("HABEAS_COVERAGE_RUN")
+        .output()
+        .unwrap();
+    assert!(!result.status.success());
+    assert!(
+        !cargo.exists(),
+        "selection discovery succeeded before removing the executable"
+    );
+    let saved = runs(root);
+    assert_eq!(saved.len(), 1);
+    assert!(!old.exists());
+    assert_eq!(saved[0].1["outcome"], "failed");
+    assert!(
+        saved[0].1["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|message| message.as_str().unwrap().contains("No such file"))
+    );
+    let records = attempts(&saved[0].0);
     assert_eq!(records.len(), 1);
-    assert_eq!(records[0]["test"], "waits");
-    assert_eq!(records[0]["outcome"], "interrupted");
+    assert_eq!(records[0]["test"], "second");
+    assert_eq!(records[0]["outcome"], "pending");
+    assert_eq!(records[0]["pid"], 0);
+    assert!(records[0]["processes"].as_array().unwrap().is_empty());
+    assert_eq!(
+        fs::read_dir(saved[0].0.join("attempts")).unwrap().count(),
+        0
+    );
+    let result = saved_check(root);
+    assert!(!result.status.success());
+    assert!(String::from_utf8_lossy(&result.stdout).contains("pending"));
+    assert!(!String::from_utf8_lossy(&result.stdout).contains("100.0%"));
+}
+
+// {test}`requirements.test-coverage.storage.replace`
+// {test}`requirements.test-coverage.storage.configuration_reset`
+// {test}`requirements.test-coverage.failures`
+#[cfg(unix)]
+#[test]
+fn a_failed_replacement_commit_reports_the_error_without_launching_execution() {
+    use std::os::unix::fs::PermissionsExt;
+    let temp = fixture();
+    let root = temp.path();
+    assert_success(&coverage(root, &["-E", "test(second)"]));
+    let before = runs(root);
+    let measurements = attempts(&before[0].0);
+    let database =
+        rusqlite::Connection::open(root.join("target/habeas/coverage/current.sqlite")).unwrap();
+    database.execute_batch("CREATE TRIGGER reject_replacement BEFORE INSERT ON tests BEGIN SELECT RAISE(ABORT,'synthetic commit failure'); END;").unwrap();
+    drop(database);
+    let tools = root.join("execution-sentinel");
+    fs::create_dir(&tools).unwrap();
+    let cargo = tools.join("cargo");
+    fs::write(
+        &cargo,
+        r#"#!/bin/sh
+if [ "$1" = nextest ] && [ "$2" = run ]; then
+  for arg in "$@"; do
+    if [ "$arg" = --binaries-metadata ]; then
+      echo started > execution-started
+    fi
+  done
+fi
+exec "$HABEAS_REAL_CARGO" "$@"
+"#,
+    )
+    .unwrap();
+    fs::set_permissions(&cargo, fs::Permissions::from_mode(0o755)).unwrap();
+    let mut paths = vec![tools];
+    paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
+    let result = Command::new(env!("CARGO_BIN_EXE_habeas"))
+        .args(["coverage", "--", "--workspace", "--features", "alpha"])
+        .current_dir(root)
+        .env("PATH", std::env::join_paths(paths).unwrap())
+        .env("HABEAS_REAL_CARGO", env!("CARGO"))
+        .env("CARGO_NET_OFFLINE", "true")
+        .env_remove("CARGO_TARGET_DIR")
+        .env_remove("CARGO_BUILD_TARGET_DIR")
+        .env_remove("RUSTC_WORKSPACE_WRAPPER")
+        .env_remove("HABEAS_COVERAGE_RUN")
+        .output()
+        .unwrap();
+    assert!(!result.status.success());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("synthetic commit failure"));
+    assert!(
+        !root.join("execution-started").exists(),
+        "no execution command may start after the failed commit"
+    );
+    assert_eq!(runs(root), before);
+    assert_eq!(attempts(&before[0].0), measurements);
+    assert_profiles_present(&before[0].0, &measurements[0]);
 }
 
 // {test}`requirements.test-coverage.failures.prerequisites`

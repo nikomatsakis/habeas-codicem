@@ -1,8 +1,8 @@
 {
   "requirement": "The harness MUST expose an `outline` tool with this interface:\n\n```text\noutline({ file: String }) -> Array<OutlineEntry>\n\nOutlineEntry {\n    item: String,\n    kind: String,\n    name: String?,\n    children: Array<OutlineEntry>,\n}\n```\n\nThe tool MUST return the outline of a permitted file in a supported language\nunder {cite}`requirements.references.outlines`, with each node's selector under\n{cite}`requirements.references.outline_selectors`, its kind, and its name when it\nis named, nested by outline ancestry and in source order. Results MUST contain\nno source text or line numbers and MUST NOT become evidence inputs; the model reads\nthe nodes it relies on with the `habeas` tool. For a file using the plain-text\nprofile, the outline lists its `line` nodes. Explicitly requesting an excluded\nfile MUST be handled as a denial under {cite}`requirements.authoring.read_denial`.",
   "determination": true,
-  "rationale": "The three supplied tests in `src/authoring/tools.rs` cover each obligation that `requirements.authoring.outline_tool` states itself. I did not request implementation source.\n\n- **Interface and arguments.** `outline_tool_is_advertised_with_a_required_file_argument` asserts the exact parameter schema: an object with a string `file`, `file` required, and no additional properties. It also checks that the description says the tool returns an item selector, kind, name, no line numbers and no source text, and that the model should read nodes with `habeas`. `outline_lists_nested_nodes_without_text_or_inputs` checks malformed arguments: a missing `file`, a non-string `file`, an extra argument, and a nonexistent file. Each returns an error that names the problem.\n- **Entry shape, nesting and order.** The same test dispatches `outline` on a Rust file and compares the whole JSON result with `assert_eq`. The expected result has `struct[Thing]` followed by `impl[Thing]`. The `impl` entry has `fn[run]` nested under it in `children`, and each entry has `item`, `kind`, `name` and `children`. This checks selectors, kind, name, nesting by ancestry and source order. Because the comparison is exact, extra fields such as line numbers would fail it.\n- **No source text.** The test asserts that the doc comment text \"Docs\" is absent from the serialized result.\n- **No evidence inputs.** The test asserts `outline.inputs.is_empty()`. The other test asserts `sources.recorded_inputs().is_empty()` after outline requests outside the project.\n- **Plain-text profile.** The test outlines `notes.txt` containing `alpha`, a blank line and `beta`. It asserts two entries, which shows the blank line is skipped. Every entry has kind `line`, a null name and an item starting with `line@`, and there is no `line_start` field.\n- **Excluded file handled as a denial.** With `notes.txt` disallowed in `habeas.toml`, the test asserts the `outline` call returns an error of kind `PermissionDenied`. The error text names `notes.txt` and says \"disallowed\", which matches the `read_denial` requirement to name the path and the reason. `unpermitted_requests_outside_the_project_are_recoverable_tool_errors` also exercises `outline` on an external path. It asserts the error says \"outside the project\" and is not `PermissionDenied`, and that no inputs are recorded.\n\nThe language list, the syntax-error behaviour, the `#N` and percent-encoding selector rules, and the structural hash belong to the cited `requirements.references.outlines` and `requirements.references.outline_selectors`. The checks on the denial error itself belong to `requirements.authoring.read_denial`. All of these are cited context, not obligations to retest here.\n\nI found no unacknowledged gap.",
-  "references": "96917d9dd620f3d6b512be6a537b8ff63277bedf76567838d51a8d195ab7d4b4",
+  "rationale": "The reviewed tests cover every obligation in `requirements.authoring.outline_tool`.\n\n- **Interface.**\n  - `tools.rs#mod[tests]/fn[outline_tool_is_advertised_with_a_required_file_argument]` asserts the advertised `outline` schema exactly: a string `file`, required, with no additional properties. It also checks that the description mentions the item selector, kind, name, no line numbers, no source text, and reading nodes with habeas.\n  - `outline_lists_nested_nodes_without_text_or_inputs` asserts the exact result array for a Rust file. Each entry has `item`, `kind`, `name` and `children`.\n  - The same test checks malformed arguments: a missing `file`, a non-string `file`, an extra argument, and a missing file. Each returns an explanatory error.\n- **Selector, kind, name, nesting and order.** The Rust fixture has a struct followed by an impl whose child is `fn[run]`. The exact-equality assertion checks the selectors `struct[Thing]` and `impl[Thing]/fn[run]`, the kinds and names, nesting under the impl, and source order. Selector grammar details such as `#N` and percent-encoding belong to the cited `requirements.references.outline_selectors`. Per-language profiles belong to `requirements.references.outlines`. Neither is reassessed here.\n- **No source text and no line numbers.**\n  - The test asserts that the doc comment text \"Docs\" is absent from the serialized result.\n  - It also asserts that no `line_start` key appears on plain-text entries, and the exact-equality assertion on the Rust result excludes any extra fields.\n- **Not an evidence input.** `assert!(outline.inputs.is_empty())` covers this, and the outside-project test asserts that `recorded_inputs()` stays empty.\n- **Plain-text profile.** `notes.txt` contains `alpha`, a blank line and `beta`. The test asserts two entries, each of kind `line`, with a null name and an `item` starting with `line@`. Blank lines are skipped.\n- **Excluded file handled as a denial.**\n  - The test adds `habeas.toml` with a disallow rule for `notes.txt`. It asserts a `PermissionDenied` error that names the path and says \"disallowed\", which gives the reason.\n  - `unpermitted_requests_outside_the_project_are_recoverable_tool_errors` covers a path outside the project. It asserts a non-`PermissionDenied` recoverable error containing \"outside the project\". It then covers a matching disallow, which still returns `PermissionDenied`.\n  - The searches I ran found further `outline` denial and read-failure cases. These include an untracked file under git, symlinks that leave the project, and book or target output.\n- **`src/inputs.rs` tests.** The two `OutlineCache` tests are marked as tests of this requirement but only check cache sharing and override behaviour. They add nothing contradictory.\n\nI found no obligation without a test and no assertion that contradicts the text. Every `MUST` is exercised and asserted.",
+  "references": "0bb3e6a0d66922b78a0fb0756215c5c85c5496dc6c8f8ced82b311ca8fdce1f0",
   "inputs": [
     {
       "requirements": "requirements.authoring.outline_tool",
@@ -50,9 +50,14 @@
         "blank is an anonymous outline node of kind `line`. Each supported language MUST",
         "have an outline profile that maps grammar node kinds to short outline kind names",
         "and, for each mapped kind, states whether a node is named, and by which fields",
-        "or children, or anonymous. Only mapped kinds MUST appear in the outline; other",
-        "nodes MUST be transparent, so their outline descendants appear under the",
-        "nearest outline ancestor. A profile MAY attach grammar siblings to an outline",
+        "or children, or anonymous. Only mapped kinds MUST appear in the outline, except",
+        "that a Markdown profile MAY additionally recognize colon-fenced directive",
+        "containers under {cite}`requirements.sdk.sources.markdown.fence_precedence`",
+        "and expose them as outline nodes under",
+        "{cite}`requirements.sdk.sources.markdown.fenced_blocks`. Such containers MUST",
+        "preserve source ranges and containment, and MUST NOT be recognized within",
+        "literal code or raw HTML. Other nodes MUST be transparent, so their outline",
+        "descendants appear under the nearest outline ancestor. A profile MAY attach grammar siblings to an outline",
         "node, such as Rust attributes and doc comments preceding an item, so the outline",
         "tree need not match the grammar tree exactly; attached siblings are part of that",
         "node for its line range and hash. Every file's outline MUST have a root node",
@@ -115,6 +120,172 @@
       "file": "src/authoring/tools.rs",
       "item": "mod[tests]/fn[outline_lists_nested_nodes_without_text_or_inputs]",
       "hash": "49fc35204083a09ec8e0e6340a0d8f6825c3ff2305fabe5e40ea92bbe34f5a9a"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "mod[tests]/fn[clones_share_sources_loaded_after_cloning_but_new_runs_read_changes]",
+      "hash": "f02266231c2f121259f031050edfd7bd091267dd441ef74c29c66b44c4a97dee"
+    },
+    {
+      "file": "src/inputs.rs",
+      "item": "mod[tests]/fn[clones_share_overrides_and_failed_reads]",
+      "hash": "5f4b99f2706751afa761751b70dad2c129dedf420012dfde179133c34834db9e"
+    }
+  ],
+  "format_version": 1,
+  "review_version": "habeas-review-v1",
+  "dependencies": [
+    {
+      "Node": [
+        {
+          "ReferenceSet": "requirements.authoring.outline_tool"
+        },
+        {
+          "scheme": "habeas-reference-set-v1",
+          "value": "0bb3e6a0d66922b78a0fb0756215c5c85c5496dc6c8f8ced82b311ca8fdce1f0"
+        }
+      ]
+    },
+    {
+      "OutgoingEdges": [
+        {
+          "Requirement": "requirements.authoring.outline_tool"
+        },
+        "Mandatory",
+        {
+          "scheme": "node-path-set-sha256-v1",
+          "value": "ba61f7d82f0d5fb3429e0a6f85325b69948d9ce10b5fe5235ed3627ed05edfda"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Requirement": "requirements.authoring.outline_tool"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "5ae14fd174a9c6dc5bb61e7babcfde1c5e46ee7187d7d02074097d3b3c2b61a6"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Requirement": "requirements.references.outlines"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "dbc66d35dd6e6c99170cc92f984dc8e616b9a9589051fb59be6e9f9c1bd2c1f1"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Requirement": "requirements.references.outline_selectors"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "50c17c215d2e9cc804380282a86b4095f6837b3f197b9e5eb63768fc29985a5d"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Requirement": "requirements.authoring.read_denial"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "38592039712d1a50167415f4c711e29c8a1eba134fcf619932cac9378a3518ce"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/tools.rs"
+            },
+            "selector": "mod[tests]/fn[unpermitted_requests_outside_the_project_are_recoverable_tool_errors]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "4fcaee6929026096f60af6cfaa9f2c9247873bf6c08680ab203c50cd35ecc9ac"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/tools.rs"
+            },
+            "selector": "mod[tests]/fn[outline_tool_is_advertised_with_a_required_file_argument]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "d39c1125d3ac9a0e51747c8873b3c297f406ed2b46a4bf019aa71b853e39fc37"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/tools.rs"
+            },
+            "selector": "mod[tests]/fn[outline_lists_nested_nodes_without_text_or_inputs]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "9a14ea80c1fac3fe750de89e8f237960742abbc4e841f3bc014f6c43dbae2846"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/inputs.rs"
+            },
+            "selector": "mod[tests]/fn[clones_share_sources_loaded_after_cloning_but_new_runs_read_changes]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "44c6fd9165a0a82c3848d7fc49e15370b1e2a9577cb0fd0443ec1eb26319eab3"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/inputs.rs"
+            },
+            "selector": "mod[tests]/fn[clones_share_overrides_and_failed_reads]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "2c718fc23f14ae77401789f7a019a5384efad26d3c16b1c4c6a3fa6b7c7a3f5b"
+        }
+      ]
     }
   ]
 }
