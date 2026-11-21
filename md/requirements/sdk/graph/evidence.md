@@ -145,7 +145,7 @@ encoding and meaning.
 
 ## Remember what a procedure actually reads
 
-Calling `Graph::node_content` directly resolves a node. Reading through the
+Calling `NodeContents::node_content` directly resolves a node. Reading through the
 context's inspection interface also records the observation:
 
 ```rust,ignore

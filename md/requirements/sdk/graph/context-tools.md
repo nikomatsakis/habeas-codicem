@@ -28,12 +28,12 @@ sequenceDiagram
     participant A as Configured agent
     participant T as Model tool adapter
     participant C as Validation context
-    participant G as Application graph
+    participant G as Node contents provider
     P->>A: Context prefix and explicitly inserted node contents
     A->>T: Read helper node
     T->>C: Read node contents
     C->>G: node_content(helper)
-    G-->>C: Graph-defined contents
+    G-->>C: Application-defined contents
     C->>G: fingerprint(helper, contents)
     G-->>C: Fingerprint
     C-->>T: Contents and fingerprint
@@ -59,7 +59,7 @@ policy rather than requiring every SDK graph to contain requirements.
 
 | Operation | Arguments and result | Dependency meaning |
 | --- | --- | --- |
-| Read a graph node | `inspection().read(&node_id)` returns graph-defined contents. | Records the node identity and the fingerprint of the returned contents. |
+| Read a graph node | `inspection().read(&node_id)` returns application-defined node contents. | Records the node identity and the fingerprint of the returned contents. |
 | Find and read source-node contents (`habeas`) | Select a resource and outline item, or locate items using a line range. Returns identified node contents. Habeas also offers requirement/example selections and terminology-definition reads. | Records the source nodes actually delivered, using selectors rather than line numbers as identity. |
 | List resources (`list_files`) | A directory or provider scope; returns child resource identities and kinds. | Discovery. A listing does not establish that any resource's contents were read. |
 | Inspect an outline (`outline`) | A resource identity; returns selectable items, kinds, names, and ancestry. | Discovery. Read a selected item to make its contents an input. |

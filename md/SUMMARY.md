@@ -16,7 +16,7 @@
       - [Agent calls](./requirements/sdk/graph/agent-calls.md)
       - [Agent harness](./requirements/sdk/graph/agent-harness.md)
       - [Context tools](./requirements/sdk/graph/context-tools.md)
-    - [Fingerprinting](./requirements/sdk/graph/fingerprinting.md)
+    - [Node contents](./requirements/sdk/graph/fingerprinting.md)
     - [Evidence storage](./requirements/sdk/graph/evidence.md)
     - [Filesystem evidence storage](./requirements/sdk/filesystem-storage.md)
     - [Sources and inspection](./requirements/sdk/sources.md)

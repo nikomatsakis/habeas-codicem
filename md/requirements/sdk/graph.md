@@ -1,39 +1,28 @@
 # Graph
 
-Define what nodes and edge labels mean, and how the SDK obtains contents and
-outgoing relationships. These operations supply observations; they do not run
-validation callbacks.
+Define the nodes, labeled edges, and successors of the application's graph.
+[Node contents](graph/fingerprinting.md) adds the contents associated with those
+nodes.
 
-## Give nodes contents and relationships
+## Identify nodes and relationships
 
-`NodeId` identifies a thing; `NodeContent` is the application's representation
-of what it contains. Contents may be text, parsed source, issue data, or another
-structured value. The graph can use enums to represent several node kinds.
-Reading a node does not validate it.
+`NodeId` identifies a thing; `EdgeLabel` describes a relationship between two
+things. The graph can use enums to represent several node and relationship kinds.
 
 :::{req} domain_types
-`habeas_sdk::graph` defines the graph's associated types and content lookup
-operation:
+`habeas_sdk::graph` defines the graph's associated types:
 
 ```rust,ignore
 pub trait Graph: Send + Sync {
     /// The *identifier* identifies a particular node in the graph.
     type NodeId: Clone + Eq + Send + Sync;
 
-    /// The *contents* of a node defines what is given to a validator
-    /// when the node is read.
-    type NodeContent: Send + Sync;
-
-    /// The *label* between edges defines the kind of verification relationship
+    /// The *label* on an edge defines the kind of relationship
     /// between two nodes.
     type EdgeLabel: Clone + Send + Sync;
 
-    /// User-defined errors that can occur when fetching node content or performing
-    /// other operations.
+    /// Application-defined errors from graph operations.
     type Error: Send;
-
-    /// Fetch the content of a node.
-    fn node_content(&self, node: &Self::NodeId) -> Result<Self::NodeContent, Self::Error>;
 
     // ... additional methods defined below ...
 }

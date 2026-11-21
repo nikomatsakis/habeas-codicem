@@ -75,14 +75,13 @@ validation. Fingerprints determine which changes count as relevant.
 
 ## Defining the application domain
 
-The application defines its own domain by implementing `Domain`. This trait
-combines graph access, fingerprints, evidence storage, and formatting of node
-contents for an agent.
+The application defines its domain by implementing `Graph`, `NodeContents`, and
+`EvidenceStorage`. `Domain` combines those traits for criterion execution.
 Criteria are implemented by the values submitted to a validator:
 
 :::{req} domain
-The application implements `Domain` using its graph, fingerprints, and evidence
-storage. It also defines how to present a node's contents to an agent:
+Every cloneable application implementing the three domain traits implements
+`Domain`:
 
 ```rust,ignore
 /// Every validation uses a domain with graph access, fingerprints, and storage.
@@ -92,29 +91,18 @@ storage. It also defines how to present a node's contents to an agent:
 /// that trace safely.
 /// Agent calls retain independent conversation and submission state.
 /// Observations never leak between separate validations.
-pub trait Domain: Clone + Graph + Fingerprinting + EvidenceStorage {
-    /// Format these already-read contents as text for an agent.
-    /// The node identifies the source being presented.
-    /// Use the supplied contents so the text and fingerprint describe the same read.
-    fn format_node_content(
-        &self,
-        node: &Self::NodeId,
-        contents: &Self::NodeContent,
-    ) -> Result<String, Self::Error>;
-}
+pub trait Domain: Clone + Graph + NodeContents + EvidenceStorage {}
+
+impl<T: Clone + Graph + NodeContents + EvidenceStorage> Domain for T {}
 
 pub trait Graph {
-    // Defines the verification graph, including
-    //
-    // * Nodes: verifiable constructs
-    // * Edges: inputs to verification
-    // * NodeContent: the application-defined contents supplied by a node read
+    // Defines node identities, labeled edges, and successors.
     /* ... members defined in the Graph chapter ... */
 }
 
-pub trait Fingerprinting: Graph {
-    // Defines which changes to input contents matter for validation.
-    /* ... members defined in the Fingerprinting chapter ... */
+pub trait NodeContents: Graph {
+    // Reads node contents, fingerprints them, and formats them for an agent.
+    /* ... members defined in the Node contents chapter ... */
 }
 
 pub trait EvidenceStorage: Graph {
@@ -125,8 +113,8 @@ pub trait EvidenceStorage: Graph {
 :::
 
 Domains with mutable state commonly store it behind `Arc`, so cloned domains
-access the same graph and evidence storage. Formatting is part of the domain
-implementation; it needs no separate renderer object. The [agent calls
+access the same graph and evidence storage. Formatting belongs to `NodeContents`.
+The [agent calls
 chapter](sdk/graph/agent-calls.md#format-node-contents-for-the-agent) explains how
 the SDK uses this method.
 
@@ -134,9 +122,9 @@ The domain traits and the separate criterion interface have their own chapters:
 
 | Trait | Purpose |
 | --- | --- |
-| [Graph](sdk/graph.md) | What nodes and edges represent, and how to obtain their contents and relationships. |
+| [Graph](sdk/graph.md) | Node identities, labeled edges, and successors. |
 | [Criteria](sdk/graph/validation.md) | A criterion's identity, result type, and execution procedure. |
-| [Fingerprinting](sdk/graph/fingerprinting.md) | What parts of a node's contents are significant. |
+| [NodeContents](sdk/graph/fingerprinting.md) | Reading, fingerprinting, and formatting node contents. |
 | [EvidenceStorage](sdk/graph/evidence.md) | Where and how evidence is saved. |
 
 
