@@ -1,8 +1,8 @@
 {
-  "requirement": "The application implements `Domain` using its graph, fingerprints, and evidence\nstorage. It also defines how to present a node's contents to an agent:\n\n```rust,ignore\n/// Every validation uses a domain with graph access, fingerprints, and storage.\n///\n/// A validator owns a cloneable domain; executions can share its state.\n/// Each criterion has its own dependency trace; operations within it share\n/// that trace safely.\n/// Agent calls retain independent conversation and submission state.\n/// Observations never leak between separate validations.\npub trait Domain: Clone + Graph + Fingerprinting + EvidenceStorage {\n    /// Format these already-read contents as text for an agent.\n    /// The node identifies the source being presented.\n    /// Use the supplied contents so the text and fingerprint describe the same read.\n    fn format_node_content(\n        &self,\n        node: &Self::NodeId,\n        contents: &Self::NodeContent,\n    ) -> Result<String, Self::Error>;\n}\n\npub trait Graph {\n    // Defines the verification graph, including\n    //\n    // * Nodes: verifiable constructs\n    // * Edges: inputs to verification\n    // * NodeContent: the application-defined contents supplied by a node read\n    /* ... members defined in the Graph chapter ... */\n}\n\npub trait Fingerprinting: Graph {\n    // Defines which changes to input contents matter for validation.\n    /* ... members defined in the Fingerprinting chapter ... */\n}\n\npub trait EvidenceStorage: Graph {\n    // Defines how evidence is stored and loaded.\n    /* ... members defined in the Evidence storage chapter ... */\n}\n```",
+  "requirement": "Every cloneable application implementing the three domain traits implements\n`Domain`:\n\n```rust,ignore\n/// Every validation uses a domain with graph access, fingerprints, and storage.\n///\n/// A validator owns a cloneable domain; executions can share its state.\n/// Each criterion has its own dependency trace; operations within it share\n/// that trace safely.\n/// Agent calls retain independent conversation and submission state.\n/// Observations never leak between separate validations.\npub trait Domain: Clone + Graph + NodeContents + EvidenceStorage {}\n\nimpl<T: Clone + Graph + NodeContents + EvidenceStorage> Domain for T {}\n\npub trait Graph {\n    // Defines node identities, labeled edges, and successors.\n    /* ... members defined in the Graph chapter ... */\n}\n\npub trait NodeContents: Graph {\n    // Reads node contents, fingerprints them, and formats them for an agent.\n    /* ... members defined in the Node contents chapter ... */\n}\n\npub trait EvidenceStorage: Graph {\n    // Defines how evidence is stored and loaded.\n    /* ... members defined in the Evidence storage chapter ... */\n}\n```",
   "determination": true,
-  "rationale": "I judged this from the supplied test text only and did not request any implementation source. The tests adequately cover every obligation in `requirements.sdk.domain`.\n\nObligations derived from the requirement:\n1. The application implements `Domain` (Clone + Graph + Fingerprinting + EvidenceStorage), and a validator owns a cloneable domain whose state executions can share.\n2. Each criterion has its own dependency trace, and operations within one criterion share that trace safely.\n3. Agent calls keep independent conversation and submission state.\n4. Observations never leak between separate validations.\n5. `format_node_content` formats the supplied, already-read contents for the given node, so the text and the fingerprint describe the same read. It can return an error.\n\nCoverage:\n- **Domain usage and shared state (1):**\n  - `criteria_keep_typed_answers_and_persist_only_when_requested` and `deterministic_validation_uses_required_storage_without_an_agent` build a `Validator` over a cloned domain. They check that the domain's graph, fingerprinting and evidence storage are used. Evidence is stored and loaded, and the saved dependency fingerprints are asserted.\n  - `concurrent_same_criterion_executions_keep_complete_independent_records` runs two same-criterion executions concurrently on a shared domain. It asserts that neither blocks the other, that each keeps its own revision and dependencies, and that the saved record is complete.\n- **Per-criterion trace shared within a criterion (2):**\n  - `later_lighter_agent_calls_preserve_the_contexts_existing_trace` asserts that later agent calls keep the existing trace, and that the context is `Send + Sync`.\n  - `shared_context_allows_independent_concurrent_agent_calls` asserts the shared trace with two concurrent calls on one context.\n  - `concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads` checks that the concurrent reads land in one trace with the expected three dependencies.\n- **Independent agent state (3):** `concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads` runs two concurrent calls behind a barrier. Each call gets its own answer (\"alpha\" and \"beta\") and its own call count. `shared_context_allows_independent_concurrent_agent_calls` gets distinct answers (7 and 11) and two separate requests.\n- **No leakage between validations (4):** `concurrent_single_node_validations_keep_separate_traces` runs three validations concurrently with delays. It asserts that each stored record contains only its own node's dependencies, and that all three ran concurrently (peak of 3).\n- **Formatting from supplied contents (5):**\n  - `domain_formats_supplied_contents_without_resolving_a_replacement` uses a file, `missing.rs`, that does not exist on disk. The formatted text still contains the supplied \"already read source\" and names the file. This rules out re-reading the source. The same test checks that an unsupported node kind returns an error.\n  - `behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer` checks that the domain-formatted contents reach the agent in order. It also checks that the dependency fingerprints equal the read text, and that `check_inputs` detects a later content change.\n\nI found no obligation without a test and no marking gap.",
-  "references": "f6a7f6c173f03c0334783ebb6431418bd28ccc4fc9320f0a940a6553e5b13421",
+  "rationale": "**Obligations derived from `requirements.sdk.domain`**\n1. `Domain` is `Clone + Graph + NodeContents + EvidenceStorage`, with a blanket impl for every type meeting those bounds.\n2. A validator owns a cloneable domain, and executions can share its state.\n3. Each criterion has its own dependency trace, and operations within one criterion share that trace safely.\n4. Agent calls keep independent conversation and submission state.\n5. Observations never leak between separate validations.\n\n**Coverage**\n- **Blanket impl and bounds.** `Validator<D: Domain>`, `ValidationContext<D: Domain>` and `ToolAgent<…>: Agent<D: Domain>` all require `Domain`. Every marked test builds a validator or context from a plain test type, such as `Memory` or `Application`. The tests include `criteria_keep_typed_answers_and_persist_only_when_requested`, `deterministic_validation_uses_required_storage_without_an_agent` and `behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer`. The blanket impl is a bound-only item with no conditional logic. The compile-time use of ordinary types as a `Domain` covers it, as does the real `HabeasDomain` in `src/sdk.rs#mod[tests]/fn[domain_formats_supplied_contents_without_resolving_a_replacement]`.\n- **Cloneable domain shared by executions.** In `concurrent_same_criterion_executions_keep_complete_independent_records`, a cloned `Application` is used by two concurrent `verify` calls. A barrier proves they do not block each other. The test asserts the separate outputs and revisions, and it checks the stored dependencies against the shared state. In `concurrent_single_node_validations_keep_separate_traces`, three concurrent validations share a cloned `Memory`. The test asserts peak concurrency of 3 and that each stored record has only its own node's dependencies.\n- **Per-criterion trace and safe sharing within it.** `concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads` runs two concurrent `ask` calls on one context. It asserts that the merged trace holds exactly three dependencies, that `finish` returns the same dependencies, and that the two calls never block each other. `shared_context_allows_independent_concurrent_agent_calls` makes the same check for a mock agent. `later_lighter_agent_calls_preserve_the_contexts_existing_trace` asserts the trace is retained by a later call, that the context is `Send + Sync`, and that `finish` returns the retained trace.\n- **Independent conversation and submission state.** The `ToolAgent` test runs two simultaneous conversations with a `Barrier`. It asserts each gets its own answer (\"alpha\" and \"beta\") and its own call count of 3. `shared_context_allows_independent_concurrent_agent_calls` asserts the two answers are 7 and 11 and that two separate requests were made.\n- **No leakage between validations.** The concurrent single-node test asserts each validation's record contains only its own node's dependencies. The same-criterion test asserts each execution's saved record is internally consistent, with matching revision and dependencies. `behavioral_adequacy_…` asserts that nothing is written to storage during `verify`. It also asserts the dependencies are exactly the read nodes and edges.\n- **Contents formatting through the domain.** `domain_formats_supplied_contents_without_resolving_a_replacement` exercises `HabeasDomain::format_node_content` on both success and error.\n\n**Gaps considered.** I found no obligation without a test that asserts its outcome. The rest of the text is a trait declaration, and the member behavior is delegated to the Graph, Node contents and Evidence storage chapters. All the tests carry `{test}` references to the subject, so there is no marking gap.",
+  "references": "afcc1363fd664bd83e8861c302a0027cbb703b5a1fa1d8d7dcbd3d609320de7c",
   "inputs": [
     {
       "requirements": "requirements.sdk.domain",
@@ -11,8 +11,8 @@
       ],
       "text": [
         ":::{req} domain",
-        "The application implements `Domain` using its graph, fingerprints, and evidence",
-        "storage. It also defines how to present a node's contents to an agent:",
+        "Every cloneable application implementing the three domain traits implements",
+        "`Domain`:",
         "",
         "```rust,ignore",
         "/// Every validation uses a domain with graph access, fingerprints, and storage.",
@@ -22,29 +22,18 @@
         "/// that trace safely.",
         "/// Agent calls retain independent conversation and submission state.",
         "/// Observations never leak between separate validations.",
-        "pub trait Domain: Clone + Graph + Fingerprinting + EvidenceStorage {",
-        "    /// Format these already-read contents as text for an agent.",
-        "    /// The node identifies the source being presented.",
-        "    /// Use the supplied contents so the text and fingerprint describe the same read.",
-        "    fn format_node_content(",
-        "        &self,",
-        "        node: &Self::NodeId,",
-        "        contents: &Self::NodeContent,",
-        "    ) -> Result<String, Self::Error>;",
-        "}",
+        "pub trait Domain: Clone + Graph + NodeContents + EvidenceStorage {}",
+        "",
+        "impl<T: Clone + Graph + NodeContents + EvidenceStorage> Domain for T {}",
         "",
         "pub trait Graph {",
-        "    // Defines the verification graph, including",
-        "    //",
-        "    // * Nodes: verifiable constructs",
-        "    // * Edges: inputs to verification",
-        "    // * NodeContent: the application-defined contents supplied by a node read",
+        "    // Defines node identities, labeled edges, and successors.",
         "    /* ... members defined in the Graph chapter ... */",
         "}",
         "",
-        "pub trait Fingerprinting: Graph {",
-        "    // Defines which changes to input contents matter for validation.",
-        "    /* ... members defined in the Fingerprinting chapter ... */",
+        "pub trait NodeContents: Graph {",
+        "    // Reads node contents, fingerprints them, and formats them for an agent.",
+        "    /* ... members defined in the Node contents chapter ... */",
         "}",
         "",
         "pub trait EvidenceStorage: Graph {",
@@ -104,6 +93,26 @@
       "file": "src/sdk.rs",
       "item": "mod[tests]/fn[domain_formats_supplied_contents_without_resolving_a_replacement]",
       "hash": "f4d7b1b820bd1fb826e222d20ab273bb419cc71426bdef3a9129e1c837032101"
+    },
+    {
+      "file": "crates/habeas-sdk/src/graph.rs",
+      "item": "trait[Domain]",
+      "hash": "5a1ae80e7c065580b465548aa62d9da8b4609d4a5d92d8ef26e2a14c9917e8db"
+    },
+    {
+      "file": "crates/habeas-sdk/src/graph.rs",
+      "item": "impl[T/Domain]",
+      "hash": "76a8a69449d25bef14b3a24f02c3ebbc2f41be5ba7907955fd91e4a670c431eb"
+    },
+    {
+      "file": "crates/habeas-sdk/src/graph/runtime.rs",
+      "item": "struct[Validator]",
+      "hash": "3a604fcae0aa7caf8f963c223c0d3501279f09b93648966a9e2de2a875c2429a"
+    },
+    {
+      "file": "crates/habeas-sdk/src/graph/runtime.rs",
+      "item": "impl[Validator<D>]",
+      "hash": "9cc4646b9e8e1ec4a416cc59a8afb025a1a2f1035cf1e6c7c98d6ce7080b0f21"
     }
   ],
   "format_version": 1,
@@ -116,7 +125,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "f6a7f6c173f03c0334783ebb6431418bd28ccc4fc9320f0a940a6553e5b13421"
+          "value": "afcc1363fd664bd83e8861c302a0027cbb703b5a1fa1d8d7dcbd3d609320de7c"
         }
       ]
     },
@@ -139,7 +148,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "d33ae3ac43dc548ed4483333586eb33d89e867feac4cbe04ef37478d97b28f0c"
+          "value": "c6d4b9714f67ce9a92f67be2654e9c60c8fd0dae123c13fb827eb4e418654148"
         }
       ]
     },
@@ -310,6 +319,74 @@
         {
           "scheme": "habeas-input-v1",
           "value": "54b12524c5c23e1b75c58adb16eaa84ade104659cae4fd701fb72526b7040e1d"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/src/graph.rs"
+            },
+            "selector": "trait[Domain]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "9e4370f359b07a07bb3b568a7326003d26eac41e5177a27da671eb56e03941f4"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/src/graph.rs"
+            },
+            "selector": "impl[T/Domain]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "437933391c22614cefd01444aead02c4dc2a3b2598c738ad9288f78e064197f7"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/src/graph/runtime.rs"
+            },
+            "selector": "struct[Validator]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "e65a4a46ff0f772a90ba1bd53ccbfb20653920ff9761220b616aa57420571b93"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/src/graph/runtime.rs"
+            },
+            "selector": "impl[Validator<D>]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "53b975dfdaa1951085e521b20177dca77b95f54a610cd5ed2c89c1d467880e50"
         }
       ]
     }

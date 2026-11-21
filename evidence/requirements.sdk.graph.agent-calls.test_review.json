@@ -1,7 +1,7 @@
 {
   "example": "{cite}`requirements.sdk.graph.agent-calls.agent_context`\n{cite}`requirements.sdk.graph.agent-calls.judge`\n{cite}`requirements.sdk.graph.agent-calls.judge.node_contents`\n{cite}`requirements.sdk.graph.agent-calls.judge.submission`\n\nThe application can package reusable instructions in its own type:\n\n```rust,ignore\nstruct Instructions {\n    text: String,\n}\n\nimpl Context for Instructions {\n    fn contents(&self) -> std::borrow::Cow<'_, String> {\n        std::borrow::Cow::Borrowed(&self.text)\n    }\n}\n```\n\nThe criterion's `TestReview` answer, introduced in the criteria chapter, is:\n\n```rust,ignore\n/// Whether the tests cover the requirement's behavior and edge cases.\n#[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]\nstruct TestReview {\n    adequate: bool,\n    rationale: String,\n}\n```\n\nHere `review_policy` and `project_conventions` are `Instructions` values shared\nacross reviews, and `question` is a `&str` describing the test-adequacy question:\n\n```rust,ignore\nlet answer: TestReview = cx.ask()\n    .context((&review_policy, &project_conventions))\n    .context(question)\n    .contents_of_current_node()\n    .contents_of_successors(HabeasEdgeLabel::Tests)\n    .await?;\n```\n\nThe tuple combines the first two instruction values. Calling\n`.context(&review_policy)` and then `.context(&project_conventions)` produces the\nsame prefix. A slice or vector handles a variable number of contexts of one type;\ntuples combine different types.\n\nThe request supplies the instructions first, followed by the requirement and its\ntests. Awaiting returns the submitted `TestReview`. Its type can be inferred\nfrom the receiving variable, as above, or chosen with `cx.ask::<TestReview>()`.",
   "determination": true,
-  "rationale": "The example `requirements.sdk.graph.agent-calls.test_review` describes a concrete case. It has an `Instructions` type implementing `Context`, a `TestReview` answer, and an ask with a tuple context, a question, the current node and the `Tests` successors. Its expected behaviour is stated. The tuple prefix equals chained `.context` calls. A slice or vector can supply many contexts of one type. The instructions come first, then the requirement and its tests. Awaiting returns the submitted `TestReview`, with the type inferred or given as `ask::<TestReview>()`.\n\nThe test `test_review_example_combines_instructions_before_requirement_and_test_contents` in `crates/habeas-sdk/tests/agent.rs` carries the `{test}` reference. It covers each outcome:\n\n- **Setup.** The test uses the same `Instructions` and `TestReview` shapes as the example, with a `Context` impl returning `Cow::Borrowed`. `Memory` is the graph. Node 1 holds \"Requirement\". `outgoing_edges` gives node 1 the successor node 2, which holds \"Tests\". `ToolAgent` wraps a `Script` provider that replies with a `submit_result` tool call carrying the expected `TestReview`.\n- **Tuple form.** `.context((&review_policy, &project_conventions)).context(question).contents_of_current_node().contents_of_successors(Label)` is awaited into `let answer: TestReview`. This checks tuple support and inference from the receiving variable. `assert_eq!(answer, expected)` checks that the submitted value is returned and deserialized.\n- **Chained calls.** `.context(&review_policy).context(&project_conventions)` uses `ask::<TestReview>()`, which checks the explicit type form. `assert_eq!(repeated, expected)` checks the result. All four recorded requests must have identical `chat_history`, so the chained prefix equals the tuple prefix.\n- **Vector and slice.** `Vec<&Instructions>` and `as_slice()` give the same result. `assert_eq!(vector, expected)` and `assert_eq!(slice, expected)` check this. These requests are also compared for identical history, so the \"variable number of contexts of one type\" claim is covered.\n- **Prefix content and order.** `requests[0].chat_history[0]` must equal `Message::system(\"Review policy\\n\\nProject conventions\\n\\nDo tests cover all behavior and edge cases?\")`. This checks the two-newline separators, the order, and that the question follows the instructions.\n- **Requirement before tests.** The serialized `chat_history[1]` is searched. The \"Requirement\" text must appear before the \"Tests\" text, which checks the node ordering. Together with the system message holding the instructions, this covers \"instructions first, followed by the requirement and its tests\".\n- **Dependencies.** `cx.inspection().dependencies().len() == 3` and `requests.len() == 4` check the recording and that each await made one request.\n\nI found no behaviour that violates the example and would still pass these assertions. The example's cited requirements are context. The test applies them in the example's case: the schema-derived `submit_result` submission is accepted and returned, and the node contents are delivered in call order. One small gap: the assertions do not exclude the instruction text appearing in the node message. That is not an outcome the example states.",
+  "rationale": "The `test_review` example describes a concrete case with expected behavior. A request is built with a tuple of two `Instructions` contexts, then the question as a context, then `contents_of_current_node()` and `contents_of_successors(HabeasEdgeLabel::Tests)`. It states four outcomes:\n- The tuple gives the same prefix as two separate `.context(...)` calls.\n- A slice or vector gives that prefix too.\n- The prefix comes first, followed by the requirement and its tests.\n- Awaiting returns the submitted `TestReview`, with the type inferred or chosen with `ask::<TestReview>()`.\n\nThe test is `crates/habeas-sdk/tests/agent.rs#fn[test_review_example_combines_instructions_before_requirement_and_test_contents]`. Its fixtures are in the same file:\n- `struct[Instructions]` with `impl[Instructions/Context]` mirrors the example's type.\n- `struct[TestReview]` has `adequate` and `rationale`.\n- `impl[Memory/Graph]` gives node 1 one outgoing edge to node 2.\n- `impl[Memory/NodeContents]` returns \"Requirement\" for node 1 and \"Tests\" for node 2.\n\nHow the test checks each outcome:\n- **Tuple, repeated calls, vector, slice:** the test makes four awaited requests, built in these ways:\n  - `.context((&review_policy, &project_conventions))`\n  - `.context(&review_policy).context(&project_conventions)`\n  - `.context(contexts.clone())` on a `Vec<&Instructions>`\n  - `.context(contexts.as_slice())`\n  It asserts that all four requests have a `chat_history` equal to `requests[0].chat_history`, so all four forms give the same prefix. It also asserts exactly 4 requests.\n- **Exact prefix and the two-newline separator:** `requests[0].chat_history[0]` must equal `Message::system(\"Review policy\\n\\nProject conventions\\n\\nDo tests cover all behavior and edge cases?\")`. This checks that the instructions come first, in order, that the question follows them, and that the separator is two newlines.\n- **Requirement, then tests:** the serialized `chat_history[1]` must contain \"Requirement\" before \"Tests\". Node 1 (the current node) and node 2 (its successor via `Label`) are delivered in call order.\n- **Return value and type:** `answer` uses the inferred type with `let answer: TestReview`, and the other three calls use `ask::<TestReview>()`. All four are `assert_eq!` to the `expected` value, which the scripted agent submits through `submit_result` as `{\"result\": expected}`.\n- **Recording:** `cx.inspection().dependencies().len() == 3` checks the delivered-node recording from the cited `judge.node_contents` requirement.\n\nI found no accepted-but-wrong behavior these assertions would let through. The cited requirements (`agent_context`, `judge`, `judge.node_contents`, `judge.submission`) are context and are applied in this case. No acknowledgments are needed.",
   "references": "b13c61ba930d4d51645c8ebb60f7b349266a514edd7b0f64272f1b0381ed3bb1",
   "inputs": [
     {
@@ -206,32 +206,12 @@
     {
       "file": "crates/habeas-sdk/tests/agent.rs",
       "item": "impl[Memory/Graph]",
-      "hash": "2ee8f0db72f89186620da10c6971c310432f7ae22d897e54a7a11f7a5f898d88"
+      "hash": "3029db1c64dcdb824b6a4b6f700b7dcd24ebe8ddd87be774626dc3587413e719"
     },
     {
       "file": "crates/habeas-sdk/tests/agent.rs",
-      "item": "impl[Memory]/fn[new]",
-      "hash": "63dc6af710c79845fe88bcbe7cbd88c72a328c14118db166d1d646aab00d1aa0"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/agent.rs",
-      "item": "impl[Script/CompletionProvider]",
-      "hash": "06573a8be903aa10885e332c00a62fd3c1227b48557041e6060e3eac83579c00"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/agent.rs",
-      "item": "struct[Node]",
-      "hash": "37a5d012a8c68e204aa82707b29ccf1782aab55095e84abb1a0e498034e1b462"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/agent.rs",
-      "item": "struct[Label]",
-      "hash": "301bc99c70bf56636fb12b99d435b11bfee4ba2f67456cf82c19e6e12e0223f6"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/agent.rs",
-      "item": "struct[Memory]",
-      "hash": "e2be5c576574e8fc8c7d84f120cffcfa2221696cc796895000e30ef457a1c1d6"
+      "item": "impl[Memory/NodeContents]",
+      "hash": "79dd23e85d5fdb1b9641a79fc3ca0d3c1e8346342262a3a5deff521f7e1f9695"
     },
     {
       "file": "crates/habeas-sdk/tests/agent.rs",
@@ -250,23 +230,18 @@
     },
     {
       "file": "crates/habeas-sdk/tests/agent.rs",
-      "item": "impl[Script]/fn[new]",
-      "hash": "2eba8124a674372ab1d6dc1b8e41fddefe326b41f6eed8725c840e083f4e9106"
+      "item": "struct[Label]",
+      "hash": "301bc99c70bf56636fb12b99d435b11bfee4ba2f67456cf82c19e6e12e0223f6"
     },
     {
       "file": "crates/habeas-sdk/tests/agent.rs",
-      "item": "impl[Memory/Graph]/type[EdgeLabel]",
-      "hash": "b2a0f9aca70fc413b49070effbf29df5f98bcea8e2a188e6f1646b5f8df67eb7"
+      "item": "impl[Script/CompletionProvider]",
+      "hash": "06573a8be903aa10885e332c00a62fd3c1227b48557041e6060e3eac83579c00"
     },
     {
       "file": "crates/habeas-sdk/tests/agent.rs",
-      "item": "impl[Memory/Graph]/fn[outgoing_edges]",
-      "hash": "4b1ae019cc134524e628ba7b73a0b6037e6d04799a5b2258da7015b0ccf31bbe"
-    },
-    {
-      "file": "crates/habeas-sdk/src/agent/tools.rs",
-      "item": "impl[ToolAgent<P,%20T>/Agent<D>]/fn[run]",
-      "hash": "1999368c0a1dbc2a39f9e64a816bdff1a70f55c1b735d792fec1c3e92257e8ed"
+      "item": "impl[Memory]",
+      "hash": "762663c2e678e5811389c14085775f0ddd3ba5cfaef386d630239345d7a01865"
     }
   ],
   "format_version": 1,
@@ -380,7 +355,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "9823079f3e817b966aba5824153794752976cd5416b1ec7ae2788d7e61c81fc1"
+          "value": "5ae0696d698d32b60070c72b0a94235be556c18bc3ac8e574f2ef5d9d763e41b"
         }
       ]
     },
@@ -392,80 +367,12 @@
               "scheme": "repo",
               "location": "crates/habeas-sdk/tests/agent.rs"
             },
-            "selector": "impl[Memory]/fn[new]"
+            "selector": "impl[Memory/NodeContents]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "5308bf06d7987837a485dc000afb056feb38553c785c101f32629ae1a8854b2d"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/agent.rs"
-            },
-            "selector": "impl[Script/CompletionProvider]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "08885722ec9db793f3d6093205c3a28ac0b78a984c77e557a727bed672fdfba9"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/agent.rs"
-            },
-            "selector": "struct[Node]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "dd4a201006d469e027fb8f7ed4890dc5a8ee7252210ee6df4664916375b672ff"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/agent.rs"
-            },
-            "selector": "struct[Label]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "dd279999a276fe639d688cc1c726a6fc8a8eb41ab7a4c1508fee0c7884e3e066"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/agent.rs"
-            },
-            "selector": "struct[Memory]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "b074355a7646af96c5d30a7460f738f00636621fc71916a370ba7620147dc22f"
+          "value": "a11093168690aa86c9424b20b77640a830d2825f8ee07236eea7e405b33b1c65"
         }
       ]
     },
@@ -528,12 +435,12 @@
               "scheme": "repo",
               "location": "crates/habeas-sdk/tests/agent.rs"
             },
-            "selector": "impl[Script]/fn[new]"
+            "selector": "struct[Label]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "fb09af3e33116411186308e4b397018685b9bbd0156f1d32cc06a0f4695fe38d"
+          "value": "dd279999a276fe639d688cc1c726a6fc8a8eb41ab7a4c1508fee0c7884e3e066"
         }
       ]
     },
@@ -545,12 +452,12 @@
               "scheme": "repo",
               "location": "crates/habeas-sdk/tests/agent.rs"
             },
-            "selector": "impl[Memory/Graph]/type[EdgeLabel]"
+            "selector": "impl[Script/CompletionProvider]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "3129a0f33b58e32b3f791203f09331a2aa60083db55d5c69d903e90f4ef0a3ba"
+          "value": "08885722ec9db793f3d6093205c3a28ac0b78a984c77e557a727bed672fdfba9"
         }
       ]
     },
@@ -562,29 +469,12 @@
               "scheme": "repo",
               "location": "crates/habeas-sdk/tests/agent.rs"
             },
-            "selector": "impl[Memory/Graph]/fn[outgoing_edges]"
+            "selector": "impl[Memory]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "cf01b80f3521fb467563a05ce6d8905c1080c90e32e6ff3bafa43805eb6492f1"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/src/agent/tools.rs"
-            },
-            "selector": "impl[ToolAgent<P,%20T>/Agent<D>]/fn[run]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "e1cbe41ea9f485f83f148e7af2f84cf87ccb1b47e1e072793cfbc4cf39df1582"
+          "value": "a5f0f281cd271e5ecffe380fe6e2774b098c57e5249ddb5cc73b7c6489197cbb"
         }
       ]
     }

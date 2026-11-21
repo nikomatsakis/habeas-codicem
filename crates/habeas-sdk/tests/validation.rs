@@ -62,19 +62,10 @@ fn fp(value: impl Into<String>) -> Fingerprint {
 
 impl Graph for Memory {
     type NodeId = u8;
-    type NodeContent = String;
     type EdgeLabel = u8;
 
     type Error = &'static str;
 
-    fn node_content(&self, node: &u8) -> Result<String, Self::Error> {
-        let mut state = self.state.lock().unwrap();
-        state.reads.push(*node);
-        if state.fail_read {
-            return Err("read");
-        }
-        state.contents.get(node).cloned().ok_or("missing")
-    }
     fn node_path(&self, node: &u8) -> NodePath {
         NodePath::new(vec![node.to_string()])
     }
@@ -94,9 +85,28 @@ impl Graph for Memory {
             .collect())
     }
 }
-impl Fingerprinting for Memory {
+impl NodeContents for Memory {
+    type NodeContent = String;
+
+    fn node_content(&self, node: &u8) -> Result<String, Self::Error> {
+        let mut state = self.state.lock().unwrap();
+        state.reads.push(*node);
+        if state.fail_read {
+            return Err("read");
+        }
+        state.contents.get(node).cloned().ok_or("missing")
+    }
+
     fn fingerprint(&self, _: &u8, content: &String) -> Fingerprint {
         fp(content.clone())
+    }
+
+    fn format_node_content(&self, _: &u8, contents: &String) -> Result<String, &'static str> {
+        if self.state.lock().unwrap().fail_format {
+            Err("render")
+        } else {
+            Ok(contents.clone())
+        }
     }
 }
 impl EvidenceStorage for Memory {
@@ -285,16 +295,6 @@ async fn runner_does_not_store_a_missing_agent_error_and_supports_intermediate_c
     assert_eq!(requests.len(), 2);
     assert_eq!(requests[1].0, "Check intermediate result 7");
     assert!(requests[1].2.is_empty());
-}
-
-impl Domain for Memory {
-    fn format_node_content(&self, _: &u8, contents: &String) -> Result<String, &'static str> {
-        if self.state.lock().unwrap().fail_format {
-            Err("render")
-        } else {
-            Ok(contents.clone())
-        }
-    }
 }
 
 // {cite}`habeas:util`

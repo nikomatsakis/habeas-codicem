@@ -34,29 +34,12 @@ struct State {
 }
 #[derive(Clone, Default)]
 struct Application(Arc<Mutex<State>>);
-impl Domain for Application {
-    fn format_node_content(&self, _: &Node, content: &Content) -> Result<String, Self::Error> {
-        Ok(content.0.clone())
-    }
-}
+
 impl Graph for Application {
     type NodeId = Node;
-    type NodeContent = Content;
     type EdgeLabel = u8;
     type Error = &'static str;
-    fn node_content(&self, node: &Node) -> Result<Content, Self::Error> {
-        let mut state = self.0.lock().unwrap();
-        state.reads.push(node.0);
-        if state.fail_read {
-            return Err("read");
-        }
-        state
-            .contents
-            .get(&node.0)
-            .cloned()
-            .map(Content)
-            .ok_or("missing")
-    }
+
     fn node_path(&self, node: &Node) -> NodePath {
         NodePath::new(vec!["application".into(), node.0.to_string()])
     }
@@ -72,12 +55,32 @@ impl Graph for Application {
             .unwrap_or_default())
     }
 }
-impl Fingerprinting for Application {
+impl NodeContents for Application {
+    type NodeContent = Content;
+
+    fn node_content(&self, node: &Node) -> Result<Content, Self::Error> {
+        let mut state = self.0.lock().unwrap();
+        state.reads.push(node.0);
+        if state.fail_read {
+            return Err("read");
+        }
+        state
+            .contents
+            .get(&node.0)
+            .cloned()
+            .map(Content)
+            .ok_or("missing")
+    }
+
     fn fingerprint(&self, _: &Node, content: &Content) -> Fingerprint {
         Fingerprint {
             scheme: "text-v1".into(),
             value: content.0.clone(),
         }
+    }
+
+    fn format_node_content(&self, _: &Node, content: &Content) -> Result<String, Self::Error> {
+        Ok(content.0.clone())
     }
 }
 impl EvidenceStorage for Application {
@@ -196,6 +199,79 @@ async fn persist<O: Serialize + serde::de::DeserializeOwned + Send>(
     let value = validator.verify(review).await.unwrap();
     validator.store_evidence(&value).await.unwrap();
     value
+}
+
+// {test}`requirements.sdk.graph.domain_types`
+// {test}`requirements.sdk.graph.outgoing_edges`
+// {test}`requirements.sdk.graph.node_path_method`
+#[test]
+fn graph_relationships_work_without_node_contents_or_storage() {
+    // The API accepts opaque identities and labels, and errors that are Send
+    // without also being Sync, Debug, Clone, or std::error::Error.
+    #[derive(Clone, PartialEq, Eq)]
+    struct Identity(u8);
+    #[derive(Clone)]
+    struct Label(u8);
+    struct GraphError(Cell<u8>);
+    struct Relationships;
+    impl Graph for Relationships {
+        type NodeId = Identity;
+        type EdgeLabel = Label;
+        type Error = GraphError;
+
+        fn node_path(&self, node: &Identity) -> NodePath {
+            NodePath::new(vec!["relationships".into(), node.0.to_string()])
+        }
+
+        fn outgoing_edges(
+            &self,
+            node: &Identity,
+            label: Label,
+        ) -> Result<Vec<Identity>, Self::Error> {
+            if node.0 == 255 {
+                return Err(GraphError(Cell::new(node.0)));
+            }
+            Ok(match (node.0, label.0) {
+                (1, 2) => vec![Identity(3), Identity(2), Identity(3)],
+                (1, 3) => vec![Identity(4)],
+                _ => vec![],
+            })
+        }
+    }
+
+    // Compile generic consumer code against the declared bounds, so loosening
+    // a required bound fails as well as adding a bound the opaque fixture lacks.
+    fn check_bounds<G: Graph>() {
+        fn send_sync<T: Send + Sync>() {}
+        fn identity<T: Clone + Eq + Send + Sync>() {}
+        fn label<T: Clone + Send + Sync>() {}
+        fn error<T: Send>() {}
+        send_sync::<G>();
+        identity::<G::NodeId>();
+        label::<G::EdgeLabel>();
+        error::<G::Error>();
+    }
+
+    // This helper requires only Graph. Relationships has neither contents nor storage.
+    fn successors<G: Graph>(graph: &G, node: &G::NodeId, label: G::EdgeLabel) -> Vec<G::NodeId> {
+        graph.outgoing_edges(node, label).ok().unwrap()
+    }
+    check_bounds::<Relationships>();
+    let graph = Relationships;
+    assert_eq!(
+        graph.node_path(&Identity(1)).segments(),
+        ["relationships", "1"]
+    );
+    assert_ne!(graph.node_path(&Identity(1)), graph.node_path(&Identity(2)));
+    assert!(successors(&graph, &Identity(1), Label(2)) == [Identity(3), Identity(2), Identity(3)]);
+    assert!(successors(&graph, &Identity(1), Label(3)) == [Identity(4)]);
+    assert!(successors(&graph, &Identity(1), Label(4)).is_empty());
+    assert!(successors(&graph, &Identity(2), Label(2)).is_empty());
+    let error = graph
+        .outgoing_edges(&Identity(255), Label(2))
+        .err()
+        .unwrap();
+    assert_eq!(send(error).0.get(), 255);
 }
 
 // {test}`requirements.sdk.graph.validation.criterion_path`
@@ -822,6 +898,7 @@ fn hierarchical_requirement_identity_maps_each_component_to_a_path_segment() {
 // {test}`requirements.sdk.graph.node_path_struct`
 // {test}`requirements.sdk.graph.fingerprinting.fingerprint_content`
 // {test}`requirements.sdk.graph.fingerprinting.snapshot`
+// {test}`requirements.sdk.graph.agent-calls.judge.rendering`
 #[test]
 fn identities_remain_stable_and_fingerprinting_uses_the_supplied_snapshot() {
     let graph = Application::default();
@@ -841,6 +918,13 @@ fn identities_remain_stable_and_fingerprinting_uses_the_supplied_snapshot() {
         graph.fingerprint(&Node(1), &snapshot.content),
         snapshot.fingerprint
     );
+    assert_eq!(
+        graph
+            .format_node_content(&Node(1), &snapshot.content)
+            .unwrap(),
+        "before"
+    );
+    assert_eq!(graph.0.lock().unwrap().reads, [1]);
     assert_eq!(snapshot.fingerprint.value, "before");
     assert_eq!(graph.node_path(&Node(1)), path);
     assert_eq!(Application::default().node_path(&Node(1)), path);

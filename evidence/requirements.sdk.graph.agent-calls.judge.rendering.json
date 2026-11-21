@@ -1,8 +1,8 @@
 {
-  "requirement": "The SDK formats node inputs using the domain's `format_node_content` method,\ndefined by {cite}`requirements.sdk.domain`:\n\n```rust,ignore\n// Method on Domain. Both arguments describe the already-read snapshot.\n/// Present these supplied contents as text for an agent.\nfn format_node_content(\n    &self,\n    node: &Self::NodeId,\n    contents: &Self::NodeContent,\n) -> Result<String, Self::Error>;\n```\n\nThe formatter uses the supplied contents; their fingerprint describes the same\nread. For inputs queued on an ask builder, formatting errors return\n`ValidationError::Graph`. During a `read_node` tool call, a formatting error is\nreturned to the agent as a tool error, so it can continue and recover.\n`NodeContent` and `NodeId` retain their application-defined types without\nserialization or display bounds.",
+  "requirement": "The SDK formats node inputs using `NodeContents::format_node_content`,\ndefined by {cite}`requirements.sdk.graph.fingerprinting.fingerprint_content`:\n\n```rust,ignore\n// Method on NodeContents. Both arguments describe the already-read snapshot.\n/// Present these supplied contents as text for an agent.\nfn format_node_content(\n    &self,\n    node: &Self::NodeId,\n    contents: &Self::NodeContent,\n) -> Result<String, Self::Error>;\n```\n\nThe formatter uses the supplied contents; their fingerprint describes the same\nread. For inputs queued on an ask builder, formatting errors return\n`ValidationError::Graph`. During a `read_node` tool call, a formatting error is\nreturned to the agent as a tool error, so it can continue and recover.\n`NodeContent` and `NodeId` retain their application-defined types without\nserialization or display bounds.",
   "determination": true,
-  "rationale": "The reviewed tests cover every obligation in `requirements.sdk.graph.agent-calls.judge.rendering`.\n\n**Formatting goes through `Domain::format_node_content`.**\n- `crates/habeas-sdk/tests/agent.rs#fn[default_tool_accepts_scalar_results_and_keeps_the_exact_prefix]` checks that the first chat message contains the formatted contents (\"source\").\n- `crates/habeas-sdk/tests/agent.rs#fn[behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer]` checks that two nodes' formatted contents appear in the request in queue order.\n- `crates/habeas-sdk/tests/validation.rs#fn[explicit_insertions_preserve_order_repetition_and_selection_snapshots]` checks the order and repetition of rendered inputs.\n- `crates/habeas-sdk/tests/agent.rs#fn[validator_agent_executions_isolate_conversations_and_dependency_traces]` uses the `distinct_pages` formatter, which produces different text per node.\n\n**The formatter uses the supplied contents, and the fingerprint describes the same read.**\n- The `Memory` test domains in `agent.rs` and `validation.rs` can only format the `contents` argument. They cannot re-read.\n- The dependency assertions in the tests above (for example `Dependency::Node(.., fp)` with the matching value) tie the fingerprint to that same read.\n- `src/sdk.rs#mod[tests]/fn[domain_formats_supplied_contents_without_resolving_a_replacement]` tests the real `HabeasDomain`. It supplies a snapshot for a file that does not exist on disk and asserts that the output contains the supplied text. A re-resolving formatter would fail on that missing file. The same test asserts that an unsupported node returns an error.\n\n**Formatting errors on queued ask-builder inputs return `ValidationError::Graph`.**\n- `crates/habeas-sdk/tests/validation.rs#fn[queued_reads_selection_and_rendering_fail_before_agent_invocation]` sets `fail_format` and asserts `Err(ValidationError::Graph(\"render\"))`.\n- The same test asserts that no dependency was recorded and that the agent was never invoked.\n\n**A formatting error during a `read_node` tool call goes back to the agent as a tool error.**\n- `crates/habeas-sdk/tests/agent.rs#fn[node_rendering_tool_errors_allow_recovery_without_recording_undelivered_contents]` makes the formatter fail.\n- It asserts that the next request carries a `ToolResult` with `is_error`, the name `read_node`, and the error text.\n- It asserts that the agent continues and submits, so `ask` succeeds.\n- It asserts that the dependency list stays empty.\n\n**`NodeContent` and `NodeId` keep their application-defined types, with no serialization or display bounds.**\n- The `agent.rs` `Node` type is documented as having no Serde or Hash implementations.\n- `Contents` has no Serde or Display implementations.\n- These fixtures compile and run through the whole agent flow, which establishes the obligation at compile time.\n\nThe tests that cover this requirement all carry `{test}` references to `requirements.sdk.graph.agent-calls.judge.rendering`. The two other `Domain` implementations I found, in `crates/habeas-sdk/tests/agent.rs#fn[agent_edge_tools_record_selections_without_validating_targets]` and `crates/habeas-sdk/tests/storage.rs`, panic if called. They show that edge-only and storage-only flows do not render contents. They are not needed for coverage. I found no gaps.",
-  "references": "d3817100fa8b03f27dbb298688d80ca96a3f1c893a9c89d732f8d4c94879e24b",
+  "rationale": "The reviewed tests cover each obligation of `judge.rendering`. I did not request implementation source.\n\n**Obligations and the tests that check them**\n\n1. **Queued inputs are formatted with `NodeContents::format_node_content`.**\n   - `crates/habeas-sdk/tests/validation.rs#fn[explicit_insertions_preserve_order_repetition_and_selection_snapshots]` queues the current node, then successors, then the current node again. It asserts the rendered inputs reach the agent in the queued order, with repeats.\n   - `crates/habeas-sdk/tests/agent.rs#fn[default_tool_accepts_scalar_results_and_keeps_the_exact_prefix]` checks that the user message carries the rendered text.\n   - `crates/habeas-sdk/tests/agent.rs#fn[behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer]` checks that the domain's contents appear in the message in order.\n   - `crates/habeas-sdk/tests/agent.rs#fn[validator_agent_executions_isolate_conversations_and_dependency_traces]` sets `graph.formatter = distinct_pages`, so the output is distinguishable from the raw contents.\n\n2. **The formatter uses the supplied contents, so the text and fingerprint describe the same read.**\n   - `crates/habeas-sdk/tests/contracts.rs#fn[identities_remain_stable_and_fingerprinting_uses_the_supplied_snapshot]` changes the underlying node after the snapshot is read. Formatting the snapshot still returns \"before\", and the fingerprint still matches the snapshot. Reads stay at `[1]`.\n   - `src/sdk.rs#mod[tests]/fn[domain_formats_supplied_contents_without_resolving_a_replacement]` formats a node that does not exist on disk. The output contains the supplied text and path, which shows the formatter does not re-resolve the node.\n   - The read counts in the explicit-insertion test, `[1, 3, 2, 3, 1]`, show one read per queued input and no rereads during formatting.\n\n3. **A formatting error on a queued input returns `ValidationError::Graph`.** `crates/habeas-sdk/tests/validation.rs#fn[queued_reads_selection_and_rendering_fail_before_agent_invocation]` sets `fail_format` and asserts `Err(ValidationError::Graph(\"render\"))`. It also asserts that no dependency is recorded and that the agent request count is unchanged.\n\n4. **A formatting error during a `read_node` tool call is returned to the agent as a tool error so it can recover.** `crates/habeas-sdk/tests/agent.rs#fn[node_rendering_tool_errors_allow_recovery_without_recording_undelivered_contents]` uses a failing formatter. It asserts that the second request carries a `ToolResult` with `is_error`, the name `read_node`, and the error text. It then asserts that the agent submits successfully, so the call was not aborted. It also asserts that no dependency is recorded.\n\n5. **`NodeContent` and `NodeId` keep their application-defined types, with no serialization or display bounds.** The `Node` type in `crates/habeas-sdk/tests/agent.rs` is documented as having no Serde or Hash implementations and derives only `Clone`, `Eq` and `PartialEq`. It has no `Display` or `Serialize`, and the agent tests compile and run with it. That serves as a compile-time check of the no-bounds obligation.\n\n**Gaps**\n\nNo gaps found. The acknowledgments list is empty, and none is needed.",
+  "references": "953bdd4cd92d4f3832d6e7231126c04aa4f380bad3591ee2b1528df2ad2645a8",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.agent-calls.judge.rendering",
@@ -11,11 +11,11 @@
       ],
       "text": [
         ":::{req} judge.rendering",
-        "The SDK formats node inputs using the domain's `format_node_content` method,",
-        "defined by {cite}`requirements.sdk.domain`:",
+        "The SDK formats node inputs using `NodeContents::format_node_content`,",
+        "defined by {cite}`requirements.sdk.graph.fingerprinting.fingerprint_content`:",
         "",
         "```rust,ignore",
-        "// Method on Domain. Both arguments describe the already-read snapshot.",
+        "// Method on NodeContents. Both arguments describe the already-read snapshot.",
         "/// Present these supplied contents as text for an agent.",
         "fn format_node_content(",
         "    &self,",
@@ -34,51 +34,39 @@
       ]
     },
     {
-      "requirements": "requirements.sdk.domain",
+      "requirements": "requirements.sdk.graph.fingerprinting.fingerprint_content",
       "matches": [
-        "requirements.sdk.domain"
+        "requirements.sdk.graph.fingerprinting.fingerprint_content"
       ],
       "text": [
-        ":::{req} domain",
-        "The application implements `Domain` using its graph, fingerprints, and evidence",
-        "storage. It also defines how to present a node's contents to an agent:",
-        "",
+        ":::{req} fingerprint_content",
         "```rust,ignore",
-        "/// Every validation uses a domain with graph access, fingerprints, and storage.",
-        "///",
-        "/// A validator owns a cloneable domain; executions can share its state.",
-        "/// Each criterion has its own dependency trace; operations within it share",
-        "/// that trace safely.",
-        "/// Agent calls retain independent conversation and submission state.",
-        "/// Observations never leak between separate validations.",
-        "pub trait Domain: Clone + Graph + Fingerprinting + EvidenceStorage {",
-        "    /// Format these already-read contents as text for an agent.",
-        "    /// The node identifies the source being presented.",
+        "pub trait NodeContents: Graph {",
+        "    /// The application's representation of a node's contents.",
+        "    type NodeContent: Send + Sync;",
+        "",
+        "    /// Fetch the contents of a node.",
+        "    fn node_content(&self, node: &Self::NodeId) -> Result<Self::NodeContent, Self::Error>;",
+        "",
+        "    /// Describe the supplied observation, without rereading the node or",
+        "    /// querying mutable external state.",
+        "    ///",
+        "    /// The same node and contents under the same rules give the same",
+        "    /// fingerprint. Everything needed is in the identity, contents, or",
+        "    /// configured rules. When the rules change, change the scheme.",
+        "    fn fingerprint(",
+        "        &self,",
+        "        node: &Self::NodeId,",
+        "        content: &Self::NodeContent,",
+        "    ) -> Fingerprint;",
+        "",
+        "    /// Present these already-read contents as text for an agent.",
         "    /// Use the supplied contents so the text and fingerprint describe the same read.",
         "    fn format_node_content(",
         "        &self,",
         "        node: &Self::NodeId,",
         "        contents: &Self::NodeContent,",
         "    ) -> Result<String, Self::Error>;",
-        "}",
-        "",
-        "pub trait Graph {",
-        "    // Defines the verification graph, including",
-        "    //",
-        "    // * Nodes: verifiable constructs",
-        "    // * Edges: inputs to verification",
-        "    // * NodeContent: the application-defined contents supplied by a node read",
-        "    /* ... members defined in the Graph chapter ... */",
-        "}",
-        "",
-        "pub trait Fingerprinting: Graph {",
-        "    // Defines which changes to input contents matter for validation.",
-        "    /* ... members defined in the Fingerprinting chapter ... */",
-        "}",
-        "",
-        "pub trait EvidenceStorage: Graph {",
-        "    // Defines how evidence is stored and loaded.",
-        "    /* ... members defined in the Evidence storage chapter ... */",
         "}",
         "```",
         ":::"
@@ -103,6 +91,11 @@
       "file": "crates/habeas-sdk/tests/agent.rs",
       "item": "fn[behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer]",
       "hash": "b1f8335fffdf3ba9cfdbb9a1835abb1873c278665f126612f75c88feaea2dd25"
+    },
+    {
+      "file": "crates/habeas-sdk/tests/contracts.rs",
+      "item": "fn[identities_remain_stable_and_fingerprinting_uses_the_supplied_snapshot]",
+      "hash": "3fc01801df479145b6d4b795efa66f52c7ba4652a2901a3e50990f17ee847023"
     },
     {
       "file": "crates/habeas-sdk/tests/validation.rs",
@@ -131,6 +124,11 @@
     },
     {
       "file": "crates/habeas-sdk/tests/agent.rs",
+      "item": "struct[Node]",
+      "hash": "37a5d012a8c68e204aa82707b29ccf1782aab55095e84abb1a0e498034e1b462"
+    },
+    {
+      "file": "crates/habeas-sdk/tests/agent.rs",
       "item": "struct[Memory]",
       "hash": "e2be5c576574e8fc8c7d84f120cffcfa2221696cc796895000e30ef457a1c1d6"
     },
@@ -141,43 +139,13 @@
     },
     {
       "file": "crates/habeas-sdk/tests/agent.rs",
-      "item": "impl[Memory/Domain]/fn[format_node_content]",
-      "hash": "2d7cd1d2b78e8dbcecaf097dd59e79a293fe2d1542659a344b0d3e3478d3694f"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/agent.rs",
-      "item": "fn[agent_edge_tools_record_selections_without_validating_targets]/impl[GraphWithChangingEdges/Domain]/fn[format_node_content]",
-      "hash": "4569fdbf4f73c08657453162c195c80eb5c945a4f955bab02ec1ded25c504db8"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/validation.rs",
-      "item": "impl[Memory/Domain]/fn[format_node_content]",
-      "hash": "815dff9e7ba116a5dbac8f7609749bbaa455d0aa9890c826d798edfc4e2f7024"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/agent.rs",
-      "item": "struct[Node]",
-      "hash": "37a5d012a8c68e204aa82707b29ccf1782aab55095e84abb1a0e498034e1b462"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/agent.rs",
-      "item": "struct[Contents]",
-      "hash": "57930076d9167dd0e1aac4119d40fcfbecb8157d4a0fa3f371b4c5d2590eb2b5"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/agent.rs",
       "item": "fn[distinct_pages]",
       "hash": "52fbf22df8aefb424219de1f34873cc2cd3020e8ebf4ca90317cd59dd4698437"
     },
     {
       "file": "crates/habeas-sdk/tests/contracts.rs",
-      "item": "impl[Application/Domain]/fn[format_node_content]",
-      "hash": "4ef5897e8093496a8ab4f2634becf37d681994c461d4739472935b90b582b901"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/contracts.rs",
-      "item": "fn[identities_remain_stable_and_fingerprinting_uses_the_supplied_snapshot]",
-      "hash": "96386c345d495ad61c9d52f1369fdb739d0261c7e88dad51881d5b3ef4416673"
+      "item": "struct[Node]",
+      "hash": "6432ba1c03e5d58df823ea2106175d9c26356019b703ba3906c9d80ba040abd6"
     }
   ],
   "format_version": 1,
@@ -190,7 +158,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "d3817100fa8b03f27dbb298688d80ca96a3f1c893a9c89d732f8d4c94879e24b"
+          "value": "953bdd4cd92d4f3832d6e7231126c04aa4f380bad3591ee2b1528df2ad2645a8"
         }
       ]
     },
@@ -202,7 +170,7 @@
         "Mandatory",
         {
           "scheme": "node-path-set-sha256-v1",
-          "value": "859c38a06f5472d07e70e86b0d92a665d88bcbffcc0e7c23a05631b70a890b54"
+          "value": "f47f07ee732ddc6e6e9a6e82d2222bd038572343738be731d5d1842fae525a81"
         }
       ]
     },
@@ -213,18 +181,18 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "42e18bc39a119a9ef12c6fe4c43e065ac7e7968b2b26e351f4e4f59c8100e168"
+          "value": "4632b9c57b27cf137376fdc2a702c96aea544912b68ac6ca4de0450007abca9a"
         }
       ]
     },
     {
       "Node": [
         {
-          "Requirement": "requirements.sdk.domain"
+          "Requirement": "requirements.sdk.graph.fingerprinting.fingerprint_content"
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "d33ae3ac43dc548ed4483333586eb33d89e867feac4cbe04ef37478d97b28f0c"
+          "value": "d4ef9bd669455af2e663284d8ab92f5ad00e1c33a2f1c2f4485498dfb1d462fd"
         }
       ]
     },
@@ -293,6 +261,23 @@
         {
           "scheme": "habeas-input-v1",
           "value": "bc7b7ef7d4cc28123a0b5a1f049bbfea3ffc409b227c4457cec9eaa8969920bd"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/tests/contracts.rs"
+            },
+            "selector": "fn[identities_remain_stable_and_fingerprinting_uses_the_supplied_snapshot]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "62a182ff054e274be28e7d3b1262b5d3cc5f3047e0e55f4f844ba77c7f2f9695"
         }
       ]
     },
@@ -389,6 +374,23 @@
               "scheme": "repo",
               "location": "crates/habeas-sdk/tests/agent.rs"
             },
+            "selector": "struct[Node]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "dd4a201006d469e027fb8f7ed4890dc5a8ee7252210ee6df4664916375b672ff"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/tests/agent.rs"
+            },
             "selector": "struct[Memory]"
           }
         },
@@ -423,91 +425,6 @@
               "scheme": "repo",
               "location": "crates/habeas-sdk/tests/agent.rs"
             },
-            "selector": "impl[Memory/Domain]/fn[format_node_content]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "370ff5a5d9819820667301e0a198bdfdb77e4a0edf35612c290cef0f0a7e3b3b"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/agent.rs"
-            },
-            "selector": "fn[agent_edge_tools_record_selections_without_validating_targets]/impl[GraphWithChangingEdges/Domain]/fn[format_node_content]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "d4dad804103dafe90d858cbfebaa0db23be77129832165602684cf6155c694e2"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/validation.rs"
-            },
-            "selector": "impl[Memory/Domain]/fn[format_node_content]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "bde1828f3becdf02e89bcca601e304dd374ff1d0e3bca1ad3d32d6bb97cd562f"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/agent.rs"
-            },
-            "selector": "struct[Node]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "dd4a201006d469e027fb8f7ed4890dc5a8ee7252210ee6df4664916375b672ff"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/agent.rs"
-            },
-            "selector": "struct[Contents]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "f7683df2a5b47d111ec376206855d6f9069bc4551f677e2267fc6086e8862656"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/agent.rs"
-            },
             "selector": "fn[distinct_pages]"
           }
         },
@@ -525,29 +442,12 @@
               "scheme": "repo",
               "location": "crates/habeas-sdk/tests/contracts.rs"
             },
-            "selector": "impl[Application/Domain]/fn[format_node_content]"
+            "selector": "struct[Node]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "c0ddb3721eb48c98027e93cf8ed72ff951b1e4fd2eeaeb288209bd23a42cfcd2"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/contracts.rs"
-            },
-            "selector": "fn[identities_remain_stable_and_fingerprinting_uses_the_supplied_snapshot]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "a389bb0a9a1ddb616a1a0dec30a8b3f804579a06264f0ae746635f75af14d424"
+          "value": "124c6b0c72fe4c4863e1dac2896d9f0a717336d624cb5e70f269ceedf5969755"
         }
       ]
     }

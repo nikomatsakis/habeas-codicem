@@ -1,8 +1,8 @@
 {
-  "requirement": "```rust,ignore\npub trait Fingerprinting: Graph {\n    /// Describe the supplied observation, without rereading the node or\n    /// querying mutable external state.\n    ///\n    /// The same node and contents under the same rules give the same\n    /// fingerprint. Everything needed is in the identity, contents, or\n    /// configured rules. When the rules change, change the scheme.\n    fn fingerprint(\n        &self,\n        node: &Self::NodeId,\n        content: &Self::NodeContent,\n    ) -> Fingerprint;\n}\n```",
+  "requirement": "```rust,ignore\npub trait NodeContents: Graph {\n    /// The application's representation of a node's contents.\n    type NodeContent: Send + Sync;\n\n    /// Fetch the contents of a node.\n    fn node_content(&self, node: &Self::NodeId) -> Result<Self::NodeContent, Self::Error>;\n\n    /// Describe the supplied observation, without rereading the node or\n    /// querying mutable external state.\n    ///\n    /// The same node and contents under the same rules give the same\n    /// fingerprint. Everything needed is in the identity, contents, or\n    /// configured rules. When the rules change, change the scheme.\n    fn fingerprint(\n        &self,\n        node: &Self::NodeId,\n        content: &Self::NodeContent,\n    ) -> Fingerprint;\n\n    /// Present these already-read contents as text for an agent.\n    /// Use the supplied contents so the text and fingerprint describe the same read.\n    fn format_node_content(\n        &self,\n        node: &Self::NodeId,\n        contents: &Self::NodeContent,\n    ) -> Result<String, Self::Error>;\n}\n```",
   "determination": true,
-  "rationale": "The two marked tests adequately check `requirements.sdk.graph.fingerprinting.fingerprint_content`.\n\n**Obligations derived from the text**\n1. The fingerprint describes the supplied observation. It must not reread the node or query mutable external state.\n2. The same node and contents under the same rules give the same fingerprint.\n3. Everything needed is in the identity, contents, or configured rules.\n4. When the rules change, the scheme changes.\n\n**Coverage**\n- **No reread, no mutable state.**\n  - In `crates/habeas-sdk/tests/contracts.rs#fn[identities_remain_stable_and_fingerprinting_uses_the_supplied_snapshot]`, the test reads a snapshot with content \"before\". It then mutates the graph's stored content to \"after\".\n  - It asserts that `graph.fingerprint(&Node(1), &snapshot.content)` equals `snapshot.fingerprint`, and that the value is still \"before\". A fingerprint that reread the graph would return \"after\", so this catches it.\n  - In `src/sdk.rs#mod[tests]/fn[requirement_edges_and_input_freshness_use_the_sdk]`, the test rewrites `src/lib.rs` on disk and builds a fresh outline cache.\n  - It asserts that fingerprinting the retained `ReferenceSet` content gives the original fingerprint. It makes the same assertion for the retained source-node content.\n  - So the real `HabeasDomain` implementation is checked against changed filesystem state.\n- **Determinism.** The same node and retained content are fingerprinted again after the external change. The result equals the earlier fingerprint in both tests.\n- **Contents matter.** After the files change, fingerprinting freshly read content gives a different fingerprint. This is asserted for both the reference set and the source node, so a constant fingerprint would fail.\n- **Everything needed is in identity, contents, or rules.** The `HabeasDomain` fingerprint is a function of the node's selector and the content. Content-sensitivity and repeatability are tested as above. The text does not require different nodes with the same content to differ, so that is not a gap.\n- **Scheme tied to rules.** The tests assert exact `Fingerprint` values, including the schemes `habeas-reference-set-v1` and `habeas-input-v1`. The input case also has a golden hash value, and the reference-set case checks `value` against `text[0]`. Changing the rules would therefore change a pinned value and force a scheme update. The `Application` fixture also asserts scheme-specific value behavior.\n\n**Judgment**\nBoth tests carry the {test} marker. They exercise both the trait contract, through a test graph, and the real `HabeasDomain` implementation. I found no obligation left untested.",
-  "references": "a9aab3f9b6d283cfbdc40f7819fbe8804515882442f6f865b2dfcfd0daaa0491",
+  "rationale": "The two marked tests adequately cover the testable obligations in `requirements.sdk.graph.fingerprinting.fingerprint_content`.\n\n**Obligations derived from the text**\n1. `fingerprint` describes the supplied observation. It does not reread the node or query mutable external state.\n2. The same node and contents under the same rules give the same fingerprint.\n3. `format_node_content` presents the supplied, already-read contents, so the text and the fingerprint describe the same read.\n4. `node_content` fetches the contents.\n5. When the rules change, the scheme changes. This is a design instruction that no input can exercise, so it has no test scenario.\n\n**Coverage**\n- **Supplied snapshot, no reread (obligations 1 and 3).** In `crates/habeas-sdk/tests/contracts.rs#fn[identities_remain_stable_and_fingerprinting_uses_the_supplied_snapshot]`:\n  - The test reads a snapshot while the application's contents are \"before\".\n  - It then mutates the application's mutable state to \"after\".\n  - `graph.fingerprint(&Node(1), &snapshot.content)` still equals `snapshot.fingerprint`, and `snapshot.fingerprint.value` is \"before\".\n  - `format_node_content` on the supplied content still returns \"before\".\n  - `reads == [1]` shows that neither `fingerprint` nor `format_node_content` triggered another `node_content` read.\n  - A fingerprint that read live state would return \"after\", and a formatter that reread would return \"after\". Both would fail the test.\n- **Stable fingerprint, and a different fingerprint for different contents (obligation 2).** In `src/sdk.rs#mod[tests]/fn[requirement_edges_and_input_freshness_use_the_sdk]`, using the real `HabeasDomain`:\n  - Fingerprinting the retained, stale contents after the file on disk changes gives the original fingerprint. This is asserted for both the reference-set node and the source node.\n  - Fingerprinting freshly read contents gives a different fingerprint, via `assert_ne!`.\n  - The scheme and value are pinned exactly, for example `habeas-input-v1` with a fixed hash and `habeas-reference-set-v1`.\n- **Fetch (obligation 4).** `node_content` is used by both tests to obtain contents, and `reads` is asserted.\n\n**Marking.** `src/sdk.rs#mod[tests]/fn[domain_formats_supplied_contents_without_resolving_a_replacement]` also tests `HabeasDomain`'s formatter on supplied contents. It carries no `{test}` reference to this requirement. The marked mock-based test already covers the trait-level obligation, so I did not count this as a gap.\n\nI found no untested obligation, and no `{fixme}` acknowledgments apply.",
+  "references": "514093b1f7d5026f75450780608b6fcb717cdf6e6bd2e36dc38dd89cc517fd03",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.fingerprinting.fingerprint_content",
@@ -12,7 +12,13 @@
       "text": [
         ":::{req} fingerprint_content",
         "```rust,ignore",
-        "pub trait Fingerprinting: Graph {",
+        "pub trait NodeContents: Graph {",
+        "    /// The application's representation of a node's contents.",
+        "    type NodeContent: Send + Sync;",
+        "",
+        "    /// Fetch the contents of a node.",
+        "    fn node_content(&self, node: &Self::NodeId) -> Result<Self::NodeContent, Self::Error>;",
+        "",
         "    /// Describe the supplied observation, without rereading the node or",
         "    /// querying mutable external state.",
         "    ///",
@@ -24,6 +30,14 @@
         "        node: &Self::NodeId,",
         "        content: &Self::NodeContent,",
         "    ) -> Fingerprint;",
+        "",
+        "    /// Present these already-read contents as text for an agent.",
+        "    /// Use the supplied contents so the text and fingerprint describe the same read.",
+        "    fn format_node_content(",
+        "        &self,",
+        "        node: &Self::NodeId,",
+        "        contents: &Self::NodeContent,",
+        "    ) -> Result<String, Self::Error>;",
         "}",
         "```",
         ":::"
@@ -32,7 +46,7 @@
     {
       "file": "crates/habeas-sdk/tests/contracts.rs",
       "item": "fn[identities_remain_stable_and_fingerprinting_uses_the_supplied_snapshot]",
-      "hash": "96386c345d495ad61c9d52f1369fdb739d0261c7e88dad51881d5b3ef4416673"
+      "hash": "3fc01801df479145b6d4b795efa66f52c7ba4652a2901a3e50990f17ee847023"
     },
     {
       "file": "src/sdk.rs",
@@ -41,18 +55,28 @@
     },
     {
       "file": "src/sdk.rs",
-      "item": "impl[HabeasDomain<'_>/Fingerprinting]/fn[fingerprint]",
-      "hash": "24de76c7d475649c27ee43cc2856af02a7aded3534ae3b01525ccff2f7dedcc7"
+      "item": "mod[tests]/fn[domain_formats_supplied_contents_without_resolving_a_replacement]",
+      "hash": "f4d7b1b820bd1fb826e222d20ab273bb419cc71426bdef3a9129e1c837032101"
+    },
+    {
+      "file": "src/sdk.rs",
+      "item": "impl[HabeasDomain<'_>/NodeContents]",
+      "hash": "db6776d946c0bd05ed007d7454bf531f901029b289402b7c8fad23b71749f5ce"
     },
     {
       "file": "crates/habeas-sdk/tests/contracts.rs",
-      "item": "impl[Application/Fingerprinting]/fn[fingerprint]",
+      "item": "impl[Application/NodeContents]",
+      "hash": "9f40fd3e1627b009fc9becbae7dd8162d1233c2963ffb80d9ffbe7ffa2ea38e5"
+    },
+    {
+      "file": "crates/habeas-sdk/tests/contracts.rs",
+      "item": "impl[Application/NodeContents]/fn[fingerprint]",
       "hash": "aeefab465a56c527045ba5517d48aa22a8a15dc67ce809728cf71c0b6a438973"
     },
     {
-      "file": "src/authoring/sdk.rs",
-      "item": "impl[ReviewGraph<'_>/Fingerprinting]/fn[fingerprint]",
-      "hash": "93fbfae42e64081b1769133b035a5d6f4921b65744f3d6bf626c6579003fb0ed"
+      "file": "crates/habeas-sdk/tests/contracts.rs",
+      "item": "impl[Application/NodeContents]/fn[format_node_content]",
+      "hash": "4ef5897e8093496a8ab4f2634becf37d681994c461d4739472935b90b582b901"
     }
   ],
   "format_version": 1,
@@ -65,7 +89,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "a9aab3f9b6d283cfbdc40f7819fbe8804515882442f6f865b2dfcfd0daaa0491"
+          "value": "514093b1f7d5026f75450780608b6fcb717cdf6e6bd2e36dc38dd89cc517fd03"
         }
       ]
     },
@@ -88,7 +112,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "b3de4eab38dcf5fd06ac4bc6f1eb69009b250e3715a3d3241e796cf8095cbe6c"
+          "value": "d4ef9bd669455af2e663284d8ab92f5ad00e1c33a2f1c2f4485498dfb1d462fd"
         }
       ]
     },
@@ -105,7 +129,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "a389bb0a9a1ddb616a1a0dec30a8b3f804579a06264f0ae746635f75af14d424"
+          "value": "62a182ff054e274be28e7d3b1262b5d3cc5f3047e0e55f4f844ba77c7f2f9695"
         }
       ]
     },
@@ -134,12 +158,29 @@
               "scheme": "repo",
               "location": "src/sdk.rs"
             },
-            "selector": "impl[HabeasDomain<'_>/Fingerprinting]/fn[fingerprint]"
+            "selector": "mod[tests]/fn[domain_formats_supplied_contents_without_resolving_a_replacement]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "fa176c982e906cab31573586257ffbed25f7bf1321a7e7108277ab231af3254e"
+          "value": "54b12524c5c23e1b75c58adb16eaa84ade104659cae4fd701fb72526b7040e1d"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/sdk.rs"
+            },
+            "selector": "impl[HabeasDomain<'_>/NodeContents]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "26cc697d2f23c1fc8f05925683b578eff9d0ddc22338d1195b8f3cee3a016d19"
         }
       ]
     },
@@ -151,12 +192,12 @@
               "scheme": "repo",
               "location": "crates/habeas-sdk/tests/contracts.rs"
             },
-            "selector": "impl[Application/Fingerprinting]/fn[fingerprint]"
+            "selector": "impl[Application/NodeContents]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "9628afd59638be5d63ad25f95262a746ee4689a04e708b6eafd30abc29643d61"
+          "value": "c80bd2a52ea2023bd224c4d5f73e34c6c60423e9e7c16bec6c5ff19f501458c5"
         }
       ]
     },
@@ -166,14 +207,31 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "src/authoring/sdk.rs"
+              "location": "crates/habeas-sdk/tests/contracts.rs"
             },
-            "selector": "impl[ReviewGraph<'_>/Fingerprinting]/fn[fingerprint]"
+            "selector": "impl[Application/NodeContents]/fn[fingerprint]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "2dc9fdac4685eefe513fa5c64f0177673120792be4fe474eaf6c68f6e5892e95"
+          "value": "59e088b9d8c11438c4723e9e30584215a47ea222acb3baedd72e394d1ffb636b"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/tests/contracts.rs"
+            },
+            "selector": "impl[Application/NodeContents]/fn[format_node_content]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "dbca9a4f63840ea5361af2a2e00e8d1f0206bbaa3e5940b50a2f17fef2a7e05b"
         }
       ]
     }

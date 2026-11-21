@@ -6,9 +6,7 @@ use crate::{
     inputs::{InputSelector, OutlineCache, ResolvedInput},
 };
 use habeas_sdk::{
-    graph::{
-        CriterionPath, Domain, Fingerprint, Fingerprinting, Graph, InspectionContext, NodePath,
-    },
+    graph::{CriterionPath, Fingerprint, Graph, InspectionContext, NodeContents, NodePath},
     resource::{OutlineId, ResourceId},
 };
 use std::{collections::BTreeMap, path::Path};
@@ -108,39 +106,12 @@ pub(crate) struct HabeasDomain<'a> {
     pub outlines: &'a OutlineCache,
 }
 
-impl Domain for HabeasDomain<'_> {
-    // {impl}`requirements.sdk.graph.agent-calls.judge.rendering`
-    fn format_node_content(
-        &self,
-        node: &HabeasNode,
-        contents: &ResolvedInput,
-    ) -> std::io::Result<String> {
-        serde_json::to_string(&node.selector()?.to_model_input(contents))
-            .map_err(std::io::Error::other)
-    }
-}
-
 // {impl}`requirements.sdk.graph.domain_types`
 impl Graph for HabeasDomain<'_> {
     type NodeId = HabeasNode;
     type EdgeLabel = HabeasEdgeLabel;
-    type NodeContent = ResolvedInput;
-    type Error = std::io::Error;
 
-    // {cite}`habeas:util`
-    fn node_content(&self, node: &HabeasNode) -> Result<ResolvedInput, std::io::Error> {
-        if let HabeasNode::ReferenceSet(id) = node {
-            return Ok(ResolvedInput {
-                text: vec![self.reference_set(id)?],
-                ranges: vec![],
-                matches: vec![],
-                node: None,
-            });
-        }
-        let node = node.selector()?;
-        node.resolve(self.root, self.definitions, self.outlines)
-            .map_err(std::io::Error::other)
-    }
+    type Error = std::io::Error;
 
     // {cite}`habeas:util`
     fn node_path(&self, node: &HabeasNode) -> NodePath {
@@ -359,7 +330,24 @@ impl habeas_sdk::graph::EvidenceStorage for HabeasDomain<'_> {
 }
 
 // {impl}`requirements.sdk.graph.fingerprinting.fingerprint_content`
-impl Fingerprinting for HabeasDomain<'_> {
+impl NodeContents for HabeasDomain<'_> {
+    type NodeContent = ResolvedInput;
+
+    // {cite}`habeas:util`
+    fn node_content(&self, node: &HabeasNode) -> Result<ResolvedInput, std::io::Error> {
+        if let HabeasNode::ReferenceSet(id) = node {
+            return Ok(ResolvedInput {
+                text: vec![self.reference_set(id)?],
+                ranges: vec![],
+                matches: vec![],
+                node: None,
+            });
+        }
+        let node = node.selector()?;
+        node.resolve(self.root, self.definitions, self.outlines)
+            .map_err(std::io::Error::other)
+    }
+
     fn fingerprint(&self, node: &HabeasNode, content: &ResolvedInput) -> Fingerprint {
         if matches!(node, HabeasNode::ReferenceSet(_)) {
             return Fingerprint {
@@ -373,6 +361,16 @@ impl Fingerprinting for HabeasDomain<'_> {
                 .expect("resolved Habeas node")
                 .to_input(content),
         )
+    }
+
+    // {impl}`requirements.sdk.graph.agent-calls.judge.rendering`
+    fn format_node_content(
+        &self,
+        node: &HabeasNode,
+        contents: &ResolvedInput,
+    ) -> std::io::Result<String> {
+        serde_json::to_string(&node.selector()?.to_model_input(contents))
+            .map_err(std::io::Error::other)
     }
 }
 

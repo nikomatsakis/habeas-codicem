@@ -82,11 +82,9 @@ impl CriterionPath {
 // {impl}`requirements.sdk.graph.outgoing_edges`
 pub trait Graph: Send + Sync {
     type NodeId: Clone + Eq + Send + Sync;
-    type NodeContent: Send + Sync;
     type EdgeLabel: Clone + Send + Sync;
     type Error: Send;
 
-    fn node_content(&self, node: &Self::NodeId) -> Result<Self::NodeContent, Self::Error>;
     // {impl}`requirements.sdk.graph.node_path_method`
     fn node_path(&self, node: &Self::NodeId) -> NodePath;
     fn outgoing_edges(
@@ -97,9 +95,25 @@ pub trait Graph: Send + Sync {
 }
 
 // {impl}`requirements.sdk.graph.fingerprinting.fingerprint_content`
-pub trait Fingerprinting: Graph {
+pub trait NodeContents: Graph {
+    /// The application's representation of a node's contents.
+    type NodeContent: Send + Sync;
+
+    /// Fetch the contents of a node.
+    fn node_content(&self, node: &Self::NodeId) -> Result<Self::NodeContent, Self::Error>;
+
     // {impl}`requirements.sdk.graph.fingerprinting.fingerprint_content`
+    /// Fingerprint these supplied contents under the application's change rules.
     fn fingerprint(&self, node: &Self::NodeId, content: &Self::NodeContent) -> Fingerprint;
+
+    // {impl}`requirements.sdk.graph.agent-calls.judge.rendering`
+    /// Format already-read contents for an agent using their source identity.
+    /// The supplied contents and their recorded fingerprint describe the same read.
+    fn format_node_content(
+        &self,
+        node: &Self::NodeId,
+        contents: &Self::NodeContent,
+    ) -> Result<String, Self::Error>;
 }
 
 // {impl}`requirements.sdk.graph.evidence.dependencies`
@@ -217,17 +231,10 @@ pub trait EvidenceStorage: Graph {
 
 // {impl}`requirements.sdk.domain`
 /// A cloneable verification graph with fingerprints and evidence storage.
-pub trait Domain: Clone + Graph + Fingerprinting + EvidenceStorage {
-    // {impl}`requirements.sdk.domain`
-    // {impl}`requirements.sdk.graph.agent-calls.judge.rendering`
-    /// Format already-read contents for an agent using their source identity.
-    /// The supplied contents and their recorded fingerprint describe the same read.
-    fn format_node_content(
-        &self,
-        node: &Self::NodeId,
-        contents: &Self::NodeContent,
-    ) -> Result<String, Self::Error>;
-}
+pub trait Domain: Clone + Graph + NodeContents + EvidenceStorage {}
+
+// {impl}`requirements.sdk.domain`
+impl<T: Clone + Graph + NodeContents + EvidenceStorage> Domain for T {}
 
 // {impl}`requirements.sdk.graph.validation.check_procedure`
 #[derive(Debug)]
@@ -284,12 +291,12 @@ pub trait Criterion<D: Domain>: Send + Sized {
 
 /// The trace lock only protects observations, never graph or agent operations.
 // {impl}`requirements.sdk.graph.context-tools.tracked_inspection`
-pub struct InspectionContext<'d, D: Graph + Fingerprinting> {
+pub struct InspectionContext<'d, D: NodeContents> {
     graph: &'d D,
     observations: Mutex<Vec<Dependency<D::NodeId, D::EdgeLabel>>>,
 }
 
-impl<'d, D: Graph + Fingerprinting> InspectionContext<'d, D> {
+impl<'d, D: NodeContents> InspectionContext<'d, D> {
     // {cite}`habeas:util`
     pub fn new(graph: &'d D) -> Self {
         Self {
@@ -420,7 +427,7 @@ pub fn procedure_matches(stored: &str, requested: &str) -> bool {
 
 /// Freshness-only reads do not enter a new assessment's trace.
 // {impl}`requirements.sdk.graph.evidence.checking_records`
-pub fn record_is_current<D: Graph + Fingerprinting>(
+pub fn record_is_current<D: NodeContents>(
     graph: &D,
     revision: &str,
     record: &Record<D::NodeId, D::EdgeLabel>,
@@ -431,7 +438,7 @@ pub fn record_is_current<D: Graph + Fingerprinting>(
     dependencies_are_current(graph, &record.dependencies)
 }
 
-fn dependencies_are_current<D: Graph + Fingerprinting>(
+fn dependencies_are_current<D: NodeContents>(
     graph: &D,
     dependencies: &[Dependency<D::NodeId, D::EdgeLabel>],
 ) -> Result<bool, D::Error> {

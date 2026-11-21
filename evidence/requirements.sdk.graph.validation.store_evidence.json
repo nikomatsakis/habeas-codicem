@@ -1,7 +1,7 @@
 {
   "requirement": "```rust,ignore\n// Method on Validator<D>.\n/// Encode the answer and atomically replace this source/criterion's record.\npub fn store_evidence<O: serde::Serialize>(\n    &self,\n    inputs: &Fingerprinted<D, O>,\n) -> impl Future<Output = Result<(), ValidationError<D::Error>>> + Send;\n```\n\nThe method saves under the source identity and criterion path captured in\n`Fingerprinted`, preserving its revision, input trace, and completed answer. Encoding follows\n{cite}`requirements.sdk.graph.evidence.record.output`; atomic replacement follows\n{cite}`requirements.sdk.graph.evidence.evidence_storage`. The result type needs\nno `Sync` bound: the method encodes the answer and captures the record and\nstorage key before constructing the storage future.",
   "determination": true,
-  "rationale": "The reviewed tests cover every obligation in `requirements.sdk.graph.validation.store_evidence`. I judged this from the supplied test sources and did not request implementation source.\n\n- **Saves under the captured source identity and criterion path, preserving revision, input trace and answer.**\n  - `criteria_keep_typed_answers_and_persist_only_when_requested` saves a verified value. It then loads it back through the validator and compares the output, source node id, criterion path, revision and dependencies with the original.\n  - The same test inspects the stored raw records for two criteria, `behavior` and `text`. It checks the encoded outputs, the dependencies and the write count (3 writes), and that no reads occurred.\n  - `input_checking_and_execution_keep_separate_observations` and `concurrent_same_criterion_executions_keep_complete_independent_records` assert that stored dependencies hold the node fingerprints.\n  - The concurrent test also asserts the stored revision and answer.\n  - `agent_edge_tools_record_selections_without_validating_targets` asserts that a saved record keeps the `Dependency::OutgoingEdges` input trace and the answer.\n- **Encoding failure returns `ValidationError::Output` and leaves the existing record unchanged** (via `record.output`). `serialization_failure_leaves_the_existing_record_unchanged` stores an `Unencodable` answer over an existing record. It asserts `Output` with the \"cannot encode answer\" message. It also asserts the record's revision, dependencies and output are unchanged, and that only one write happened.\n- **Storage failure returns `ValidationError::Graph`.** `resolution_storage_and_callback_errors_are_not_judgments` sets `fail_store` and asserts `Graph(\"store\")`, with no record written. `runner_does_not_store_a_missing_agent_error_and_supports_intermediate_calls` asserts that no record is written when execution fails.\n- **Atomic replacement of one complete record.**\n  - `concurrent_same_criterion_executions_keep_complete_independent_records` runs two concurrent `store_evidence` calls for the same key. It asserts a single record whose revision, dependencies and output all come from the same save.\n  - `typed_loading_reports_decode_errors_even_for_stale_evidence` asserts that a store replaces the single record (`records.len() == 1`).\n- **No `Sync` bound on the result type.** `validation_and_answer_need_send_without_sync` stores and reloads a `Cell<u32>` answer through the `send(...)` helper, which requires a `Send` future. The answer type is not `Sync`.\n\nI found no obligation that lacks a test with a relevant assertion, and no marking gap. Each of these tests carries a `{test}` reference to the subject.",
+  "rationale": "The reviewed tests cover every obligation of `requirements.sdk.graph.validation.store_evidence`. I found no gap.\n\n- **Save under the captured source identity and criterion path.** `criteria_keep_typed_answers_and_persist_only_when_requested` stores records for the `behavior`, `structure` and `text` criteria of one source and loads each back. It asserts that the stored records are separate per criterion. `agent_edge_tools_record_selections_without_validating_targets` and the `serialization_failure…` test also load by `(Node(1), path)` directly from storage.\n- **Preserve revision, input trace and completed answer.**\n  - `criteria_keep_typed_answers…` compares the loaded value's output, source id, criterion path, revision and dependencies with the stored value. It also checks the raw stored output JSON.\n  - `input_checking_and_execution_keep_separate_observations` checks that the stored dependencies are the `Dependency::Node` entry with the new fingerprint.\n  - `agent_edge_tools…` checks that the stored `OutgoingEdges` dependency matches the one on the `Fingerprinted` value.\n  - `runner_does_not_store_a_missing_agent_error…` checks the stored `Dependency::Node(1, fp(\"root\"))`.\n- **Serialization failure returns `ValidationError::Output` and leaves the existing record unchanged.** `serialization_failure_leaves_the_existing_record_unchanged` stores an old record, then stores a value whose answer is `Unencodable`. It asserts `ValidationError::Output` with the message \"cannot encode answer\". It then asserts that the revision, dependencies and output are unchanged and that `writes == 1`, so no storage write happened.\n- **Storage failure returns `ValidationError::Graph`.** `resolution_storage_and_callback_errors_are_not_judgments` sets `fail_store` and asserts `Err(ValidationError::Graph(\"store\"))` and that no record was written.\n- **Atomic replacement, with one complete record after competing saves.** `concurrent_same_criterion_executions_keep_complete_independent_records` runs two saves with different revisions, dependencies and outputs concurrently. It asserts that exactly one record remains and that its revision, dependencies and output all belong to the same save. It accepts either save winning, which matches the \"no ordering guaranteed\" wording. The replace-rather-than-append behavior is also checked in `typed_loading_reports_decode_errors_even_for_stale_evidence`, which asserts `records.len() == 1` after a second save.\n- **No `Sync` bound on the result type.** `validation_and_answer_need_send_without_sync` stores a `Cell<u32>` answer, which is `Send` but not `Sync`. It wraps the `store_evidence` future in `send`, which requires `T: Send`. That asserts the future is `Send` and compiles with a non-`Sync` answer. It then round-trips the value.\n- **Cited requirements.** `record.output` and `evidence_storage` are cited context. The Output/Graph error mapping and the unchanged record on failure are covered above. `malformed_records_are_storage_errors_and_bad_outputs_are_output_errors` also exercises the real file-backed storage path.\n\nThe tests have `{test}` markers on the subject, and their assertions enforce the expected outcomes.",
   "references": "8e33ac85a20b563a55d309676c6dc74e14308b10a5a4cc7b94b85799c6b9f515",
   "inputs": [
     {
@@ -101,7 +101,7 @@
     {
       "file": "crates/habeas-sdk/tests/agent.rs",
       "item": "fn[agent_edge_tools_record_selections_without_validating_targets]",
-      "hash": "0194638271b25cfd6c1203da86cd9ddd42197e72cd7542c4c70e02cf17e1d200"
+      "hash": "dbaa26880c450bc1ed86d9e43ffa73d1705ca587b3af7a2f652cb59a1beeab87"
     },
     {
       "file": "crates/habeas-sdk/tests/contracts.rs",
@@ -149,9 +149,44 @@
       "hash": "019d9b3dcaf43b538f3a14448e2ca0e42fc6f000972a6af300f11b86fb14e3ac"
     },
     {
+      "file": "crates/habeas-sdk/tests/contracts.rs",
+      "item": "fn[send]",
+      "hash": "8584e807e9abc79dc59d3352ed10789b3f88c34eaf2710718740786192bf2708"
+    },
+    {
+      "file": "crates/habeas-sdk/tests/contracts.rs",
+      "item": "struct[Unencodable]",
+      "hash": "75d032a649c15951fa87adad6c854952ff1200d302fd77d2f8db2c1153ffc28b"
+    },
+    {
+      "file": "crates/habeas-sdk/tests/contracts.rs",
+      "item": "impl[Unencodable/Serialize]",
+      "hash": "a009973e0afc746a0b5c0aa4605c4dcc902b4b5c178cb97dbdd97a624ab75fa1"
+    },
+    {
+      "file": "crates/habeas-sdk/tests/contracts.rs",
+      "item": "struct[Review]",
+      "hash": "f446c3b083932a8584c9e149398756f344f85189baccc05253e635e24644c7d4"
+    },
+    {
+      "file": "crates/habeas-sdk/tests/contracts.rs",
+      "item": "impl[Review<O>]/fn[new]",
+      "hash": "0d9b5bd44e4aea8dc1b7160f78e0b45e9612c2466952ee5ab718ad4bab241577"
+    },
+    {
+      "file": "crates/habeas-sdk/tests/contracts.rs",
+      "item": "impl[Review<O>/Criterion<Application>]/fn[source_node_id]",
+      "hash": "535e981a869f261457c6f27c290b9c961da07791d9cc63840cfc68753249695f"
+    },
+    {
       "file": "crates/habeas-sdk/tests/storage.rs",
       "item": "impl[StoredReview<'_>/Criterion<StoredGraph>]/fn[source_node_id]",
       "hash": "9a8d80cc4b652fc6ef1c65c90729366a4feb74bd278ff2353800f1184d70985c"
+    },
+    {
+      "file": "crates/habeas-sdk/tests/validation.rs",
+      "item": "impl[Review/Criterion<Memory>]/fn[source_node_id]",
+      "hash": "9fca287776078ad3c119b1fbcd3b1a47661985df3fc763b32a61fefcc56f9164"
     }
   ],
   "format_version": 1,
@@ -226,7 +261,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "89524f764c128c93ae86bdd0c10627ca41ae1c1a5c3dffd4d7c485e5390e4524"
+          "value": "7ba6e159d3237f4eb2489ca6a2d5db61d91e155d884c4051a3b0d4c31d4d862e"
         }
       ]
     },
@@ -389,6 +424,108 @@
           "Source": {
             "resource": {
               "scheme": "repo",
+              "location": "crates/habeas-sdk/tests/contracts.rs"
+            },
+            "selector": "fn[send]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "17d3cbb9647108545d77c32a08642a7ba2205d46bbabb4ef6c4c63251b8114bb"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/tests/contracts.rs"
+            },
+            "selector": "struct[Unencodable]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "66583bacfffba7c9e9e68b4e4c5a5bdf58f07cbf9b9d82b5276b12947fc895fd"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/tests/contracts.rs"
+            },
+            "selector": "impl[Unencodable/Serialize]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "0bbfaf0b46ef3c1a99ad67726b375850561cf22daac31c85b6850c7cb86f5c9f"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/tests/contracts.rs"
+            },
+            "selector": "struct[Review]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "2a7948034fb6c193ce69749712bf3af5b61a28187401c3d89a6e14d8560385e7"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/tests/contracts.rs"
+            },
+            "selector": "impl[Review<O>]/fn[new]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "ca5282a73f819a591fd3bc2e56f4f774966d47bdcd4e421216927c7db788f10c"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/tests/contracts.rs"
+            },
+            "selector": "impl[Review<O>/Criterion<Application>]/fn[source_node_id]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "49cc45fcde1f5cb4ab6ea1cef1ff91fa9ea352a9a56ab519822374ac3c646540"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
               "location": "crates/habeas-sdk/tests/storage.rs"
             },
             "selector": "impl[StoredReview<'_>/Criterion<StoredGraph>]/fn[source_node_id]"
@@ -397,6 +534,23 @@
         {
           "scheme": "habeas-input-v1",
           "value": "17889049d44372e5deae3fdcc45e5c23d9ec0fe2a602a1ecbc4add5d0bc283e6"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/tests/validation.rs"
+            },
+            "selector": "impl[Review/Criterion<Memory>]/fn[source_node_id]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "2a6623c94c5f7bae5fb145b012d18ef0594c5758eea6671338ae503e7cb393ef"
         }
       ]
     }

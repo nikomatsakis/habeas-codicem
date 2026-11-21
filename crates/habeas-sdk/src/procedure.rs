@@ -91,7 +91,7 @@ pub struct AgentRequest<N> {
 }
 
 /// Returns one accepted structured tool submission; assistant text is an error.
-pub trait Agent<D: Graph + Fingerprinting>: Send + Sync {
+pub trait Agent<D: NodeContents>: Send + Sync {
     // {cite}`habeas:util`
     fn run<'a>(
         &'a self,

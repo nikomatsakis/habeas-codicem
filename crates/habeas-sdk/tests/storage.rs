@@ -395,36 +395,18 @@ fn concurrent_readers_only_observe_complete_records_from_competing_writes() {
 
 #[derive(Clone)]
 struct StoredGraph(FileEvidenceStorage);
-impl Domain for StoredGraph {
-    // :::{cite} habeas:coverage
-    // This storage-only domain verifies output decoding without reading or
-    // presenting node contents. A formatter call would be an unwanted graph
-    // access. Agent fixtures exercise formatting separately.
-    // :::
-    fn format_node_content(&self, _: &String, _: &()) -> Result<String, Self::Error> {
-        panic!("storage operations must not format graph contents")
-    }
-}
+
 impl Graph for StoredGraph {
     type NodeId = String;
-    type NodeContent = ();
     type EdgeLabel = ();
 
     type Error = FileStorageError;
-    // :::{cite} habeas:coverage
-    // This storage-only consumer must delegate load/store using node_path
-    // without resolving contents. Graph requires the callback, but invoking
-    // this guard would violate the no-content-read invariant of the test.
-    // Other graph fixtures exercise content resolution.
-    // :::
-    fn node_content(&self, _: &String) -> Result<(), Self::Error> {
-        panic!("storage operations must not read graph contents")
-    }
+
     fn node_path(&self, node: &String) -> NodePath {
         NodePath::new(vec!["consumer".into(), node.clone()])
     }
     // :::{cite} habeas:coverage
-    // Graph requires this callback even for a storage-only consumer. The
+    // NodeContents requires this callback even for a storage-only consumer. The
     // delegation test must use only node_path; discovering edges would be
     // an unwanted graph access, which this guard rejects. Traversal fixtures
     // separately exercise edge discovery.
@@ -451,15 +433,36 @@ impl EvidenceStorage for StoredGraph {
     }
 }
 
-impl Fingerprinting for StoredGraph {
+impl NodeContents for StoredGraph {
+    type NodeContent = ();
+
     // :::{cite} habeas:coverage
-    // These storage and output-decoding checks use records with no content
-    // dependencies. The required fingerprint callback must remain unused:
-    // consulting graph contents would mask a storage-layer or decoding error.
+    // This storage-only consumer must delegate load/store using node_path
+    // without resolving contents. NodeContents requires the callback, but invoking
+    // this guard would violate the no-content-read invariant of the test.
+    // Other graph fixtures exercise content resolution.
+    // :::
+    fn node_content(&self, _: &String) -> Result<(), Self::Error> {
+        panic!("storage operations must not read graph contents")
+    }
+
+    // :::{cite} habeas:coverage
+    // These checks load and store recorded dependencies without checking their
+    // freshness. Fingerprinting is outside the storage and output-decoding
+    // operations being tested, so this guard must remain unused.
     // Other domain fixtures exercise tracked fingerprint observations.
     // :::
     fn fingerprint(&self, _: &String, _: &()) -> Fingerprint {
         panic!("storage and output-decoding checks must not resolve contents")
+    }
+
+    // :::{cite} habeas:coverage
+    // This storage-only domain verifies output decoding without reading or
+    // presenting node contents. A formatter call would be an unwanted graph
+    // access. Agent fixtures exercise formatting separately.
+    // :::
+    fn format_node_content(&self, _: &String, _: &()) -> Result<String, Self::Error> {
+        panic!("storage operations must not format graph contents")
     }
 }
 

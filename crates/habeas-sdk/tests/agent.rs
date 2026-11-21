@@ -81,10 +81,21 @@ impl EvidenceStorage for Memory {
 }
 impl Graph for Memory {
     type NodeId = Node;
-    type NodeContent = Contents;
     type EdgeLabel = Label;
 
     type Error = io::Error;
+
+    fn node_path(&self, node: &Node) -> NodePath {
+        NodePath::new(vec![node.0.to_string()])
+    }
+    fn outgoing_edges(&self, node: &Node, _: Label) -> io::Result<Vec<Node>> {
+        Ok(if node.0 == 1 { vec![Node(2)] } else { vec![] })
+    }
+}
+// {cite}`habeas:util`
+impl NodeContents for Memory {
+    type NodeContent = Contents;
+
     fn node_content(&self, node: &Node) -> io::Result<Contents> {
         self.reads.lock().unwrap().push(node.0);
         Ok(Contents(
@@ -96,19 +107,16 @@ impl Graph for Memory {
                 .unwrap_or_else(|| self.contents.lock().unwrap().clone()),
         ))
     }
-    fn node_path(&self, node: &Node) -> NodePath {
-        NodePath::new(vec![node.0.to_string()])
-    }
-    fn outgoing_edges(&self, node: &Node, _: Label) -> io::Result<Vec<Node>> {
-        Ok(if node.0 == 1 { vec![Node(2)] } else { vec![] })
-    }
-}
-impl Fingerprinting for Memory {
+
     fn fingerprint(&self, _: &Node, value: &Contents) -> Fingerprint {
         Fingerprint {
             scheme: "content".into(),
             value: value.0.clone(),
         }
+    }
+
+    fn format_node_content(&self, node: &Node, contents: &Contents) -> io::Result<String> {
+        (self.formatter)(node, contents)
     }
 }
 struct Review(Node);
@@ -138,12 +146,7 @@ impl Criterion<Memory> for Review {
         })
     }
 }
-// {cite}`habeas:util`
-impl Domain for Memory {
-    fn format_node_content(&self, node: &Node, contents: &Contents) -> io::Result<String> {
-        (self.formatter)(node, contents)
-    }
-}
+
 // {cite}`habeas:util`
 struct Script {
     turns: Mutex<VecDeque<Option<Vec<(&'static str, Value)>>>>,
@@ -488,19 +491,10 @@ async fn agent_edge_tools_record_selections_without_validating_targets() {
     }
     impl Graph for GraphWithChangingEdges {
         type NodeId = u8;
-        type NodeContent = String;
         type EdgeLabel = ();
 
         type Error = io::Error;
-        // :::{cite} habeas:coverage
-        // This edge-only validation regression deliberately supplies no node
-        // contents. Its records assert selection dependencies only. Graph
-        // requires this callback, but reaching it would introduce an unwanted
-        // content read and fail this guard.
-        // :::
-        fn node_content(&self, _: &u8) -> io::Result<String> {
-            panic!("edge inspection must not read node contents")
-        }
+
         fn node_path(&self, node: &u8) -> NodePath {
             NodePath::new(vec![node.to_string()])
         }
@@ -511,15 +505,38 @@ async fn agent_edge_tools_record_selections_without_validating_targets() {
             Ok(if *node == 1 { vec![2] } else { vec![] })
         }
     }
-    impl Fingerprinting for GraphWithChangingEdges {
+
+    impl NodeContents for GraphWithChangingEdges {
+        type NodeContent = String;
+
         // :::{cite} habeas:coverage
-        // Fingerprinting is required by validation, but this regression
+        // This edge-only validation regression deliberately supplies no node
+        // contents. Its records assert selection dependencies only. NodeContents
+        // requires this callback, but reaching it would introduce an unwanted
+        // content read and fail this guard.
+        // :::
+        fn node_content(&self, _: &u8) -> io::Result<String> {
+            panic!("edge inspection must not read node contents")
+        }
+
+        // :::{cite} habeas:coverage
+        // NodeContents is required by validation, but this regression
         // observes only the outgoing-edge selection. No node contents
         // are read, so producing a content fingerprint would violate the
         // asserted selection-only dependencies.
         // :::
         fn fingerprint(&self, _: &u8, _: &String) -> Fingerprint {
             panic!("edge inspection must not fingerprint node contents")
+        }
+
+        // :::{cite} habeas:coverage
+        // The agent asks only for outgoing edges and submits without reading
+        // contents. NodeContents requires a formatter, but any
+        // rendering would imply an unwanted content input. Other agent tests
+        // exercise rendering with explicitly requested contents.
+        // :::
+        fn format_node_content(&self, _: &u8, _: &String) -> io::Result<String> {
+            panic!("edge-only conversation must not render contents")
         }
     }
     impl EvidenceStorage for GraphWithChangingEdges {
@@ -574,17 +591,7 @@ async fn agent_edge_tools_record_selections_without_validating_targets() {
             })
         }
     }
-    impl Domain for GraphWithChangingEdges {
-        // :::{cite} habeas:coverage
-        // The agent asks only for outgoing edges and submits without reading
-        // contents. Domain requires a formatter, but any
-        // rendering would imply an unwanted content input. Other agent tests
-        // exercise rendering with explicitly requested contents.
-        // :::
-        fn format_node_content(&self, _: &u8, _: &String) -> io::Result<String> {
-            panic!("edge-only conversation must not render contents")
-        }
-    }
+
     let graph = GraphWithChangingEdges {
         lookups: Arc::new(AtomicUsize::new(0)),
         records: Arc::default(),

@@ -1,7 +1,7 @@
 {
   "requirement": "```rust,ignore\n// Defined in habeas_sdk::agent.\n/// Provider conversations with graph tools and optional application tools.\npub struct ToolAgent<P, T = NoTools> { /* fields omitted */ }\n\nimpl<P> ToolAgent<P> {\n    /// Use the provider with graph tools and no additional application tools.\n    pub fn new(provider: P) -> Self;\n}\n\nimpl<P, T> ToolAgent<P, T> {\n    /// Use this factory for additional application tools, with fresh state per call.\n    pub fn with_tools<U>(self, tools: U) -> ToolAgent<P, U>;\n}\n```\n\n`ToolAgent<P, T>` implements `Agent<D>` when `D: Domain`,\n`P: CompletionProvider`, and `T: ToolFactory<D>`. Its graph-tool adapter requires `D::EdgeLabel` to implement\n`DeserializeOwned`, `JsonSchema`, and `PartialEq`, and `D::Error` to implement\n`Display`. These bounds describe and decode tool arguments and errors; they do\nnot constrain ordinary graph operations.\n\nEach call creates a fresh conversation and tool session. Graph-node reads use\nthe domain's formatter under\n{cite}`requirements.sdk.graph.agent-calls.judge.rendering` and record delivered\ninputs under {cite}`requirements.sdk.graph.agent-calls.author_procedure`.",
   "determination": true,
-  "rationale": "I found no test-adequacy gap for `requirements.sdk.graph.agent-harness.tool_agent`. Each obligation maps to a marked test, as follows.\n\n- **`ToolAgent::new` gives graph tools and no extra tools.** Every marked test builds the agent with `ToolAgent::new(provider)`. The provider calls the graph tools `read_node`, `get_node_page` and `submit_result`, and the calls succeed. `behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer` also inspects the advertised tool list, including `submit_result` and its schema. The text gives no exact tool list for `new`, so I treated this as met.\n\n- **`with_tools` adds application tools, with fresh state per call.** `application_tool_factories_create_fresh_state_for_each_agent_call` makes two `ctx.ask` calls, each using the `increment` tool twice. Both calls show `counter=1` and `counter=2` and never `counter=3`, so state is not shared between calls. The factory is created once per call (`created == 2`). A second `with_tools` replaces the first (`previous == 0`). The test also asserts that `increment` is advertised in the request tools. `source_tools_keep_search_discovery_separate_from_delivered_source_reads` shows application tools working beside graph tools through `.with_tools(factory)`.\n\n- **`Agent<D>` implementation and its bounds.** These are type-level obligations. The marked tests compile and run `ToolAgent` against the `Memory` domain with `Label`, `io::Error` and the other test types, so the impl and its bounds are exercised.\n\n- **Fresh conversation and tool session per call.**\n  - `concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads` runs two concurrent asks that meet at a barrier. Each ask gets its own history, its own page state (`distinct_pages`) and its own submission (`\"alpha\"` and `\"beta\"`). Each provider conversation has exactly 3 turns.\n  - `validator_agent_executions_isolate_conversations_and_dependency_traces` repeats this through `Validator` and checks that the dependency traces stay separate.\n  - The counter test also confirms that history is not carried across sequential calls.\n\n- **Cited context: formatter use and recorded delivered inputs.** `ParallelConversations::complete` drives `read_node` and then `get_node_page`. The tests assert the delivered `Dependency::Node` fingerprints and `OutgoingEdges` entries. `behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer` checks the formatted contents and their ordering in the request. Other tests in the same file, such as `node_rendering_tool_errors_allow_recovery_without_recording_undelivered_contents` and `graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery`, cover rendering errors and recording in more depth. The obligations stated in the cited requirements belong to their own reviews.\n\nThe assertions are specific and would catch shared or leaked state, a missing factory call, or missing dependencies.",
+  "rationale": "The tests adequately check `requirements.sdk.graph.agent-harness.tool_agent`.\n\nI reviewed the five supplied `{test}` items in `crates/habeas-sdk/tests/agent.rs`. I also searched that file for other tests that use `ToolAgent` or `read_node`.\n\nObligations and the tests that cover them:\n\n- **`ToolAgent::new` gives graph tools and no extra application tools.**\n  - `concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads` uses `ToolAgent::new`. Its scripted conversations call `read_node`, `get_node_page` and `submit_result`.\n  - `behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer` checks that the request includes a typed `submit_result` tool.\n  - Other tests in the file, such as `agent_edge_tools_record_selections_without_validating_targets` and `unknown_tools_return_errors_without_creating_inputs_or_preventing_submission`, also exercise the default graph tools.\n- **`with_tools` adds application tools.**\n  - `application_tool_factories_create_fresh_state_for_each_agent_call` asserts that the request tools include `increment`.\n  - `source_tools_keep_search_discovery_separate_from_delivered_source_reads` runs `.with_tools(SourceTools)` next to the graph tools and `submit_result`. It records a dependency that the source tool produces.\n- **The factory creates fresh state for each call.** The fresh-state test chains `with_tools` twice. It asserts that the second factory replaces the first: `previous` stays 0 and `created` is 2. It also asserts that the counter restarts in each of two calls: the last chat message of each second request contains `counter=1` and `counter=2` but not `counter=3`.\n- **Each call has a fresh conversation and tool session, including under concurrency.**\n  - The two concurrent tests run two asks together, using `tokio::sync::Barrier` and a 2-second timeout. One goes through `ValidationContext` shared references and the other through `Validator::verify`.\n  - Each conversation takes exactly 3 turns. Each returns its own answer, \"alpha\" or \"beta\".\n  - The dependency traces are separated. The `Validator` test compares the stored evidence for alpha and beta exactly. The context test checks the combined trace.\n- **Graph-node reads use the domain formatter and record delivered inputs (cited requirements).**\n  - The tests use `distinct_pages` as the formatter. They assert the recorded node dependencies, the edge dependencies and their fingerprints.\n  - `behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer` checks that the domain's node contents appear in the delivered message in the expected order.\n  - `node_rendering_tool_errors_allow_recovery_without_recording_undelivered_contents` and `graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery` cover the error-recovery and delivery-recording behaviour. They carry their own references to the cited requirements, so they are not needed here.\n- **`Agent<D>` bounds.** The bounds are compile-time constraints. Every test instantiates `ToolAgent` with the `Memory` domain, which uses `Label` edge labels and `io::Error`. The bound clause adds no runtime behaviour beyond that.\n\nI found no unmarked relevant test and no obligation without a test. The assertions are exact and would catch the plausible violations: state carried over between calls, shared histories, or missing application tools. No acknowledgments apply.",
   "references": "7c4c6c2340a77366b360579ed8ad29c894e076d7bdd257384b3c5929b70f6c2d",
   "inputs": [
     {
@@ -47,11 +47,11 @@
       ],
       "text": [
         ":::{req} judge.rendering",
-        "The SDK formats node inputs using the domain's `format_node_content` method,",
-        "defined by {cite}`requirements.sdk.domain`:",
+        "The SDK formats node inputs using `NodeContents::format_node_content`,",
+        "defined by {cite}`requirements.sdk.graph.fingerprinting.fingerprint_content`:",
         "",
         "```rust,ignore",
-        "// Method on Domain. Both arguments describe the already-read snapshot.",
+        "// Method on NodeContents. Both arguments describe the already-read snapshot.",
         "/// Present these supplied contents as text for an agent.",
         "fn format_node_content(",
         "    &self,",
@@ -129,6 +129,16 @@
       "file": "crates/habeas-sdk/tests/agent.rs",
       "item": "impl[ParallelConversations/CompletionProvider]/fn[complete]",
       "hash": "9b76c57be2910b2f98ffe6cb68c23fcf71f2ee1afad1aafdceccb1d3122f530e"
+    },
+    {
+      "file": "crates/habeas-sdk/tests/agent.rs",
+      "item": "fn[node_rendering_tool_errors_allow_recovery_without_recording_undelivered_contents]",
+      "hash": "b7e2426eba927a9c3c2aa8341c7d8ee427cc3be544f451c891da0f445dcb6f0b"
+    },
+    {
+      "file": "crates/habeas-sdk/tests/agent.rs",
+      "item": "fn[distinct_pages]",
+      "hash": "52fbf22df8aefb424219de1f34873cc2cd3020e8ebf4ca90317cd59dd4698437"
     }
   ],
   "format_version": 1,
@@ -175,7 +185,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "42e18bc39a119a9ef12c6fe4c43e065ac7e7968b2b26e351f4e4f59c8100e168"
+          "value": "4632b9c57b27cf137376fdc2a702c96aea544912b68ac6ca4de0450007abca9a"
         }
       ]
     },
@@ -289,6 +299,40 @@
         {
           "scheme": "habeas-input-v1",
           "value": "bffe151f9f62fca6482eb02b8e8ffd94cb155d303aeb1549e016cd45594784d8"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/tests/agent.rs"
+            },
+            "selector": "fn[node_rendering_tool_errors_allow_recovery_without_recording_undelivered_contents]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "85634904971a778d5c49894dd3f9f2b213eed866a22202d43d071a069af608c7"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/tests/agent.rs"
+            },
+            "selector": "fn[distinct_pages]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "a4310b94da69aefd8328c9e287aa4b01665c02f44bddbf739d96482e9255143f"
         }
       ]
     }

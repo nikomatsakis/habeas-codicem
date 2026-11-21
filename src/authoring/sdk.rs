@@ -7,8 +7,8 @@ use crate::{
 };
 use habeas_sdk::{
     graph::{
-        Criterion, CriterionPath, Domain, EvidenceStorage, Fingerprint, Fingerprinting, Graph,
-        InspectionContext, NodePath, ValidationContext, ValidationError,
+        Criterion, CriterionPath, EvidenceStorage, Fingerprint, Graph, InspectionContext,
+        NodeContents, NodePath, ValidationContext, ValidationError,
     },
     procedure::{Agent, AgentRequest},
 };
@@ -59,22 +59,9 @@ struct ReviewGraph<'a> {
 
 impl Graph for ReviewGraph<'_> {
     type NodeId = HabeasNode;
-    type NodeContent = Value;
     type EdgeLabel = HabeasEdgeLabel;
     type Error = io::Error;
 
-    // {cite}`habeas:util`
-    fn node_content(&self, node: &HabeasNode) -> io::Result<Value> {
-        if matches!(node, HabeasNode::ReferenceSet(_)) {
-            return Ok(json!({"reference_set": self.reference_set}));
-        }
-        if let Some((_, input)) = self.mandatory.iter().find(|(id, _)| id == node) {
-            return Ok(input.clone());
-        }
-        let selector = node.selector()?;
-        let contents = self.domain().node_content(node)?;
-        Ok(selector.to_model_input(&contents))
-    }
     // {cite}`habeas:util`
     fn node_path(&self, node: &HabeasNode) -> NodePath {
         self.domain().node_path(node)
@@ -132,7 +119,23 @@ impl EvidenceStorage for ReviewGraph<'_> {
     }
 }
 
-impl Fingerprinting for ReviewGraph<'_> {
+// {impl}`requirements.sdk.domain`
+impl NodeContents for ReviewGraph<'_> {
+    type NodeContent = Value;
+
+    // {cite}`habeas:util`
+    fn node_content(&self, node: &HabeasNode) -> io::Result<Value> {
+        if matches!(node, HabeasNode::ReferenceSet(_)) {
+            return Ok(json!({"reference_set": self.reference_set}));
+        }
+        if let Some((_, input)) = self.mandatory.iter().find(|(id, _)| id == node) {
+            return Ok(input.clone());
+        }
+        let selector = node.selector()?;
+        let contents = self.domain().node_content(node)?;
+        Ok(selector.to_model_input(&contents))
+    }
+
     // {cite}`habeas:util`
     fn fingerprint(&self, node: &HabeasNode, content: &Value) -> Fingerprint {
         if matches!(node, HabeasNode::ReferenceSet(_)) {
@@ -146,6 +149,11 @@ impl Fingerprinting for ReviewGraph<'_> {
         }
         input_fingerprint(&model_recorded_input(content))
     }
+
+    // {impl}`requirements.sdk.graph.agent-calls.judge.rendering`
+    fn format_node_content(&self, _: &HabeasNode, contents: &Value) -> io::Result<String> {
+        serde_json::to_string(contents).map_err(io::Error::other)
+    }
 }
 
 // {cite}`habeas:util`
@@ -155,14 +163,6 @@ fn model_recorded_input(value: &Value) -> Value {
         object.remove("github_issues");
     }
     recorded_input(&value)
-}
-
-// {impl}`requirements.sdk.domain`
-impl Domain for ReviewGraph<'_> {
-    // {impl}`requirements.sdk.graph.agent-calls.judge.rendering`
-    fn format_node_content(&self, _: &HabeasNode, contents: &Value) -> io::Result<String> {
-        serde_json::to_string(contents).map_err(io::Error::other)
-    }
 }
 
 // {impl}`requirements.sdk.graph.validation.check_procedure`
