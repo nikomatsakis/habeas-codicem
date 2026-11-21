@@ -42,12 +42,13 @@ impl Criterion<HabeasDomain> for BehavioralAdequacy {
 }
 ```
 
-Evaluate an instance using a validator. Here `agent` and `renderer` are configured
-`Arc` handles, and `domain` supplies Habeas's graph and evidence storage:
+Evaluate an instance using a validator. Here `agent` is a configured `Arc`
+handle, and `domain` supplies Habeas's graph, evidence storage, and node
+formatting:
 
 ```rust,ignore
 let validator = Validator::new(domain.clone())
-    .with_agent(agent.clone(), renderer.clone());
+    .with_agent(agent.clone());
 
 let inputs = validator.verify(BehavioralAdequacy {
     requirement: requirement.clone(),
@@ -140,8 +141,15 @@ impl<'cx, D: Domain> ValidationContext<'cx, D> {
 }
 ```
 
-Continue the `BehavioralAdequacy` application example from the overview.
-Its agent examines the requirement and its tests and submits a `TestReview`.
+The `BehavioralAdequacy` criterion from the overview asks the agent to examine
+the requirement and its tests and submit a `TestReview`. Its `execute` method is
+an application example of the SDK's request builder:
+
+:::{example} behavioral_adequacy
+{cite}`requirements.sdk.graph.agent-calls.judge`
+{cite}`requirements.sdk.graph.agent-calls.judge.node_contents`
+{cite}`requirements.sdk.graph.evidence.inputs`
+
 Here is the `execute` method from
 `impl Criterion<HabeasDomain> for BehavioralAdequacy`:
 
@@ -168,12 +176,20 @@ The builder methods determine what is given to the agent:
 - `contents_of_successors(label)` provides the contents of its successors with
   that label: here, the requirement's tests.
 
+:::
+
+:::{cite} requirements.sdk.graph.agent-calls.author_procedure
 The context records the contents supplied in the prompt. The agent also has
 tools for requesting additional contents, which are recorded when delivered.
 Awaiting the ask builder returns the submitted `TestReview`; `verify` returns
 a `Fingerprinted` containing the criterion's completed answer and the identity and
 fingerprint of each input used during execution. Those fingerprints let the
 application check when the answer may be stale.
+
+{cite}`requirements.sdk.graph.agent-calls.judge.submission`
+{cite}`requirements.sdk.graph.validation.validate_node`
+{cite}`requirements.sdk.graph.evidence.inputs`
+:::
 
 Habeas currently runs one combined `Review` criterion at `["review"]`; its
 execution selects the requirement and mandatory inputs and applies Habeas's
@@ -182,7 +198,8 @@ be reused for a more specific question.
 [Putting it together in Habeas](../habeas.md) follows the current review.
 
 [Agent calls](agent-calls.md) explains the `ask()` builder, prompt construction,
-and typed submissions. [Context tools](context-tools.md) explains tracked
+and typed answers. [Agent harness](agent-harness.md) explains how providers and
+tools are configured. [Context tools](context-tools.md) explains tracked
 source discovery and content reads. Use tracked operations for information the
 answer relies on, including filesystem or network inputs.
 
@@ -247,16 +264,16 @@ impl<D: Domain> Validator<D> {
     /// Own the domain used to check and execute criteria.
     pub fn new(domain: D) -> Self;
 
-    /// Share this agent and input renderer with execution contexts.
+    /// Share this agent with execution contexts.
     pub fn with_agent(
         self,
         agent: Arc<dyn Agent<D>>,
-        renderer: Arc<dyn AgentInputRenderer<D>>,
     ) -> Self;
 }
 ```
 
-`Agent` and `AgentInputRenderer` are supplied by `habeas_sdk::procedure`.
+`Agent` is supplied by `habeas_sdk::procedure`; the domain formats node contents.
+[Agent harness](agent-harness.md) shows how to configure a provider and tools.
 Independent verifications share a validator through `&self`. Cached observations
 can be reused when they still represent the state being checked. Each execution
 has its own context, dependency trace, and agent conversation state. Operations

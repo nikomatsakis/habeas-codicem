@@ -331,8 +331,9 @@ assessments judge by the same rules:
 A citation review under {cite}`requirements.references.citation_review` MUST use
 the same tools and exactly-once submission rule as other assessments and this
 prompt, replacing `{{item_file}}`, `{{item_selector}}` (with `<root>` for the
-root node), `{{citations}}` (the item's `{cite}` references as JSON with role,
-name, and commentary), `{{habeas_background}}` and `{{reference_roles}}` under
+root node), `{{review_kind}}` (`source_item` for ordinary source citations or
+`book_commentary` for a reviewed book passage), `{{citations}}` (the item's
+`{cite}` references as JSON with role, name, and commentary), `{{habeas_background}}` and `{{reference_roles}}` under
 {cite}`requirements.authoring.habeas_background`, `{{judgment_rules}}` under
 {cite}`requirements.authoring.judgment_rules`, and `{{mandatory_inputs}}`, the
 first block as its system prompt and the second as its subject message under
@@ -356,13 +357,17 @@ The mandatory inputs at the end contain the source item and the declarations
 or fixed built-in text of its citations.
 
 Assess each listed citation using the rules below. For citations of project
-requirements and examples, decide whether the item implements part of a cited
-requirement, not whether it does so correctly. Do not look for requirements or
-examples the item does not cite, except as needed to assess a built-in's stated
-citation criteria.
+requirements and examples outside book commentary, decide whether the item
+implements part of a cited requirement, not whether it does so correctly. Do not
+look for requirements or examples the item does not cite, except as needed to
+assess a built-in's stated citation criteria.
 
-1. For citations of project requirements and examples, apply the reference
-   procedure in order: if the item is a
+1. For `book_commentary` citing project requirements or examples, check whether
+   the passage's claims agree with and are supported by the cited declarations.
+   Contradicting or unsupported claims are gaps. Explanatory prose
+   uses {cite}; it does not need {impl} or {test} merely because it describes
+   behavior. For other citations of project requirements and examples, apply
+   the reference procedure in order: if the item is a
    test designed to verify the cited requirement or example, it calls for
    {test}; otherwise, if it is a root of the cited definition's
    implementation as the reference roles describe, it calls for {impl};
@@ -396,6 +401,7 @@ reply text is not accepted.
 # Subject
 
 Item under review: {{item_file}} {{item_selector}}
+Review kind: {{review_kind}}
 Citations to check: {{citations}}
 Judge against: the declarations or fixed built-in text it cites.
 

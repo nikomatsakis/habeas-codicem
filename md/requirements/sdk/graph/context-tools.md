@@ -83,7 +83,8 @@ application-defined label types.
 A structured submission tool is also supplied to each agent call, but is not an
 inspection tool. Its SDK default name is `submit_result`; Habeas retains the
 submission names and acceptance checks of its existing harness. It ends the
-call with the typed result described in [Agent calls](agent-calls.md).
+call with a typed result. [Agent harness](agent-harness.md) explains how these
+tools are exposed and how submission ends the conversation.
 Awaiting an ask builder starts an agent interaction. Its
 `contents_of_current_node()` and `contents_of_successors(label)` calls explicitly
 insert tracked contents after the reusable context prefix.

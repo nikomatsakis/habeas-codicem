@@ -37,8 +37,9 @@ Project text files MAY use the `{impl}`, `{cite}`, and `{test}` roles with a bac
   no evidence input. Its issues are checked under {cite}`requirements.cli.fixme_issues`.
 
 `{impl}`, `{test}`, and `{fixme}` are edges from the definition to the source.
-Only requirements and examples are assessed; code is reviewed as part of the
-definitions it implements or tests.
+Code implementations are reviewed as part of the definitions they implement or
+test. Citation reviews assess cited source items and book passages under
+{cite}`requirements.references.citation_review`.
 
 ```text
 {impl}`requirements.references.roles`
@@ -170,10 +171,39 @@ MUST author the review of the one item it names, under
 {cite}`requirements.authoring.refresh`, where omitting `#<selector>`
 names the file's root node. A citation in a requirement or example
 declaration is reviewed as part of that definition's own assessment instead.
+Fenced commentary elsewhere in the book is reviewed under
+{cite}`requirements.references.citation_review.book_commentary`.
 Storage MAY use the versioned representation under
 {cite}`requirements.sdk.habeas.evidence_format`, retaining the same review
 information and validation rules.
 :::
+
+::::{req} citation_review.book_commentary
+A closed `:::{cite} full.name` fence in the book, outside a requirement or
+example declaration, opts its explanatory passage into citation review.
+A passage needs a review when it contains at least one resolved citation
+other than `habeas:util`.
+
+The outermost eligible citation fence identifies the passage. Its opening
+citation and citations throughout its body belong to one review, including
+citations inside nested commentary containers. References inside nested
+requirement or example declarations belong to those declarations' assessments.
+
+The review's subject is the enclosing citation fence's outline node, rather
+than the whole chapter. Its inputs include the passage and each cited
+declaration or built-in text, with the terminology they use. For project
+requirements and examples, the reviewer checks that the passage's claims agree
+with and are supported by the cited declarations. Contradicting or unsupported
+claims produce a negative assessment. Built-in citations retain their
+permitted-role and stated-criteria checks under
+{cite}`requirements.references.citation_review`.
+
+These passages use the citation-review storage, freshness checks, selection,
+and `author --all` workflow of {cite}`requirements.references.citation_review`.
+Their identities follow the existing outline-selector rules. Rendering follows
+{cite}`requirements.references.book_badges`. Unfenced book citations retain
+their existing behavior.
+::::
 
 :::{req} anchors
 A `{req}` declaration MAY list `:impl:` and `:test:` options, and an `{example}`

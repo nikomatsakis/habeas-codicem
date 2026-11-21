@@ -76,12 +76,13 @@ validation. Fingerprints determine which changes count as relevant.
 ## Defining the application domain
 
 The application defines its own domain by implementing `Domain`. This trait
-combines three subtraits that capture different aspects of the domain.
+combines graph access, fingerprints, evidence storage, and formatting of node
+contents for an agent.
 Criteria are implemented by the values submitted to a validator:
 
 :::{req} domain
-The SDK exposes `Domain` and its blanket implementation. Its subtraits define
-the graph, fingerprints, and evidence storage:
+The application implements `Domain` using its graph, fingerprints, and evidence
+storage. It also defines how to present a node's contents to an agent:
 
 ```rust,ignore
 /// Every validation uses a domain with graph access, fingerprints, and storage.
@@ -91,9 +92,16 @@ the graph, fingerprints, and evidence storage:
 /// that trace safely.
 /// Agent calls retain independent conversation and submission state.
 /// Observations never leak between separate validations.
-pub trait Domain: Clone + Graph + Fingerprinting + EvidenceStorage {}
-
-impl<T: Clone + Graph + Fingerprinting + EvidenceStorage> Domain for T {}
+pub trait Domain: Clone + Graph + Fingerprinting + EvidenceStorage {
+    /// Format these already-read contents as text for an agent.
+    /// The node identifies the source being presented.
+    /// Use the supplied contents so the text and fingerprint describe the same read.
+    fn format_node_content(
+        &self,
+        node: &Self::NodeId,
+        contents: &Self::NodeContent,
+    ) -> Result<String, Self::Error>;
+}
 
 pub trait Graph {
     // Defines the verification graph, including
@@ -117,7 +125,10 @@ pub trait EvidenceStorage: Graph {
 :::
 
 Domains with mutable state commonly store it behind `Arc`, so cloned domains
-access the same graph and evidence storage.
+access the same graph and evidence storage. Formatting is part of the domain
+implementation; it needs no separate renderer object. The [agent calls
+chapter](sdk/graph/agent-calls.md#format-node-contents-for-the-agent) explains how
+the SDK uses this method.
 
 The domain traits and the separate criterion interface have their own chapters:
 
@@ -140,7 +151,8 @@ functionality. The linked chapters describe each one:
 | [Parsing and outlining](sdk/sources.md#register-the-languages-that-interpret-those-resources) | Language-aware source structure and selectors for individual items. |
 | [Context tools](sdk/graph/context-tools.md) | Source discovery and tracked content reads. |
 | [Structural fingerprints](sdk/graph/fingerprinting.md#fingerprint-the-structure-and-version-the-rules) | Change detection based on source structure. |
-| [Agent calls](sdk/graph/agent-calls.md) | Prompt construction, tracked tools, and typed results. |
+| [Agent calls](sdk/graph/agent-calls.md) | Prompt construction and typed answers. |
+| [Agent harness](sdk/graph/agent-harness.md) | Provider setup, tool exposure, and structured submissions. |
 | [Evidence storage helpers](sdk/filesystem-storage.md) | Filesystem persistence for SDK evidence records. |
 
 
