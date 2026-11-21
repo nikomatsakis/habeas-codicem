@@ -1278,6 +1278,9 @@ impl Criterion<Memory> for BehavioralAdequacy {
 }
 
 // {test}`requirements.sdk.graph.execution.behavioral_adequacy`
+// {test}`requirements.sdk.graph.validation.criterion_definition`
+// {test}`requirements.sdk.graph.validation.evaluate_criterion`
+// {test}`requirements.sdk.graph.validation.store_evidence`
 // {test}`requirements.sdk.graph.agent-harness.setup`
 // {test}`requirements.sdk.graph.agent-harness.tool_agent`
 // {test}`requirements.sdk.domain`
@@ -1321,6 +1324,20 @@ async fn behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprin
         Dependency::OutgoingEdges(Node(1), Label, fp) if *fp == edge_fingerprint(&domain, &[Node(2)]))));
     assert!(domain.records.lock().unwrap().is_empty());
     assert!(validator.check_inputs(&inputs).unwrap());
+    validator.store_evidence(&inputs).await.unwrap();
+    let restored = validator
+        .load_evidence(&BehavioralAdequacy {
+            requirement: Node(1),
+            review_policy: "Review test adequacy.".into(),
+        })
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(restored.output(), &expected);
+    assert!(restored.source_node_id() == inputs.source_node_id());
+    assert_eq!(restored.criterion_path(), inputs.criterion_path());
+    assert_eq!(restored.revision(), inputs.revision());
+    assert!(restored.dependencies() == inputs.dependencies());
     domain
         .node_contents
         .lock()
