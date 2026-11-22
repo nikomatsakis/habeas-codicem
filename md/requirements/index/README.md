@@ -88,10 +88,13 @@ collapsible sections, expanded when the chapter opens. Body prose shares the
 containing prose's left edge without added indentation. Each header's badge
 is right-aligned and identifies the declaration and its kind.
 A narrow colored bar in the right margin delineates the section and uses the
-badge's color: blue for requirements and purple for examples. A square
-disclosure control at the top of that bar shows a minus when expanded
-and a plus when collapsed. Collapsing a section hides its body while keeping
-the header visible. The disclosure works with a mouse or keyboard.
+badge's color: blue for requirements, purple for examples, and green for named
+definitions. Named definitions use the same badge styling, displaying their
+kind and phrase. A square disclosure control at the top of that bar adjoins
+the badge without a gap, matches its height, and is separated from it by a thin
+border. It shows a minus when expanded and a plus when collapsed. Collapsing
+a section hides its body while keeping the header visible. The disclosure
+works with a mouse or keyboard.
 
 The body retains its Markdown rendering, including code blocks and nested
 declarations. Requirement and example headers retain the definition and
