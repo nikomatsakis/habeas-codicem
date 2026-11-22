@@ -92,7 +92,10 @@ badge's color: blue for requirements, purple for examples, and green for named
 definitions. Named definitions use the same badge styling, displaying their
 kind and phrase. A square disclosure control at the top of that bar adjoins
 the badge without a gap, matches its height, and is separated from it by a thin
-border. It shows a minus when expanded and a plus when collapsed. Collapsing
+border. The same thin divider separates the badge's kind from its name or
+phrase. The badge and control form a rectangle with subtly rounded outer
+corners and straight internal joins; the vertical bar has rounded ends.
+The control shows a minus when expanded and a plus when collapsed. Collapsing
 a section hides its body while keeping the header visible. The disclosure
 works with a mouse or keyboard.
 
