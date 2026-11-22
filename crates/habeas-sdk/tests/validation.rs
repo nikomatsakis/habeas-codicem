@@ -246,7 +246,7 @@ async fn historical_freshness_reads_do_not_enter_the_replacement_trace() {
 // {test}`requirements.sdk.graph.agent-calls.procedures`
 // {test}`requirements.sdk.graph.evidence.store_evidence`
 // {test}`requirements.sdk.graph.validation.validate_node.errors`
-// {test}`requirements.sdk.graph.validation.validator`
+// {test}`requirements.sdk.graph.agent-harness.with_agent`
 // {test}`requirements.sdk.graph.agent-calls.judge.rendering`
 #[tokio::test]
 async fn runner_does_not_store_a_missing_agent_error_and_supports_intermediate_calls() {

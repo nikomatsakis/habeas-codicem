@@ -397,6 +397,7 @@ impl Criterion<Memory> for Question {
 // {test}`requirements.sdk.graph.agent-calls.judge.rendering`
 // {test}`requirements.sdk.graph.agent-calls.author_procedure`
 // {test}`requirements.sdk.graph.agent-harness.tool_agent`
+// {test}`requirements.sdk.graph.agent-harness.with_agent`
 // {test}`requirements.sdk.graph.agent-harness.setup`
 #[tokio::test]
 async fn validator_agent_executions_isolate_conversations_and_dependency_traces() {

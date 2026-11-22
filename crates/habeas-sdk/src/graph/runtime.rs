@@ -19,7 +19,7 @@ impl<D: Domain> Validator<D> {
         }
     }
 
-    // {impl}`requirements.sdk.graph.validation.validator`
+    // {impl}`requirements.sdk.graph.agent-harness.with_agent`
     /// Share this agent with execution contexts.
     pub fn with_agent(mut self, agent: Arc<dyn Agent<D>>) -> Self {
         self.agent = Some(agent);

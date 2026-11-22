@@ -1,7 +1,7 @@
 {
-  "example": "{cite}`requirements.sdk.graph.agent-harness.tool_agent`\n{cite}`requirements.sdk.graph.validation.validator`\n\nHere `provider` implements `CompletionProvider`, and `domain` is the\napplication's domain with the adapter's label and error bounds described above.\nThe provider lives for the lifetime required by the shared `Arc<dyn Agent<D>>`.\nThe validator shares the agent across criterion executions:\n\n```rust,ignore\nuse habeas_sdk::{agent::ToolAgent, graph::Validator};\nuse std::sync::Arc;\n\nlet agent = Arc::new(ToolAgent::new(provider));\nlet validator = Validator::new(domain).with_agent(agent);\n```\n\nThe application implements `Contents::format_node_content` to present its node\ncontents; the harness obtains that formatter through the execution's domain.",
+  "example": "{cite}`requirements.sdk.graph.agent-harness.tool_agent`\n{cite}`requirements.sdk.graph.agent-harness.with_agent`\n{cite}`requirements.sdk.graph.validation.validator`\n\nHere `provider` implements `CompletionProvider`, and `domain` is the\napplication's domain with the adapter's label and error bounds described above.\nThe provider lives for the lifetime required by the shared `Arc<dyn Agent<D>>`.\nThe validator shares the agent across criterion executions:\n\n```rust,ignore\nuse habeas_sdk::{agent::ToolAgent, graph::Validator};\nuse std::sync::Arc;\n\nlet agent = Arc::new(ToolAgent::new(provider));\nlet validator = Validator::new(domain).with_agent(agent);\n```\n\nThe application implements `Contents::format_node_content` to present its node\ncontents; the harness obtains that formatter through the execution's domain.",
   "determination": true,
-  "rationale": "The example describes a concrete setup. It wraps `ToolAgent::new(provider)` in an `Arc` and passes it to `Validator::new(domain).with_agent(agent)`. The validator shares that agent across criterion executions. The application's `Contents::format_node_content` supplies node presentation, and the harness gets the formatter through the execution's domain. Two tests reference the example.\n\n- **`validator_agent_executions_isolate_conversations_and_dependency_traces`** (`crates/habeas-sdk/tests/agent.rs`) builds exactly this setup: `Arc::new(ToolAgent::new(ParallelConversations{..}))` and `Validator::new(graph.clone()).with_agent(agent.clone())`.\n  - **Shared agent across executions:** two concurrent `validator.verify` calls run on the one shared `Arc` agent. The barrier means both conversations must be live at once, and the run is wrapped in a 2-second timeout.\n  - **Formatter through the domain:** the `Memory` domain's `Contents::format_node_content` delegates to a `formatter` field set to `distinct_pages`. The `ParallelConversations` provider asserts that each conversation's history contains its own `ALPHA-CONTENTS` or `BETA-CONTENTS` page and never the other's. So the harness really rendered node contents through the domain's formatter.\n  - **Isolation of conversation state:** the provider checks each conversation's history length, and the test asserts 3 calls per conversation.\n  - **Isolation of traces:** the stored alpha record has a single `Dependency::Node(Node(1), ..)`. The beta record has `OutgoingEdges` plus `Node(2)`. Outputs are `alpha` and `beta`, and the result is reloaded through the validator.\n- **`behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer`** covers the same setup with a scripted provider. It asserts that the domain's contents are read in order `[1, 2]` and appear in the request message in that order. It also asserts that the dependencies match the delivered contents, that the `submit_result` schema is typed, and that evidence is stored, restored, reused and invalidated.\n\nTogether they check each expected outcome of the example. The provider-lifetime remark is a compile-time property, not runtime behavior. The `D::EdgeLabel` and `D::Error` bounds are satisfied by the test domain, because it compiles and runs. I found no gap and there are no acknowledgments.",
+  "rationale": "The example `requirements.sdk.graph.agent-harness.setup` describes a concrete case with expected behavior. A provider is wrapped as `Arc::new(ToolAgent::new(provider))`. That agent is shared with `Validator::new(domain).with_agent(agent)`. The application's `Contents::format_node_content` supplies the node rendering, and the harness reaches it through the execution's domain.\n\nTwo `{test}` references cover this in `crates/habeas-sdk/tests/agent.rs`.\n\n- `fn[validator_agent_executions_isolate_conversations_and_dependency_traces]` builds the setup exactly as the example shows. It uses `ToolAgent::new(ParallelConversations{..})`, wraps it in an `Arc`, and calls `Validator::new(graph.clone()).with_agent(agent.clone())`.\n  - It runs two verifications concurrently through the validator. The `ParallelConversations` provider asserts that each conversation's history contains only its own content. The content comes from the domain's `Memory` formatter field, set to `distinct_pages`, via `impl[Memory/Contents]/fn[format_node_content]`.\n  - The tool-call sequence is `read_node`, then `get_node_page`, then `submit_result`. The test asserts each conversation made 3 calls and that the outputs are \"alpha\" and \"beta\".\n  - It then stores the evidence and checks each record's dependencies. The alpha record has only a node dependency. The beta record has an outgoing-edges dependency plus a node dependency.\n  - Reading content through the domain formatter and sharing one `Arc` agent across executions are therefore both checked. The test compiles against the shared `Arc<dyn Agent<D>>` coercion and the `ToolAgent` bounds.\n- `fn[behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer]` uses the same setup shape: `Arc::new(ToolAgent::new(provider))` passed to `Validator::new(domain.clone()).with_agent(agent.clone())`.\n  - It checks that the domain's node contents (read order `[1, 2]`) reach the provider's first user message in order.\n  - It checks that the typed answer is returned, that the dependency fingerprints match the domain content, and that the `submit_result` schema is present.\n  - This confirms the harness obtains node content through the domain when the setup is used end to end.\n\nThe tests assert each outcome the example states. Setup compiles and works with `ToolAgent::new` and `with_agent`. Content flows through the domain's formatter. The shared agent keeps conversations and traces separate. I found no scenario in the example that the tests leave unchecked.",
   "references": "9531bb4e54e457cfb4326eb6bc687ccce18d35f875c22962e17074bbb30085dc",
   "inputs": [
     {
@@ -12,6 +12,7 @@
       "text": [
         ":::{example} setup",
         "{cite}`requirements.sdk.graph.agent-harness.tool_agent`",
+        "{cite}`requirements.sdk.graph.agent-harness.with_agent`",
         "{cite}`requirements.sdk.graph.validation.validator`",
         "",
         "Here `provider` implements `CompletionProvider`, and `domain` is the",
@@ -69,6 +70,27 @@
       ]
     },
     {
+      "requirements": "requirements.sdk.graph.agent-harness.with_agent",
+      "matches": [
+        "requirements.sdk.graph.agent-harness.with_agent"
+      ],
+      "text": [
+        ":::{req} with_agent",
+        "```rust,ignore",
+        "use habeas_sdk::procedure::Agent;",
+        "use std::sync::Arc;",
+        "",
+        "// Method on Validator<D>.",
+        "/// Share this agent with execution contexts.",
+        "pub fn with_agent(",
+        "    self,",
+        "    agent: Arc<dyn Agent<D>>,",
+        ") -> Self;",
+        "```",
+        ":::"
+      ]
+    },
+    {
       "requirements": "requirements.sdk.graph.validation.validator",
       "matches": [
         "requirements.sdk.graph.validation.validator"
@@ -76,9 +98,6 @@
       "text": [
         ":::{req} validator",
         "```rust,ignore",
-        "use habeas_sdk::procedure::Agent;",
-        "use std::sync::Arc;",
-        "",
         "// Defined in habeas_sdk::graph.",
         "/// Domain access and configuration shared by criterion executions.",
         "pub struct Validator<D: Domain> { /* private fields */ }",
@@ -86,20 +105,9 @@
         "impl<D: Domain> Validator<D> {",
         "    /// Own the domain used to check and execute criteria.",
         "    pub fn new(domain: D) -> Self;",
-        "",
-        "    /// Share this agent with execution contexts.",
-        "    pub fn with_agent(",
-        "        self,",
-        "        agent: Arc<dyn Agent<D>>,",
-        "    ) -> Self;",
         "}",
         "```",
         "",
-        "[`Agent<D>`](agent-harness.md#the-agent-interface) is the interface an `ask`",
-        "request calls to run a model conversation. It is defined in",
-        "`habeas_sdk::procedure`; the supplied `ToolAgent` implements it. The",
-        "[Agent harness chapter](agent-harness.md) shows how to configure a provider",
-        "and tools.",
         "Independent verifications share a validator through `&self`. Cached observations",
         "can be reused when they still represent the state being checked. Each execution",
         "has its own context, dependency trace, and agent conversation state. Operations",
@@ -124,16 +132,6 @@
     },
     {
       "file": "crates/habeas-sdk/tests/agent.rs",
-      "item": "struct[Memory]",
-      "hash": "565c538114197abba5831912c0ce8485c97f2f89100d3647640517a9036c49e7"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/agent.rs",
-      "item": "impl[Memory]/fn[new]",
-      "hash": "63dc6af710c79845fe88bcbe7cbd88c72a328c14118db166d1d646aab00d1aa0"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/agent.rs",
       "item": "impl[Memory/Contents]/fn[format_node_content]",
       "hash": "2b4cb190fdf0daf77a97e7d2f102e83d41792bbdd9d69b4e468f11eb014a7c11"
     },
@@ -149,8 +147,8 @@
     },
     {
       "file": "crates/habeas-sdk/tests/agent.rs",
-      "item": "impl[ParallelConversations/CompletionProvider]/fn[complete]",
-      "hash": "9b76c57be2910b2f98ffe6cb68c23fcf71f2ee1afad1aafdceccb1d3122f530e"
+      "item": "struct[ParallelConversations]",
+      "hash": "1bdc6269de579c6be8df018df323ddb04cde0b13d9464d994d5316e08bde0013"
     }
   ],
   "format_version": 1,
@@ -175,7 +173,7 @@
         "Mandatory",
         {
           "scheme": "node-path-set-sha256-v1",
-          "value": "d3223877583efe2190b54e3aaa93259a0b270d1cf4b15d345a3a584519145a40"
+          "value": "43785538b2faf5ba189b5e930e6cb0ccf4377e9292d0b4dc54e3aa9886c563ae"
         }
       ]
     },
@@ -186,7 +184,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "e573e028e2907d4dcba699e19a7bc1d5c7f9d64e3caf3fd0b98f631575d24e4e"
+          "value": "d3fc3e7444657eebe1a4c77c3a5147b65d6146db88970210d95b800f328b31ab"
         }
       ]
     },
@@ -204,11 +202,22 @@
     {
       "Node": [
         {
+          "Requirement": "requirements.sdk.graph.agent-harness.with_agent"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "add0ea2540f0d937184a06cc3d7c52d1a6315fda4f87a1513d11ec405b3f9c8c"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
           "Requirement": "requirements.sdk.graph.validation.validator"
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "92e26698b3e68d6c5114234d7c4296fad44e11356d78eb2767b9efbf5cbc618a"
+          "value": "22e2357aa67967bfbf7496dce8e79f77c1fffbda4bd9b9920c9969a2e0d26a95"
         }
       ]
     },
@@ -243,40 +252,6 @@
         {
           "scheme": "habeas-input-v1",
           "value": "c4430a4dcf35406fe786cad412940ba6026ae51c8c8561dcfa3001a66a6a16e8"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/agent.rs"
-            },
-            "selector": "struct[Memory]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "aa6f6a068cf59d391f2bd2f174633f768666d3230b1ee0461329de998750340b"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/agent.rs"
-            },
-            "selector": "impl[Memory]/fn[new]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "5308bf06d7987837a485dc000afb056feb38553c785c101f32629ae1a8854b2d"
         }
       ]
     },
@@ -339,12 +314,12 @@
               "scheme": "repo",
               "location": "crates/habeas-sdk/tests/agent.rs"
             },
-            "selector": "impl[ParallelConversations/CompletionProvider]/fn[complete]"
+            "selector": "struct[ParallelConversations]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "bffe151f9f62fca6482eb02b8e8ffd94cb155d303aeb1549e016cd45594784d8"
+          "value": "dc2537d6f8e5eb7819fa1ee967783aec1ed35d266ed1fc3bf150661183feef38"
         }
       ]
     }
