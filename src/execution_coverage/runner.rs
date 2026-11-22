@@ -1340,15 +1340,56 @@ fn dependency_inputs(
         }
     }
     for path in files {
-        if path.file_name().is_some_and(|name| name == "output") {
-            let package_name = path
+        // Cargo's legacy layout uses build/<package>-<hash>/output.
+        // Its build-unit layout uses build/<package>/<hash>/run/stdout.
+        let output = path.file_name().is_some_and(|name| name == "output");
+        let stdout = path.file_name().is_some_and(|name| name == "stdout")
+            && path
                 .parent()
-                .and_then(|path| path.file_name())
+                .and_then(Path::file_name)
+                .is_some_and(|name| name == "run");
+        let directory = if output {
+            path.parent()
+        } else if stdout {
+            path.parent().and_then(Path::parent)
+        } else {
+            None
+        };
+        if let Some(directory) = directory {
+            let parent = directory.parent();
+            let package_directory = if parent
+                .and_then(Path::file_name)
+                .is_some_and(|name| name == "build")
+            {
+                Some(directory)
+            } else if stdout
+                && directory
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| {
+                        !name.is_empty() && name.bytes().all(|byte| byte.is_ascii_hexdigit())
+                    })
+                && parent
+                    .and_then(Path::parent)
+                    .and_then(Path::file_name)
+                    .is_some_and(|name| name == "build")
+            {
+                parent
+            } else {
+                None
+            };
+            let Some(package_directory) = package_directory else {
+                continue;
+            };
+            let package = package_directory
+                .file_name()
                 .and_then(|name| name.to_str())
-                .and_then(|name| name.rsplit_once('-'))
-                .map(|(name, _)| name);
-            let package = package_name
-                .and_then(|name| packages.get(name))
+                .and_then(|name| {
+                    packages.get(name).or_else(|| {
+                        name.rsplit_once('-')
+                            .and_then(|(name, _)| packages.get(name))
+                    })
+                })
                 .map(PathBuf::as_path)
                 .unwrap_or(root);
             for line in fs::read_to_string(&path)?.lines() {
@@ -1835,6 +1876,84 @@ fn function_counts(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // {test}`requirements.test-coverage.storage.provenance`
+    #[test]
+    fn build_script_inputs_cover_legacy_and_build_unit_layouts() {
+        let workspace = tempfile::tempdir().unwrap();
+        let dependency = tempfile::tempdir().unwrap();
+        let root = workspace.path();
+        let dep = dependency.path();
+        fs::write(root.join("Cargo.toml"), "[package]\nname = 'application'\n").unwrap();
+        fs::write(
+            dep.join("Cargo.toml"),
+            "[package]\nname = 'dep-with-dashes'\n",
+        )
+        .unwrap();
+        fs::write(dep.join("lib.rs"), "").unwrap();
+        let target = root.join("target");
+        let instrumented = target.join("instrumented");
+        let deps = instrumented.join("debug/deps");
+        fs::create_dir_all(&deps).unwrap();
+        fs::write(
+            deps.join("dependency.d"),
+            format!(
+                "dependency: {}\n",
+                dep.join("lib.rs")
+                    .to_string_lossy()
+                    .replace('\\', r"\\")
+                    .replace(' ', r"\ ")
+            ),
+        )
+        .unwrap();
+        for (path, directives) in [
+            (
+                "debug/build/dep-with-dashes-1234/output",
+                "cargo:rerun-if-changed=legacy.txt\ncargo:rerun-if-env-changed=HABEAS_LAYOUT_LEGACY\n",
+            ),
+            (
+                "debug/build/dep-with-dashes-5678/run/stdout",
+                "cargo::rerun-if-changed=flat.txt\ncargo::rerun-if-env-changed=HABEAS_LAYOUT_FLAT\n",
+            ),
+            (
+                "debug/build/dep-with-dashes/abcd/run/stdout",
+                "cargo::rerun-if-changed=modern.txt\ncargo::rerun-if-env-changed=HABEAS_LAYOUT_MODERN\n",
+            ),
+            (
+                "debug/build/application/ef01/run/stdout",
+                "cargo:rerun-if-changed=application.txt\n",
+            ),
+            (
+                "debug/build/dep-with-dashes-5678/out/stdout",
+                "cargo:rerun-if-changed=unrelated.txt\ncargo:rerun-if-env-changed=HABEAS_LAYOUT_UNRELATED\n",
+            ),
+            (
+                "debug/build/dep-with-dashes-5678/out/run/stdout",
+                "cargo:rerun-if-changed=nested-unrelated.txt\ncargo:rerun-if-env-changed=HABEAS_LAYOUT_UNRELATED\n",
+            ),
+        ] {
+            let path = instrumented.join(path);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, directives).unwrap();
+        }
+        let (inputs, environment) = dependency_inputs(&instrumented, root, &target).unwrap();
+        for name in ["legacy.txt", "flat.txt", "modern.txt"] {
+            assert!(inputs.contains(&dep.join(name)), "{inputs:?}");
+            assert!(!inputs.contains(&root.join(name)), "{inputs:?}");
+        }
+        assert!(inputs.contains(&root.join("application.txt")));
+        assert!(!inputs.iter().any(|path| {
+            path.ends_with("unrelated.txt") || path.ends_with("nested-unrelated.txt")
+        }));
+        for name in [
+            "HABEAS_LAYOUT_LEGACY",
+            "HABEAS_LAYOUT_FLAT",
+            "HABEAS_LAYOUT_MODERN",
+        ] {
+            assert!(environment.contains_key(name), "{environment:?}");
+        }
+        assert!(!environment.contains_key("HABEAS_LAYOUT_UNRELATED"));
+    }
 
     // {test}`requirements.test-coverage.storage.selection`
     #[test]
