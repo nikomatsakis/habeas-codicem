@@ -72,6 +72,15 @@ for Markdown, JSON, TOML, Java, JavaScript, TypeScript, and Python; TOML may use
 INI highlighting when native TOML highlighting is unavailable.
 :::
 
+:::{req} detail_format.rationale_html
+Recorded rationales display HTML markup as literal text, including angle-bracket
+placeholders such as `<file>`, `<line>`, and `<selector>` in prose or on standalone
+lines. Their other Markdown retains its usual rendering under
+{cite}`requirements.index.detail_format`, including headings, emphasis, lists,
+links and autolinks, code spans, and fenced code blocks. Character entities
+render normally without double escaping.
+:::
+
 :::{req} declaration_sections
 :impl: md/habeas.css
 In authored chapters, requirements, examples, and named definitions render as
