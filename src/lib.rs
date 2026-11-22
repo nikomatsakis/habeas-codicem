@@ -2139,9 +2139,23 @@ mod tests {
         };
         let section = declarations(".habeas-declaration");
         assert!(
-            section.contains(&"border-right: 3px solid var(--habeas-declaration-color)"),
+            section.contains(&"border-right: 3px solid transparent"),
             "{section:?}"
         );
+        let bar = declarations(".habeas-declaration::before");
+        for declaration in [
+            "content: \"\"",
+            "position: absolute",
+            "top: 0",
+            "bottom: 0",
+            "right: -3px",
+            "width: 3px",
+            "border-radius: 2px",
+            "background: var(--habeas-declaration-color)",
+            "pointer-events: none",
+        ] {
+            assert!(bar.contains(&declaration), "{bar:?}");
+        }
         assert!(
             section.contains(&"margin: 1.25em 0.75em 1.25em 0")
                 && section.contains(&"padding-right: 1.25em")
@@ -2152,7 +2166,7 @@ mod tests {
         for declaration in [
             "content: \"+\"",
             "flex-shrink: 0",
-            "border-radius: 2px",
+            "border-radius: 0 3px 3px 0",
             "background: var(--habeas-declaration-color)",
             "border: 1px solid var(--habeas-declaration-color)",
             "border-left-color: var(--bg)",
@@ -2174,6 +2188,10 @@ mod tests {
         let summary = declarations(".habeas-declaration > summary");
         assert!(summary.contains(&"gap: 0"), "{summary:?}");
         assert!(
+            summary.contains(&"position: relative") && summary.contains(&"z-index: 1"),
+            "The disclosure should remain above the vertical bar: {summary:?}"
+        );
+        assert!(
             summary
                 .contains(&"margin-right: calc(-1.25em - var(--habeas-badge-height) / 2 - 1.5px)"),
             "The disclosure should sit over the top of the right-margin bar: {summary:?}"
@@ -2190,6 +2208,15 @@ mod tests {
                 && badge.contains(&"box-sizing: border-box")
                 && badge.contains(&"padding: 0 0.5em"),
             "{badge:?}"
+        );
+        assert!(
+            declarations(".habeas-badge-kind").contains(&"border-radius: 3px 0 0 3px"),
+            "The kind segment should round only the badge's outer left corners"
+        );
+        assert!(
+            declarations(".habeas-badge-name").contains(&"border-left: 1px solid var(--bg)")
+                && declarations(".habeas-badge-name").contains(&"border-radius: 0"),
+            "The middle segment should have straight joins and a matching thin divider"
         );
         assert!(
             declarations(".habeas-declaration[open] > summary::after").contains(&"content: \"−\"")
@@ -2274,6 +2301,7 @@ mod tests {
             ".habeas-builtin",
             ".habeas-fenced-ref",
             ".habeas-declaration",
+            ".habeas-declaration::before",
             ".habeas-declaration > summary",
             ".habeas-declaration > summary::-webkit-details-marker",
             ".habeas-declaration > summary::after",
