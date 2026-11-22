@@ -47,6 +47,7 @@ pub trait Conversation: Send {
     // {cite}`habeas:util`
     fn submit(&mut self, name: &str, arguments: &Value) -> io::Result<Submission<Self::Output>>;
     // {cite}`habeas:util`
+    // {impl}`requirements.sdk.graph.context-tools.pages.fn`
     fn dispatch(
         &mut self,
         name: &str,

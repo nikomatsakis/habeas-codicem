@@ -59,6 +59,12 @@ where
         + Sync,
 {
     // {cite}`habeas:util`
+    // {impl}`requirements.sdk.graph.context-tools.read_source.fn`
+    // {impl}`requirements.sdk.graph.context-tools.list_sources.fn`
+    // {impl}`requirements.sdk.graph.context-tools.outline_source.fn`
+    // {impl}`requirements.sdk.graph.context-tools.search_text.fn`
+    // {impl}`requirements.sdk.graph.context-tools.search_structure.fn`
+    // {impl}`requirements.sdk.graph.context-tools.pages.fn`
     fn definitions(&self) -> io::Result<Vec<ToolDefinition>> {
         let resource = json!({"type":"object","required":["scheme","location"],
             "properties":{"scheme":{"type":"string"},"location":{"type":"string"}}});
@@ -78,11 +84,17 @@ where
         ].into_iter().map(|value| serde_json::from_value(value).map_err(io::Error::other)).collect()
     }
     // {impl}`requirements.sdk.graph.context-tools.read_source.behavior`
+    // {impl}`requirements.sdk.graph.context-tools.read_source.inputs`
     // {impl}`requirements.sdk.graph.context-tools.list_sources.behavior`
+    // {impl}`requirements.sdk.graph.context-tools.list_sources.inputs`
     // {impl}`requirements.sdk.graph.context-tools.outline_source.behavior`
+    // {impl}`requirements.sdk.graph.context-tools.outline_source.inputs`
     // {impl}`requirements.sdk.graph.context-tools.search_text.behavior`
+    // {impl}`requirements.sdk.graph.context-tools.search_text.inputs`
     // {impl}`requirements.sdk.graph.context-tools.search_structure.behavior`
+    // {impl}`requirements.sdk.graph.context-tools.search_structure.inputs`
     // {impl}`requirements.sdk.graph.context-tools.pages.behavior`
+    // {impl}`requirements.sdk.graph.context-tools.pages.inputs`
     fn dispatch<'a>(
         &'a mut self,
         name: &'a str,

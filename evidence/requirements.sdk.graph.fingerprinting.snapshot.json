@@ -1,7 +1,7 @@
 {
   "requirement": "```rust,ignore\n/// Contents paired with the fingerprint of that same observation.\n#[derive(Clone, Debug)]\npub struct Snapshot<T> {\n    pub content: T,\n    pub fingerprint: Fingerprint,\n}\n```\n\nThis type lives in `habeas_sdk::graph`. For node reads, the SDK constructs it by\npassing the identity and the contents returned by `Contents::node_content` to\n`Contents::fingerprint`, without another read. For a label-specific edge\nquery, the SDK constructs the snapshot from the returned targets and their\ntarget-set fingerprint, without another query.\n`T` needs no filesystem path or source span.",
   "determination": true,
-  "rationale": "The reviewed tests cover each obligation in `requirements.sdk.graph.fingerprinting.snapshot`. I read only the supplied test sources and did not request implementation source.\n\n**Type shape.** The requirement says `Snapshot<T>` has `content` and `fingerprint` fields and lives in `habeas_sdk::graph`. Several tests read both fields directly. `snapshots_record_exact_reads_and_retain_distinct_versions` reads `read_snapshot(&1).unwrap().fingerprint`. `identities_remain_stable_and_fingerprinting_uses_the_supplied_snapshot` reads `snapshot.content` and `snapshot.fingerprint`. `labeled_selections_track_only_target_membership_without_reading_contents` reads `snapshot.content` and `snapshot.fingerprint` from `outgoing_edges`. The `Clone` and `Debug` derives and the `T` constraint are type-level facts that the compiler checks, so they need no behavioral test.\n\n**Node reads.** The obligation is that the snapshot comes from passing the identity and the `node_content` result to `Contents::fingerprint`, with no further read.\n- In `snapshots_record_exact_reads_and_retain_distinct_versions`, `read_snapshot` returns a fingerprint equal to `fp(\"before\")`. After the contents change, the next read is a distinct snapshot (`Dependency::Node(1, fp(\"after\"))`). The graph's read log is `[1, 1, 1, 2]`, which is exactly one backend read per call, including the failing read of node 2.\n- In `identities_remain_stable_and_fingerprinting_uses_the_supplied_snapshot`, the snapshot is taken, the graph contents are then changed, and `graph.fingerprint(&Node(1), &snapshot.content)` still equals `snapshot.fingerprint`. The read log is exactly `[1]`, so no second read happened. The fingerprint value is `\"before\"`, matching the content read.\n- In `requirement_edges_and_input_freshness_use_the_sdk` in `src/sdk.rs`, the domain's `fingerprint` is identity-dependent through its scheme. `record_is_current` is asserted true for a record built from `ctx.read`. That only holds if the snapshot fingerprint was computed with the right identity and the returned contents.\n- The agent tests `graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery` and `explicit_insertions_preserve_order_repetition_and_selection_snapshots` check that the recorded `Dependency::Node` fingerprints match the content actually read. These tests include 18,000-character contents and repeated reads.\n\n**Label-specific edge queries.** The obligation is that the snapshot is built from the returned targets and their target-set fingerprint, with no further query.\n- `labeled_selections_track_only_target_membership_without_reading_contents` asserts that `snapshot.content` is `[5, 3, 5]` (the targets as returned) and that `snapshot.fingerprint` equals `edge_fingerprint(&graph, &[3, 5])` (the target-set fingerprint). It also asserts that no node contents are read.\n- `agent_edge_tools_record_selections_without_validating_targets` uses a graph whose second lookup of node 1 returns an error (\"must not relist inspected edges\"). It asserts `lookups == 1`, so building the snapshot and recording the dependency made no second query. It also asserts that the recorded `Dependency::OutgoingEdges` fingerprint equals `edge_fingerprint(&graph, &[2])`, and it checks a second label.\n- `explicit_insertions_preserve_order_repetition_and_selection_snapshots` records an edge snapshot with duplicates and a non-selected label, and its fingerprint is `edge_fingerprint(&[2, 3])`.\n\n**`T` needs no path or span.** This clause permits something and does not require any behavior. The tests use `String`-like and domain content types without paths, which is consistent with it.\n\nI found no unresolved ambiguity and no plausible violation that the reviewed tests would accept.",
+  "rationale": "I judge the tests adequate for `requirements.sdk.graph.fingerprinting.snapshot`. I did not request implementation source. The tests were enough to map every obligation.\n\n**Obligations derived from the text**\n1. `Snapshot<T>` has a `content` field and a `fingerprint` field, and derives `Clone` and `Debug`.\n2. The type lives in `habeas_sdk::graph`.\n3. For node reads, the SDK builds the snapshot by passing the identity and the `node_content` result to `Contents::fingerprint`. It does this without another read.\n4. For a label-specific edge query, the SDK builds the snapshot from the returned targets and their target-set fingerprint. It does this without another query.\n5. `T` needs no filesystem path or source span.\n\n**Mapping to tests**\n- **Obligation 1, fields.** Several tests read both fields.\n  - In `validation.rs#fn[snapshots_record_exact_reads_and_retain_distinct_versions]`, `read_snapshot(&1).unwrap().fingerprint` equals `fp(\"before\")`.\n  - In `contracts.rs#fn[identities_remain_stable_and_fingerprinting_uses_the_supplied_snapshot]`, `snapshot.content` and `snapshot.fingerprint.value` are both asserted.\n  - In `validation.rs#fn[labeled_selections_track_only_target_membership_without_reading_contents]`, `snapshot.content` is `[5,3,5]` and `snapshot.fingerprint` equals `edge_fingerprint(&graph, &[3,5])`.\n  - The derives are declarative and have no conditional logic, so they need no test of their own.\n- **Obligation 2, location.** The tests reach the snapshot only through `habeas_sdk::graph` APIs, such as `InspectionContext::read_snapshot` and `record_is_current`. A wrong location would fail to compile.\n- **Obligation 3, fingerprint pairing and no extra read.**\n  - `fn[identities_remain_stable_and_fingerprinting_uses_the_supplied_snapshot]` changes the graph content after the read. It then asserts `graph.fingerprint(&Node(1), &snapshot.content) == snapshot.fingerprint`. It also asserts that the graph's `reads` is exactly `[1]`, so `read_snapshot` plus fingerprinting did not trigger a second read.\n  - `fn[snapshots_record_exact_reads_and_retain_distinct_versions]` asserts `reads == [1,1,1,2]`. That is one read per `read`/`read_snapshot` call, with no hidden re-reads. It also asserts that the recorded dependencies keep the \"before\" and \"after\" fingerprints.\n  - `fn[graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery]` asserts that the recorded node fingerprint value equals the read content.\n  - `fn[explicit_insertions_preserve_order_repetition_and_selection_snapshots]` asserts `reads == [1,3,2,3,1]`, matching the five explicit insertions.\n  - In `src/sdk.rs#mod[tests]/fn[requirement_edges_and_input_freshness_use_the_sdk]`, `record_is_current` is true after `finish`. It is false after the underlying file changes. This shows the identity passed to `fingerprint` is the correct node for the `Requirement`, `ReferenceSet` and input node kinds. The same test shows a retained snapshot fingerprints the same way after the source changes.\n- **Obligation 4, edge snapshot and no re-query.**\n  - `fn[labeled_selections_track_only_target_membership_without_reading_contents]` asserts the edge snapshot's content and fingerprint, and the recorded `Dependency::OutgoingEdges`. It also asserts that no node contents were read.\n  - `agent.rs#fn[agent_edge_tools_record_selections_without_validating_targets]` guards against a second query. Its graph returns an error on any second lookup of node 1's edges. The test asserts `lookups == 1`. It also asserts that the stored dependency equals `edge_fingerprint(&graph, &[2])`. The other label (8) is checked separately.\n- **Obligation 5, no path or span.** This is a type-level property. The tests instantiate `T` as `String`, `Vec<_>` and node ids, with no path or span. Nothing further is testable.\n\n**Result**\nEvery obligation with behavior has a test that exercises it and asserts the outcome. I found no unacknowledged gap.",
   "references": "86ae59aa916cd9cba23031380bb29ae20cfae3ed4c11419c652f310471200eb2",
   "inputs": [
     {
@@ -52,7 +52,7 @@
     {
       "file": "crates/habeas-sdk/tests/validation.rs",
       "item": "fn[labeled_selections_track_only_target_membership_without_reading_contents]",
-      "hash": "51822f1fbf470a5723af84aa6c4c59fd5a3a5ffe60856033e6d83f6ba838ca22"
+      "hash": "8473cabd5a09d6750cd3a3d456feda1fb3dd09be458b2380b0bdb9ea70d0f9fa"
     },
     {
       "file": "crates/habeas-sdk/tests/validation.rs",
@@ -63,21 +63,6 @@
       "file": "src/sdk.rs",
       "item": "mod[tests]/fn[requirement_edges_and_input_freshness_use_the_sdk]",
       "hash": "41bc695a8afd21b4068dcc3765fc401d14b5d1ed619a5df0f4a84bff7ebdf5c6"
-    },
-    {
-      "file": "crates/habeas-sdk/src/graph.rs",
-      "item": "impl[InspectionContext<'d,%20D>]/fn[prepare_edges]",
-      "hash": "68e766136ad846da3a33cb489ff7613fa3c8d1acfa87fe0d26c48c8d08f68242"
-    },
-    {
-      "file": "crates/habeas-sdk/src/graph.rs",
-      "item": "impl[InspectionContext<'d,%20D>]/fn[read_snapshot]",
-      "hash": "4b4987d9a1ee8e433c918f930d0411df0f67d1aba31090c8df477cff76e0a78b"
-    },
-    {
-      "file": "crates/habeas-sdk/src/graph.rs",
-      "item": "impl[InspectionContext<'d,%20D>]/fn[outgoing_edges]",
-      "hash": "664f7b18d745ea1b4e5962c384c521546946ebd381b339054fefdb2539212436"
     }
   ],
   "format_version": 1,
@@ -198,7 +183,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "9277805172234b527326964200095bb0f26d5767a8d7a435220f0ec74ba6170a"
+          "value": "d9d875910ac6cd666bb1de0af1481f232023f4e3934a4b63db3004b35fccdf86"
         }
       ]
     },
@@ -233,57 +218,6 @@
         {
           "scheme": "habeas-input-v1",
           "value": "b7ec834818546ddf97f0f21fa43b659de9724a25dc2446e853065989f9bbaed2"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/src/graph.rs"
-            },
-            "selector": "impl[InspectionContext<'d,%20D>]/fn[prepare_edges]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "30c08e6fab392a904b5b9a5bdc01d8ec99e99762eef85280d45a2989e3d4f841"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/src/graph.rs"
-            },
-            "selector": "impl[InspectionContext<'d,%20D>]/fn[read_snapshot]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "fb9cb2bacab4dbb6e8d221a5e641921beea520de9d3ce6408dd9464cf1f6c1c2"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/src/graph.rs"
-            },
-            "selector": "impl[InspectionContext<'d,%20D>]/fn[outgoing_edges]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "9964107ab488a60fb9ec78dee243fcb11c05f112198cec27aea1358db1510b25"
         }
       ]
     }

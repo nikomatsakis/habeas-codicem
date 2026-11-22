@@ -116,6 +116,7 @@ pub type StructuralMatches = SearchResults<StructuralMatch>;
 pub trait SourceProvider: Send + Sync {
     type Error: From<SourceError> + Send;
 
+    // {impl}`requirements.sdk.graph.context-tools.list_sources.fn`
     fn list(
         &self,
         scope: &SourceScope,
@@ -131,6 +132,7 @@ pub trait SourceProvider: Send + Sync {
     ) -> impl Future<Output = Result<ParsedSource, Self::Error>> + Send {
         defaults::parse(self, id, languages)
     }
+    // {impl}`requirements.sdk.graph.context-tools.search_text.fn`
     fn search_text(
         &self,
         query: &TextQuery,
@@ -364,10 +366,13 @@ impl<P: SourceProvider> SourceAnalysis<P> {
         }
     }
     // {cite}`habeas:util`
+    // {impl}`requirements.sdk.graph.context-tools.read_source.fn`
+    // {impl}`requirements.sdk.graph.context-tools.outline_source.fn`
     pub async fn parse(&self, id: &ResourceId) -> Result<ParsedSource, P::Error> {
         self.provider.parse(id, &self.languages).await
     }
     // {cite}`habeas:util`
+    // {impl}`requirements.sdk.graph.context-tools.search_structure.fn`
     pub async fn search_structure(
         &self,
         query: &StructuralQuery,

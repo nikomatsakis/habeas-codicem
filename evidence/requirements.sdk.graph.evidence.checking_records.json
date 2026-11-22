@@ -1,8 +1,8 @@
 {
   "requirement": "```rust,ignore\n// Method on Validator<D>.\n/// Compare each recorded input with the current domain state.\n/// Return true when every fingerprint still matches, including an empty trace.\npub fn check_inputs<O>(\n    &self,\n    inputs: &Fingerprinted<D, O>,\n) -> Result<bool, D::Error>;\n```\n\nThe method resolves the recorded dependencies through graph operations and\nfingerprinting, comparing each with its saved observation. A fingerprint\nmismatch returns `Ok(false)` and permits an early return; it need not resolve\nlater dependencies. An encountered dependency-resolution failure returns an\nerror.\n\nIt uses the current state that the caller intends to inspect, rather than\nreusing source snapshots from an earlier invocation without establishing that\nthey remain current. These reads are separate from a criterion execution's\ndependency trace.\n\nFreshness checking has a separate observation scope from execution. Reads used\nonly to check old evidence do not become dependencies of the new result. A\nchecked snapshot can be reused if it still represents the current state; when\nexecution explicitly reads or delivers it, its fingerprint enters the new trace.",
   "determination": true,
-  "rationale": "The reviewed tests cover each obligation in `requirements.sdk.graph.evidence.checking_records`. I did not request implementation source, because the supplied tests and their assertions were enough to map the obligations.\n\n- **Empty trace and all-match return `true`.**\n  - `criteria_keep_typed_answers_and_persist_only_when_requested` asserts `check_inputs(&loaded)` is true for a loaded record with no dependencies.\n  - `a_matching_dependency_does_not_hide_a_later_changed_dependency` asserts `record_is_current` is true when node and edge dependencies all match.\n  - `changing_one_criteria_input_does_not_invalidate_another` asserts the unaffected record stays true.\n  - `wildcard_versions_still_check_inputs_and_errors` asserts a matching node dependency stays true.\n- **Mismatch returns `Ok(false)`.**\n  - `changing_one_criteria_input_does_not_invalidate_another` covers a changed node.\n  - `absence_certification_is_invalidated_by_the_first_selected_root` and `labeled_selections_track_only_target_membership_without_reading_contents` cover changed outgoing-edge membership.\n  - `a_matching_dependency_does_not_hide_a_later_changed_dependency` covers a mismatch in a later dependency after a first match, for both node and edge dependencies.\n  - `wildcard_versions_still_check_inputs_and_errors` covers a changed value and a different fingerprint scheme.\n  - The early return is optional, so it needs no test.\n- **Resolution failure returns an error.**\n  - `dependency_resolution_failures_do_not_execute_or_replace_saved_answers` asserts `check_inputs` returns `Err(\"read\")` and `Err(\"edges\")` for failing node and edge resolution.\n  - `wildcard_versions_still_check_inputs_and_errors` asserts `Err(\"read\")`.\n  - `labeled_selections_track_only_target_membership_without_reading_contents` asserts `Err(\"edges\")`.\n- **Uses current state, not stale snapshots.**\n  - `a_matching_dependency_does_not_hide_a_later_changed_dependency` calls the check on the same graph before and after a mutation, and the result flips from true to false.\n  - The same flip appears in `changing_one_criteria_input_does_not_invalidate_another` and `input_checking_and_execution_keep_separate_observations`.\n  - `src/sdk.rs#mod[tests]/fn[requirement_edges_and_input_freshness_use_the_sdk]` checks that with a fresh outline cache a retained snapshot is not trusted. The record is detected stale after the source changes, and fingerprints of the retained and current content differ.\n- **Check reads are separate from the execution trace.**\n  - `input_checking_and_execution_keep_separate_observations` clears reads after `check_inputs`. After the new execution, the only read is node 2, and the new dependency carries the current fingerprint \"after\".\n  - `historical_freshness_reads_do_not_enter_the_replacement_trace` shows reads `[2, 1]` but a stored trace containing only node 1.\n  - `refresh_evaluates_missing_incompatible_or_changed_evidence_with_a_fresh_trace` shows the reads `[2, 1]` for the contents case and a replacement trace containing only node 1.\n- **Reuse of a checked snapshot.** This is permissive (\"can be reused\"), so it needs no test. The rule that an explicit execution read puts its fingerprint in the new trace is asserted in the tests above.\n\nI found no unacknowledged gap.",
-  "references": "04e7f0bdb21168e3835359c83d3a39fa1fef8accd7895a37c8882a33859a74cc",
+  "rationale": "I judge the tests adequate for `requirements.sdk.graph.evidence.checking_records`. I did not request any implementation source. I derived the obligations from the requirement text and mapped each to the supplied tests.\n\n**1. Returns true when every fingerprint matches, including an empty trace.**\n- `contracts.rs#fn[criteria_keep_typed_answers_and_persist_only_when_requested]` asserts `check_inputs(&loaded)` is true for a record with empty dependencies.\n- `contracts.rs#fn[changing_one_criteria_input_does_not_invalidate_another]` asserts true for an unchanged structure record.\n- `validation.rs#fn[a_matching_dependency_does_not_hide_a_later_changed_dependency]` and `validation.rs#fn[labeled_selections_track_only_target_membership_without_reading_contents]` assert true via `record_is_current`. The second also covers an empty-trace record and an edge-membership record whose unrelated edges changed.\n\n**2. A mismatch returns `Ok(false)`.**\n- Node content mismatch: `contracts.rs#fn[changing_one_criteria_input_does_not_invalidate_another]` and `contracts.rs#fn[input_checking_and_execution_keep_separate_observations]`.\n- Outgoing-edge mismatch: `contracts.rs#fn[absence_certification_is_invalidated_by_the_first_selected_root]`, plus the edge branch of `validation.rs#fn[a_matching_dependency_does_not_hide_a_later_changed_dependency]`.\n- Fingerprint scheme mismatch: `validation.rs#fn[wildcard_versions_still_check_inputs_and_errors]`.\n- Every recorded dependency is compared, not just the first. A matching first dependency followed by a changed second one, in both the node and edge variants, returns false.\n- The early return is permitted but not required, so it needs no test.\n\n**3. A dependency-resolution failure returns an error.**\n- `contracts.rs#fn[dependency_resolution_failures_do_not_execute_or_replace_saved_answers]` injects read and edge failures. It asserts `check_inputs` returns `Err(\"read\")` and `Err(\"edges\")`.\n- The same test shows saved records stay unchanged and nothing is re-executed.\n- `validation.rs#fn[wildcard_versions_still_check_inputs_and_errors]` asserts the read error. `validation.rs#fn[labeled_selections_track_only_target_membership_without_reading_contents]` asserts the edge error.\n\n**4. Uses the current state, not an earlier snapshot.**\n- `src/sdk.rs#mod[tests]/fn[requirement_edges_and_input_freshness_use_the_sdk]` retains a stale reference-set read and a stale source read. Fingerprinting the retained content gives the old fingerprint.\n- After the files change, `record_is_current` on a fresh domain returns false. A freshly read node content gives a different fingerprint. So the check re-reads current state instead of reusing the retained snapshot.\n- `contracts.rs#fn[input_checking_and_execution_keep_separate_observations]` changes content after saving and gets false from `check_inputs`.\n\n**5. Checking reads are separate from execution's trace.**\n- `validation.rs#fn[historical_freshness_reads_do_not_enter_the_replacement_trace]` runs `check_inputs`, then `verify`. The stored record contains only the new read of node 1, not the checked node 2.\n- `contracts.rs#fn[input_checking_and_execution_keep_separate_observations]` asserts the new record's dependencies hold only the freshly read fingerprint (\"after\").\n- `contracts.rs#fn[refresh_evaluates_missing_incompatible_or_changed_evidence_with_a_fresh_trace]` asserts the read order and that the replacement trace contains only the new execution's reads.\n- `contracts.rs#fn[typed_loading_reports_decode_errors_even_for_stale_evidence]` asserts no saved-input resolution happens during loading or new execution.\n\n**6. Reusing a checked snapshot.**\n- This is a MAY, so it imposes nothing to check.\n\nI found no unaddressed obligation and no assertion that contradicts the requirement. Every marked test in the inputs cites the subject. I found no marking gap.",
+  "references": "efa64bbbd88a1051b5fbd2ff35a2610b060fc4a48b374a27214e5966e14b1a8f",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.evidence.checking_records",
@@ -38,6 +38,11 @@
         "execution explicitly reads or delivers it, its fingerprint enters the new trace.",
         ":::"
       ]
+    },
+    {
+      "file": "crates/habeas-sdk/tests/agent.rs",
+      "item": "fn[source_reads_track_optional_dependencies_and_empty_searches_remain_discovery]",
+      "hash": "f123e642e677b6fd4086d0b35128eb66a10b68886a8aceb0baa810ebbc16ce51"
     },
     {
       "file": "crates/habeas-sdk/tests/contracts.rs",
@@ -92,7 +97,7 @@
     {
       "file": "crates/habeas-sdk/tests/validation.rs",
       "item": "fn[labeled_selections_track_only_target_membership_without_reading_contents]",
-      "hash": "51822f1fbf470a5723af84aa6c4c59fd5a3a5ffe60856033e6d83f6ba838ca22"
+      "hash": "8473cabd5a09d6750cd3a3d456feda1fb3dd09be458b2380b0bdb9ea70d0f9fa"
     },
     {
       "file": "src/sdk.rs",
@@ -110,7 +115,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "04e7f0bdb21168e3835359c83d3a39fa1fef8accd7895a37c8882a33859a74cc"
+          "value": "efa64bbbd88a1051b5fbd2ff35a2610b060fc4a48b374a27214e5966e14b1a8f"
         }
       ]
     },
@@ -122,7 +127,7 @@
         "Mandatory",
         {
           "scheme": "node-path-set-sha256-v1",
-          "value": "149f27436e71dcbcd5f4a79562b50e8ed650b2122d11d5ace2341f6e4938c91e"
+          "value": "59afdbd7733d47f6dccd99830b1244b20b8b8d921274285f827f9d0e6a1ae7d1"
         }
       ]
     },
@@ -134,6 +139,23 @@
         {
           "scheme": "habeas-input-v1",
           "value": "71ccf88036864ad802d61fd442c95610f5c59a6fa3b65dda6dcfc3fb3583cf17"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/tests/agent.rs"
+            },
+            "selector": "fn[source_reads_track_optional_dependencies_and_empty_searches_remain_discovery]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "099b92e9efac7bfa5c1d2537c94af897cef1bf60d7a223f7a3cce71e2842bf63"
         }
       ]
     },
@@ -320,7 +342,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "9277805172234b527326964200095bb0f26d5767a8d7a435220f0ec74ba6170a"
+          "value": "d9d875910ac6cd666bb1de0af1481f232023f4e3934a4b63db3004b35fccdf86"
         }
       ]
     },

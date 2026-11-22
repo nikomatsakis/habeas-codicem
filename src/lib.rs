@@ -257,7 +257,13 @@ pub fn preprocess_book(book: &mut Book, root: &Path) -> io::Result<()> {
             .or(chapter.path.as_deref())
             .map(chapter_namespace)
             .unwrap_or_default();
-        let content = omit_fenced_citation_paragraphs(&chapter.content, &namespace, &definitions);
+        let content = chapter.path.as_deref().map_or_else(
+            || chapter.content.clone(),
+            |path| {
+                replace_reviewed_citation_passages(&chapter.content, &namespace, path, &definitions)
+            },
+        );
+        let content = omit_fenced_citation_paragraphs(&content, &namespace, &definitions);
         chapter.content =
             replace_definitions(&content, &namespace, chapter.path.as_deref(), Some(&plan));
         if let Some(path) = chapter.path.as_deref() {
@@ -265,6 +271,122 @@ pub fn preprocess_book(book: &mut Book, root: &Path) -> io::Result<()> {
         }
     });
     Ok(())
+}
+
+/// Render review annotations separately from their prose. Collect from the
+/// original source, including metadata later omitted from chapter presentation.
+// {impl}`requirements.references.citation_review.book_commentary.display`
+fn replace_reviewed_citation_passages(
+    content: &str,
+    namespace: &str,
+    current_path: &Path,
+    definitions: &BTreeMap<String, Definition>,
+) -> String {
+    let declarations = definition_blocks(content);
+    let in_declaration = |offset| {
+        declarations.iter().any(|block| {
+            block.kind != DefinitionKind::Term && block.start < offset && offset < block.body_end
+        })
+    };
+    let fences = fenced::markdown_fences(content, true);
+    let mut citations = reference_roles(content, true)
+        .into_iter()
+        .filter(|reference| reference.kind == ReferenceKind::Cite)
+        .map(|reference| (reference.start, reference.name.to_owned()))
+        .collect::<Vec<_>>();
+    citations.extend(
+        fences
+            .iter()
+            .filter(|fence| fence.closed && fence.kind == ReferenceKind::Cite)
+            .map(|fence| (fence.start, fence.name.clone())),
+    );
+    citations.sort_by_key(|(offset, _)| *offset);
+
+    let mut result = String::with_capacity(content.len());
+    let mut cursor = 0;
+    for fence in &fences {
+        if !fence.closed
+            || fence.kind != ReferenceKind::Cite
+            || fence.start < cursor
+            || in_declaration(fence.start)
+        {
+            continue;
+        }
+        let mut names = Vec::new();
+        let mut badges = Vec::new();
+        for (offset, name) in &citations {
+            if *offset < fence.start || *offset >= fence.end || in_declaration(*offset) {
+                continue;
+            }
+            if !names.contains(name)
+                && let Some(badge) =
+                    reference_badge(ReferenceKind::Cite, name, current_path, definitions)
+            {
+                names.push(name.clone());
+                badges.push(badge);
+            }
+        }
+        if !names.iter().any(|name| name != "habeas:util") {
+            continue;
+        }
+
+        // Keep the original annotation list, but omit citation-only metadata
+        // from the visible prose using the same rules as other fenced sections.
+        let fragment = omit_fenced_citation_paragraphs(
+            &content[fence.start..fence.end],
+            namespace,
+            definitions,
+        );
+        let fragment_declarations = definition_blocks(&fragment);
+        let fragment_fences = fenced::markdown_fences(&fragment, true);
+        let mut removed = Vec::new();
+        for nested in &fragment_fences {
+            if !nested.closed
+                || nested.kind != ReferenceKind::Cite
+                || fragment_declarations.iter().any(|block| {
+                    block.kind != DefinitionKind::Term
+                        && block.start < nested.start
+                        && nested.start < block.body_end
+                })
+                || (nested.start != 0
+                    && reference_badge(
+                        ReferenceKind::Cite,
+                        &nested.name,
+                        current_path,
+                        definitions,
+                    )
+                    .is_none())
+            {
+                continue;
+            }
+            removed.push(nested.start..nested.body.start);
+            removed.push(nested.body.end..nested.end);
+        }
+        removed.sort_by_key(|range| range.start);
+        let mut body = String::new();
+        let mut position = 0;
+        for range in removed {
+            if position < range.start {
+                body.push_str(&fragment[position..range.start]);
+            }
+            position = position.max(range.end);
+        }
+        body.push_str(&fragment[position..]);
+
+        result.push_str(&content[cursor..fence.start]);
+        result.push_str(
+            "<div class=\"habeas-citation-passage\">\n<details class=\"habeas-citation-list\">\n<summary aria-label=\"Show citations for this passage\" title=\"Show citations\"><span aria-hidden=\"true\">※</span></summary>\n<ul>\n",
+        );
+        for badge in badges {
+            result.push_str(&format!("<li>{badge}</li>\n"));
+        }
+        result.push_str("</ul>\n</details>\n\n");
+        result.push_str(&body);
+        result.push_str("\n\n</div>\n\n");
+        cursor = fence.end;
+    }
+    result.push_str(&content[cursor..]);
+    result
 }
 
 /// Hide citation metadata only in authored chapter presentation. Definitions,
@@ -1071,6 +1193,7 @@ mod tests {
     }
 
     // {test}`requirements.references.book_badges`
+    // {test}`requirements.references.citation_review.book_commentary.display`
     // {test}`requirements.references.builtin_definitions`
     // {test}`requirements.index.navigation`
     // {test}`requirements.examples.authoring_inputs`
@@ -1128,12 +1251,24 @@ mod tests {
                 .find(|chapter| chapter.name == "Guide")
                 .unwrap();
             assert!(guide.content.contains("A concrete case."), "{opening}");
+            let visible_prose = if opening.starts_with(":::{cite}") {
+                let (annotations, prose) = guide.content.split_once("</details>\n\n").unwrap();
+                for name in ["rules.ready", "rules.other", "habeas:util"] {
+                    assert!(
+                        annotations.contains(&format!("alt=\"cite {name}\"")),
+                        "{opening}: {annotations}"
+                    );
+                }
+                prose
+            } else {
+                &guide.content
+            };
             assert!(
-                !guide.content.contains("alt=\"cite rules.other\""),
+                !visible_prose.contains("alt=\"cite rules.other\""),
                 "{opening}"
             );
             assert!(
-                !guide.content.contains("alt=\"cite habeas:util\""),
+                !visible_prose.contains("alt=\"cite habeas:util\""),
                 "{opening}"
             );
             assert_eq!(
@@ -1180,6 +1315,148 @@ mod tests {
                 );
             }
         }
+    }
+
+    // {test}`requirements.references.citation_review.book_commentary.display`
+    #[test]
+    fn reviewed_passages_show_one_gutter_list_and_preserve_prose_and_literal_contexts() {
+        let rules = ":::{req} ready\nReady.\n:::\n\n:::{req} other\nOther.\n:::\n\n:::{req} inside\nInside.\n:::\n\n:::{req} term_rule\nTerminology.\n:::\n";
+        let source = concat!(
+            "Outside paragraph. {cite}`rules.inside`.\n\n",
+            ":::::{cite} habeas:util\n",
+            "{cite}`rules.other`\n\n",
+            "The *ordinary* paragraph cites {cite}`rules.ready`.\n\n",
+            "::::{cite} rules.ready\nNested prose.\n::::\n\n",
+            "::::{req} nested\n{cite}`rules.inside`\nNested requirement.\n::::\n\n",
+            "::::{example} sample\n{cite}`rules.inside`\nNested example.\n::::\n\n",
+            "::::{definition} term\n:phrase: nested term\nDefinition prose. {cite}`rules.term_rule`\n::::\n\n",
+            "```text\n:::{cite} rules.inside\nLiteral code.\n:::\n```\n\n",
+            "Inline code ``{cite}`rules.inside` ``.\n",
+            "\\{cite}`rules.inside`\n",
+            ":::::\n\n",
+            ":::{cite} habeas:util\nUtility-only.\n:::\n\n",
+            ":::{cite} rules.missing\nUnresolved.\n:::\n\n",
+            "<div>\n:::{cite} rules.ready\nHTML literal.\n:::\n</div>\n\n",
+            ":::{cite} rules.ready\nUnclosed.\n",
+        );
+        let root = book_root();
+        std::fs::write(root.path().join("md/guide.md"), source).unwrap();
+        let original_references = super::text_references(source, true);
+        let mut book = Book::new();
+        book.push_item(Chapter::new("Rules", rules.into(), "rules.md", vec![]));
+        book.push_item(Chapter::new("Guide", source.into(), "guide.md", vec![]));
+        preprocess_book(&mut book, root.path()).unwrap();
+        let guide = &book
+            .chapters()
+            .find(|chapter| chapter.name == "Guide")
+            .unwrap()
+            .content;
+        assert_eq!(
+            guide.matches("class=\"habeas-citation-passage\"").count(),
+            1
+        );
+        assert_eq!(guide.matches("class=\"habeas-citation-list\"").count(), 1);
+        let (before_prose, prose) = guide.split_once("</details>\n\n").unwrap();
+        let (outside, list) = before_prose
+            .split_once("<div class=\"habeas-citation-passage\">")
+            .unwrap();
+        assert!(outside.starts_with("Outside paragraph."));
+        assert!(outside.contains("href=\"rules.html#habeas-req-rules.inside\""));
+        assert!(outside.contains("alt=\"cite rules.inside\""));
+        assert!(!outside.contains("habeas-citation-list"));
+        assert!(list.contains("<summary aria-label=\"Show citations for this passage\""));
+        assert!(
+            list.contains("title=\"Show citations\"><span aria-hidden=\"true\">※</span></summary>")
+        );
+        assert_eq!(list.matches("<li>").count(), 4);
+        for name in [
+            "habeas:util",
+            "rules.other",
+            "rules.ready",
+            "rules.term_rule",
+        ] {
+            assert_eq!(list.matches(&format!("alt=\"cite {name}\"")).count(), 1);
+        }
+        assert!(!list.contains("rules.inside"));
+        assert!(list.contains("href=\"rules.html#habeas-req-rules.other\""));
+        assert!(list.contains("habeas-builtin\" title="));
+        assert!(!prose.contains("alt=\"cite rules.other\""));
+        // Only the explicit inline citation remains, not a nested opening badge.
+        assert_eq!(prose.matches("alt=\"cite rules.ready\"").count(), 1);
+        let utility = prose
+            .split("<div class=\"habeas-fenced-ref\">")
+            .find(|part| part.contains("Utility-only."))
+            .unwrap();
+        assert!(utility.contains("habeas-req-ref-cite habeas-builtin\" title="));
+        assert!(utility.contains("alt=\"cite habeas:util\""));
+        for (name, kind) in [("guide.nested", "req"), ("guide.sample", "example")] {
+            assert!(prose.contains(&format!("aria-label=\"{kind} {name}\"")));
+            assert!(prose.contains(&format!("href=\"requirements-index/{name}.html\"")));
+            let detail = book
+                .chapters()
+                .find(|chapter| chapter.name == name)
+                .unwrap();
+            assert!(detail.content.contains("alt=\"cite rules.inside\""));
+        }
+        assert!(!prose.contains("::::{cite} rules.ready\nNested"));
+        for text in [
+            "Nested prose.",
+            "Nested requirement.",
+            "Nested example.",
+            "```text\n:::{cite} rules.inside\nLiteral code.\n:::\n```",
+            ":::{cite} rules.missing\nUnresolved.\n:::",
+            "<div>\n:::{cite} rules.ready\nHTML literal.\n:::\n</div>",
+            ":::{cite} rules.ready\nUnclosed.",
+        ] {
+            assert!(prose.contains(text), "{text}: {prose}");
+        }
+        let mut html = String::new();
+        pulldown_cmark::html::push_html(&mut html, pulldown_cmark::Parser::new(guide));
+        assert!(html.contains("<p>The <em>ordinary</em> paragraph cites"));
+        assert!(html.contains("<p>Nested prose.</p>"), "{html}");
+        assert!(html.contains("<p>Utility-only.</p>"), "{html}");
+        assert_eq!(
+            std::fs::read_to_string(root.path().join("md/guide.md")).unwrap(),
+            source
+        );
+        assert_eq!(super::text_references(source, true), original_references);
+
+        let css = include_str!("../md/habeas.css");
+        let rules = |selector: &str| {
+            css.rsplit_once(&format!("{selector} {{"))
+                .unwrap()
+                .1
+                .split('}')
+                .next()
+                .unwrap()
+        };
+        let passage = rules(".habeas-citation-passage");
+        assert!(passage.contains("padding: 0;") && passage.contains("border: 0;"));
+        let margin = passage
+            .split(';')
+            .find_map(|declaration| declaration.trim().strip_prefix("margin:"))
+            .unwrap();
+        let margins = margin.split_whitespace().collect::<Vec<_>>();
+        let left = match margins.as_slice() {
+            [all] => *all,
+            [_, horizontal] | [_, horizontal, _] => *horizontal,
+            [_, _, _, left] => *left,
+            _ => panic!("invalid margin shorthand"),
+        };
+        assert_eq!(left, "0");
+        assert!(passage.contains("position: relative;"));
+        let marker = rules(".habeas-citation-list");
+        assert!(marker.contains("position: absolute;"));
+        assert!(marker.contains("right:") && !marker.contains("left:"));
+        let panel = rules(".habeas-citation-list > ul");
+        assert!(panel.contains("max-width:") && panel.contains("position: absolute;"));
+        // The native disclosure contains annotations only; prose follows it
+        // as a sibling, so opening or closing it leaves prose displayed.
+        assert!(html.contains("</details>\n<p>The <em>ordinary</em> paragraph"));
+        assert!(
+            rules(".habeas-citation-list > summary:focus-visible")
+                .contains("outline: 2px solid var(--links);")
+        );
     }
 
     // {test}`requirements.references.book_badges`
@@ -1262,7 +1539,7 @@ mod tests {
     fn fenced_references_render_their_badge_and_body_and_built_ins_are_unlinked() {
         let mut book = Book::new();
         let content = [
-            "::::{req} ready\nReady MUST hold.\n\n:::{cite} rules.other\nThe *other* rule.\n:::\n::::\n\n",
+            "::::{req} ready\nReady MUST hold.\n\n:::{cite} rules.other\nThe *other* rule.\n:::\n\n:::{impl} rules.other\nThe *implementation* rule.\n:::\n\n:::{test} rules.other\nThe *tested* rule.\n:::\n::::\n\n",
             ":::{req} other\nOther.\n:::\n\n",
             ":::{cite} habeas:util\nServes its caller.\n:::\n\n",
             ":::{cite} habeas:coverage\nA substantive coverage explanation.\n:::\n\n",
@@ -1281,20 +1558,37 @@ mod tests {
         // The project reference links to its definition, then its body.
         let mut html = String::new();
         pulldown_cmark::html::push_html(&mut html, pulldown_cmark::Parser::new(&rendered));
-        assert!(html.contains("<p>The <em>other</em> rule.</p>"), "{html}");
         assert!(html.contains("aria-label=\"req rules.ready\""), "{html}");
-        let linked = "<div class=\"habeas-fenced-ref\">\n\n<p><a class=\"habeas-req-badge habeas-req-ref-cite\" href=\"rules.html#habeas-req-rules.other\">";
-        let start = rendered.find(linked).expect(&rendered);
-        let after = &rendered[start..];
-        assert!(
-            after.find("alt=\"cite rules.other\"").unwrap()
-                < after.find("The *other* rule.").unwrap(),
-            "{rendered}"
-        );
-        assert!(
-            !rendered.contains(":::{cite} rules.other\nThe"),
-            "{rendered}"
-        );
+        for (kind, color, word) in [
+            ("cite", "7151a1", "other"),
+            ("impl", "237346", "implementation"),
+            ("test", "ae5d14", "tested"),
+        ] {
+            assert!(
+                html.contains(&format!("<p>The <em>{word}</em> rule.</p>")),
+                "{html}"
+            );
+            let linked = format!(
+                "<div class=\"habeas-fenced-ref\">\n\n<p><a class=\"habeas-req-badge habeas-req-ref-{kind}\" href=\"rules.html#habeas-req-rules.other\">"
+            );
+            let start = rendered.find(&linked).expect(&rendered);
+            let after = &rendered[start..];
+            let badge_end = after.find("</a>").unwrap();
+            assert!(
+                after[..badge_end].contains(&format!("alt=\"{kind} rules.other\""))
+                    && after[..badge_end]
+                        .contains(&format!("img.shields.io/badge/{kind}-rules.other-{color}")),
+                "{rendered}"
+            );
+            assert!(
+                badge_end < after.find(&format!("The *{word}* rule.")).unwrap(),
+                "{rendered}"
+            );
+            assert!(
+                !rendered.contains(&format!(":::{kind} rules.other\nThe")),
+                "{rendered}"
+            );
+        }
         // The outer requirement still contains it and closes at its own fence.
         assert!(!rendered.contains("See evidence"), "{rendered}");
 
@@ -2283,8 +2577,8 @@ mod tests {
             declarations("a.habeas-req-badge:hover"),
             ["filter: brightness(1.08)"]
         );
-        // Every rule styles a Habeas declaration, badge, or fenced reference; nothing else in
-        // the book is restyled.
+        // Every rule styles a Habeas declaration, badge, fenced reference, or citation
+        // passage; nothing else in the book is restyled.
         let specified = [
             ".habeas-req-badge",
             ".habeas-shield",
@@ -2309,6 +2603,15 @@ mod tests {
             ".habeas-declaration > summary > .habeas-definition-badge",
             ".habeas-declaration > summary:focus-visible::after",
             ".habeas-declaration-body",
+            ".habeas-citation-passage",
+            ".habeas-citation-list",
+            ".habeas-citation-list > summary",
+            ".habeas-citation-list > summary::-webkit-details-marker",
+            ".habeas-citation-list > summary:hover",
+            ".habeas-citation-list[open] > summary",
+            ".habeas-citation-list > summary:focus-visible",
+            ".habeas-citation-list > ul",
+            ".habeas-citation-list > ul > li",
         ];
         for (selectors, _) in &rules {
             for selector in selectors {

@@ -17,6 +17,7 @@ pub trait ToolSession<D: Graph>: Send {
     // {cite}`habeas:util`
     fn definitions(&self) -> io::Result<Vec<ToolDefinition>>;
     // {cite}`habeas:util`
+    // {impl}`requirements.sdk.graph.context-tools.pages.fn`
     fn dispatch<'a>(
         &'a mut self,
         name: &'a str,
@@ -199,6 +200,9 @@ where
 {
     type Output = Value;
     // {cite}`habeas:util`
+    // {impl}`requirements.sdk.graph.context-tools.read_node.fn`
+    // {impl}`requirements.sdk.graph.context-tools.outgoing_edges.fn`
+    // {impl}`requirements.sdk.graph.context-tools.pages.fn`
     fn tools(&self) -> io::Result<Vec<ToolDefinition>> {
         let path = json!({"type":"object","required":["segments"],"properties":{"segments":{"type":"array","items":{"type":"string"}}}});
         let mut tools: Vec<ToolDefinition> = [
@@ -226,8 +230,11 @@ where
     // {impl}`requirements.sdk.graph.agent-calls.judge.rendering`
     // {impl}`requirements.sdk.graph.context-tools.shared_context`
     // {impl}`requirements.sdk.graph.context-tools.read_node.behavior`
+    // {impl}`requirements.sdk.graph.context-tools.read_node.inputs`
     // {impl}`requirements.sdk.graph.context-tools.outgoing_edges.behavior`
+    // {impl}`requirements.sdk.graph.context-tools.outgoing_edges.inputs`
     // {impl}`requirements.sdk.graph.context-tools.pages.behavior`
+    // {impl}`requirements.sdk.graph.context-tools.pages.inputs`
     async fn dispatch(&mut self, name: &str, arguments: &Value) -> io::Result<String> {
         match name {
             "read_node" => {
@@ -290,9 +297,9 @@ where
         }
     }
     // {impl}`requirements.sdk.graph.context-tools.shared_context`
-    // {impl}`requirements.sdk.graph.context-tools.read_node.behavior`
-    // {impl}`requirements.sdk.graph.context-tools.outgoing_edges.behavior`
-    // {impl}`requirements.sdk.graph.context-tools.pages.behavior`
+    // {impl}`requirements.sdk.graph.context-tools.read_node.inputs`
+    // {impl}`requirements.sdk.graph.context-tools.outgoing_edges.inputs`
+    // {impl}`requirements.sdk.graph.context-tools.pages.inputs`
     fn delivered(&mut self) -> io::Result<()> {
         for observation in self.pending.drain(..) {
             match observation {

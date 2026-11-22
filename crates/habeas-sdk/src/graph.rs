@@ -312,6 +312,8 @@ impl<'d, D: Contents> InspectionContext<'d, D> {
 
     // {cite}`habeas:util`
     // {impl}`requirements.sdk.graph.context-tools.read_node.behavior`
+    // {impl}`requirements.sdk.graph.context-tools.read_node.fn`
+    // {impl}`requirements.sdk.graph.context-tools.read_node.inputs`
     pub fn read(&self, node: &D::NodeId) -> Result<D::NodeContent, D::Error> {
         Ok(self.read_snapshot(node)?.content)
     }
@@ -335,6 +337,8 @@ impl<'d, D: Contents> InspectionContext<'d, D> {
     }
 
     // {impl}`requirements.sdk.graph.context-tools.outgoing_edges.behavior`
+    // {impl}`requirements.sdk.graph.context-tools.outgoing_edges.fn`
+    // {impl}`requirements.sdk.graph.context-tools.outgoing_edges.inputs`
     pub fn outgoing_edges(
         &self,
         node: &D::NodeId,

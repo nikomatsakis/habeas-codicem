@@ -353,6 +353,7 @@ struct Answer {
 // {test}`requirements.sdk.graph.evidence.node_inputs`
 // {test}`requirements.sdk.graph.context-tools.tracked_inspection`
 // {test}`requirements.sdk.graph.context-tools.read_node.behavior`
+// {test}`requirements.sdk.graph.context-tools.read_node.inputs`
 #[test]
 fn snapshots_record_exact_reads_and_retain_distinct_versions() {
     let graph = Memory::default();
@@ -500,6 +501,7 @@ fn wildcard_versions_still_check_inputs_and_errors() {
 // {test}`requirements.sdk.graph.outgoing_edges`
 // {test}`requirements.sdk.graph.fingerprinting.snapshot`
 // {test}`requirements.sdk.graph.context-tools.outgoing_edges.behavior`
+// {test}`requirements.sdk.graph.context-tools.outgoing_edges.inputs`
 #[test]
 fn labeled_selections_track_only_target_membership_without_reading_contents() {
     let graph = Memory::default();
@@ -552,7 +554,9 @@ fn labeled_selections_track_only_target_membership_without_reading_contents() {
     assert!(!record_is_current(&graph, "v1", &record).unwrap());
     assert!(graph.state.lock().unwrap().reads.is_empty());
     graph.state.lock().unwrap().fail_edges = Some(1);
+    let before = selected.inspection().dependencies();
     assert_eq!(selected.successors(&7), Err("edges"));
+    assert_eq!(selected.inspection().dependencies(), before);
     assert_eq!(record_is_current(&graph, "v1", &record), Err("edges"));
 }
 
