@@ -1,4 +1,4 @@
-# Deconstructing Habeas
+# The `habeas` SDK
 
 This chapter is for the implementer of a tool like Habeas. We start with the
 Habeas you already know and ask how to express its verification work as a graph.

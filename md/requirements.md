@@ -1,10 +1,14 @@
-# Requirements
+# The `habeas` system
 
-Capitalized requirement terms in this chapter use the meanings defined by BCP 14 ([RFC 2119](https://www.rfc-editor.org/rfc/rfc2119) and [RFC 8174](https://www.rfc-editor.org/rfc/rfc8174)).
+Habeas connects a project's prose to its implementation and tests. This reference
+explains how to write requirements and examples, author evidence, check it, and
+browse those connections in the book.
 
-The requirements are organized by the behavior they describe:
+Start with [How it works](reference.md) for the workflow. The chapters below
+explain each part of the system and specify its behavior. The
+[SDK reference](requirements/sdk.md) explains the reusable building blocks for
+implementing tools like Habeas.
 
-- [SDK](requirements/sdk.md)
 - [CI and evidence validation](requirements/ci.md)
 - [Configuration](requirements/configuration.md)
 - [Authoring evidence](requirements/authoring.md)
@@ -17,6 +21,11 @@ The requirements are organized by the behavior they describe:
 - [Project integration](requirements/integration.md)
 - [Project layout](requirements/layout.md)
 - [Refactoring](requirements/refactor.md)
+- [Test execution coverage](requirements/test-coverage.md)
+
+Capitalized requirement terms in these chapters use the meanings defined by BCP
+14 ([RFC 2119](https://www.rfc-editor.org/rfc/rfc2119) and
+[RFC 8174](https://www.rfc-editor.org/rfc/rfc8174)).
 
 ## Requirements as authoring inputs
 
