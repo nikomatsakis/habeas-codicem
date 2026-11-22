@@ -1066,6 +1066,7 @@ fn approved_text(name: &str, index: usize) -> &'static str {
 
 // {test}`requirements.authoring.initial_prompt`
 // {test}`requirements.authoring.prompt_parts`
+// {test}`requirements.authoring.habeas_background`
 // {test}`requirements.authoring.fixme_inputs`
 // {test}`requirements.authoring.invocation`
 #[test]
@@ -3761,22 +3762,65 @@ fn bundled_skills_say_when_to_read_each_reference_file() {
             "{name} lacks {link:?}"
         );
     }
-    let pointers =
-        regex::Regex::new(r"\]\((?:[^)]*/)?references/[^)]*\.md\)|`[^`\n]*references/[^`\n]*\.md`")
+    let reference_guidance = [
+        (
+            "habeas-requirements",
+            "references/review-prompt.md",
+            "**Distributed:** for a requirement with `{sites}` or `{violations}` queries, apply the Do and Don't lists in the habeas skill's `references/distributed-requirements.md`.",
+        ),
+        (
+            "habeas-evidence",
+            "references/reviews.md",
+            "A distributed requirement (the habeas skill's `references/distributed-requirements.md`) gets a site review for each site, authored by `habeas author --all` or, for one requirement, `habeas author sites:<full-name>`.",
+        ),
+        (
+            "habeas",
+            "references/distributed-requirements.md",
+            "Don't re-run a false site review for a different result; fix the site, or tighten the queries or the text, as the habeas-evidence skill's `references/reviews.md` describes.",
+        ),
+    ];
+    for (name, file, guidance) in &reference_guidance {
+        let (_, text) = skill_files(name)
+            .iter()
+            .find(|(path, _)| path == file)
             .unwrap();
+        assert!(
+            collapse(text).contains(guidance),
+            "{name}/{file} lacks {guidance:?}"
+        );
+    }
+    let pointers = regex::Regex::new(
+        r"\]\((?:[^)]*/)?references/[^)]*\.md(?:#[^)]*)?\)|`[^`\n]*references/[^`\n]*\.md`",
+    )
+    .unwrap();
     for name in SKILLS {
         let text = collapse(skill_md(name));
-        for pointer in pointers.find_iter(&text) {
-            assert!(
-                links.iter().any(|(skill, _, sentence)| {
-                    *skill == name
-                        && text.match_indices(sentence).any(|(start, sentence)| {
+        for (file, source) in skill_files(name) {
+            let source = collapse(source);
+            for pointer in pointers.find_iter(&source) {
+                let guidance = if *file == "SKILL.md" {
+                    links
+                        .iter()
+                        .filter(|(skill, _, _)| *skill == name)
+                        .map(|(_, _, sentence)| *sentence)
+                        .collect::<Vec<_>>()
+                } else {
+                    reference_guidance
+                        .iter()
+                        .filter(|(skill, path, _)| *skill == name && path == file)
+                        .map(|(_, _, sentence)| *sentence)
+                        .collect::<Vec<_>>()
+                };
+                assert!(
+                    guidance.iter().any(|sentence| {
+                        source.match_indices(sentence).any(|(start, sentence)| {
                             start <= pointer.start() && pointer.end() <= start + sentence.len()
                         })
-                }),
-                "{name}: reference without checked reading guidance: {}",
-                pointer.as_str()
-            );
+                    }),
+                    "{name}/{file}: reference without checked reading guidance: {}",
+                    pointer.as_str()
+                );
+            }
         }
         for (path, _) in &skill_files(name)[1..] {
             let found = links
@@ -4733,7 +4777,7 @@ fn bundled_skills_direct_behavior_review_against_requirements() {
         "habeas-evidence",
         &[
             "A judgment is one of three outcomes",
-            "`true`: the reviewed tests adequately check the definition, with no gap under",
+            "`true`: the reviewed tests adequately check the definition, or its implementations support its structural obligations, with no gap under",
             "`false`: there is a gap that no `{fixme}` reference acknowledges",
             "FIXME: `{fixme}` references acknowledge every remaining gap",
         ],
@@ -4762,7 +4806,23 @@ fn bundled_skills_direct_behavior_review_against_requirements() {
         "what the review checks",
         &section(skill_md("habeas-requirements"), "## What the review checks"),
         &[
+            "The intended review checks stated structure and behavior independently",
+            "implementation roots support signatures, relationships, ownership, and required",
+            "delegation; tests support behavioral obligations",
+            "Missing implementation or",
+            "test edges must not hide an obligation needing that evidence",
+            "Examples and distributed requirements retain",
+            "their existing review tasks",
+            "Issue #51",
+            "remaining independent-check and regression-test gaps",
             "assertions whose expected results contradict the requirement",
+            "too weak to rule out plausible requirement-violating behavior",
+            "an applicable recommendation with inadequate tests",
+            "text with two equally supported readings that lead to different testing judgments",
+            "adequacy gap, explain what requirement-violating behavior those tests would accept",
+            "check whether another reviewed test rules it out",
+            "map each obligation assessed here to concrete test inputs and assertions",
+            "Identify delegated obligations and established testing exemptions separately",
             "a standalone test designed to verify the subject without `{test}`",
             "The supervising agent must still check that the code fulfills each applicable requirement",
             "obligations, boundaries, and failure cases no test runs and asserts",
@@ -4971,6 +5031,7 @@ fn distributed_reference() -> &'static str {
 }
 
 // {test}`requirements.cli.distributed_guidance`
+// {test}`requirements.cli.behavior_review_guidance`
 #[test]
 fn bundled_skills_explain_distributed_requirements() {
     assert_phrases(

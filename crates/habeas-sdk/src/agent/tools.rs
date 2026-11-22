@@ -99,6 +99,7 @@ where
     P: CompletionProvider,
     T: ToolFactory<D>,
 {
+    // {impl}`requirements.sdk.graph.context-tools.shared_context`
     fn run<'a>(
         &'a self,
         request: AgentRequest<D::NodeId>,
@@ -151,6 +152,7 @@ where
 }
 
 // {cite}`habeas:util`
+// {impl}`requirements.sdk.graph.context-tools.shared_context`
 struct GraphSession<'a, 'd, D: Domain> {
     inspection: &'a InspectionContext<'d, D>,
     tools: Box<dyn ToolSession<D> + 'a>,
@@ -222,6 +224,10 @@ where
     }
     // {cite}`habeas:util`
     // {impl}`requirements.sdk.graph.agent-calls.judge.rendering`
+    // {impl}`requirements.sdk.graph.context-tools.shared_context`
+    // {impl}`requirements.sdk.graph.context-tools.read_node`
+    // {impl}`requirements.sdk.graph.context-tools.outgoing_edges`
+    // {impl}`requirements.sdk.graph.context-tools.pages`
     async fn dispatch(&mut self, name: &str, arguments: &Value) -> io::Result<String> {
         match name {
             "read_node" => {
@@ -283,6 +289,10 @@ where
             }
         }
     }
+    // {impl}`requirements.sdk.graph.context-tools.shared_context`
+    // {impl}`requirements.sdk.graph.context-tools.read_node`
+    // {impl}`requirements.sdk.graph.context-tools.outgoing_edges`
+    // {impl}`requirements.sdk.graph.context-tools.pages`
     fn delivered(&mut self) -> io::Result<()> {
         for observation in self.pending.drain(..) {
             match observation {

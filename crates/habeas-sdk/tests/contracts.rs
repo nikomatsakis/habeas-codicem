@@ -545,6 +545,7 @@ async fn typed_loading_reports_decode_errors_even_for_stale_evidence() {
 // {test}`requirements.sdk.graph.evidence.record.output`
 // {test}`requirements.sdk.graph.validation.validate_node`
 // {test}`requirements.sdk.graph.evidence.record`
+// {test}`requirements.sdk.graph.evidence.checking_records`
 #[tokio::test]
 async fn input_checking_and_execution_keep_separate_observations() {
     let domain = Application::default();

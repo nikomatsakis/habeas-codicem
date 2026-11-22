@@ -172,11 +172,15 @@ use `{fixme}` as the habeas-evidence skill's `references/fixme.md` describes.
 
 ## What the review checks
 
-Requirements with implementation roots and no test edges receive structural
-assessment: inspect the stated signatures, relationships, ownership, and
-delegation from implementation sources. Behavioral obligations still need test
-evidence; add `{test}` edges for those requirements. Examples and distributed
-requirements retain their existing review tasks.
+The intended review checks stated structure and behavior independently:
+implementation roots support signatures, relationships, ownership, and required
+delegation; tests support behavioral obligations. Missing implementation or
+test edges must not hide an obligation needing that evidence.
+The current harness selects structural assessment for requirements with
+implementation roots and no test edges, and test adequacy otherwise. Issue #51
+tracks the remaining independent-check and regression-test gaps, acknowledged
+by fenced `{fixme}` references. Examples and distributed requirements retain
+their existing review tasks.
 
 Before running `habeas author`, check the change against what each
 requirement's assessment treats as a gap:

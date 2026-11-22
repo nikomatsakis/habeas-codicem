@@ -352,6 +352,7 @@ struct Answer {
 // {test}`requirements.sdk.graph.fingerprinting.snapshot`
 // {test}`requirements.sdk.graph.evidence.node_inputs`
 // {test}`requirements.sdk.graph.context-tools.tracked_inspection`
+// {test}`requirements.sdk.graph.context-tools.read_node`
 #[test]
 fn snapshots_record_exact_reads_and_retain_distinct_versions() {
     let graph = Memory::default();
@@ -498,6 +499,7 @@ fn wildcard_versions_still_check_inputs_and_errors() {
 // {test}`requirements.sdk.graph.execution.root_inputs`
 // {test}`requirements.sdk.graph.outgoing_edges`
 // {test}`requirements.sdk.graph.fingerprinting.snapshot`
+// {test}`requirements.sdk.graph.context-tools.outgoing_edges`
 #[test]
 fn labeled_selections_track_only_target_membership_without_reading_contents() {
     let graph = Memory::default();
@@ -521,6 +523,9 @@ fn labeled_selections_track_only_target_membership_without_reading_contents() {
     assert!(!record_is_current(&graph, "v1", &empty).unwrap());
     let selected = ValidationContext::new(&graph, 1);
     assert_eq!(selected.successors(&7).unwrap(), [5, 3, 5]);
+    let snapshot = selected.inspection().outgoing_edges(&1, 7).unwrap();
+    assert_eq!(snapshot.content, [5, 3, 5]);
+    assert_eq!(snapshot.fingerprint, edge_fingerprint(&graph, &[3, 5]));
     selected.successors(&7).unwrap();
     let record = selected.inspection().finish("v1".into(), output()).unwrap();
     assert_eq!(
@@ -557,6 +562,7 @@ fn labeled_selections_track_only_target_membership_without_reading_contents() {
 // {test}`requirements.sdk.graph.validation.check_procedure`
 // {test}`requirements.sdk.graph.execution.deterministic_procedures`
 // {test}`requirements.sdk.graph.evidence.procedure_identity`
+// {test}`requirements.sdk.graph.evidence.inputs`
 #[tokio::test]
 async fn caller_reuses_negative_answers_and_compares_revisions_explicitly() {
     let graph = Memory::default();

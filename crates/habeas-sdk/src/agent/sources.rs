@@ -77,6 +77,12 @@ where
                 "parameters":{"type":"object","required":["page"],"properties":{"page":{"type":"integer","minimum":0}}}}),
         ].into_iter().map(|value| serde_json::from_value(value).map_err(io::Error::other)).collect()
     }
+    // {impl}`requirements.sdk.graph.context-tools.read_source`
+    // {impl}`requirements.sdk.graph.context-tools.list_sources`
+    // {impl}`requirements.sdk.graph.context-tools.outline_source`
+    // {impl}`requirements.sdk.graph.context-tools.search_text`
+    // {impl}`requirements.sdk.graph.context-tools.search_structure`
+    // {impl}`requirements.sdk.graph.context-tools.pages`
     fn dispatch<'a>(
         &'a mut self,
         name: &'a str,

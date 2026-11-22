@@ -1,7 +1,7 @@
 {
   "requirement": "For backends that accept explicit cache checkpoints, when the backend and model\nsupport prompt caching, every provider request MUST place one cache checkpoint\nafter the system prompt of {cite}`requirements.authoring.prompt_parts` and\nanother at the end of its last message, so each request reuses the tool\ndefinitions and system prompt that earlier assessments of its kind sent, and\nthe conversation its own earlier requests sent. Cache checkpoints MUST NOT\nchange the content of a request.\n\nFor OpenAI, which caches matching prompt prefixes automatically, the harness\nMUST keep the system prompt and tool definitions unchanged across requests in\none conversation and replay prior conversation content in its original order.\nIt MUST NOT insert checkpoint blocks.",
   "determination": true,
-  "rationale": "The reviewed tests cover each obligation of `requirements.authoring.cache_checkpoints`.\n\n**Explicit-checkpoint backend (Bedrock):**\n- `tests/authoring_cli.rs#fn[claude_requests_carry_cache_checkpoints_and_record_cache_usage]` runs a Claude model through `bedrock_run` and checks both recorded requests. In each, the `system` array has two entries: the prompt text starting with \"# Task\", then the `cachePoint` block. The last message's content ends with the `cachePoint` block. The whole body contains exactly two `cachePoint` occurrences, so there are no extra checkpoints.\n- The second request is a three-message request after a reasoning turn. It still ends in a checkpoint, which covers the multi-turn case where \"every provider request\" must carry one.\n- The \"MUST NOT change the content\" obligation is tested by running the same conversation on a non-caching model (`fixture-uncached-model`). That run contains no `cachePoint`, and each cached request with its cache points stripped (`without_cache_points`) equals the plain request.\n- The \"when the backend and model support prompt caching\" condition is tested in two places. The end-to-end test checks the uncached model gets no checkpoints. The unit test `src/authoring/providers.rs#mod[tests]/fn[cache_checkpoints_are_requested_for_caching_models]` checks `bedrock_caches` is true for Claude, an inference-profile ARN and Nova, and false for Llama and the fixture model.\n- The same unit test checks that `place_cache_checkpoints` changes only the cache option, including after a reasoning turn.\n\n**OpenAI (automatic caching):** `tests/authoring_cli.rs#fn[openai_responses_replays_tool_calls_and_records_usage]` makes two requests. It does the following:\n- It recursively asserts that no `cachePoint` or `cache_control` key, and no `cache_point` or `cache_checkpoint` block type, appears in any request body.\n- It asserts `instructions` is non-empty and identical across the requests.\n- It asserts `tools` is identical across the requests.\n- It asserts the second request's `input` begins with the first request's `input` verbatim, followed by the `function_call` and `function_call_output` items in order.\n\n**Delegated or out of scope:**\n- The requirement that a system prompt be identical across assessments of a kind belongs to the cited `requirements.authoring.prompt_parts`. Its own tests cover it, and the Bedrock test also carries a `{test}` reference for it.\n- Ollama has no explicit checkpoints and the requirement does not address it.\n- Nova placement is covered by the shared `place_cache_checkpoints` path plus the `bedrock_caches` predicate check, so it needs no separate end-to-end test.\n\nI found no plausible requirement-violating behavior that these tests would accept.",
+  "rationale": "The tests adequately check `requirements.authoring.cache_checkpoints`.\n\n**Explicit-checkpoint backends.** Only Bedrock caches (`bedrock_caches` in `src/authoring/providers.rs`). The `caches` flag gates `place_cache_checkpoints`, which sets `request.options.cache`. OpenAI and Ollama never get it.\n- **Gating by model.**\n  - `src/authoring/providers.rs#mod[tests]/fn[cache_checkpoints_are_requested_for_caching_models]` asserts `bedrock_caches` is true for Claude (plain id and inference-profile ARN) and Nova.\n  - It asserts `bedrock_caches` is false for Llama and for the fixture model.\n  - Together these cover the \"when the backend and model support prompt caching\" condition.\n- **No other change from `place_cache_checkpoints`.** The same unit test compares a request serialized after `place_cache_checkpoints` with the original request plus only `options.cache`. This supports \"MUST NOT change the content of a request\". It also checks that a request with a reasoning turn still gets the cache option.\n- **Checkpoint placement on the wire.** `tests/authoring_cli.rs#fn[claude_requests_carry_cache_checkpoints_and_record_cache_usage]` drives a two-request Bedrock Claude conversation against a mock server. For every request body it asserts:\n  - The `system` array has exactly two entries: the prompt text, then a `cachePoint` block.\n  - The last message's content ends in a `cachePoint` block.\n  - There are exactly two `cachePoint` occurrences in the body.\n  - This holds for the second request too, where the last message follows a reasoning turn (the test checks `reasoningContent` is present).\n  - So \"every provider request\" is covered, including a multi-turn request.\n- **Content unchanged.** The same test runs a non-caching model (`fixture-uncached-model`). It asserts that request has no `cachePoint`. It also asserts that each caching request, once `without_cache_points` strips the blocks, equals the corresponding uncached request. That helper removes only `cachePoint` blocks from `system` and message content, so tools, prompt text and messages are all compared.\n- **Reuse of earlier prompts.** The system prompt's sameness across assessments of a kind comes from `requirements.authoring.prompt_parts`, which this test also marks. It is cited context and is not reassessed here.\n\n**OpenAI.** `tests/authoring_cli.rs#fn[openai_responses_replays_tool_calls_and_records_usage]` runs two requests and asserts:\n- `assert_no_checkpoints` recursively rejects `cachePoint`, `cache_control`, and `type` values `cache_point` or `cache_checkpoint` in every request body.\n- `instructions` (the system prompt) are equal across the two requests.\n- `tools` are equal across the two requests.\n- The second request's `input` starts with exactly the first request's `input`. It is followed by the `function_call` and `function_call_output` in order, so earlier conversation content is replayed in its original order.\n\n**Gaps.** None found. Nova has no wire-level test, but it takes the same `bedrock_caches` and `place_cache_checkpoints` path, which the unit test covers. The tests make no assertion for Ollama, but the requirement says nothing about it.",
   "references": "83601ad827d1384db991b7c7e3d745a0c0710a4254b1e62a1ee5cd2c173f203f",
   "inputs": [
     {
@@ -36,10 +36,10 @@
         "Each assessment conversation MUST send its prompt as a system prompt followed by",
         "one user message, the subject message, filled from the first and second text",
         "blocks of the prompt requirement for the assessment's kind. The kinds are",
-        "requirement, example, citation review, site review, and a verifier of each of",
-        "those. A system prompt MUST be the same for every assessment of its kind, so",
-        "every placeholder whose value depends on the subject MUST be in the subject",
-        "message.",
+        "test-adequacy requirement, structural requirement, example, citation review, site",
+        "review, and a verifier of each of those. A system prompt MUST be the same for",
+        "every assessment of its kind, so every placeholder whose value depends on the",
+        "subject MUST be in the subject message.",
         ":::"
       ]
     },
@@ -62,11 +62,6 @@
       "file": "src/authoring/providers.rs",
       "item": "impl[RigProvider]/fn[connect]",
       "hash": "1a2c0128c6755d08cec22cdca2a433cb68c950d25ab6074438bc1cdada2bd48f"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "fn[converse_observed]",
-      "hash": "bf73d662969f2f85abb162e788dc832c94bb15a262acaca2191699a40e43ac2a"
     },
     {
       "file": "src/authoring/providers.rs",
@@ -98,13 +93,25 @@
   "review_version": "habeas-review-v1",
   "dependencies": [
     {
-      "OutgoingEdges": [
+      "Node": [
         {
-          "Requirement": "requirements.authoring.cache_checkpoints"
+          "ReferenceSet": "requirements.authoring.cache_checkpoints"
         },
         {
           "scheme": "habeas-reference-set-v1",
           "value": "83601ad827d1384db991b7c7e3d745a0c0710a4254b1e62a1ee5cd2c173f203f"
+        }
+      ]
+    },
+    {
+      "OutgoingEdges": [
+        {
+          "Requirement": "requirements.authoring.cache_checkpoints"
+        },
+        "Mandatory",
+        {
+          "scheme": "node-path-set-sha256-v1",
+          "value": "814cf9b50336249995d80d329447b827894fbe7a49e7025f980ce8ca2567d856"
         }
       ]
     },
@@ -126,7 +133,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "e58b789a002b56df2f1abfe27fc127ac5cd365022f4e749138caa29dd232e290"
+          "value": "86a1cbea0c395a8e3dbedfe7179361091f673df43422d7bfeb832bdaf4c28a7f"
         }
       ]
     },
@@ -195,23 +202,6 @@
         {
           "scheme": "habeas-input-v1",
           "value": "d5bd7f0fc6ee79333338a887f3e6b224a532abc26b91df2bb1ddd5bdf8e90177"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/authoring/mod.rs"
-            },
-            "selector": "fn[converse_observed]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "3d740f21831eae4926e989a9528af8543cc3bfbcdc8d6010cac8a70df1ff68c6"
         }
       ]
     },

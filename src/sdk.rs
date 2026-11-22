@@ -196,7 +196,7 @@ impl Graph for HabeasDomain<'_> {
 
 impl HabeasDomain<'_> {
     // {cite}`habeas:util`
-    fn reference_entries(
+    pub(crate) fn reference_entries(
         &self,
         query: &RequirementId,
     ) -> std::io::Result<Vec<crate::evidence::ReferenceSetEntry>> {
@@ -231,8 +231,12 @@ impl HabeasDomain<'_> {
     }
     // {cite}`habeas:util`
     pub(crate) fn reference_set(&self, query: &RequirementId) -> std::io::Result<String> {
-        Ok(crate::evidence::digest_entries(
-            self.reference_entries(query)?,
+        let entries = self.reference_entries(query)?;
+        Ok(crate::evidence::digest_definition_entries(
+            self.root,
+            self.outlines,
+            &self.definitions[&query.0],
+            entries,
         ))
     }
 }

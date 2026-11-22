@@ -482,28 +482,34 @@ async fn validator_agent_executions_isolate_conversations_and_dependency_traces(
 // {test}`requirements.sdk.graph.evidence.check_node`
 // {test}`requirements.sdk.graph.evidence.store_evidence`
 // {test}`requirements.sdk.graph.evidence.inputs`
+// {test}`requirements.sdk.graph.context-tools.outgoing_edges`
 #[tokio::test]
 async fn agent_edge_tools_record_selections_without_validating_targets() {
     use std::sync::atomic::{AtomicUsize, Ordering};
     #[derive(Clone)]
     struct GraphWithChangingEdges {
         lookups: Arc<AtomicUsize>,
-        records: Arc<Mutex<Vec<(u8, Record<u8, ()>)>>>,
+        records: Arc<Mutex<Vec<(u8, Record<u8, u8>)>>>,
     }
     impl Graph for GraphWithChangingEdges {
         type NodeId = u8;
-        type EdgeLabel = ();
+        type EdgeLabel = u8;
 
         type Error = io::Error;
 
         fn node_path(&self, node: &u8) -> NodePath {
             NodePath::new(vec![node.to_string()])
         }
-        fn outgoing_edges(&self, node: &u8, _: ()) -> io::Result<Vec<u8>> {
+        fn outgoing_edges(&self, node: &u8, label: u8) -> io::Result<Vec<u8>> {
+            assert!(matches!(label, 7 | 8));
             if *node == 1 && self.lookups.fetch_add(1, Ordering::SeqCst) != 0 {
                 return Err(io::Error::other("must not relist inspected edges"));
             }
-            Ok(if *node == 1 { vec![2] } else { vec![] })
+            Ok(if *node == 1 {
+                vec![if label == 7 { 2 } else { 3 }]
+            } else {
+                vec![]
+            })
         }
     }
 
@@ -545,7 +551,7 @@ async fn agent_edge_tools_record_selections_without_validating_targets() {
             &self,
             node: &u8,
             _: &CriterionPath,
-        ) -> io::Result<Option<Record<u8, ()>>> {
+        ) -> io::Result<Option<Record<u8, u8>>> {
             Ok(self
                 .records
                 .lock()
@@ -558,7 +564,7 @@ async fn agent_edge_tools_record_selections_without_validating_targets() {
             &self,
             node: &u8,
             _: &CriterionPath,
-            record: &Record<u8, ()>,
+            record: &Record<u8, u8>,
         ) -> io::Result<()> {
             self.records.lock().unwrap().push((*node, record.clone()));
             Ok(())
@@ -600,7 +606,7 @@ async fn agent_edge_tools_record_selections_without_validating_targets() {
     let agent = ToolAgent::new(Script::new(vec![
         Some(vec![(
             "outgoing_edges",
-            json!({"path":{"segments":["1"]},"label":null}),
+            json!({"path":{"segments":["1"]},"label":7}),
         )]),
         Some(vec![("submit_result", json!({"result":true}))]),
     ]));
@@ -636,15 +642,102 @@ async fn agent_edge_tools_record_selections_without_validating_targets() {
             .dependencies,
         vec![Dependency::OutgoingEdges(
             1,
-            (),
+            7,
             edge_fingerprint(&graph, &[2])
         )]
     );
     let requests = agent.provider.requests.lock().unwrap();
-    let delivered = serde_json::to_string(requests[1].chat_history.last().unwrap()).unwrap();
-    assert!(
-        delivered.contains("targets") && delivered.contains("2"),
-        "{delivered}"
+    let Message::User { content } = requests[1].chat_history.last().unwrap() else {
+        panic!("expected edge tool delivery");
+    };
+    let [UserContent::ToolResult(result)] = content.as_slice() else {
+        panic!("expected one edge result");
+    };
+    assert!(!result.is_error);
+    assert_eq!(
+        result.content,
+        vec![ToolResultContent::text(
+            json!({"targets":[{"segments":["2"]}]}).to_string()
+        )]
+    );
+    drop(requests);
+    drop(records);
+    // An unknown path cannot trigger a graph query or add an observation.
+    let graph = GraphWithChangingEdges {
+        lookups: Arc::default(),
+        records: Arc::default(),
+    };
+    let agent = ToolAgent::new(Script::new(vec![
+        Some(vec![(
+            "outgoing_edges",
+            json!({"path":{"segments":["unknown"]},"label":7}),
+        )]),
+        Some(vec![("submit_result", json!({"result":true}))]),
+    ]));
+    let ctx = ValidationContext::with_agent(&graph, 1, &agent);
+    assert!(ctx.ask::<bool>().await.unwrap());
+    assert!(ctx.inspection().dependencies().is_empty());
+    assert_eq!(graph.lookups.load(Ordering::SeqCst), 0);
+    let requests = agent.provider.requests.lock().unwrap();
+    let Message::User { content } = requests[1].chat_history.last().unwrap() else {
+        panic!("expected rejected path result");
+    };
+    let [UserContent::ToolResult(result)] = content.as_slice() else {
+        panic!("expected one rejected edge query");
+    };
+    assert!(result.is_error);
+    assert_eq!(
+        result.content,
+        vec![ToolResultContent::text(
+            "unknown node path; inspect outgoing_edges of a known node first"
+        )]
+    );
+    drop(requests);
+    // A prepared selection is not an input until delivery succeeds.
+    let failed = ToolAgent::new(Script::new(vec![
+        Some(vec![(
+            "outgoing_edges",
+            json!({"path":{"segments":["1"]},"label":7}),
+        )]),
+        None,
+    ]));
+    let ctx = ValidationContext::with_agent(&graph, 1, &failed);
+    assert!(ctx.ask::<bool>().await.is_err());
+    assert_eq!(graph.lookups.load(Ordering::SeqCst), 1);
+    assert!(ctx.inspection().dependencies().is_empty());
+    let graph = GraphWithChangingEdges {
+        lookups: Arc::default(),
+        records: Arc::default(),
+    };
+    let agent = ToolAgent::new(Script::new(vec![
+        Some(vec![(
+            "outgoing_edges",
+            json!({"path":{"segments":["1"]},"label":8}),
+        )]),
+        Some(vec![("submit_result", json!({"result":true}))]),
+    ]));
+    let ctx = ValidationContext::with_agent(&graph, 1, &agent);
+    assert!(ctx.ask::<bool>().await.unwrap());
+    assert_eq!(
+        ctx.inspection().dependencies(),
+        vec![Dependency::OutgoingEdges(
+            1,
+            8,
+            edge_fingerprint(&graph, &[3])
+        )]
+    );
+    let requests = agent.provider.requests.lock().unwrap();
+    let Message::User { content } = requests[1].chat_history.last().unwrap() else {
+        panic!("expected second label's edge delivery");
+    };
+    let [UserContent::ToolResult(result)] = content.as_slice() else {
+        panic!("expected one edge result");
+    };
+    assert_eq!(
+        result.content,
+        vec![ToolResultContent::text(
+            json!({"targets":[{"segments":["3"]}]}).to_string()
+        )]
     );
 }
 
@@ -708,6 +801,8 @@ async fn typed_submission_references_resolve_and_invalid_results_are_agent_error
 // {test}`requirements.sdk.graph.agent-calls.author_procedure`
 // {test}`requirements.sdk.graph.evidence.node_inputs`
 // {test}`requirements.sdk.graph.fingerprinting.snapshot`
+// {test}`requirements.sdk.graph.context-tools.read_node`
+// {test}`requirements.sdk.graph.context-tools.pages`
 #[tokio::test]
 async fn graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery() {
     let graph = Memory::new("x".repeat(18_000));
@@ -762,6 +857,8 @@ async fn graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record
 // {test}`requirements.sdk.sources.provider_defaults`
 // {test}`requirements.sdk.graph.context-tools.tracked_inspection`
 // {test}`requirements.sdk.graph.agent-harness.tool_agent`
+// {test}`requirements.sdk.graph.context-tools.read_source`
+// {test}`requirements.sdk.graph.context-tools.search_text`
 #[tokio::test]
 async fn source_tools_keep_search_discovery_separate_from_delivered_source_reads() {
     let root = tempfile::tempdir().unwrap();
@@ -864,6 +961,10 @@ async fn assistant_text_and_provider_failure_cannot_become_typed_results() {
 
 // {test}`requirements.sdk.graph.context-tools.tracked_inspection`
 // {test}`requirements.sdk.sources.provider_observations`
+// {test}`requirements.sdk.graph.context-tools.list_sources`
+// {test}`requirements.sdk.graph.context-tools.outline_source`
+// {test}`requirements.sdk.graph.context-tools.search_text`
+// {test}`requirements.sdk.graph.context-tools.pages`
 #[tokio::test]
 async fn source_discovery_and_its_pages_do_not_register_reads() {
     let root = tempfile::tempdir().unwrap();
@@ -1034,6 +1135,7 @@ async fn unknown_tools_return_errors_without_creating_inputs_or_preventing_submi
 // {test}`requirements.sdk.graph.agent-calls.judge.rendering`
 // {test}`requirements.sdk.graph.context-tools.tracked_inspection`
 // {test}`requirements.sdk.graph.agent-calls.author_procedure`
+// {test}`requirements.sdk.graph.context-tools.read_node`
 #[tokio::test]
 async fn node_rendering_tool_errors_allow_recovery_without_recording_undelivered_contents() {
     let mut graph = Memory::new("source".into());
@@ -1208,6 +1310,9 @@ async fn generic_conversations_can_use_default_telemetry_through_retry_and_conti
 // {test}`requirements.sdk.sources.provider_results.parse_snapshot`
 #[cfg(feature = "default-languages")]
 // {test}`requirements.sdk.graph.evidence.node_inputs`
+// {test}`requirements.sdk.graph.context-tools.read_source`
+// {test}`requirements.sdk.graph.context-tools.search_structure`
+// {test}`requirements.sdk.graph.context-tools.outline_source`
 #[tokio::test]
 async fn cached_selected_source_reads_record_exact_delivered_contents_and_errors_add_no_input() {
     let graph = Memory::new("different current source".into());
@@ -1539,4 +1644,341 @@ async fn application_tool_factories_create_fresh_state_for_each_agent_call() {
         );
     }
     assert!(ctx.inspection().dependencies().is_empty());
+}
+
+// {test}`requirements.sdk.graph.context-tools.pages`
+// {test}`requirements.sdk.graph.evidence.node_inputs`
+#[tokio::test]
+async fn graph_read_pages_retain_the_prepared_snapshot_after_contents_change() {
+    struct ChangingProvider {
+        script: Script,
+        graph: Memory,
+    }
+    impl CompletionProvider for ChangingProvider {
+        async fn complete(&self, request: CompletionRequest) -> io::Result<CompletionResponse> {
+            if self.script.requests.lock().unwrap().len() == 1 {
+                *self.graph.contents.lock().unwrap() = "replacement contents".into();
+            }
+            self.script.complete(request).await
+        }
+    }
+    let original = "original snapshot ".repeat(1200);
+    let graph = Memory::new(original.clone());
+    let agent = ToolAgent::new(ChangingProvider {
+        graph: graph.clone(),
+        script: Script::new(vec![
+            Some(vec![("read_node", json!({"path":{"segments":["1"]}}))]),
+            Some(vec![("get_node_page", json!({"page":1}))]),
+            Some(vec![("submit_result", json!({"result":true}))]),
+        ]),
+    });
+    let ctx = ValidationContext::with_agent(&graph, Node(1), &agent);
+    assert!(ctx.ask::<bool>().await.unwrap());
+    assert_eq!(*graph.reads.lock().unwrap(), [1]);
+    assert!(
+        matches!(&ctx.inspection().dependencies()[..], [Dependency::Node(Node(1), fingerprint)] if fingerprint.value == original)
+    );
+    let requests = agent.provider.script.requests.lock().unwrap();
+    let page = serde_json::to_string(requests[2].chat_history.last().unwrap()).unwrap();
+    assert!(page.contains("original snapshot"), "{page}");
+    assert!(!page.contains("replacement contents"), "{page}");
+}
+
+// {test}`requirements.sdk.graph.context-tools.pages`
+// {test}`requirements.sdk.graph.context-tools.read_source`
+#[tokio::test]
+async fn source_read_pages_retain_text_and_dependencies_without_another_read() {
+    let root = tempfile::tempdir().unwrap();
+    let original = "original source snapshot\n".repeat(1200);
+    let path = root.path().join("note.txt");
+    std::fs::write(&path, &original).unwrap();
+    let observed = Arc::new(Mutex::new(0));
+    let count = observed.clone();
+    let factory = SourceTools {
+        analysis: SourceAnalysis::new(
+            LocalSources::new(root.path()),
+            habeas_sdk::language::Registry::new([]),
+        ),
+        observation: move |id: &OutlineId, parsed: &ParsedSource| {
+            assert_eq!(id.selector, "");
+            *count.lock().unwrap() += 1;
+            Ok(Some(Dependency::Node(
+                Node(7),
+                Fingerprint {
+                    scheme: "snapshot".into(),
+                    value: parsed.source.text().unwrap().into(),
+                },
+            )))
+        },
+    };
+    let mut session = <SourceTools<_, _> as ToolFactory<Memory>>::session(&factory);
+    let first = session
+        .dispatch(
+            "read_source",
+            &json!({"resource":{"scheme":"repo","location":"note.txt"}}),
+        )
+        .await
+        .unwrap();
+    let prepared: Value = serde_json::from_str(&first.text).unwrap();
+    std::fs::write(&path, "replacement contents\n").unwrap();
+    let mut text = String::new();
+    for page in prepared["pages"].as_array().unwrap() {
+        let next = session
+            .dispatch("get_source_page", &json!({"page":page}))
+            .await
+            .unwrap();
+        assert!(
+            matches!(&next.dependencies[..], [Dependency::Node(Node(7), fingerprint)] if fingerprint.value == original)
+        );
+        text.push_str(&next.text);
+    }
+    let complete: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(complete["node"]["selector"], "");
+    assert_eq!(
+        complete["text"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|line| line.as_str().unwrap())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        original.trim_end()
+    );
+    assert_eq!(*observed.lock().unwrap(), 1);
+}
+
+#[cfg(feature = "default-languages")]
+// {test}`requirements.sdk.graph.context-tools.read_source`
+// {test}`requirements.sdk.graph.context-tools.list_sources`
+// {test}`requirements.sdk.graph.context-tools.outline_source`
+// {test}`requirements.sdk.graph.context-tools.search_text`
+// {test}`requirements.sdk.graph.context-tools.search_structure`
+// {test}`requirements.sdk.graph.context-tools.pages`
+#[tokio::test]
+async fn source_tools_forward_arguments_and_present_discovery_and_read_results() {
+    struct Provider(Arc<Mutex<Vec<Value>>>);
+    impl SourceProvider for Provider {
+        type Error = SourceError;
+        async fn list(&self, scope: &SourceScope) -> Result<Vec<ResourceId>, SourceError> {
+            self.0.lock().unwrap().push(json!({"list":scope.prefix}));
+            Ok(vec![ResourceId {
+                scheme: "generated".into(),
+                location: "source".into(),
+            }])
+        }
+        async fn read(&self, id: &ResourceId) -> Result<SourceFile, SourceError> {
+            self.0.lock().unwrap().push(json!({"read":id}));
+            Ok(SourceFile {
+                bytes: b"fn chosen() { call(); }\nfn other() {}\n"
+                    .as_slice()
+                    .into(),
+                language: Some("rust".into()),
+            })
+        }
+        async fn search_text(&self, query: &TextQuery) -> Result<TextMatches, SourceError> {
+            self.0.lock().unwrap().push(json!({"text":query.pattern,"prefix":query.scope.prefix,"context":query.context_lines,"limit":query.limit}));
+            if query.pattern == "error" {
+                return Err(SourceError::Invalid("text search failed".into()));
+            }
+            Ok(TextMatches {
+                complete: query.limit.is_none(),
+                matches: vec![TextMatch {
+                    resource: ResourceId {
+                        scheme: "generated".into(),
+                        location: "source".into(),
+                    },
+                    line: 7,
+                    excerpt: "text excerpt".into(),
+                }],
+            })
+        }
+        async fn search_structure(
+            &self,
+            query: &StructuralQuery,
+            _: &habeas_sdk::language::Registry,
+        ) -> Result<StructuralMatches, SourceError> {
+            self.0.lock().unwrap().push(json!({"structure":query.language,"rule":query.rule,"prefix":query.scope.prefix,"limit":query.limit}));
+            if query.language == "error" {
+                return Err(SourceError::Invalid("structural search failed".into()));
+            }
+            Ok(StructuralMatches {
+                complete: query.limit.is_none(),
+                matches: vec![StructuralMatch {
+                    node: OutlineId {
+                        resource: ResourceId {
+                            scheme: "generated".into(),
+                            location: "source".into(),
+                        },
+                        selector: "fn[chosen]".into(),
+                    },
+                    excerpt: if query.scope.prefix == "paged" {
+                        "structural excerpt".repeat(800)
+                    } else {
+                        "structural excerpt".into()
+                    },
+                }],
+            })
+        }
+    }
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let reads = Arc::new(Mutex::new(Vec::new()));
+    let observed = reads.clone();
+    let factory = SourceTools {
+        analysis: SourceAnalysis::new(Provider(calls.clone()), habeas_languages::registry()),
+        observation: move |id: &OutlineId, parsed: &ParsedSource| {
+            observed.lock().unwrap().push(id.clone());
+            assert_eq!(
+                parsed.source.text().unwrap(),
+                "fn chosen() { call(); }\nfn other() {}\n"
+            );
+            Ok(Some(Dependency::Node(
+                Node(7),
+                Fingerprint {
+                    scheme: "selected".into(),
+                    value: id.selector.clone(),
+                },
+            )))
+        },
+    };
+    let mut session = <SourceTools<_, _> as ToolFactory<Memory>>::session(&factory);
+    let resource = json!({"scheme":"generated","location":"source"});
+    for prefix in [None, Some("src/")] {
+        let mut args = json!({});
+        if let Some(prefix) = prefix {
+            args["prefix"] = json!(prefix);
+        }
+        let delivery = session.dispatch("list_sources", &args).await.unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&delivery.text).unwrap(),
+            json!([resource])
+        );
+        assert!(delivery.dependencies.is_empty());
+        args["pattern"] = json!("call.*");
+        if prefix.is_some() {
+            args["context_lines"] = json!(3);
+            args["limit"] = json!(2);
+        }
+        let delivery = session.dispatch("search_text", &args).await.unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&delivery.text).unwrap(),
+            json!({"complete":prefix.is_none(),"matches":[{"resource":resource,"line":7,"excerpt":"text excerpt"}]})
+        );
+        assert!(delivery.dependencies.is_empty());
+        args["language"] = json!("rust");
+        args["rule"] = json!({"rule":{"pattern":"call()"}});
+        let delivery = session.dispatch("search_structure", &args).await.unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&delivery.text).unwrap(),
+            json!({"complete":prefix.is_none(),"matches":[{"node":{"resource":resource,"selector":"fn[chosen]"},"excerpt":"structural excerpt"}]})
+        );
+        assert!(delivery.dependencies.is_empty());
+    }
+    let delivery = session
+        .dispatch("outline_source", &json!({"resource":resource}))
+        .await
+        .unwrap();
+    let outline: Value = serde_json::from_str(&delivery.text).unwrap();
+    assert_eq!(outline["resource"], resource);
+    assert!(
+        outline["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|node| node["selector"] == "fn[chosen]" && node["kind"] == "fn"),
+        "{outline}"
+    );
+    assert!(delivery.dependencies.is_empty());
+    assert!(reads.lock().unwrap().is_empty());
+    for selector in [None, Some(""), Some("fn[chosen]")] {
+        let mut args = json!({"resource":resource});
+        if let Some(selector) = selector {
+            args["selector"] = json!(selector);
+        }
+        let delivery = session.dispatch("read_source", &args).await.unwrap();
+        let read: Value = serde_json::from_str(&delivery.text).unwrap();
+        assert_eq!(
+            read["node"],
+            json!({"resource":resource,"selector":selector.unwrap_or("")})
+        );
+        let expected = if selector == Some("fn[chosen]") {
+            json!(["fn chosen() { call(); }"])
+        } else {
+            json!(["fn chosen() { call(); }", "fn other() {}"])
+        };
+        assert_eq!(read["text"], expected);
+        assert!(
+            matches!(&delivery.dependencies[..], [Dependency::Node(Node(7), fingerprint)] if fingerprint.value == selector.unwrap_or(""))
+        );
+    }
+    assert_eq!(
+        &calls.lock().unwrap()[..6],
+        &[
+            json!({"list":""}),
+            json!({"text":"call.*","prefix":"","context":0,"limit":null}),
+            json!({"structure":"rust","rule":{"rule":{"pattern":"call()"}},"prefix":"","limit":null}),
+            json!({"list":"src/"}),
+            json!({"text":"call.*","prefix":"src/","context":3,"limit":2}),
+            json!({"structure":"rust","rule":{"rule":{"pattern":"call()"}},"prefix":"src/","limit":2}),
+        ]
+    );
+    assert_eq!(
+        reads
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|id| id.selector.as_str())
+            .collect::<Vec<_>>(),
+        ["", "", "fn[chosen]"]
+    );
+    for (name, args, message) in [
+        (
+            "search_text",
+            json!({"pattern":"error"}),
+            "text search failed",
+        ),
+        (
+            "search_structure",
+            json!({"language":"error","rule":{"rule":{"pattern":"call()"}}}),
+            "structural search failed",
+        ),
+    ] {
+        assert!(
+            session
+                .dispatch(name, &args)
+                .await
+                .err()
+                .unwrap()
+                .to_string()
+                .contains(message)
+        );
+    }
+    let delivered = session
+        .dispatch(
+            "search_structure",
+            &json!({"language":"rust","rule":{"rule":{"pattern":"call()"}},"prefix":"paged"}),
+        )
+        .await
+        .unwrap();
+    assert!(delivered.dependencies.is_empty());
+    let pages: Value = serde_json::from_str(&delivered.text).unwrap();
+    assert!(pages["pages"].as_array().unwrap().len() > 1);
+    let mut assembled = String::new();
+    for page in pages["pages"].as_array().unwrap() {
+        let delivered = session
+            .dispatch("get_source_page", &json!({"page":page}))
+            .await
+            .unwrap();
+        assert!(delivered.dependencies.is_empty());
+        assembled.push_str(&delivered.text);
+    }
+    let result: Value = serde_json::from_str(&assembled).unwrap();
+    assert_eq!(
+        result["matches"][0]["excerpt"],
+        "structural excerpt".repeat(800)
+    );
+    assert_eq!(
+        reads.lock().unwrap().len(),
+        3,
+        "discovery pages cannot invoke the observation callback"
+    );
 }

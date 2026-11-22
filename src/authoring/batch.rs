@@ -276,15 +276,34 @@ async fn run_batch(
 }
 
 /// The kind of a subject's assessment, whose system prompt every
-/// assessment of that kind shares: requirement, example, citation review, or
-/// site review.
+/// assessment of that kind shares. Structural and test-adequacy requirements
+/// have different system prompts, while both retain the "requirement" usage label.
 // {impl}`requirements.authoring.prompt_parts`
 fn assessment_kind(inspection: &RepositoryInspection, subject: &AuthoringSubject) -> &'static str {
     match subject {
-        AuthoringSubject::Definition(name) => inspection
-            .definitions
-            .get(name)
-            .map_or("requirement", |definition| definition.kind.noun()),
+        AuthoringSubject::Definition(name) => {
+            let Some(definition) = inspection.definitions.get(name) else {
+                return "requirement";
+            };
+            let entries = crate::evidence::reference_set_entries(
+                &inspection.root,
+                &inspection.outlines,
+                name,
+                definition,
+                &inspection.references,
+                &inspection.sites,
+            );
+            if crate::evidence::structural_assessment(
+                &inspection.root,
+                &inspection.outlines,
+                definition,
+                &entries,
+            ) {
+                "structural requirement"
+            } else {
+                definition.kind.noun()
+            }
+        }
         AuthoringSubject::Citation { .. } => "citation review",
         AuthoringSubject::Site { .. } => "site review",
     }
@@ -700,6 +719,49 @@ mod tests {
         assert_eq!(
             label(warmup.next(&mut queue)),
             started("requirement", "d", false)
+        );
+        assert!(queue.is_empty());
+    }
+
+    // {test}`requirements.authoring.cache_warmup`
+    // {test}`requirements.authoring.prompt_parts`
+    // {test}`requirements.authoring.structural_review`
+    #[test]
+    fn structural_and_test_reviews_warm_separately_without_changing_usage_labels() {
+        let project = super::super::inputs::tests::project();
+        let root = project.path();
+        fs::write(
+            root.join("md/requirements.md"),
+            ":::{req} structure\nStructure.\n:::\n:::{req} behavior\nBehavior.\n:::\n:::{req} more_structure\nStructure.\n:::\n:::{req} more_behavior\nBehavior.\n:::\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("src/lib.rs"),
+            "// {impl}`requirements.structure`\n// {impl}`requirements.more_structure`\nfn api() {}\n// {test}`requirements.behavior`\n// {test}`requirements.more_behavior`\nfn test_api() {}\n",
+        )
+        .unwrap();
+        let inspection = crate::evidence::inspect_repository(root).unwrap();
+        let mut queue = ["structure", "behavior", "more_structure", "more_behavior"]
+            .map(|name| {
+                let subject = AuthoringSubject::Definition(format!("requirements.{name}"));
+                assert_eq!(subject.kind_noun(root), Some("requirement"));
+                (assessment_kind(&inspection, &subject), subject)
+            })
+            .to_vec();
+        let mut warmup = CacheWarmup::default();
+        assert_eq!(warmup.next(&mut queue).unwrap().0, "structural requirement");
+        assert_eq!(warmup.next(&mut queue).unwrap().0, "requirement");
+        assert!(warmup.next(&mut queue).is_none());
+        warmup.warmed("structural requirement");
+        let (kind, subject, warms) = warmup.next(&mut queue).unwrap();
+        assert_eq!(kind, "structural requirement");
+        assert_eq!(subject.label(), "requirements.more_structure");
+        assert!(!warms);
+        assert!(warmup.next(&mut queue).is_none());
+        warmup.warmed("requirement");
+        assert_eq!(
+            warmup.next(&mut queue).unwrap().1.label(),
+            "requirements.more_behavior"
         );
         assert!(queue.is_empty());
     }

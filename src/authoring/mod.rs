@@ -921,10 +921,24 @@ impl Prompt {
 // {impl}`requirements.authoring.habeas_background`
 // {impl}`requirements.authoring.judgment_rules`
 // {impl}`requirements.authoring.credentials`
+// {impl}`requirements.authoring.structural_prompt`
 fn initial_prompt(sources: &AssessmentSources) -> io::Result<Prompt> {
     initial_prompt_with_inputs(sources, &sources.model_mandatory_inputs())
 }
 
+// :::{fixme} requirements.ci.review_criteria
+// :github: nikomatsakis/habeas-codicem#51
+// One prompt is selected rather than ensuring independent structural and
+// behavioral checks. Mixed requirements receive only the behavioral task; absent
+// edge kinds do not each receive an explicit absence check. Tests exercise the
+// exclusive prompt paths and confirmation, not the full independent-check matrix.
+// :::
+// :::{fixme} requirements.ci.outcomes
+// :github: nikomatsakis/habeas-codicem#51
+// The current single-task result does not ensure both structural and behavioral
+// conclusions before accepting true. Regression tests cover existing outcomes,
+// but do not yet reject an overall success when the omitted check would find a gap.
+// :::
 fn initial_prompt_with_inputs(sources: &AssessmentSources, inputs: &[Value]) -> io::Result<Prompt> {
     let mandatory = serde_json::to_string_pretty(inputs)?;
     let mut values = shared_blocks().to_vec();
@@ -941,7 +955,14 @@ fn initial_prompt_with_inputs(sources: &AssessmentSources, inputs: &[Value]) -> 
                 ("distributed_task", &distributed),
                 ("acknowledgments", &acknowledgments),
             ]);
-            Prompt::filled("initial_prompt", &values)
+            Prompt::filled(
+                if sources.structural {
+                    "structural_prompt"
+                } else {
+                    "initial_prompt"
+                },
+                &values,
+            )
         }
         AssessmentKind::Citation(item) => {
             let citations = serde_json::to_string(&item.model_citations_value())?;
@@ -2056,6 +2077,7 @@ mod tests {
     // {test}`requirements.ci.review_criteria`
     // {test}`requirements.authoring.requirement_task`
     // {test}`requirements.authoring.testing_bar`
+    // {test}`requirements.authoring.behavioral_review`
     // {test}`requirements.authoring.example_task`
     // {test}`requirements.authoring.judgment_rules`
     // {test}`requirements.authoring.habeas_background`
@@ -4532,6 +4554,10 @@ mod tests {
     /// every subject-dependent value is in the subject message.
     // {test}`requirements.authoring.prompt_parts`
     // {test}`requirements.authoring.initial_prompt`
+    // {test}`requirements.authoring.structural_prompt`
+    // {test}`requirements.authoring.structural_review`
+    // {test}`requirements.authoring.habeas_background`
+    // {test}`requirements.authoring.judgment_rules`
     // {test}`requirements.authoring.citation_prompt`
     // {test}`requirements.authoring.site_prompt`
     // {test}`requirements.authoring.verifier_prompt`
@@ -4577,13 +4603,13 @@ mod tests {
         let mut book = fs::read_to_string(&requirements).unwrap();
         let cite = "{cite}`requirements.rule`";
         book.push_str(&format!(
-            "\n:::{{req}} other\nThe project MUST also work.\n:::\n\n:::{{req}} second\nThe project MUST keep working.\n:::\n\n:::{{example}} first_case\nA case. {cite}\n:::\n\n:::{{example}} second_case\nAnother case. {cite}\n:::\n"
+            "\n:::{{req}} other\nThe project MUST also work.\n:::\n\n:::{{req}} second\nThe project MUST keep working.\n:::\n\n:::{{req}} structure_one\nThe API MUST delegate to a helper.\n:::\n\n:::{{req}} structure_two\nThe API MUST expose a function.\n:::\n\n:::{{example}} first_case\nA case. {cite}\n:::\n\n:::{{example}} second_case\nAnother case. {cite}\n:::\n"
         ));
         fs::write(&requirements, book).unwrap();
         let source = project.path().join("src/lib.rs");
         let mut text = fs::read_to_string(&source).unwrap();
         text.push_str(&format!(
-            "\n// {cite}\nfn cites_one() {{}}\n\n// {cite}\n// :::{{cite}} habeas:util\n// Formats output.\n// :::\nfn cites_two() {{}}\n"
+            "\n// {cite}\nfn cites_one() {{}}\n\n// {cite}\n// :::{{cite}} habeas:util\n// Formats output.\n// :::\nfn cites_two() {{}}\n\n// {{impl}}`requirements.structure_one`\nfn delegates() {{ helper(); }}\nfn helper() {{}}\n// {{impl}}`requirements.structure_two`\npub fn api() {{}}\n"
         ));
         fs::write(&source, text).unwrap();
         for (first, second, template) in [
@@ -4591,6 +4617,11 @@ mod tests {
                 "requirements.other",
                 "requirements.second",
                 "initial_prompt",
+            ),
+            (
+                "requirements.structure_one",
+                "requirements.structure_two",
+                "structural_prompt",
             ),
             (
                 "requirements.first_case",
@@ -4614,12 +4645,28 @@ mod tests {
                     .unwrap()
             };
             let (first, second) = (sources(first), sources(second));
+            assert_eq!(first.structural, template == "structural_prompt");
+            assert_eq!(second.structural, template == "structural_prompt");
             let (one, two) = (
                 initial_prompt(&first).unwrap(),
                 initial_prompt(&second).unwrap(),
             );
             assert_opening(&one, template);
             assert_opening(&two, template);
+            for prompt in [&one, &two] {
+                assert!(
+                    prompt
+                        .system
+                        .contains(approved_text("habeas_background", 0))
+                );
+                assert!(prompt.system.contains(approved_text("judgment_rules", 0)));
+                assert_eq!(
+                    prompt
+                        .system
+                        .contains(approved_text("habeas_background", 1)),
+                    template != "site_prompt"
+                );
+            }
             assert_eq!(one.system, two.system, "{}", first.subject_name);
             assert_ne!(one.subject, two.subject);
             assert!(one.subject.starts_with("# Subject\n\n"), "{}", one.subject);
@@ -4631,6 +4678,20 @@ mod tests {
             );
             assert_opening(&one, "verifier_prompt");
             assert_opening(&two, "verifier_prompt");
+            for prompt in [&one, &two] {
+                assert!(
+                    prompt
+                        .system
+                        .contains(approved_text("habeas_background", 0))
+                );
+                assert!(prompt.system.contains(approved_text("judgment_rules", 0)));
+                assert_eq!(
+                    prompt
+                        .system
+                        .contains(approved_text("habeas_background", 1)),
+                    template != "site_prompt"
+                );
+            }
             assert_eq!(one.system, two.system, "verifier of {}", first.subject_name);
             assert!(one.subject.contains("One gap."));
             assert!(!one.system.contains("One gap."));
@@ -5146,7 +5207,7 @@ no_match:
         assert_eq!(result.unwrap().1["rationale"], "Reports problems.");
         assert_eq!(provider.requests.lock().unwrap().len(), 2);
 
-        for (turns, recorded, applies, kept) in [
+        for (turns, recorded, applies, kept, reviewed) in [
             // The verifier finds the requirement does not apply, unlike the
             // more favorable assessment it keeps: true on its rationale.
             (
@@ -5158,6 +5219,7 @@ no_match:
                 Judgment::True,
                 true,
                 "It is a checker after all.",
+                "Reports problems.",
             ),
             // The verifier agrees with the more favorable assessment.
             (
@@ -5169,6 +5231,7 @@ no_match:
                 Judgment::True,
                 false,
                 "Not a checker.",
+                "Reports problems.",
             ),
             // A real gap in the applying assessment records false.
             (
@@ -5179,6 +5242,7 @@ no_match:
                 ],
                 Judgment::False,
                 true,
+                "It panics.",
                 "It panics.",
             ),
             (
@@ -5196,6 +5260,7 @@ no_match:
                 Judgment::Fixme(vec!["o/r#1".into()]),
                 true,
                 "It panics.",
+                "It panics.",
             ),
             (
                 vec![
@@ -5206,6 +5271,7 @@ no_match:
                 Judgment::True,
                 false,
                 "Only a helper.",
+                "Another gap.",
             ),
         ] {
             let (result, provider) = site_confirmed(turns.clone()).await;
@@ -5256,7 +5322,462 @@ no_match:
                 "{text}"
             );
             assert!(!text.contains("{{"), "{text}");
+            assert!(text.contains(&escaped(reviewed)), "{text}");
+            assert!(text.contains("# Mandatory inputs"), "{text}");
             assert!(tools.contains(&"submit_verification".to_owned()));
+            assert!(!tools.contains(&"submit_judgment".to_owned()));
+            let requests = provider.requests.lock().unwrap();
+            let subject = requests[2]["chat_history"][1]["content"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|part| part["text"].as_str())
+                .collect::<String>();
+            let inputs: Value =
+                serde_json::from_str(prompt_section(&subject, "Mandatory inputs").trim()).unwrap();
+            assert_eq!(
+                inputs[0]["text"],
+                json!(["fn check_one() { panic!(\"x\"); }"])
+            );
+            assert_eq!(
+                requests[2]["tools"],
+                serde_json::to_value(tool_definitions_with("submit_verification", true).unwrap())
+                    .unwrap()
+            );
+            let source_tools = |request: &Value| {
+                request["tools"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter(|tool| {
+                        !matches!(
+                            tool["name"].as_str(),
+                            Some("submit_judgment" | "submit_verification")
+                        )
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(source_tools(&requests[2]), source_tools(&requests[0]));
+            assert_eq!(source_tools(&requests[2]), source_tools(&requests[1]));
+        }
+    }
+    // {test}`requirements.authoring.structural_review`
+    // {test}`requirements.authoring.behavioral_review`
+    // {test}`requirements.authoring.structural_inputs`
+    // {test}`requirements.references.authoring_inputs`
+    // {test}`requirements.ci.reference_set`
+    #[test]
+    fn structural_roots_select_inputs_and_version_the_reference_digest() {
+        let root = inputs::tests::project();
+        let (path, configuration) = crate::execution_coverage::configure(root.path()).unwrap();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, configuration).unwrap();
+        let impl_role = inputs::tests::role("impl", "requirements.ready");
+        let test_role = inputs::tests::role("test", "requirements.ready");
+        let implementation =
+            format!("// {impl_role}\npub fn api() {{ helper(); }}\nfn helper() {{}}\n");
+        let declaration = ":::{req} ready\n:impl: src/lib.rs#fn[api]\nThe public api function delegates to helper.\n:::\n";
+        fs::write(root.path().join("md/requirements.md"), declaration).unwrap();
+        fs::write(root.path().join("src/lib.rs"), &implementation).unwrap();
+        let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        assert!(sources.structural);
+        let inputs = sources.mandatory_inputs();
+        let roots = inputs
+            .iter()
+            .filter(|input| input["file"] == "src/lib.rs")
+            .collect::<Vec<_>>();
+        assert_eq!(
+            roots.len(),
+            1,
+            "anchor and reference must deduplicate: {inputs:?}"
+        );
+        assert_eq!(roots[0]["item"], "fn[api]");
+        assert!(roots[0]["text"].to_string().contains("helper();"));
+        assert!(!roots[0]["text"].to_string().contains("fn helper"));
+        // In-source references select their own enclosing node without an anchor.
+        fs::write(
+            root.path().join("md/requirements.md"),
+            ":::{req} ready\nThe public api function delegates to helper.\n:::\n",
+        )
+        .unwrap();
+        let unanchored = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        assert!(unanchored.structural);
+        assert_eq!(unanchored.mandatory_inputs(), inputs);
+        // A structural assessment also includes plain-text implementation roots
+        // and complete refining declarations, without recursively reading helpers.
+        let plain = format!("Plain implementation\n{impl_role}\nWhole file content.\n");
+        fs::write(root.path().join("src/details.txt"), &plain).unwrap();
+        fs::write(root.path().join("md/requirements.md"), format!(":::{{req}} ready\nThe public api function delegates to helper.\n:::\n:::{{req}} refined\n{impl_role}\nComplete refinement.\nSecond paragraph.\n:::\n")).unwrap();
+        let refined = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        assert!(refined.structural);
+        let refined_inputs = refined.mandatory_inputs();
+        assert!(
+            refined_inputs
+                .iter()
+                .any(|input| input["file"] == "src/details.txt"
+                    && input["item"] == ""
+                    && input["text"]
+                        == json!(["Plain implementation", &impl_role, "Whole file content."])),
+            "{refined_inputs:?}"
+        );
+        assert!(
+            refined_inputs
+                .iter()
+                .any(|input| input["requirements"] == "requirements.refined"
+                    && input["text"].to_string().contains("Complete refinement.")
+                    && input["text"].to_string().contains("Second paragraph.")),
+            "{refined_inputs:?}"
+        );
+        fs::remove_file(root.path().join("src/details.txt")).unwrap();
+        fs::write(root.path().join("md/requirements.md"), declaration).unwrap();
+        let definitions = crate::evidence::load_definitions(root.path()).unwrap();
+        let domain = crate::sdk::HabeasDomain {
+            root: root.path(),
+            definitions: &definitions,
+            outlines: &sources.outlines,
+        };
+        let entries = domain
+            .reference_entries(&crate::sdk::RequirementId("requirements.ready".into()))
+            .unwrap();
+        let historical = crate::evidence::digest_entries(entries);
+        assert_ne!(sources.reference_set, historical);
+        fs::create_dir_all(root.path().join("evidence")).unwrap();
+        let record = json!({"requirement": sources.subject_text, "determination": true,
+            "rationale":"A former test-adequacy review.", "references":historical,
+            "inputs":inputs.iter().map(crate::inputs::recorded_input).collect::<Vec<_>>()});
+        fs::write(
+            root.path().join("evidence/requirements.ready.json"),
+            record.to_string(),
+        )
+        .unwrap();
+        let errors = crate::evidence::validate_repository(root.path())
+            .unwrap()
+            .errors
+            .join("\n");
+        assert!(errors.contains("reference set changed"), "{errors}");
+        // Structural sources are dependencies, so implementation changes stale a current review.
+        let mut current = record;
+        current["references"] = json!(sources.reference_set);
+        fs::write(
+            root.path().join("evidence/requirements.ready.json"),
+            current.to_string(),
+        )
+        .unwrap();
+        let errors = crate::evidence::validate_repository(root.path())
+            .unwrap()
+            .errors;
+        assert!(errors.is_empty(), "{errors:?}");
+        fs::write(
+            root.path().join("src/lib.rs"),
+            implementation.replace("helper();", "other();"),
+        )
+        .unwrap();
+        assert!(
+            crate::evidence::validate_repository(root.path())
+                .unwrap()
+                .errors
+                .iter()
+                .any(|error| error.contains("input") && error.contains("changed"))
+        );
+        // Adding a test selects test adequacy, including with an implementation anchor.
+        fs::write(
+            root.path().join("src/lib.rs"),
+            format!("{implementation}\n// {test_role}\n#[test]\nfn checks_api() {{ api(); }}\n"),
+        )
+        .unwrap();
+        let tested = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        assert!(!tested.structural);
+        assert!(
+            !tested
+                .mandatory_inputs()
+                .iter()
+                .any(|input| input["item"] == "fn[api]")
+        );
+        let definitions = crate::evidence::load_definitions(root.path()).unwrap();
+        let domain = crate::sdk::HabeasDomain {
+            root: root.path(),
+            definitions: &definitions,
+            outlines: &tested.outlines,
+        };
+        assert_eq!(
+            tested.reference_set,
+            crate::evidence::digest_entries(
+                domain
+                    .reference_entries(&crate::sdk::RequirementId("requirements.ready".into()))
+                    .unwrap()
+            )
+        );
+        // Test anchors have the same precedence as in-source test references.
+        fs::write(root.path().join("src/lib.rs"), &implementation).unwrap();
+        fs::write(
+            root.path().join("md/requirements.md"),
+            declaration.replace(":impl:", ":test:"),
+        )
+        .unwrap();
+        assert!(
+            !AssessmentSources::prepare(root.path(), "requirements.ready")
+                .unwrap()
+                .structural
+        );
+        // An implementation anchor alone is enough, without an in-source reference.
+        fs::write(root.path().join("src/lib.rs"), "pub fn api() {}\n").unwrap();
+        fs::write(root.path().join("md/requirements.md"), declaration).unwrap();
+        assert!(
+            AssessmentSources::prepare(root.path(), "requirements.ready")
+                .unwrap()
+                .structural
+        );
+        fs::write(
+            root.path().join("md/requirements.md"),
+            ":::{req} base\nContext.\n:::\n:::{example} ready\nA case. {cite}`requirements.base`\n:::\n",
+        )
+        .unwrap();
+        fs::write(root.path().join("src/lib.rs"), &implementation).unwrap();
+        assert!(
+            !AssessmentSources::prepare(root.path(), "requirements.ready")
+                .unwrap()
+                .structural
+        );
+        let distributed = format!("{declaration}\n").replace("The public api", "::::{sites} functions\n```yaml\nlanguage: rust\nrule: {kind: function_item}\nmatch: ['fn api() {}']\nno_match: ['struct Other;']\n```\n::::\nThe public api");
+        fs::write(root.path().join("md/requirements.md"), distributed).unwrap();
+        assert!(
+            !AssessmentSources::prepare(root.path(), "requirements.ready")
+                .unwrap()
+                .structural
+        );
+        fs::write(root.path().join("md/requirements.md"), format!(":::{{req}} ready\nStructure.\n:::\n:::{{req}} refined\n{impl_role}\nRefinement.\n:::\n")).unwrap();
+        fs::write(root.path().join("src/lib.rs"), "fn unreferenced() {}\n").unwrap();
+        assert!(
+            !AssessmentSources::prepare(root.path(), "requirements.ready")
+                .unwrap()
+                .structural
+        );
+    }
+
+    // {test}`requirements.authoring.structural_inputs`
+    // {test}`requirements.authoring.structural_review`
+    // {test}`requirements.authoring.behavioral_review`
+    // {test}`requirements.authoring.read_denial.mandatory`
+    #[test]
+    fn structural_roots_obey_mandatory_access_and_resolution_rules() {
+        let root = inputs::tests::project();
+        fs::write(
+            root.path().join("md/requirements.md"),
+            ":::{req} ready\n:impl: src/lib.rs#fn[api]\nStructure.\n:::\n",
+        )
+        .unwrap();
+        let role = inputs::tests::role("impl", "requirements.ready");
+        fs::write(
+            root.path().join("src/lib.rs"),
+            format!("// {role}\nfn api() {{}}\n"),
+        )
+        .unwrap();
+        fs::write(
+            root.path().join("habeas.toml"),
+            "version=1\n[evidence]\ndisallow=['src/lib.rs']\n",
+        )
+        .unwrap();
+        let error = AssessmentSources::prepare(root.path(), "requirements.ready")
+            .err()
+            .unwrap();
+        assert!(error.to_string().contains("disallowed"), "{error}");
+        fs::remove_file(root.path().join("habeas.toml")).unwrap();
+        fs::write(
+            root.path().join("md/requirements.md"),
+            ":::{req} ready\n:impl: src/lib.rs#fn[missing]\nStructure.\n:::\n",
+        )
+        .unwrap();
+        let error = AssessmentSources::prepare(root.path(), "requirements.ready")
+            .err()
+            .unwrap();
+        assert!(error.to_string().contains("missing"), "{error}");
+        fs::create_dir_all(root.path().join("evidence")).unwrap();
+        fs::write(
+            root.path().join("evidence/generated.rs"),
+            "fn generated() {}\n",
+        )
+        .unwrap();
+        fs::write(
+            root.path().join("md/requirements.md"),
+            ":::{req} ready\n:impl: evidence/generated.rs\nStructure.\n:::\n",
+        )
+        .unwrap();
+        fs::write(root.path().join("src/lib.rs"), "fn unreferenced() {}\n").unwrap();
+        let omitted = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        assert!(!omitted.structural);
+        fs::write(
+            root.path().join("habeas.toml"),
+            "version=1\n[evidence]\nallow=['evidence/generated.rs']\n",
+        )
+        .unwrap();
+        let allowed = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        assert!(allowed.structural);
+        assert!(
+            allowed
+                .mandatory_inputs()
+                .iter()
+                .any(|input| input["file"] == "evidence/generated.rs")
+        );
+        // An omitted generated test edge cannot override a real implementation.
+        fs::remove_file(root.path().join("habeas.toml")).unwrap();
+        fs::write(
+            root.path().join("src/lib.rs"),
+            format!("// {role}\nfn api() {{}}\n"),
+        )
+        .unwrap();
+        fs::write(
+            root.path().join("md/requirements.md"),
+            ":::{req} ready\n:test: evidence/generated.rs\nStructure.\n:::\n",
+        )
+        .unwrap();
+        assert!(
+            AssessmentSources::prepare(root.path(), "requirements.ready")
+                .unwrap()
+                .structural
+        );
+        fs::write(
+            root.path().join("habeas.toml"),
+            "version=1\n[evidence]\nallow=['evidence/generated.rs']\n",
+        )
+        .unwrap();
+        assert!(
+            !AssessmentSources::prepare(root.path(), "requirements.ready")
+                .unwrap()
+                .structural
+        );
+        fs::remove_file(root.path().join("habeas.toml")).unwrap();
+        // A plain-text implementation alone is not a supported code profile.
+        fs::write(root.path().join("src/lib.rs"), "fn unreferenced() {}\n").unwrap();
+        fs::write(
+            root.path().join("src/details.txt"),
+            format!("{role}\nPlain content.\n"),
+        )
+        .unwrap();
+        fs::write(
+            root.path().join("md/requirements.md"),
+            ":::{req} ready\n:impl: src/details.txt\nStructure.\n:::\n",
+        )
+        .unwrap();
+        assert!(
+            !AssessmentSources::prepare(root.path(), "requirements.ready")
+                .unwrap()
+                .structural
+        );
+    }
+
+    // {test}`requirements.authoring.structural_prompt`
+    // {test}`requirements.authoring.structural_review`
+    // {test}`requirements.authoring.confirmation`
+    // {test}`requirements.authoring.verifier_prompt`
+    // {test}`requirements.ci.review_criteria`
+    #[tokio::test]
+    async fn structural_assessments_and_confirmation_use_the_same_structural_contract() {
+        let root = inputs::tests::project();
+        let role = inputs::tests::role("impl", "requirements.ready");
+        fs::write(
+            root.path().join("src/lib.rs"),
+            format!("// {role}\n// :::{{fixme}} requirements.ready\n// The remaining structural gap.\n// :::\npub fn api() {{}}\n"),
+        )
+        .unwrap();
+        let sources = AssessmentSources::prepare(root.path(), "requirements.ready").unwrap();
+        let initial = initial_prompt(&sources).unwrap();
+        for text in [
+            "stated structural obligations",
+            "Inspect the supplied implementation roots",
+            "Observable runtime",
+            "testing gap",
+            "marking gap",
+            "pub fn api()",
+        ] {
+            assert!(initial.joined().contains(text), "missing {text}");
+        }
+        assert!(!initial.system.contains("Testing criteria:"));
+        assert!(!initial.joined().contains("{{"));
+        assert!(
+            initial
+                .subject
+                .starts_with("# Subject\n\nSubject: requirement requirements.ready\n")
+        );
+        let acknowledgment = sources.model_acknowledgments();
+        assert_eq!(acknowledgment.len(), 1);
+        assert!(
+            acknowledgment[0]["body"]
+                .as_str()
+                .unwrap()
+                .contains("The remaining structural gap.")
+        );
+        assert_eq!(
+            serde_json::from_str::<Value>(
+                prompt_section(&initial.subject, "Acknowledgments").trim()
+            )
+            .unwrap(),
+            json!(acknowledgment)
+        );
+        let verification = verification_prompt(
+            &sources,
+            &Judgment::False,
+            "The required signature is absent.",
+        )
+        .unwrap();
+        assert!(verification.subject.contains("using structural assessment"));
+        assert!(
+            verification
+                .subject
+                .contains(prompt_section(&initial.system, "Your task"))
+        );
+        let provider = RecordingProvider::new(vec![
+            judgment(json!(true), "The structure is present."),
+            judgment(json!(false), "The required signature is absent."),
+            (
+                "submit_verification",
+                json!({"real":false,"acknowledged":false,"acknowledgments":[],"rationale":"The signature is present."}),
+            ),
+        ]);
+        let state = tempfile::tempdir().unwrap();
+        let mut usage = UsageLog::start(state.path(), root.path(), "requirements.ready").unwrap();
+        let subject = AuthoringSubject::Definition("requirements.ready".into());
+        let (answer, record) = assess_subject(
+            &provider,
+            root.path(),
+            state.path(),
+            &subject,
+            sources,
+            &mut usage,
+            AssessmentPolicy::Confirm,
+        )
+        .await
+        .unwrap();
+        assert_eq!(answer, Judgment::True);
+        assert!(
+            record["inputs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|input| input["item"] == "fn[api]")
+        );
+        let prompts = provider.prompts();
+        assert_eq!(prompts.len(), 3);
+        assert!(prompts.iter().all(
+            |(prompt, _)| prompt.contains("stated structural obligations")
+                || prompt.contains("Inspect the supplied implementation roots")
+        ));
+        let requests = provider.requests.lock().unwrap();
+        for (index, request) in requests.iter().enumerate() {
+            let submit_name = if index == 2 {
+                "submit_verification"
+            } else {
+                "submit_judgment"
+            };
+            let expected =
+                serde_json::to_value(tool_definitions_with(submit_name, false).unwrap()).unwrap();
+            assert_eq!(
+                request["tools"], expected,
+                "structural conversation {index} must retain tools and submission schemas"
+            );
+            let prompt = &prompts[index].0;
+            assert!(prompt.contains("requirements.ready"));
+            assert!(prompt.contains("The remaining structural gap."));
         }
     }
 }

@@ -43,6 +43,7 @@ pub(crate) struct AssessmentSources {
     pub(crate) access: std::sync::Arc<SourceAccess>,
     pub(crate) subject_name: String,
     pub(crate) subject_kind: AssessmentKind,
+    pub(crate) structural: bool,
     pub(crate) subject_text: String,
     pub(crate) has_applicable_fixme: bool,
     /// Parsed outlines, cached for this assessment.
@@ -163,10 +164,24 @@ impl AssessmentSources {
             definitions,
             outlines: &outlines,
         };
-        let reference_set =
-            domain.reference_set(&crate::sdk::RequirementId(subject_name.to_owned()))?;
-        // Tests contribute source. Refining declarations contribute their text;
-        // implementation references outside declarations only locate code.
+        let id = crate::sdk::RequirementId(subject_name.to_owned());
+        let structural = crate::evidence::structural_assessment(
+            &root,
+            &outlines,
+            subject,
+            &domain.reference_entries(&id)?,
+        );
+        let reference_set = domain.reference_set(&id)?;
+        // {impl}`requirements.authoring.structural_inputs`
+        // :::{fixme} requirements.authoring.structural_inputs
+        // :github: nikomatsakis/habeas-codicem#51
+        // Implementation roots are mandatory only in the exclusive structural
+        // mode. Mixed requirements omit them from the initial bundle even though
+        // their independent structural check needs them. Input tests assert the
+        // accepted compromise and do not yet verify the full mixed-input contract.
+        // :::
+        // Structural review receives implementation roots, while test review
+        // retains on-demand implementation reads.
         for reference in references.iter().filter(|reference| {
             reference.name == subject_name
                 && matches!(reference.kind, ReferenceKind::Impl | ReferenceKind::Test)
@@ -177,7 +192,8 @@ impl AssessmentSources {
                 continue;
             }
             let selector = reference_selector(&root, &definitions, &outlines, reference)?;
-            if reference.kind == ReferenceKind::Test
+            if structural
+                || reference.kind == ReferenceKind::Test
                 || matches!(selector, InputSelector::Requirements { .. })
             {
                 access.file(&root, &reference.file)?;
@@ -208,7 +224,7 @@ impl AssessmentSources {
                         ),
                     )
                 })?;
-            if anchor.kind == ReferenceKind::Test {
+            if structural || anchor.kind == ReferenceKind::Test {
                 insert_selector(&mut selectors, selector);
             }
         }
@@ -298,6 +314,7 @@ impl AssessmentSources {
             root,
             access: access.into(),
             subject_name: subject_name.to_owned(),
+            structural,
             has_applicable_fixme: !acknowledgments.is_empty(),
             subject_kind: AssessmentKind::Definition(
                 subject.kind,
@@ -398,6 +415,7 @@ impl AssessmentSources {
             access: access.into(),
             subject_name,
             subject_kind: AssessmentKind::Citation(citation),
+            structural: false,
             has_applicable_fixme: false,
             subject_text: String::new(),
             outlines,
@@ -517,6 +535,7 @@ impl AssessmentSources {
             subject_name,
             has_applicable_fixme: !fixmes.is_empty(),
             subject_kind: AssessmentKind::Site(site, fixmes),
+            structural: false,
             subject_text: String::new(),
             outlines,
             reference_set: String::new(),

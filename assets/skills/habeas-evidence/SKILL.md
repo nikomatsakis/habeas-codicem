@@ -71,6 +71,12 @@ those records without calling a model. A judgment is one of three outcomes:
 - FIXME: `{fixme}` references acknowledge every remaining gap; validation
   accepts it while each named issue is open.
 
+The intended requirement review checks structure and behavior independently.
+The current choice of one assessment, including its incomplete handling of
+mixed requirements and absent edge kinds, is the accepted gap tracked by issue
+#51. Keep its fenced `{fixme}` acknowledgments until the independent checks
+and their regression tests are implemented.
+
 ## Rules
 
 - Never write or edit evidence JSON, determinations, rationales, or inputs

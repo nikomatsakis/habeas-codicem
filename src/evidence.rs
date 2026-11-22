@@ -1233,9 +1233,81 @@ pub(crate) fn reference_set_digest<'a>(
     references: impl IntoIterator<Item = &'a SourceReference>,
     sites: &crate::sites::Sites,
 ) -> String {
-    digest_entries(reference_set_entries(
-        root, outlines, name, definition, references, sites,
-    ))
+    digest_definition_entries(
+        root,
+        outlines,
+        definition,
+        reference_set_entries(root, outlines, name, definition, references, sites),
+    )
+}
+
+/// The same mode predicate is used for mandatory inputs and freshness.
+// {impl}`requirements.authoring.structural_review`
+// :::{fixme} requirements.authoring.structural_review
+// :github: nikomatsakis/habeas-codicem#51
+// The accepted routing compromise selects structural review only with supported
+// implementation roots and no test edges. Mixed requirements skip structural
+// review, and absent implementation edges do not trigger a structural absence
+// check. Existing routing tests pin this compromise; regression tests do not yet
+// establish independent structural checks for all four edge combinations.
+// :::
+// :::{fixme} requirements.authoring.behavioral_review
+// :github: nikomatsakis/habeas-codicem#51
+// Structural mode does not also run an independent behavioral check, including
+// establishing the absence of behavioral properties without test edges. Existing
+// tests cover exclusive selection, not both checks or removal of either edge kind.
+// :::
+pub(crate) fn structural_assessment(
+    root: &Path,
+    outlines: &OutlineCache,
+    definition: &Declaration,
+    entries: &[ReferenceSetEntry],
+) -> bool {
+    let access = outlines.source_access(root);
+    let considered = |entry: &&ReferenceSetEntry| {
+        access
+            .as_ref()
+            .is_ok_and(|access| !access.omit_generated_evidence(root, Path::new(&entry.file)))
+    };
+    definition.kind == DefinitionKind::Requirement
+        && !crate::structural::has_query_directive(definition)
+        && !entries
+            .iter()
+            .filter(considered)
+            .any(|entry| entry.role == "test")
+        && entries.iter().filter(considered).any(|entry| {
+            let profile = crate::outline::profile_for_path(Path::new(&entry.file));
+            entry.role == "impl" && profile.language.is_some() && profile.name != "markdown"
+        })
+}
+
+/// Preserve the historical encoding for test review. Structural reviews add a
+/// marker to the hash only, never a synthetic edge to the graph.
+// {impl}`requirements.ci.reference_set`
+// :::{fixme} requirements.ci.reference_set
+// :github: nikomatsakis/habeas-codicem#51
+// The structural marker currently applies only to the exclusive structural mode.
+// Mixed requirements and requirements without implementation edges do not get
+// the marker required for their independent structural check. Regression tests
+// assert the current exclusive mode's digest, not full independent-check freshness.
+// :::
+pub(crate) fn digest_definition_entries(
+    root: &Path,
+    outlines: &OutlineCache,
+    definition: &Declaration,
+    entries: Vec<ReferenceSetEntry>,
+) -> String {
+    let structural = structural_assessment(root, outlines, definition, &entries);
+    let digest = digest_entries(entries);
+    if structural {
+        use sha2::{Digest, Sha256};
+        Sha256::digest(format!("habeas-structural-assessment-v1\0{digest}"))
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
+    } else {
+        digest
+    }
 }
 
 /// The entries of a definition's reference set, unsorted, as

@@ -1479,6 +1479,16 @@ fn batch_preserves_current_false_judgments_and_reauthors_stale_ones() {
 fn batch_reauthors_a_false_judgment_when_its_reference_set_changes() {
     let server = Server::start(false, None);
     let fixture = Fixture::new(&server.endpoint, Some(2));
+    let source = fixture.project.join("src/lib.rs");
+    // Start without an implementation root, so structural review does not
+    // already supply delta's source before the new test edge is added.
+    fs::write(
+        &source,
+        fs::read_to_string(&source)
+            .unwrap()
+            .replace("// {impl}`requirements.delta`\n", ""),
+    )
+    .unwrap();
     let output = fixture.run(&["author", "--all"]);
     assert!(
         output.status.success(),
@@ -1494,11 +1504,11 @@ fn batch_reauthors_a_false_judgment_when_its_reference_set_changes() {
     }
     let path = fixture.project.join("evidence/requirements.delta.json");
     let mut record = fixture.evidence("requirements.delta");
+    assert!(!record["inputs"].to_string().contains("src/lib.rs"));
     record["determination"] = json!(false);
     record["rationale"] = json!("The behavior has no {test} reference.");
     fs::write(&path, serde_json::to_vec_pretty(&record).unwrap()).unwrap();
 
-    let source = fixture.project.join("src/lib.rs");
     fs::write(
         &source,
         fs::read_to_string(&source).unwrap().replace(
@@ -2404,7 +2414,10 @@ fn initial_acknowledgments_supply_closed_and_missing_issue_states_without_source
     *github.state.lock().unwrap() = "closed";
     let fixture = Fixture::new(&server.endpoint, None);
     let source = fixture.project.join("src/lib.rs");
-    fs::write(&source, fs::read_to_string(&source).unwrap().replace(
+    // An acknowledgment alone supplies issue states, not implementation source.
+    fs::write(&source, fs::read_to_string(&source).unwrap()
+        .replace("// {impl}`requirements.beta`\n", "")
+        .replace(
         "pub fn beta()",
         "// :::{fixme} requirements.beta\n// :github: example/queue#125\n// :github: example/queue#404\n// Boundary cases are untested.\n// :::\npub fn beta()",
     )).unwrap();

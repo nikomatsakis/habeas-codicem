@@ -14,10 +14,14 @@ Follow "Writing chapters" in the habeas-requirements skill. Review prose, API
 declarations, comments, and examples together for a clear explanation and
 checkable promises; illustrative examples do not automatically create promises.
 
-Each requirement gets its own model assessment: test adequacy for requirements
-with test edges, or stated structure for requirements with implementation roots
-and no test edges. Behavioral obligations still need test evidence. Examples and
-distributed requirements retain their existing tasks. Editing a requirement makes
+Each requirement gets its own model assessment. The intended contract checks
+structure through implementation roots and behavior through tests independently;
+without one kind of edge, establish that no obligation needs it, applying the
+existing refining-declaration rules and testing exemptions. The current harness
+chooses structural assessment only for requirements with implementation roots
+and no test edges, and test adequacy otherwise. Issue #51 tracks this accepted
+temporary gap; fenced `{fixme}` references acknowledge it.
+Examples and distributed requirements retain their existing tasks. Editing a requirement makes
 its evidence stale. So a requirement should
 be as small as it can be while still standing on its own: it costs less to
 assess, and editing it makes only its own evidence stale.

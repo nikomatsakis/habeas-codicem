@@ -134,6 +134,7 @@ impl<'d, D: Domain> ValidationContext<'d, D> {
     // {impl}`requirements.sdk.graph.agent-calls.author_procedure`
     /// Tracked graph reads and edge selections for this execution.
     // {impl}`requirements.sdk.graph.execution.root_inputs`
+    // {impl}`requirements.sdk.graph.context-tools.shared_context`
     pub fn inspection(&self) -> &InspectionContext<'d, D> {
         &self.inspection
     }
@@ -253,6 +254,7 @@ where
     // {impl}`requirements.sdk.graph.agent-calls.judge.node_contents`
     // {impl}`requirements.sdk.graph.agent-calls.judge.rendering`
     // {impl}`requirements.sdk.graph.agent-calls.model_capability`
+    // {impl}`requirements.sdk.graph.context-tools.shared_context`
     async fn execute(self) -> Result<R, ValidationError<D::Error>> {
         let agent = self.ctx.agent.ok_or(ValidationError::NoAgentConfigured)?;
         let mut inputs = Vec::new();
