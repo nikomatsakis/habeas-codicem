@@ -254,8 +254,9 @@ Escaped roles, code, raw HTML, and unresolvable references remain literal.
 The original declaration, reference discovery, and authoring inputs retain the
 citations.
 
-Each fenced `{req}` or `{example}` directive renders as a Shields.io definition
-badge image identifying its kind; text outside a directive remains literal.
+Each fenced `{req}` or `{example}` directive renders with a badge identifying
+its kind and full name; text outside a directive remains literal. Declaration
+badge navigation follows {cite}`requirements.index.navigation`.
 Badge text remains legible regardless of whether its link has been visited.
 A badge link shows a visible indicator when it has keyboard focus and may
 brighten on hover. Badges may be laid out inline with the surrounding text, a

@@ -84,12 +84,14 @@ render normally without double escaping.
 :::{req} declaration_sections
 :impl: md/habeas.css
 In authored chapters, requirements, examples, and named definitions render as
-collapsible sections, expanded when the chapter opens. Their headers and body
-prose share the left edge of the containing prose. Each header identifies the
-declaration and its kind. A light vertical rule on the right delineates the
-section; a circular disclosure control at the top of that rule shows a minus
-when expanded and a plus when collapsed. Collapsing a section hides its body
-while keeping the header visible. The disclosure works with a mouse or keyboard.
+collapsible sections, expanded when the chapter opens. Body prose shares the
+containing prose's left edge without added indentation. Each header's badge
+is right-aligned and identifies the declaration and its kind.
+A narrow colored bar in the right margin delineates the section and uses the
+badge's color: blue for requirements and purple for examples. A square
+disclosure control at the top of that bar shows a minus when expanded
+and a plus when collapsed. Collapsing a section hides its body while keeping
+the header visible. The disclosure works with a mouse or keyboard.
 
 The body retains its Markdown rendering, including code blocks and nested
 declarations. Requirement and example headers retain the definition and
@@ -99,7 +101,14 @@ links navigate independently of the disclosure.
 
 :::{req} navigation
 :impl: md/habeas.css
-Each requirement and example definition badge MUST link to its own anchored definition on the current page. The badge MUST have a separate adjacent link containing an accessible right-arrow icon in an integrated segment matching the badge color linking to its evidence detail page. The badge and arrow MUST remain aligned in one non-wrapping row. Definitions MUST NOT be followed by a separate plaintext evidence link. Each detail page MUST link back to the definition's anchored badge and to the index. Reference badges MUST continue to link to the definition. These links MUST resolve when a requirement name contains `.md`, as in `requirements.cli.mdbook`.
+Each requirement and example declaration badge has two adjacent links. Its
+kind (`req` or `example`) links to the declaration's anchor on the current
+page; its full name links to the evidence detail page. These segments stay
+together in one non-wrapping row, with no separate arrow link or plaintext evidence link.
+Each detail page links back to the declaration's anchored badge and to the
+index. Reference badges continue to link to the declaration. These links
+resolve when a requirement name contains `.md`, as in
+`requirements.cli.mdbook`.
 :::
 
 :::{req} source_links
