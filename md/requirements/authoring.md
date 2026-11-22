@@ -1989,10 +1989,10 @@ where it does not, the stop MUST be treated as reaching the output limit.
 Each assessment conversation MUST send its prompt as a system prompt followed by
 one user message, the subject message, filled from the first and second text
 blocks of the prompt requirement for the assessment's kind. The kinds are
-requirement, example, citation review, site review, and a verifier of each of
-those. A system prompt MUST be the same for every assessment of its kind, so
-every placeholder whose value depends on the subject MUST be in the subject
-message.
+test-adequacy requirement, structural requirement, example, citation review, site
+review, and a verifier of each of those. A system prompt MUST be the same for
+every assessment of its kind, so every placeholder whose value depends on the
+subject MUST be in the subject message.
 :::
 
 :::{req} cache_checkpoints
