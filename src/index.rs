@@ -6,6 +6,7 @@ use std::path::{Component, Path, PathBuf};
 
 use mdbook_preprocessor::book::{Book, BookItem, Chapter, SectionNumber};
 use mdbook_preprocessor::config::Config;
+use pulldown_cmark::{Event, Parser, Tag};
 use serde_json::Value;
 
 use crate::evidence::{Declaration, SourceReference, collect_references, load_definitions};
@@ -595,6 +596,55 @@ fn evidence_edit_path(book_src: &Path, name: &str) -> PathBuf {
     path
 }
 
+/// Escape HTML tokens while retaining the surrounding Markdown source.
+// {impl}`requirements.index.detail_format.rationale_html`
+fn literal_rationale_html(rationale: &str) -> String {
+    let mut markdown = rationale.to_owned();
+    loop {
+        let mut markup = Vec::new();
+        for (event, range) in Parser::new(&markdown).into_offset_iter() {
+            match event {
+                Event::InlineHtml(_) => markup.push(range),
+                Event::Start(Tag::HtmlBlock) => {
+                    // Reveal the block's Markdown by escaping its opening token
+                    // first. Escaping the entire block would also change code
+                    // and autolinks within its body.
+                    let start = range.start + markdown[range.clone()].find('<').unwrap();
+                    let inline = format!("x{}", &markdown[start..range.end]);
+                    let length =
+                        Parser::new(&inline)
+                            .into_offset_iter()
+                            .find_map(|(event, token)| match event {
+                                Event::InlineHtml(_) if token.start == 1 => Some(token.end - 1),
+                                _ => None,
+                            });
+                    markup.push(start..length.map_or(range.end, |length| start + length));
+                }
+                _ => {}
+            }
+        }
+        if markup.is_empty() {
+            return markdown;
+        }
+        for range in markup.into_iter().rev() {
+            let mut literal = String::new();
+            let mut previous = None;
+            for character in markdown[range.clone()].chars() {
+                // Protect Markdown-looking attribute values too. Entities keep
+                // their ampersand, semicolon, and optional numeric prefix.
+                let entity_punctuation =
+                    matches!(character, '&' | ';') || (character == '#' && previous == Some('&'));
+                if character.is_ascii_punctuation() && !entity_punctuation {
+                    literal.push('\\');
+                }
+                literal.push(character);
+                previous = Some(character);
+            }
+            markdown.replace_range(range, &literal);
+        }
+    }
+}
+
 // {impl}`requirements.index.detail_format`
 // {impl}`requirements.index.invalid_detail`
 // {impl}`requirements.examples.index`
@@ -841,7 +891,9 @@ fn render_detail_sections(
         .and_then(|evidence| evidence.get("rationale"))
         .and_then(Value::as_str)
     {
-        Some(rationale) if !rationale.trim().is_empty() => content.push_str(rationale.trim()),
+        Some(rationale) if !rationale.trim().is_empty() => {
+            content.push_str(&literal_rationale_html(rationale.trim()));
+        }
         _ => content.push_str("No rationale recorded."),
     }
     if !detail_evidence.fixme_entries.is_empty() {
@@ -1644,6 +1696,141 @@ mod tests {
         );
         assert!(page.contains("```ini\n[book]\n```"), "{page}");
         assert!(!page.contains("Stale text."));
+    }
+
+    // {test}`requirements.index.detail_format.rationale_html`
+    #[test]
+    fn detail_rationales_render_html_literally_and_preserve_markdown() {
+        use pulldown_cmark::{Event, Parser, html};
+
+        let definition = Definition {
+            path: Path::new("requirements/core.md").to_path_buf(),
+            text: "Ready.".into(),
+            kind: DefinitionKind::Requirement,
+        };
+        let temp = TempDir::new().unwrap();
+        let body = r##"## Checks
+
+**Checked** *carefully*.
+
+- missing at <chapter>:<line>
+- outline <file> <selector> (lines <range>)
+- mapping <old>=<new>, searches <ids>, and [REDACTED:<kind>]
+- [source](https://example.test/source)
+- <https://example.test/auto>
+- <reviewer@example.test>
+
+<file>
+
+> Quoted <line>.
+
+Inline code: `<code> &amp;`.
+
+```text
+<selector> &amp;
+```
+
+Entities: &lt;entity&gt; &amp; &#x3c;numeric&#62;.
+
+<span title="**bold** `code` [link](https://example.test/attribute) &amp; &#35;literal">span text</span>
+
+<!-- **comment** -->
+"##;
+        let cases = [
+            body.to_owned(),
+            format!("<div>\n{body}</div>"),
+            format!("<script>\n{body}</script>"),
+            format!("<style>\n{body}</style>"),
+            format!("<pre>\n{body}</pre>"),
+            format!("<div\n title=\"# Heading **literal**\">\n{body}</div>"),
+            format!("{body}\n<!-- unterminated **literal** &amp;"),
+        ];
+        for rationale in cases {
+            let record = json!({
+                "determination": true,
+                "rationale": rationale,
+                "inputs": [],
+            })
+            .to_string();
+            let page = render_detail_page(
+                "requirements.core.ready",
+                Path::new("requirements-index/requirements.core.ready.md"),
+                None,
+                &definition,
+                DetailEvidence {
+                    state: EvidenceState::Valid,
+                    record: Some(&record),
+                    errors: &[],
+                    fixme_entries: &[],
+                },
+                &RenderSources {
+                    check_hashes: false,
+                    root: temp.path(),
+                    definitions: &BTreeMap::new(),
+                    references: &[],
+                    source_links: None,
+                    outlines: &crate::inputs::OutlineCache::default(),
+                },
+            );
+            let rationale_markdown = page
+                .split_once("\n## Rationale\n\n")
+                .unwrap()
+                .1
+                .split_once("\n\n## Inputs\n\n")
+                .unwrap()
+                .0;
+            let events = Parser::new(rationale_markdown).collect::<Vec<_>>();
+            assert!(
+                !events
+                    .iter()
+                    .any(|event| matches!(event, Event::Html(_) | Event::InlineHtml(_))),
+                "{rationale_markdown}"
+            );
+            let text = events
+                .iter()
+                .filter_map(|event| match event {
+                    Event::Text(text) | Event::Code(text) => Some(text.as_ref()),
+                    _ => None,
+                })
+                .collect::<String>();
+            for literal in [
+                "missing at <chapter>:<line>",
+                "outline <file> <selector> (lines <range>)",
+                "mapping <old>=<new>, searches <ids>, and [REDACTED:<kind>]",
+                "Quoted <line>.",
+                "Entities: <entity> & <numeric>.",
+                r#"<span title="**bold** `code` [link](https://example.test/attribute) & #literal">"#,
+                "<!-- **comment** -->",
+            ] {
+                assert!(text.contains(literal), "{literal:?} missing from {text:?}");
+            }
+            if rationale.starts_with("<div\n") {
+                assert!(text.contains("title=\"# Heading **literal**\""), "{text}");
+            }
+            if rationale.contains("unterminated") {
+                assert!(text.contains("<!-- unterminated **literal** &"), "{text}");
+            }
+            let mut rendered = String::new();
+            html::push_html(&mut rendered, events.into_iter());
+            for formatted in [
+                "<h2>Checks</h2>",
+                "<strong>Checked</strong> <em>carefully</em>",
+                "<ul>",
+                "<blockquote>",
+                "<p>&lt;file&gt;</p>",
+                r#"<a href="https://example.test/source">source</a>"#,
+                r#"<a href="https://example.test/auto">https://example.test/auto</a>"#,
+                r#"<a href="mailto:reviewer@example.test">reviewer@example.test</a>"#,
+                "<code>&lt;code&gt; &amp;amp;</code>",
+                "<pre><code class=\"language-text\">&lt;selector&gt; &amp;amp;\n</code></pre>",
+            ] {
+                assert!(
+                    rendered.contains(formatted),
+                    "{formatted:?} missing from {rendered}"
+                );
+            }
+            assert!(!rendered.contains("href=\"https://example.test/attribute\""));
+        }
     }
 
     // {test}`requirements.index.source_links`
