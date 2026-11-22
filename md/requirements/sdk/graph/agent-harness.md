@@ -46,6 +46,25 @@ Applications can instead [implement their own conversation
 adapter](#adapt-an-existing-conversation). A validator shares the chosen
 implementation through `Arc<dyn Agent<D>>`.
 
+## Configure the validator's agent
+
+Choose the agent once when configuring a validator. Its criteria then use that
+agent through their contexts' `ask` requests.
+
+:::{req} with_agent
+```rust,ignore
+use habeas_sdk::procedure::Agent;
+use std::sync::Arc;
+
+// Method on Validator<D>.
+/// Share this agent with execution contexts.
+pub fn with_agent(
+    self,
+    agent: Arc<dyn Agent<D>>,
+) -> Self;
+```
+:::
+
 ## Configure the supplied harness
 
 The SDK supplies `ToolAgent` for applications that want a provider conversation
@@ -83,6 +102,7 @@ inputs under {cite}`requirements.sdk.graph.agent-calls.author_procedure`.
 
 :::{example} setup
 {cite}`requirements.sdk.graph.agent-harness.tool_agent`
+{cite}`requirements.sdk.graph.agent-harness.with_agent`
 {cite}`requirements.sdk.graph.validation.validator`
 
 Here `provider` implements `CompletionProvider`, and `domain` is the
