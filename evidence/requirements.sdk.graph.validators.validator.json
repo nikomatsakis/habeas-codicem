@@ -1,7 +1,7 @@
 {
   "requirement": "```rust,ignore\n// Defined in habeas_sdk::graph.\n/// Domain access and configuration shared by criterion executions.\npub struct Validator<D: Domain> { /* private fields */ }\n\nimpl<D: Domain> Validator<D> {\n    /// Own the domain used to check and execute criteria.\n    pub fn new(domain: D) -> Self;\n}\n```\n\nIndependent verifications share a validator through `&self`. Cached observations\ncan be reused when they still represent the state being checked. Each execution\nhas its own context, dependency trace, and agent conversation state. Operations\nwithin one execution share its synchronized trace through context inspection\nand agent calls.\n\nConcurrent verifications of the same source and criterion run independently,\neach with its own context and trace. [Storage](evidence.md#look-up-a-source-and-criterion)\ndescribes atomic replacement when results are saved.",
   "determination": true,
-  "rationale": "The reviewed tests adequately cover the obligations in `requirements.sdk.graph.validators.validator`.\n\n- **Construction and shared `&self` use.** `Validator::new(domain)` is exercised by every marked test. In `validator_agent_executions_isolate_conversations_and_dependency_traces`, one validator runs two `verify` calls concurrently with `futures::join!`. The two `Validator` constructions in `crates/habeas-sdk/tests/contracts.rs` do the same through `&self`.\n- **Per-execution agent conversation state.** The `ParallelConversations` provider in `crates/habeas-sdk/tests/agent.rs` asserts the following. Each conversation's history length grows as `2 + turn*2`. Each history contains only its own contents and never the other's. The last delivered page belongs to the same conversation, even though both conversations use the same page ids and tool-call id. A `Barrier(2)` forces the two executions to interleave. The test also asserts 3 calls per conversation and that each result is its own (`alpha` and `beta`).\n- **Per-execution dependency trace.** The test loads each saved record and checks its exact dependency list. `alpha` has only `Node(1)`. `beta` has only `OutgoingEdges(Node(1), Label, …)` and `Node(2)`. Any leakage between traces would fail these equalities.\n- **Shared synchronized trace within one execution.** Each execution's trace combines context inspection (`contents_of_*`) and agent tool reads, and the stored records show a complete trace. Concurrent writers to one trace are also checked by `concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads`. That test carries a `context-tools.tracked_inspection` marker rather than a validator marker, but it directly asserts three dependencies and `finish` equality on a single shared context. The validator-level test cannot tell agent-call reads apart from context reads, because the node ids overlap. I treat that as covered at the context level and not as a validator gap.\n- **Cached observation reuse.** `validation_and_answer_need_send_without_sync` stores a verification result and then calls `load_evidence`. It asserts the output `17`, one descriptor read and one execution, so the stored result was reused. It also calls `refresh_evidence` twice with the same criterion. It asserts `(executions, writes) == (2, 2)` and that the second call returns the stored `23` rather than the new `0`.\n- **Concurrent verifications of the same source and criterion.** `concurrent_same_criterion_executions_keep_complete_independent_records` runs two `verify` calls on the same node and criterion path behind a barrier, with a 5-second timeout so a serializing implementation would fail. It asserts that two executions ran and that no records were stored before `store_evidence`. It then stores both concurrently and asserts a single complete record, with the output, revision and dependencies all coming from the same execution. `concurrent_refreshes_execute_independently_and_store_complete_records` does the same for `refresh_evidence`, and also asserts that the saved record matches the winner's output, revision and dependencies.\n- **Atomic replacement.** The requirement says storage describes atomic replacement, so I treat it as owned by the evidence/storage requirements. These tests also check that the single surviving record is never a mix of two executions.\n\nI found no unacknowledged gap.",
+  "rationale": "I mapped each obligation in `requirements.sdk.graph.validators.validator` to the four {test}-marked tests.\n\n- **`Validator::new` owns the domain.** Every marked test builds the validator with `Validator::new(domain)`, then runs, stores, loads and refreshes through it. `validation_and_answer_need_send_without_sync` asserts the outcomes against the domain's `executions` and `writes` counters. `validator_agent_executions_isolate_conversations_and_dependency_traces` loads the saved records back from the domain.\n- **Independent verifications share a validator through `&self`.**\n  - `validator_agent_executions_isolate_conversations_and_dependency_traces` runs two `validator.verify(...)` calls concurrently on one validator. A 2s timeout and a two-party barrier in the provider prove the executions overlap.\n  - `concurrent_same_criterion_executions_keep_complete_independent_records` does the same with `verify`. `concurrent_refreshes_execute_independently_and_store_complete_records` does it with `refresh_evidence`.\n- **Cached observations can be reused when they still represent the state.** This is a permission (\"can\").\n  - `validation_and_answer_need_send_without_sync` shows `load_evidence` returns the stored value (17). The test asserts executions stay at 1 and `descriptor_reads` is 1.\n  - The same test shows a second `refresh_evidence` for the same criterion returns the stored 23 without re-executing. It asserts `(executions, writes) == (2, 2)`.\n- **Each execution has its own context, dependency trace and agent conversation.**\n  - In `validator_agent_executions_isolate_conversations_and_dependency_traces`, the `ParallelConversations` provider asserts per-conversation history length, and that each history contains only its own page contents and never the other's.\n  - The stored records are asserted to hold exactly each execution's own dependencies. Alpha has only `Node(1)`. Beta has `OutgoingEdges(Node(1), Label, …)` and `Node(2)`.\n  - The test also checks each execution made 3 provider calls.\n- **Operations within one execution share its synchronized trace through context inspection and agent calls.**\n  - Agent tool reads performed in each execution appear in that execution's stored dependencies, as shown in the agent test above.\n  - Context reads (`Review.reads`) appear in the saved dependencies in the two `contracts.rs` concurrent tests. Those tests assert the exact `Dependency::Node(..)` vectors.\n  - Within-execution concurrent sharing is also checked in `concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads`. It has no `validator` {test} reference, but it targets the context-level requirements. The validator-level obligation is already shown through the marked tests, so I don't count this as a gap.\n- **Concurrent verifications of the same source and criterion run independently, each with its own context and trace.**\n  - `concurrent_same_criterion_executions_keep_complete_independent_records` uses two executions of the same source and criterion path, `[\"behavior\"]`. They meet at a barrier inside a 5s timeout, so neither waits for the other.\n  - The test asserts each output and that nothing is stored before `store_evidence`.\n  - It asserts the one saved record is entirely one execution's: revision and dependencies match the winner, and there is one record from two writes.\n  - `concurrent_refreshes_execute_independently_and_store_complete_records` repeats the check for refresh. It compares the saved output, revision and dependencies to the winner's.\n- **Atomic replacement on save** belongs to the Storage requirement and is only cited here.\n\nA violating implementation would be a shared trace or conversation across executions, serialized same-criterion executions, or mixed records on save. Each of these would fail the assertions above. I found no unaddressed obligation and no acknowledged gap.",
   "references": "f899292954b6eec14a2fffe928e059882650b6eb614243f0fb3fab3be1baf7fb",
   "inputs": [
     {
@@ -56,8 +56,8 @@
     },
     {
       "file": "crates/habeas-sdk/tests/agent.rs",
-      "item": "impl[ParallelConversations/CompletionProvider]",
-      "hash": "d426e081a91f37facb763b194696eb8f08f79aae8a1e78b2b622852869f0dd8e"
+      "item": "fn[concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads]",
+      "hash": "fafa2e8f5995a8c2c867d4cd32c42a224ab6e393e2d2238b20e023b5abecc89f"
     },
     {
       "file": "crates/habeas-sdk/tests/agent.rs",
@@ -66,13 +66,8 @@
     },
     {
       "file": "crates/habeas-sdk/tests/agent.rs",
-      "item": "fn[concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads]",
-      "hash": "fafa2e8f5995a8c2c867d4cd32c42a224ab6e393e2d2238b20e023b5abecc89f"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/agent.rs",
-      "item": "struct[Question]",
-      "hash": "35e06302b085fcd8997745325322bbd449f619aa13141a5d746fecf3fadb2ccf"
+      "item": "impl[ParallelConversations/CompletionProvider]",
+      "hash": "d426e081a91f37facb763b194696eb8f08f79aae8a1e78b2b622852869f0dd8e"
     }
   ],
   "format_version": 1,
@@ -81,7 +76,7 @@
     {
       "Node": [
         {
-          "ReferenceSet": "requirements.sdk.graph.validation.validator"
+          "ReferenceSet": "requirements.sdk.graph.validators.validator"
         },
         {
           "scheme": "habeas-reference-set-v1",
@@ -92,7 +87,7 @@
     {
       "OutgoingEdges": [
         {
-          "Requirement": "requirements.sdk.graph.validation.validator"
+          "Requirement": "requirements.sdk.graph.validators.validator"
         },
         "Mandatory",
         {
@@ -104,11 +99,11 @@
     {
       "Node": [
         {
-          "Requirement": "requirements.sdk.graph.validation.validator"
+          "Requirement": "requirements.sdk.graph.validators.validator"
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "22e2357aa67967bfbf7496dce8e79f77c1fffbda4bd9b9920c9969a2e0d26a95"
+          "value": "2ccccb4b85f9338080315a381b9e28449f413d55654f446554d29fe242ff84fa"
         }
       ]
     },
@@ -188,12 +183,12 @@
               "scheme": "repo",
               "location": "crates/habeas-sdk/tests/agent.rs"
             },
-            "selector": "impl[ParallelConversations/CompletionProvider]"
+            "selector": "fn[concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "dbb1d95af1f77fa680a1bc763a31e521792078c2c50fd60befacbfadcb81bd46"
+          "value": "726a5f29a590fbe20135afc83b8e57c3f349194a6317a8988baad5909682a8c5"
         }
       ]
     },
@@ -222,29 +217,12 @@
               "scheme": "repo",
               "location": "crates/habeas-sdk/tests/agent.rs"
             },
-            "selector": "fn[concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads]"
+            "selector": "impl[ParallelConversations/CompletionProvider]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "726a5f29a590fbe20135afc83b8e57c3f349194a6317a8988baad5909682a8c5"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/agent.rs"
-            },
-            "selector": "struct[Question]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "06d5f1eb0b81cff1b01256354deaff00d1fcb01841dd5ef70da73c1a5b83cd18"
+          "value": "dbb1d95af1f77fa680a1bc763a31e521792078c2c50fd60befacbfadcb81bd46"
         }
       ]
     }

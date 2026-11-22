@@ -1646,6 +1646,91 @@ async fn application_tool_factories_create_fresh_state_for_each_agent_call() {
     assert!(ctx.inspection().dependencies().is_empty());
 }
 
+// {test}`requirements.sdk.graph.agent-harness.tool_agent`
+#[tokio::test]
+async fn application_tools_preserve_graph_tools_in_the_same_conversation() {
+    let contents = "x".repeat(18_000);
+    let graph = Memory::new(contents.clone());
+    let created = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let agent = ToolAgent::new(Script::new(vec![
+        Some(vec![
+            (
+                "outgoing_edges",
+                json!({"path":{"segments":["1"]},"label":null}),
+            ),
+            ("increment", json!({})),
+        ]),
+        Some(vec![
+            ("read_node", json!({"path":{"segments":["2"]}})),
+            ("increment", json!({})),
+        ]),
+        Some(vec![("get_node_page", json!({"page":1}))]),
+        Some(vec![("submit_result", json!({"result":true}))]),
+    ]))
+    .with_tools(CounterTools(created));
+    let ctx = ValidationContext::with_agent(&graph, Node(1), &agent);
+    assert!(ctx.ask::<bool>().await.unwrap());
+
+    let requests = agent.provider.requests.lock().unwrap();
+    assert_eq!(requests.len(), 4);
+    for request in requests.iter() {
+        for name in [
+            "outgoing_edges",
+            "read_node",
+            "get_node_page",
+            "increment",
+            "submit_result",
+        ] {
+            assert!(request.tools.iter().any(|tool| tool.name == name));
+        }
+    }
+    let deliveries: Vec<Vec<String>> = requests[1..]
+        .iter()
+        .map(|request| {
+            let Message::User { content } = request.chat_history.last().unwrap() else {
+                panic!("expected tool results");
+            };
+            content
+                .iter()
+                .map(|item| {
+                    let UserContent::ToolResult(result) = item else {
+                        panic!("expected tool result");
+                    };
+                    assert!(!result.is_error);
+                    let [ToolResultContent::Text(text)] = result.content.as_slice() else {
+                        panic!("expected text result");
+                    };
+                    text.text.clone()
+                })
+                .collect()
+        })
+        .collect();
+    assert_eq!(
+        serde_json::from_str::<Value>(&deliveries[0][0]).unwrap(),
+        json!({"targets":[{"segments":["2"]}]})
+    );
+    assert_eq!(deliveries[0][1], "counter=1");
+    assert_eq!(
+        serde_json::from_str::<Value>(&deliveries[1][0]).unwrap(),
+        json!({"first":{"page":0,"text":"x".repeat(8_192)},"pages":[0,1,2]})
+    );
+    assert_eq!(deliveries[1][1], "counter=2");
+    assert_eq!(
+        serde_json::from_str::<Value>(&deliveries[2][0]).unwrap(),
+        json!({"page":1,"text":"x".repeat(8_192)})
+    );
+    let observations = ctx.inspection().dependencies();
+    assert_eq!(observations.len(), 2);
+    assert!(
+        matches!(&observations[0], Dependency::OutgoingEdges(Node(1), Label, fingerprint)
+            if *fingerprint == edge_fingerprint(&graph, &[Node(2)]))
+    );
+    assert!(
+        matches!(&observations[1], Dependency::Node(Node(2), fingerprint)
+            if fingerprint.value == contents)
+    );
+}
+
 // {test}`requirements.sdk.graph.context-tools.pages`
 // {test}`requirements.sdk.graph.evidence.node_inputs`
 #[tokio::test]
