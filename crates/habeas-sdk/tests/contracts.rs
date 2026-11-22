@@ -667,6 +667,7 @@ async fn wildcard_revision_does_not_supply_other_criteria_or_nodes() {
 // {test}`requirements.sdk.graph.validation.validate_node`
 // {test}`requirements.sdk.graph.validation.validator`
 // {test}`requirements.sdk.graph.evidence.store_evidence`
+// {test}`requirements.sdk.graph.evidence.refresh_evidence`
 #[tokio::test]
 async fn validation_and_answer_need_send_without_sync() {
     let domain = Application::default();
@@ -684,6 +685,269 @@ async fn validation_and_answer_need_send_without_sync() {
     assert_eq!(loaded.into_output().get(), 17);
     assert_eq!(descriptor.descriptor_reads.get(), 1);
     assert_eq!(domain.0.lock().unwrap().executions, 1);
+    let fresh = send(validator.refresh_evidence(Review::new(&["refresh"], Cell::new(23u32))))
+        .await
+        .unwrap();
+    assert_eq!(fresh.output().get(), 23);
+    let reused = send(validator.refresh_evidence(Review::new(&["refresh"], Cell::new(0u32))))
+        .await
+        .unwrap();
+    assert_eq!(reused.into_output().get(), 23);
+    let state = domain.0.lock().unwrap();
+    assert_eq!((state.executions, state.writes), (2, 2));
+}
+
+// {test}`requirements.sdk.graph.evidence.refresh_evidence`
+// {test}`requirements.sdk.graph.evidence.checking_records.procedure_match`
+#[tokio::test]
+async fn refresh_reuses_current_positive_negative_and_legacy_answers_without_saving() {
+    for satisfied in [true, false] {
+        for revision in ["v1", "*"] {
+            let domain = Application::default();
+            domain.0.lock().unwrap().contents.insert(2, "input".into());
+            let validator = Validator::new(domain.clone());
+            let mut first = Review::new(&["behavior"], answer(satisfied, "saved answer"));
+            first.reads = vec![Node(2)];
+            let saved = validator.refresh_evidence(first).await.unwrap();
+            domain.0.lock().unwrap().records[0].2.revision = revision.into();
+
+            let mut next = Review::new(&["behavior"], answer(!satisfied, "unused answer"));
+            next.failure = Some("must reuse");
+            let reused = validator.refresh_evidence(next).await.unwrap();
+            assert_eq!(reused.output(), saved.output());
+            assert_eq!(reused.dependencies(), saved.dependencies());
+            assert_eq!(reused.source_node_id(), saved.source_node_id());
+            assert_eq!(reused.criterion_path(), saved.criterion_path());
+            assert_eq!(reused.revision(), revision);
+            let state = domain.0.lock().unwrap();
+            assert_eq!((state.executions, state.writes), (1, 1));
+            assert_eq!(state.reads, [2, 2]);
+            assert_eq!(state.records.len(), 1);
+            assert_eq!(state.records[0].2.revision, revision);
+            assert_eq!(
+                state.records[0].2.output,
+                serde_json::to_value(saved.output()).unwrap()
+            );
+        }
+    }
+}
+
+// {test}`requirements.sdk.graph.evidence.refresh_evidence`
+// {test}`requirements.sdk.graph.evidence.checking_records`
+#[tokio::test]
+async fn refresh_evaluates_missing_incompatible_or_changed_evidence_with_a_fresh_trace() {
+    for cause in ["missing", "revision", "contents", "successors"] {
+        let domain = Application::default();
+        {
+            let mut state = domain.0.lock().unwrap();
+            state
+                .contents
+                .extend([(1, "current input".into()), (2, "old input".into())]);
+            state.edges.insert((1, 7), vec![Node(2)]);
+        }
+        let validator = Validator::new(domain.clone());
+        if cause != "missing" {
+            let mut old = Review::new(&["behavior"], "old answer".to_owned());
+            if cause == "successors" {
+                old.label = Some(7);
+            } else {
+                old.reads = vec![Node(2)];
+            }
+            persist(&validator, old).await;
+        }
+        {
+            let mut state = domain.0.lock().unwrap();
+            state.reads.clear();
+            match cause {
+                "revision" => {
+                    // An incompatible revision bypasses resolution of obsolete inputs.
+                    state.contents.remove(&2);
+                }
+                "contents" => {
+                    state.contents.insert(2, "changed input".into());
+                }
+                "successors" => {
+                    state.edges.insert((1, 7), vec![Node(3)]);
+                }
+                _ => {}
+            }
+        }
+        let mut next = Review::new(&["behavior"], "new answer".to_owned());
+        next.reads = vec![Node(1)];
+        if cause == "revision" {
+            next.revision = "v2".into();
+        }
+        let replacement = validator.refresh_evidence(next).await.unwrap();
+        assert_eq!(replacement.output(), "new answer");
+        assert_eq!(
+            replacement.dependencies(),
+            [Dependency::Node(
+                Node(1),
+                Fingerprint {
+                    scheme: "text-v1".into(),
+                    value: "current input".into(),
+                }
+            )]
+        );
+        let state = domain.0.lock().unwrap();
+        let expected_count = if cause == "missing" { 1 } else { 2 };
+        assert_eq!(
+            (state.executions, state.writes),
+            (expected_count, expected_count)
+        );
+        assert_eq!(
+            state.reads,
+            if cause == "contents" {
+                vec![2, 1]
+            } else {
+                vec![1]
+            }
+        );
+        assert_eq!(state.records.len(), 1);
+        assert_eq!(state.records[0].2.output, json!("new answer"));
+        assert_eq!(state.records[0].2.dependencies, replacement.dependencies());
+        assert_eq!(state.records[0].2.revision, replacement.revision());
+    }
+}
+
+// {test}`requirements.sdk.graph.evidence.refresh_evidence`
+// {test}`requirements.sdk.graph.evidence.record.output`
+#[tokio::test]
+async fn refresh_propagates_load_decode_check_execution_and_save_errors() {
+    for stage in [
+        "load",
+        "decode",
+        "stale decode",
+        "read",
+        "edges",
+        "execute",
+        "store",
+    ] {
+        let domain = Application::default();
+        domain.0.lock().unwrap().contents.insert(2, "input".into());
+        let validator = Validator::new(domain.clone());
+        let mut old = Review::new(&[], true);
+        if stage == "read" {
+            old.reads = vec![Node(2)];
+        } else if stage == "edges" {
+            old.label = Some(7);
+        }
+        persist(&validator, old).await;
+        let mut next = Review::new(&[], false);
+        {
+            let mut state = domain.0.lock().unwrap();
+            match stage {
+                "load" => state.fail_load = true,
+                "decode" | "stale decode" => state.records[0].2.output = json!("not a boolean"),
+                "read" => state.fail_read = true,
+                "edges" => state.fail_edges = true,
+                "execute" => next.failure = Some("execute"),
+                "store" => state.fail_store = true,
+                _ => unreachable!(),
+            }
+            if matches!(stage, "stale decode" | "execute" | "store") {
+                next.revision = "v2".into();
+            }
+        }
+        let before = domain.0.lock().unwrap().records[0].2.clone();
+        let error = validator.refresh_evidence(next).await.err().unwrap();
+        match (stage, error) {
+            ("decode" | "stale decode", ValidationError::Output(_)) => {}
+            (expected, ValidationError::Graph(actual)) => assert_eq!(actual, expected),
+            (stage, other) => panic!("{stage}: unexpected error {other:?}"),
+        }
+        let state = domain.0.lock().unwrap();
+        assert_eq!(
+            state.executions,
+            if matches!(stage, "execute" | "store") {
+                2
+            } else {
+                1
+            }
+        );
+        assert_eq!(state.writes, 1);
+        assert_eq!(state.records.len(), 1);
+        let after = &state.records[0].2;
+        assert_eq!(after.output, before.output);
+        assert_eq!(after.revision, before.revision);
+        assert_eq!(after.dependencies, before.dependencies);
+    }
+}
+
+// {test}`requirements.sdk.graph.evidence.refresh_evidence`
+// {test}`requirements.sdk.graph.evidence.record.output`
+#[tokio::test]
+async fn refresh_serialization_failure_preserves_the_saved_record() {
+    let domain = Application::default();
+    let validator = Validator::new(domain.clone());
+    // A unit struct decodes from null, but this criterion's new answer cannot encode.
+    domain.0.lock().unwrap().records.push((
+        Node(1),
+        path(&[]),
+        Record {
+            revision: "v1".into(),
+            dependencies: vec![],
+            output: json!(null),
+        },
+    ));
+    let mut next = Review::new(&[], Unencodable);
+    next.revision = "v2".into();
+    assert!(matches!(
+        validator.refresh_evidence(next).await,
+        Err(ValidationError::Output(_))
+    ));
+    let state = domain.0.lock().unwrap();
+    assert_eq!((state.executions, state.writes), (1, 0));
+    assert_eq!(state.records.len(), 1);
+    assert_eq!(state.records[0].2.revision, "v1");
+    assert_eq!(state.records[0].2.output, json!(null));
+}
+
+// {test}`requirements.sdk.graph.evidence.refresh_evidence`
+// {test}`requirements.sdk.graph.validation.validator`
+// {test}`requirements.sdk.graph.evidence.evidence_storage`
+#[tokio::test]
+async fn concurrent_refreshes_execute_independently_and_store_complete_records() {
+    let domain = Application::default();
+    domain
+        .0
+        .lock()
+        .unwrap()
+        .contents
+        .extend([(2, "first".into()), (3, "second".into())]);
+    let validator = Validator::new(domain.clone());
+    let barrier = Arc::new(tokio::sync::Barrier::new(2));
+    let mut first = Review::new(&[], "first".to_owned());
+    first.revision = "first".into();
+    first.reads = vec![Node(2)];
+    first.barrier = Some(barrier.clone());
+    let mut second = Review::new(&[], "second".to_owned());
+    second.revision = "second".into();
+    second.reads = vec![Node(3)];
+    second.barrier = Some(barrier);
+    let (a, b) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        futures::join!(
+            validator.refresh_evidence(first),
+            validator.refresh_evidence(second)
+        )
+    })
+    .await
+    .expect("refreshes must execute independently");
+    let (a, b) = (a.unwrap(), b.unwrap());
+    assert_eq!(a.output(), "first");
+    assert_eq!(b.output(), "second");
+    let state = domain.0.lock().unwrap();
+    assert_eq!((state.executions, state.writes), (2, 2));
+    assert_eq!(state.records.len(), 1);
+    let saved = &state.records[0].2;
+    let winner = if saved.output == json!("first") {
+        &a
+    } else {
+        &b
+    };
+    assert_eq!(saved.output, serde_json::to_value(winner.output()).unwrap());
+    assert_eq!(saved.revision, winner.revision());
+    assert_eq!(saved.dependencies, winner.dependencies());
 }
 
 // {test}`requirements.sdk.graph.execution.root_inputs`

@@ -1121,30 +1121,34 @@ async fn shared_context_allows_independent_concurrent_agent_calls() {
 #[tokio::test]
 async fn later_lighter_agent_calls_preserve_the_contexts_existing_trace() {
     let graph = Memory::default();
-    graph
-        .state
-        .lock()
-        .unwrap()
-        .contents
-        .insert(1, "retained".into());
+    graph.state.lock().unwrap().contents.extend([
+        (1, "retained".into()),
+        (2, "direct before".into()),
+        (3, "direct after".into()),
+    ]);
     let agent = MockAgent::default();
     let ctx = ValidationContext::with_agent(&graph, 1, &agent);
     fn assert_send_sync<T: Send + Sync>(_: &T) {}
     assert_send_sync(&ctx);
+    assert_eq!(ctx.inspection().read(&2).unwrap(), "direct before");
     let _: Answer = ctx
         .ask()
         .contents_of_current_node()
         .contents_of_successors(7)
         .await
         .unwrap();
+    assert_eq!(ctx.inspection().read(&3).unwrap(), "direct after");
     let retained = ctx.inspection().dependencies();
     assert_eq!(
         retained,
         vec![
+            Dependency::Node(2, fp("direct before")),
             Dependency::OutgoingEdges(1, 7, edge_fingerprint(&graph, &[])),
             Dependency::Node(1, fp("retained")),
+            Dependency::Node(3, fp("direct after")),
         ]
     );
+    assert_eq!(graph.state.lock().unwrap().reads, [2, 1, 3]);
     let _: Answer = ctx.ask().context("lighter".to_owned()).await.unwrap();
     assert_eq!(ctx.inspection().dependencies(), retained);
     assert!(agent.requests.lock().unwrap()[1].2.is_empty());

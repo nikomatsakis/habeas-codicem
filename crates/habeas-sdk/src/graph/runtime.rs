@@ -26,6 +26,29 @@ impl<D: Domain> Validator<D> {
         self
     }
 
+    // {impl}`requirements.sdk.graph.evidence.refresh_evidence`
+    /// Reuse compatible, current evidence, or evaluate and save a new answer.
+    /// Errors from loading, decoding, checking, execution, or saving propagate.
+    pub fn refresh_evidence<V: Criterion<D>>(
+        &self,
+        criterion: V,
+    ) -> impl Future<Output = Result<Fingerprinted<D, V::Ok>, ValidationError<D::Error>>> + Send
+    {
+        async move {
+            if let Some(saved) = self.load_evidence(&criterion).await? {
+                if procedure_matches(saved.revision(), &criterion.revision())
+                    && self.check_inputs(&saved).map_err(ValidationError::Graph)?
+                {
+                    return Ok(saved);
+                }
+            }
+
+            let inputs = self.verify(criterion).await?;
+            self.store_evidence(&inputs).await?;
+            Ok(inputs)
+        }
+    }
+
     // {impl}`requirements.sdk.graph.evidence.check_node`
     // {impl}`requirements.sdk.graph.evidence.procedure_identity`
     // {impl}`requirements.sdk.graph.evidence.record.output`

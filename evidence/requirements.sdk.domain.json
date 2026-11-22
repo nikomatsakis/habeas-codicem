@@ -1,7 +1,7 @@
 {
   "requirement": "Every cloneable application implementing the three domain traits implements\n`Domain`:\n\n```rust,ignore\n/// Every validation uses a domain with graph access, fingerprints, and storage.\n///\n/// A validator owns a cloneable domain; executions can share its state.\n/// Each criterion has its own dependency trace; operations within it share\n/// that trace safely.\n/// Agent calls retain independent conversation and submission state.\n/// Observations never leak between separate validations.\npub trait Domain: Clone + Graph + Contents + Storage {}\n\nimpl<T: Clone + Graph + Contents + Storage> Domain for T {}\n\npub trait Graph {\n    // Defines node identities, labeled edges, and successors.\n    /* ... members defined in the Graph chapter ... */\n}\n\npub trait Contents: Graph {\n    // Reads node contents, fingerprints them, and formats them for an agent.\n    /* ... members defined in the Contents chapter ... */\n}\n\npub trait Storage: Graph {\n    // Defines how evidence is stored and loaded.\n    /* ... members defined in the Storage chapter ... */\n}\n```",
   "determination": true,
-  "rationale": "The reviewed tests adequately check `requirements.sdk.domain`.\n\n**Obligations derived from the text**\n1. Any type that is `Clone + Graph + Contents + Storage` is a `Domain`, through the blanket impl. The impl is `crates/habeas-sdk/src/graph.rs#impl[T/Domain]`.\n2. A validator owns a cloneable domain, and executions share that domain's state.\n3. Each criterion has its own dependency trace, and operations within it share that trace safely.\n4. Agent calls keep independent conversation and submission state.\n5. Observations never leak between separate validations.\n\n**Mapping to tests**\n- **Blanket impl.**\n  - `Validator`, `ValidationContext`, `Ask`, `ToolAgent` and the other generic items are all bounded on `D: Domain`.\n  - Every marked test builds a `Validator` or `ValidationContext` over a custom test domain (`Memory`, `Application`, `HabeasDomain`) that has only the three traits and `Clone`.\n  - If the blanket impl were missing or narrower than stated, these tests would fail to compile.\n  - A negative compile check, where a type missing one trait is not a `Domain`, is not an obligation of the text.\n- **Clone and shared state.**\n  - `criteria_keep_typed_answers_and_persist_only_when_requested` clones the domain (`Application`) into the validator.\n  - It then asserts the shared state through the original handle: execution and write counts, stored records, and no reads.\n  - `concurrent_same_criterion_executions_keep_complete_independent_records` does the same with concurrent executions.\n- **Trace within a criterion.**\n  - `concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads` runs two concurrent agent calls on one context. It asserts that all three dependencies are present in the single shared trace and that `finish` returns the same set.\n  - `shared_context_allows_independent_concurrent_agent_calls` asserts the shared trace after a concurrent call, using a barrier to force real concurrency.\n  - `later_lighter_agent_calls_preserve_the_contexts_existing_trace` asserts that a later call keeps the existing trace, and that the context is `Send + Sync`.\n- **Independent agent state.**\n  - The `ToolAgent` concurrent test uses `ParallelConversations` with a barrier.\n  - It asserts each conversation got its own answer (alpha and beta) and its own call count of 3, so histories, pages and submissions do not mix.\n  - `contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text` checks per-call request context and fingerprints.\n- **No leakage between validations.**\n  - `concurrent_single_node_validations_keep_separate_traces` verifies three concurrent validations. It asserts the peak concurrency is 3 and that each stored record's dependencies contain only its own node's content and edge fingerprints.\n  - `concurrent_same_criterion_executions_keep_complete_independent_records` shows that two executions of the same criterion path keep separate dependencies and revisions.\n- **Contents formatting.** `deterministic_validation_uses_required_storage_without_an_agent`, `behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer` and `domain_formats_supplied_contents_without_resolving_a_replacement` exercise the Graph, Contents and Storage members through a real `Domain`. This covers reads, fingerprints, formatting for an agent, and evidence store and load.\n\n**Gaps**\nNone established. The tests do not run two different criterion paths concurrently. The same-criterion case is the stricter one, and the single-node test runs concurrent validations whose records are checked separately. I found nothing in the requirement text that this distinction would change. There are no `{fixme}` acknowledgments, and none are needed.",
+  "rationale": "The tests adequately check `requirements.sdk.domain`.\n\n**What the requirement asks for**\n- Every type that is `Clone + Graph + Contents + Storage` is a `Domain`. The code has this blanket impl at `crates/habeas-sdk/src/graph.rs#impl[T/Domain]`.\n- The doc comment adds behavioural statements:\n  - A validator owns a cloneable domain, and executions can share its state.\n  - Each criterion has its own dependency trace, and operations within it share that trace safely.\n  - Agent calls keep independent conversation and submission state.\n  - Observations never leak between separate validations.\n\n**Blanket impl and trait bounds**\n- Many tests use ordinary application types, such as `Memory` and `Application`, as the `D: Domain` argument of `Validator::new`, `ValidationContext::with_agent` and `ToolAgent`.\n- These compile only through the blanket impl, so it is exercised.\n- `Validator<D: Domain>` is declared in `crates/habeas-sdk/src/graph/runtime.rs#struct[Validator]`.\n- The tests include `deterministic_validation_uses_required_storage_without_an_agent`, `criteria_keep_typed_answers_and_persist_only_when_requested` and `behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer`.\n- `domain_formats_supplied_contents_without_resolving_a_replacement` in `src/sdk.rs` checks the content-formatting part of the domain (`Contents`) on the real `HabeasDomain`.\n- A negative compile test would only show that a non-`Clone` type is not a `Domain`. The requirement does not state that obligation as behaviour, so I do not count its absence as a gap.\n\n**Shared, cloneable state**\n- `Validator::new(graph.clone())` is used throughout. `concurrent_same_criterion_executions_keep_complete_independent_records` shows two executions on a cloned `Application`. Both write to the shared storage and read from it.\n- `behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer` stores evidence, then restores it and checks the restored evidence's dependencies against the original's.\n\n**Per-criterion trace, safely shared within a criterion**\n- `concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads` and `shared_context_allows_independent_concurrent_agent_calls` run concurrent operations on one `ValidationContext`. Both assert that the shared trace holds the combined dependencies.\n- `later_lighter_agent_calls_preserve_the_contexts_existing_trace` checks that the trace is retained and ordered across operations. It also asserts that the context is `Send + Sync`.\n\n**Independent agent state**\n- The concurrent tool-agent test uses a barrier so both conversations really overlap. It asserts the per-conversation call counts (`alpha` 3, `beta` 3) and that each call returns its own answer.\n- `shared_context_allows_independent_concurrent_agent_calls` uses a barrier too and checks two independent answers (7 and 11).\n- `contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text` checks that each request carries its own context text and fingerprint.\n\n**No leaking between validations**\n- `concurrent_single_node_validations_keep_separate_traces` runs three validations concurrently, with a peak concurrency of 3. Each stored record contains only its own node's dependencies.\n- `concurrent_same_criterion_executions_keep_complete_independent_records` shows that executions of the same criterion keep separate revisions and dependencies.\n- `criteria_keep_typed_answers_and_persist_only_when_requested` shows that sequential verifications do not alter saved records.\n\nAll obligations are mapped to tests with real assertions, and I found no scenario where a requirement-violating behaviour would pass.",
   "references": "8fb91c09a5cb7ba143e43f1d814d7546e82e52fc4563e399ad491acb6ae034e9",
   "inputs": [
     {
@@ -57,7 +57,7 @@
     {
       "file": "crates/habeas-sdk/tests/agent.rs",
       "item": "fn[behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer]",
-      "hash": "e338f7c44d7f9f15fd87fccc4aa9841a4e2af31fa42554ea30046d0d1e432f5d"
+      "hash": "1c6d0226ee5885409cca23fc6ec4ee77eb6eb63b9b2d92824ac8666dd74f1b68"
     },
     {
       "file": "crates/habeas-sdk/tests/contracts.rs",
@@ -82,7 +82,7 @@
     {
       "file": "crates/habeas-sdk/tests/validation.rs",
       "item": "fn[later_lighter_agent_calls_preserve_the_contexts_existing_trace]",
-      "hash": "eef2170c7efd843afaf48457e6ef74f16726626d2a285a2c0572b2d08850c8f6"
+      "hash": "fbdd37cb014de40c5e46985d8f56634c39ef30316d5fcc2c5e0da39093742f4f"
     },
     {
       "file": "crates/habeas-sdk/tests/validation.rs",
@@ -112,7 +112,7 @@
     {
       "file": "crates/habeas-sdk/src/graph/runtime.rs",
       "item": "impl[Validator<D>]",
-      "hash": "9cc4646b9e8e1ec4a416cc59a8afb025a1a2f1035cf1e6c7c98d6ce7080b0f21"
+      "hash": "047678aedce7c4fabae3d6262a83fda37f598d0450e15749fef99dd77b3888ec"
     }
   ],
   "format_version": 1,
@@ -199,7 +199,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "9d501abcfc7c15a8f56dbddd2822db0e48645333ce7a549be2546e5d8acdcd19"
+          "value": "c4430a4dcf35406fe786cad412940ba6026ae51c8c8561dcfa3001a66a6a16e8"
         }
       ]
     },
@@ -284,7 +284,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "640affa5375ac21a4a88d81dc440ef70dc38b437228ab30058580dfcd2166c8d"
+          "value": "4ec198e498ffa9424d11cba8e8caf852d4281d5c1e2b1e1ef7b3458ea3f41ab7"
         }
       ]
     },
@@ -386,7 +386,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "53b975dfdaa1951085e521b20177dca77b95f54a610cd5ed2c89c1d467880e50"
+          "value": "61d8a022dda5910365fd556ff64b7612554511d42f40d0a94930ed1660b196a7"
         }
       ]
     }

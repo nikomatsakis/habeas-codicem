@@ -1,7 +1,7 @@
 {
-  "requirement": "```rust,ignore\n// Method on Validator<D>.\n/// Execute the criterion and return its completed answer and observed inputs.\n/// Use store_evidence to save the returned value.\npub fn verify<V: Criterion<D>>(\n    &self,\n    criterion: V,\n) -> impl Future<Output = Result<Fingerprinted<D, V::Ok>, ValidationError<D::Error>>> + Send;\n```\n\nEvery call starts a fresh context identifying the source node and calls\n`Criterion::execute`. Its completed answer, including a negative assessment,\nand captured dependencies form the returned `Fingerprinted` under\n{cite}`requirements.sdk.graph.evidence.inputs`. Loading and saving records are\nseparate operations.\n\nFreshness checking has a separate observation scope from execution. Reads used\nonly to check old evidence do not become dependencies of the new result. A\nchecked snapshot can be reused if it still represents the current state; when\nexecution explicitly reads or delivers it, its fingerprint enters the new trace.",
+  "requirement": "```rust,ignore\n// Method on Validator<D>.\n/// Execute the criterion and return its completed answer and observed inputs.\npub fn verify<V: Criterion<D>>(\n    &self,\n    criterion: V,\n) -> impl Future<Output = Result<Fingerprinted<D, V::Ok>, ValidationError<D::Error>>> + Send;\n```\n\nEvery call starts a fresh context identifying the source node and calls\n`Criterion::execute`. Its completed answer, including a negative assessment,\nand captured dependencies form the returned `Fingerprinted` under\n{cite}`requirements.sdk.graph.evidence.inputs`.",
   "determination": true,
-  "rationale": "The reviewed tests cover each obligation in `requirements.sdk.graph.validation.validate_node`. I did not need implementation source.\n\n- **Fresh context and `Criterion::execute` on every call.**\n  - `concurrent_single_node_validations_keep_separate_traces` runs three concurrent verifies on nodes 1, 2 and 3. It asserts `started == [1,2,3]` and that each record holds only its own node's dependencies.\n  - `validator_agent_executions_isolate_conversations_and_dependency_traces` runs two concurrent agent-driven verifies. It asserts that each has its own conversation (3 calls each) and its own dependency list. The alpha record has only the node dependency. The beta record has only the edge and node dependencies.\n  - `criteria_keep_typed_answers_and_persist_only_when_requested` shows that a second `verify` executes again and ignores the saved record. Its final count is 4 executions.\n  - `changing_one_criteria_input_does_not_invalidate_another` shows that a replacement `verify` yields only its own `Node(3)` dependency, so nothing leaks from earlier runs.\n- **Completed answer, including a negative one, plus captured dependencies form the `Fingerprinted`.**\n  - `criteria_keep_typed_answers_and_persist_only_when_requested` checks the output, source node, criterion path, revision and empty dependencies on a negative answer.\n  - `caller_reuses_negative_answers_and_compares_revisions_explicitly` checks the same for a negative answer.\n  - `agent_edge_tools_record_selections_without_validating_targets` asserts the exact `OutgoingEdges` dependency.\n  - `concurrent_single_node_validations_keep_separate_traces` asserts exact `Node` and `OutgoingEdges` dependencies.\n- **Loading and saving are separate.**\n  - `criteria_keep_typed_answers_and_persist_only_when_requested` asserts `(executions, writes) == (1, 0)` after `verify`, and that `load_evidence` still returns `None`. It also asserts that saved records are unchanged after a later `verify`.\n  - `caller_reuses_negative_answers_and_compares_revisions_explicitly` asserts that `records.is_empty()` after `verify`.\n  - `src/authoring/sdk.rs#mod[tests]/fn[review_graph_persists_and_reuses_a_negative_validation_through_the_sdk]` asserts that the evidence file does not exist after `verify`.\n- **Freshness reads do not become dependencies.**\n  - `historical_freshness_reads_do_not_enter_the_replacement_trace` runs `check_inputs`, which reads node 2. It then runs `verify`, which reads node 1. It asserts `reads == [2,1]` and that the stored dependencies are only `Node(1)`.\n  - `input_checking_and_execution_keep_separate_observations` covers the same point.\n- **Execution that reads a previously checked snapshot puts its fingerprint in the new trace.** `input_checking_and_execution_keep_separate_observations` runs `check_inputs`, which reads node 2. Execution then reads node 2 again. The test asserts that the new record has a `Node(2)` dependency with the \"after\" fingerprint. Reusing a checked snapshot is permissive (\"can be reused\"), so it needs no test.\n\nThe tests assert expected outcomes that match the requirement text, and the {test} markings are present. I found no unacknowledged gap.",
+  "rationale": "I judged this from the supplied test source alone and did not request any implementation source. The tests adequately cover `requirements.sdk.graph.validation.validate_node`.\n\n**Obligations derived from the text**\n1. Every `verify` call starts a fresh context that identifies the source node.\n2. Every call invokes `Criterion::execute`.\n3. The completed answer, including a negative assessment, is returned in the `Fingerprinted`.\n4. The captured dependencies are returned in the `Fingerprinted`. Earlier or concurrent traces must not leak into them.\n5. The `Fingerprinted` accessors (`source_node_id`, `criterion_path`, `revision`, `dependencies`, `output`) come from `requirements.sdk.graph.evidence.inputs`. That requirement is cited as context, so I only checked that its accessors are exercised in this case.\n\n**Mapping to tests**\n- **Execute called on every call, answer returned:**\n  - `contracts.rs#fn[criteria_keep_typed_answers_and_persist_only_when_requested]` asserts that `verify` returns the negative answer `satisfied:false`. It also checks `source_node_id`, `criterion_path`, `revision` and empty `dependencies`.\n  - The same test asserts `(executions, writes) == (1, 0)` after the first `verify`, and later `(4, 3)`.\n  - A repeated `verify` of the same criterion runs `execute` again, returns the new answer, and leaves the saved record unchanged.\n- **Negative assessment as a completed answer:** `validation.rs#fn[caller_reuses_negative_answers_and_compares_revisions_explicitly]` checks that a negative `result` is returned by `verify` and that nothing is written until `store_evidence`.\n- **Fresh context, source node identified:**\n  - `validation.rs#fn[concurrent_single_node_validations_keep_separate_traces]` runs three concurrent verifications on nodes 1, 2 and 3. It asserts that each started with its own node (`started == [1,2,3]`) and that each stored record has only its own node and edge dependencies.\n  - `agent.rs#fn[validator_agent_executions_isolate_conversations_and_dependency_traces]` runs two concurrent `verify` calls and checks that their dependency traces are isolated. One records only a node dependency. The other records edge and node dependencies.\n  - The `EdgeReview` criterion in `agent.rs#fn[agent_edge_tools_record_selections_without_validating_targets]` branches on `ctx.node_id()`. It also asserts the captured dependency is exactly the `OutgoingEdges` observation.\n- **Captured dependencies match the trace, with no stale reads:**\n  - `validation.rs#fn[historical_freshness_reads_do_not_enter_the_replacement_trace]` shows that reads made earlier by `check_inputs` are not part of the later `verify` trace. The stored dependency is only `Node(1, \"root\")`.\n  - `contracts.rs#fn[changing_one_criteria_input_does_not_invalidate_another]` shows a replacement `verify` yields only its own `Node(3)` dependency.\n  - `contracts.rs#fn[input_checking_and_execution_keep_separate_observations]` shows `check_inputs` observations stay separate from the observations made by execution. The execution reads are `[2]` and the dependency is the `after` fingerprint.\n- **Send bound:** `contracts.rs#fn[validation_and_answer_need_send_without_sync]` checks that the returned future satisfies the `Send` bound.\n- **End-to-end with a real domain:** `src/authoring/sdk.rs#mod[tests]/fn[review_graph_persists_and_reuses_a_negative_validation_through_the_sdk]` verifies a negative judgment. It checks that the output has no extra fields and that dependencies are captured as non-empty.\n\n**Gaps**\nI found no untested obligation and no wrong expected result. The text states no other failure case for this requirement. The `Fingerprinted` accessors are covered under the cited `requirements.sdk.graph.evidence.inputs`.",
   "references": "c27fe311bb9c804546fec92bd1ae36047d6e6627e9bc981fd528496af96bdf9a",
   "inputs": [
     {
@@ -14,7 +14,6 @@
         "```rust,ignore",
         "// Method on Validator<D>.",
         "/// Execute the criterion and return its completed answer and observed inputs.",
-        "/// Use store_evidence to save the returned value.",
         "pub fn verify<V: Criterion<D>>(",
         "    &self,",
         "    criterion: V,",
@@ -24,13 +23,7 @@
         "Every call starts a fresh context identifying the source node and calls",
         "`Criterion::execute`. Its completed answer, including a negative assessment,",
         "and captured dependencies form the returned `Fingerprinted` under",
-        "{cite}`requirements.sdk.graph.evidence.inputs`. Loading and saving records are",
-        "separate operations.",
-        "",
-        "Freshness checking has a separate observation scope from execution. Reads used",
-        "only to check old evidence do not become dependencies of the new result. A",
-        "checked snapshot can be reused if it still represents the current state; when",
-        "execution explicitly reads or delivers it, its fingerprint enters the new trace.",
+        "{cite}`requirements.sdk.graph.evidence.inputs`.",
         ":::"
       ]
     },
@@ -101,7 +94,7 @@
     {
       "file": "crates/habeas-sdk/tests/contracts.rs",
       "item": "fn[validation_and_answer_need_send_without_sync]",
-      "hash": "c4fa44e942678b92bc1d2617afc25c4497e9e81652229f3fa4466926431137d3"
+      "hash": "949fb3a00a164a6932b73fcd42652fd7673f951f9b81ee20b692b383da14aafa"
     },
     {
       "file": "crates/habeas-sdk/tests/validation.rs",
@@ -122,16 +115,6 @@
       "file": "src/authoring/sdk.rs",
       "item": "mod[tests]/fn[review_graph_persists_and_reuses_a_negative_validation_through_the_sdk]",
       "hash": "6426d95b392ae74058473af88d994f9dd6a2993915433e15429b98f06b7ab0b7"
-    },
-    {
-      "file": "crates/habeas-sdk/src/graph.rs",
-      "item": "impl[InspectionContext<'d,%20D>]/fn[read_snapshot]",
-      "hash": "4b4987d9a1ee8e433c918f930d0411df0f67d1aba31090c8df477cff76e0a78b"
-    },
-    {
-      "file": "crates/habeas-sdk/src/graph.rs",
-      "item": "impl[InspectionContext<'d,%20D>]/fn[prepare_read]",
-      "hash": "037952444898e2451d97ed9aaf99c55e38f1488cd7a51bdbbbe03f07238e4823"
     }
   ],
   "format_version": 1,
@@ -167,7 +150,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "0a4b0f55a7716df379ca00e63085774046e0cbbebdfb0ad98324345035b2ec21"
+          "value": "1b064206126d88da591b7b7ae7eec6487cc8e2162b6705a89a78343d51ac50e8"
         }
       ]
     },
@@ -280,7 +263,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "69e15685d1653f94368c90e2cf9429d5e111c4bd932df9434721685a80e4b55a"
+          "value": "41c5ac465c870ee6c75983666cca16f615eef537250cde1e0f6d7d33f08c893e"
         }
       ]
     },
@@ -349,40 +332,6 @@
         {
           "scheme": "habeas-input-v1",
           "value": "f1cdb79d160311c2d6a955c6528706284187c4a29e84a0232268f92c70afa4e3"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/src/graph.rs"
-            },
-            "selector": "impl[InspectionContext<'d,%20D>]/fn[read_snapshot]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "fb9cb2bacab4dbb6e8d221a5e641921beea520de9d3ce6408dd9464cf1f6c1c2"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/src/graph.rs"
-            },
-            "selector": "impl[InspectionContext<'d,%20D>]/fn[prepare_read]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "e233d2a5838e7b2260fdd3271659ce5a87e1441ef39bf9dfb039aa20ca3096e5"
         }
       ]
     }

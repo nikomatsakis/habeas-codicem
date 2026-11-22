@@ -1280,6 +1280,7 @@ impl Criterion<Memory> for BehavioralAdequacy {
 // {test}`requirements.sdk.graph.execution.behavioral_adequacy`
 // {test}`requirements.sdk.graph.validation.criterion_definition`
 // {test}`requirements.sdk.graph.validation.evaluate_criterion`
+// {test}`requirements.sdk.graph.evidence.refresh_evidence`
 // {test}`requirements.sdk.graph.evidence.store_evidence`
 // {test}`requirements.sdk.graph.agent-harness.setup`
 // {test}`requirements.sdk.graph.agent-harness.tool_agent`
@@ -1303,7 +1304,7 @@ async fn behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprin
     let agent = Arc::new(ToolAgent::new(provider));
     let validator = Validator::new(domain.clone()).with_agent(agent.clone());
     let inputs = validator
-        .verify(BehavioralAdequacy {
+        .refresh_evidence(BehavioralAdequacy {
             requirement: Node(1),
             review_policy: "Review test adequacy.".into(),
         })
@@ -1322,9 +1323,8 @@ async fn behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprin
     }
     assert!(inputs.dependencies().iter().any(|dep| matches!(dep,
         Dependency::OutgoingEdges(Node(1), Label, fp) if *fp == edge_fingerprint(&domain, &[Node(2)]))));
-    assert!(domain.records.lock().unwrap().is_empty());
+    assert_eq!(domain.records.lock().unwrap().len(), 1);
     assert!(validator.check_inputs(&inputs).unwrap());
-    validator.store_evidence(&inputs).await.unwrap();
     let restored = validator
         .load_evidence(&BehavioralAdequacy {
             requirement: Node(1),
@@ -1338,6 +1338,16 @@ async fn behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprin
     assert_eq!(restored.criterion_path(), inputs.criterion_path());
     assert_eq!(restored.revision(), inputs.revision());
     assert!(restored.dependencies() == inputs.dependencies());
+    let reused = validator
+        .refresh_evidence(BehavioralAdequacy {
+            requirement: Node(1),
+            review_policy: "Review test adequacy.".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(reused.output(), &expected);
+    assert!(reused.dependencies() == inputs.dependencies());
+    assert_eq!(domain.records.lock().unwrap().len(), 1);
     domain
         .node_contents
         .lock()
@@ -1345,6 +1355,7 @@ async fn behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprin
         .insert(2, "Only earlier times are tested.".into());
     assert!(!validator.check_inputs(&inputs).unwrap());
     let requests = agent.provider.requests.lock().unwrap();
+    assert_eq!(requests.len(), 1);
     assert_eq!(
         requests[0].chat_history[0],
         Message::system(

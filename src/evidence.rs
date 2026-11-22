@@ -3581,8 +3581,15 @@ pub(crate) mod tests {
                 "requirement": "Ready.",
                 "determination": true,
                 "rationale": "The example cites this rule.",
-                "inputs": crate::inputs::outline_inputs_for_lines(temp.path(), "md/rules.md", 8, 8)
-                    .unwrap()
+                "inputs": [{
+                    "requirements": "rules.case",
+                    "matches": ["rules.case"],
+                    "text": [
+                        chapter.lines().nth(6).unwrap(),
+                        chapter.lines().nth(7).unwrap(),
+                        chapter.lines().nth(8).unwrap()
+                    ]
+                }]
             })
             .to_string(),
         )
@@ -3620,6 +3627,30 @@ pub(crate) mod tests {
         assert_eq!(report.examples, 1);
         assert_eq!(report.evidence_files, 2);
         assert!(report.errors.is_empty(), "{:?}", report.errors);
+
+        // The requirements input covers the test reference inside its matched
+        // declaration, using the declaration's current range after it moves.
+        fs::write(
+            temp.path().join("md/rules.md"),
+            chapter.replacen("# Rules\n\n", "# Rules\n\nExtra prose.\n\n", 1),
+        )
+        .unwrap();
+        let report = validate_repository(temp.path()).unwrap();
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        // It does not accidentally cover a reference outside that declaration.
+        fs::write(
+            temp.path().join("md/rules.md"),
+            format!("{chapter}\nUnselected reference: {{test}}`rules.ready`.\n"),
+        )
+        .unwrap();
+        let errors = validate_repository(temp.path()).unwrap().errors;
+        assert!(
+            errors.iter().any(|error| error.contains("no input covers")
+                && error.contains("rules.ready")
+                && error.contains("md/rules.md:11")),
+            "{errors:?}"
+        );
+        fs::write(temp.path().join("md/rules.md"), chapter).unwrap();
 
         let ready_path = temp.path().join("evidence/rules.ready.json");
         let ready = fs::read_to_string(&ready_path).unwrap();

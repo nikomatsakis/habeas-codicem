@@ -1,7 +1,7 @@
 {
   "example": "{cite}`requirements.sdk.graph.validation.check_procedure`\n{cite}`requirements.sdk.graph.validation.criterion_path`\n\n```rust,ignore\n/// Determine whether the requirement's tests cover its observable behavior\n/// and edge cases.\nstruct BehavioralAdequacy {\n    requirement: HabeasNodeId,\n    review_policy: String,\n}\n\n/// The criterion's answer, submitted by the agent.\n#[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]\nstruct TestReview {\n    adequate: bool,\n    rationale: String,\n}\n\nimpl Criterion<HabeasDomain> for BehavioralAdequacy {\n    type Ok = TestReview;\n\n    fn source_node_id(&self) -> HabeasNodeId {\n        self.requirement.clone()\n    }\n\n    async fn execute(\n        self,\n        cx: &mut ValidationContext<'_, HabeasDomain>,\n    ) -> Result<Self::Ok, ValidationError<std::io::Error>> {\n        // Evaluation code goes here; the next chapter fills it in.\n        todo!()\n    }\n\n    // ... criterion_path and revision are described below ...\n}\n```",
   "determination": true,
-  "rationale": "**The example is concrete.** `requirements.sdk.graph.validation.criterion_definition` shows a full criterion. `BehavioralAdequacy` holds `requirement` and `review_policy`. `TestReview` is a serializable answer with `adequate` and `rationale`. `impl Criterion<HabeasDomain>` sets `type Ok = TestReview`, returns `requirement` from `source_node_id`, and has an `execute` method. The example leaves `criterion_path` and `revision` to the cited requirements.\n\n**The test reproduces the example's definition.** In `crates/habeas-sdk/tests/agent.rs`, `struct[BehavioralAdequacy]`, `struct[TestReview]` and `impl[BehavioralAdequacy/Criterion<Memory>]` match the example's fields, derives and `Ok` type. `source_node_id` returns `self.requirement.clone()`. The impl supplies `criterion_path` as `[\"behavior\"]` and `revision` as `\"test-review-v1\"`. Its `execute` uses `cx.ask()` with the review policy, the current node's contents and the successors' contents.\n\n**The test asserts each outcome.** `fn[behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer]` does the following:\n- It runs the criterion through `Validator::verify` with `requirement: Node(1)`. It asserts `inputs.output()` equals the typed `TestReview` that the scripted agent returned.\n- It asserts `criterion_path().segments()` equals `[\"behavior\"]`.\n- It asserts that node 1's and node 2's contents were read, and that the dependencies record node 1, node 2 and node 1's outgoing edges with the right fingerprints.\n- It asserts that the agent request carries the `review_policy` text and the contents in order. It also asserts that the `submit_result` tool schema has `result.adequate` of type boolean, which checks the `TestReview` shape.\n- It calls `store_evidence` and then `load_evidence` with an equal `BehavioralAdequacy`. The restored answer equals `expected`, and the restored source node, criterion path, revision and dependencies match the originals. This checks that `TestReview` round-trips through Serde and that the definition identifies the same question for checking and execution.\n- It changes node 2's contents and asserts `check_inputs` then returns false.\n\n**Minor observation.** The test never asserts directly that `source_node_id()` equals `Node(1)`. It only compares the restored value with the original. The behavior is still exercised, because the dependencies are keyed on node 1 and `load_evidence` finds the stored record for `requirement: Node(1)`. I do not count this as a gap.\n\nThe example is covered by a `{test}` reference to it, and no gaps remain.",
+  "rationale": "The example `requirements.sdk.graph.validation.criterion_definition` is concrete. It defines a `BehavioralAdequacy` criterion with `requirement` and `review_policy` fields. Its answer type is a serializable `TestReview` with `adequate: bool` and `rationale: String`. `Ok = TestReview`, and `source_node_id` returns the `requirement` node. `criterion_path`, `revision` and `execute` are left to the cited requirements `check_procedure` and `criterion_path` and to the next chapter.\n\nThe `{test}` item is `crates/habeas-sdk/tests/agent.rs#fn[behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer]`. It uses a `BehavioralAdequacy` and `TestReview` that mirror the example. In the same file, `struct[BehavioralAdequacy]` has `requirement: Node` and `review_policy: String`. `struct[TestReview]` derives `Serialize`, `Deserialize` and `JsonSchema` with `adequate` and `rationale`. `impl[BehavioralAdequacy/Criterion<Memory>]` sets `type Ok = TestReview` and `source_node_id` returns `self.requirement.clone()`. It also gives `criterion_path` as `[\"behavior\"]` and `revision` as `\"test-review-v1\"`, as `check_procedure` and `criterion_path` require.\n\nThe test's assertions cover each outcome:\n- **Typed answer:** the `TestReview` returned through `refresh_evidence` equals `expected`, and the answer is rebuilt from JSON. The JSON schema for `adequate` is checked as `boolean`, which exercises the serde and schema derives.\n- **Source node:** the dependencies are on node 1 (`Requirement`, via `requirement: Node(1)`) and its successor node 2. A restored evidence record has the same `source_node_id()` as the original, so the source node is Node(1).\n- **Criterion path:** `inputs.criterion_path().segments()` equals `[\"behavior\"]`, and the restored path equals the original.\n- **Revision:** the restored `revision()` equals the original.\n- **Round trip:** `load_evidence` reconstructs the same output, and `refresh_evidence` reuses the stored record without a second agent request. The record count stays at 1 and exactly one request was made.\n- **Policy field:** `review_policy` is observed in the system message sent to the agent.\n\nI found no gap: the test would fail if the criterion's source node, `Ok` type, serialization, path or revision were wrong.",
   "references": "37f35c339ff6fe05ca858f57ce9dad355290f241ac4bf3bbd7c99ebd6e394dab",
   "inputs": [
     {
@@ -71,14 +71,13 @@
         "",
         "pub trait Criterion<D: Domain>: Send + Sized {",
         "    /// The completed answer, including any negative assessment.",
-        "    /// The SDK serializes it for storage and reconstructs it when reused.",
         "    /// Its Serde JSON representation must reconstruct the completed answer.",
         "    type Ok: Serialize + DeserializeOwned + Send;",
         "",
         "    /// The node this question is about.",
         "    fn source_node_id(&self) -> D::NodeId;",
         "",
-        "    /// Identify this question within the source node's saved evidence.",
+        "    /// Identify this question relative to its source node.",
         "    fn criterion_path(&self) -> CriterionPath;",
         "",
         "    /// Version of these review rules and the result's encoding.",
@@ -124,20 +123,20 @@
         "```",
         "",
         "Its identity is stable across runs and changes to input contents. Different",
-        "questions that need independent records have different paths; nested paths can",
-        "distinguish several questions within one area.",
+        "questions that need independent assessments have different paths; nested paths",
+        "can distinguish several questions within one area.",
         ":::"
       ]
     },
     {
       "file": "crates/habeas-sdk/tests/agent.rs",
       "item": "fn[behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer]",
-      "hash": "e338f7c44d7f9f15fd87fccc4aa9841a4e2af31fa42554ea30046d0d1e432f5d"
+      "hash": "1c6d0226ee5885409cca23fc6ec4ee77eb6eb63b9b2d92824ac8666dd74f1b68"
     },
     {
       "file": "crates/habeas-sdk/tests/agent.rs",
-      "item": "struct[BehavioralAdequacy]",
-      "hash": "d4fe618bc2f0e271054a8718114ea59547e682ca8b7ffffeca27d2c4854d1328"
+      "item": "impl[BehavioralAdequacy/Criterion<Memory>]",
+      "hash": "7e1bcf5f1e44282185c4e045f36603a0552b8826df613a13768cf8d09f22e0a0"
     },
     {
       "file": "crates/habeas-sdk/tests/agent.rs",
@@ -146,8 +145,23 @@
     },
     {
       "file": "crates/habeas-sdk/tests/agent.rs",
-      "item": "impl[BehavioralAdequacy/Criterion<Memory>]",
-      "hash": "7e1bcf5f1e44282185c4e045f36603a0552b8826df613a13768cf8d09f22e0a0"
+      "item": "struct[BehavioralAdequacy]",
+      "hash": "d4fe618bc2f0e271054a8718114ea59547e682ca8b7ffffeca27d2c4854d1328"
+    },
+    {
+      "file": "crates/habeas-sdk/tests/agent.rs",
+      "item": "impl[BehavioralAdequacy/Criterion<Memory>]/fn[source_node_id]",
+      "hash": "105423e722b075f853e08a3f30a2ee9fcdd5bd05f55abdbed2a3f2a4be1db4df"
+    },
+    {
+      "file": "crates/habeas-sdk/tests/agent.rs",
+      "item": "impl[BehavioralAdequacy/Criterion<Memory>]/fn[criterion_path]",
+      "hash": "7c971d415aafdf585f5ef81a9a84c507f920764d8e03d05c7bc28aebefb0be95"
+    },
+    {
+      "file": "crates/habeas-sdk/tests/agent.rs",
+      "item": "impl[BehavioralAdequacy/Criterion<Memory>]/fn[revision]",
+      "hash": "917de33fcec079c2b5126431fe9cb4c6945354a5b5fab3b5ca1bf4a50f923f5c"
     }
   ],
   "format_version": 1,
@@ -194,7 +208,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "6bd0565a837077f3aa370fb1431320ddadfeb4f77a90b272c4d9f20e82fd4cdc"
+          "value": "baa3e1243b0f95df93ed327a328fe44d5ddd9b13781b8fddf1f8db8f05b9aee0"
         }
       ]
     },
@@ -205,7 +219,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "ac5dd355512b07b07c4ecde8403cd34bb1d6f2ac52d827270b18bb51fd912036"
+          "value": "59ddf8250a505cde6578eeddf6280c444c0aab77385866b7d5f11bb5cc886b0b"
         }
       ]
     },
@@ -222,7 +236,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "9d501abcfc7c15a8f56dbddd2822db0e48645333ce7a549be2546e5d8acdcd19"
+          "value": "c4430a4dcf35406fe786cad412940ba6026ae51c8c8561dcfa3001a66a6a16e8"
         }
       ]
     },
@@ -234,12 +248,12 @@
               "scheme": "repo",
               "location": "crates/habeas-sdk/tests/agent.rs"
             },
-            "selector": "struct[BehavioralAdequacy]"
+            "selector": "impl[BehavioralAdequacy/Criterion<Memory>]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "506f86b4bebd1d1b2237dde4be8b4a39983c7c3829585364669d7aa67908b824"
+          "value": "b0893ab614d4908e6b4fb59de1e31a94d73d17660dfb67f996a20c20d297e16b"
         }
       ]
     },
@@ -268,12 +282,63 @@
               "scheme": "repo",
               "location": "crates/habeas-sdk/tests/agent.rs"
             },
-            "selector": "impl[BehavioralAdequacy/Criterion<Memory>]"
+            "selector": "struct[BehavioralAdequacy]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "b0893ab614d4908e6b4fb59de1e31a94d73d17660dfb67f996a20c20d297e16b"
+          "value": "506f86b4bebd1d1b2237dde4be8b4a39983c7c3829585364669d7aa67908b824"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/tests/agent.rs"
+            },
+            "selector": "impl[BehavioralAdequacy/Criterion<Memory>]/fn[source_node_id]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "5f8ac36c368261a8a7d1d9f923910d5fcf2f6a56e3b2fd636e557bea25e9cf2c"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/tests/agent.rs"
+            },
+            "selector": "impl[BehavioralAdequacy/Criterion<Memory>]/fn[criterion_path]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "fd522f70a2a3bb0e5a871d76be37125ee0e6ecf412d43f35bf798983f1ad1a08"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/tests/agent.rs"
+            },
+            "selector": "impl[BehavioralAdequacy/Criterion<Memory>]/fn[revision]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "fda7b6cb3c93d2bac3ff54ba28dbd3a527906054a42ba9652293dd73d2d007e7"
         }
       ]
     }
