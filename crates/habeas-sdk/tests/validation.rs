@@ -200,7 +200,7 @@ impl Memory {
 }
 
 // {test}`requirements.sdk.graph.evidence.checking_records`
-// {test}`requirements.sdk.graph.validation.validate_node`
+// {test}`requirements.sdk.graph.validators.validate_node`
 #[tokio::test]
 async fn historical_freshness_reads_do_not_enter_the_replacement_trace() {
     let graph = Memory {
@@ -245,7 +245,7 @@ async fn historical_freshness_reads_do_not_enter_the_replacement_trace() {
 // {test}`requirements.sdk.graph.agent-calls.model_capability`
 // {test}`requirements.sdk.graph.agent-calls.procedures`
 // {test}`requirements.sdk.graph.evidence.store_evidence`
-// {test}`requirements.sdk.graph.validation.validate_node.errors`
+// {test}`requirements.sdk.graph.validators.validate_node.errors`
 // {test}`requirements.sdk.graph.agent-harness.with_agent`
 // {test}`requirements.sdk.graph.agent-calls.judge.rendering`
 #[tokio::test]
@@ -556,10 +556,10 @@ fn labeled_selections_track_only_target_membership_without_reading_contents() {
     assert_eq!(record_is_current(&graph, "v1", &record), Err("edges"));
 }
 
-// {test}`requirements.sdk.graph.validation.validate_node`
+// {test}`requirements.sdk.graph.validators.validate_node`
 // {test}`requirements.sdk.graph.evidence.check_node`
 // {test}`requirements.sdk.graph.agent-calls.procedures`
-// {test}`requirements.sdk.graph.validation.check_procedure`
+// {test}`requirements.sdk.graph.validation.criterion_trait`
 // {test}`requirements.sdk.graph.execution.deterministic_procedures`
 // {test}`requirements.sdk.graph.evidence.procedure_identity`
 // {test}`requirements.sdk.graph.evidence.inputs`
@@ -629,7 +629,7 @@ async fn caller_reuses_negative_answers_and_compares_revisions_explicitly() {
 }
 
 // {test}`requirements.sdk.graph.evidence.store_evidence`
-// {test}`requirements.sdk.graph.validation.validate_node.errors`
+// {test}`requirements.sdk.graph.validators.validate_node.errors`
 // {test}`requirements.sdk.graph.evidence.check_node`
 // {test}`requirements.sdk.graph.evidence.procedure_identity`
 // {test}`requirements.sdk.graph.evidence.record.output`
@@ -1175,7 +1175,7 @@ async fn later_lighter_agent_calls_preserve_the_contexts_existing_trace() {
 }
 
 // {test}`requirements.sdk.domain`
-// {test}`requirements.sdk.graph.validation.validate_node`
+// {test}`requirements.sdk.graph.validators.validate_node`
 // {test}`requirements.sdk.graph.execution.root_inputs`
 // {test}`requirements.sdk.graph.evidence.node_inputs`
 #[tokio::test]
@@ -1272,7 +1272,7 @@ fn prefix_hashes_match_known_utf8_sha256_without_normalization() {
     assert_ne!(context_fingerprint("a b"), context_fingerprint("a  b"));
 }
 
-// {test}`requirements.sdk.graph.validation.check_procedure`
+// {test}`requirements.sdk.graph.validation.criterion_trait`
 #[test]
 fn agent_errors_expose_the_agreed_string_payload() {
     use std::error::Error;

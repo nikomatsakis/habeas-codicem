@@ -165,7 +165,7 @@ fn model_recorded_input(value: &Value) -> Value {
     recorded_input(&value)
 }
 
-// {impl}`requirements.sdk.graph.validation.check_procedure`
+// {impl}`requirements.sdk.graph.validation.criterion_trait`
 // {impl}`requirements.sdk.graph.agent-calls.procedures`
 // {impl}`requirements.authoring.mandatory_inputs`
 struct Review {
@@ -572,9 +572,9 @@ mod tests {
         assert_eq!(inspection.dependencies().len(), 1);
     }
 
-    // {test}`requirements.sdk.graph.validation.check_procedure`
+    // {test}`requirements.sdk.graph.validation.criterion_trait`
     // {test}`requirements.sdk.graph.evidence.check_node`
-    // {test}`requirements.sdk.graph.validation.validate_node`
+    // {test}`requirements.sdk.graph.validators.validate_node`
     // {test}`requirements.sdk.graph.evidence.evidence_storage`
     // {test}`requirements.sdk.habeas.evidence_format.loading`
     #[tokio::test]

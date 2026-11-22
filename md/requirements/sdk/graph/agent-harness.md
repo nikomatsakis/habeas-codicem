@@ -114,7 +114,7 @@ inputs under {cite}`requirements.sdk.graph.agent-calls.author_procedure`.
 :::{example} setup
 {cite}`requirements.sdk.graph.agent-harness.tool_agent`
 {cite}`requirements.sdk.graph.agent-harness.with_agent`
-{cite}`requirements.sdk.graph.validation.validator`
+{cite}`requirements.sdk.graph.validators.validator`
 
 Here `provider` implements `CompletionProvider`, and `domain` is the
 application's domain with the adapter's label and error bounds described above.

@@ -298,7 +298,7 @@ Calls can run concurrently without holding an exclusive context borrow across
 an agent interaction or locking the whole context for the conversation.
 
 The context is the same interface used by deterministic criteria under
-{cite}`requirements.sdk.graph.validation.check_procedure`; its domain includes
+{cite}`requirements.sdk.graph.validation.criterion_trait`; its domain includes
 evidence storage.
 :::
 

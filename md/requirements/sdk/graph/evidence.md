@@ -59,7 +59,7 @@ and {cite}`requirements.sdk.graph.evidence.record.output`. Revision and input
 comparison follow
 {cite}`requirements.sdk.graph.evidence.checking_records.procedure_match` and
 {cite}`requirements.sdk.graph.evidence.checking_records`. Evaluation follows
-{cite}`requirements.sdk.graph.validation.validate_node`; saving follows
+{cite}`requirements.sdk.graph.validators.validate_node`; saving follows
 {cite}`requirements.sdk.graph.evidence.store_evidence`.
 :::
 

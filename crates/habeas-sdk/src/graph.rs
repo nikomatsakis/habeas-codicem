@@ -236,7 +236,7 @@ pub trait Domain: Clone + Graph + Contents + Storage {}
 // {impl}`requirements.sdk.domain`
 impl<T: Clone + Graph + Contents + Storage> Domain for T {}
 
-// {impl}`requirements.sdk.graph.validation.check_procedure`
+// {impl}`requirements.sdk.graph.validation.criterion_trait`
 #[derive(Debug)]
 pub enum ValidationError<E> {
     Graph(E),
@@ -268,7 +268,7 @@ impl<E: std::error::Error + 'static> std::error::Error for ValidationError<E> {
     }
 }
 
-// {impl}`requirements.sdk.graph.validation.check_procedure`
+// {impl}`requirements.sdk.graph.validation.criterion_trait`
 pub trait Criterion<D: Domain>: Send + Sized {
     /// The completed answer, serialized for storage and reconstructed on reuse.
     type Ok: Serialize + serde::de::DeserializeOwned + Send;
@@ -282,7 +282,7 @@ pub trait Criterion<D: Domain>: Send + Sized {
     fn revision(&self) -> String;
 
     /// Select inputs through the context and compute the completed answer.
-    // {impl}`requirements.sdk.graph.validation.check_procedure`
+    // {impl}`requirements.sdk.graph.validation.criterion_trait`
     fn execute(
         self,
         ctx: &mut ValidationContext<'_, D>,

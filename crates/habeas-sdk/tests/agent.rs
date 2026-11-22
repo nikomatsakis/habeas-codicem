@@ -392,8 +392,8 @@ impl Criterion<Memory> for Question {
     }
 }
 
-// {test}`requirements.sdk.graph.validation.validator`
-// {test}`requirements.sdk.graph.validation.validate_node`
+// {test}`requirements.sdk.graph.validators.validator`
+// {test}`requirements.sdk.graph.validators.validate_node`
 // {test}`requirements.sdk.graph.agent-calls.judge.rendering`
 // {test}`requirements.sdk.graph.agent-calls.author_procedure`
 // {test}`requirements.sdk.graph.agent-harness.tool_agent`
@@ -478,7 +478,7 @@ async fn validator_agent_executions_isolate_conversations_and_dependency_traces(
 
 // {test}`requirements.sdk.graph.context-tools.tracked_inspection`
 // {test}`requirements.sdk.graph.fingerprinting.snapshot`
-// {test}`requirements.sdk.graph.validation.validate_node`
+// {test}`requirements.sdk.graph.validators.validate_node`
 // {test}`requirements.sdk.graph.evidence.check_node`
 // {test}`requirements.sdk.graph.evidence.store_evidence`
 // {test}`requirements.sdk.graph.evidence.inputs`
@@ -897,7 +897,7 @@ async fn source_tools_keep_search_discovery_separate_from_delivered_source_reads
     );
 }
 
-// {test}`requirements.sdk.graph.validation.check_procedure`
+// {test}`requirements.sdk.graph.validation.criterion_trait`
 // {test}`requirements.sdk.graph.domain_types`
 // {test}`requirements.sdk.domain`
 // {test}`requirements.sdk.graph.agent-calls.author_procedure`
@@ -1385,7 +1385,7 @@ impl Criterion<Memory> for BehavioralAdequacy {
 
 // {test}`requirements.sdk.graph.execution.behavioral_adequacy`
 // {test}`requirements.sdk.graph.validation.criterion_definition`
-// {test}`requirements.sdk.graph.validation.evaluate_criterion`
+// {test}`requirements.sdk.graph.validators.evaluate_criterion`
 // {test}`requirements.sdk.graph.evidence.refresh_evidence`
 // {test}`requirements.sdk.graph.evidence.store_evidence`
 // {test}`requirements.sdk.graph.agent-harness.setup`

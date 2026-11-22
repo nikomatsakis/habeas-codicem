@@ -3,14 +3,14 @@ use crate::procedure::Agent;
 use std::sync::Arc;
 
 /// Shared domain and agent access. Each execution owns its dependency trace.
-// {impl}`requirements.sdk.graph.validation.validator`
+// {impl}`requirements.sdk.graph.validators.validator`
 pub struct Validator<D: Domain> {
     domain: D,
     agent: Option<Arc<dyn Agent<D>>>,
 }
 
 impl<D: Domain> Validator<D> {
-    // {impl}`requirements.sdk.graph.validation.validator`
+    // {impl}`requirements.sdk.graph.validators.validator`
     /// Own the domain used to check and execute criteria.
     pub fn new(domain: D) -> Self {
         Self {
@@ -88,8 +88,8 @@ impl<D: Domain> Validator<D> {
         dependencies_are_current(&self.domain, &inputs.dependencies)
     }
 
-    // {impl}`requirements.sdk.graph.validation.validate_node`
-    // {impl}`requirements.sdk.graph.validation.validate_node.errors`
+    // {impl}`requirements.sdk.graph.validators.validate_node`
+    // {impl}`requirements.sdk.graph.validators.validate_node.errors`
     // {impl}`requirements.sdk.graph.evidence.procedure_identity`
     // {impl}`requirements.sdk.graph.evidence.inputs`
     /// Execute the criterion and return its completed answer and observed inputs.

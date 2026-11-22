@@ -77,7 +77,7 @@ fingerprint of each input used during execution. Those fingerprints let the
 application check when the answer may be stale.
 
 {cite}`requirements.sdk.graph.agent-calls.judge.submission`
-{cite}`requirements.sdk.graph.validation.validate_node`
+{cite}`requirements.sdk.graph.validators.validate_node`
 {cite}`requirements.sdk.graph.evidence.inputs`
 :::
 

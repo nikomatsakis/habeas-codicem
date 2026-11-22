@@ -275,8 +275,8 @@ fn graph_relationships_work_without_node_contents_or_storage() {
 }
 
 // {test}`requirements.sdk.graph.validation.criterion_path`
-// {test}`requirements.sdk.graph.validation.check_procedure`
-// {test}`requirements.sdk.graph.validation.validate_node`
+// {test}`requirements.sdk.graph.validation.criterion_trait`
+// {test}`requirements.sdk.graph.validators.validate_node`
 // {test}`requirements.sdk.graph.evidence.procedure_identity`
 // {test}`requirements.sdk.graph.evidence.check_node`
 // {test}`requirements.sdk.graph.execution.deterministic_procedures`
@@ -431,7 +431,7 @@ fn criterion_paths_preserve_hierarchy_empty_segments_order_and_unicode() {
 }
 
 // {test}`requirements.sdk.graph.evidence.check_node`
-// {test}`requirements.sdk.graph.validation.validate_node`
+// {test}`requirements.sdk.graph.validators.validate_node`
 // {test}`requirements.sdk.graph.evidence.node_inputs`
 // {test}`requirements.sdk.graph.evidence.checking_records`
 #[tokio::test]
@@ -494,7 +494,7 @@ async fn changing_one_criteria_input_does_not_invalidate_another() {
 // {test}`requirements.sdk.graph.evidence.store_evidence`
 // {test}`requirements.sdk.graph.evidence.record.output`
 // {test}`requirements.sdk.graph.evidence.procedure_identity`
-// {test}`requirements.sdk.graph.validation.validate_node.errors`
+// {test}`requirements.sdk.graph.validators.validate_node.errors`
 // {test}`requirements.sdk.graph.evidence.check_node`
 // {test}`requirements.sdk.graph.evidence.checking_records`
 #[tokio::test]
@@ -543,7 +543,7 @@ async fn typed_loading_reports_decode_errors_even_for_stale_evidence() {
 
 // {test}`requirements.sdk.graph.evidence.store_evidence`
 // {test}`requirements.sdk.graph.evidence.record.output`
-// {test}`requirements.sdk.graph.validation.validate_node`
+// {test}`requirements.sdk.graph.validators.validate_node`
 // {test}`requirements.sdk.graph.evidence.record`
 // {test}`requirements.sdk.graph.evidence.checking_records`
 #[tokio::test]
@@ -663,10 +663,10 @@ async fn wildcard_revision_does_not_supply_other_criteria_or_nodes() {
     assert_eq!(domain.0.lock().unwrap().executions, 1);
 }
 
-// {test}`requirements.sdk.graph.validation.check_procedure`
+// {test}`requirements.sdk.graph.validation.criterion_trait`
 // {test}`requirements.sdk.graph.evidence.check_node`
-// {test}`requirements.sdk.graph.validation.validate_node`
-// {test}`requirements.sdk.graph.validation.validator`
+// {test}`requirements.sdk.graph.validators.validate_node`
+// {test}`requirements.sdk.graph.validators.validator`
 // {test}`requirements.sdk.graph.evidence.store_evidence`
 // {test}`requirements.sdk.graph.evidence.refresh_evidence`
 #[tokio::test]
@@ -905,7 +905,7 @@ async fn refresh_serialization_failure_preserves_the_saved_record() {
 }
 
 // {test}`requirements.sdk.graph.evidence.refresh_evidence`
-// {test}`requirements.sdk.graph.validation.validator`
+// {test}`requirements.sdk.graph.validators.validator`
 // {test}`requirements.sdk.graph.evidence.evidence_storage`
 #[tokio::test]
 async fn concurrent_refreshes_execute_independently_and_store_complete_records() {
@@ -986,7 +986,7 @@ impl Serialize for Unencodable {
     }
 }
 
-// {test}`requirements.sdk.graph.validation.validate_node.errors`
+// {test}`requirements.sdk.graph.validators.validate_node.errors`
 // {test}`requirements.sdk.graph.evidence.store_evidence`
 // {test}`requirements.sdk.graph.evidence.record.output`
 #[tokio::test]
@@ -1016,7 +1016,7 @@ async fn serialization_failure_leaves_the_existing_record_unchanged() {
     assert_eq!(domain.0.lock().unwrap().writes, 1);
 }
 
-// {test}`requirements.sdk.graph.validation.validate_node.errors`
+// {test}`requirements.sdk.graph.validators.validate_node.errors`
 // {test}`requirements.sdk.graph.evidence.check_node`
 // {test}`requirements.sdk.graph.evidence.record.output`
 #[tokio::test]
@@ -1060,7 +1060,7 @@ async fn loading_execution_resolution_and_saving_failures_do_not_publish_answers
     assert_eq!(state.writes, 0);
 }
 
-// {test}`requirements.sdk.graph.validation.validator`
+// {test}`requirements.sdk.graph.validators.validator`
 // {test}`requirements.sdk.graph.evidence.evidence_storage`
 // {test}`requirements.sdk.domain`
 // {test}`requirements.sdk.graph.evidence.store_evidence`
