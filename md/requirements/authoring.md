@@ -1400,10 +1400,12 @@ of edge is absent. The implementation carries issue-linked `{fixme}`
 acknowledgments of this temporary gap.
 
 :::{req} structural_inputs
-For a structural assessment under {cite}`requirements.authoring.structural_review`,
-every direct implementation reference or anchor outside a declaration MUST
-contribute its source selection to the mandatory inputs under
-{cite}`requirements.authoring.mandatory_inputs`. An in-source reference selects
+For every non-distributed requirement's structural check under
+{cite}`requirements.authoring.structural_review`, every direct implementation
+reference or `:impl:` anchor outside a declaration MUST contribute its source
+selection to the initial mandatory inputs under
+{cite}`requirements.authoring.mandatory_inputs`, including when the requirement
+also has incoming `{test}` references or `:test:` anchors. An in-source reference selects
 its enclosing outline node, or the whole file when it has no language outline;
 an anchor selects its named file or node. Source access, exclusions, errors,
 and deduplication follow the existing mandatory-input rules. Refining
