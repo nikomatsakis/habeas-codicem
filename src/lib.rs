@@ -2124,44 +2124,42 @@ mod tests {
                 .flat_map(|(_, declarations)| declarations.iter().map(String::as_str))
                 .collect::<Vec<_>>()
         };
-        let frame = declarations(".habeas-declaration");
+        let section = declarations(".habeas-declaration");
         assert!(
-            frame.contains(&"border: 1px solid color-mix(in srgb, var(--fg) 22%, var(--bg))"),
-            "{frame:?}"
+            section
+                .contains(&"border-right: 1px solid color-mix(in srgb, var(--fg) 22%, var(--bg))"),
+            "{section:?}"
         );
         assert!(
-            frame
-                .iter()
-                .any(|declaration| declaration.starts_with("box-shadow:")),
-            "{frame:?}"
+            section.contains(&"margin: 1.25em 0.8em 1.25em 0")
+                && section.contains(&"padding-right: 1.5em")
+                && declarations(".habeas-declaration-body").contains(&"padding: 0"),
+            "{section:?}"
         );
-        let expanded = declarations(".habeas-declaration[open] > summary");
-        assert!(
-            expanded
-                .contains(&"border-bottom: 1px solid color-mix(in srgb, var(--fg) 22%, var(--bg))"),
-            "{expanded:?}"
-        );
-        let chevron = declarations(".habeas-declaration > summary::before");
+        let control = declarations(".habeas-declaration > summary::after");
         for declaration in [
-            "content: \"\"",
-            "border-right: 1.5px solid currentColor",
-            "border-bottom: 1.5px solid currentColor",
-            "transform: rotate(-45deg)",
+            "content: \"+\"",
+            "position: absolute",
+            "top: 0",
+            "right: -0.7em",
+            "border-radius: 50%",
         ] {
-            assert!(chevron.contains(&declaration), "{chevron:?}");
+            assert!(control.contains(&declaration), "{control:?}");
         }
         assert!(
-            declarations(".habeas-declaration[open] > summary::before")
-                .contains(&"transform: rotate(45deg)")
+            declarations(".habeas-declaration[open] > summary::after").contains(&"content: \"−\"")
         );
-        let focus = declarations(".habeas-declaration > summary:focus-visible");
+        let focus = declarations(".habeas-declaration > summary:focus-visible::after");
         assert!(
             focus
                 .iter()
                 .any(|declaration| declaration.starts_with("outline: 2px")),
             "{focus:?}"
         );
-        assert!(declarations(".habeas-declaration > summary").contains(&"overflow-x: auto"));
+        assert!(
+            declarations(".habeas-declaration > summary > .habeas-definition-badge")
+                .contains(&"overflow-x: auto")
+        );
     }
 
     // {test}`requirements.references.book_badges`
@@ -2223,10 +2221,10 @@ mod tests {
             ".habeas-declaration",
             ".habeas-declaration > summary",
             ".habeas-declaration > summary::-webkit-details-marker",
-            ".habeas-declaration > summary::before",
-            ".habeas-declaration[open] > summary",
-            ".habeas-declaration[open] > summary::before",
-            ".habeas-declaration > summary:focus-visible",
+            ".habeas-declaration > summary::after",
+            ".habeas-declaration[open] > summary::after",
+            ".habeas-declaration > summary > .habeas-definition-badge",
+            ".habeas-declaration > summary:focus-visible::after",
             ".habeas-declaration-body",
             ".habeas-definition-label",
         ];
