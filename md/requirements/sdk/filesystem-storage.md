@@ -129,5 +129,5 @@ Atomic replacement does not promise durability across power loss or recovery
 of temporary files after a process crash. Applications needing transactions
 across several nodes can implement `Storage` with another backend.
 
-The SDK still owns [freshness checking](graph/validation.md#compare-the-saved-observations).
+The SDK still owns [freshness checking](graph/evidence.md#compare-the-saved-observations).
 A successfully loaded record may be stale or contain a negative judgment.

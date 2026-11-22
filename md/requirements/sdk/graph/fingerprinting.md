@@ -50,7 +50,7 @@ explains how formatting participates in a request.
 A matching fingerprint establishes that the input is unchanged under those
 rules. It does not establish that the node is valid: a current review can still
 contain a negative judgment. The SDK uses these fingerprints to
-[compare saved observations](validation.md#compare-the-saved-observations).
+[compare saved observations](evidence.md#compare-the-saved-observations).
 
 ## Fingerprint the structure, and version the rules
 

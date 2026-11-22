@@ -17,6 +17,35 @@ flowchart TD
     Submit --> Answer["Ask decodes the answer into R"]
 ```
 
+## The agent interface
+
+`Agent<D>`, defined in `habeas_sdk::procedure`, is the interface the ask builder
+uses to run a model conversation. Its `AgentRequest` contains the prepared
+instructions, node contents, result schema, and submission-tool name.
+The accompanying `InspectionContext` records additional inputs delivered
+during the conversation.
+
+```rust,ignore
+use futures::future::BoxFuture;
+
+// Defined in habeas_sdk::procedure.
+pub trait Agent<D: Contents>: Send + Sync {
+    /// Run this request and return the accepted submitted answer as JSON.
+    /// Record additional delivered inputs through inspection.
+    fn run<'a>(
+        &'a self,
+        request: AgentRequest<D::NodeId>,
+        inspection: &'a InspectionContext<'_, D>,
+    ) -> BoxFuture<'a, Result<serde_json::Value, std::io::Error>>;
+}
+```
+
+The ask builder decodes that JSON into its answer type `R`. `ToolAgent`
+implements this interface with a provider conversation and inspection tools.
+Applications can instead [implement their own conversation
+adapter](#adapt-an-existing-conversation). A validator shares the chosen
+implementation through `Arc<dyn Agent<D>>`.
+
 ## Configure the supplied harness
 
 The SDK supplies `ToolAgent` for applications that want a provider conversation

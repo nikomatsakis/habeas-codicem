@@ -9,6 +9,60 @@ observations captured during execution. The application calls `store_evidence`
 to save it, and `load_evidence` to retrieve a typed answer later. Storage is a
 required domain capability; the application chooses its backend.
 
+## Refresh evidence
+
+`Validator::refresh_evidence` implements the usual reuse workflow. It loads a
+previous answer, checks its review-rule revision and recorded inputs, and
+returns it when both still match. Otherwise it evaluates the criterion and
+saves the new answer. Its definition uses the granular methods described below:
+
+:::{req} refresh_evidence
+```rust,ignore
+use std::future::Future;
+
+// Method on Validator<D>.
+/// Reuse compatible, current evidence, or evaluate and save a new answer.
+/// Errors from loading, decoding, checking, execution, or saving propagate.
+pub fn refresh_evidence<V: Criterion<D>>(
+    &self,
+    criterion: V,
+) -> impl Future<Output = Result<Fingerprinted<D, V::Ok>, ValidationError<D::Error>>> + Send {
+    async move {
+        if let Some(saved) = self.load_evidence(&criterion).await? {
+            if procedure_matches(saved.revision(), &criterion.revision())
+                && self.check_inputs(&saved).map_err(ValidationError::Graph)?
+            {
+                return Ok(saved);
+            }
+        }
+
+        let inputs = self.verify(criterion).await?;
+        self.store_evidence(&inputs).await?;
+        Ok(inputs)
+    }
+}
+```
+
+Loading and decoding follow {cite}`requirements.sdk.graph.evidence.check_node`
+and {cite}`requirements.sdk.graph.evidence.record.output`. Revision and input
+comparison follow
+{cite}`requirements.sdk.graph.evidence.checking_records.procedure_match` and
+{cite}`requirements.sdk.graph.evidence.checking_records`. Evaluation follows
+{cite}`requirements.sdk.graph.validation.validate_node`; saving follows
+{cite}`requirements.sdk.graph.evidence.store_evidence`.
+:::
+
+A current negative assessment is reused just like a positive one. A missing
+record, an incompatible revision, or changed inputs leads to a new evaluation.
+A load or decoding failure is reported even when the stored evidence is stale,
+as required by the loading contract.
+
+The helper packages this workflow; the individual methods remain available for
+applications that need to inspect an old answer, force a new evaluation with
+`verify`, or decide when to save a result. Concurrent calls follow the validator's
+independent-execution policy; [storage](#look-up-a-source-and-criterion) provides
+atomic record replacement.
+
 ## Keep the answer with its inputs
 
 `Fingerprinted<D, O>` keeps a criterion's answer together with the observations used to
@@ -276,6 +330,11 @@ It uses the current state that the caller intends to inspect, rather than
 reusing source snapshots from an earlier invocation without establishing that
 they remain current. These reads are separate from a criterion execution's
 dependency trace.
+
+Freshness checking has a separate observation scope from execution. Reads used
+only to check old evidence do not become dependencies of the new result. A
+checked snapshot can be reused if it still represents the current state; when
+execution explicitly reads or delivers it, its fingerprint enters the new trace.
 :::
 
 :::{req} checking_records.procedure_match
@@ -299,38 +358,6 @@ Habeas chooses how to map its legacy assessments to the corresponding criteria.
 A current record need not contain a favorable assessment. The SDK supplies the
 comparisons; Habeas owns its reuse and acceptance policies.
 
-## Compose a reuse workflow
-
-The application decides when to reuse a saved answer. For example, it can
-compare the saved revision and recorded inputs before choosing whether to
-execute and store a new review:
-
-```rust,ignore
-let review = BehavioralAdequacy {
-    requirement,
-    review_policy: test_review_policy,
-};
-
-let inputs = match validator.load_evidence(&review).await? {
-    Some(saved)
-        if procedure_matches(saved.revision(), &review.revision())
-            && validator.check_inputs(&saved)? => saved,
-    _ => {
-        let inputs = validator.verify(review).await?;
-        validator.store_evidence(&inputs).await?;
-        inputs
-    }
-};
-
-let assessment = inputs.output();
-println!("{}: {}", assessment.adequate, assessment.rationale);
-```
-
-Of the [comparisons above](#compare-the-saved-observations), `procedure_matches`
-checks whether the saved answer was produced using compatible review rules;
-`check_inputs` compares only its recorded observations. A current negative
-assessment is still current. Habeas decides which answers make CI pass.
-
 ## Reuse the filesystem storage helper
 
 :::{req} evidence_storage.filesystem
@@ -341,7 +368,8 @@ path and preserves segment boundaries under
 {cite}`requirements.sdk.filesystem-storage.keys`.
 :::
 
-[Criteria and validators](validation.md) defines loading, input comparison,
-verification, and saving, then composes them into a reuse workflow.
+[Criteria and validators](validation.md) defines the criterion and its
+verification interface. The methods above compose verification with this
+chapter's evidence workflow.
 [Filesystem evidence
 storage](../filesystem-storage.md) defines the helper and its encoding.

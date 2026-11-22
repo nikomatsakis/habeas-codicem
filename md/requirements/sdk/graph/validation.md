@@ -4,10 +4,42 @@ In the Habeas SDK, a criterion is a question about a node that can be evaluated.
 Define it with your own struct implementing `Criterion<D>`, then evaluate it
 with a `Validator<D>`.
 
-The following application example asks whether a requirement's tests cover its
-behavior. This chapter defines the `BehavioralAdequacy` criterion and shows how
-to evaluate it and manage its evidence. [Evaluating criteria](execution.md)
-fills in its execution method.
+A requirement can be reviewed with `BehavioralAdequacy`, an application-defined
+criterion. The validator can reuse its previous answer when the review rules
+and inputs are current, or evaluate it again:
+
+:::{example} evaluate_criterion
+{cite}`requirements.sdk.graph.validation.validator`
+{cite}`requirements.sdk.graph.evidence.refresh_evidence`
+{cite}`requirements.sdk.graph.evidence.inputs`
+
+Here `domain` implements Habeas's graph, contents, and storage, and `agent` is
+an implementation of the [agent interface](agent-harness.md#the-agent-interface):
+
+```rust,ignore
+let validator = Validator::new(domain.clone())
+    .with_agent(agent.clone());
+
+let inputs = validator.refresh_evidence(BehavioralAdequacy {
+    requirement: requirement.clone(),
+    review_policy: test_review_policy.clone(),
+}).await?;
+
+let assessment: &TestReview = inputs.output();
+println!("{}: {}", assessment.adequate, assessment.rationale);
+```
+:::
+
+This chapter focuses on defining the criterion and evaluating it with a
+validator. [Storage](evidence.md#refresh-evidence) defines `refresh_evidence`
+and explains the load, check, verify, and store steps it combines.
+[Evaluating criteria](execution.md) fills in the criterion's execution method.
+
+## Define a criterion
+
+`BehavioralAdequacy` asks whether a requirement's tests cover its behavior. Its
+fields identify the requirement and the review policy; its `Ok` type describes
+the answer:
 
 :::{example} criterion_definition
 {cite}`requirements.sdk.graph.validation.check_procedure`
@@ -50,17 +82,17 @@ impl Criterion<HabeasDomain> for BehavioralAdequacy {
 
 ## Run criteria with a validator
 
-A `Validator<D>` owns a cloneable domain and agent configuration. It supplies
-four operations: load evidence, check its inputs, execute a criterion, and
-store the resulting evidence. Applications compose these into their workflows.
+A `Validator<D>` owns a cloneable domain and agent configuration. Its `verify`
+method evaluates a criterion and returns its answer with the inputs used to
+produce it.
 
 :::{req} validator
 ```rust,ignore
+use habeas_sdk::procedure::Agent;
 use std::sync::Arc;
 
 // Defined in habeas_sdk::graph.
 /// Domain access and configuration shared by criterion executions.
-/// Evidence storage is required through Domain.
 pub struct Validator<D: Domain> { /* private fields */ }
 
 impl<D: Domain> Validator<D> {
@@ -75,8 +107,11 @@ impl<D: Domain> Validator<D> {
 }
 ```
 
-`Agent` is supplied by `habeas_sdk::procedure`; the domain formats node contents.
-[Agent harness](agent-harness.md) shows how to configure a provider and tools.
+[`Agent<D>`](agent-harness.md#the-agent-interface) is the interface an `ask`
+request calls to run a model conversation. It is defined in
+`habeas_sdk::procedure`; the supplied `ToolAgent` implements it. The
+[Agent harness chapter](agent-harness.md) shows how to configure a provider
+and tools.
 Independent verifications share a validator through `&self`. Cached observations
 can be reused when they still represent the state being checked. Each execution
 has its own context, dependency trace, and agent conversation state. Operations
@@ -84,39 +119,8 @@ within one execution share its synchronized trace through context inspection
 and agent calls.
 
 Concurrent verifications of the same source and criterion run independently,
-each with its own context and trace. The storage backend handles atomic
-replacement when their results are saved.
-:::
-
-The validator can now evaluate an instance of `BehavioralAdequacy`.
-
-:::{example} evaluate_criterion
-{cite}`requirements.sdk.graph.validation.validator`
-{cite}`requirements.sdk.graph.validation.validate_node`
-{cite}`requirements.sdk.graph.evidence.store_evidence`
-{cite}`requirements.sdk.graph.evidence.inputs`
-
-Here `agent` is a configured `Arc` handle, and `domain` is Habeas's implementation
-of the SDK's `Graph`, `Contents`, and `Storage` traits:
-
-```rust,ignore
-let validator = Validator::new(domain.clone())
-    .with_agent(agent.clone());
-
-let inputs = validator.verify(BehavioralAdequacy {
-    requirement: requirement.clone(),
-    review_policy: test_review_policy.clone(),
-}).await?;
-
-validator.store_evidence(&inputs).await?;
-let assessment: &TestReview = inputs.output();
-println!("{}: {}", assessment.adequate, assessment.rationale);
-```
-
-`verify` evaluates the question and returns `Fingerprinted<D, TestReview>`, containing
-the answer and its recorded inputs. `store_evidence` saves that value. Loading
-evidence and checking its inputs are separate operations, so the application
-decides whether to reuse an answer or evaluate the criterion again.
+each with its own context and trace. [Storage](evidence.md#look-up-a-source-and-criterion)
+describes atomic replacement when results are saved.
 :::
 
 ## Define the criterion's interface
@@ -139,14 +143,13 @@ pub enum ValidationError<E> {
 
 pub trait Criterion<D: Domain>: Send + Sized {
     /// The completed answer, including any negative assessment.
-    /// The SDK serializes it for storage and reconstructs it when reused.
     /// Its Serde JSON representation must reconstruct the completed answer.
     type Ok: Serialize + DeserializeOwned + Send;
 
     /// The node this question is about.
     fn source_node_id(&self) -> D::NodeId;
 
-    /// Identify this question within the source node's saved evidence.
+    /// Identify this question relative to its source node.
     fn criterion_path(&self) -> CriterionPath;
 
     /// Version of these review rules and the result's encoding.
@@ -167,9 +170,8 @@ belong in its identity or revision.
 :::
 
 The criterion defines its answer through `Ok`. Here, an `Ok(TestReview {
-adequate: false, ... })` is a completed assessment finding a gap. The validator
-can save and reuse that answer; an `Err` means execution failed and produces no
-completed record.
+adequate: false, ... })` is a completed assessment finding a gap. An `Err` means
+the evaluation failed to produce a completed answer.
 
 ## Give the question a stable path
 
@@ -197,15 +199,14 @@ impl CriterionPath {
 ```
 
 Its identity is stable across runs and changes to input contents. Different
-questions that need independent records have different paths; nested paths can
-distinguish several questions within one area.
+questions that need independent assessments have different paths; nested paths
+can distinguish several questions within one area.
 :::
 
 The complete identity is the pair of source node and criterion path. Appending
-criterion segments to a source `NodePath` gives a useful display path; storage
-preserves the boundary between the two paths so different pairs cannot collide.
-The [Storage chapter](evidence.md) defines that lookup. The criterion path names
-an evidence record; the context's source remains the graph node.
+criterion segments to a source `NodePath` gives a useful display path.
+[Storage](evidence.md#identify-the-saved-assessment) explains how this pair
+identifies a saved answer.
 
 ## Verify a criterion
 
@@ -213,7 +214,6 @@ an evidence record; the context's source remains the graph node.
 ```rust,ignore
 // Method on Validator<D>.
 /// Execute the criterion and return its completed answer and observed inputs.
-/// Use store_evidence to save the returned value.
 pub fn verify<V: Criterion<D>>(
     &self,
     criterion: V,
@@ -223,16 +223,10 @@ pub fn verify<V: Criterion<D>>(
 Every call starts a fresh context identifying the source node and calls
 `Criterion::execute`. Its completed answer, including a negative assessment,
 and captured dependencies form the returned `Fingerprinted` under
-{cite}`requirements.sdk.graph.evidence.inputs`. Loading and saving records are
-separate operations.
-
-Freshness checking has a separate observation scope from execution. Reads used
-only to check old evidence do not become dependencies of the new result. A
-checked snapshot can be reused if it still represents the current state; when
-execution explicitly reads or delivers it, its fingerprint enters the new trace.
+{cite}`requirements.sdk.graph.evidence.inputs`.
 :::
 
 :::{req} validate_node.errors
-An execution error returns `Err` rather than a `Fingerprinted` containing a completed
-answer. The caller can store only a completed verification.
+An execution error returns `Err` rather than a `Fingerprinted` containing a
+completed answer.
 :::
