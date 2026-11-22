@@ -84,11 +84,12 @@ render normally without double escaping.
 :::{req} declaration_sections
 :impl: md/habeas.css
 In authored chapters, requirements, examples, and named definitions render as
-lightly framed, collapsible sections, expanded when the chapter opens. Each
-header identifies the declaration and its kind. A disclosure chevron indicates
-whether its body is expanded or collapsed; a subtle divider separates the
-header from the expanded body. Collapsing a section hides its body while
-keeping the header visible. The disclosure works with a mouse or keyboard.
+collapsible sections, expanded when the chapter opens. Their headers and body
+prose share the left edge of the containing prose. Each header identifies the
+declaration and its kind. A light vertical rule on the right delineates the
+section; a circular disclosure control at the top of that rule shows a minus
+when expanded and a plus when collapsed. Collapsing a section hides its body
+while keeping the header visible. The disclosure works with a mouse or keyboard.
 
 The body retains its Markdown rendering, including code blocks and nested
 declarations. Requirement and example headers retain the definition and
