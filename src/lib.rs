@@ -468,9 +468,10 @@ fn replace_definitions(
             if let Ok((phrase, body)) =
                 terms::declaration(&content[block.body_start..block.body_end])
             {
+                let anchor = escape_html(&block.kind.anchor(&full_name));
+                let permalink = format!("#{anchor}").replace(".md", "%2Emd");
                 result.push_str(&format!(
-                    "<details class=\"habeas-declaration\" open>\n<summary><span class=\"habeas-definition-label\">definition</span> <strong id=\"{}\">{}</strong></summary>\n<div class=\"habeas-declaration-body\">\n\n",
-                    escape_html(&block.kind.anchor(&full_name)),
+                    "<details class=\"habeas-declaration\" style=\"--habeas-declaration-color: #2e8555\" open>\n<summary><span class=\"habeas-definition-badge\"><a class=\"habeas-req-badge habeas-badge-kind\" href=\"{permalink}\" title=\"Link to {escaped_name} in this chapter\">definition</a><a class=\"habeas-req-badge habeas-badge-name\" id=\"{anchor}\" href=\"{permalink}\" title=\"Link to {escaped_name} in this chapter\">{}</a></span></summary>\n<div class=\"habeas-declaration-body\">\n\n",
                     terms::escaped_phrase(phrase)
                 ));
                 result.push_str(&replace_definitions(body, namespace, current_path, plan));
@@ -1712,7 +1713,7 @@ mod tests {
         let mut book = Book::new();
         book.push_item(Chapter::new(
             "Rules",
-            ":::{req} ready\nReady.\n:::\n\n:::{example} case\nA case. {cite}`rules.ready`\n:::\n"
+            ":::{req} ready\nReady.\n:::\n\n:::{example} case\nA case. {cite}`rules.ready`\n:::\n\n:::{definition} word\n:phrase: a word\n\nA definition.\n:::\n"
                 .into(),
             "rules.md",
             vec![],
@@ -1720,7 +1721,11 @@ mod tests {
         let root = book_root();
         preprocess_book(&mut book, root.path()).unwrap();
         let content = &book.chapters().next().unwrap().content;
-        for (kind, name, color) in [("req", "ready", "006ba8"), ("example", "case", "7151a1")] {
+        for (kind, name, color) in [
+            ("req", "ready", "006ba8"),
+            ("example", "case", "7151a1"),
+            ("definition", "word", "2e8555"),
+        ] {
             let segment = content
                 .split("<details class=\"habeas-declaration\"")
                 .find(|part| part.contains(&format!("id=\"habeas-{kind}-rules.{name}\"")))
@@ -1825,7 +1830,7 @@ mod tests {
             "{html}"
         );
         assert!(
-            html.contains("<span class=\"habeas-definition-label\">definition</span> <strong id=\"habeas-definition-rules.word\">alpha &amp; beta</strong></summary>"),
+            html.contains(">definition</a><a class=\"habeas-req-badge habeas-badge-name\" id=\"habeas-definition-rules.word\" href=\"#habeas-definition-rules.word\" title=\"Link to rules.word in this chapter\">alpha &amp; beta</a></span></summary>"),
             "{html}"
         );
         assert!(
@@ -2146,11 +2151,11 @@ mod tests {
         let control = declarations(".habeas-declaration > summary::after");
         for declaration in [
             "content: \"+\"",
-            "position: absolute",
-            "top: 0",
-            "right: -13px",
+            "flex-shrink: 0",
             "border-radius: 2px",
             "background: var(--habeas-declaration-color)",
+            "border: 1px solid var(--habeas-declaration-color)",
+            "border-left-color: var(--bg)",
         ] {
             assert!(control.contains(&declaration), "{control:?}");
         }
@@ -2165,6 +2170,27 @@ mod tests {
             "Disclosure needs a defined size: {control:?}"
         );
         assert_eq!(width, height, "Disclosure should be square: {control:?}");
+        assert_eq!(height, Some("var(--habeas-badge-height)"), "{control:?}");
+        let summary = declarations(".habeas-declaration > summary");
+        assert!(summary.contains(&"gap: 0"), "{summary:?}");
+        assert!(
+            summary
+                .contains(&"margin-right: calc(-1.25em - var(--habeas-badge-height) / 2 - 1.5px)"),
+            "The disclosure should sit over the top of the right-margin bar: {summary:?}"
+        );
+        // Links use 0.8em text, so 1.6em equals the control's 1.28em height.
+        assert!(
+            section.contains(&"--habeas-badge-height: 1.28em"),
+            "{section:?}"
+        );
+        let badge = declarations(".habeas-definition-badge > a.habeas-req-badge");
+        assert!(
+            badge.contains(&"font-size: 0.8em")
+                && badge.contains(&"height: 1.6em")
+                && badge.contains(&"box-sizing: border-box")
+                && badge.contains(&"padding: 0 0.5em"),
+            "{badge:?}"
+        );
         assert!(
             declarations(".habeas-declaration[open] > summary::after").contains(&"content: \"−\"")
         );
@@ -2178,6 +2204,11 @@ mod tests {
         assert!(
             declarations(".habeas-declaration > summary > .habeas-definition-badge")
                 .contains(&"overflow-x: auto")
+        );
+        assert!(
+            declarations(".habeas-declaration > summary > .habeas-definition-badge")
+                .contains(&"scrollbar-width: none"),
+            "A horizontal scrollbar must not push the badge above its disclosure"
         );
     }
 
@@ -2250,7 +2281,6 @@ mod tests {
             ".habeas-declaration > summary > .habeas-definition-badge",
             ".habeas-declaration > summary:focus-visible::after",
             ".habeas-declaration-body",
-            ".habeas-definition-label",
         ];
         for (selectors, _) in &rules {
             for selector in selectors {
