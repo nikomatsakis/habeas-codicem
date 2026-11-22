@@ -1,9 +1,20 @@
 # Agent harness
 
 The ask builder defines what the agent receives and the answer type it should
-return. An agent harness turns that request into provider messages, handles tool
-calls, and returns an accepted submission. Configure it once on the validator;
-criteria then use the same `ask` interface.
+return. An {term}`requirements.sdk.graph.agent-harness.agent_harness` runs
+that request. Configure it once on the validator; criteria then use the same
+`ask` interface.
+
+:::{definition} agent_harness
+:phrase: agent harness
+
+The conversation machinery behind an agent request: it turns the request into
+provider messages and handles tool calls. On success, it returns an accepted
+submission as JSON, which the SDK's ask builder decodes into the requested
+answer type. `Agent<D>` is the conversation interface, and `ToolAgent` is the
+supplied implementation. A `CompletionProvider` transports model requests
+and responses; the harness manages the conversation.
+:::
 
 ```mermaid
 flowchart TD

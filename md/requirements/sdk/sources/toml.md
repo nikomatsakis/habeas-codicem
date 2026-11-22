@@ -10,7 +10,7 @@ expires = true
 The `habeas-language-toml` crate supplies this outline definition. The default
 registry selects it for `.toml` files.
 
-The selector `table[auth]/pair[expires]` identifies the nested entry in this example.
+The {term}`requirements.sdk.sources.selector` `table[auth]/pair[expires]` identifies the nested entry in this example.
 The resource address identifies the file separately from this selector.
 
 ## Outline rules

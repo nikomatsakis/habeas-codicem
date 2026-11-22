@@ -9,7 +9,7 @@ Consider this source:
 The `habeas-language-css` crate supplies this outline definition. The default
 registry selects it for `css` files.
 
-The selector `rule[.token]` identifies the item in this example.
+The {term}`requirements.sdk.sources.selector` `rule[.token]` identifies the item in this example.
 The resource address identifies the file separately from this selector.
 
 ## Outline rules

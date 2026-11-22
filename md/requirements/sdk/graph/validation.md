@@ -1,12 +1,22 @@
 # Criteria and validators
 
-In the Habeas SDK, a criterion is a question about a node that can be evaluated.
-Define it with your own struct implementing `Criterion<D>`, then evaluate it
-with a `Validator<D>`.
+In the Habeas SDK, define a
+{term}`requirements.sdk.graph.validation.criterion` with your own type
+implementing `Criterion<D>`, then evaluate it with a `Validator<D>`.
 
 ## Define a criterion
 
-All criterion structs implement `Criterion<D>`, a trait that defines what a
+:::{definition} criterion
+:phrase: criterion
+
+A test performed on a {term}`requirements.sdk.graph.node`. In the SDK, it is
+represented by a value whose type implements `Criterion<D>` for the
+{term}`requirements.sdk.application_domain`. Its `Criterion::Ok` type describes
+the completed answer, which can include a negative assessment. An execution
+error means no completed answer was produced.
+:::
+
+All criterion types implement `Criterion<D>`, a trait that defines what a
 successful result is and how it is evaluated.
 
 :::{req} check_procedure
@@ -184,7 +194,17 @@ and explains the load, check, verify, and store steps it combines.
 
 ## Give the criterion a stable path
 
-A `NodeId` and its stable `NodePath` identify the source. `CriterionPath`
+:::{definition} source_node
+:phrase: source node
+
+The {term}`requirements.sdk.graph.node` on which a
+{term}`requirements.sdk.graph.validation.criterion` is evaluated, identified by
+`Criterion::source_node_id`. Tracked reads of its own contents or those of other
+nodes can supply inputs without changing the criterion's source node.
+:::
+
+A `NodeId` and its stable `NodePath` identify the
+{term}`requirements.sdk.graph.validation.source_node`. `CriterionPath`
 identifies a question relative to that source. For example, a requirement might
 use `["text"]`, `["behavior"]`, and `["structure"]`; a source item's citation
 checks might use `["citations", "requirements.auth.expiration"]`.

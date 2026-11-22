@@ -2,7 +2,8 @@
 
 An `execute` method can read additional graph nodes through
 `cx.inspection()`. An agent can request additional reads through tools. Those
-reads contribute inputs to the criterion's answer, alongside the contents
+reads contribute to the execution's
+{term}`requirements.sdk.graph.evidence.dependency_trace`, alongside the contents
 supplied by the ask builder.
 
 ## Find a node, then read its contents

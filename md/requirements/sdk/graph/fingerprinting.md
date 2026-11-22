@@ -1,9 +1,17 @@
 # Contents
 
 `Graph` describes nodes and their relationships. Implement `Contents` to
-give those nodes contents: text, parsed source, issue data, or another structured
-value. The same trait defines which changes to those contents matter and how to
-present them to an agent.
+read {term}`requirements.sdk.graph.fingerprinting.node_contents`, determine
+which changes matter, and present them to an agent.
+
+:::{definition} node_contents
+:phrase: node contents
+
+The application-defined value obtained by reading a
+{term}`requirements.sdk.graph.node`: text, parsed source, issue data, or another
+structured value. In the SDK, `Contents::NodeContent` represents this value and
+`Contents::node_content` obtains it.
+:::
 
 :::{req} fingerprint_content
 ```rust,ignore
@@ -47,12 +55,22 @@ several kinds of nodes can select the calculation using the node identity or
 a content enum. [Agent calls](agent-calls.md#format-node-contents-for-the-agent)
 explains how formatting participates in a request.
 
-A matching fingerprint establishes that the input is unchanged under those
+A matching {term}`requirements.sdk.graph.fingerprinting.observation_fingerprint`
+establishes that the input is unchanged under those
 rules. It does not establish that the node is valid: a current review can still
 contain a negative judgment. The SDK uses these fingerprints to
 [compare saved observations](evidence.md#compare-the-saved-observations).
 
 ## Fingerprint the structure, and version the rules
+
+:::{definition} observation_fingerprint
+:phrase: fingerprint
+
+A digest together with the scheme identifying how it was computed,
+represented by `Fingerprint`. It describes an observation under those rules;
+it does not identify the node or say whether a criterion's answer is favorable.
+Both the scheme and digest participate in comparisons.
+:::
 
 :::{req} fingerprint
 ```rust,ignore
@@ -92,10 +110,19 @@ fingerprints or automatically rerun a review.
 
 ## Read content together with its fingerprint
 
+:::{definition} content_snapshot
+:phrase: snapshot
+
+The contents obtained by one observation, paired with the
+{term}`requirements.sdk.graph.fingerprinting.observation_fingerprint` of those
+same contents. `Snapshot<T>` represents that pair. A node read can yield node
+contents; an outgoing-edge query can yield target identities.
+:::
+
 To read `check_token`, the SDK calls `Contents::node_content`. It then passes the returned
 contents and node identity to `Contents::fingerprint`, then packages the
 contents and fingerprint in a
-`Snapshot`. The procedure receives the contents; the SDK retains the fingerprint
+{term}`requirements.sdk.graph.fingerprinting.content_snapshot`. The procedure receives the contents; the SDK retains the fingerprint
 so it can check freshness later. Conceptually, the tracked context does this:
 
 ```rust,ignore

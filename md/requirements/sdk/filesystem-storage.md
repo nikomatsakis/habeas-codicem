@@ -4,7 +4,8 @@ Use `FileEvidenceStorage` to implement `Storage` with a directory of
 JSON records. The application chooses the directory and uses `Graph::node_path` to obtain
 a stable [`NodePath`](graph.md#give-nodes-a-stable-path), paired with the validation's
 `CriterionPath`. The helper handles serialization, file access, and replacing
-saved records; it does not decide whether evidence is current.
+saved records; it does not decide whether the
+{term}`requirements.sdk.graph.evidence.verification_evidence` is current.
 
 ## Configure the store
 

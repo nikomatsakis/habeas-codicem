@@ -1,13 +1,15 @@
 # Evaluating criteria
 
-A criterion's `execute` method defines how its question is answered.
+A {term}`requirements.sdk.graph.validation.criterion`'s `execute` method defines
+how its question is answered.
 `Validator::verify` calls it with a `ValidationContext` that records the inputs
 used during execution. This chapter completes the `BehavioralAdequacy` example
 from [Criteria and validators](validation.md).
 
 ## Execute the criterion with a context
 
-`execute` receives a `ValidationContext` for its source node. Its `ask` method
+`execute` receives a `ValidationContext` for its
+{term}`requirements.sdk.graph.validation.source_node`. Its `ask` method
 starts a typed agent request. Add instructions and node contents to the builder,
 then await the answer. The context records the inputs the agent reads so the SDK
 can tell when a saved answer needs to be recomputed.

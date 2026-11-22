@@ -10,7 +10,7 @@ def check_token():
 The `habeas-language-python` crate supplies this outline definition. The default
 registry selects it for `.py` and `.pyi` files.
 
-The selector `def[check_token]` identifies the item in this example.
+The {term}`requirements.sdk.sources.selector` `def[check_token]` identifies the item in this example.
 The resource address identifies the file separately from this selector.
 
 ## Outline rules

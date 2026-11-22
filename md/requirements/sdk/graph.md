@@ -6,8 +6,15 @@ nodes.
 
 ## Identify nodes and relationships
 
-`NodeId` identifies a thing; `EdgeLabel` describes a relationship between two
-things. The graph can use enums to represent several node and relationship kinds.
+:::{definition} node
+:phrase: graph node
+
+A thing identified in the application's graph, such as a requirement, a
+function, a test, or an issue. The application's `Graph::NodeId` identifies it;
+its contents and the criteria evaluated on it are separate from that identity.
+:::
+
+The graph can use enums to represent several node and relationship kinds.
 
 :::{req} domain_types
 `habeas_sdk::graph` defines the graph's associated types:
@@ -31,7 +38,15 @@ pub trait Graph: Send + Sync {
 
 ## Edges between nodes
 
-Edges in the application's verification graph define *root verification relationships* between nodes.
+:::{definition} edge
+:phrase: labeled edge
+
+A directed relationship from one {term}`requirements.sdk.graph.node` to another,
+with an application-defined `Graph::EdgeLabel` describing the relationship.
+The targets of a node's outgoing edges with a given label are its successors
+for that label. In Habeas, labels can identify a requirement's implementations
+or tests.
+:::
 
 :::{req} outgoing_edges
 The `habeas_sdk::graph::Graph` trait includes a method for obtaining a node's outgoing edges with a given label:
@@ -77,7 +92,20 @@ fn test_something() {
 
 ## Give nodes a stable path
 
-The `NodeId` type that identifies a particular node in the graph is defined by the application domain, which allows the application domain to use a precise and well-typed definition. However some parts of the SDK want to have a transparent structure that they can use for diagnostics and other purposes.
+The application chooses its `NodeId` type. The SDK also needs a
+{term}`requirements.sdk.graph.node_path` that it can display in diagnostics
+without knowing that type.
+
+:::{definition} node_path
+:phrase: node path
+
+An ordered sequence of string segments describing a graph node's identity.
+In the SDK, `NodePath` represents this path. `Graph::node_path` maps each
+application-defined `NodeId` to a distinct path that stays stable across runs
+and changes to the node's contents.
+:::
+
+The SDK exposes the following type for representing these paths:
 
 :::{req} node_path_struct
 `habeas_sdk::graph::NodePath` describes the logical structure of a node identity:

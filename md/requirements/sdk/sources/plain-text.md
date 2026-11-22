@@ -8,7 +8,8 @@ Reject expired tokens.
 ```
 
 Each nonblank line is an anonymous `line` item. In this example, a review can
-select “Reject expired tokens.” independently of “Tokens expire.” Its address
+select “Reject expired tokens.” independently of “Tokens expire.” Its
+{term}`requirements.sdk.sources.selector`
 is `line@<identity-hash-prefix>`, with the prefix derived from contents rather
 than a line number. Identical lines are interchangeable for selection.
 

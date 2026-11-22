@@ -3,8 +3,9 @@
 This chapter is for the implementer of a tool like Habeas. We start with the
 Habeas you already know and ask how to express its verification work as a graph.
 A node identifies a thing: a requirement, a function, a test, or a GitHub issue.
-The application can ask several questions about the same node. Each criterion
-value identifies a question and supplies its execution procedure. The SDK
+The application can ask several questions about the same node. Each
+{term}`requirements.sdk.graph.validation.criterion`
+value identifies a test to perform and supplies its execution procedure. The SDK
 tracks each criterion's answer independently and supplies operations for loading,
 checking, executing, and saving evidence. The application decides when to reuse
 an answer.
@@ -75,9 +76,17 @@ validation. Fingerprints determine which changes count as relevant.
 
 ## Defining the application domain
 
-The application defines its domain by implementing `Graph`, `Contents`, and
-`Storage`. `Domain` combines those traits for criterion execution.
-Criteria are implemented by the values submitted to a validator:
+:::{definition} application_domain
+:phrase: application domain
+
+The application's graph, node contents, and evidence storage, made available
+together for criterion execution. In the SDK, a cloneable value implementing
+`Graph`, `Contents`, and `Storage` implements the combined `Domain` trait.
+:::
+
+The {term}`requirements.sdk.application_domain` supplies these capabilities
+through three traits. Criteria are implemented by the values submitted to a
+validator:
 
 :::{req} domain
 Every cloneable application implementing the three domain traits implements

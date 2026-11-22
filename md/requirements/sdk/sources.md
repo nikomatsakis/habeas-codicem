@@ -16,9 +16,30 @@ reading resources, identifying items within them, and searching their contents.
 
 ## Separate where content comes from from how it is interpreted
 
-For this example, a local source provider supplies the bytes of `src/auth.rs`.
-A registered Rust language definition supplies a tree-sitter grammar and rules
-for identifying functions. The SDK's default parser combines them to produce
+:::{definition} resource
+:phrase: source resource
+
+A unit of source identified by `ResourceId` and made available through a
+source provider. Its scheme and location identify it independently of any
+item within it; its bytes can change without changing that address. A resource
+can be a local file, a Git revision's file, an editor buffer, or content
+exposed by another backend.
+:::
+
+:::{definition} outline
+:phrase: source outline
+
+The SDK's structured view of one source snapshot. Its items describe
+the source's organization, with selectors for addressing them, spans in that
+snapshot, and structural hashes. Language-specific outline rules or the
+plain-text fallback determine which source constructs become outline items.
+:::
+
+For this example, a local {term}`requirements.sdk.sources.source_provider`
+supplies the bytes of `src/auth.rs`.
+A registered Rust {term}`requirements.sdk.sources.language_definition` supplies
+a tree-sitter grammar and rules for identifying functions. The SDK's default
+parser combines them to produce
 an outline containing `fn[check_token]`.
 
 ```mermaid
@@ -47,7 +68,20 @@ A declaration and a source item each need an identity. An identity tells us
 *which thing* to read; it does not tell us which version we will get. A function
 can keep its identity while its body changes.
 
-For source code, the SDK separates the resource from the item within it:
+:::{definition} selector
+:phrase: item selector
+
+An address for an item within a
+{term}`requirements.sdk.sources.outline`, such as `fn[check_token]`.
+The empty selector addresses the resource root. The resource address and
+selector together form an `OutlineId`. A selector identifies the item
+independently of its line number; the outline item's spans refer to the
+source snapshot used to build that outline.
+:::
+
+For source code, the SDK separates the
+{term}`requirements.sdk.sources.resource` from the
+{term}`requirements.sdk.sources.selector` within it:
 
 ```rust,ignore
 let function = OutlineId {
@@ -94,6 +128,16 @@ resource fetching.
 :::
 
 ## The application supplies a source provider
+
+:::{definition} source_provider
+:phrase: source provider
+
+The adapter through which source inspection lists resources and reads a
+{term}`requirements.sdk.sources.resource`'s bytes. The SDK's `SourceProvider`
+interface also allows provider-specific parsing and search. Resource access
+belongs to the provider; language interpretation is described separately by
+a {term}`requirements.sdk.sources.language_definition`.
+:::
 
 For a checkout, listing resources might return `src/auth.rs` and
 `tests/auth.rs`; reading either resource returns its bytes. A database-backed
@@ -155,6 +199,16 @@ within an application-selected scope.
 :::
 
 ## Register the languages that interpret those resources
+
+:::{definition} language_definition
+:phrase: language definition
+
+A registered description of a source language: its grammar and outline rules,
+along with its language identifier and resource-name matching. The SDK's
+`LanguageProvider` supplies this description so the shared parser can build a
+{term}`requirements.sdk.sources.outline`. It describes how to interpret source;
+the source provider supplies the bytes.
+:::
 
 For `check_token`, the Rust grammar recognizes a `function_item`; the Rust
 outline definition maps it to the kind `fn` and takes its name from the

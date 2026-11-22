@@ -1,6 +1,7 @@
 # Agent calls
 
-An agent call combines reusable instructions with selected node contents and
+An agent call combines reusable instructions with selected
+{term}`requirements.sdk.graph.fingerprinting.node_contents` and
 returns an application-defined answer. A criterion starts the request with
 `cx.ask::<R>()`, adds context and inputs, then awaits an `R`.
 
