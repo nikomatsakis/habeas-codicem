@@ -1354,23 +1354,50 @@ to discover them.
 
 Some requirements describe the program's structure: a public signature, a
 borrowed context, or delegation through a particular interface. These can be
-checked by reading the implementations. Requirements with tests retain the
-existing test-adequacy assessment.
+checked by reading the implementations. Behavioral properties are checked by
+tests. A requirement can have both kinds of property; each check applies
+independently.
 
 :::{req} structural_review
-A non-distributed requirement with no incoming `{test}` references or `:test:`
-anchors and at least one incoming `{impl}` reference or `:impl:` anchor to
-source code outside a requirement, example, or terminology declaration MUST
-receive structural assessment under
-{cite}`requirements.authoring.structural_prompt`. References and anchors here
-are those considered under {cite}`requirements.references.discovery` and the
-existing source-access policy; omitted generated evidence MUST NOT select a
-mode. Source code here means a
-source with a supported, non-Markdown language profile. Refining declarations
-alone MUST NOT select structural assessment. Requirements with test edges,
-distributed requirements, examples, citation reviews, and site reviews MUST
-retain their existing assessment tasks.
+For every non-distributed requirement, the assessment MUST identify its stated
+structural properties, including signatures, type and field relationships,
+ownership, and required delegation through interfaces. With incoming `{impl}`
+references or `:impl:` anchors, it MUST check that the supplied implementation
+roots support every such property under
+{cite}`requirements.authoring.structural_prompt`. Without those edges, it MUST
+establish that the requirement has no structural properties needing
+implementation evidence; an unmet structural obligation MUST be a gap.
+Incoming `{test}` references or `:test:` anchors MUST NOT skip this check.
+References and anchors are those considered under
+{cite}`requirements.references.discovery` and the existing source-access
+policy; omitted generated evidence MUST NOT count as an edge. Obligations
+delegated to refining declarations follow
+{cite}`requirements.ci.review_criteria`. Examples, distributed requirements,
+citation reviews, and site reviews retain their own assessment tasks.
 :::
+
+:::{req} behavioral_review
+For every non-distributed requirement, the assessment MUST identify its stated
+behavioral properties and check their test adequacy under
+{cite}`requirements.ci.review_criteria`. With incoming `{test}` references or
+`:test:` anchors, it MUST check that the supplied tests cover every behavioral
+property assessed here. Without those edges, it MUST establish that there are
+no behavioral properties needing test evidence, explaining any established
+testing exemption or obligation delegated to a refining declaration under
+{cite}`requirements.authoring.testing_bar` and
+{cite}`requirements.ci.review_criteria`; otherwise the missing test evidence
+MUST be a gap. Incoming `{impl}` references or `:impl:` anchors MUST NOT skip
+this check. Considered references and anchors follow
+{cite}`requirements.references.discovery` and the existing source-access
+policy; omitted generated evidence MUST NOT count as an edge.
+:::
+
+The current harness selects structural assessment only for requirements with
+supported non-Markdown implementation roots and no test edges. Requirements with test edges receive
+test-adequacy assessment, including mixed requirements. Issue #51 tracks the
+independent checks specified above, including explicit checks when either kind
+of edge is absent. The implementation carries issue-linked `{fixme}`
+acknowledgments of this temporary gap.
 
 :::{req} structural_inputs
 For a structural assessment under {cite}`requirements.authoring.structural_review`,
@@ -1422,16 +1449,17 @@ it. Each {fixme} acknowledgment includes the state of the issues it names.
    obligations delegated to a refining declaration separately: assess that
    declaration's text, not its implementation or tests. Cited declarations
    supply context and do not become additional subjects to assess in full.
-4. A missing or conflicting structural element is a gap. If the requirement
-   imposes an observable runtime outcome, boundary, or failure case that needs
-   test evidence, report that obligation as a testing gap rather than certifying
-   it from implementation alone. Discover relevant tests; a test designed to
-   check the subject without a {test} reference is a marking gap. Tests with
-   that reference select test-adequacy assessment instead.
-5. Report ambiguities and unavailable information separately. A true judgment
-   means every obligation assessed here is structurally supported, with no
-   behavioral obligation awaiting test evidence. Do not assess unspecified
-   behavior or general implementation correctness.
+4. A missing or conflicting structural element is a gap. Observable runtime
+   outcomes, boundaries, and failure cases require the independent behavioral
+   assessment; do not certify them from implementation alone. Missing or
+   inadequate test evidence is a testing gap. Discover relevant tests before
+   reporting missing evidence; a test designed to check the subject without
+   a {test} reference is a marking gap.
+5. Report ambiguities and unavailable information separately. A successful
+   structural check means every structural obligation assessed here is
+   supported. The requirement's judgment must also account for its independent
+   behavioral check. Do not assess unspecified behavior or general
+   implementation correctness.
 
 # How to judge
 

@@ -28,11 +28,13 @@ For requirement and example evidence, both `true` and `FIXME` MUST satisfy the d
 
 :::{req} review_criteria
 The reviewer MUST assess the named subject using its text, referenced requirements,
-and terminology definitions. A structural assessment MUST follow
-{cite}`requirements.authoring.structural_prompt`; the following test-adequacy
-criteria apply to other requirements under
-{cite}`requirements.authoring.structural_review`. For those requirements, the reviewer MUST assess whether
-the reviewed tests adequately check its stated obligations, including relevant
+and terminology definitions. A non-distributed requirement MUST receive both
+the structural check under {cite}`requirements.authoring.structural_review`
+and the behavioral check under {cite}`requirements.authoring.behavioral_review`,
+independently of which reference kinds it has. Structural checks follow
+{cite}`requirements.authoring.structural_prompt`. The following test-adequacy
+criteria apply to its behavioral properties. The reviewer MUST assess whether
+the reviewed tests adequately check those properties, including relevant
 input classes, boundaries, condition combinations, state transitions, and failure
 cases. These cases MUST follow from the requirement's obligations; the reviewer
 MUST NOT require behavior for inputs the text leaves unspecified. The reviewer
@@ -53,10 +55,10 @@ MUST NOT by itself establish a gap without explaining why it could expose
 different required behavior. It MUST check other relevant tests and helpers before reporting a
 gap and distinguish missing information from an established inadequacy. A marking
 gap or an ambiguity MUST be identified as such, without requiring a behavioral
-counterexample. A judgment of `true` MUST mean the reviewed tests adequately check
-the subject under these criteria, including the testing exemptions of
+counterexample. A successful behavioral check MUST mean the reviewed tests adequately check
+the subject's behavioral properties under these criteria, including the testing exemptions of
 {cite}`requirements.authoring.testing_bar`; it MUST NOT assert implementation
-correctness. The reviewer MAY request implementation source to resolve a
+correctness. For that check, the reviewer MAY request implementation source to resolve a
 specific question and MUST state that question in its rationale. It MUST NOT
 derive expected behavior from the implementation or assess implementation
 correctness, implementation reachability, or unspecified implementation behavior
@@ -113,7 +115,7 @@ site or treat a site without an `{impl}` reference as a gap.
 
 For an example, the reviewer MUST assess whether tests exist whose setup and
 assertions cover its scenario and expected outcomes. The rationale MUST identify
-the relevant sources and explain the testing judgment for a
+the relevant sources and explain each applicable check for a
 requirement, or the test coverage for an example. Referenced requirements provide
 context; they MUST NOT become additional subjects to assess in full.
 :::
@@ -122,12 +124,15 @@ context; they MUST NOT become additional subjects to assess in full.
 Every assessment judgment MUST use one of these outcomes, applying
 {cite}`requirements.ci.review_criteria`:
 
-- `true`: the reviewed tests adequately check a requirement or example under
-  {cite}`requirements.ci.review_criteria`, including applicable testing
+- `true`: for a non-distributed requirement, both its structural and behavioral
+  checks find no gap under {cite}`requirements.authoring.structural_review` and
+  {cite}`requirements.authoring.behavioral_review`, including their conclusions
+  when an edge kind is absent. Behavioral checks include the applicable testing
   exemptions and obligations assessed by a refining requirement or a site's
-  own review. For a structural assessment, the implementations support the
-  subject under {cite}`requirements.authoring.structural_prompt`. For a citation or site review, the review finds no gap under its
-  own task.
+  own review under {cite}`requirements.ci.review_criteria`. For an example, the
+  reviewed tests adequately check its scenario and expected outcomes under
+  those criteria. Distributed requirements, citations, and site reviews find
+  no gap under their own tasks.
 - `false`: the sources do not support the subject, or information is missing,
   and the gaps are not all acknowledged by `{fixme}` references to it.
 - `FIXME`: some aspects remain unmet or untested, and `{fixme}` references to
