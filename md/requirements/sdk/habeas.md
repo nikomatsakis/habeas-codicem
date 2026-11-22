@@ -69,7 +69,10 @@ Habeas implements this boundary in `src/authoring/sdk.rs`. Its
 `Criterion::execute` procedure receives the context. For a requirement
 review, it builds a reusable context prefix from its review instructions and
 question, inserts the subject and its mandatory content inputs, then awaits
-the builder. Implementation references do not automatically supply source.
+the builder. For test-adequacy review, implementation references do not
+automatically supply source. For [structural assessment](../authoring.md#structural-assessment),
+implementation roots become mandatory inputs; the review checks the stated
+structure and flags runtime obligations that need test evidence.
 Comment-only acknowledgments and reference metadata remain protected by the
 reference-set snapshot without reading their containing implementation.
 

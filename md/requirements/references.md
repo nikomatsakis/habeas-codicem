@@ -570,11 +570,13 @@ contributions to the mandatory input set defined by
 MUST contribute the cited definition's complete fenced declaration. A requirement
 or example declaration that references the subject with `{impl}` or `{test}`
 MUST contribute that complete declaration. For sources outside such declarations,
-an `{impl}` reference or `:impl:` anchor alone MUST NOT contribute source text;
+an `{impl}` reference or `:impl:` anchor alone MUST NOT contribute source text,
+except for structural assessments under
+{cite}`requirements.authoring.structural_inputs`;
 those sources MUST remain discoverable under
 {cite}`requirements.authoring.reference_index` and MAY be requested under
-{cite}`requirements.authoring.source_tools`. Sources with only edges into the subject
-MUST NOT contribute and remain discoverable under
+{cite}`requirements.authoring.source_tools`. Sources with only `{cite}` edges into the subject
+MUST NOT contribute and MUST remain discoverable under
 {cite}`requirements.authoring.reference_index`. A `:test:` anchor under
 {cite}`requirements.references.anchors` MUST contribute the complete anchored file,
 or for a `path#selector` anchor the anchored node.

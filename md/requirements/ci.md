@@ -28,7 +28,10 @@ For requirement and example evidence, both `true` and `FIXME` MUST satisfy the d
 
 :::{req} review_criteria
 The reviewer MUST assess the named subject using its text, referenced requirements,
-and terminology definitions. For a requirement, the reviewer MUST assess whether
+and terminology definitions. A structural assessment MUST follow
+{cite}`requirements.authoring.structural_prompt`; the following test-adequacy
+criteria apply to other requirements under
+{cite}`requirements.authoring.structural_review`. For those requirements, the reviewer MUST assess whether
 the reviewed tests adequately check its stated obligations, including relevant
 input classes, boundaries, condition combinations, state transitions, and failure
 cases. These cases MUST follow from the requirement's obligations; the reviewer
@@ -62,7 +65,7 @@ as additional tasks.
 When another requirement implements part of the subject, the
 reviewer MUST assess whether its text carries out that part, and MUST NOT
 reassess its implementation, tests, or evidence; that requirement is assessed
-separately. When there are no tests, the reviewer MUST apply the testing
+separately. For a test-adequacy assessment with no tests, the reviewer MUST apply the testing
 exemptions of {cite}`requirements.authoring.testing_bar` and explain any
 exemption it establishes.
 
@@ -80,9 +83,9 @@ need a reference of its own. A gap MUST be
 reported only for a specific obligation with relevant sources the reviewer
 has read. Before reporting a missing test, the reviewer MUST perform targeted
 discovery of relevant tests and identify the missing scenario; an absent test
-MUST NOT require an invented source location. Style, performance, logging, how
-helpers are factored, robustness the text does not require, and silently ignoring input the text does not mention MUST NOT be treated as gaps, and the reviewer MUST NOT report bugs or issues outside the
-subject's text.
+MUST NOT require an invented source location. The reviewer MUST NOT report gaps about style, performance, logging, helper
+factoring, robustness, or input handling unless the subject explicitly requires
+them. It MUST NOT report bugs or issues outside the subject's text.
 
 For a distributed requirement under {cite}`requirements.references.distributed`,
 the reviewer MUST also assess the requirement and its queries. Each obligation
@@ -122,7 +125,8 @@ Every assessment judgment MUST use one of these outcomes, applying
 - `true`: the reviewed tests adequately check a requirement or example under
   {cite}`requirements.ci.review_criteria`, including applicable testing
   exemptions and obligations assessed by a refining requirement or a site's
-  own review. For a citation or site review, the review finds no gap under its
+  own review. For a structural assessment, the implementations support the
+  subject under {cite}`requirements.authoring.structural_prompt`. For a citation or site review, the review finds no gap under its
   own task.
 - `false`: the sources do not support the subject, or information is missing,
   and the gaps are not all acknowledged by `{fixme}` references to it.
@@ -167,6 +171,11 @@ its body under the word rule of {cite}`requirements.references.structural_hash`.
 `{cite}` references MUST NOT contribute. The reference-set digest MUST be
 the SHA-256 digest of an unambiguous encoding of those entries in sorted order,
 so it does not depend on line numbers or on the order references are found.
+For a structural assessment under
+{cite}`requirements.authoring.structural_review`, the digest MUST additionally
+include a versioned structural-assessment marker. A record predating structural
+assessment MUST therefore be stale, including a legacy record with a wildcard
+review version. Other assessments MUST retain their existing digest encoding.
 Authoring MUST record the digest of the reference set it supplied, and
 validation MUST recompute it and report a changed reference set as stale
 evidence. Adding or removing an `{impl}`, `{test}`, or `{fixme}` reference or anchor,

@@ -172,6 +172,12 @@ use `{fixme}` as the habeas-evidence skill's `references/fixme.md` describes.
 
 ## What the review checks
 
+Requirements with implementation roots and no test edges receive structural
+assessment: inspect the stated signatures, relationships, ownership, and
+delegation from implementation sources. Behavioral obligations still need test
+evidence; add `{test}` edges for those requirements. Examples and distributed
+requirements retain their existing review tasks.
+
 Before running `habeas author`, check the change against what each
 requirement's assessment treats as a gap:
 
@@ -197,12 +203,15 @@ adequacy gap, explain what requirement-violating behavior those tests would
 accept, and check whether another reviewed test rules it out. Identify delegated
 obligations and established testing exemptions separately.
 
-The model initially receives the subject and its context, test sources, and
+For test-adequacy assessment, the model initially receives the subject and its context, test sources, and
 comment-only `{fixme}` acknowledgments. An `{impl}` reference or anchor alone
 does not supply implementation source. `references` locates sources without
 reading them; its `roles` filter can select implementations. A `habeas` source
 read is recorded. The model requests implementation only for a specific question;
 its passing judgment establishes test adequacy, not implementation correctness.
+For structural assessment, implementation roots are mandatory inputs and a
+passing judgment establishes the subject's structural obligations, not general
+runtime correctness.
 The supervising agent must still check that the code fulfills each applicable
 requirement and introduces no additional end-user-observable behavior without an
 agreed requirement.

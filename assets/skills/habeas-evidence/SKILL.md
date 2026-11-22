@@ -58,11 +58,14 @@ the policy.
 ## Judgments
 
 `habeas author` records, for each requirement and example, a model's judgment
-of whether the reviewed tests adequately check it; `habeas coverage` validates
+of whether the reviewed tests adequately check it, or, for structural assessment
+of a requirement with implementation roots and no test edges, whether its stated
+structure is supported by those implementations; `habeas coverage` validates
 those records without calling a model. A judgment is one of three outcomes:
 
-- `true`: the reviewed tests adequately check the definition, with no gap under
-  the assessment's criteria.
+- `true`: the reviewed tests adequately check the definition, or its
+  implementations support its structural obligations, with no gap under the
+  assessment's criteria. Runtime obligations still require test evidence.
 - `false`: there is a gap that no `{fixme}` reference acknowledges; the
   rationale names it.
 - FIXME: `{fixme}` references acknowledge every remaining gap; validation

@@ -298,9 +298,9 @@ assessments judge by the same rules:
   one it fails to exclude, and they lead to different conclusions, such as
   whether code conforms or which role a citation calls for, that ambiguity is a
   gap. Name the readings in your rationale.
-- These are not gaps: style, performance, logging, how helpers are factored,
-  robustness the text does not require, and silently ignoring input the text
-  does not mention.
+- Unless the subject explicitly requires them, these are not gaps: style,
+  performance, logging, how helpers are factored, robustness, and handling input
+  the text does not mention.
 - A gap is acknowledged only by a {fixme} reference, in the supplied
   acknowledgments, in the inputs, or in a source you read, to the requirement
   or example your task judges against, or,
@@ -1350,10 +1350,124 @@ dependencies; its containing implementation source MUST NOT be supplied merely
 to discover them.
 :::
 
+### Structural assessment
+
+Some requirements describe the program's structure: a public signature, a
+borrowed context, or delegation through a particular interface. These can be
+checked by reading the implementations. Requirements with tests retain the
+existing test-adequacy assessment.
+
+:::{req} structural_review
+A non-distributed requirement with no incoming `{test}` references or `:test:`
+anchors and at least one incoming `{impl}` reference or `:impl:` anchor to
+source code outside a requirement, example, or terminology declaration MUST
+receive structural assessment under
+{cite}`requirements.authoring.structural_prompt`. References and anchors here
+are those considered under {cite}`requirements.references.discovery` and the
+existing source-access policy; omitted generated evidence MUST NOT select a
+mode. Source code here means a
+source with a supported, non-Markdown language profile. Refining declarations
+alone MUST NOT select structural assessment. Requirements with test edges,
+distributed requirements, examples, citation reviews, and site reviews MUST
+retain their existing assessment tasks.
+:::
+
+:::{req} structural_inputs
+For a structural assessment under {cite}`requirements.authoring.structural_review`,
+every direct implementation reference or anchor outside a declaration MUST
+contribute its source selection to the mandatory inputs under
+{cite}`requirements.authoring.mandatory_inputs`. An in-source reference selects
+its enclosing outline node, or the whole file when it has no language outline;
+an anchor selects its named file or node. Source access, exclusions, errors,
+and deduplication follow the existing mandatory-input rules. Refining
+declarations continue to contribute their complete text. Implementation
+helpers are requested when needed, rather than supplied recursively.
+:::
+
+:::{req} structural_prompt
+A structural assessment MUST use the same tools, acknowledgments, judgment
+rules, confirmation policy, and submission contract as a test-adequacy
+assessment, with these system and subject blocks under
+{cite}`requirements.authoring.prompt_parts`. Placeholders MUST be filled as in
+{cite}`requirements.authoring.initial_prompt`. The confirmation verifier MUST
+receive these structural instructions under
+{cite}`requirements.authoring.verifier_prompt`.
+
+```text
+# Task
+
+Assess whether a requirement's stated structural obligations are fulfilled by
+its implementations. Your determination should be the one any careful reviewer
+would reach from the same text and sources.
+
+# Background: Habeas terms
+
+{{habeas_background}}
+
+{{reference_roles}}
+
+# Your task
+
+The mandatory inputs contain the requirement, its cited declarations and
+terminology, its direct implementation sources, and declarations that refine
+it. Each {fixme} acknowledgment includes the state of the issues it names.
+
+1. Derive the stated structural obligations, including signatures, type and
+   field relationships, ownership, and required delegation through interfaces.
+   Do not substitute inferred runtime behavior for a structural obligation.
+2. Inspect the supplied implementation roots. Follow relevant calls, types,
+   trait implementations, and callbacks; request the helper source needed to
+   establish each obligation. Comments or reference edges alone are not proof.
+3. Map each obligation to the concrete source that fulfills it. Identify
+   obligations delegated to a refining declaration separately: assess that
+   declaration's text, not its implementation or tests. Cited declarations
+   supply context and do not become additional subjects to assess in full.
+4. A missing or conflicting structural element is a gap. If the requirement
+   imposes an observable runtime outcome, boundary, or failure case that needs
+   test evidence, report that obligation as a testing gap rather than certifying
+   it from implementation alone. Discover relevant tests; a test designed to
+   check the subject without a {test} reference is a marking gap. Tests with
+   that reference select test-adequacy assessment instead.
+5. Report ambiguities and unavailable information separately. A true judgment
+   means every obligation assessed here is structurally supported, with no
+   behavioral obligation awaiting test evidence. Do not assess unspecified
+   behavior or general implementation correctness.
+
+# How to judge
+
+{{judgment_rules}}
+
+# Submitting
+
+Choose true when your task finds no gap, {"FIXME": ["..."]} when every gap is
+acknowledged, and false otherwise. You MUST end by calling submit_judgment
+with determination and rationale until one submission is accepted.
+A rejected submission does not complete the assessment. A judgment written in your
+reply text is not accepted.
+```
+
+```text
+# Subject
+
+Subject: requirement {{subject_name}}
+Judge against: the subject's text, using structural assessment.
+
+# Acknowledgments
+
+{{acknowledgments}}
+
+# Mandatory inputs
+
+{{mandatory_inputs}}
+```
+:::
+
 ### Prompt template
 
 :::{req} initial_prompt
-The initial request MUST provide the ten tool definitions above and the
+Except for structural assessments under
+{cite}`requirements.authoring.structural_prompt`, the initial request MUST provide
+the ten tool definitions above and the
 following prompt, the first block as its system prompt and the second as its
 subject message under {cite}`requirements.authoring.prompt_parts`. The harness MUST replace `{{subject_kind}}` with `requirement`
 or `example`, `{{subject_name}}` with the full subject name,

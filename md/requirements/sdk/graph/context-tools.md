@@ -1,104 +1,202 @@
 # Context tools and tracked inspection
 
-The validation context is the application's route to additional inputs. Its
-inspection operations are also exposed as tools to the agent. Both routes use
-the same dependency trace, access policy, and redaction rules. The source
-provider and language machinery behind these operations are described in
-[Sources and inspection](../sources.md).
+An `execute` method can read additional graph nodes through
+`cx.inspection()`. An agent can request additional reads through tools. Those
+reads contribute inputs to the criterion's answer, alongside the contents
+supplied by the ask builder.
 
 ## Find a node, then read its contents
 
-A review of `check_token` may need to inspect a helper. Text search or structural
-search locates the helper; an outline identifies its selector; a node-content
-read obtains the contents used in the judgment. Finding a node does not mean
-that its contents have been examined.
+Suppose a test calls a helper whose code the agent needs to examine. A search
+finds the file containing the helper. The file's outline lists its functions
+and gives each one an identifier. The agent can then read the helper's complete
+contents using that identifier.
+
+Searches and outlines help choose what to read. The read records the chosen
+contents and their fingerprint, so a later change can make the answer stale.
 
 ## Agent tools call the same context as ordinary code
 
-In the requirement example, the procedure explicitly inserts the requirement
-text and test functions into its ask builder. Implementation references remain
-available for discovery. Suppose a test calls a helper. The agent can request that helper
-through a tool; the tool calls back into the validation context to read the
-helper's node contents. Once delivered, those contents are recorded as an
-additional input to this judgment.
+The SDK's graph tools are adapters around the inspection API available to the
+criterion. They translate tool arguments and format results; the shared context
+prepares reads and records observations.
+
+:::{req} shared_context
+`ValidationContext::inspection()` exposes the execution's `InspectionContext`.
+The ask builder passes that context to `Agent::run`. The supplied `ToolAgent`
+implements graph-node reads, outgoing-edge queries, and delivery recording by
+delegating to that same context's operations.
+:::
 
 ```mermaid
-sequenceDiagram
-    participant P as Habeas validation procedure
-    participant A as Configured agent
-    participant T as Model tool adapter
-    participant C as Validation context
-    participant G as Node contents provider
-    P->>A: Context prefix and explicitly inserted node contents
-    A->>T: Read helper node
-    T->>C: Read node contents
-    C->>G: node_content(helper)
-    G-->>C: Application-defined contents
-    C->>G: fingerprint(helper, contents)
-    G-->>C: Fingerprint
-    C-->>T: Contents and fingerprint
-    T-->>A: Deliver contents
-    T->>C: Record delivered input
-    A-->>P: Agent response
+flowchart TD
+    Code["Criterion code: cx.inspection()"] --> Context["Execution's InspectionContext"]
+    Agent["Agent request"] --> Tools["ToolAgent graph tools"]
+    Tools --> Context
+    Context --> Contents["Contents: read and fingerprint"]
+    Context --> Trace["Execution's recorded inputs"]
 ```
 
-The context is also the API for ordinary code. Both callers can read additional nodes.
-The sources chapter develops the additional inspection operations for code. A procedure can call these typed operations directly; the model tool
-adapter translates its arguments and formats its results. Access controls,
-redaction, and input recording belong beneath both callers.
+For source exploration, `SourceTools` adapts the
+provider and parser operations described in [Sources and inspection](../sources.md).
+That chapter explains how applications configure sources and languages.
 
-Every validation receives this context. Its inspection operations work whether
-or not an agent provider is configured.
+## Reading the contents of a graph node
 
+Use a node's identity to obtain its application-defined
+[contents](fingerprinting.md).
 
-## Inspection operations and their agent presentation
+:::{req} read_node
+```rust,ignore
+// Method on InspectionContext<'_, D>, where D: Contents.
+/// Read this node and record the fingerprint of the returned contents.
+pub fn read(&self, node: &D::NodeId) -> Result<D::NodeContent, D::Error>;
+```
 
-Applications choose domain-specific tool names. The table uses Habeas's names
-where they make the operation concrete; `habeas` and `references` expose Habeas
-policy rather than requiring every SDK graph to contain requirements.
+The read follows {cite}`requirements.sdk.graph.evidence.node_inputs`.
+`ToolAgent` exposes `read_node`, accepting a known node's `NodePath`. It
+prepares that node's contents and fingerprint, formats the supplied contents
+under {cite}`requirements.sdk.graph.agent-calls.judge.rendering`, and records
+the observation when those contents are delivered.
+:::
 
-| Operation | Arguments and result | Dependency meaning |
-| --- | --- | --- |
-| Read a graph node | `inspection().read(&node_id)` returns application-defined node contents. | Records the node identity and the fingerprint of the returned contents. |
-| Find and read source-node contents (`habeas`) | Select a resource and outline item, or locate items using a line range. Returns identified node contents. Habeas also offers requirement/example selections and terminology-definition reads. | Records the source nodes actually delivered, using selectors rather than line numbers as identity. |
-| List resources (`list_files`) | A directory or provider scope; returns child resource identities and kinds. | Discovery. A listing does not establish that any resource's contents were read. |
-| Inspect an outline (`outline`) | A resource identity; returns selectable items, kinds, names, and ancestry. | Discovery. Read a selected item to make its contents an input. |
-| Text search (`ripgrep`) | A regex, search scope, and context-window options; returns matching nodes and excerpts. | Locates candidate nodes. Excerpts do not count as a full read of a matching node. |
-| Structural search (`ast_grep`) | A structural pattern or configured query and resource/language scope; returns matching nodes and excerpts. | Locates syntax-related candidates. Read the nodes on which the conclusion relies. |
-| Discover relationships (`references`) | In Habeas, a definition selection and reference roles; returns matching references and source selectors. Generic graph relationships come from `outgoing_edges`. | Discovery results do not read target contents. Explicit context successor selections record the source, requested label, and target-set fingerprint. |
-| Inspect an external issue (`github`) | Habeas accepts a GitHub issue identity and returns issue data. | This supplementary Habeas tool does not record evidence inputs. When an issue state supports a judgment, expose it as a graph node and read it through the tracked context; see [Habeas external nodes](../habeas.md#nodes-can-refer-to-external-state). |
-| Continue a paged result (`next_page`) | An opaque continuation token; returns another page of the original operation. | Keeps the underlying operation's semantics. Only delivered content pages contribute node reads. |
+## Selecting a node's outgoing edges
 
-Habeas can constrain searches by the definitions and reference roles they relate
-to. Those filters are application policy; they do not change the distinction
-between finding a node and reading it. The exact Habeas argument forms are
-specified in [Authoring evidence](../../authoring.md).
+Select relationships by their label. A criterion can use the returned node
+identities to choose additional reads.
 
-The SDK's optional `ToolAgent` adapter exposes `outgoing_edges` with a typed
-label argument. Its edge labels implement `DeserializeOwned`, `JsonSchema`,
-and `PartialEq` so that the adapter can describe, decode, and track that
-argument. These bounds belong to the adapter; ordinary graphs keep their
-application-defined label types.
+:::{req} outgoing_edges
+```rust,ignore
+// Method on InspectionContext<'_, D>, where D: Contents.
+/// Obtain this source's targets for the label and record their set fingerprint.
+pub fn outgoing_edges(
+    &self,
+    source: &D::NodeId,
+    label: D::EdgeLabel,
+) -> Result<Snapshot<Vec<D::NodeId>>, D::Error>
+where
+    D::EdgeLabel: PartialEq;
+```
 
-A structured submission tool is also supplied to each agent call, but is not an
-inspection tool. Its SDK default name is `submit_result`; Habeas retains the
-submission names and acceptance checks of its existing harness. It ends the
-call with a typed result. [Agent harness](agent-harness.md) explains how these
-tools are exposed and how submission ends the conversation.
-Awaiting an ask builder starts an agent interaction. Its
-`contents_of_current_node()` and `contents_of_successors(label)` calls explicitly
-insert tracked contents after the reusable context prefix.
+The snapshot pairs the returned target identities with their target-set
+fingerprint under {cite}`requirements.sdk.graph.fingerprinting.snapshot`.
+The selection becomes an observation under
+{cite}`requirements.sdk.graph.evidence.inputs`; reading a target's contents
+is a separate operation.
 
-## Search tools use a fixed dependency policy
+`ToolAgent` exposes this selection as `outgoing_edges`, with a known source
+`NodePath` and a typed label argument. It returns the target paths and records
+the selection when delivered. The adapter's label bounds follow
+{cite}`requirements.sdk.graph.agent-harness.tool_agent`.
+:::
 
-Text search and structural search call shared SDK operations through the
-source-exploration interface to find resources and parse their contents.
-The tools treat search result sets as discovery, without recording them as
-assessment dependencies. A hook to customize that policy is deferred.
-Habeas separately records the enclosing source nodes of excerpts selected
-through `finish_search`; it does not track changes to the search result set.
-Search results still report completeness: a truncated result cannot establish
-the absence of other matches.
+## Reading a source item
+
+A source item is identified by a resource and an outline selector, such as a
+function within a file. Source identities are defined in
+[Sources and inspection](../sources.md#identify-something-before-reading-it).
+
+:::{req} read_source
+The supplied `SourceTools` adapter exposes `read_source` with a resource
+identity and an optional outline selector. An omitted or empty selector selects
+the whole resource. The result supplies the selected item's contents.
+
+The adapter's observation callback receives the selected identity and the
+parsed source snapshot. `ToolAgent` records any dependency it returns when
+those contents are delivered, under
+{cite}`requirements.sdk.sources.provider_observations`.
+:::
+
+## Listing source resources
+
+List resources when choosing a file or other source to inspect.
+
+:::{req} list_sources
+The supplied `SourceTools` adapter exposes `list_sources` with an optional
+scope prefix.
+It returns the identities supplied by `SourceProvider::list` under
+{cite}`requirements.sdk.sources.provider`. The listing is discovery and
+contributes no graph-node input observations.
+:::
+
+## Inspecting a source outline
+
+An outline identifies the items within a source, so a caller can select one
+for a content read.
+
+:::{req} outline_source
+The supplied `SourceTools` adapter exposes `outline_source` with a resource
+identity. It parses that resource through `SourceAnalysis` and returns its
+items' selectors and kinds. Inspecting the outline is discovery and contributes
+no graph-node input observations.
+:::
+
+## Searching source text
+
+Use a regular expression to locate relevant source text.
+
+:::{req} search_text
+The supplied `SourceTools` adapter exposes `search_text` with a regular
+expression and optional scope prefix, context-window size, and match limit.
+It uses `SourceProvider::search_text` and returns matches with their locations,
+excerpts, and completeness under
+{cite}`requirements.sdk.sources.provider_results.search_completeness`.
+Search results and their pages are discovery and contribute no graph-node
+input observations.
+:::
+
+## Searching source structure
+
+Use a language and a structural query to locate syntax, such as calls to a
+particular function.
+
+:::{req} search_structure
+The supplied `SourceTools` adapter exposes `search_structure` with a language
+and an ast-grep rule, plus an optional scope prefix and match limit. It uses
+`SourceAnalysis::search_structure` and returns matching source-item identities,
+excerpts, and completeness under
+{cite}`requirements.sdk.sources.provider_results.search_completeness`.
+Search results and their pages are discovery and contribute no graph-node
+input observations.
+:::
+
+The SDK's discovery policy is fixed for now. Habeas also offers `finish_search`
+to record the enclosing source nodes of excerpts that an assessment relied on;
+see [Authoring evidence](../../authoring.md#account-for-search-snippets).
+
+## Continuing a paged result
+
+Long results arrive in pages. Fetch another page to continue reading the same
+prepared result.
+
+:::{req} pages
+`ToolAgent` exposes `get_node_page`, and `SourceTools` exposes
+`get_source_page`, accepting page IDs returned by their prepared results.
+
+A continuation returns the stored text and dependency metadata from the
+prepared result without fetching replacement contents. When `ToolAgent`
+delivers a read page, it records the dependencies retained by that page under
+{cite}`requirements.sdk.graph.evidence.node_inputs`. Discovery pages retain
+the discovery operation's dependency policy.
+:::
+
+## Habeas's application tools
+
+Habeas supplies its own names and selectors for these operations.
+`habeas` reads source items, requirements, examples, or terminology definitions;
+`list_files`, `outline`, `ripgrep`, and `ast_grep` provide source discovery.
+`references` finds connections to declarations, optionally filtered by reference
+role. [Authoring evidence](../../authoring.md) specifies these argument forms.
+
+### Inspecting external issue state
+
+Habeas's supplementary `github` tool retrieves issue data without recording
+evidence inputs. An application can represent issue state as a graph node and
+use a tracked node read when the answer depends on it; see
+[Habeas external nodes](../habeas.md#nodes-can-refer-to-external-state).
+
+Structured submissions are explained separately in
+[Agent harness](agent-harness.md#submit-a-structured-answer).
 
 ## Stay inside the tracked interface
 
