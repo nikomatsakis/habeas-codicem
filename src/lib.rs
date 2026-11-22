@@ -437,6 +437,7 @@ fn chapter_namespace(path: &Path) -> String {
 }
 
 // {impl}`requirements.index.navigation`
+// {impl}`requirements.index.declaration_sections`
 // {impl}`requirements.references.book_badges`
 // {impl}`requirements.examples.definition`
 // {impl}`requirements.examples.index`
@@ -468,12 +469,12 @@ fn replace_definitions(
                 terms::declaration(&content[block.body_start..block.body_end])
             {
                 result.push_str(&format!(
-                    "<strong id=\"{}\">{}</strong>\n\n",
+                    "<details class=\"habeas-declaration\" open>\n<summary><span class=\"habeas-definition-label\">definition</span> <strong id=\"{}\">{}</strong></summary>\n<div class=\"habeas-declaration-body\">\n\n",
                     escape_html(&block.kind.anchor(&full_name)),
                     terms::escaped_phrase(phrase)
                 ));
-                result.push_str(body);
-                result.push('\n');
+                result.push_str(&replace_definitions(body, namespace, current_path, plan));
+                result.push_str("\n</div>\n</details>\n\n");
             } else {
                 result.push_str(&content[block.start..block.end]);
             }
@@ -493,14 +494,14 @@ fn replace_definitions(
         let anchor = format!("habeas-{}-{escaped_name}", block.kind.badge());
         let permalink = format!("#{anchor}").replace(".md", "%2Emd");
         result.push_str(&format!(
-            "<span class=\"habeas-definition-badge\"><a class=\"habeas-req-badge\" id=\"{anchor}\" href=\"{permalink}\" title=\"Link to this definition\">{badge}</a>"
+            "<details class=\"habeas-declaration\" open>\n<summary><span class=\"habeas-definition-badge\"><a class=\"habeas-req-badge\" id=\"{anchor}\" href=\"{permalink}\" title=\"Link to this definition\">{badge}</a>"
         ));
         if let Some(href) = &detail_href {
             result.push_str(&format!(
                 "<a class=\"habeas-detail-icon\" href=\"{href}\" style=\"background-color: #{color}\" title=\"View evidence\" aria-label=\"View evidence for {escaped_name}\"><svg width=\"14\" height=\"14\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"#fff\" stroke-width=\"1.5\" aria-hidden=\"true\" focusable=\"false\"><path d=\"M3 8h10M8 3l5 5-5 5\"/></svg></a>"
             ));
         }
-        result.push_str("</span>\n\n");
+        result.push_str("</span></summary>\n<div class=\"habeas-declaration-body\">\n\n");
         // Option lines such as anchors are metadata, not body text.
         let body = &content[block.text_start..block.body_end];
         let body = if block.kind == DefinitionKind::Requirement {
@@ -509,7 +510,7 @@ fn replace_definitions(
             body.to_owned()
         };
         result.push_str(&replace_definitions(&body, namespace, current_path, plan));
-        result.push('\n');
+        result.push_str("\n</div>\n</details>\n\n");
         cursor = block.end;
     }
 
@@ -1747,6 +1748,86 @@ mod tests {
         }
     }
 
+    // {test}`requirements.index.declaration_sections`
+    // {test}`requirements.index.navigation`
+    #[test]
+    fn declaration_sections_contain_their_headers_and_markdown_bodies() {
+        let mut book = Book::new();
+        book.push_item(Chapter::new(
+            "Rules",
+            "Before.\n\n::::{req} ready\n:impl: notes.md\nA **requirement**.\n\n:::{example} case\nA *nested example*. {cite}`rules.ready`\n\n```rust\nlet answer = true;\n```\n:::\n\nThe requirement ends here.\n::::\n\n:::{definition} word\n:phrase: alpha & beta\n\nA named **definition**.\n:::\n\nAfter.\n"
+                .into(),
+            "rules.md",
+            vec![],
+        ));
+        let root = book_root();
+        preprocess_book(&mut book, root.path()).unwrap();
+        let markdown = &book.chapters().next().unwrap().content;
+        let mut html = String::new();
+        pulldown_cmark::html::push_html(&mut html, pulldown_cmark::Parser::new(markdown));
+        assert_eq!(
+            html.matches("<details class=\"habeas-declaration\" open>")
+                .count(),
+            3,
+            "{html}"
+        );
+        assert_eq!(html.matches("</details>").count(), 3, "{html}");
+        assert_eq!(html.matches("<summary>").count(), 3, "{html}");
+        assert_eq!(html.matches("</summary>").count(), 3, "{html}");
+        assert!(
+            html.contains("<p>Before.</p>\n<details")
+                && html.ends_with("</details>\n<p>After.</p>\n"),
+            "{html}"
+        );
+        // Both navigational links belong to the header, not the hidden body.
+        for (kind, name) in [("req", "ready"), ("example", "case")] {
+            let header = html
+                .split(&format!("id=\"habeas-{kind}-rules.{name}\""))
+                .nth(1)
+                .unwrap()
+                .split("</summary>")
+                .next()
+                .unwrap();
+            assert!(
+                header.contains(&format!("alt=\"{kind} rules.{name}\"")),
+                "{header}"
+            );
+            assert!(header.contains(&format!("href=\"#habeas-{kind}-rules.{name}\"")));
+            assert!(header.contains(&format!("href=\"requirements-index/rules.{name}.html\"")));
+            assert!(!header.contains("habeas-declaration-body"), "{header}");
+        }
+        let body = "<div class=\"habeas-declaration-body\">\n";
+        assert!(
+            html.contains(&format!(
+                "{body}<p>A <strong>requirement</strong>.</p>\n<details"
+            )),
+            "{html}"
+        );
+        assert!(
+            html.contains(&format!("{body}<p>A <em>nested example</em>.")),
+            "{html}"
+        );
+        assert!(
+            html.contains("<pre><code class=\"language-rust\">let answer = true;"),
+            "{html}"
+        );
+        assert!(
+            html.contains("</details>\n<p>The requirement ends here.</p>\n</div>\n</details>"),
+            "{html}"
+        );
+        assert!(
+            html.contains("<span class=\"habeas-definition-label\">definition</span> <strong id=\"habeas-definition-rules.word\">alpha &amp; beta</strong></summary>"),
+            "{html}"
+        );
+        assert!(
+            html.contains(&format!(
+                "{body}<p>A named <strong>definition</strong>.</p>"
+            )),
+            "{html}"
+        );
+        assert!(!html.contains(":impl: notes.md"), "{html}");
+    }
+
     // {test}`requirements.references.safe_badges`
     // {test}`requirements.index.navigation`
     #[test]
@@ -2032,6 +2113,57 @@ mod tests {
         }
     }
 
+    // {test}`requirements.index.declaration_sections`
+    #[test]
+    fn declaration_styles_distinguish_disclosure_state_and_keyboard_focus() {
+        let rules = stylesheet_rules();
+        let declarations = |selector: &str| {
+            rules
+                .iter()
+                .filter(|(selectors, _)| selectors.iter().any(|candidate| candidate == selector))
+                .flat_map(|(_, declarations)| declarations.iter().map(String::as_str))
+                .collect::<Vec<_>>()
+        };
+        let frame = declarations(".habeas-declaration");
+        assert!(
+            frame.contains(&"border: 1px solid color-mix(in srgb, var(--fg) 22%, var(--bg))"),
+            "{frame:?}"
+        );
+        assert!(
+            frame
+                .iter()
+                .any(|declaration| declaration.starts_with("box-shadow:")),
+            "{frame:?}"
+        );
+        let expanded = declarations(".habeas-declaration[open] > summary");
+        assert!(
+            expanded
+                .contains(&"border-bottom: 1px solid color-mix(in srgb, var(--fg) 22%, var(--bg))"),
+            "{expanded:?}"
+        );
+        let chevron = declarations(".habeas-declaration > summary::before");
+        for declaration in [
+            "content: \"\"",
+            "border-right: 1.5px solid currentColor",
+            "border-bottom: 1.5px solid currentColor",
+            "transform: rotate(-45deg)",
+        ] {
+            assert!(chevron.contains(&declaration), "{chevron:?}");
+        }
+        assert!(
+            declarations(".habeas-declaration[open] > summary::before")
+                .contains(&"transform: rotate(45deg)")
+        );
+        let focus = declarations(".habeas-declaration > summary:focus-visible");
+        assert!(
+            focus
+                .iter()
+                .any(|declaration| declaration.starts_with("outline: 2px")),
+            "{focus:?}"
+        );
+        assert!(declarations(".habeas-declaration > summary").contains(&"overflow-x: auto"));
+    }
+
     // {test}`requirements.references.book_badges`
     #[test]
     fn badge_stylesheet_keeps_visited_links_legible_and_shows_focus() {
@@ -2069,7 +2201,7 @@ mod tests {
             declarations("a.habeas-req-badge:hover"),
             ["filter: brightness(1.08)"]
         );
-        // Every rule styles a Habeas badge or fenced reference; nothing else in
+        // Every rule styles a Habeas declaration, badge, or fenced reference; nothing else in
         // the book is restyled.
         let specified = [
             ".habeas-req-badge",
@@ -2088,6 +2220,15 @@ mod tests {
             "a.habeas-req-badge:focus-visible",
             ".habeas-builtin",
             ".habeas-fenced-ref",
+            ".habeas-declaration",
+            ".habeas-declaration > summary",
+            ".habeas-declaration > summary::-webkit-details-marker",
+            ".habeas-declaration > summary::before",
+            ".habeas-declaration[open] > summary",
+            ".habeas-declaration[open] > summary::before",
+            ".habeas-declaration > summary:focus-visible",
+            ".habeas-declaration-body",
+            ".habeas-definition-label",
         ];
         for (selectors, _) in &rules {
             for selector in selectors {
@@ -2226,6 +2367,7 @@ mod tests {
 
     // {test}`requirements.references.book_badges`
     // {test}`requirements.references.markdown_literals`
+    // {test}`requirements.index.declaration_sections`
     #[test]
     fn colon_directives_render_markdown_bodies_and_legacy_roles_stay_literal() {
         let source = "An inline {req}`inline` role.\n\n:::{req} defined\nDefinition.\n\n## Details\n\n```text\nexample\n```\n:::\n\nAfter.";
