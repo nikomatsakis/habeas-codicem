@@ -179,17 +179,6 @@ fn coverage_progress_on_a_pty_preserves_reports_and_plain_output_policy() {
 
     let temp = fixture();
     let root = temp.path();
-    // Establish the watched input before the first build. Replacing its parent
-    // directory with a file later makes the input unreadable even for a
-    // privileged process that can ignore Unix permission bits.
-    let input = root.join("input.data");
-    fs::create_dir(&input).unwrap();
-    fs::write(input.join("watched"), "build input").unwrap();
-    fs::write(
-        root.join("build.rs"),
-        "fn main() { println!(\"cargo::rerun-if-changed=input.data/watched\"); }\n",
-    )
-    .unwrap();
     let source = fs::read_to_string(root.join("src/lib.rs")).unwrap();
     fs::write(root.join("src/lib.rs"), format!("{source}\n#[test] fn deliberate_failure() {{ panic!(\"fixture failure\"); }}\nunsafe extern \"C\" {{ fn _exit(status: i32) -> !; }}\n#[test] fn missing_profile() {{ unsafe {{ _exit(0) }} }}\n")).unwrap();
     let run_on_pty = |term: &str, filter: &str| {
@@ -339,10 +328,15 @@ fn coverage_progress_on_a_pty_preserves_reports_and_plain_output_policy() {
     }
     // An error during preparation must also clear the stage before the CLI
     // prints its diagnostic, without manufacturing test attempts.
-    fs::remove_file(input.join("watched")).unwrap();
-    fs::remove_dir(&input).unwrap();
-    fs::write(&input, "a file cannot contain the watched input").unwrap();
-    assert!(fs::read(input.join("watched")).is_err());
+    // Cargo does not compile this unreferenced module, but source capture
+    // must read it as UTF-8. This fails during preparation regardless of
+    // permissions or Cargo's handling of missing build-script watch paths.
+    let input = root.join("src/uncompiled.rs");
+    fs::write(&input, [0xff]).unwrap();
+    assert_eq!(
+        fs::read_to_string(&input).unwrap_err().kind(),
+        std::io::ErrorKind::InvalidData
+    );
     let output = run_on_pty("xterm", "test(second)");
     let text = String::from_utf8_lossy(&output.stderr);
     assert!(!output.status.success(), "{text}");
@@ -1733,21 +1727,18 @@ fn a_process_that_cannot_start_is_failed_with_retained_attempt_metadata() {
 fn unreadable_build_inputs_fail_preparation_before_any_tests_start() {
     let temp = fixture();
     let root = temp.path();
-    fs::write(
-        root.join("build.rs"),
-        "fn main() { println!(\"cargo::rerun-if-changed=input.data/watched\"); }\n",
-    )
-    .unwrap();
-    let input = root.join("input.data");
-    fs::create_dir(&input).unwrap();
-    fs::write(input.join("watched"), "build input").unwrap();
     assert_success(&coverage(root, &["-E", "test(second)"]));
     let before = runs(root);
     let measurements = attempts(&before[0].0);
-    fs::remove_file(input.join("watched")).unwrap();
-    fs::remove_dir(&input).unwrap();
-    fs::write(&input, "a file cannot contain the watched input").unwrap();
-    assert!(fs::read(input.join("watched")).is_err());
+    // An uncompiled Rust source is hashed as bytes before compilation, then
+    // read as text during source capture. Invalid UTF-8 reaches that stage
+    // and fails without relying on Unix permission bits.
+    let input = root.join("src/uncompiled.rs");
+    fs::write(&input, [0xff]).unwrap();
+    assert_eq!(
+        fs::read_to_string(&input).unwrap_err().kind(),
+        std::io::ErrorKind::InvalidData
+    );
     let output = coverage(root, &["--features", "alpha", "-E", "test(second)"]);
     assert!(
         !output.status.success(),
