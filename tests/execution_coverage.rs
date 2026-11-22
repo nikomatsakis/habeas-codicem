@@ -179,6 +179,17 @@ fn coverage_progress_on_a_pty_preserves_reports_and_plain_output_policy() {
 
     let temp = fixture();
     let root = temp.path();
+    // Establish the watched input before the first build. Replacing its parent
+    // directory with a file later makes the input unreadable even for a
+    // privileged process that can ignore Unix permission bits.
+    let input = root.join("input.data");
+    fs::create_dir(&input).unwrap();
+    fs::write(input.join("watched"), "build input").unwrap();
+    fs::write(
+        root.join("build.rs"),
+        "fn main() { println!(\"cargo::rerun-if-changed=input.data/watched\"); }\n",
+    )
+    .unwrap();
     let source = fs::read_to_string(root.join("src/lib.rs")).unwrap();
     fs::write(root.join("src/lib.rs"), format!("{source}\n#[test] fn deliberate_failure() {{ panic!(\"fixture failure\"); }}\nunsafe extern \"C\" {{ fn _exit(status: i32) -> !; }}\n#[test] fn missing_profile() {{ unsafe {{ _exit(0) }} }}\n")).unwrap();
     let run_on_pty = |term: &str, filter: &str| {
@@ -328,19 +339,13 @@ fn coverage_progress_on_a_pty_preserves_reports_and_plain_output_policy() {
     }
     // An error during preparation must also clear the stage before the CLI
     // prints its diagnostic, without manufacturing test attempts.
-    use std::os::unix::fs::PermissionsExt;
-    fs::write(
-        root.join("build.rs"),
-        "fn main() { println!(\"cargo::rerun-if-changed=input.data\"); }\n",
-    )
-    .unwrap();
-    let input = root.join("input.data");
-    fs::write(&input, "unreadable input").unwrap();
-    fs::set_permissions(&input, fs::Permissions::from_mode(0o000)).unwrap();
+    fs::remove_file(input.join("watched")).unwrap();
+    fs::remove_dir(&input).unwrap();
+    fs::write(&input, "a file cannot contain the watched input").unwrap();
+    assert!(fs::read(input.join("watched")).is_err());
     let output = run_on_pty("xterm", "test(second)");
-    fs::set_permissions(input, fs::Permissions::from_mode(0o600)).unwrap();
-    assert!(!output.status.success());
     let text = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "{text}");
     let stage = text.rfind("Preparing coverage: recording inputs").unwrap();
     let diagnostic = text.find("Coverage preparation failed").unwrap();
     assert!(text[stage..diagnostic].contains("\x1b[2K"), "{text}");
@@ -1726,22 +1731,29 @@ fn a_process_that_cannot_start_is_failed_with_retained_attempt_metadata() {
 #[cfg(unix)]
 #[test]
 fn unreadable_build_inputs_fail_preparation_before_any_tests_start() {
-    use std::os::unix::fs::PermissionsExt;
     let temp = fixture();
     let root = temp.path();
     fs::write(
         root.join("build.rs"),
-        "fn main() { println!(\"cargo::rerun-if-changed=input.data\"); }\n",
+        "fn main() { println!(\"cargo::rerun-if-changed=input.data/watched\"); }\n",
     )
     .unwrap();
-    fs::write(root.join("input.data"), "private build input").unwrap();
+    let input = root.join("input.data");
+    fs::create_dir(&input).unwrap();
+    fs::write(input.join("watched"), "build input").unwrap();
     assert_success(&coverage(root, &["-E", "test(second)"]));
     let before = runs(root);
     let measurements = attempts(&before[0].0);
-    fs::set_permissions(root.join("input.data"), fs::Permissions::from_mode(0o000)).unwrap();
+    fs::remove_file(input.join("watched")).unwrap();
+    fs::remove_dir(&input).unwrap();
+    fs::write(&input, "a file cannot contain the watched input").unwrap();
+    assert!(fs::read(input.join("watched")).is_err());
     let output = coverage(root, &["--features", "alpha", "-E", "test(second)"]);
-    fs::set_permissions(root.join("input.data"), fs::Permissions::from_mode(0o600)).unwrap();
-    assert!(!output.status.success());
+    assert!(
+        !output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     assert!(String::from_utf8_lossy(&output.stderr).contains("Coverage preparation failed"));
     assert_eq!(runs(root), before);
     assert_eq!(attempts(&before[0].0), measurements);

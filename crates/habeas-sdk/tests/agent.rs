@@ -298,6 +298,7 @@ impl CompletionProvider for ParallelConversations {
 // {test}`requirements.sdk.graph.agent-calls.author_procedure`
 // {test}`requirements.sdk.graph.context-tools.tracked_inspection`
 // {test}`requirements.sdk.graph.agent-harness.tool_agent`
+// {test}`requirements.sdk.graph.context-tools.read_node`
 #[tokio::test]
 async fn concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads() {
     use std::future::IntoFuture;
@@ -895,6 +896,104 @@ async fn source_tools_keep_search_discovery_separate_from_delivered_source_reads
     assert!(
         matches!(&observations[0],Dependency::Node(Node(7),fingerprint) if fingerprint.value == "observed source\n")
     );
+}
+
+// {test}`requirements.sdk.graph.context-tools.read_source`
+// {test}`requirements.sdk.graph.context-tools.search_text`
+// {test}`requirements.sdk.graph.evidence.checking_records`
+#[tokio::test]
+async fn source_reads_track_optional_dependencies_and_empty_searches_remain_discovery() {
+    let root = tempfile::tempdir().unwrap();
+    let original = "observed source\n";
+    std::fs::write(root.path().join("note.txt"), original).unwrap();
+    for record_dependency in [false, true] {
+        let graph = Memory::new(original.into());
+        let observed = Arc::new(Mutex::new(0));
+        let count = observed.clone();
+        let factory = SourceTools {
+            analysis: SourceAnalysis::new(
+                LocalSources::new(root.path()),
+                habeas_sdk::language::Registry::new([]),
+            ),
+            observation: move |id: &OutlineId, parsed: &ParsedSource| {
+                assert_eq!(id.resource.location, "note.txt");
+                assert_eq!(id.selector, "");
+                *count.lock().unwrap() += 1;
+                Ok(record_dependency.then(|| {
+                    Dependency::Node(
+                        Node(7),
+                        Fingerprint {
+                            scheme: "content".into(),
+                            value: parsed.source.text().unwrap().into(),
+                        },
+                    )
+                }))
+            },
+        };
+        let ctx = ValidationContext::new(&graph, Node(1));
+        let parsed = factory
+            .analysis
+            .parse(&ResourceId {
+                scheme: "repo".into(),
+                location: "note.txt".into(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(parsed.source.text().unwrap(), original);
+        assert!(ctx.inspection().dependencies().is_empty());
+        assert_eq!(*observed.lock().unwrap(), 0);
+
+        let agent = ToolAgent::new(Script::new(vec![
+            Some(vec![("search_text", json!({"pattern":"no such text"}))]),
+            Some(vec![(
+                "read_source",
+                json!({"resource":{"scheme":"repo","location":"note.txt"}}),
+            )]),
+            Some(vec![("submit_result", json!({"result":true}))]),
+        ]))
+        .with_tools(factory);
+        let ctx = ValidationContext::with_agent(&graph, Node(1), &agent);
+        assert!(ctx.ask::<bool>().await.unwrap());
+        assert_eq!(*observed.lock().unwrap(), 1);
+        let requests = agent.provider.requests.lock().unwrap();
+        for (turn, expected) in [
+            (1, json!({"complete":true,"matches":[]})),
+            (
+                2,
+                json!({"node":{"resource":{"scheme":"repo","location":"note.txt"},"selector":""},
+                    "text":["observed source"]}),
+            ),
+        ] {
+            let Message::User { content, .. } = requests[turn].chat_history.last().unwrap() else {
+                panic!("expected a delivered tool result");
+            };
+            let [UserContent::ToolResult(result)] = content.as_slice() else {
+                panic!("expected one delivered result");
+            };
+            assert!(!result.is_error);
+            let [ToolResultContent::Text(text)] = result.content.as_slice() else {
+                panic!("expected result text");
+            };
+            assert_eq!(serde_json::from_str::<Value>(&text.text).unwrap(), expected);
+        }
+        drop(requests);
+
+        let record = ctx.inspection().finish("v1".into(), true).unwrap();
+        if record_dependency {
+            assert!(
+                matches!(&record.dependencies[..], [Dependency::Node(Node(7), fingerprint)]
+                    if fingerprint.scheme == "content" && fingerprint.value == original)
+            );
+        } else {
+            assert!(record.dependencies.is_empty());
+        }
+        assert!(record_is_current(&graph, "v1", &record).unwrap());
+        *graph.contents.lock().unwrap() = "changed source".into();
+        assert_eq!(
+            record_is_current(&graph, "v1", &record).unwrap(),
+            !record_dependency
+        );
+    }
 }
 
 // {test}`requirements.sdk.graph.validation.criterion_trait`
