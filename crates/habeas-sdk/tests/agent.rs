@@ -298,7 +298,7 @@ impl CompletionProvider for ParallelConversations {
 // {test}`requirements.sdk.graph.agent-calls.author_procedure`
 // {test}`requirements.sdk.graph.context-tools.tracked_inspection`
 // {test}`requirements.sdk.graph.agent-harness.tool_agent`
-// {test}`requirements.sdk.graph.context-tools.read_node`
+// {test}`requirements.sdk.graph.context-tools.read_node.behavior`
 #[tokio::test]
 async fn concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads() {
     use std::future::IntoFuture;
@@ -483,7 +483,7 @@ async fn validator_agent_executions_isolate_conversations_and_dependency_traces(
 // {test}`requirements.sdk.graph.evidence.check_node`
 // {test}`requirements.sdk.graph.evidence.store_evidence`
 // {test}`requirements.sdk.graph.evidence.inputs`
-// {test}`requirements.sdk.graph.context-tools.outgoing_edges`
+// {test}`requirements.sdk.graph.context-tools.outgoing_edges.behavior`
 #[tokio::test]
 async fn agent_edge_tools_record_selections_without_validating_targets() {
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -802,8 +802,8 @@ async fn typed_submission_references_resolve_and_invalid_results_are_agent_error
 // {test}`requirements.sdk.graph.agent-calls.author_procedure`
 // {test}`requirements.sdk.graph.evidence.node_inputs`
 // {test}`requirements.sdk.graph.fingerprinting.snapshot`
-// {test}`requirements.sdk.graph.context-tools.read_node`
-// {test}`requirements.sdk.graph.context-tools.pages`
+// {test}`requirements.sdk.graph.context-tools.read_node.behavior`
+// {test}`requirements.sdk.graph.context-tools.pages.behavior`
 #[tokio::test]
 async fn graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery() {
     let graph = Memory::new("x".repeat(18_000));
@@ -858,8 +858,8 @@ async fn graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record
 // {test}`requirements.sdk.sources.provider_defaults`
 // {test}`requirements.sdk.graph.context-tools.tracked_inspection`
 // {test}`requirements.sdk.graph.agent-harness.tool_agent`
-// {test}`requirements.sdk.graph.context-tools.read_source`
-// {test}`requirements.sdk.graph.context-tools.search_text`
+// {test}`requirements.sdk.graph.context-tools.read_source.behavior`
+// {test}`requirements.sdk.graph.context-tools.search_text.behavior`
 #[tokio::test]
 async fn source_tools_keep_search_discovery_separate_from_delivered_source_reads() {
     let root = tempfile::tempdir().unwrap();
@@ -898,8 +898,8 @@ async fn source_tools_keep_search_discovery_separate_from_delivered_source_reads
     );
 }
 
-// {test}`requirements.sdk.graph.context-tools.read_source`
-// {test}`requirements.sdk.graph.context-tools.search_text`
+// {test}`requirements.sdk.graph.context-tools.read_source.behavior`
+// {test}`requirements.sdk.graph.context-tools.search_text.behavior`
 // {test}`requirements.sdk.graph.evidence.checking_records`
 #[tokio::test]
 async fn source_reads_track_optional_dependencies_and_empty_searches_remain_discovery() {
@@ -1060,10 +1060,10 @@ async fn assistant_text_and_provider_failure_cannot_become_typed_results() {
 
 // {test}`requirements.sdk.graph.context-tools.tracked_inspection`
 // {test}`requirements.sdk.sources.provider_observations`
-// {test}`requirements.sdk.graph.context-tools.list_sources`
-// {test}`requirements.sdk.graph.context-tools.outline_source`
-// {test}`requirements.sdk.graph.context-tools.search_text`
-// {test}`requirements.sdk.graph.context-tools.pages`
+// {test}`requirements.sdk.graph.context-tools.list_sources.behavior`
+// {test}`requirements.sdk.graph.context-tools.outline_source.behavior`
+// {test}`requirements.sdk.graph.context-tools.search_text.behavior`
+// {test}`requirements.sdk.graph.context-tools.pages.behavior`
 #[tokio::test]
 async fn source_discovery_and_its_pages_do_not_register_reads() {
     let root = tempfile::tempdir().unwrap();
@@ -1234,7 +1234,7 @@ async fn unknown_tools_return_errors_without_creating_inputs_or_preventing_submi
 // {test}`requirements.sdk.graph.agent-calls.judge.rendering`
 // {test}`requirements.sdk.graph.context-tools.tracked_inspection`
 // {test}`requirements.sdk.graph.agent-calls.author_procedure`
-// {test}`requirements.sdk.graph.context-tools.read_node`
+// {test}`requirements.sdk.graph.context-tools.read_node.behavior`
 #[tokio::test]
 async fn node_rendering_tool_errors_allow_recovery_without_recording_undelivered_contents() {
     let mut graph = Memory::new("source".into());
@@ -1409,9 +1409,9 @@ async fn generic_conversations_can_use_default_telemetry_through_retry_and_conti
 // {test}`requirements.sdk.sources.provider_results.parse_snapshot`
 #[cfg(feature = "default-languages")]
 // {test}`requirements.sdk.graph.evidence.node_inputs`
-// {test}`requirements.sdk.graph.context-tools.read_source`
-// {test}`requirements.sdk.graph.context-tools.search_structure`
-// {test}`requirements.sdk.graph.context-tools.outline_source`
+// {test}`requirements.sdk.graph.context-tools.read_source.behavior`
+// {test}`requirements.sdk.graph.context-tools.search_structure.behavior`
+// {test}`requirements.sdk.graph.context-tools.outline_source.behavior`
 #[tokio::test]
 async fn cached_selected_source_reads_record_exact_delivered_contents_and_errors_add_no_input() {
     let graph = Memory::new("different current source".into());
@@ -1830,7 +1830,7 @@ async fn application_tools_preserve_graph_tools_in_the_same_conversation() {
     );
 }
 
-// {test}`requirements.sdk.graph.context-tools.pages`
+// {test}`requirements.sdk.graph.context-tools.pages.behavior`
 // {test}`requirements.sdk.graph.evidence.node_inputs`
 #[tokio::test]
 async fn graph_read_pages_retain_the_prepared_snapshot_after_contents_change() {
@@ -1868,8 +1868,8 @@ async fn graph_read_pages_retain_the_prepared_snapshot_after_contents_change() {
     assert!(!page.contains("replacement contents"), "{page}");
 }
 
-// {test}`requirements.sdk.graph.context-tools.pages`
-// {test}`requirements.sdk.graph.context-tools.read_source`
+// {test}`requirements.sdk.graph.context-tools.pages.behavior`
+// {test}`requirements.sdk.graph.context-tools.read_source.behavior`
 #[tokio::test]
 async fn source_read_pages_retain_text_and_dependencies_without_another_read() {
     let root = tempfile::tempdir().unwrap();
@@ -1932,12 +1932,12 @@ async fn source_read_pages_retain_text_and_dependencies_without_another_read() {
 }
 
 #[cfg(feature = "default-languages")]
-// {test}`requirements.sdk.graph.context-tools.read_source`
-// {test}`requirements.sdk.graph.context-tools.list_sources`
-// {test}`requirements.sdk.graph.context-tools.outline_source`
-// {test}`requirements.sdk.graph.context-tools.search_text`
-// {test}`requirements.sdk.graph.context-tools.search_structure`
-// {test}`requirements.sdk.graph.context-tools.pages`
+// {test}`requirements.sdk.graph.context-tools.read_source.behavior`
+// {test}`requirements.sdk.graph.context-tools.list_sources.behavior`
+// {test}`requirements.sdk.graph.context-tools.outline_source.behavior`
+// {test}`requirements.sdk.graph.context-tools.search_text.behavior`
+// {test}`requirements.sdk.graph.context-tools.search_structure.behavior`
+// {test}`requirements.sdk.graph.context-tools.pages.behavior`
 #[tokio::test]
 async fn source_tools_forward_arguments_and_present_discovery_and_read_results() {
     struct Provider(Arc<Mutex<Vec<Value>>>);

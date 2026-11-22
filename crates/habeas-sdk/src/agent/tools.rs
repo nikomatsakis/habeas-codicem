@@ -225,9 +225,9 @@ where
     // {cite}`habeas:util`
     // {impl}`requirements.sdk.graph.agent-calls.judge.rendering`
     // {impl}`requirements.sdk.graph.context-tools.shared_context`
-    // {impl}`requirements.sdk.graph.context-tools.read_node`
-    // {impl}`requirements.sdk.graph.context-tools.outgoing_edges`
-    // {impl}`requirements.sdk.graph.context-tools.pages`
+    // {impl}`requirements.sdk.graph.context-tools.read_node.behavior`
+    // {impl}`requirements.sdk.graph.context-tools.outgoing_edges.behavior`
+    // {impl}`requirements.sdk.graph.context-tools.pages.behavior`
     async fn dispatch(&mut self, name: &str, arguments: &Value) -> io::Result<String> {
         match name {
             "read_node" => {
@@ -290,9 +290,9 @@ where
         }
     }
     // {impl}`requirements.sdk.graph.context-tools.shared_context`
-    // {impl}`requirements.sdk.graph.context-tools.read_node`
-    // {impl}`requirements.sdk.graph.context-tools.outgoing_edges`
-    // {impl}`requirements.sdk.graph.context-tools.pages`
+    // {impl}`requirements.sdk.graph.context-tools.read_node.behavior`
+    // {impl}`requirements.sdk.graph.context-tools.outgoing_edges.behavior`
+    // {impl}`requirements.sdk.graph.context-tools.pages.behavior`
     fn delivered(&mut self) -> io::Result<()> {
         for observation in self.pending.drain(..) {
             match observation {

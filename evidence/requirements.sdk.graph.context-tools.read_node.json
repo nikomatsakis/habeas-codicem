@@ -1,7 +1,7 @@
 {
-  "requirement": "```rust,ignore\n// Method on InspectionContext<'_, D>, where D: Contents.\n/// Read this node and record the fingerprint of the returned contents.\npub fn read(&self, node: &D::NodeId) -> Result<D::NodeContent, D::Error>;\n```\n\nThe read follows {cite}`requirements.sdk.graph.evidence.node_inputs`.\n`ToolAgent` exposes `read_node`, accepting a known node's `NodePath`. It\nprepares that node's contents and fingerprint, formats the supplied contents\nunder {cite}`requirements.sdk.graph.agent-calls.judge.rendering`, and records\nthe observation when those contents are delivered.",
-  "determination": true,
-  "rationale": "I judge the tests adequate for `requirements.sdk.graph.context-tools.read_node`. I did not request implementation source or read the `Script` helper. The tests below are marked `{test}` for the subject.\n\n**Obligations and the tests that cover them**\n\n1. **`InspectionContext::read` returns the contents and records the fingerprint of what it returned.**\n   - `crates/habeas-sdk/tests/validation.rs#fn[snapshots_record_exact_reads_and_retain_distinct_versions]` reads node 1 and asserts that the contents are `\"before\"`.\n   - It asserts that the recorded dependency is `Dependency::Node(1, fp(\"before\"))`.\n   - It changes the node's contents and reads again. It asserts that both versions are recorded, in order.\n   - It asserts the exact underlying read calls and that `finish` carries the same dependencies.\n   - This also covers the `node_inputs` points that the same identity with different fingerprints keeps both observations, and that the recorded fingerprint is of the contents actually supplied.\n\n2. **A failed read returns an error and records no observation.**\n   - The same test calls `inspection.read(&2)` and asserts it is an error.\n   - The dependency list afterwards contains only node 1's two observations, so no entry was invented for node 2.\n\n3. **`ToolAgent` exposes `read_node`, accepts a `NodePath`, and records the node and the fingerprint of the contents it prepared.**\n   - In `crates/habeas-sdk/tests/agent.rs#fn[graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery]`, a scripted agent calls `read_node` with path `[\"2\"]` on an 18,000-character node. It then calls `get_node_page`.\n   - The test asserts that the dependencies are the edge observation plus `Dependency::Node(Node(2), fingerprint)`. The fingerprint equals the full 18,000-character content, not just the first page, so the fingerprint is of the prepared contents.\n   - It asserts that `finish` returns the same dependencies.\n\n4. **The observation is recorded only when the contents are delivered.**\n   - In the same test, a `read_node` call followed by an agent failure (`None` in the script) makes `ask` error, and the dependencies are empty.\n   - In the contrasting case, `contents_of_current_node` followed by a failure leaves one recorded dependency.\n\n5. **A formatting error under `judge.rendering` is returned to the agent as a tool error, and nothing is recorded.**\n   - `crates/habeas-sdk/tests/agent.rs#fn[node_rendering_tool_errors_allow_recovery_without_recording_undelivered_contents]` uses a formatter that always fails.\n   - It asserts that the agent recovers and `ask` succeeds.\n   - It asserts that the dependencies are empty.\n   - It asserts that the second request contains a tool result for `read_node` with `is_error` set and the formatter's message as its content.\n   - This is the \"contents not delivered, so no observation\" case.\n\n**Residual points**\n\n- The success path does not assert the formatted text delivered to the agent. Formatting itself belongs to the cited `judge.rendering` requirement, which has its own tests. The formatting-failure behavior inside `read_node` is tested here.\n- The text names no unknown-path behavior, so its absence is not a gap.\n\nI found no unacknowledged gap.",
+  "requirement": "```rust,ignore\nimpl<'d, D: Contents> InspectionContext<'d, D> {\n    /// Read this node and record the fingerprint of the returned contents.\n    pub fn read(&self, node: &D::NodeId) -> Result<D::NodeContent, D::Error>;\n}\n```\n\nThe result is the node's application-defined `D::NodeContent`. A successful\nread records the node's identity and the fingerprint of those contents, under\n{cite}`requirements.sdk.graph.evidence.node_inputs`. A failed read records no\nsuccessful observation. The evidence becomes stale when a later read of that\nnode has a different fingerprint; a failure to resolve it is reported by\n{cite}`requirements.sdk.graph.evidence.checking_records`.\n\n`ToolAgent` exposes `read_node`, accepting a known node's `NodePath`. It\nprepares that node's contents and fingerprint, formats the supplied contents\nunder {cite}`requirements.sdk.graph.agent-calls.judge.rendering`, and records\nthe observation when those contents are delivered.",
+  "determination": false,
+  "rationale": "**Obligations derived from `read_node`**\n- `InspectionContext::read` returns the node's `NodeContent`.\n- A successful read records the node identity and the fingerprint of the contents.\n- A failed read records no observation.\n- Evidence becomes stale when a later read of the node has a different fingerprint.\n- The `ToolAgent` tool `read_node` takes a `NodePath`. It prepares the contents and fingerprint, and it formats the supplied contents under `requirements.sdk.graph.agent-calls.judge.rendering`. It records the observation only when the contents are delivered.\n- Under `judge.rendering`, a formatting error during a `read_node` tool call is returned to the agent as a tool error, so the agent can recover.\n\n**Covered by the marked tests**\n- **Direct reads:** `crates/habeas-sdk/tests/validation.rs#fn[snapshots_record_exact_reads_and_retain_distinct_versions]` covers the direct-read obligations.\n  - It asserts that `read(&1)` returns \"before\" and, after a change, \"after\".\n  - It asserts that `read(&2)` fails and leaves no observation.\n  - It asserts that both distinct fingerprints are recorded and kept in `finish`.\n  - It asserts that `record_is_current` is false afterwards, which is the staleness check.\n- **Recording the full contents:** `crates/habeas-sdk/tests/agent.rs#fn[graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery]` calls the `read_node` tool on node 2. The observation is `Dependency::Node(Node(2), fp)` with `fp.value` equal to the full 18,000-character contents.\n- **Recording only on delivery:** the same test scripts a `read_node` call followed by a provider failure. No observation is recorded in that case. A contrasting `contents_of_current_node` case does record one.\n- **Formatting error:** `crates/habeas-sdk/tests/agent.rs#fn[node_rendering_tool_errors_allow_recovery_without_recording_undelivered_contents]` covers this. The formatter fails and the agent receives a tool result with `is_error`, the name `read_node` and the formatter's message. The agent then submits successfully, and no dependency is recorded.\n\n**Gap**\n- The `read_node` obligation says the tool \"formats the supplied contents under `judge.rendering`\".\n- The two agent tests marked `read_node` never check the text delivered to the agent on a successful `read_node`. The first test uses the default identity formatter and never inspects the tool result.\n- The second test only makes the formatter fail.\n- So an implementation could skip or misapply the formatter on success, or deliver something other than the formatter's output of the supplied contents. Both marked tests would still pass.\n- Other tests do check delivered formatted pages. These are `fn[validator_agent_executions_isolate_conversations_and_dependency_traces]` and `fn[concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads]`, which use the `distinct_pages` formatter. `fn[graph_read_pages_retain_the_prepared_snapshot_after_contents_change]` also checks page text.\n- None of those carries a `{test}` reference to `requirements.sdk.graph.context-tools.read_node`. The first two are marked for `judge.rendering` or other requirements, and the third for `pages` and `node_inputs`.\n- This is therefore a marking gap. The successful, formatted delivery in a `read_node` call is not verified by any test marked for this requirement.\n\n**Not treated as gaps**\n- Tool-level handling of a failing `node_content` read is not separately named by the text, and I did not count it.\n- The cited requirements `evidence.node_inputs` and `evidence.checking_records` are context only, and I did not reassess them.",
   "references": "4c9c28488fff4d1b116028bc32e2b354ffd077824c5fd7ea57d663c40bf5ef18",
   "inputs": [
     {
@@ -12,12 +12,19 @@
       "text": [
         ":::{req} read_node",
         "```rust,ignore",
-        "// Method on InspectionContext<'_, D>, where D: Contents.",
-        "/// Read this node and record the fingerprint of the returned contents.",
-        "pub fn read(&self, node: &D::NodeId) -> Result<D::NodeContent, D::Error>;",
+        "impl<'d, D: Contents> InspectionContext<'d, D> {",
+        "    /// Read this node and record the fingerprint of the returned contents.",
+        "    pub fn read(&self, node: &D::NodeId) -> Result<D::NodeContent, D::Error>;",
+        "}",
         "```",
         "",
-        "The read follows {cite}`requirements.sdk.graph.evidence.node_inputs`.",
+        "The result is the node's application-defined `D::NodeContent`. A successful",
+        "read records the node's identity and the fingerprint of those contents, under",
+        "{cite}`requirements.sdk.graph.evidence.node_inputs`. A failed read records no",
+        "successful observation. The evidence becomes stale when a later read of that",
+        "node has a different fingerprint; a failure to resolve it is reported by",
+        "{cite}`requirements.sdk.graph.evidence.checking_records`.",
+        "",
         "`ToolAgent` exposes `read_node`, accepting a known node's `NodePath`. It",
         "prepares that node's contents and fingerprint, formats the supplied contents",
         "under {cite}`requirements.sdk.graph.agent-calls.judge.rendering`, and records",
@@ -39,6 +46,41 @@
         "A failed read returns an error without inventing a successful observation.",
         "Repeating an identical observation adds no information. Reading the same",
         "identity with two different fingerprints preserves both observations.",
+        ":::"
+      ]
+    },
+    {
+      "requirements": "requirements.sdk.graph.evidence.checking_records",
+      "matches": [
+        "requirements.sdk.graph.evidence.checking_records"
+      ],
+      "text": [
+        ":::{req} checking_records",
+        "```rust,ignore",
+        "// Method on Validator<D>.",
+        "/// Compare each recorded input with the current domain state.",
+        "/// Return true when every fingerprint still matches, including an empty trace.",
+        "pub fn check_inputs<O>(",
+        "    &self,",
+        "    inputs: &Fingerprinted<D, O>,",
+        ") -> Result<bool, D::Error>;",
+        "```",
+        "",
+        "The method resolves the recorded dependencies through graph operations and",
+        "fingerprinting, comparing each with its saved observation. A fingerprint",
+        "mismatch returns `Ok(false)` and permits an early return; it need not resolve",
+        "later dependencies. An encountered dependency-resolution failure returns an",
+        "error.",
+        "",
+        "It uses the current state that the caller intends to inspect, rather than",
+        "reusing source snapshots from an earlier invocation without establishing that",
+        "they remain current. These reads are separate from a criterion execution's",
+        "dependency trace.",
+        "",
+        "Freshness checking has a separate observation scope from execution. Reads used",
+        "only to check old evidence do not become dependencies of the new result. A",
+        "checked snapshot can be reused if it still represents the current state; when",
+        "execution explicitly reads or delivers it, its fingerprint enters the new trace.",
         ":::"
       ]
     },
@@ -87,9 +129,9 @@
       "hash": "5b44bee0e882127ee5897c4ecb659d146d9e640fe6acdd525a44fae4a6af9c1b"
     },
     {
-      "file": "crates/habeas-sdk/src/agent/tools.rs",
-      "item": "impl[GraphSession<'_,%20'_,%20D>/Conversation]/fn[dispatch]",
-      "hash": "c36fe122495cf4f6e74838b6b3348c0f547d7a2c7d6d5c945aa40762902edc42"
+      "file": "crates/habeas-sdk/tests/agent.rs",
+      "item": "impl[Memory/Contents]",
+      "hash": "13ed94d23d9844ad80bc6c4f63755195c0635eea065a4f7e107ce8c7308d5666"
     },
     {
       "file": "crates/habeas-sdk/tests/agent.rs",
@@ -98,8 +140,18 @@
     },
     {
       "file": "crates/habeas-sdk/tests/agent.rs",
-      "item": "fn[retries_and_cut_off_tools_preserve_inputs_and_submission_skips_other_reads]",
-      "hash": "0f18bd680c513ce3781a6a11fe9f4f919e32ff93d60fed99f4473995919e2547"
+      "item": "impl[Memory]/fn[new]",
+      "hash": "63dc6af710c79845fe88bcbe7cbd88c72a328c14118db166d1d646aab00d1aa0"
+    },
+    {
+      "file": "crates/habeas-sdk/tests/agent.rs",
+      "item": "fn[concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads]",
+      "hash": "fafa2e8f5995a8c2c867d4cd32c42a224ab6e393e2d2238b20e023b5abecc89f"
+    },
+    {
+      "file": "crates/habeas-sdk/tests/agent.rs",
+      "item": "fn[validator_agent_executions_isolate_conversations_and_dependency_traces]",
+      "hash": "e39e00db9a2c71613240e7bae59a9807f9865a74a3563130001f2563ff15d8d8"
     }
   ],
   "format_version": 1,
@@ -124,7 +176,7 @@
         "Mandatory",
         {
           "scheme": "node-path-set-sha256-v1",
-          "value": "e8394702c32f193dd865f88c8efa1b80915e804732e45ac4c84aa2f3b7d15000"
+          "value": "e975fe6c7031bc150409e74186c528361d73004a1998b7c9c773629ac51fb79d"
         }
       ]
     },
@@ -135,7 +187,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "228454d9150b85da73f1aa33b7984e77491ea838580ff31110d557f050d8bf4c"
+          "value": "8dd163ce225064321e36aa411f8ac8ee1ed1a1f426dfaf2d65a46f110ad4e013"
         }
       ]
     },
@@ -147,6 +199,17 @@
         {
           "scheme": "habeas-input-v1",
           "value": "9752b8662b43a4a86d2b91ce206009bb135d4ea545a37e3be5aacba644042c9d"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Requirement": "requirements.sdk.graph.evidence.checking_records"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "71ccf88036864ad802d61fd442c95610f5c59a6fa3b65dda6dcfc3fb3583cf17"
         }
       ]
     },
@@ -218,14 +281,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/habeas-sdk/src/agent/tools.rs"
+              "location": "crates/habeas-sdk/tests/agent.rs"
             },
-            "selector": "impl[GraphSession<'_,%20'_,%20D>/Conversation]/fn[dispatch]"
+            "selector": "impl[Memory/Contents]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "a48c9a4d7626d48c1d11fb3d080fb747e1995a7cd9bb39857ae7555f32403bc8"
+          "value": "d6d17190d45fa90a0c75bab53204d2718ff3acc364df5b23c373b90d016abe9e"
         }
       ]
     },
@@ -254,12 +317,46 @@
               "scheme": "repo",
               "location": "crates/habeas-sdk/tests/agent.rs"
             },
-            "selector": "fn[retries_and_cut_off_tools_preserve_inputs_and_submission_skips_other_reads]"
+            "selector": "impl[Memory]/fn[new]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "2281ec6c07b90deb233340a8959190130d90ad9141a2da8f45509d7e85b5d63a"
+          "value": "5308bf06d7987837a485dc000afb056feb38553c785c101f32629ae1a8854b2d"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/tests/agent.rs"
+            },
+            "selector": "fn[concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "726a5f29a590fbe20135afc83b8e57c3f349194a6317a8988baad5909682a8c5"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/tests/agent.rs"
+            },
+            "selector": "fn[validator_agent_executions_isolate_conversations_and_dependency_traces]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "1a97e526e190c34b43bec034a83701645bca0a852bb550d4fcedb9341bd57753"
         }
       ]
     }

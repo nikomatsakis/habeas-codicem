@@ -352,7 +352,7 @@ struct Answer {
 // {test}`requirements.sdk.graph.fingerprinting.snapshot`
 // {test}`requirements.sdk.graph.evidence.node_inputs`
 // {test}`requirements.sdk.graph.context-tools.tracked_inspection`
-// {test}`requirements.sdk.graph.context-tools.read_node`
+// {test}`requirements.sdk.graph.context-tools.read_node.behavior`
 #[test]
 fn snapshots_record_exact_reads_and_retain_distinct_versions() {
     let graph = Memory::default();
@@ -499,7 +499,7 @@ fn wildcard_versions_still_check_inputs_and_errors() {
 // {test}`requirements.sdk.graph.execution.root_inputs`
 // {test}`requirements.sdk.graph.outgoing_edges`
 // {test}`requirements.sdk.graph.fingerprinting.snapshot`
-// {test}`requirements.sdk.graph.context-tools.outgoing_edges`
+// {test}`requirements.sdk.graph.context-tools.outgoing_edges.behavior`
 #[test]
 fn labeled_selections_track_only_target_membership_without_reading_contents() {
     let graph = Memory::default();

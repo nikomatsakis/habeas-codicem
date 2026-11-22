@@ -1,7 +1,7 @@
 {
-  "requirement": "The supplied `SourceTools` adapter exposes `search_structure` with a language\nand an ast-grep rule, plus an optional scope prefix and match limit. It uses\n`SourceAnalysis::search_structure` and returns matching source-item identities,\nexcerpts, and completeness under\n{cite}`requirements.sdk.sources.provider_results.search_completeness`.\nSearch results and their pages are discovery and contribute no graph-node\ninput observations.",
+  "requirement": "```rust,ignore\nimpl<P: SourceProvider> SourceAnalysis<P> {\n    /// Return structural matches and whether the result is complete.\n    pub async fn search_structure(\n        &self,\n        query: &StructuralQuery,\n    ) -> Result<StructuralMatches, P::Error>;\n}\n```\n\nThe supplied `SourceTools` adapter exposes `search_structure` with a language\nand an ast-grep rule, plus an optional scope prefix and match limit. It uses\n`SourceAnalysis::search_structure`; `StructuralQuery` holds the `language`,\n`rule`, `scope`, and `limit`. Each match contains an `OutlineId` and an\nexcerpt; the result also states whether the search is complete, under\n{cite}`requirements.sdk.sources.provider_results.search_completeness`.\n\nSearch results and their pages are discovery and record no evidence inputs,\nincluding an empty result. Changes to matches or excerpts do not by themselves\ninvalidate the evidence. A subsequent tracked read records the selected\nitem's contents and fingerprint.",
   "determination": true,
-  "rationale": "The reviewed tests adequately cover `requirements.sdk.graph.context-tools.search_structure`.\n\nThe main test is `crates/habeas-sdk/tests/agent.rs#fn[source_tools_forward_arguments_and_present_discovery_and_read_results]`. It dispatches `search_structure` through the `SourceTools` session over a `SourceAnalysis` whose provider records each call.\n\nObligations and how the tests cover them:\n\n- **Arguments are forwarded.**\n  - The test runs `search_structure` twice. One call has no prefix or limit. The other has `prefix` `src/` and `limit` 2.\n  - It asserts the exact calls the provider received: language `rust`, the ast-grep rule object, the prefix (`\"\"` or `src/`), and the limit (`null` or 2). This covers the language, rule, optional scope prefix and optional limit, and shows the adapter goes through `SourceAnalysis` to the provider's `search_structure`.\n- **Results carry identities, excerpts and completeness.**\n  - Each call's output is compared with the full JSON `{\"complete\":…, \"matches\":[{\"node\":{\"resource\":…,\"selector\":\"fn[chosen]\"},\"excerpt\":\"structural excerpt\"}]}`.\n  - `complete` is `true` when no limit is given and `false` when a limit is given. That covers both the complete and truncated cases required by `requirements.sdk.sources.provider_results.search_completeness`.\n- **A failure is an error, not an empty complete result.** With `language` `error`, the provider returns `SourceError::Invalid`. The test asserts that dispatch returns an error containing \"structural search failed\".\n- **No graph-node inputs come from results or pages.**\n  - `delivery.dependencies.is_empty()` is asserted after each `search_structure` call.\n  - A `paged` prefix produces an oversized excerpt, so the result is split into several pages. Every `get_source_page` delivery is asserted to have no dependencies.\n  - The pages are reassembled and the excerpt is compared with the original.\n  - The observation-callback count is asserted to stay at 3, the reads from `read_source` only. Discovery and pages therefore never invoke the callback.\n- **No input observations come from searching alongside a read.** `cached_selected_source_reads_record_exact_delivered_contents_and_errors_add_no_input` runs `search_structure` in a session with a cached provider and the observation callback. It asserts that the context's recorded dependencies are only the single node dependency from `read_source`. The search added none.\n\nNo obligation lacks a test. Both tests carry `{test}` references to the subject, so there is no marking gap. The fake provider's truncation rule is simplistic: it sets `complete` from `limit.is_none()`. This still checks that the adapter passes the provider's completeness through, and the text requires nothing more.",
+  "rationale": "The two marked tests in `crates/habeas-sdk/tests/agent.rs` adequately check the adapter obligations in `requirements.sdk.graph.context-tools.search_structure`. I read the adapter implementation (`crates/habeas-sdk/src/agent/sources.rs#impl[SourceSession<'_, P, F, D::NodeId, D::EdgeLabel>/ToolSession<D>]/fn[dispatch]`) only to see its inputs and branches. Expected behaviour comes from the requirement text.\n\n**Obligations and the tests that cover them**\n\n- **Arguments reach `SourceAnalysis::search_structure`.** The adapter must expose `search_structure` with a language, an ast-grep rule, an optional scope prefix and a limit.\n  - `source_tools_forward_arguments_and_present_discovery_and_read_results` calls the tool twice. The first call has no prefix or limit. The second has prefix `src/` and limit 2.\n  - It then asserts the exact provider-side calls: `{\"structure\":\"rust\",\"rule\":{...},\"prefix\":\"\",\"limit\":null}` and `{\"structure\":\"rust\",...,\"prefix\":\"src/\",\"limit\":2}`. The language, rule, prefix and limit are therefore forwarded, including the defaults for the optional fields.\n- **Each match has an `OutlineId` and an excerpt.** The test asserts the full JSON output: `{\"matches\":[{\"node\":{\"resource\":...,\"selector\":\"fn[chosen]\"},\"excerpt\":\"structural excerpt\"}]}`.\n- **The result states whether it is complete, under `search_completeness`.** The mock provider returns `complete: query.limit.is_none()`.\n  - The test asserts `complete` is true for the unlimited call and false for the limited call, so both values reach the output.\n- **An operation failure is an error, not a complete empty result.** With language `\"error\"` the mock returns `Err`. The test asserts that `dispatch` returns an error containing \"structural search failed\".\n- **Search results and pages record no evidence inputs.** Every `search_structure` delivery has `delivery.dependencies.is_empty()` asserted.\n  - A large excerpt (`\"structural excerpt\".repeat(800)`) forces paging. The test asserts the first delivery has no dependencies, that more than one page exists, and that each `get_source_page` delivery has no dependencies. It reassembles the pages and checks the excerpt matches the original.\n  - The observation callback is shown not to run during discovery: `reads` is empty after the searches and outline, and holds exactly the 3 `read_source` entries at the end.\n- **A subsequent tracked read records the selected item's contents and fingerprint.**\n  - The first test searches, outlines and reads through the real default-language registry with `CachedProvider`. It asserts that only the `read_source` of `fn[observed]` contributes a `Dependency::Node` whose fingerprint is the exact selected content. The failed read of `fn[missing]` adds none.\n  - The second test asserts each `read_source` yields a dependency with the selected fingerprint.\n- **Changes to matches or excerpts do not invalidate evidence.** No search dependency is recorded, so there is nothing to invalidate. The no-dependency assertions cover this.\n\n**Obligations not separately tested**\n\n- No test uses a successful empty `search_structure` result. The adapter has no branch for it: dependencies start as `Vec::new()` and only the `read_source` branch pushes to it, so a non-empty search result already exercises the same path.\n- The adapter's argument-type errors (language not a string, rule not an object) are not named by the requirement.\n- `SourceAnalysis::search_structure` only delegates to the provider. The adapter tests exercise it through `SourceTools`, and `tests/sources.rs` also calls it directly.\n\nI found no unacknowledged gap.",
   "references": "e3a119334f6a47c2b5674deb59de0324a35fed166ca7274f618268f162a52f11",
   "inputs": [
     {
@@ -11,13 +11,27 @@
       ],
       "text": [
         ":::{req} search_structure",
+        "```rust,ignore",
+        "impl<P: SourceProvider> SourceAnalysis<P> {",
+        "    /// Return structural matches and whether the result is complete.",
+        "    pub async fn search_structure(",
+        "        &self,",
+        "        query: &StructuralQuery,",
+        "    ) -> Result<StructuralMatches, P::Error>;",
+        "}",
+        "```",
+        "",
         "The supplied `SourceTools` adapter exposes `search_structure` with a language",
         "and an ast-grep rule, plus an optional scope prefix and match limit. It uses",
-        "`SourceAnalysis::search_structure` and returns matching source-item identities,",
-        "excerpts, and completeness under",
+        "`SourceAnalysis::search_structure`; `StructuralQuery` holds the `language`,",
+        "`rule`, `scope`, and `limit`. Each match contains an `OutlineId` and an",
+        "excerpt; the result also states whether the search is complete, under",
         "{cite}`requirements.sdk.sources.provider_results.search_completeness`.",
-        "Search results and their pages are discovery and contribute no graph-node",
-        "input observations.",
+        "",
+        "Search results and their pages are discovery and record no evidence inputs,",
+        "including an empty result. Changes to matches or excerpts do not by themselves",
+        "invalidate the evidence. A subsequent tracked read records the selected",
+        "item's contents and fingerprint.",
         ":::"
       ]
     },
@@ -42,6 +56,21 @@
       "file": "crates/habeas-sdk/tests/agent.rs",
       "item": "fn[source_tools_forward_arguments_and_present_discovery_and_read_results]",
       "hash": "287d4c1911ff5e84e5b444a910b071e58fab1d3c9231671bf787bcaca78fe03f"
+    },
+    {
+      "file": "crates/habeas-sdk/src/agent/sources.rs",
+      "item": "impl[SourceSession<'_,%20P,%20F,%20D::NodeId,%20D::EdgeLabel>/ToolSession<D>]/fn[dispatch]",
+      "hash": "9bb0bd13f0143dd8ae775c147672da649efc939318809d901e6df66cab4a3893"
+    },
+    {
+      "file": "crates/habeas-sdk/src/sources.rs",
+      "item": "impl[SourceAnalysis<P>]/fn[search_structure]",
+      "hash": "ec053344f86765678122471d0b7689be43872b6e303c18907f410ab85261b443"
+    },
+    {
+      "file": "crates/habeas-sdk/tests/agent.rs",
+      "item": "impl[CachedProvider/SourceProvider]",
+      "hash": "45eed4a4549223f268548132370d21ba1fd2dde4f4dddf9dab5320cb43f4cd7e"
     }
   ],
   "format_version": 1,
@@ -77,7 +106,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "33e6212efa976162577075e3647a76dd4e0adf3464b482d2aa8bb39fb202489f"
+          "value": "29d18b1aafe4e014acd464b7b7c7e4ef2dddb6d4506244209980102aa1d0fe7c"
         }
       ]
     },
@@ -123,6 +152,57 @@
         {
           "scheme": "habeas-input-v1",
           "value": "9d263ff21e9eef63db0ccfa14f01b60a1565bacd124b3b9a79adef073fa968cb"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/src/agent/sources.rs"
+            },
+            "selector": "impl[SourceSession<'_,%20P,%20F,%20D::NodeId,%20D::EdgeLabel>/ToolSession<D>]/fn[dispatch]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "0638b31fbef861153edfbfc541997707458e9776db371e70a33e9f545f8540ee"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/src/sources.rs"
+            },
+            "selector": "impl[SourceAnalysis<P>]/fn[search_structure]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "0b86122da52ccd9a83c3a86e3c05f360196548537bcebc2f460bd33f343a865c"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/tests/agent.rs"
+            },
+            "selector": "impl[CachedProvider/SourceProvider]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "ac2e23a1d585551812b886ff75dc7531d3e2652252475bb52426b5efb329e7d4"
         }
       ]
     }

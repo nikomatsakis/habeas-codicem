@@ -77,12 +77,12 @@ where
                 "parameters":{"type":"object","required":["page"],"properties":{"page":{"type":"integer","minimum":0}}}}),
         ].into_iter().map(|value| serde_json::from_value(value).map_err(io::Error::other)).collect()
     }
-    // {impl}`requirements.sdk.graph.context-tools.read_source`
-    // {impl}`requirements.sdk.graph.context-tools.list_sources`
-    // {impl}`requirements.sdk.graph.context-tools.outline_source`
-    // {impl}`requirements.sdk.graph.context-tools.search_text`
-    // {impl}`requirements.sdk.graph.context-tools.search_structure`
-    // {impl}`requirements.sdk.graph.context-tools.pages`
+    // {impl}`requirements.sdk.graph.context-tools.read_source.behavior`
+    // {impl}`requirements.sdk.graph.context-tools.list_sources.behavior`
+    // {impl}`requirements.sdk.graph.context-tools.outline_source.behavior`
+    // {impl}`requirements.sdk.graph.context-tools.search_text.behavior`
+    // {impl}`requirements.sdk.graph.context-tools.search_structure.behavior`
+    // {impl}`requirements.sdk.graph.context-tools.pages.behavior`
     fn dispatch<'a>(
         &'a mut self,
         name: &'a str,

@@ -1,7 +1,7 @@
 {
-  "requirement": "`ToolAgent` exposes `get_node_page`, and `SourceTools` exposes\n`get_source_page`, accepting page IDs returned by their prepared results.\n\nA continuation returns the stored text and dependency metadata from the\nprepared result without fetching replacement contents. When `ToolAgent`\ndelivers a read page, it records the dependencies retained by that page under\n{cite}`requirements.sdk.graph.evidence.node_inputs`. Discovery pages retain\nthe discovery operation's dependency policy.",
+  "requirement": "```rust,ignore\n// Graph-tool calls go through the harness's Conversation.\npub trait Conversation: Send {\n    type Output: Send;\n\n    fn dispatch(\n        &mut self,\n        name: &str,\n        arguments: &serde_json::Value,\n    ) -> impl Future<Output = std::io::Result<String>> + Send;\n\n    // Other conversation methods omitted.\n}\n\n// Source-tool calls go through the factory's per-conversation ToolSession.\npub trait ToolSession<D: Graph>: Send {\n    fn dispatch<'a>(\n        &'a mut self,\n        name: &'a str,\n        arguments: &'a serde_json::Value,\n    ) -> BoxFuture<'a, std::io::Result<ToolDelivery<D::NodeId, D::EdgeLabel>>>;\n\n    // Other session methods omitted.\n}\n```\n\n`ToolAgent` exposes `get_node_page`, and `SourceTools` exposes\n`get_source_page`, accepting page IDs returned by their prepared results.\nThey are dispatched with the tool name and a `{\"page\": page_id}` argument.\nThe graph dispatcher returns response text; a source session returns\n`ToolDelivery`, containing response text and any dependencies awaiting delivery.\n\nA continuation returns the stored text and dependency metadata from the\nprepared result without fetching replacement contents. When `ToolAgent`\ndelivers a read page, it records the dependencies retained by that page under\n{cite}`requirements.sdk.graph.evidence.node_inputs`. Each page of a graph-node\nread carries the original node identity and content fingerprint; reading a\nlater page does not observe a newer version. A change to that node's\nfingerprint can invalidate the evidence even if it happens between pages.\nSource-read pages retain whatever dependency the observation callback supplied.\nDiscovery pages record no evidence inputs, just like the original discovery\nresult.",
   "determination": true,
-  "rationale": "The reviewed tests cover each obligation of `requirements.sdk.graph.context-tools.pages`.\n\n**Page tools accept IDs from prepared results**\n- `get_node_page` is called with the page ID from a prepared `read_node` result in `graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery`, in `graph_read_pages_retain_the_prepared_snapshot_after_contents_change`, and in the `ParallelConversations` provider.\n- `get_source_page` is called with every page ID from the `pages` array of prepared `read_source`, `search_text`, `outline_source` and `search_structure` results. This happens in `source_read_pages_retain_text_and_dependencies_without_another_read`, `source_discovery_and_its_pages_do_not_register_reads` and `source_tools_forward_arguments_and_present_discovery_and_read_results`.\n\n**A continuation returns stored text and dependency metadata without a replacement fetch**\n- `graph_read_pages_retain_the_prepared_snapshot_after_contents_change` changes the graph contents between `read_node` and `get_node_page`. It asserts that:\n  - the graph was read exactly once (`reads == [1]`);\n  - the delivered page contains \"original snapshot\" and not \"replacement contents\";\n  - the only recorded dependency is `Node(1)` with the original fingerprint.\n- A continuation that re-fetched contents would fail these assertions.\n- `source_read_pages_retain_text_and_dependencies_without_another_read` rewrites the file after the prepared read. Each `get_source_page` delivery then carries exactly one `Dependency::Node(Node(7), …)` whose fingerprint equals the original text. The reassembled text equals the original, and the observation callback ran once.\n\n**ToolAgent records the dependencies a delivered read page retains**\n- `graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery` reads an 18,000-character node and then calls `get_node_page`. It asserts that the recorded observations are the edge observation and `Node(2)` with the exact delivered contents, and that `finish` carries those same dependencies.\n- The same test covers a failed completion, where the delivered-but-failed case adds no dependency. This shows recording happens on delivery and not on preparation.\n- The identical-observation rule in `node_inputs` is a cited context requirement. The implementation `deliver_page` pushes the page's retained dependency, and the first page is also delivered by `read_node`. A continuation's recording is therefore indistinguishable from the first page's, so no further test could separate them.\n\n**Discovery pages keep the discovery policy**\n- In the SDK's `outgoing_edges` handler, `GraphSession` dispatch never pages edge results, so no graph discovery pages exist.\n- For source discovery, `source_discovery_and_its_pages_do_not_register_reads` and `source_tools_forward_arguments_and_present_discovery_and_read_results` page the `list_sources`, `search_text`, `outline_source` and `search_structure` results and fetch each page with `get_source_page`. They assert that every page delivery has empty dependencies and that the observation callback is never invoked (`calls == 0`, and `reads.len() == 3` after paged structural search).\n- The latter test also checks that the reassembled paged text equals the original excerpt.\n\n**Not covered**\n- No test pages a source read through `ToolAgent` end to end. That path is a generic pass-through (`pending.extend(delivery.dependencies)`, then `delivered()`) of dependencies the session-level tests already assert.\n- This is a small residual risk, not a gap, because it has no logic of its own.\n\nNo gap was found, and there are no acknowledgments.",
+  "rationale": "I judge the tests adequate for `requirements.sdk.graph.context-tools.pages`. I read the implementation only to see how pages are prepared and delivered. That showed `GraphSession::dispatch` splits a `read_node` result into 8192-character pages. Each page keeps the same `Dependency::Node` observation. The first page is delivered immediately, and `get_node_page` calls `deliver_page`. Expected behaviour comes from the requirement text, not from this code.\n\nObligations and the tests that cover them:\n\n- **Graph continuation uses the stored page and records its dependency.**\n  - `graph_read_pages_retain_the_prepared_snapshot_after_contents_change` makes the provider swap the node contents to \"replacement contents\" after the `read_node` call and before `get_node_page`. It then asserts four things:\n    - The graph was read exactly once (`reads == [1]`).\n    - The recorded inspection dependency is a single `Dependency::Node(Node(1), fp)` whose fingerprint value is the original contents.\n    - The page text sent back to the model contains \"original snapshot\".\n    - That page text does not contain \"replacement contents\".\n  - This covers \"returns the stored text… without fetching replacement contents\", \"reading a later page does not observe a newer version\", and the recorded dependency carrying the original identity and fingerprint, even when the change happens between pages.\n  - `graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery` uses 18,000 characters (3 pages) and a `get_node_page` call with `{\"page\":1}`. It asserts the ordered dependencies (edge observation, then a node observation with the full fingerprint). It also asserts that `finish` carries them into the record and that failed runs record nothing, or only the delivered read.\n- **`ToolAgent` records dependencies under `node_inputs`.** The same two tests assert the recorded `Dependency::Node` fingerprints. The assertions also match the \"failed read invents no observation\" and no-duplicate parts that apply here.\n- **Source-read pages retain the callback's dependency without another read.** `source_read_pages_retain_text_and_dependencies_without_another_read` reads a multi-page source and rewrites the file afterwards. It then fetches every page through `get_source_page` with `{\"page\":page}`. It asserts:\n  - Each page's `ToolDelivery.dependencies` is exactly one `Dependency::Node(Node(7), fp)` with the original text as fingerprint.\n  - The reassembled pages equal the original text.\n  - The observation callback ran exactly once.\n- **Discovery pages record no evidence inputs.**\n  - `source_tools_forward_arguments_and_present_discovery_and_read_results` forces a multi-page `search_structure` result (it asserts more than one page). It asserts every `get_source_page` delivery has empty dependencies and that the observation callback count stays at 3.\n  - `source_discovery_and_its_pages_do_not_register_reads` loops over `list_sources`, `search_text` and `outline_source`. It asserts empty dependencies on the first result and on any pages, and zero callback invocations.\n  - Its page loop runs only if a result is actually paged, but the structural case is guaranteed to page.\n- **Dispatch shape and return types.** Every test dispatches by tool name with `{\"page\": id}`. The graph tests go through `ToolAgent` and read the model-visible text. The source tests use `session.dispatch`, which returns `ToolDelivery` with `.text` and `.dependencies`.\n\nResidual points I considered and did not count as gaps:\n\n- No test reads two nodes and then fetches a page of the first. Page IDs are global, so this would check that each page keeps its own observation. The text says each page carries the original node identity, but this is an untested variation of a represented scenario, not a separate obligation.\n- Delivering a later graph page records the same observation that the first page already recorded. Duplicates add no information under `node_inputs`, so omitting the record on later pages could not be told apart by any test.\n\nThere are no acknowledged gaps.",
   "references": "db1cd490c129e7a112cdb45d051c05ea1196f1ffeedf5a9f1e0b4e740639b3ef",
   "inputs": [
     {
@@ -11,14 +11,48 @@
       ],
       "text": [
         ":::{req} pages",
+        "```rust,ignore",
+        "// Graph-tool calls go through the harness's Conversation.",
+        "pub trait Conversation: Send {",
+        "    type Output: Send;",
+        "",
+        "    fn dispatch(",
+        "        &mut self,",
+        "        name: &str,",
+        "        arguments: &serde_json::Value,",
+        "    ) -> impl Future<Output = std::io::Result<String>> + Send;",
+        "",
+        "    // Other conversation methods omitted.",
+        "}",
+        "",
+        "// Source-tool calls go through the factory's per-conversation ToolSession.",
+        "pub trait ToolSession<D: Graph>: Send {",
+        "    fn dispatch<'a>(",
+        "        &'a mut self,",
+        "        name: &'a str,",
+        "        arguments: &'a serde_json::Value,",
+        "    ) -> BoxFuture<'a, std::io::Result<ToolDelivery<D::NodeId, D::EdgeLabel>>>;",
+        "",
+        "    // Other session methods omitted.",
+        "}",
+        "```",
+        "",
         "`ToolAgent` exposes `get_node_page`, and `SourceTools` exposes",
         "`get_source_page`, accepting page IDs returned by their prepared results.",
+        "They are dispatched with the tool name and a `{\"page\": page_id}` argument.",
+        "The graph dispatcher returns response text; a source session returns",
+        "`ToolDelivery`, containing response text and any dependencies awaiting delivery.",
         "",
         "A continuation returns the stored text and dependency metadata from the",
         "prepared result without fetching replacement contents. When `ToolAgent`",
         "delivers a read page, it records the dependencies retained by that page under",
-        "{cite}`requirements.sdk.graph.evidence.node_inputs`. Discovery pages retain",
-        "the discovery operation's dependency policy.",
+        "{cite}`requirements.sdk.graph.evidence.node_inputs`. Each page of a graph-node",
+        "read carries the original node identity and content fingerprint; reading a",
+        "later page does not observe a newer version. A change to that node's",
+        "fingerprint can invalidate the evidence even if it happens between pages.",
+        "Source-read pages retain whatever dependency the observation callback supplied.",
+        "Discovery pages record no evidence inputs, just like the original discovery",
+        "result.",
         ":::"
       ]
     },
@@ -70,14 +104,14 @@
       "hash": "c36fe122495cf4f6e74838b6b3348c0f547d7a2c7d6d5c945aa40762902edc42"
     },
     {
-      "file": "crates/habeas-sdk/tests/agent.rs",
-      "item": "impl[ParallelConversations/CompletionProvider]/fn[complete]",
-      "hash": "9b76c57be2910b2f98ffe6cb68c23fcf71f2ee1afad1aafdceccb1d3122f530e"
+      "file": "crates/habeas-sdk/src/agent/tools.rs",
+      "item": "impl[GraphSession<'_,%20'_,%20D>/Conversation]/fn[delivered]",
+      "hash": "f16cc420cb7845db7859fb5d0eb530dde7f79ac377107b5e69b62936a2c9309f"
     },
     {
-      "file": "crates/habeas-sdk/src/agent/tools.rs",
-      "item": "impl[GraphSession<'_,%20'_,%20D>/Conversation]/fn[tools]",
-      "hash": "6dad38121c58511bda210ab54ce54ce67a1136f5f22da383afd960ab66bbe1fb"
+      "file": "crates/habeas-sdk/tests/agent.rs",
+      "item": "fn[application_tools_preserve_graph_tools_in_the_same_conversation]",
+      "hash": "750169e9c9506e13601ef30068be5c7acacaa87ad1a5e9ad941ddebe4395d8a5"
     },
     {
       "file": "crates/habeas-sdk/src/agent/tools.rs",
@@ -85,9 +119,14 @@
       "hash": "a8f2073dbe4e8394f3fca67f2a6611f9401eaea1ad7194ff61386ea3e37ae637"
     },
     {
+      "file": "crates/habeas-sdk/src/agent/sources.rs",
+      "item": "impl[SourceSession<'_,%20P,%20F,%20D::NodeId,%20D::EdgeLabel>/ToolSession<D>]/fn[definitions]",
+      "hash": "107aa8abde437785110eb951f9299fea1d7cfccd27164a5f217fb85b7ab0edea"
+    },
+    {
       "file": "crates/habeas-sdk/src/agent/tools.rs",
-      "item": "impl[GraphSession<'_,%20'_,%20D>/Conversation]/fn[delivered]",
-      "hash": "f16cc420cb7845db7859fb5d0eb530dde7f79ac377107b5e69b62936a2c9309f"
+      "item": "impl[GraphSession<'_,%20'_,%20D>/Conversation]/fn[tools]",
+      "hash": "6dad38121c58511bda210ab54ce54ce67a1136f5f22da383afd960ab66bbe1fb"
     }
   ],
   "format_version": 1,
@@ -123,7 +162,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "a7fdf84760926d9cf7381c44c3fbc9de64a8166bc476f9d68b496569d2a744bc"
+          "value": "b8293152db50c35de714d97318905e1904a00dec35b78e371325dd44b6ef0288"
         }
       ]
     },
@@ -246,14 +285,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/agent.rs"
+              "location": "crates/habeas-sdk/src/agent/tools.rs"
             },
-            "selector": "impl[ParallelConversations/CompletionProvider]/fn[complete]"
+            "selector": "impl[GraphSession<'_,%20'_,%20D>/Conversation]/fn[delivered]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "bffe151f9f62fca6482eb02b8e8ffd94cb155d303aeb1549e016cd45594784d8"
+          "value": "de17d5eb859098c44d971f905babd367b13c5afe5d960bea28714aafd14f015d"
         }
       ]
     },
@@ -263,14 +302,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/habeas-sdk/src/agent/tools.rs"
+              "location": "crates/habeas-sdk/tests/agent.rs"
             },
-            "selector": "impl[GraphSession<'_,%20'_,%20D>/Conversation]/fn[tools]"
+            "selector": "fn[application_tools_preserve_graph_tools_in_the_same_conversation]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "64c1df77f66b794666f8bbec3825fc289d486338d6aaa4d72cb94b67784faebf"
+          "value": "c8f77303c31c35edfd28f53e436639ac34b6c283eb80e3640880113f5d76de88"
         }
       ]
     },
@@ -297,14 +336,31 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/habeas-sdk/src/agent/tools.rs"
+              "location": "crates/habeas-sdk/src/agent/sources.rs"
             },
-            "selector": "impl[GraphSession<'_,%20'_,%20D>/Conversation]/fn[delivered]"
+            "selector": "impl[SourceSession<'_,%20P,%20F,%20D::NodeId,%20D::EdgeLabel>/ToolSession<D>]/fn[definitions]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "de17d5eb859098c44d971f905babd367b13c5afe5d960bea28714aafd14f015d"
+          "value": "4274ec8c89cd3b9cc5e84031532a3c1f6f2a1cca0a58fab36daaccd2b423f865"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/src/agent/tools.rs"
+            },
+            "selector": "impl[GraphSession<'_,%20'_,%20D>/Conversation]/fn[tools]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "64c1df77f66b794666f8bbec3825fc289d486338d6aaa4d72cb94b67784faebf"
         }
       ]
     }

@@ -59,7 +59,7 @@ The signatures below show the Rust methods those commands use.
 Use a node's identity to obtain its application-defined
 [contents](fingerprinting.md).
 
-:::{req} read_node
+:::{req} read_node.behavior
 ```rust,ignore
 impl<'d, D: Contents> InspectionContext<'d, D> {
     /// Read this node and record the fingerprint of the returned contents.
@@ -85,7 +85,7 @@ the observation when those contents are delivered.
 Select relationships by their label. A criterion can use the returned node
 identities to choose additional reads.
 
-:::{req} outgoing_edges
+:::{req} outgoing_edges.behavior
 ```rust,ignore
 impl<'d, D: Contents> InspectionContext<'d, D> {
     /// Obtain this source's targets for the label and record their set fingerprint.
@@ -124,7 +124,7 @@ A source item is identified by a resource and an outline selector, such as a
 function within a file. Source identities are defined in
 [Sources and inspection](../sources.md#identify-something-before-reading-it).
 
-:::{req} read_source
+:::{req} read_source.behavior
 ```rust,ignore
 impl<P: SourceProvider> SourceAnalysis<P> {
     /// Read and parse one resource, retaining the bytes used for its outline.
@@ -154,7 +154,7 @@ directly also records none. Dependency comparison follows
 
 List resources when choosing a file or other source to inspect.
 
-:::{req} list_sources
+:::{req} list_sources.behavior
 ```rust,ignore
 pub trait SourceProvider: Send + Sync {
     type Error: From<SourceError> + Send;
@@ -184,7 +184,7 @@ dependencies.
 An outline identifies the items within a source, so a caller can select one
 for a content read.
 
-:::{req} outline_source
+:::{req} outline_source.behavior
 ```rust,ignore
 impl<P: SourceProvider> SourceAnalysis<P> {
     /// Read and parse one resource, returning its source snapshot and outline.
@@ -207,7 +207,7 @@ of a selected item records that item's contents and fingerprint.
 
 Use a regular expression to locate relevant source text.
 
-:::{req} search_text
+:::{req} search_text.behavior
 ```rust,ignore
 pub trait SourceProvider: Send + Sync {
     type Error: From<SourceError> + Send;
@@ -244,7 +244,7 @@ dependency on its contents.
 Use a language and a structural query to locate syntax, such as calls to a
 particular function.
 
-:::{req} search_structure
+:::{req} search_structure.behavior
 ```rust,ignore
 impl<P: SourceProvider> SourceAnalysis<P> {
     /// Return structural matches and whether the result is complete.
@@ -277,7 +277,7 @@ see [Authoring evidence](../../authoring.md#account-for-search-snippets).
 Long results arrive in pages. Fetch another page to continue reading the same
 prepared result.
 
-:::{req} pages
+:::{req} pages.behavior
 ```rust,ignore
 // Graph-tool calls go through the harness's Conversation.
 pub trait Conversation: Send {

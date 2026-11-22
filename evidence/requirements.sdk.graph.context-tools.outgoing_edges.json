@@ -1,7 +1,7 @@
 {
-  "requirement": "```rust,ignore\n// Method on InspectionContext<'_, D>, where D: Contents.\n/// Obtain this source's targets for the label and record their set fingerprint.\npub fn outgoing_edges(\n    &self,\n    source: &D::NodeId,\n    label: D::EdgeLabel,\n) -> Result<Snapshot<Vec<D::NodeId>>, D::Error>\nwhere\n    D::EdgeLabel: PartialEq;\n```\n\nThe snapshot pairs the returned target identities with their target-set\nfingerprint under {cite}`requirements.sdk.graph.fingerprinting.snapshot`.\nThe selection becomes an observation under\n{cite}`requirements.sdk.graph.evidence.inputs`; reading a target's contents\nis a separate operation.\n\n`ToolAgent` exposes this selection as `outgoing_edges`, with a known source\n`NodePath` and a typed label argument. It returns the target paths and records\nthe selection when delivered. The adapter's label bounds follow\n{cite}`requirements.sdk.graph.agent-harness.tool_agent`.",
+  "requirement": "```rust,ignore\nimpl<'d, D: Contents> InspectionContext<'d, D> {\n    /// Obtain this source's targets for the label and record their set fingerprint.\n    pub fn outgoing_edges(\n        &self,\n        source: &D::NodeId,\n        label: D::EdgeLabel,\n    ) -> Result<Snapshot<Vec<D::NodeId>>, D::Error>\n    where\n        D::EdgeLabel: PartialEq;\n}\n```\n\nThe snapshot returns the target node identities and a fingerprint of their\nset of stable `NodePath`s, under\n{cite}`requirements.sdk.graph.fingerprinting.snapshot`. The returned vector\npreserves the graph's ordering and duplicates.\n\nThe recorded dependency contains the source identity, the requested label,\nand that set fingerprint. Adding or removing an identity from that set changes\nit, including adding the first identity to an empty set. Reordering targets or\nrepeating a target does not change it. Changes to a target's contents do not affect this\ndependency: reading those contents records a separate node dependency.\nThese observations follow {cite}`requirements.sdk.graph.evidence.inputs`\nand {cite}`requirements.sdk.graph.evidence.checking_records`.\n\n`ToolAgent` exposes this selection as `outgoing_edges`, with a known source\n`NodePath` and a typed label argument. It returns the target paths and records\nthe selection when delivered. The adapter's label bounds follow\n{cite}`requirements.sdk.graph.agent-harness.tool_agent`.",
   "determination": true,
-  "rationale": "I judge the tests adequate for `requirements.sdk.graph.context-tools.outgoing_edges`. I reviewed only the two supplied {test} items and did not request implementation source.\n\n**Obligations and the tests that cover them**\n\n1. **The `InspectionContext::outgoing_edges` method returns a `Snapshot` pairing the targets with their target-set fingerprint.**\n   - `crates/habeas-sdk/tests/validation.rs#fn[labeled_selections_track_only_target_membership_without_reading_contents]` calls `selected.inspection().outgoing_edges(&1, 7)`.\n   - It asserts that `snapshot.content` is `[5, 3, 5]`, so order and duplicates are kept.\n   - It asserts that `snapshot.fingerprint` equals `edge_fingerprint(&graph, &[3, 5])`, so the fingerprint is of the target set.\n   - Edges with another label, such as `(8, 2)` and `(8, 99)`, are present. Only the label-7 targets reach the result, so the label filter is exercised.\n\n2. **The selection becomes an observation, `Dependency::OutgoingEdges(source, label, fingerprint)`.**\n   - The validation test asserts `record.dependencies` equals exactly one `OutgoingEdges(1, 7, fp[3,5])`. Repeated calls to `successors` do not add a second dependency.\n   - It checks currency both ways. A change to unrelated label-8 edges leaves the record current. A change to the label-7 targets makes it stale.\n   - An empty selection recorded earlier becomes stale once label-7 targets appear.\n   - `crates/habeas-sdk/tests/agent.rs#fn[agent_edge_tools_record_selections_without_validating_targets]` asserts the stored and reloaded record's dependencies equal `OutgoingEdges(1, 7, edge_fingerprint(&graph, &[2]))`.\n   - The same test covers a second label, 8, which yields `OutgoingEdges(1, 8, fp[3])`.\n\n3. **Reading a target's contents is a separate operation.**\n   - The validation test asserts `graph.state...reads.is_empty()`.\n   - The agent test's graph panics in `node_content`, `fingerprint` and `format_node_content`, so any content read fails the test.\n\n4. **The `ToolAgent` `outgoing_edges` tool takes a known source `NodePath` and a typed label, and returns the target paths.**\n   - The agent test sends `{\"path\":{\"segments\":[\"1\"]},\"label\":7}`.\n   - It asserts the tool result is the non-error text `{\"targets\":[{\"segments\":[\"2\"]}]}`.\n   - A second label returns a different target set.\n   - An unknown path gives an error result with the expected message. The test also asserts that no graph lookup happened and no dependency was recorded.\n\n5. **The tool \"records the selection when delivered\".**\n   - The agent test uses a script whose second step fails, so the delivery fails. After that failure, `ctx.inspection().dependencies()` is empty even though the graph was queried once.\n   - On successful delivery the dependency is recorded.\n   - The test asserts `lookups == 1` after verify, store and load. The query is not repeated, and the selection is not re-validated.\n\n6. **Errors from `D::Error` are propagated.** The validation test sets `fail_edges` and asserts `successors` returns `Err(\"edges\")`.\n\n**Items reviewed and not treated as gaps**\n\n- The `Snapshot` construction rules belong to `requirements.sdk.graph.fingerprinting.snapshot`. The cited requirements are context only.\n- The adapter's label bounds follow `requirements.sdk.graph.agent-harness.tool_agent`. They are a cited requirement and compile-time bounds, and the agent test exercises them with `u8` labels.\n- I found no named boundary or failure case for this requirement that lacks a test.",
+  "rationale": "The two marked tests cover each obligation of `requirements.sdk.graph.context-tools.outgoing_edges`. Two small points are only indirectly covered, and I judged neither to be a gap.\n\n**Context API (`crates/habeas-sdk/tests/validation.rs#fn[labeled_selections_track_only_target_membership_without_reading_contents]`)**\n- **Return value:** The test calls `inspection().outgoing_edges(&1, 7)` on a graph whose label-7 edges are `[5, 3, 5]`. It asserts `snapshot.content == [5, 3, 5]`, so the graph's order and duplicates are preserved. It asserts `snapshot.fingerprint == edge_fingerprint(&graph, &[3, 5])`. `edge_fingerprint` in `crates/habeas-sdk/src/graph.rs` hashes the sorted, deduplicated set of node paths, so this is the set fingerprint.\n- **Recorded dependency:** After `finish`, the test asserts `record.dependencies == [Dependency::OutgoingEdges(1, 7, edge_fingerprint(.., &[3,5]))]`. This covers the source identity, the label and the set fingerprint. Repeated `successors(&7)` calls leave a single dependency.\n- **Adding the first identity to an empty set:** The test first records an empty selection for label 7. Edges are then added only under label 8, and `record_is_current` stays true, so other labels don't affect the dependency. Adding label-7 edges next makes `record_is_current` false.\n- **Reorder and repeat:** The recorded `[3,5]` is compared with a graph holding `[3,5,8:99]` in a different order. `record_is_current` stays true.\n- **Membership change:** Changing the targets to `[3,6]` makes `record_is_current` false.\n- **Contents independence:** `graph.state.reads.is_empty()` is asserted after the freshness checks, so the check never reads node contents.\n- **Errors:** A `fail_edges` error is asserted to propagate from both `successors` and `record_is_current`.\n\n**Agent adapter (`crates/habeas-sdk/tests/agent.rs#fn[agent_edge_tools_record_selections_without_validating_targets]`)**\n- **Delivery and recording:** `ToolAgent` exposes `outgoing_edges` with a known `NodePath` and a typed numeric label. The test asserts the delivered result is `{\"targets\":[{\"segments\":[\"2\"]}]}`. The verified, stored and reloaded record has the single dependency `OutgoingEdges(1, 7, edge_fingerprint(&[2]))`.\n- **No second query:** The graph returns an error on a second lookup. The test asserts `lookups == 1`.\n- **No contents read:** `node_content`, `fingerprint` and `format_node_content` all panic. The edge-only flow therefore never reads contents or records a node dependency.\n- **Unknown path:** An unknown path gives an error result, no graph query and no dependency.\n- **Failed delivery:** If delivery fails, the query ran once and no dependency is recorded. This matches \"records the selection when delivered\".\n- **Second label:** A second label (8) yields different targets and a distinct dependency.\n\n**Delegated and indirect points**\n- The label bounds follow `requirements.sdk.graph.agent-harness.tool_agent`, and the check logic follows `requirements.sdk.graph.evidence.checking_records`. Both are cited context, so I did not reassess them.\n- The clause that reading contents records a separate node dependency belongs to the node-read requirement. No test of this requirement changes a target's contents. The \"no effect\" claim is covered indirectly: contents are never read, and the contents callbacks would panic.\n- No test removes an identity without also adding one. The `[3,5]` to `[3,6]` change removes 5, and the fingerprint is a symmetric hash of the sorted path set. A removal-specific gap is implausible.\n\nNo `{fixme}` acknowledgments apply, and I found no gaps.",
   "references": "d4f7b67d6c6cc97637c3223ee7b1f5466b5778e75d6132e1d8bfb45b9094af64",
   "inputs": [
     {
@@ -12,22 +12,30 @@
       "text": [
         ":::{req} outgoing_edges",
         "```rust,ignore",
-        "// Method on InspectionContext<'_, D>, where D: Contents.",
-        "/// Obtain this source's targets for the label and record their set fingerprint.",
-        "pub fn outgoing_edges(",
-        "    &self,",
-        "    source: &D::NodeId,",
-        "    label: D::EdgeLabel,",
-        ") -> Result<Snapshot<Vec<D::NodeId>>, D::Error>",
-        "where",
-        "    D::EdgeLabel: PartialEq;",
+        "impl<'d, D: Contents> InspectionContext<'d, D> {",
+        "    /// Obtain this source's targets for the label and record their set fingerprint.",
+        "    pub fn outgoing_edges(",
+        "        &self,",
+        "        source: &D::NodeId,",
+        "        label: D::EdgeLabel,",
+        "    ) -> Result<Snapshot<Vec<D::NodeId>>, D::Error>",
+        "    where",
+        "        D::EdgeLabel: PartialEq;",
+        "}",
         "```",
         "",
-        "The snapshot pairs the returned target identities with their target-set",
-        "fingerprint under {cite}`requirements.sdk.graph.fingerprinting.snapshot`.",
-        "The selection becomes an observation under",
-        "{cite}`requirements.sdk.graph.evidence.inputs`; reading a target's contents",
-        "is a separate operation.",
+        "The snapshot returns the target node identities and a fingerprint of their",
+        "set of stable `NodePath`s, under",
+        "{cite}`requirements.sdk.graph.fingerprinting.snapshot`. The returned vector",
+        "preserves the graph's ordering and duplicates.",
+        "",
+        "The recorded dependency contains the source identity, the requested label,",
+        "and that set fingerprint. Adding or removing an identity from that set changes",
+        "it, including adding the first identity to an empty set. Reordering targets or",
+        "repeating a target does not change it. Changes to a target's contents do not affect this",
+        "dependency: reading those contents records a separate node dependency.",
+        "These observations follow {cite}`requirements.sdk.graph.evidence.inputs`",
+        "and {cite}`requirements.sdk.graph.evidence.checking_records`.",
         "",
         "`ToolAgent` exposes this selection as `outgoing_edges`, with a known source",
         "`NodePath` and a typed label argument. It returns the target paths and records",
@@ -101,6 +109,41 @@
       ]
     },
     {
+      "requirements": "requirements.sdk.graph.evidence.checking_records",
+      "matches": [
+        "requirements.sdk.graph.evidence.checking_records"
+      ],
+      "text": [
+        ":::{req} checking_records",
+        "```rust,ignore",
+        "// Method on Validator<D>.",
+        "/// Compare each recorded input with the current domain state.",
+        "/// Return true when every fingerprint still matches, including an empty trace.",
+        "pub fn check_inputs<O>(",
+        "    &self,",
+        "    inputs: &Fingerprinted<D, O>,",
+        ") -> Result<bool, D::Error>;",
+        "```",
+        "",
+        "The method resolves the recorded dependencies through graph operations and",
+        "fingerprinting, comparing each with its saved observation. A fingerprint",
+        "mismatch returns `Ok(false)` and permits an early return; it need not resolve",
+        "later dependencies. An encountered dependency-resolution failure returns an",
+        "error.",
+        "",
+        "It uses the current state that the caller intends to inspect, rather than",
+        "reusing source snapshots from an earlier invocation without establishing that",
+        "they remain current. These reads are separate from a criterion execution's",
+        "dependency trace.",
+        "",
+        "Freshness checking has a separate observation scope from execution. Reads used",
+        "only to check old evidence do not become dependencies of the new result. A",
+        "checked snapshot can be reused if it still represents the current state; when",
+        "execution explicitly reads or delivers it, its fingerprint enters the new trace.",
+        ":::"
+      ]
+    },
+    {
       "requirements": "requirements.sdk.graph.agent-harness.tool_agent",
       "matches": [
         "requirements.sdk.graph.agent-harness.tool_agent"
@@ -148,13 +191,13 @@
     },
     {
       "file": "crates/habeas-sdk/src/graph.rs",
-      "item": "impl[InspectionContext<'d,%20D>]/fn[outgoing_edges]",
-      "hash": "664f7b18d745ea1b4e5962c384c521546946ebd381b339054fefdb2539212436"
+      "item": "fn[edge_fingerprint]",
+      "hash": "573c33edd8a8a37234c4b0c3ed8e450f3f381bf107db1505f9fc86c3174d049b"
     },
     {
-      "file": "crates/habeas-sdk/src/procedure.rs",
-      "item": "impl[ValidationContext<'d,%20D>]#1/fn[successors]",
-      "hash": "7efe9e695e53a2b933bb6c31d3f2b290a1c694de461f5fd95e5fa7098b670243"
+      "file": "crates/habeas-sdk/src/graph.rs",
+      "item": "fn[record_is_current]",
+      "hash": "a687ad1c528a65c723f125cb42b41d833e589e8dbabe516bf9edf3c581f88eaa"
     }
   ],
   "format_version": 1,
@@ -179,7 +222,7 @@
         "Mandatory",
         {
           "scheme": "node-path-set-sha256-v1",
-          "value": "92f8aecfe95530236098115eca34e1851a0a088bbfc234175ac490dc33d8725c"
+          "value": "8b3015f80384b731ddfeffa219b7729d86876e9f9307a1e9a2e35afc59f52cbd"
         }
       ]
     },
@@ -190,7 +233,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "bc7eb16bff072439e0774c8302ce72331edde2e779c4abfd10b985ace55ae0e3"
+          "value": "c7f24f80ad3c42d047bbe782b6f20eb9138b61a06e8f73954b7245859496ac11"
         }
       ]
     },
@@ -213,6 +256,17 @@
         {
           "scheme": "habeas-input-v1",
           "value": "ea3c120913ba7c72863b076b0d5bdde877527fbfee8b304755533759b9033524"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Requirement": "requirements.sdk.graph.evidence.checking_records"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "71ccf88036864ad802d61fd442c95610f5c59a6fa3b65dda6dcfc3fb3583cf17"
         }
       ]
     },
@@ -269,12 +323,12 @@
               "scheme": "repo",
               "location": "crates/habeas-sdk/src/graph.rs"
             },
-            "selector": "impl[InspectionContext<'d,%20D>]/fn[outgoing_edges]"
+            "selector": "fn[edge_fingerprint]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "9964107ab488a60fb9ec78dee243fcb11c05f112198cec27aea1358db1510b25"
+          "value": "84d3427bdf50fb0027f2cefeffb8296586725bc640ec52dd275a9885ecf4ce7b"
         }
       ]
     },
@@ -284,14 +338,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/habeas-sdk/src/procedure.rs"
+              "location": "crates/habeas-sdk/src/graph.rs"
             },
-            "selector": "impl[ValidationContext<'d,%20D>]#1/fn[successors]"
+            "selector": "fn[record_is_current]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "e048e54069d7cbff161496029889551f2ca10aec7a140871e23c0562206655f0"
+          "value": "8a127f627d48b3b70a16d281b3afac3479e7528da94bce604504f7fa7518912f"
         }
       ]
     }
