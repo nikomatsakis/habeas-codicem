@@ -487,9 +487,9 @@ impl Criterion<StoredGraph> for StoredReview<'_> {
     }
 }
 
-// {test}`requirements.sdk.graph.validation.store_evidence`
+// {test}`requirements.sdk.graph.evidence.store_evidence`
 // {test}`requirements.sdk.graph.evidence.record.output`
-// {test}`requirements.sdk.graph.validation.check_node`
+// {test}`requirements.sdk.graph.evidence.check_node`
 // {test}`requirements.sdk.graph.validation.validate_node.errors`
 #[tokio::test]
 async fn malformed_records_are_storage_errors_and_bad_outputs_are_output_errors() {

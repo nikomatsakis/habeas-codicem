@@ -420,13 +420,13 @@ impl<'d, D: Contents> InspectionContext<'d, D> {
     }
 }
 
-// {impl}`requirements.sdk.graph.validation.checking_records.procedure_match`
+// {impl}`requirements.sdk.graph.evidence.checking_records.procedure_match`
 pub fn procedure_matches(stored: &str, requested: &str) -> bool {
     stored == "*" || stored == requested
 }
 
 /// Freshness-only reads do not enter a new assessment's trace.
-// {impl}`requirements.sdk.graph.validation.checking_records`
+// {impl}`requirements.sdk.graph.evidence.checking_records`
 pub fn record_is_current<D: Contents>(
     graph: &D,
     revision: &str,

@@ -478,8 +478,8 @@ async fn validator_agent_executions_isolate_conversations_and_dependency_traces(
 // {test}`requirements.sdk.graph.context-tools.tracked_inspection`
 // {test}`requirements.sdk.graph.fingerprinting.snapshot`
 // {test}`requirements.sdk.graph.validation.validate_node`
-// {test}`requirements.sdk.graph.validation.check_node`
-// {test}`requirements.sdk.graph.validation.store_evidence`
+// {test}`requirements.sdk.graph.evidence.check_node`
+// {test}`requirements.sdk.graph.evidence.store_evidence`
 // {test}`requirements.sdk.graph.evidence.inputs`
 #[tokio::test]
 async fn agent_edge_tools_record_selections_without_validating_targets() {
@@ -1280,7 +1280,7 @@ impl Criterion<Memory> for BehavioralAdequacy {
 // {test}`requirements.sdk.graph.execution.behavioral_adequacy`
 // {test}`requirements.sdk.graph.validation.criterion_definition`
 // {test}`requirements.sdk.graph.validation.evaluate_criterion`
-// {test}`requirements.sdk.graph.validation.store_evidence`
+// {test}`requirements.sdk.graph.evidence.store_evidence`
 // {test}`requirements.sdk.graph.agent-harness.setup`
 // {test}`requirements.sdk.graph.agent-harness.tool_agent`
 // {test}`requirements.sdk.domain`

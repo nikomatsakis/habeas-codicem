@@ -745,7 +745,7 @@ mod tests {
         assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 3);
     }
 
-    // {test}`requirements.sdk.graph.validation.checking_records`
+    // {test}`requirements.sdk.graph.evidence.checking_records`
     // {test}`requirements.sdk.graph.domain_types`
     // {test}`requirements.sdk.graph.fingerprinting.fingerprint_content`
     // {test}`requirements.sdk.graph.fingerprinting.snapshot`

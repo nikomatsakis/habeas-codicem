@@ -199,7 +199,7 @@ impl Memory {
     }
 }
 
-// {test}`requirements.sdk.graph.validation.checking_records`
+// {test}`requirements.sdk.graph.evidence.checking_records`
 // {test}`requirements.sdk.graph.validation.validate_node`
 #[tokio::test]
 async fn historical_freshness_reads_do_not_enter_the_replacement_trace() {
@@ -244,7 +244,7 @@ async fn historical_freshness_reads_do_not_enter_the_replacement_trace() {
 
 // {test}`requirements.sdk.graph.agent-calls.model_capability`
 // {test}`requirements.sdk.graph.agent-calls.procedures`
-// {test}`requirements.sdk.graph.validation.store_evidence`
+// {test}`requirements.sdk.graph.evidence.store_evidence`
 // {test}`requirements.sdk.graph.validation.validate_node.errors`
 // {test}`requirements.sdk.graph.validation.validator`
 // {test}`requirements.sdk.graph.agent-calls.judge.rendering`
@@ -403,7 +403,7 @@ fn snapshots_record_exact_reads_and_retain_distinct_versions() {
     assert!(!record_is_current(&graph, "v1", &record).unwrap());
 }
 
-// {test}`requirements.sdk.graph.validation.checking_records`
+// {test}`requirements.sdk.graph.evidence.checking_records`
 #[test]
 fn a_matching_dependency_does_not_hide_a_later_changed_dependency() {
     for edge_dependency in [false, true] {
@@ -439,8 +439,8 @@ fn a_matching_dependency_does_not_hide_a_later_changed_dependency() {
     }
 }
 
-// {test}`requirements.sdk.graph.validation.checking_records.procedure_match`
-// {test}`requirements.sdk.graph.validation.checking_records`
+// {test}`requirements.sdk.graph.evidence.checking_records.procedure_match`
+// {test}`requirements.sdk.graph.evidence.checking_records`
 // {test}`requirements.sdk.graph.fingerprinting.fingerprint`
 #[test]
 fn wildcard_versions_still_check_inputs_and_errors() {
@@ -494,7 +494,7 @@ fn wildcard_versions_still_check_inputs_and_errors() {
     assert!(procedure_matches("*", "anything"));
 }
 
-// {test}`requirements.sdk.graph.validation.checking_records`
+// {test}`requirements.sdk.graph.evidence.checking_records`
 // {test}`requirements.sdk.graph.execution.root_inputs`
 // {test}`requirements.sdk.graph.outgoing_edges`
 // {test}`requirements.sdk.graph.fingerprinting.snapshot`
@@ -552,11 +552,11 @@ fn labeled_selections_track_only_target_membership_without_reading_contents() {
 }
 
 // {test}`requirements.sdk.graph.validation.validate_node`
-// {test}`requirements.sdk.graph.validation.check_node`
+// {test}`requirements.sdk.graph.evidence.check_node`
 // {test}`requirements.sdk.graph.agent-calls.procedures`
 // {test}`requirements.sdk.graph.validation.check_procedure`
 // {test}`requirements.sdk.graph.execution.deterministic_procedures`
-// {test}`requirements.sdk.graph.validation.procedure_identity`
+// {test}`requirements.sdk.graph.evidence.procedure_identity`
 #[tokio::test]
 async fn caller_reuses_negative_answers_and_compares_revisions_explicitly() {
     let graph = Memory::default();
@@ -622,10 +622,10 @@ async fn caller_reuses_negative_answers_and_compares_revisions_explicitly() {
     assert!(validator.check_inputs(&legacy).unwrap());
 }
 
-// {test}`requirements.sdk.graph.validation.store_evidence`
+// {test}`requirements.sdk.graph.evidence.store_evidence`
 // {test}`requirements.sdk.graph.validation.validate_node.errors`
-// {test}`requirements.sdk.graph.validation.check_node`
-// {test}`requirements.sdk.graph.validation.procedure_identity`
+// {test}`requirements.sdk.graph.evidence.check_node`
+// {test}`requirements.sdk.graph.evidence.procedure_identity`
 // {test}`requirements.sdk.graph.evidence.record.output`
 #[tokio::test]
 async fn resolution_storage_and_callback_errors_are_not_judgments() {

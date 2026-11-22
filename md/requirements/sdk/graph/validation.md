@@ -93,7 +93,7 @@ The validator can now evaluate an instance of `BehavioralAdequacy`.
 :::{example} evaluate_criterion
 {cite}`requirements.sdk.graph.validation.validator`
 {cite}`requirements.sdk.graph.validation.validate_node`
-{cite}`requirements.sdk.graph.validation.store_evidence`
+{cite}`requirements.sdk.graph.evidence.store_evidence`
 {cite}`requirements.sdk.graph.evidence.inputs`
 
 Here `agent` is a configured `Arc` handle, and `domain` is Habeas's implementation
@@ -209,19 +209,6 @@ an evidence record; the context's source remains the graph node.
 
 ## Verify a criterion
 
-:::{req} procedure_identity
-`load_evidence` selects a saved record using the source node and criterion path
-from the supplied `Criterion`. `verify` captures those values and the criterion's
-revision in its returned `Fingerprinted`. The pair of source and criterion selects a
-record; its saved revision identifies the review rules used to produce it.
-
-Changing review instructions, deterministic rules, input-selection policy, or
-result encoding in a way that invalidates an old answer requires a changed
-revision. This is independent of model selection and the agent's context-prefix
-cache fingerprint. A stored legacy revision `*` retains the matching behavior of
-{cite}`requirements.sdk.graph.validation.checking_records.procedure_match`.
-:::
-
 :::{req} validate_node
 ```rust,ignore
 // Method on Validator<D>.
@@ -249,127 +236,3 @@ execution explicitly reads or delivers it, its fingerprint enters the new trace.
 An execution error returns `Err` rather than a `Fingerprinted` containing a completed
 answer. The caller can store only a completed verification.
 :::
-
-## Load and store evidence
-
-Loading returns the saved answer and its input trace, if a record exists.
-The caller can then compare the revision and inputs or inspect the answer.
-
-:::{req} check_node
-```rust,ignore
-// Method on Validator<D>.
-/// Load this criterion's evidence and decode its answer as V::Ok.
-/// Ok(None) means no saved record exists.
-pub fn load_evidence<V: Criterion<D>>(
-    &self,
-    criterion: &V,
-) -> impl Future<Output = Result<Option<Fingerprinted<D, V::Ok>>, ValidationError<D::Error>>> + Send;
-```
-
-`load_evidence` captures the source identity and criterion path while constructing
-its future. It retains no reference to the criterion value while storage is
-pending, so the criterion needs no `Sync` bound. It loads the complete record and
-decodes its output under {cite}`requirements.sdk.graph.evidence.record.output`.
-Revision and input comparison are separate steps.
-:::
-
-:::{req} store_evidence
-```rust,ignore
-// Method on Validator<D>.
-/// Encode the answer and atomically replace this source/criterion's record.
-pub fn store_evidence<O: serde::Serialize>(
-    &self,
-    inputs: &Fingerprinted<D, O>,
-) -> impl Future<Output = Result<(), ValidationError<D::Error>>> + Send;
-```
-
-The method saves under the source identity and criterion path captured in
-`Fingerprinted`, preserving its revision, input trace, and completed answer. Encoding follows
-{cite}`requirements.sdk.graph.evidence.record.output`; atomic replacement follows
-{cite}`requirements.sdk.graph.evidence.evidence_storage`. The result type needs
-no `Sync` bound: the method encodes the answer and captures the record and
-storage key before constructing the storage future.
-:::
-
-## Compare the saved observations
-
-`Validator::check_inputs` reads current contents and edge selections through the
-domain, computes their fingerprints, and compares them with the observations in
-`Fingerprinted`. Revision comparison is a separate operation: the caller has the
-current criterion and decides which review rules remain compatible.
-
-:::{req} checking_records
-```rust,ignore
-// Method on Validator<D>.
-/// Compare each recorded input with the current domain state.
-/// Return true when every fingerprint still matches, including an empty trace.
-pub fn check_inputs<O>(
-    &self,
-    inputs: &Fingerprinted<D, O>,
-) -> Result<bool, D::Error>;
-```
-
-The method resolves the recorded dependencies through graph operations and
-fingerprinting, comparing each with its saved observation. A fingerprint
-mismatch returns `Ok(false)` and permits an early return; it need not resolve
-later dependencies. An encountered dependency-resolution failure returns an
-error.
-
-It uses the current state that the caller intends to inspect, rather than
-reusing source snapshots from an earlier invocation without establishing that
-they remain current. These reads are separate from a criterion execution's
-dependency trace.
-:::
-
-:::{req} checking_records.procedure_match
-```rust,ignore
-// Defined in habeas_sdk::graph.
-/// Compare the saved review-rule revision with the currently requested revision.
-pub fn procedure_matches(stored: &str, requested: &str) -> bool;
-```
-
-The revision matches when the stored `Record::revision` is `*` or equals the
-requested revision exactly. Only the complete stored value `*` is a wildcard;
-other values compare literally. A wildcard leaves dependency comparison and
-result decoding unchanged. It matches revisions for the selected source and
-criterion only, and does not supply evidence for other criteria.
-:::
-
-The wildcard represents a supported legacy record that did not capture its
-review-rule version. It does not certify a criterion that was never assessed.
-Habeas chooses how to map its legacy assessments to the corresponding criteria.
-
-A current record need not contain a favorable assessment. The SDK supplies the
-comparisons; Habeas owns its reuse and acceptance policies.
-
-## Compose a reuse workflow
-
-The application decides when to reuse a saved answer. For example, it can
-compare the saved revision and recorded inputs before choosing whether to
-execute and store a new review:
-
-```rust,ignore
-let review = BehavioralAdequacy {
-    requirement,
-    review_policy: test_review_policy,
-};
-
-let inputs = match validator.load_evidence(&review).await? {
-    Some(saved)
-        if procedure_matches(saved.revision(), &review.revision())
-            && validator.check_inputs(&saved)? => saved,
-    _ => {
-        let inputs = validator.verify(review).await?;
-        validator.store_evidence(&inputs).await?;
-        inputs
-    }
-};
-
-let assessment = inputs.output();
-println!("{}: {}", assessment.adequate, assessment.rationale);
-```
-
-Of the [comparisons above](#compare-the-saved-observations), `procedure_matches`
-checks whether the saved answer was produced using compatible review rules;
-`check_inputs` compares only its recorded observations. A current negative
-assessment is still current. Habeas decides which answers make CI pass.

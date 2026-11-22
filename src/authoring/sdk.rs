@@ -573,7 +573,7 @@ mod tests {
     }
 
     // {test}`requirements.sdk.graph.validation.check_procedure`
-    // {test}`requirements.sdk.graph.validation.check_node`
+    // {test}`requirements.sdk.graph.evidence.check_node`
     // {test}`requirements.sdk.graph.validation.validate_node`
     // {test}`requirements.sdk.graph.evidence.evidence_storage`
     // {test}`requirements.sdk.habeas.evidence_format.loading`

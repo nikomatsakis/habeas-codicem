@@ -26,8 +26,8 @@ impl<D: Domain> Validator<D> {
         self
     }
 
-    // {impl}`requirements.sdk.graph.validation.check_node`
-    // {impl}`requirements.sdk.graph.validation.procedure_identity`
+    // {impl}`requirements.sdk.graph.evidence.check_node`
+    // {impl}`requirements.sdk.graph.evidence.procedure_identity`
     // {impl}`requirements.sdk.graph.evidence.record.output`
     // {impl}`requirements.sdk.graph.evidence.inputs`
     /// Load this criterion's evidence and decode its answer.
@@ -59,7 +59,7 @@ impl<D: Domain> Validator<D> {
         }
     }
 
-    // {impl}`requirements.sdk.graph.validation.checking_records`
+    // {impl}`requirements.sdk.graph.evidence.checking_records`
     /// Compare recorded input fingerprints with the current domain state.
     pub fn check_inputs<O>(&self, inputs: &Fingerprinted<D, O>) -> Result<bool, D::Error> {
         dependencies_are_current(&self.domain, &inputs.dependencies)
@@ -67,7 +67,7 @@ impl<D: Domain> Validator<D> {
 
     // {impl}`requirements.sdk.graph.validation.validate_node`
     // {impl}`requirements.sdk.graph.validation.validate_node.errors`
-    // {impl}`requirements.sdk.graph.validation.procedure_identity`
+    // {impl}`requirements.sdk.graph.evidence.procedure_identity`
     // {impl}`requirements.sdk.graph.evidence.inputs`
     /// Execute the criterion and return its completed answer and observed inputs.
     pub fn verify<V: Criterion<D>>(
@@ -92,7 +92,7 @@ impl<D: Domain> Validator<D> {
         }
     }
 
-    // {impl}`requirements.sdk.graph.validation.store_evidence`
+    // {impl}`requirements.sdk.graph.evidence.store_evidence`
     // {impl}`requirements.sdk.graph.evidence.record.output`
     /// Encode the answer and atomically replace its source/criterion record.
     pub fn store_evidence<O: Serialize>(

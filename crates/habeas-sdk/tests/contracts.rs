@@ -277,17 +277,17 @@ fn graph_relationships_work_without_node_contents_or_storage() {
 // {test}`requirements.sdk.graph.validation.criterion_path`
 // {test}`requirements.sdk.graph.validation.check_procedure`
 // {test}`requirements.sdk.graph.validation.validate_node`
-// {test}`requirements.sdk.graph.validation.procedure_identity`
-// {test}`requirements.sdk.graph.validation.check_node`
+// {test}`requirements.sdk.graph.evidence.procedure_identity`
+// {test}`requirements.sdk.graph.evidence.check_node`
 // {test}`requirements.sdk.graph.execution.deterministic_procedures`
 // {test}`requirements.sdk.graph.evidence.record`
-// {test}`requirements.sdk.graph.validation.store_evidence`
+// {test}`requirements.sdk.graph.evidence.store_evidence`
 // {test}`requirements.sdk.graph.evidence.record.output`
 // {test}`requirements.sdk.graph.evidence.evidence_storage`
 // {test}`requirements.sdk.graph.domain_types`
 // {test}`requirements.sdk.domain`
 // {test}`requirements.sdk.graph.evidence.inputs`
-// {test}`requirements.sdk.graph.validation.checking_records`
+// {test}`requirements.sdk.graph.evidence.checking_records`
 #[tokio::test]
 async fn criteria_keep_typed_answers_and_persist_only_when_requested() {
     let domain = Application::default();
@@ -430,10 +430,10 @@ fn criterion_paths_preserve_hierarchy_empty_segments_order_and_unicode() {
     assert_eq!(first.finish(), second.finish());
 }
 
-// {test}`requirements.sdk.graph.validation.check_node`
+// {test}`requirements.sdk.graph.evidence.check_node`
 // {test}`requirements.sdk.graph.validation.validate_node`
 // {test}`requirements.sdk.graph.evidence.node_inputs`
-// {test}`requirements.sdk.graph.validation.checking_records`
+// {test}`requirements.sdk.graph.evidence.checking_records`
 #[tokio::test]
 async fn changing_one_criteria_input_does_not_invalidate_another() {
     let domain = Application::default();
@@ -491,12 +491,12 @@ async fn changing_one_criteria_input_does_not_invalidate_another() {
     assert_eq!(saved.dependencies, value.dependencies());
 }
 
-// {test}`requirements.sdk.graph.validation.store_evidence`
+// {test}`requirements.sdk.graph.evidence.store_evidence`
 // {test}`requirements.sdk.graph.evidence.record.output`
-// {test}`requirements.sdk.graph.validation.procedure_identity`
+// {test}`requirements.sdk.graph.evidence.procedure_identity`
 // {test}`requirements.sdk.graph.validation.validate_node.errors`
-// {test}`requirements.sdk.graph.validation.check_node`
-// {test}`requirements.sdk.graph.validation.checking_records`
+// {test}`requirements.sdk.graph.evidence.check_node`
+// {test}`requirements.sdk.graph.evidence.checking_records`
 #[tokio::test]
 async fn typed_loading_reports_decode_errors_even_for_stale_evidence() {
     let domain = Application::default();
@@ -541,7 +541,7 @@ async fn typed_loading_reports_decode_errors_even_for_stale_evidence() {
     assert_eq!(domain.0.lock().unwrap().records.len(), 1);
 }
 
-// {test}`requirements.sdk.graph.validation.store_evidence`
+// {test}`requirements.sdk.graph.evidence.store_evidence`
 // {test}`requirements.sdk.graph.evidence.record.output`
 // {test}`requirements.sdk.graph.validation.validate_node`
 // {test}`requirements.sdk.graph.evidence.record`
@@ -590,8 +590,8 @@ async fn input_checking_and_execution_keep_separate_observations() {
     );
 }
 
-// {test}`requirements.sdk.graph.validation.check_node`
-// {test}`requirements.sdk.graph.validation.checking_records`
+// {test}`requirements.sdk.graph.evidence.check_node`
+// {test}`requirements.sdk.graph.evidence.checking_records`
 // {test}`requirements.sdk.graph.evidence.inputs`
 #[tokio::test]
 async fn dependency_resolution_failures_do_not_execute_or_replace_saved_answers() {
@@ -634,8 +634,8 @@ async fn dependency_resolution_failures_do_not_execute_or_replace_saved_answers(
     }
 }
 
-// {test}`requirements.sdk.graph.validation.checking_records.procedure_match`
-// {test}`requirements.sdk.graph.validation.check_node`
+// {test}`requirements.sdk.graph.evidence.checking_records.procedure_match`
+// {test}`requirements.sdk.graph.evidence.check_node`
 // {test}`requirements.sdk.graph.validation.criterion_path`
 #[tokio::test]
 async fn wildcard_revision_does_not_supply_other_criteria_or_nodes() {
@@ -663,10 +663,10 @@ async fn wildcard_revision_does_not_supply_other_criteria_or_nodes() {
 }
 
 // {test}`requirements.sdk.graph.validation.check_procedure`
-// {test}`requirements.sdk.graph.validation.check_node`
+// {test}`requirements.sdk.graph.evidence.check_node`
 // {test}`requirements.sdk.graph.validation.validate_node`
 // {test}`requirements.sdk.graph.validation.validator`
-// {test}`requirements.sdk.graph.validation.store_evidence`
+// {test}`requirements.sdk.graph.evidence.store_evidence`
 #[tokio::test]
 async fn validation_and_answer_need_send_without_sync() {
     let domain = Application::default();
@@ -687,7 +687,7 @@ async fn validation_and_answer_need_send_without_sync() {
 }
 
 // {test}`requirements.sdk.graph.execution.root_inputs`
-// {test}`requirements.sdk.graph.validation.checking_records`
+// {test}`requirements.sdk.graph.evidence.checking_records`
 #[tokio::test]
 async fn absence_certification_is_invalidated_by_the_first_selected_root() {
     let domain = Application::default();
@@ -722,7 +722,7 @@ impl Serialize for Unencodable {
 }
 
 // {test}`requirements.sdk.graph.validation.validate_node.errors`
-// {test}`requirements.sdk.graph.validation.store_evidence`
+// {test}`requirements.sdk.graph.evidence.store_evidence`
 // {test}`requirements.sdk.graph.evidence.record.output`
 #[tokio::test]
 async fn serialization_failure_leaves_the_existing_record_unchanged() {
@@ -752,7 +752,7 @@ async fn serialization_failure_leaves_the_existing_record_unchanged() {
 }
 
 // {test}`requirements.sdk.graph.validation.validate_node.errors`
-// {test}`requirements.sdk.graph.validation.check_node`
+// {test}`requirements.sdk.graph.evidence.check_node`
 // {test}`requirements.sdk.graph.evidence.record.output`
 #[tokio::test]
 async fn loading_execution_resolution_and_saving_failures_do_not_publish_answers() {
@@ -798,7 +798,7 @@ async fn loading_execution_resolution_and_saving_failures_do_not_publish_answers
 // {test}`requirements.sdk.graph.validation.validator`
 // {test}`requirements.sdk.graph.evidence.evidence_storage`
 // {test}`requirements.sdk.domain`
-// {test}`requirements.sdk.graph.validation.store_evidence`
+// {test}`requirements.sdk.graph.evidence.store_evidence`
 #[tokio::test]
 async fn concurrent_same_criterion_executions_keep_complete_independent_records() {
     let domain = Application::default();
