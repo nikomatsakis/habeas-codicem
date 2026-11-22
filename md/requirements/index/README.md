@@ -72,6 +72,21 @@ for Markdown, JSON, TOML, Java, JavaScript, TypeScript, and Python; TOML may use
 INI highlighting when native TOML highlighting is unavailable.
 :::
 
+:::{req} declaration_sections
+:impl: md/habeas.css
+In authored chapters, requirements, examples, and named definitions render as
+lightly framed, collapsible sections, expanded when the chapter opens. Each
+header identifies the declaration and its kind. A disclosure chevron indicates
+whether its body is expanded or collapsed; a subtle divider separates the
+header from the expanded body. Collapsing a section hides its body while
+keeping the header visible. The disclosure works with a mouse or keyboard.
+
+The body retains its Markdown rendering, including code blocks and nested
+declarations. Requirement and example headers retain the definition and
+evidence links described by {cite}`requirements.index.navigation`; those
+links navigate independently of the disclosure.
+:::
+
 :::{req} navigation
 :impl: md/habeas.css
 Each requirement and example definition badge MUST link to its own anchored definition on the current page. The badge MUST have a separate adjacent link containing an accessible right-arrow icon in an integrated segment matching the badge color linking to its evidence detail page. The badge and arrow MUST remain aligned in one non-wrapping row. Definitions MUST NOT be followed by a separate plaintext evidence link. Each detail page MUST link back to the definition's anchored badge and to the index. Reference badges MUST continue to link to the definition. These links MUST resolve when a requirement name contains `.md`, as in `requirements.cli.mdbook`.
