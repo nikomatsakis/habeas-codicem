@@ -1,5 +1,9 @@
 # Validators
 
+A validator runs the values introduced in [Criteria definition](validation.md).
+It supplies the application domain and an execution context to the criterion,
+then returns its completed answer with a trace of the inputs it used.
+
 ## Run criteria with a validator
 
 A `Validator<D>` owns a cloneable domain. Construct it with `new`, then submit a
@@ -79,8 +83,8 @@ println!("{}: {}", assessment.adequate, assessment.rationale);
 ```
 :::
 
-This chapter focuses on defining the criterion and evaluating it with a
-validator. [Storage](evidence.md#refresh-evidence) defines `refresh_evidence`
-and explains the load, check, verify, and store steps it combines.
-[Evaluating criteria](execution.md) fills in the criterion's execution method.
+This chapter focuses on running a criterion with a validator.
+[Storage](evidence.md#refresh-evidence) defines `refresh_evidence` and explains
+the load, check, verify, and store steps it combines.
+[Criteria evaluation](execution.md) fills in the criterion's execution method.
 

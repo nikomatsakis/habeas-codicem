@@ -127,12 +127,13 @@ The [agent calls
 chapter](sdk/graph/agent-calls.md#format-node-contents-for-the-agent) explains how
 the SDK uses this method.
 
-The domain traits and the separate criterion interface have their own chapters:
+The domain traits, criterion interface, and validator have their own chapters:
 
-| Trait | Purpose |
+| Interface | Purpose |
 | --- | --- |
 | [Graph](sdk/graph.md) | Node identities, labeled edges, and successors. |
-| [Criteria and validators](sdk/graph/validation.md) | Defining a criterion and composing validator operations. |
+| [Criteria definition](sdk/graph/validation.md) | Criterion types, completed answers, and criterion paths. |
+| [Validators](sdk/graph/validators.md) | Constructing a validator and running criterion values. |
 | [Contents](sdk/graph/fingerprinting.md) | Reading, fingerprinting, and formatting node contents. |
 | [Storage](sdk/graph/evidence.md) | Where and how evidence is saved. |
 
@@ -144,7 +145,7 @@ functionality. The linked chapters describe each one:
 
 | Chapter | What it provides |
 | --- | --- |
-| [Evaluating criteria](sdk/graph/execution.md) | Using a criterion's context to ask an agent and read tracked inputs. |
+| [Criteria evaluation](sdk/graph/execution.md) | Using a criterion's context to ask an agent and read tracked inputs. |
 | [Source providers](sdk/sources.md#the-application-supplies-a-source-provider) | Resource access, including a filesystem provider. |
 | [Parsing and outlining](sdk/sources.md#register-the-languages-that-interpret-those-resources) | Language-aware source structure and selectors for individual items. |
 | [Context tools](sdk/graph/context-tools.md) | Source discovery and tracked content reads. |

@@ -411,8 +411,9 @@ path and preserves segment boundaries under
 {cite}`requirements.sdk.filesystem-storage.keys`.
 :::
 
-[Criteria and validators](validation.md) defines the criterion and its
-verification interface. The methods above compose verification with this
+[Criteria definition](validation.md) defines the criterion, and
+[Validators](validators.md) explains how to run it.
+The methods above compose verification with this
 chapter's evidence workflow.
 [Filesystem evidence
 storage](../filesystem-storage.md) defines the helper and its encoding.

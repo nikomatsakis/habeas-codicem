@@ -1,10 +1,11 @@
-# Evaluating criteria
+# Criteria evaluation
 
 A {term}`requirements.sdk.graph.validation.criterion`'s `execute` method defines
 how its question is answered.
 `Validator::verify` calls it with a `ValidationContext` that records the inputs
 used during execution. This chapter completes the `BehavioralAdequacy` example
-from [Criteria and validators](validation.md).
+from [Criteria definition](validation.md).
+[Validators](validators.md) explains how to start that execution.
 
 ## Execute the criterion with a context
 

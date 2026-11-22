@@ -1,25 +1,27 @@
-# Criteria and validators
+# Criteria definition
 
-In the Habeas SDK, define a
-{term}`requirements.sdk.graph.validation.criterion` with your own type
-implementing `Criterion<D>`, then evaluate it with a `Validator<D>`.
+An application defines a
+{term}`requirements.sdk.graph.validation.criterion` to ask a question about a
+graph node. This chapter describes the criterion's type, answer, and identity.
+[Validators](validators.md) explains how to run criterion values, and
+[Criteria evaluation](execution.md) explains how to write their execution methods.
 
 ## Define a criterion
 
 :::{definition} criterion
 :phrase: criterion
 
-A test performed on a {term}`requirements.sdk.graph.node`. In the SDK, it is
-represented by a value whose type implements `Criterion<D>` for the
+A value describing a test to perform on a {term}`requirements.sdk.graph.node`.
+In the SDK, its type implements `Criterion<D>` for the
 {term}`requirements.sdk.application_domain`. Its `Criterion::Ok` type describes
 the completed answer, which can include a negative assessment. An execution
 error means no completed answer was produced.
 :::
 
-All criterion types implement `Criterion<D>`, a trait that defines what a
-successful result is and how it is evaluated.
-
 :::{req} criterion_trait
+The SDK provides the `Criterion<D>` trait below. Every criterion type implements
+this trait, which defines its completed answer and how it is evaluated.
+
 ```rust,ignore
 use serde::{Serialize, de::DeserializeOwned};
 use std::future::Future;
@@ -95,7 +97,7 @@ impl Criterion<HabeasDomain> for BehavioralAdequacy {
         self,
         cx: &mut ValidationContext<'_, HabeasDomain>,
     ) -> Result<Self::Ok, ValidationError<std::io::Error>> {
-        // Evaluation code goes here; the next chapter fills it in.
+        // Evaluation code goes here; the Criteria evaluation chapter fills it in.
         todo!()
     }
 
