@@ -258,8 +258,15 @@ fn mdbook_preprocessor_renders_definitions_between_stdin_and_stdout() {
         .collect::<Vec<_>>();
     assert_eq!(badge_rows.len(), 2, "{}", chapter.content);
     for row in badge_rows {
-        assert!(row.contains("<img "), "{row}");
-        assert!(row.contains("class=\"habeas-detail-icon\""), "{row}");
+        assert!(
+            row.contains("class=\"habeas-req-badge habeas-badge-kind\""),
+            "{row}"
+        );
+        assert!(
+            row.contains("class=\"habeas-req-badge habeas-badge-name\""),
+            "{row}"
+        );
+        assert!(!row.contains("<svg"), "{row}");
         assert_eq!(row.matches("</a>").count(), 2, "{row}");
     }
     assert!(chapter.sub_items.is_empty());

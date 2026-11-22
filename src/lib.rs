@@ -482,26 +482,26 @@ fn replace_definitions(
             continue;
         }
         let color = if block.kind == DefinitionKind::Example {
-            "5b62a8"
+            "7151a1"
         } else {
             "006ba8"
         };
-        let badge = shield_badge(block.kind.badge(), &full_name, color);
         let detail_href = current_path
             .zip(plan)
             .and_then(|(current, plan)| plan.detail_path(&full_name).map(|path| (current, path)))
             .map(|(current, path)| escape_html(&chapter_href(current, path, None)));
         let anchor = format!("habeas-{}-{escaped_name}", block.kind.badge());
         let permalink = format!("#{anchor}").replace(".md", "%2Emd");
+        let name_href = detail_href.as_deref().unwrap_or(&permalink);
+        let name_title = if detail_href.is_some() {
+            format!("View evidence for {escaped_name}")
+        } else {
+            format!("Link to {escaped_name} in this chapter")
+        };
+        let kind = block.kind.badge();
         result.push_str(&format!(
-            "<details class=\"habeas-declaration\" open>\n<summary><span class=\"habeas-definition-badge\"><a class=\"habeas-req-badge\" id=\"{anchor}\" href=\"{permalink}\" title=\"Link to this definition\">{badge}</a>"
+            "<details class=\"habeas-declaration\" style=\"--habeas-declaration-color: #{color}\" open>\n<summary><span class=\"habeas-definition-badge\"><a class=\"habeas-req-badge habeas-badge-kind\" id=\"{anchor}\" href=\"{permalink}\" title=\"Link to {escaped_name} in this chapter\" aria-label=\"{kind} {escaped_name}\">{kind}</a><a class=\"habeas-req-badge habeas-badge-name\" href=\"{name_href}\" title=\"{name_title}\">{escaped_name}</a></span></summary>\n<div class=\"habeas-declaration-body\">\n\n"
         ));
-        if let Some(href) = &detail_href {
-            result.push_str(&format!(
-                "<a class=\"habeas-detail-icon\" href=\"{href}\" style=\"background-color: #{color}\" title=\"View evidence\" aria-label=\"View evidence for {escaped_name}\"><svg width=\"14\" height=\"14\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"#fff\" stroke-width=\"1.5\" aria-hidden=\"true\" focusable=\"false\"><path d=\"M3 8h10M8 3l5 5-5 5\"/></svg></a>"
-            ));
-        }
-        result.push_str("</span></summary>\n<div class=\"habeas-declaration-body\">\n\n");
         // Option lines such as anchors are metadata, not body text.
         let body = &content[block.text_start..block.body_end];
         let body = if block.kind == DefinitionKind::Requirement {
@@ -1158,7 +1158,7 @@ mod tests {
                     detail.content.contains("alt=\"cite habeas:util\""),
                     "{opening}"
                 );
-                assert!(guide.content.contains("habeas-detail-icon"), "{opening}");
+                assert!(guide.content.contains("habeas-badge-name"), "{opening}");
                 assert!(
                     guide
                         .content
@@ -1281,7 +1281,7 @@ mod tests {
         let mut html = String::new();
         pulldown_cmark::html::push_html(&mut html, pulldown_cmark::Parser::new(&rendered));
         assert!(html.contains("<p>The <em>other</em> rule.</p>"), "{html}");
-        assert!(html.contains("alt=\"req rules.ready\""), "{html}");
+        assert!(html.contains("aria-label=\"req rules.ready\""), "{html}");
         let linked = "<div class=\"habeas-fenced-ref\">\n\n<p><a class=\"habeas-req-badge habeas-req-ref-cite\" href=\"rules.html#habeas-req-rules.other\">";
         let start = rendered.find(linked).expect(&rendered);
         let after = &rendered[start..];
@@ -1431,7 +1431,7 @@ mod tests {
         assert_eq!(pages[0].name, "Child");
         assert_eq!(book.items.len(), 2);
         assert_eq!(book.chapters().count(), 8);
-        assert!(rules.content.contains("habeas-detail-icon"));
+        assert!(rules.content.contains("habeas-badge-name"));
         assert!(!rules.content.contains("See evidence"));
         assert!(!rules.content.contains("notes.txt"));
         for (kind, name) in [("req", "zeta"), ("example", "alpha"), ("req", "cli.mdbook")] {
@@ -1663,12 +1663,9 @@ mod tests {
         let chapters = book.chapters().collect::<Vec<_>>();
         for chapter in &chapters[..2] {
             assert!(chapter.sub_items.is_empty());
-            assert!(
-                chapter
-                    .content
-                    .contains("title=\"View evidence\" aria-label=\"View evidence for ")
-            );
-            assert!(chapter.content.contains("stroke=\"#fff\""));
+            assert!(chapter.content.contains("title=\"View evidence for "));
+            assert!(chapter.content.contains("habeas-badge-name"));
+            assert!(!chapter.content.contains("<svg"), "{}", chapter.content);
             assert!(!chapter.content.contains("See evidence"));
         }
         assert!(
@@ -1709,8 +1706,9 @@ mod tests {
     }
 
     // {test}`requirements.index.navigation`
+    // {test}`requirements.index.declaration_sections`
     #[test]
-    fn definition_badge_and_evidence_icon_share_colors() {
+    fn declaration_badges_and_margin_controls_share_kind_colors() {
         let mut book = Book::new();
         book.push_item(Chapter::new(
             "Rules",
@@ -1722,29 +1720,20 @@ mod tests {
         let root = book_root();
         preprocess_book(&mut book, root.path()).unwrap();
         let content = &book.chapters().next().unwrap().content;
-        for (kind, name) in [("req", "ready"), ("example", "case")] {
+        for (kind, name, color) in [("req", "ready", "006ba8"), ("example", "case", "7151a1")] {
             let segment = content
-                .split(&format!("id=\"habeas-{kind}-rules.{name}\""))
-                .nth(1)
+                .split("<details class=\"habeas-declaration\"")
+                .find(|part| part.contains(&format!("id=\"habeas-{kind}-rules.{name}\"")))
                 .unwrap()
-                .split("</span>")
+                .split("</summary>")
                 .next()
                 .unwrap();
-            let badge_color = segment
-                .split(&format!("/badge/{kind}-rules.{name}-"))
-                .nth(1)
-                .unwrap()
-                .split('?')
-                .next()
-                .unwrap();
-            let icon_color = segment
-                .split("style=\"background-color: #")
-                .nth(1)
-                .unwrap()
-                .split('"')
-                .next()
-                .unwrap();
-            assert_eq!(icon_color, badge_color, "{segment}");
+            assert!(
+                segment.contains(&format!("style=\"--habeas-declaration-color: #{color}\"")),
+                "{segment}"
+            );
+            assert!(segment.contains("habeas-badge-name"), "{segment}");
+            assert!(!segment.contains("<svg"), "{segment}");
         }
     }
 
@@ -1766,11 +1755,20 @@ mod tests {
         let mut html = String::new();
         pulldown_cmark::html::push_html(&mut html, pulldown_cmark::Parser::new(markdown));
         assert_eq!(
-            html.matches("<details class=\"habeas-declaration\" open>")
+            html.matches("<details class=\"habeas-declaration\"")
                 .count(),
             3,
             "{html}"
         );
+        for declaration in html.split("<details class=\"habeas-declaration\"").skip(1) {
+            let attributes = declaration.split('>').next().unwrap();
+            assert!(
+                attributes
+                    .split_ascii_whitespace()
+                    .any(|attribute| attribute == "open"),
+                "Declaration should start expanded: {attributes}"
+            );
+        }
         assert_eq!(html.matches("</details>").count(), 3, "{html}");
         assert_eq!(html.matches("<summary>").count(), 3, "{html}");
         assert_eq!(html.matches("</summary>").count(), 3, "{html}");
@@ -1789,11 +1787,22 @@ mod tests {
                 .next()
                 .unwrap();
             assert!(
-                header.contains(&format!("alt=\"{kind} rules.{name}\"")),
+                header.contains(&format!("aria-label=\"{kind} rules.{name}\"")),
                 "{header}"
             );
-            assert!(header.contains(&format!("href=\"#habeas-{kind}-rules.{name}\"")));
-            assert!(header.contains(&format!("href=\"requirements-index/rules.{name}.html\"")));
+            assert!(
+                header.contains(&format!(
+                    "href=\"#habeas-{kind}-rules.{name}\" title=\"Link to rules.{name} in this chapter\" aria-label=\"{kind} rules.{name}\">{kind}</a>"
+                )),
+                "{header}"
+            );
+            assert!(
+                header.contains(&format!(
+                    "class=\"habeas-req-badge habeas-badge-name\" href=\"requirements-index/rules.{name}.html\" title=\"View evidence for rules.{name}\">rules.{name}</a>"
+                )),
+                "{header}"
+            );
+            assert!(!header.contains("habeas-detail-icon"), "{header}");
             assert!(!header.contains("habeas-declaration-body"), "{header}");
         }
         let body = "<div class=\"habeas-declaration-body\">\n";
@@ -1848,21 +1857,21 @@ mod tests {
         let root = book_root();
         preprocess_book(&mut book, root.path()).unwrap();
         let content = &book.chapters().next().unwrap().content;
-        let icon = content
-            .split("<a class=\"habeas-detail-icon\"")
+        let name_link = content
+            .split("<a class=\"habeas-req-badge habeas-badge-name\"")
             .nth(1)
             .unwrap()
             .split("</a>")
             .next()
             .unwrap();
         assert!(
-            icon.contains("href=\"a&amp;b &quot;q&quot; &lt;x&gt;/rules.ready.html\""),
-            "{icon}"
+            name_link.contains("href=\"a&amp;b &quot;q&quot; &lt;x&gt;/rules.ready.html\""),
+            "{name_link}"
         );
-        assert!(icon.contains("aria-label=\"View evidence for rules.ready\""));
-        assert!(!icon.contains("a&b"));
-        assert!(!icon.contains("\"q\""));
-        assert!(!icon.contains("<x>"));
+        assert!(name_link.contains("title=\"View evidence for rules.ready\""));
+        assert!(!name_link.contains("a&b"));
+        assert!(!name_link.contains("\"q\""));
+        assert!(!name_link.contains("<x>"));
     }
 
     // {test}`requirements.ci.identifiers`
@@ -1893,7 +1902,7 @@ mod tests {
             None,
         );
         assert!(rendered.contains("habeas-req-badge"));
-        assert!(rendered.contains("alt=\"req requirements.tui.table\""));
+        assert!(rendered.contains("aria-label=\"req requirements.tui.table\""));
         assert!(!rendered.contains("{req}"));
     }
 
@@ -1926,7 +1935,7 @@ mod tests {
         assert!(rendered.contains("{req}`inline`"));
         assert!(rendered.contains(":::{req} block"));
         assert!(rendered.contains("{req}`legacy`"));
-        assert!(rendered.contains("alt=\"req requirements.visible\""));
+        assert!(rendered.contains("aria-label=\"req requirements.visible\""));
     }
 
     // {test}`requirements.ci.identifiers`
@@ -1935,7 +1944,7 @@ mod tests {
         let source = ":::{req} bad name\nInvalid.\n:::\n\n:::{req} good\nGood.\n:::";
         let rendered = replace_definitions(source, "rules", None, None);
         assert!(rendered.contains(":::{req} bad name"));
-        assert!(rendered.contains("alt=\"req rules.good\""));
+        assert!(rendered.contains("aria-label=\"req rules.good\""));
         // A valid local name in a chapter whose namespace is invalid gives an
         // invalid full name, so the directive stays literal too.
         let rendered = replace_definitions(source, "a&b", None, None);
@@ -2081,8 +2090,9 @@ mod tests {
     }
 
     // {test}`requirements.index.navigation`
+    // {test}`requirements.index.declaration_sections`
     #[test]
-    fn definition_badge_stylesheet_keeps_the_arrow_in_one_row() {
+    fn declaration_badge_stylesheet_keeps_split_links_in_one_row() {
         let rules = stylesheet_rules();
         let declarations = |selector: &str| {
             rules
@@ -2100,17 +2110,15 @@ mod tests {
         ] {
             assert!(wrapper.contains(&declaration), "{wrapper:?}");
         }
-        let links = declarations(".habeas-definition-badge > a");
+        let links = declarations(".habeas-definition-badge > a.habeas-req-badge");
         assert!(links.contains(&"flex-shrink: 0"), "{links:?}");
-        let icon = declarations("a.habeas-detail-icon");
-        for declaration in [
-            "display: inline-flex",
-            "align-items: center",
-            "justify-content: center",
-            "height: 20px",
-        ] {
-            assert!(icon.contains(&declaration), "{icon:?}");
-        }
+        assert!(
+            declarations(".habeas-declaration > summary").contains(&"justify-content: flex-end")
+        );
+        assert!(
+            declarations(".habeas-badge-name")
+                .contains(&"background: var(--habeas-declaration-color)")
+        );
     }
 
     // {test}`requirements.index.declaration_sections`
@@ -2126,13 +2134,12 @@ mod tests {
         };
         let section = declarations(".habeas-declaration");
         assert!(
-            section
-                .contains(&"border-right: 1px solid color-mix(in srgb, var(--fg) 22%, var(--bg))"),
+            section.contains(&"border-right: 3px solid var(--habeas-declaration-color)"),
             "{section:?}"
         );
         assert!(
-            section.contains(&"margin: 1.25em 0.8em 1.25em 0")
-                && section.contains(&"padding-right: 1.5em")
+            section.contains(&"margin: 1.25em 0.75em 1.25em 0")
+                && section.contains(&"padding-right: 1.25em")
                 && declarations(".habeas-declaration-body").contains(&"padding: 0"),
             "{section:?}"
         );
@@ -2141,11 +2148,23 @@ mod tests {
             "content: \"+\"",
             "position: absolute",
             "top: 0",
-            "right: -0.7em",
-            "border-radius: 50%",
+            "right: -13px",
+            "border-radius: 2px",
+            "background: var(--habeas-declaration-color)",
         ] {
             assert!(control.contains(&declaration), "{control:?}");
         }
+        let width = control
+            .iter()
+            .find_map(|value| value.strip_prefix("width: "));
+        let height = control
+            .iter()
+            .find_map(|value| value.strip_prefix("height: "));
+        assert!(
+            width.is_some(),
+            "Disclosure needs a defined size: {control:?}"
+        );
+        assert_eq!(width, height, "Disclosure should be square: {control:?}");
         assert!(
             declarations(".habeas-declaration[open] > summary::after").contains(&"content: \"−\"")
         );
@@ -2180,12 +2199,19 @@ mod tests {
         );
         assert!(declarations("a.habeas-req-badge").contains(&"color: inherit"));
         assert_eq!(
-            declarations("a.habeas-detail-icon:link"),
-            declarations("a.habeas-detail-icon:visited")
+            declarations(".habeas-definition-badge > a.habeas-req-badge"),
+            declarations(".habeas-definition-badge > a.habeas-req-badge:visited")
         );
-        assert!(declarations("a.habeas-detail-icon:link").contains(&"color: white"));
+        assert!(
+            declarations(".habeas-definition-badge > a.habeas-req-badge:visited")
+                .contains(&"color: white")
+        );
         // Keyboard focus shows an outline.
         let focus = declarations("a.habeas-req-badge:focus-visible");
+        assert!(
+            focus.contains(&"outline: 2px solid var(--links)"),
+            "{focus:?}"
+        );
         assert!(
             focus
                 .iter()
@@ -2205,12 +2231,10 @@ mod tests {
             ".habeas-req-badge",
             ".habeas-shield",
             ".habeas-definition-badge",
-            ".habeas-definition-badge > a",
-            "a.habeas-detail-icon",
-            "a.habeas-detail-icon:link",
-            "a.habeas-detail-icon:visited",
-            "a.habeas-detail-icon:hover",
-            "a.habeas-detail-icon:focus-visible",
+            ".habeas-definition-badge > a.habeas-req-badge",
+            ".habeas-definition-badge > a.habeas-req-badge:visited",
+            ".habeas-badge-kind",
+            ".habeas-badge-name",
             ".habeas-req-badge img.habeas-shield",
             "a.habeas-req-badge",
             "a.habeas-req-badge:visited",
@@ -2505,7 +2529,7 @@ mod tests {
         assert!(
             chapters[0]
                 .content
-                .contains("alt=\"example requirements.something.foo\"")
+                .contains("aria-label=\"example requirements.something.foo\"")
         );
         assert!(chapters[0].content.contains(":::{example} bad name"));
         assert!(chapters[0].content.contains(":::{example} hidden"));
