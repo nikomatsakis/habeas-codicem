@@ -205,6 +205,34 @@ Their identities follow the existing outline-selector rules. Rendering follows
 their existing behavior.
 ::::
 
+
+:::{req} citation_review.book_commentary.display
+:impl: md/habeas.css
+In authored book chapters, a passage opted into citation review under
+{cite}`requirements.references.citation_review.book_commentary` displays its
+body as ordinary Markdown prose, with the same left alignment as the
+surrounding prose and no opening citation badge or enclosing border.
+
+A small marker in the right gutter identifies the passage's citation-checking
+annotations. It does not claim that recorded evidence is current or accepted.
+The outermost eligible citation fence has one marker; nested commentary
+belongs to its list rather than displaying another marker.
+
+Activating the marker opens the list of resolved citations from the source
+passage, including its opening citation, citation-only metadata paragraphs,
+and citations within nested commentary. Citations belonging to nested
+requirement or example declarations are excluded. Repeated citations appear
+once. Project citations link to their declarations; built-in citations retain
+their descriptive hover text. The marker is keyboard operable, has an
+accessible label, and shows visible keyboard focus. Opening the list does not
+hide the passage. Inline citations within explanatory prose retain their
+usual rendering.
+
+Rendering does not change the source passage, its discovered references, or
+its review inputs. Unfenced citations, citations inside requirement or example
+declarations, and utility-only commentary retain their existing rendering.
+:::
+
 :::{req} anchors
 A `{req}` declaration MAY list `:impl:` and `:test:` options, and an `{example}`
 declaration MAY list `:test:` options, immediately after its opening fence and
@@ -237,11 +265,13 @@ Agents SHOULD NOT anchor a file under {cite}`requirements.references.anchors` wh
 :::{req} book_badges
 :impl: md/habeas.css
 In a book chapter, each valid `{impl}`, `{cite}`, or `{test}` reference, inline
-or fenced, renders as a Shields.io static badge image, apart from the
-citation paragraphs described below. The badge has meaningful alt text displaying
-its role and full name, and links to the badge at the corresponding `{req}` or
-`{example}` definition. Links work across chapters, including nested
-chapters. A fenced reference renders its badge followed by its body as Markdown.
+or fenced, renders as a Shields.io static badge image, subject to the
+citation-only paragraph exception below and the reviewed-passage display under
+{cite}`requirements.references.citation_review.book_commentary.display`.
+The badge has meaningful alt text displaying its role and full name, and links
+to the badge at the corresponding `{req}` or `{example}` definition. Links
+work across chapters, including nested chapters. Apart from the reviewed-passage
+exception, a fenced reference renders its badge followed by its body as Markdown.
 
 Inside any prose-bearing colon-fenced section, top-level paragraphs containing
 one or more valid inline `{cite}` references and otherwise only whitespace are
