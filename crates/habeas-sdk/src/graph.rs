@@ -174,7 +174,7 @@ impl<T: PartialEq> Trace<T> {
     }
 }
 
-// {impl}`requirements.sdk.graph.execution.execute`
+// {impl}`requirements.sdk.graph.validation.execute`
 #[derive(Debug)]
 pub enum ValidationError<E> {
     Graph(E),
@@ -224,7 +224,7 @@ pub trait Criterion<D: Domain>: Send + Sized {
     fn revision(&self) -> String;
 
     /// Select inputs through the context and compute the completed answer.
-    // {impl}`requirements.sdk.graph.execution.execute`
+    // {impl}`requirements.sdk.graph.validation.execute`
     fn execute(
         self,
         ctx: &mut ValidationContext<'_, D>,

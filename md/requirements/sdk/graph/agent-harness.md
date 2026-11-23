@@ -80,7 +80,7 @@ impl<D: Domain> Validator<D> {
 
 Criteria obtain the configured agent through their `ValidationContext`.
 Constructing a validator without this configuration still permits deterministic
-criteria under {cite}`requirements.sdk.graph.execution.deterministic_procedures`.
+criteria under {cite}`requirements.sdk.graph.validation.deterministic_procedures`.
 :::
 
 :::{example} setup
@@ -154,4 +154,4 @@ Assistant prose is conversation text; the submitted value is the answer.
 
 The criterion can inspect that answer, perform more computation, or make
 another ask request. The application interprets the completed answer under
-{cite}`requirements.sdk.graph.execution.output_policy`.
+{cite}`requirements.sdk.graph.validation.output_policy`.

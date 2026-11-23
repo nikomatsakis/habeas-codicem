@@ -128,7 +128,7 @@ determination rules under {cite}`requirements.ci.outcomes` and
 returning `Ok(value)` constitutes a passing application review.
 
 The SDK's `Criterion::Ok` is an application-defined completed answer under
-{cite}`requirements.sdk.graph.execution.output_policy`. An execution error
+{cite}`requirements.sdk.graph.validation.output_policy`. An execution error
 is distinct from a completed negative assessment.
 :::
 

@@ -153,9 +153,8 @@ The chapters introduce each interface and the tools used with it:
 | --- | --- | --- |
 | [Graph nodes](sdk/graph.md) | Node identities, stable paths, contents, and fingerprints. | [`Domain`](../rustdocs/habeas_sdk/domain/trait.Domain.html), [`NodeContents`](../rustdocs/habeas_sdk/domain/trait.NodeContents.html) |
 | [Graph edges](sdk/graph-edges.md) | Relationship labels and successor lookup. | [`Domain`](../rustdocs/habeas_sdk/domain/trait.Domain.html) |
-| [Criteria definition](sdk/graph/validation.md) | Criterion types, completed answers, and criterion paths. | [`Criterion`](../rustdocs/habeas_sdk/graph/trait.Criterion.html) |
+| [Criteria](sdk/graph/validation.md) | Criterion types, completed answers, identity, review rules, and execution. | [`Criterion`](../rustdocs/habeas_sdk/graph/trait.Criterion.html) |
 | [Validators](sdk/graph/validators.md) | Constructing a validator and running criterion values. | [`Domain`](../rustdocs/habeas_sdk/domain/trait.Domain.html), [`Validator`](../rustdocs/habeas_sdk/graph/struct.Validator.html) |
-| [Criteria evaluation](sdk/graph/execution.md) | Using a criterion's context to ask an agent and read tracked inputs. | [`Criterion`](../rustdocs/habeas_sdk/graph/trait.Criterion.html), [`ValidationContext`](../rustdocs/habeas_sdk/procedure/struct.ValidationContext.html) |
 | [Agent calls](sdk/graph/agent-calls.md) | Prompt construction and typed answers. | [`Context`](../rustdocs/habeas_sdk/procedure/trait.Context.html), [`Ask`](../rustdocs/habeas_sdk/procedure/struct.Ask.html) |
 | [Context tools](sdk/graph/context-tools.md) | Source discovery, tracked content reads, and edge selections. | [`InspectionContext`](../rustdocs/habeas_sdk/graph/struct.InspectionContext.html) |
 | [Agent harness](sdk/graph/agent-harness.md) | Agent configuration, fixed inspection tools, and structured submissions. | [`AgentConfig`](sdk/graph/agent-harness.md#habeas-req-requirements.sdk.graph.agent-harness.agent_config) |

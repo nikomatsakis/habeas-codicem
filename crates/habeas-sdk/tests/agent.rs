@@ -990,8 +990,8 @@ async fn source_reads_track_optional_dependencies_and_empty_searches_remain_disc
 // {test}`requirements.sdk.graph.domain_types`
 // {test}`requirements.sdk.domain`
 // {test}`requirements.sdk.graph.agent-calls.author_procedure`
-// {test}`requirements.sdk.graph.execution.deterministic_procedures`
-// {test}`requirements.sdk.graph.execution.execute`
+// {test}`requirements.sdk.graph.validation.deterministic_procedures`
+// {test}`requirements.sdk.graph.validation.execute`
 #[tokio::test]
 async fn deterministic_validation_uses_required_storage_without_an_agent() {
     let graph = Memory::new("ordinary computation".into());
@@ -1481,7 +1481,7 @@ impl Criterion<Memory> for BehavioralAdequacy {
     }
 }
 
-// {test}`requirements.sdk.graph.execution.behavioral_adequacy`
+// {test}`requirements.sdk.graph.validation.behavioral_adequacy`
 // {test}`requirements.sdk.graph.validation.criterion_definition`
 // {test}`requirements.sdk.graph.validators.evaluate_criterion`
 // {test}`requirements.sdk.graph.evidence.refresh_evidence`

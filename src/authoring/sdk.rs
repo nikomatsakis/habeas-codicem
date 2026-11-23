@@ -579,7 +579,7 @@ mod tests {
     // {test}`requirements.sdk.graph.validation.criterion_trait.answer`
     // {test}`requirements.sdk.graph.validation.criterion_trait.source_node_id`
     // {test}`requirements.sdk.graph.validation.criterion_trait.revision`
-    // {test}`requirements.sdk.graph.execution.execute`
+    // {test}`requirements.sdk.graph.validation.execute`
     // {test}`requirements.sdk.graph.evidence.check_node`
     // {test}`requirements.sdk.graph.validators.validate_node`
     // {test}`requirements.sdk.graph.evidence.evidence_storage`

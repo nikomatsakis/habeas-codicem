@@ -329,7 +329,7 @@ async fn domain_relationships_accept_opaque_types_and_send_only_errors() {
 // {test}`requirements.sdk.graph.validators.validate_node`
 // {test}`requirements.sdk.graph.evidence.procedure_identity`
 // {test}`requirements.sdk.graph.evidence.check_node`
-// {test}`requirements.sdk.graph.execution.deterministic_procedures`
+// {test}`requirements.sdk.graph.validation.deterministic_procedures`
 // {test}`requirements.sdk.graph.evidence.record`
 // {test}`requirements.sdk.graph.evidence.store_evidence`
 // {test}`requirements.sdk.graph.evidence.record.output`
@@ -720,7 +720,7 @@ async fn wildcard_revision_does_not_supply_other_criteria_or_nodes() {
 // {test}`requirements.sdk.graph.evidence.store_evidence`
 // {test}`requirements.sdk.graph.evidence.refresh_evidence`
 // {test}`requirements.sdk.graph.validation.criterion_trait.answer`
-// {test}`requirements.sdk.graph.execution.execute`
+// {test}`requirements.sdk.graph.validation.execute`
 #[tokio::test]
 async fn validation_and_answer_need_send_without_sync() {
     let domain = Application::default();

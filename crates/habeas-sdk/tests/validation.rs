@@ -577,7 +577,7 @@ fn labeled_selections_track_only_target_membership_without_reading_contents() {
 // {test}`requirements.sdk.graph.evidence.check_node`
 // {test}`requirements.sdk.graph.agent-calls.procedures`
 // {test}`requirements.sdk.graph.validation.criterion_trait`
-// {test}`requirements.sdk.graph.execution.deterministic_procedures`
+// {test}`requirements.sdk.graph.validation.deterministic_procedures`
 // {test}`requirements.sdk.graph.evidence.procedure_identity`
 // {test}`requirements.sdk.graph.evidence.inputs`
 // {test}`requirements.sdk.graph.validation.criterion_trait.revision`
@@ -1290,7 +1290,7 @@ fn prefix_hashes_match_known_utf8_sha256_without_normalization() {
     assert_ne!(context_fingerprint("a b"), context_fingerprint("a  b"));
 }
 
-// {test}`requirements.sdk.graph.execution.execute`
+// {test}`requirements.sdk.graph.validation.execute`
 #[test]
 fn agent_errors_expose_the_agreed_string_payload() {
     use std::error::Error;

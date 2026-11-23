@@ -292,7 +292,7 @@ Calls can run concurrently without holding an exclusive context borrow across
 an agent interaction or locking the whole context for the conversation.
 
 The same context supports deterministic criteria under
-{cite}`requirements.sdk.graph.execution.deterministic_procedures`.
+{cite}`requirements.sdk.graph.validation.deterministic_procedures`.
 :::
 
 :::{req} procedures
