@@ -1,6 +1,7 @@
 use super::*;
 use crate::{
-    graph::{Dependency, Domain, Graph, InspectionContext, NodePath},
+    domain::{Domain, NodeContents},
+    graph::{Dependency, InspectionContext, NodePath},
     procedure::{Agent, AgentRequest},
 };
 use futures::future::BoxFuture;
@@ -13,7 +14,7 @@ pub struct ToolDelivery<N, L = ()> {
     pub dependencies: Vec<Dependency<N, L>>,
 }
 
-pub trait ToolSession<D: Graph>: Send {
+pub trait ToolSession<D: Domain>: Send {
     // {cite}`habeas:util`
     fn definitions(&self) -> io::Result<Vec<ToolDefinition>>;
     // {cite}`habeas:util`
@@ -26,7 +27,7 @@ pub trait ToolSession<D: Graph>: Send {
 }
 
 /// Each agent call gets fresh tool state, including its own result pages.
-pub trait ToolFactory<D: Graph>: Send + Sync {
+pub trait ToolFactory<D: Domain>: Send + Sync {
     // {cite}`habeas:util`
     fn session<'a>(&'a self) -> Box<dyn ToolSession<D> + 'a>
     where
@@ -36,7 +37,7 @@ pub trait ToolFactory<D: Graph>: Send + Sync {
 
 // {cite}`habeas:util`
 pub struct NoTools;
-impl<D: Graph> ToolFactory<D> for NoTools {
+impl<D: Domain> ToolFactory<D> for NoTools {
     // {cite}`habeas:util`
     fn session<'a>(&'a self) -> Box<dyn ToolSession<D> + 'a>
     where
@@ -46,7 +47,7 @@ impl<D: Graph> ToolFactory<D> for NoTools {
         Box::new(NoTools)
     }
 }
-impl<D: Graph> ToolSession<D> for NoTools {
+impl<D: Domain> ToolSession<D> for NoTools {
     // {cite}`habeas:util`
     fn definitions(&self) -> io::Result<Vec<ToolDefinition>> {
         Ok(Vec::new())
@@ -243,11 +244,7 @@ where
                     .inspection
                     .prepare_read(&node)
                     .map_err(|error| io::Error::other(error.to_string()))?;
-                let text = self
-                    .inspection
-                    .graph()
-                    .format_node_content(&node, &snapshot.content)
-                    .map_err(|error| io::Error::other(error.to_string()))?;
+                let text = snapshot.content.format();
                 let observation = Dependency::Node(node, snapshot.fingerprint);
                 // Split on character boundaries; every page retains the same snapshot.
                 let chars: Vec<char> = text.chars().collect();

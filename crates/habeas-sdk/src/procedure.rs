@@ -1,6 +1,9 @@
 //! Typed agent calls with reusable context followed by explicit node inputs.
 
-use crate::graph::*;
+use crate::{
+    domain::{Domain, NodeContents},
+    graph::*,
+};
 use futures::future::BoxFuture;
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
@@ -91,7 +94,7 @@ pub struct AgentRequest<N> {
 }
 
 /// Returns one accepted structured tool submission; assistant text is an error.
-pub trait Agent<D: Contents>: Send + Sync {
+pub trait Agent<D: Domain>: Send + Sync {
     // {cite}`habeas:util`
     fn run<'a>(
         &'a self,
@@ -178,14 +181,14 @@ pub struct ContextPhase;
 /// The reusable prefix is sealed after the first node insertion.
 ///
 /// ```compile_fail
-/// use habeas_sdk::{graph::Domain, procedure::ValidationContext};
+/// use habeas_sdk::{domain::Domain, procedure::ValidationContext};
 /// fn too_late<D: Domain>(ctx: &ValidationContext<'_, D>) {
 ///     ctx.ask::<bool>().contents_of_current_node().context(String::new());
 /// }
 /// ```
 ///
 /// ```compile_fail
-/// use habeas_sdk::{graph::Domain, procedure::ValidationContext};
+/// use habeas_sdk::{domain::Domain, procedure::ValidationContext};
 /// fn too_late<D: Domain>(ctx: &ValidationContext<'_, D>, label: D::EdgeLabel)
 /// where D::EdgeLabel: PartialEq {
 ///     ctx.ask::<bool>().contents_of_successors(label).context(String::new());
@@ -282,12 +285,7 @@ where
                     .inspection
                     .prepare_read(&node)
                     .map_err(ValidationError::Graph)?;
-                let text = self
-                    .ctx
-                    .inspection
-                    .graph()
-                    .format_node_content(&node, &snapshot.content)
-                    .map_err(ValidationError::Graph)?;
+                let text = snapshot.content.format();
                 inputs.push(PreparedInput {
                     node,
                     text,

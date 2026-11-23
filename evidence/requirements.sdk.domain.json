@@ -1,8 +1,8 @@
 {
-  "requirement": "Every cloneable application implementing the three domain traits implements\n`Domain`:\n\n```rust,ignore\n/// Every validation uses a domain with graph access, fingerprints, and storage.\n///\n/// A validator owns a cloneable domain; executions can share its state.\n/// Each criterion has its own dependency trace; operations within it share\n/// that trace safely.\n/// Agent calls retain independent conversation and submission state.\n/// Observations never leak between separate validations.\npub trait Domain: Clone + Graph + Contents + Storage {}\n\nimpl<T: Clone + Graph + Contents + Storage> Domain for T {}\n\npub trait Graph {\n    // Defines node identities, labeled edges, and successors.\n    /* ... members defined in the Graph chapter ... */\n}\n\npub trait Contents: Graph {\n    // Reads node contents, fingerprints them, and formats them for an agent.\n    /* ... members defined in the Contents chapter ... */\n}\n\npub trait Storage: Graph {\n    // Defines how evidence is stored and loaded.\n    /* ... members defined in the Storage chapter ... */\n}\n```",
+  "requirement": "Every {term}`requirements.sdk.application_domain` implements\n`habeas_sdk::domain::Domain`. A domain is cloneable and safe to share between\nexecutions. The following chapters introduce its members one capability at a\ntime:\n\n```rust,ignore\n// Defined in habeas_sdk::domain.\n/// Application data and operations used to evaluate criteria.\npub trait Domain: Clone + Send + Sync {\n    // ... shared error type introduced below ...\n    // ... node identities and contents in Graph nodes ...\n    // ... labeled relationships in Graph edges ...\n    // ... evidence persistence in Storage ...\n}\n```",
   "determination": true,
-  "rationale": "The tests adequately check `requirements.sdk.domain`.\n\n**What the requirement asks for**\n- Every type that is `Clone + Graph + Contents + Storage` is a `Domain`. The code has this blanket impl at `crates/habeas-sdk/src/graph.rs#impl[T/Domain]`.\n- The doc comment adds behavioural statements:\n  - A validator owns a cloneable domain, and executions can share its state.\n  - Each criterion has its own dependency trace, and operations within it share that trace safely.\n  - Agent calls keep independent conversation and submission state.\n  - Observations never leak between separate validations.\n\n**Blanket impl and trait bounds**\n- Many tests use ordinary application types, such as `Memory` and `Application`, as the `D: Domain` argument of `Validator::new`, `ValidationContext::with_agent` and `ToolAgent`.\n- These compile only through the blanket impl, so it is exercised.\n- `Validator<D: Domain>` is declared in `crates/habeas-sdk/src/graph/runtime.rs#struct[Validator]`.\n- The tests include `deterministic_validation_uses_required_storage_without_an_agent`, `criteria_keep_typed_answers_and_persist_only_when_requested` and `behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer`.\n- `domain_formats_supplied_contents_without_resolving_a_replacement` in `src/sdk.rs` checks the content-formatting part of the domain (`Contents`) on the real `HabeasDomain`.\n- A negative compile test would only show that a non-`Clone` type is not a `Domain`. The requirement does not state that obligation as behaviour, so I do not count its absence as a gap.\n\n**Shared, cloneable state**\n- `Validator::new(graph.clone())` is used throughout. `concurrent_same_criterion_executions_keep_complete_independent_records` shows two executions on a cloned `Application`. Both write to the shared storage and read from it.\n- `behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer` stores evidence, then restores it and checks the restored evidence's dependencies against the original's.\n\n**Per-criterion trace, safely shared within a criterion**\n- `concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads` and `shared_context_allows_independent_concurrent_agent_calls` run concurrent operations on one `ValidationContext`. Both assert that the shared trace holds the combined dependencies.\n- `later_lighter_agent_calls_preserve_the_contexts_existing_trace` checks that the trace is retained and ordered across operations. It also asserts that the context is `Send + Sync`.\n\n**Independent agent state**\n- The concurrent tool-agent test uses a barrier so both conversations really overlap. It asserts the per-conversation call counts (`alpha` 3, `beta` 3) and that each call returns its own answer.\n- `shared_context_allows_independent_concurrent_agent_calls` uses a barrier too and checks two independent answers (7 and 11).\n- `contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text` checks that each request carries its own context text and fingerprint.\n\n**No leaking between validations**\n- `concurrent_single_node_validations_keep_separate_traces` runs three validations concurrently, with a peak concurrency of 3. Each stored record contains only its own node's dependencies.\n- `concurrent_same_criterion_executions_keep_complete_independent_records` shows that executions of the same criterion keep separate revisions and dependencies.\n- `criteria_keep_typed_answers_and_persist_only_when_requested` shows that sequential verifications do not alter saved records.\n\nAll obligations are mapped to tests with real assertions, and I found no scenario where a requirement-violating behaviour would pass.",
-  "references": "8fb91c09a5cb7ba143e43f1d814d7546e82e52fc4563e399ad491acb6ae034e9",
+  "rationale": "I judged this from the supplied test sources only and requested no implementation source. The requirement `requirements.sdk.domain` has three testable obligations. Every application domain implements `habeas_sdk::domain::Domain`. `Domain` is `Clone + Send + Sync`. A domain is safe to share between executions. Its member chapters are covered by the other requirements the tests also cite, so I did not assess them here.\n\n- **Trait contract and bounds.** `crates/habeas-sdk/tests/contracts.rs#fn[domain_relationships_accept_opaque_types_and_send_only_errors]` implements `Domain` for an opaque `Relationships` fixture. Its generic `check_bounds<G: Domain>()` calls `domain::<G>()`, which requires `Clone + Send + Sync`. Those bounds are therefore enforced at compile time, and loosening any of them would break the build. The same test checks the other associated types. It then calls the trait's operations through the trait: `node_content`, `load_evidence`, `store_evidence`, `node_path`, and `outgoing_edges`. This shows the fixture works as a `Domain`.\n- **Cloneable.** Many tests clone the domain into a validator or graph. Examples are `Validator::new(domain.clone())` in `contracts.rs#fn[criteria_keep_typed_answers_and_persist_only_when_requested]` and in `agent.rs#fn[behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer]`. Those tests then assert on state seen through the original handle. For example, the domain's record count and `reads` are checked after the validator runs. This shows clones share state.\n- **Safe to share between executions.**\n  - `contracts.rs#fn[concurrent_same_criterion_executions_keep_complete_independent_records]` runs two executions on one domain behind a barrier and a timeout. It asserts that both run concurrently and that their records are independent.\n  - `validation.rs#fn[concurrent_single_node_validations_keep_separate_traces]` runs three concurrent validations and asserts that traces stay separate.\n  - `validation.rs#fn[shared_context_allows_independent_concurrent_agent_calls]` and `agent.rs#fn[concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads]` share one domain across concurrent agent calls and assert the outcomes.\n- **Application domains used with the SDK.** Tests implement real domains (`Memory`, `Application`) and run the SDK against them end to end. `src/sdk.rs#mod[tests]/fn[domain_formats_supplied_contents_without_resolving_a_replacement]` covers the Habeas domain's content formatting.\n\nI found no plausible violation of the subject's obligations that these tests would accept. A domain that is not `Clone`, `Send`, or `Sync` would fail to compile in `check_bounds`. A domain that could not be shared between concurrent executions would fail the concurrency tests. No gaps; no acknowledgments are needed.",
+  "references": "44246135d868c7483b42bf226354d030edb27cf8b7f61cf9907a706a997003fe",
   "inputs": [
     {
       "requirements": "requirements.sdk.domain",
@@ -11,34 +11,19 @@
       ],
       "text": [
         ":::{req} domain",
-        "Every cloneable application implementing the three domain traits implements",
-        "`Domain`:",
+        "Every {term}`requirements.sdk.application_domain` implements",
+        "`habeas_sdk::domain::Domain`. A domain is cloneable and safe to share between",
+        "executions. The following chapters introduce its members one capability at a",
+        "time:",
         "",
         "```rust,ignore",
-        "/// Every validation uses a domain with graph access, fingerprints, and storage.",
-        "///",
-        "/// A validator owns a cloneable domain; executions can share its state.",
-        "/// Each criterion has its own dependency trace; operations within it share",
-        "/// that trace safely.",
-        "/// Agent calls retain independent conversation and submission state.",
-        "/// Observations never leak between separate validations.",
-        "pub trait Domain: Clone + Graph + Contents + Storage {}",
-        "",
-        "impl<T: Clone + Graph + Contents + Storage> Domain for T {}",
-        "",
-        "pub trait Graph {",
-        "    // Defines node identities, labeled edges, and successors.",
-        "    /* ... members defined in the Graph chapter ... */",
-        "}",
-        "",
-        "pub trait Contents: Graph {",
-        "    // Reads node contents, fingerprints them, and formats them for an agent.",
-        "    /* ... members defined in the Contents chapter ... */",
-        "}",
-        "",
-        "pub trait Storage: Graph {",
-        "    // Defines how evidence is stored and loaded.",
-        "    /* ... members defined in the Storage chapter ... */",
+        "// Defined in habeas_sdk::domain.",
+        "/// Application data and operations used to evaluate criteria.",
+        "pub trait Domain: Clone + Send + Sync {",
+        "    // ... shared error type introduced below ...",
+        "    // ... node identities and contents in Graph nodes ...",
+        "    // ... labeled relationships in Graph edges ...",
+        "    // ... evidence persistence in Storage ...",
         "}",
         "```",
         ":::"
@@ -58,6 +43,11 @@
       "file": "crates/habeas-sdk/tests/agent.rs",
       "item": "fn[behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer]",
       "hash": "1c6d0226ee5885409cca23fc6ec4ee77eb6eb63b9b2d92824ac8666dd74f1b68"
+    },
+    {
+      "file": "crates/habeas-sdk/tests/contracts.rs",
+      "item": "fn[domain_relationships_accept_opaque_types_and_send_only_errors]",
+      "hash": "41efd8a6fdf7e364703966fe00df7428a005e0e26c41f12860cdeee987741a9e"
     },
     {
       "file": "crates/habeas-sdk/tests/contracts.rs",
@@ -82,7 +72,7 @@
     {
       "file": "crates/habeas-sdk/tests/validation.rs",
       "item": "fn[later_lighter_agent_calls_preserve_the_contexts_existing_trace]",
-      "hash": "fbdd37cb014de40c5e46985d8f56634c39ef30316d5fcc2c5e0da39093742f4f"
+      "hash": "7c95b76c889f1814a35ed89d0adc236183d6e106aaef21d413b66283e8ae888b"
     },
     {
       "file": "crates/habeas-sdk/tests/validation.rs",
@@ -92,27 +82,22 @@
     {
       "file": "src/sdk.rs",
       "item": "mod[tests]/fn[domain_formats_supplied_contents_without_resolving_a_replacement]",
-      "hash": "f4d7b1b820bd1fb826e222d20ab273bb419cc71426bdef3a9129e1c837032101"
+      "hash": "5fa8d5e8ed4b0b9dc48dd397ee5954a664a7c320da908024026c5aeeaad2760a"
     },
     {
-      "file": "crates/habeas-sdk/src/graph.rs",
-      "item": "trait[Domain]",
-      "hash": "0b70ce0e5619ddf9da48a2ffc2413f807bac897a7f6a81edaa12a2652819b1b7"
-    },
-    {
-      "file": "crates/habeas-sdk/src/graph.rs",
-      "item": "impl[T/Domain]",
-      "hash": "5284b89b3fd9371a7257ad2da15dd6dd6a80f0b22eef239b41531a9ac6fc184d"
-    },
-    {
-      "file": "crates/habeas-sdk/src/graph/runtime.rs",
-      "item": "struct[Validator]",
-      "hash": "3a604fcae0aa7caf8f963c223c0d3501279f09b93648966a9e2de2a875c2429a"
-    },
-    {
-      "file": "crates/habeas-sdk/src/graph/runtime.rs",
-      "item": "impl[Validator<D>]",
-      "hash": "047678aedce7c4fabae3d6262a83fda37f598d0450e15749fef99dd77b3888ec"
+      "definition": "requirements.sdk.application_domain",
+      "text": [
+        "::::{definition} application_domain",
+        ":phrase: application domain",
+        "",
+        ":::{cite} requirements.sdk.domain",
+        "An *application domain* is the application's graph, node contents, and evidence",
+        "storage, made available together for criterion execution. In the SDK, it",
+        "implements [`Domain`](../rustdocs/habeas_sdk/domain/trait.Domain.html) to supply",
+        "its shared types, node and edge operations, and evidence persistence.",
+        ":::",
+        "::::"
+      ]
     }
   ],
   "format_version": 1,
@@ -125,7 +110,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "8fb91c09a5cb7ba143e43f1d814d7546e82e52fc4563e399ad491acb6ae034e9"
+          "value": "44246135d868c7483b42bf226354d030edb27cf8b7f61cf9907a706a997003fe"
         }
       ]
     },
@@ -137,7 +122,7 @@
         "Mandatory",
         {
           "scheme": "node-path-set-sha256-v1",
-          "value": "76502f51b385f33d5b4a3a011ccf4ec7d68abdd27a619152a4258696d14910d8"
+          "value": "f1ddb4b52b524e0b1688d31adb88eca5cf84f85e50e3c504f745972d4fd885a3"
         }
       ]
     },
@@ -148,7 +133,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "8a83e7611e6672df1a9df181c5ead759023151e240f419a75c6d9cb3ce69ba22"
+          "value": "2a5b97ff3517119e6d663023b9593f669444d68ff30a126d5a7066d1f9cac53b"
         }
       ]
     },
@@ -200,6 +185,23 @@
         {
           "scheme": "habeas-input-v1",
           "value": "c4430a4dcf35406fe786cad412940ba6026ae51c8c8561dcfa3001a66a6a16e8"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/tests/contracts.rs"
+            },
+            "selector": "fn[domain_relationships_accept_opaque_types_and_send_only_errors]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "0c502f4014e80e08dee2b712cef24b6f49019fe029cb26c3f51c275d721cf776"
         }
       ]
     },
@@ -284,7 +286,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "4ec198e498ffa9424d11cba8e8caf852d4281d5c1e2b1e1ef7b3458ea3f41ab7"
+          "value": "2f0da5b496c47ab26c688dbcb95d03b5918b642912bbdfbf928ab4ef29c93a81"
         }
       ]
     },
@@ -318,75 +320,18 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "54b12524c5c23e1b75c58adb16eaa84ade104659cae4fd701fb72526b7040e1d"
+          "value": "7702d2eb6481ae04124aab1977e354e163a62b7a00b68dd7a335124ee5d79b5f"
         }
       ]
     },
     {
       "Node": [
         {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/src/graph.rs"
-            },
-            "selector": "trait[Domain]"
-          }
+          "Definition": "requirements.sdk.application_domain"
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "5bc9b17975c7ddb324c36d7cb1e9ed8fe57c84afcc11c335890250caf4dee79d"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/src/graph.rs"
-            },
-            "selector": "impl[T/Domain]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "426eec2d5b5573b970c1a47ddec11ede0949b297ff2cd0224f431341ba9aabd8"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/src/graph/runtime.rs"
-            },
-            "selector": "struct[Validator]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "e65a4a46ff0f772a90ba1bd53ccbfb20653920ff9761220b616aa57420571b93"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/src/graph/runtime.rs"
-            },
-            "selector": "impl[Validator<D>]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "61d8a022dda5910365fd556ff64b7612554511d42f40d0a94930ed1660b196a7"
+          "value": "06b6b74d72930371b54914feda84291d29d853e0f7c28f21c70e05e159e03c3c"
         }
       ]
     }

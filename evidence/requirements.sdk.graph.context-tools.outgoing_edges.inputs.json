@@ -1,7 +1,7 @@
 {
-  "requirement": "A successful edge selection records the source identity, the requested label,\nand the fingerprint of the returned target identity set. Adding or removing an\nidentity from that set changes it, including adding the first identity to an\nempty set. Reordering targets or repeating a target does not change it.\nChanges to a target's contents do not affect this dependency: reading those\ncontents records a separate node dependency. These observations follow\n{cite}`requirements.sdk.graph.evidence.inputs` and\n{cite}`requirements.sdk.graph.evidence.checking_records`.\n\n`InspectionContext::outgoing_edges` records the selection when returning it.\n`ToolAgent` records the prepared selection when delivered. A failed selection\nrecords no successful observation.",
+  "requirement": "A successful edge selection records the source identity, the requested label,\nand the fingerprint of the returned target identity set. Adding or removing an\nidentity from that set changes it, including adding the first identity to an\nempty set. Reordering targets or repeating a target does not change it.\nChanges to a target's contents do not affect this dependency: reading those\ncontents records a separate node dependency. These observations follow\n{cite}`requirements.sdk.graph.evidence.inputs` and\n{cite}`requirements.sdk.graph.evidence.checking_records`.\n\n`InspectionContext::outgoing_edges` records the selection when returning it.\nThe SDK agent records the prepared selection when delivered. A failed selection\nrecords no successful observation.",
   "determination": true,
-  "rationale": "The two marked tests cover each obligation in `requirements.sdk.graph.context-tools.outgoing_edges.inputs`.\n\n**Recorded observation (source, label, target-set fingerprint).**\n- `validation.rs#fn[labeled_selections_track_only_target_membership_without_reading_contents]` asserts `Dependency::OutgoingEdges(1, 7, edge_fingerprint(&graph, &[3, 5]))` after `successors`/`inspection().finish`.\n- `agent.rs#fn[agent_edge_tools_record_selections_without_validating_targets]` asserts `Dependency::OutgoingEdges(1, 7, fp[2])` in the stored record and `Dependency::OutgoingEdges(1, 8, fp[3])` for a second label. This shows the label is part of the record and the right label is recorded.\n\n**Adding or removing an identity changes the fingerprint, including the first identity added to an empty set.**\n- The `empty` record, made from an empty label-7 selection, stays current when only a label-8 edge is added. It becomes stale once label-7 targets appear. That covers the empty-to-first case and shows the fingerprint is label-scoped.\n- A record of {3,5} becomes stale when the set changes to {3,6}.\n- A pure removal (for example {3,5} to {3}) is not isolated. The {3,5} to {3,6} case removes 5 as well as adding 6. This is a minor residual. `edge_fingerprint` hashes the whole sorted, deduplicated path set, so any removal changes the digest, and I don't treat this as a gap.\n\n**Reordering or repeating a target does not change the fingerprint.**\n- The graph returns [5,3,5]. The test asserts that the snapshot fingerprint equals `edge_fingerprint(&graph, &[3, 5])`, and that the recorded dependency has the same value.\n- The record then stays current when the graph returns the same targets in the order (3,5).\n\n**Target content changes do not affect the dependency.**\n- The test asserts `graph.state...reads.is_empty()` after creating the record and checking freshness, so no node content is read.\n- The agent test's `node_content`, `fingerprint` and `format_node_content` all panic. The agent tests therefore show that no content dependency is recorded.\n\n**Recording points and failure cases.**\n- `InspectionContext::outgoing_edges` records on return. The validation test shows the dependency present after a successful selection and unchanged after a failed `successors` (`fail_edges`, `Err(\"edges\")`). `record_is_current` also returns `Err(\"edges\")` for the same failure.\n- `ToolAgent` records on delivery. The agent test checks a successful delivery, which records the dependency and the stored record matches it. A prepared selection whose delivery fails (the script yields `None`) leaves `ctx.inspection().dependencies()` empty. An unknown path returns an error result, makes no graph lookup, and adds no dependency.\n\n**Cited requirements.** The tests apply `requirements.sdk.graph.evidence.inputs` and `requirements.sdk.graph.evidence.checking_records`. The agent test round-trips the record through `store_evidence` and `load_evidence`. The validation test checks freshness with `record_is_current`, including that an error is propagated.\n\nNo acknowledgments apply. I found no adequacy gaps.",
+  "rationale": "The two marked tests cover each obligation of `requirements.sdk.graph.context-tools.outgoing_edges.inputs`. I found one thin spot, a missing pure-removal case, and I judged it not to be a gap.\n\n**Obligations and the tests that cover them**\n\n- **Records source, label and target-set fingerprint.**\n  - `crates/habeas-sdk/tests/validation.rs#fn[labeled_selections_track_only_target_membership_without_reading_contents]` asserts the finished record's dependencies equal `[Dependency::OutgoingEdges(1, 7, edge_fingerprint(&graph, &[3, 5]))]`. It also asserts that `outgoing_edges` returns a snapshot with that fingerprint.\n  - `crates/habeas-sdk/tests/agent.rs#fn[agent_edge_tools_record_selections_without_validating_targets]` asserts the stored record's dependency is `OutgoingEdges(1, 7, fp([2]))`. A second run with label 8 asserts `OutgoingEdges(1, 8, fp([3]))`, so source and label are both distinguished.\n- **Adding or removing an identity changes the fingerprint, including adding the first identity to an empty set.**\n  - The validation test records an empty selection. It then adds a label-7 edge and asserts `record_is_current` is false.\n  - It also changes the recorded `{3,5}` to `{3,6}` and asserts the record is no longer current. That change removes 5 and adds 6.\n  - There is no pure removal case, such as `{3,5}` to `{3}`, and no pure addition to a non-empty set. Replacing 5 with 6 still exercises both directions. The fingerprint is a hash of the sorted, deduplicated path set (`crates/habeas-sdk/src/graph.rs#fn[edge_fingerprint]`). I judged the missing pure cases to be extra untested values in an already-represented class of membership change, not a gap.\n- **Reordering and repeating targets do not change it.**\n  - The validation test returns `[5, 3, 5]` and asserts the snapshot fingerprint equals `fp([3,5])`.\n  - It then reorders the current edges to `[(7,3),(7,5),(8,99)]` and asserts the record is still current.\n  - The contracts test `edge_fingerprints_preserve_path_boundaries_and_version_membership_encoding` also asserts `fp([0,1,0]) == fp([1,0])`. It is not marked for this subject, but it is consistent with the other tests.\n- **Target content changes do not affect the dependency.**\n  - The validation test asserts the domain's `reads` list stays empty through selection, recording and freshness checks.\n  - The agent test's `node_content` panics if it is ever called.\n  - Edges under another label (the `(8, 99)` and `(8, 2)` edges) are ignored.\n- **`InspectionContext::outgoing_edges` records on return.** The validation test calls it directly and then checks the finished record.\n- **The agent records when delivered, not when prepared.**\n  - A successful scripted delivery records the dependency.\n  - A script whose delivery fails after the graph lookup (`lookups == 1`) leaves `ctx.inspection().dependencies()` empty.\n  - An unknown path is rejected with an error tool result, no graph query and no dependency.\n- **A failed selection records no successful observation.** With `fail_edges` set, `successors` returns `Err(\"edges\")`, the dependencies are unchanged, and `record_is_current` propagates the error.\n\nThe cited requirements `requirements.sdk.graph.evidence.inputs` and `requirements.sdk.graph.evidence.checking_records` are applied here. The tests save and load a record whose dependencies are equal, and they run the freshness check through `record_is_current`.",
   "references": "d4f7b67d6c6cc97637c3223ee7b1f5466b5778e75d6132e1d8bfb45b9094af64",
   "inputs": [
     {
@@ -21,7 +21,7 @@
         "{cite}`requirements.sdk.graph.evidence.checking_records`.",
         "",
         "`InspectionContext::outgoing_edges` records the selection when returning it.",
-        "`ToolAgent` records the prepared selection when delivered. A failed selection",
+        "The SDK agent records the prepared selection when delivered. A failed selection",
         "records no successful observation.",
         ":::"
       ]
@@ -88,42 +88,33 @@
         "later dependencies. An encountered dependency-resolution failure returns an",
         "error.",
         "",
-        "It uses the current state that the caller intends to inspect, rather than",
-        "reusing source snapshots from an earlier invocation without establishing that",
-        "they remain current. These reads are separate from a criterion execution's",
-        "dependency trace.",
-        "",
-        "Freshness checking has a separate observation scope from execution. Reads used",
-        "only to check old evidence do not become dependencies of the new result. A",
-        "checked snapshot can be reused if it still represents the current state; when",
-        "execution explicitly reads or delivers it, its fingerprint enters the new trace.",
+        "The method observes the current state that the caller intends to inspect.",
+        "Freshness checking has a separate observation scope from criterion execution.",
+        "Checked observations enter the new trace when execution explicitly reads",
+        "or delivers them.",
+        "A checked snapshot can be reused if it still represents the current state.",
         ":::"
       ]
     },
     {
       "file": "crates/habeas-sdk/tests/agent.rs",
       "item": "fn[agent_edge_tools_record_selections_without_validating_targets]",
-      "hash": "c5379c942742e5f726f333a709d5dd9d0b0fe978531e42307ea77b3f085347a3"
+      "hash": "6a7abe1ee48a3b75741a647a1fc23c9365dfdbf32b637b2fb40aaeffa5b159d0"
     },
     {
       "file": "crates/habeas-sdk/tests/validation.rs",
       "item": "fn[labeled_selections_track_only_target_membership_without_reading_contents]",
-      "hash": "8473cabd5a09d6750cd3a3d456feda1fb3dd09be458b2380b0bdb9ea70d0f9fa"
+      "hash": "8416597f011beef763e47a1110064ca4c3e3502459799dac35b41921bd20da8e"
+    },
+    {
+      "file": "crates/habeas-sdk/tests/contracts.rs",
+      "item": "fn[edge_fingerprints_preserve_path_boundaries_and_version_membership_encoding]",
+      "hash": "0187a508798004b9df97f4f82777e80473ce658369aaafabf7740ba5c2e6bfae"
     },
     {
       "file": "crates/habeas-sdk/src/graph.rs",
       "item": "fn[edge_fingerprint]",
-      "hash": "573c33edd8a8a37234c4b0c3ed8e450f3f381bf107db1505f9fc86c3174d049b"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/validation.rs",
-      "item": "fn[a_matching_dependency_does_not_hide_a_later_changed_dependency]",
-      "hash": "3b5eecf0cb7620e9e36f89a3888d17d3a92d3ea4262455c8965de1df17c6edc2"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/validation.rs",
-      "item": "fn[queued_reads_selection_and_rendering_fail_before_agent_invocation]",
-      "hash": "fd110523e4e752b05cfe7dcb5228f94fd6d979f9dd26cb5c0d57d9d98407dc4d"
+      "hash": "a8acf08ac9e9e98b8cd0bf17bc56e15e50a4c62822c4096970f0ef9cafade106"
     }
   ],
   "format_version": 1,
@@ -159,7 +150,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "0573135153758b25cacb405169768c53274095163f70e2815bd6e400de19510c"
+          "value": "23e6cf9bf4c9a54d55885f89eff9d73dc619c2abc2f4cee6f1f4fac7760996a1"
         }
       ]
     },
@@ -181,7 +172,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "71ccf88036864ad802d61fd442c95610f5c59a6fa3b65dda6dcfc3fb3583cf17"
+          "value": "962cd411fc64e2fcae8f78a0af6666292adf69607a32fc309b287b8da58cc0da"
         }
       ]
     },
@@ -198,7 +189,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "565f76669b68874d1ab67b6faad1b4e67747fd8790ee9a91a86021eb90346ce6"
+          "value": "6e84d9c3c047af918b780b1c7697fb0a9d1b52c5e96dd163b0fdb8eb53fc0005"
         }
       ]
     },
@@ -215,7 +206,24 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "d9d875910ac6cd666bb1de0af1481f232023f4e3934a4b63db3004b35fccdf86"
+          "value": "d9ec1301911f418ec70244044875eb929a1975ef9f0f304acbb2a4e2a8275ffb"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/tests/contracts.rs"
+            },
+            "selector": "fn[edge_fingerprints_preserve_path_boundaries_and_version_membership_encoding]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "47aec2e59a33910426045d454fb8207d56f8a97809b3f1b48245575fea255446"
         }
       ]
     },
@@ -232,41 +240,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "84d3427bdf50fb0027f2cefeffb8296586725bc640ec52dd275a9885ecf4ce7b"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/validation.rs"
-            },
-            "selector": "fn[a_matching_dependency_does_not_hide_a_later_changed_dependency]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "4ece2ce93514a99163521ae7383071ad9b504caaa644a403649a558b1d6b7c06"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/validation.rs"
-            },
-            "selector": "fn[queued_reads_selection_and_rendering_fail_before_agent_invocation]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "7f1bfa7adae1f9d11b91c40ee5c64b10950910c16e9426d01dab22f3f49783a9"
+          "value": "a7cf77bbe180d4e063f29de57709eaf13ea5b5342d26d5dd441a891c3c300306"
         }
       ]
     }

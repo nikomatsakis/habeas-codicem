@@ -1,4 +1,5 @@
 use futures::future::BoxFuture;
+use habeas_sdk::domain::{Domain, NodeContents};
 use habeas_sdk::{
     graph::*,
     procedure::{Agent, AgentRequest, Context, context_fingerprint},
@@ -36,7 +37,7 @@ struct State {
     started: Vec<u8>,
     finished: Vec<u8>,
     fail_read: bool,
-    fail_format: bool,
+    fail_prepare: bool,
     fail_load: bool,
     fail_store: bool,
     fail_edges: Option<u8>,
@@ -60,7 +61,19 @@ fn fp(value: impl Into<String>) -> Fingerprint {
     }
 }
 
-impl Graph for Memory {
+#[derive(Debug, PartialEq, Eq)]
+struct Content(String);
+
+impl NodeContents for Content {
+    fn fingerprint(&self) -> Fingerprint {
+        fp(self.0.clone())
+    }
+    fn format(&self) -> String {
+        self.0.clone()
+    }
+}
+
+impl Domain for Memory {
     type NodeId = u8;
     type EdgeLabel = u8;
 
@@ -84,32 +97,26 @@ impl Graph for Memory {
             .map(|(_, target)| *target)
             .collect())
     }
-}
-impl Contents for Memory {
-    type NodeContent = String;
 
-    fn node_content(&self, node: &u8) -> Result<String, Self::Error> {
+    type NodeContent = Content;
+
+    fn node_content(&self, node: &u8) -> Result<Content, Self::Error> {
         let mut state = self.state.lock().unwrap();
         state.reads.push(*node);
         if state.fail_read {
             return Err("read");
         }
-        state.contents.get(node).cloned().ok_or("missing")
-    }
-
-    fn fingerprint(&self, _: &u8, content: &String) -> Fingerprint {
-        fp(content.clone())
-    }
-
-    fn format_node_content(&self, _: &u8, contents: &String) -> Result<String, &'static str> {
-        if self.state.lock().unwrap().fail_format {
-            Err("render")
-        } else {
-            Ok(contents.clone())
+        if state.fail_prepare {
+            return Err("render");
         }
+        state
+            .contents
+            .get(node)
+            .cloned()
+            .map(Content)
+            .ok_or("missing")
     }
-}
-impl Storage for Memory {
+
     async fn load_evidence(
         &self,
         node: &u8,
@@ -135,6 +142,7 @@ impl Storage for Memory {
         Ok(())
     }
 }
+
 struct Review {
     node: u8,
     revision: &'static str,
@@ -364,7 +372,7 @@ fn snapshots_record_exact_reads_and_retain_distinct_versions() {
         .contents
         .insert(1, "before".into());
     let inspection = InspectionContext::new(&graph);
-    assert_eq!(inspection.read(&1).unwrap(), "before");
+    assert_eq!(inspection.read(&1).unwrap().0, "before");
     assert_eq!(
         inspection.read_snapshot(&1).unwrap().fingerprint,
         fp("before")
@@ -375,7 +383,7 @@ fn snapshots_record_exact_reads_and_retain_distinct_versions() {
         .unwrap()
         .contents
         .insert(1, "after".into());
-    assert_eq!(inspection.read(&1).unwrap(), "after");
+    assert_eq!(inspection.read(&1).unwrap().0, "after");
     assert!(inspection.read(&2).is_err());
     assert_eq!(
         inspection.dependencies(),
@@ -444,6 +452,8 @@ fn a_matching_dependency_does_not_hide_a_later_changed_dependency() {
 // {test}`requirements.sdk.graph.evidence.checking_records.procedure_match`
 // {test}`requirements.sdk.graph.evidence.checking_records`
 // {test}`requirements.sdk.graph.fingerprint`
+// {test}`requirements.sdk.graph.fingerprint_content`
+// {test}`requirements.sdk.graph.fingerprint_content.fingerprint`
 #[test]
 fn wildcard_versions_still_check_inputs_and_errors() {
     let graph = Memory::default();
@@ -508,6 +518,7 @@ fn labeled_selections_track_only_target_membership_without_reading_contents() {
     let ctx = ValidationContext::new(&graph, 1);
     assert_eq!(ctx.node_id(), &1);
     assert!(ctx.successors(&7).unwrap().is_empty());
+    assert_eq!(graph.state.lock().unwrap().selections, [1]);
     let output = || Assessment {
         result: true,
         rationale: "selection".into(),
@@ -525,7 +536,9 @@ fn labeled_selections_track_only_target_membership_without_reading_contents() {
     assert!(!record_is_current(&graph, "v1", &empty).unwrap());
     let selected = ValidationContext::new(&graph, 1);
     assert_eq!(selected.successors(&7).unwrap(), [5, 3, 5]);
+    graph.state.lock().unwrap().selections.clear();
     let snapshot = selected.inspection().outgoing_edges(&1, 7).unwrap();
+    assert_eq!(graph.state.lock().unwrap().selections, [1]);
     assert_eq!(snapshot.content, [5, 3, 5]);
     assert_eq!(snapshot.fingerprint, edge_fingerprint(&graph, &[3, 5]));
     selected.successors(&7).unwrap();
@@ -1140,14 +1153,14 @@ async fn later_lighter_agent_calls_preserve_the_contexts_existing_trace() {
     let ctx = ValidationContext::with_agent(&graph, 1, &agent);
     fn assert_send_sync<T: Send + Sync>(_: &T) {}
     assert_send_sync(&ctx);
-    assert_eq!(ctx.inspection().read(&2).unwrap(), "direct before");
+    assert_eq!(ctx.inspection().read(&2).unwrap().0, "direct before");
     let _: Answer = ctx
         .ask()
         .contents_of_current_node()
         .contents_of_successors(7)
         .await
         .unwrap();
-    assert_eq!(ctx.inspection().read(&3).unwrap(), "direct after");
+    assert_eq!(ctx.inspection().read(&3).unwrap().0, "direct after");
     let retained = ctx.inspection().dependencies();
     assert_eq!(
         retained,
@@ -1296,6 +1309,7 @@ fn agent_errors_expose_the_agreed_string_payload() {
 // {test}`requirements.sdk.graph.agent-calls.judge.node_contents`
 // {test}`requirements.sdk.graph.agent-calls.judge.rendering`
 // {test}`requirements.sdk.graph.agent-calls.author_procedure`
+// {test}`requirements.sdk.graph.fingerprint_content`
 #[tokio::test]
 async fn queued_reads_selection_and_rendering_fail_before_agent_invocation() {
     let graph = Memory::default();
@@ -1336,7 +1350,7 @@ async fn queued_reads_selection_and_rendering_fail_before_agent_invocation() {
         .unwrap()
         .contents
         .insert(1, "root".into());
-    graph.state.lock().unwrap().fail_format = true;
+    graph.state.lock().unwrap().fail_prepare = true;
     let ctx = ValidationContext::with_agent(&graph, 1, &agent);
     assert!(matches!(
         ctx.ask::<Answer>().contents_of_current_node().await,

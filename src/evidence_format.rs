@@ -393,7 +393,7 @@ pub(crate) fn check_native(
 mod tests {
     use super::*;
     use crate::{authoring::AuthoringSubject, inputs::OutlineCache};
-    use habeas_sdk::graph::{Contents, Storage};
+    use habeas_sdk::domain::Domain;
     use std::collections::BTreeMap;
 
     fn legacy(subject: &AuthoringSubject) -> Value {
@@ -628,7 +628,7 @@ mod tests {
         let input = node
             .selector()
             .unwrap()
-            .to_input(&graph.node_content(&node).unwrap());
+            .to_input(&graph.node_content(&node).unwrap().resolved);
         let metadata = json!({"requirement":"Ready MUST work.","references":"b".repeat(64),
             "determination":false,"rationale":"Still negative.","inputs":[input]});
         let mut record = decode(&metadata, &node).unwrap();

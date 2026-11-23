@@ -1,5 +1,6 @@
 //! Consumer-defined graphs, tracked observations, and validation.
 
+use crate::domain::{Domain, NodeContents};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{future::Future, sync::Mutex};
@@ -78,45 +79,6 @@ impl CriterionPath {
     }
 }
 
-// {impl}`requirements.sdk.graph.domain_types`
-// {impl}`requirements.sdk.graph-edges.label`
-// {impl}`requirements.sdk.graph-edges.outgoing_edges`
-pub trait Graph: Send + Sync {
-    type NodeId: Clone + Eq + Send + Sync;
-    type EdgeLabel: Clone + Send + Sync;
-    type Error: Send;
-
-    // {impl}`requirements.sdk.graph.node_path_method`
-    fn node_path(&self, node: &Self::NodeId) -> NodePath;
-    fn outgoing_edges(
-        &self,
-        node: &Self::NodeId,
-        label: Self::EdgeLabel,
-    ) -> Result<Vec<Self::NodeId>, Self::Error>;
-}
-
-// {impl}`requirements.sdk.graph.fingerprint_content`
-pub trait Contents: Graph {
-    /// The application's representation of a node's contents.
-    type NodeContent: Send + Sync;
-
-    /// Fetch the contents of a node.
-    fn node_content(&self, node: &Self::NodeId) -> Result<Self::NodeContent, Self::Error>;
-
-    // {impl}`requirements.sdk.graph.fingerprint_content`
-    /// Fingerprint these supplied contents under the application's change rules.
-    fn fingerprint(&self, node: &Self::NodeId, content: &Self::NodeContent) -> Fingerprint;
-
-    // {impl}`requirements.sdk.graph.agent-calls.judge.rendering`
-    /// Format already-read contents for an agent using their source identity.
-    /// The supplied contents and their recorded fingerprint describe the same read.
-    fn format_node_content(
-        &self,
-        node: &Self::NodeId,
-        contents: &Self::NodeContent,
-    ) -> Result<String, Self::Error>;
-}
-
 // {impl}`requirements.sdk.graph.evidence.dependencies`
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Dependency<N, L = ()> {
@@ -137,7 +99,7 @@ pub struct Record<N, L = ()> {
 /// The captured evidence metadata is available through read-only accessors.
 ///
 /// ```compile_fail
-/// use habeas_sdk::graph::{Domain, Fingerprinted};
+/// use habeas_sdk::{domain::Domain, graph::Fingerprinted};
 /// fn change_revision<D: Domain>(answer: &mut Fingerprinted<D, bool>) {
 ///     answer.revision = "different rules".into();
 /// }
@@ -212,31 +174,6 @@ impl<T: PartialEq> Trace<T> {
     }
 }
 
-// {impl}`requirements.sdk.graph.evidence.evidence_storage`
-pub trait Storage: Graph {
-    // {impl}`requirements.sdk.graph.evidence.evidence_storage`
-    fn load_evidence(
-        &self,
-        node: &Self::NodeId,
-        criterion: &CriterionPath,
-    ) -> impl Future<Output = Result<Option<Record<Self::NodeId, Self::EdgeLabel>>, Self::Error>> + Send;
-
-    // {impl}`requirements.sdk.graph.evidence.evidence_storage`
-    fn store_evidence(
-        &self,
-        node: &Self::NodeId,
-        criterion: &CriterionPath,
-        record: &Record<Self::NodeId, Self::EdgeLabel>,
-    ) -> impl Future<Output = Result<(), Self::Error>> + Send;
-}
-
-// {impl}`requirements.sdk.domain`
-/// A cloneable verification graph with fingerprints and evidence storage.
-pub trait Domain: Clone + Graph + Contents + Storage {}
-
-// {impl}`requirements.sdk.domain`
-impl<T: Clone + Graph + Contents + Storage> Domain for T {}
-
 // {impl}`requirements.sdk.graph.validation.criterion_trait`
 #[derive(Debug)]
 pub enum ValidationError<E> {
@@ -292,12 +229,12 @@ pub trait Criterion<D: Domain>: Send + Sized {
 
 /// The trace lock only protects observations, never graph or agent operations.
 // {impl}`requirements.sdk.graph.context-tools.tracked_inspection`
-pub struct InspectionContext<'d, D: Contents> {
+pub struct InspectionContext<'d, D: Domain> {
     graph: &'d D,
     observations: Mutex<Vec<Dependency<D::NodeId, D::EdgeLabel>>>,
 }
 
-impl<'d, D: Contents> InspectionContext<'d, D> {
+impl<'d, D: Domain> InspectionContext<'d, D> {
     // {cite}`habeas:util`
     pub fn new(graph: &'d D) -> Self {
         Self {
@@ -330,7 +267,7 @@ impl<'d, D: Contents> InspectionContext<'d, D> {
     /// Prepare a paged result without claiming its delivery.
     pub fn prepare_read(&self, node: &D::NodeId) -> Result<Snapshot<D::NodeContent>, D::Error> {
         let content = self.graph.node_content(node)?;
-        let fingerprint = self.graph.fingerprint(node, &content);
+        let fingerprint = content.fingerprint();
         Ok(Snapshot {
             content,
             fingerprint,
@@ -435,7 +372,7 @@ pub fn procedure_matches(stored: &str, requested: &str) -> bool {
 
 /// Freshness-only reads do not enter a new assessment's trace.
 // {impl}`requirements.sdk.graph.evidence.checking_records`
-pub fn record_is_current<D: Contents>(
+pub fn record_is_current<D: Domain>(
     graph: &D,
     revision: &str,
     record: &Record<D::NodeId, D::EdgeLabel>,
@@ -446,7 +383,7 @@ pub fn record_is_current<D: Contents>(
     dependencies_are_current(graph, &record.dependencies)
 }
 
-fn dependencies_are_current<D: Contents>(
+fn dependencies_are_current<D: Domain>(
     graph: &D,
     dependencies: &[Dependency<D::NodeId, D::EdgeLabel>],
 ) -> Result<bool, D::Error> {
@@ -454,7 +391,7 @@ fn dependencies_are_current<D: Contents>(
         let (current, previous) = match dependency {
             Dependency::Node(node, previous) => {
                 let content = graph.node_content(node)?;
-                (graph.fingerprint(node, &content), previous)
+                (content.fingerprint(), previous)
             }
             Dependency::OutgoingEdges(node, label, previous) => (
                 edge_fingerprint(graph, &graph.outgoing_edges(node, label.clone())?),
@@ -472,7 +409,7 @@ fn dependencies_are_current<D: Contents>(
 /// JSON encodes segment boundaries and Unicode unambiguously; ordering and
 /// duplicate edges do not affect membership. Empty selections have a digest too.
 // {impl}`requirements.sdk.graph-edges.snapshot`
-pub fn edge_fingerprint<D: Graph>(graph: &D, targets: &[D::NodeId]) -> Fingerprint {
+pub fn edge_fingerprint<D: Domain>(graph: &D, targets: &[D::NodeId]) -> Fingerprint {
     let mut paths = targets
         .iter()
         .map(|node| graph.node_path(node).segments)

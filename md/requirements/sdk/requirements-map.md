@@ -55,7 +55,6 @@ design described by these SDK chapters.
 
 | Current interface or contract | Required change |
 | --- | --- |
-| Node content operations | Return prepared values implementing `NodeContents::fingerprint` and `NodeContents::format` from `Domain::node_content`. |
 | `Agent<D>`, `CompletionProvider`, `Conversation`, and `ToolAgent::with_tools` as application extension points | Configure SDK-supplied agents through `AgentConfig`; keep conversation and tool machinery inside the SDK. |
 | HC's backend construction and backend configuration types | Supply serializable backend configuration from the SDK while retaining HC's configuration loading, paths, and overrides. |
 | `SourceTools` observation callbacks that may return no dependency | Map source items into application nodes and require tracked source reads to record supplied node snapshots. |
@@ -76,7 +75,7 @@ compares whatever snapshots the domain can actually supply.
 The ownership boundaries are established. The following details still need
 decisions before implementation:
 
-- **Source capabilities.** Keep graph-only domains usable with the SDK's graph
+- **Source capabilities.** Keep domains without source access usable with the SDK's graph
   tools, and add its built-in source operations when the domain supplies source
   access and source-node mapping. This is the recommended capability rule.
   The exact hook representation and agent-specific label-schema bounds remain

@@ -1,7 +1,7 @@
 {
   "requirement": "```rust,ignore\n// Method on Validator<D>.\n/// Load this criterion's evidence and decode its answer as V::Ok.\n/// Ok(None) means no saved record exists.\npub fn load_evidence<V: Criterion<D>>(\n    &self,\n    criterion: &V,\n) -> impl Future<Output = Result<Option<Fingerprinted<D, V::Ok>>, ValidationError<D::Error>>> + Send;\n```\n\n`load_evidence` captures the source identity and criterion path while constructing\nits future. It retains no reference to the criterion value while storage is\npending, so the criterion needs no `Sync` bound. It loads the complete record and\ndecodes its output under {cite}`requirements.sdk.graph.evidence.record.output`.\nRevision and input comparison are separate steps.",
   "determination": true,
-  "rationale": "The reviewed tests cover every obligation in `requirements.sdk.graph.evidence.check_node`. I found no gaps. The obligations and the tests that check them are:\n\n- **Missing evidence returns `Ok(None)`.** Several tests assert `load_evidence(...).await.unwrap().is_none()` before anything is stored.\n  - `criteria_keep_typed_answers_and_persist_only_when_requested` checks this before and after `verify`. A verified but unsaved answer still loads as `None`, and so does an unsaved criterion path.\n  - `wildcard_revision_does_not_supply_other_criteria_or_nodes` checks a different criterion path and a different source node.\n  - `caller_reuses_negative_answers_and_compares_revisions_explicitly` checks a different node.\n  - `agent_edge_tools_record_selections_without_validating_targets` and the `review_graph_persists_and_reuses_a_negative_validation_through_the_sdk` test in `src/authoring/sdk.rs` also check it.\n- **The complete record loads and decodes as `V::Ok`.**\n  - `criteria_keep_typed_answers_and_persist_only_when_requested` compares the loaded output, source node id, criterion path, revision and dependencies with the stored value.\n  - `agent_edge_tools_record_selections_without_validating_targets` and `dependency_resolution_failures_do_not_execute_or_replace_saved_answers` compare loaded dependencies.\n  - The `src/authoring/sdk.rs` test compares the loaded output with the stored answer.\n- **Source identity and criterion path are captured at construction, and no reference to the criterion is kept, so no `Sync` bound is needed.** `validation_and_answer_need_send_without_sync` passes `validator.load_evidence(&descriptor)` through `send<T: Send>`. The criterion `Review<Cell<u32>>` holds `Cell` fields, so it is not `Sync` and `&Review` is not `Send`. The `Send` check therefore fails to compile if the future retained the criterion reference. The test also asserts `descriptor_reads == 1`, which shows the source id was read from the descriptor.\n- **Revision and input comparison are separate steps.**\n  - A stale revision still loads in `caller_reuses_negative_answers_and_compares_revisions_explicitly`, where loading with `v2` returns the saved `v1` record.\n  - The same test and `wildcard_revision_does_not_supply_other_criteria_or_nodes` handle the `\"*\"` revision with `procedure_matches` and `check_inputs` as separate calls.\n  - Changed inputs still load in `changing_one_criteria_input_does_not_invalidate_another`.\n  - Inputs that cannot resolve still load in `dependency_resolution_failures_do_not_execute_or_replace_saved_answers`. The test sets `fail_read` and `fail_edges`, loads successfully, and then `check_inputs` returns the error. The test asserts no execution or write happens in that case.\n- **Errors follow `requirements.sdk.graph.evidence.record.output`, which the subject cites.**\n  - An output that cannot decode returns `ValidationError::Output`, including for a stale revision or stale inputs. `typed_loading_reports_decode_errors_even_for_stale_evidence` covers both, and also asserts that no input reads happen. `malformed_records_are_storage_errors_and_bad_outputs_are_output_errors` covers an obsolete revision and checks the file is unchanged.\n  - A malformed stored record returns `ValidationError::Graph(FileStorageError::Json)`. `malformed_records_are_storage_errors_and_bad_outputs_are_output_errors` covers this.\n  - A storage failure returns `ValidationError::Graph`. `loading_execution_resolution_and_saving_failures_do_not_publish_answers` and `resolution_storage_and_callback_errors_are_not_judgments` set `fail_load` and assert `Graph(\"load\")`.\n\nThe assertions are specific, using `matches!` on error variants and equality on fields. They would reject plausible violations, such as comparing the revision during load, resolving inputs during load, returning `Graph` for a decode error, or requiring `Sync`.",
+  "rationale": "The tests adequately cover `requirements.sdk.graph.evidence.check_node`.\n\n**Missing evidence returns `Ok(None)`.**\n- `criteria_keep_typed_answers_and_persist_only_when_requested` checks `Ok(None)` before any save and again after `verify` without a save. It checks `None` for a different criterion path too.\n- `wildcard_revision_does_not_supply_other_criteria_or_nodes` and `caller_reuses_negative_answers_and_compares_revisions_explicitly` check `None` for a different criterion path and for a different source node.\n\n**It loads the complete record for the criterion's source identity and path.**\n- `criteria_keep_typed_answers_and_persist_only_when_requested` compares the loaded output, source node, criterion path, revision and dependencies with the stored value.\n- `dependency_resolution_failures_do_not_execute_or_replace_saved_answers` checks the loaded dependencies, including a node dependency and an outgoing-edges dependency.\n- `agent_edge_tools_record_selections_without_validating_targets` checks the loaded dependencies and output.\n- `review_graph_persists_and_reuses_a_negative_validation_through_the_sdk` runs the same round trip through the real SDK domain.\n\n**It decodes the output as `V::Ok`, including typed outputs.**\n- `criteria_keep_typed_answers_and_persist_only_when_requested` loads a typed struct answer and a `()` answer.\n- `validation_and_answer_need_send_without_sync` loads a `Cell<u32>` answer.\n\n**Decode failures return `ValidationError::Output`, including for stale evidence.**\n- `typed_loading_reports_decode_errors_even_for_stale_evidence` loads a record whose output cannot decode. The record has a different revision and tampered dependencies, and reads are set to fail. It asserts `ValidationError::Output`, and also asserts that no reads happened.\n- `malformed_records_are_storage_errors_and_bad_outputs_are_output_errors` stores a record with a mismatched output and an obsolete revision. It asserts `Output` and that the file is unchanged.\n\n**Malformed stored records and storage failures return `ValidationError::Graph`.**\n- `malformed_records_are_storage_errors_and_bad_outputs_are_output_errors` writes \"not JSON\" and asserts a `Graph` JSON error.\n- `loading_execution_resolution_and_saving_failures_do_not_publish_answers` and `resolution_storage_and_callback_errors_are_not_judgments` set `fail_load` and assert `Graph(\"load\")`.\n\n**Revision and input comparison are separate steps.**\n- `caller_reuses_negative_answers_and_compares_revisions_explicitly` loads a v1 record when v2 is requested and returns it with its revision `v1`. It also loads a record whose revision is the wildcard `*`.\n- `wildcard_revision_does_not_supply_other_criteria_or_nodes` loads a `*` record for a \"future\" revision.\n- `dependency_resolution_failures_do_not_execute_or_replace_saved_answers` loads successfully while input resolution fails. `check_inputs` reports the error separately, and no execution happens.\n\n**The criterion is not retained and needs no `Sync` bound.**\n- `validation_and_answer_need_send_without_sync` uses a `Review<Cell<..>>` descriptor, which is `!Sync`. It passes the `load_evidence(&descriptor)` future through `send<T: Send>`, so the future must be `Send` without borrowing the descriptor.\n- The test asserts `descriptor_reads == 1`. That shows the descriptor was read once for the source identity and path. The `Send` check enforces that the read does not happen across a pending await.\n\nAll obligations in the subject's text have a test that exercises them and asserts the outcome. I found no gaps.",
   "references": "f376a78b976dd9794fc12dbb46f73a3221b957bea2e398aeeb1a9549045fe1b7",
   "inputs": [
     {
@@ -53,7 +53,7 @@
     {
       "file": "crates/habeas-sdk/tests/agent.rs",
       "item": "fn[agent_edge_tools_record_selections_without_validating_targets]",
-      "hash": "c5379c942742e5f726f333a709d5dd9d0b0fe978531e42307ea77b3f085347a3"
+      "hash": "6a7abe1ee48a3b75741a647a1fc23c9365dfdbf32b637b2fb40aaeffa5b159d0"
     },
     {
       "file": "crates/habeas-sdk/tests/contracts.rs",
@@ -112,6 +112,11 @@
     },
     {
       "file": "crates/habeas-sdk/tests/contracts.rs",
+      "item": "struct[Review]",
+      "hash": "f446c3b083932a8584c9e149398756f344f85189baccc05253e635e24644c7d4"
+    },
+    {
+      "file": "crates/habeas-sdk/tests/contracts.rs",
       "item": "impl[Review<O>/Criterion<Application>]/fn[source_node_id]",
       "hash": "535e981a869f261457c6f27c290b9c961da07791d9cc63840cfc68753249695f"
     },
@@ -119,11 +124,6 @@
       "file": "crates/habeas-sdk/tests/contracts.rs",
       "item": "fn[send]",
       "hash": "8584e807e9abc79dc59d3352ed10789b3f88c34eaf2710718740786192bf2708"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/contracts.rs",
-      "item": "struct[Review]",
-      "hash": "f446c3b083932a8584c9e149398756f344f85189baccc05253e635e24644c7d4"
     }
   ],
   "format_version": 1,
@@ -187,7 +187,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "565f76669b68874d1ab67b6faad1b4e67747fd8790ee9a91a86021eb90346ce6"
+          "value": "6e84d9c3c047af918b780b1c7697fb0a9d1b52c5e96dd163b0fdb8eb53fc0005"
         }
       ]
     },
@@ -386,6 +386,23 @@
               "scheme": "repo",
               "location": "crates/habeas-sdk/tests/contracts.rs"
             },
+            "selector": "struct[Review]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "2a7948034fb6c193ce69749712bf3af5b61a28187401c3d89a6e14d8560385e7"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/habeas-sdk/tests/contracts.rs"
+            },
             "selector": "impl[Review<O>/Criterion<Application>]/fn[source_node_id]"
           }
         },
@@ -409,23 +426,6 @@
         {
           "scheme": "habeas-input-v1",
           "value": "17d3cbb9647108545d77c32a08642a7ba2205d46bbabb4ef6c4c63251b8114bb"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/contracts.rs"
-            },
-            "selector": "struct[Review]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "2a7948034fb6c193ce69749712bf3af5b61a28187401c3d89a6e14d8560385e7"
         }
       ]
     }

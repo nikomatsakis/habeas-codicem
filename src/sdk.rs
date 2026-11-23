@@ -6,7 +6,8 @@ use crate::{
     inputs::{InputSelector, OutlineCache, ResolvedInput},
 };
 use habeas_sdk::{
-    graph::{Contents, CriterionPath, Fingerprint, Graph, InspectionContext, NodePath},
+    domain::{Domain, NodeContents},
+    graph::{CriterionPath, Fingerprint, InspectionContext, NodePath},
     resource::{OutlineId, ResourceId},
 };
 use std::{collections::BTreeMap, path::Path};
@@ -106,8 +107,53 @@ pub(crate) struct HabeasDomain<'a> {
     pub outlines: &'a OutlineCache,
 }
 
+pub(crate) struct HabeasNodeContent {
+    pub resolved: ResolvedInput,
+    fingerprint: Fingerprint,
+    text: String,
+}
+
+impl HabeasNodeContent {
+    fn prepare(node: &HabeasNode, resolved: ResolvedInput) -> std::io::Result<Self> {
+        let (fingerprint, model) = if matches!(node, HabeasNode::ReferenceSet(_)) {
+            (
+                Fingerprint {
+                    scheme: "habeas-reference-set-v1".into(),
+                    value: resolved.text[0].clone(),
+                },
+                serde_json::json!({"reference_set": resolved.text[0]}),
+            )
+        } else {
+            let selector = node.selector()?;
+            (
+                input_fingerprint(&selector.to_input(&resolved)),
+                selector.to_model_input(&resolved),
+            )
+        };
+        let text = serde_json::to_string(&model).map_err(std::io::Error::other)?;
+        Ok(Self {
+            resolved,
+            fingerprint,
+            text,
+        })
+    }
+}
+
+impl NodeContents for HabeasNodeContent {
+    // {impl}`requirements.sdk.graph.fingerprint_content.fingerprint`
+    fn fingerprint(&self) -> Fingerprint {
+        self.fingerprint.clone()
+    }
+    // {impl}`requirements.sdk.graph.fingerprint_content.format`
+    // {impl}`requirements.sdk.graph.agent-calls.judge.rendering`
+    fn format(&self) -> String {
+        self.text.clone()
+    }
+}
+
 // {impl}`requirements.sdk.graph.domain_types`
-impl Graph for HabeasDomain<'_> {
+// {impl}`requirements.sdk.domain`
+impl Domain for HabeasDomain<'_> {
     type NodeId = HabeasNode;
     type EdgeLabel = HabeasEdgeLabel;
 
@@ -191,6 +237,62 @@ impl Graph for HabeasDomain<'_> {
                 })
             })
             .collect())
+    }
+
+    // {impl}`requirements.sdk.habeas.evidence_format.loading`
+    async fn load_evidence(
+        &self,
+        node: &HabeasNode,
+        criterion: &CriterionPath,
+    ) -> std::io::Result<Option<habeas_sdk::graph::Record<HabeasNode, HabeasEdgeLabel>>> {
+        if criterion != &review_criterion() {
+            return Ok(None);
+        }
+        let Some(path) = node.evidence_path(self.root) else {
+            return Ok(None);
+        };
+        let bytes = match std::fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        let value = serde_json::from_slice(&bytes).map_err(std::io::Error::other)?;
+        crate::evidence_format::decode(&value, node).map(Some)
+    }
+
+    // {cite}`habeas:util`
+    async fn store_evidence(
+        &self,
+        node: &HabeasNode,
+        criterion: &CriterionPath,
+        record: &habeas_sdk::graph::Record<HabeasNode, HabeasEdgeLabel>,
+    ) -> std::io::Result<()> {
+        if criterion != &review_criterion() {
+            return Err(std::io::Error::other("unsupported Habeas review criterion"));
+        }
+        let path = node
+            .evidence_path(self.root)
+            .ok_or_else(|| std::io::Error::other("this source node has no Habeas review record"))?;
+        crate::evidence_format::write_atomic(&path, &crate::evidence_format::encode(record)?)
+    }
+
+    type NodeContent = HabeasNodeContent;
+
+    // {impl}`requirements.sdk.graph.fingerprint_content`
+    fn node_content(&self, node: &HabeasNode) -> std::io::Result<HabeasNodeContent> {
+        let resolved = if let HabeasNode::ReferenceSet(id) = node {
+            ResolvedInput {
+                text: vec![self.reference_set(id)?],
+                ranges: vec![],
+                matches: vec![],
+                node: None,
+            }
+        } else {
+            node.selector()?
+                .resolve(self.root, self.definitions, self.outlines)
+                .map_err(std::io::Error::other)?
+        };
+        HabeasNodeContent::prepare(node, resolved)
     }
 }
 
@@ -294,90 +396,6 @@ pub(crate) fn review_criterion() -> CriterionPath {
     CriterionPath::new(vec!["review".into()])
 }
 
-// {impl}`requirements.sdk.habeas.evidence_format.loading`
-impl habeas_sdk::graph::Storage for HabeasDomain<'_> {
-    async fn load_evidence(
-        &self,
-        node: &HabeasNode,
-        criterion: &CriterionPath,
-    ) -> std::io::Result<Option<habeas_sdk::graph::Record<HabeasNode, HabeasEdgeLabel>>> {
-        if criterion != &review_criterion() {
-            return Ok(None);
-        }
-        let Some(path) = node.evidence_path(self.root) else {
-            return Ok(None);
-        };
-        let bytes = match std::fs::read(path) {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(error),
-        };
-        let value = serde_json::from_slice(&bytes).map_err(std::io::Error::other)?;
-        crate::evidence_format::decode(&value, node).map(Some)
-    }
-
-    // {cite}`habeas:util`
-    async fn store_evidence(
-        &self,
-        node: &HabeasNode,
-        criterion: &CriterionPath,
-        record: &habeas_sdk::graph::Record<HabeasNode, HabeasEdgeLabel>,
-    ) -> std::io::Result<()> {
-        if criterion != &review_criterion() {
-            return Err(std::io::Error::other("unsupported Habeas review criterion"));
-        }
-        let path = node
-            .evidence_path(self.root)
-            .ok_or_else(|| std::io::Error::other("this source node has no Habeas review record"))?;
-        crate::evidence_format::write_atomic(&path, &crate::evidence_format::encode(record)?)
-    }
-}
-
-// {impl}`requirements.sdk.graph.fingerprint_content`
-impl Contents for HabeasDomain<'_> {
-    type NodeContent = ResolvedInput;
-
-    // {cite}`habeas:util`
-    fn node_content(&self, node: &HabeasNode) -> Result<ResolvedInput, std::io::Error> {
-        if let HabeasNode::ReferenceSet(id) = node {
-            return Ok(ResolvedInput {
-                text: vec![self.reference_set(id)?],
-                ranges: vec![],
-                matches: vec![],
-                node: None,
-            });
-        }
-        let node = node.selector()?;
-        node.resolve(self.root, self.definitions, self.outlines)
-            .map_err(std::io::Error::other)
-    }
-
-    fn fingerprint(&self, node: &HabeasNode, content: &ResolvedInput) -> Fingerprint {
-        if matches!(node, HabeasNode::ReferenceSet(_)) {
-            return Fingerprint {
-                scheme: "habeas-reference-set-v1".into(),
-                value: content.text[0].clone(),
-            };
-        }
-        input_fingerprint(
-            &node
-                .selector()
-                .expect("resolved Habeas node")
-                .to_input(content),
-        )
-    }
-
-    // {impl}`requirements.sdk.graph.agent-calls.judge.rendering`
-    fn format_node_content(
-        &self,
-        node: &HabeasNode,
-        contents: &ResolvedInput,
-    ) -> std::io::Result<String> {
-        serde_json::to_string(&node.selector()?.to_model_input(contents))
-            .map_err(std::io::Error::other)
-    }
-}
-
 // {cite}`habeas:util`
 pub(crate) fn input_fingerprint(input: &serde_json::Value) -> Fingerprint {
     use sha2::{Digest, Sha256};
@@ -406,27 +424,22 @@ pub(crate) fn resolve_input(
     };
     InspectionContext::new(&domain)
         .read(&HabeasNode::from(selector))
+        .map(|content| content.resolved)
         .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use habeas_sdk::graph::{Dependency, Record, Storage};
+    use habeas_sdk::graph::{Dependency, Record};
     use std::fs;
 
     // {test}`requirements.sdk.domain`
     // {test}`requirements.sdk.graph.agent-calls.judge.rendering`
+    // {test}`requirements.sdk.graph.fingerprint_content.format`
     #[test]
     fn domain_formats_supplied_contents_without_resolving_a_replacement() {
         let root = tempfile::tempdir().unwrap();
-        let definitions = BTreeMap::new();
-        let outlines = OutlineCache::default();
-        let domain = HabeasDomain {
-            root: root.path(),
-            definitions: &definitions,
-            outlines: &outlines,
-        };
         let node = HabeasNode::from(&InputSelector::Outline {
             file: "missing.rs".into(),
             item: "fn[old]".into(),
@@ -442,17 +455,10 @@ mod tests {
                 hash: "supplied-snapshot".into(),
             }),
         };
-        let text = domain.format_node_content(&node, &contents).unwrap();
+        let contents = HabeasNodeContent::prepare(&node, contents).unwrap();
+        let text = contents.format();
         assert!(text.contains("already read source"));
         assert!(text.contains("missing.rs"));
-        assert!(
-            domain
-                .format_node_content(
-                    &HabeasNode::ReferenceSet(RequirementId("r".into())),
-                    &contents
-                )
-                .is_err()
-        );
     }
 
     // {test}`requirements.sdk.graph.node_path_method`
@@ -752,6 +758,7 @@ mod tests {
     // {test}`requirements.sdk.graph.evidence.checking_records`
     // {test}`requirements.sdk.graph.domain_types`
     // {test}`requirements.sdk.graph.fingerprint_content`
+    // {test}`requirements.sdk.graph.fingerprint_content.fingerprint`
     // {test}`requirements.sdk.graph.snapshot`
     #[test]
     fn requirement_edges_and_input_freshness_use_the_sdk() {
@@ -777,12 +784,12 @@ mod tests {
         let subject = HabeasNode::Requirement(query.clone());
         let references = HabeasNode::ReferenceSet(query.clone());
         let retained_references = ctx.read(&references).unwrap();
-        let reference_fingerprint = domain.fingerprint(&references, &retained_references);
+        let reference_fingerprint = retained_references.fingerprint();
         assert_eq!(
             reference_fingerprint,
             Fingerprint {
                 scheme: "habeas-reference-set-v1".into(),
-                value: retained_references.text[0].clone(),
+                value: retained_references.resolved.text[0].clone(),
             }
         );
         assert!(
@@ -796,7 +803,7 @@ mod tests {
         };
         let retained = ctx.read(&HabeasNode::from(&selector)).unwrap();
         assert_eq!(
-            selector.to_input(&retained),
+            selector.to_input(&retained.resolved),
             serde_json::json!({
                 "matches":["requirements.ready"],
                 "requirements":"requirements.ready",
@@ -804,11 +811,18 @@ mod tests {
             })
         );
         assert_eq!(
-            domain.fingerprint(&HabeasNode::from(&selector), &retained),
+            retained.fingerprint(),
             Fingerprint {
                 scheme: "habeas-input-v1".into(),
                 value: "a60363aa2a9f4d79aff6d511c59e574752e36810da394f6087a72c164adabf7c".into(),
             }
+        );
+        assert_eq!(
+            domain
+                .node_content(&HabeasNode::from(&selector))
+                .unwrap()
+                .fingerprint(),
+            retained.fingerprint(),
         );
         let record = ctx
             .finish(
@@ -824,12 +838,9 @@ mod tests {
             outlines: &fresh_outlines,
             ..domain
         };
-        assert_eq!(
-            changed.fingerprint(&references, &retained_references),
-            reference_fingerprint
-        );
+        assert_eq!(retained_references.fingerprint(), reference_fingerprint);
         assert_ne!(
-            changed.fingerprint(&references, &changed.node_content(&references).unwrap()),
+            changed.node_content(&references).unwrap().fingerprint(),
             reference_fingerprint
         );
         assert!(
@@ -848,7 +859,7 @@ mod tests {
         );
         let source_node = snapshot[0].clone();
         let retained_source = changed.node_content(&source_node).unwrap();
-        let retained_fingerprint = changed.fingerprint(&source_node, &retained_source);
+        let retained_fingerprint = retained_source.fingerprint();
         fs::write(
             root.path().join("src/lib.rs"),
             "// {impl}`requirements.ready`\nfn ready() { changed(); }\n",
@@ -859,14 +870,8 @@ mod tests {
             outlines: &current_outlines,
             ..changed
         };
-        assert_eq!(
-            current.fingerprint(&source_node, &retained_source),
-            retained_fingerprint
-        );
+        assert_eq!(retained_source.fingerprint(), retained_fingerprint);
         let current_source = current.node_content(&source_node).unwrap();
-        assert_ne!(
-            current.fingerprint(&source_node, &current_source),
-            retained_fingerprint
-        );
+        assert_ne!(current_source.fingerprint(), retained_fingerprint);
     }
 }

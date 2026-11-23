@@ -11,6 +11,7 @@ pub mod search;
 pub mod structural;
 
 pub mod agent;
+pub mod domain;
 pub mod graph;
 pub mod procedure;
 pub mod sources;

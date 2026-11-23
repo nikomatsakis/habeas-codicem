@@ -2,7 +2,8 @@
 
 use super::{ToolDelivery, ToolFactory, ToolSession};
 use crate::{
-    graph::{Dependency, Graph},
+    domain::Domain,
+    graph::Dependency,
     resource::{OutlineId, ResourceId},
     sources::{
         ParsedSource, SourceAnalysis, SourceProvider, SourceScope, StructuralQuery, TextQuery,
@@ -23,7 +24,7 @@ pub struct SourceTools<P, F> {
 
 impl<D, P, F> ToolFactory<D> for SourceTools<P, F>
 where
-    D: Graph,
+    D: Domain,
     P: SourceProvider,
     P::Error: std::fmt::Display,
     F: Fn(&OutlineId, &ParsedSource) -> Result<Option<Dependency<D::NodeId, D::EdgeLabel>>, String>
@@ -51,7 +52,7 @@ struct SourceSession<'a, P, F, N, L> {
 
 impl<D, P, F> ToolSession<D> for SourceSession<'_, P, F, D::NodeId, D::EdgeLabel>
 where
-    D: Graph,
+    D: Domain,
     P: SourceProvider,
     P::Error: std::fmt::Display,
     F: Fn(&OutlineId, &ParsedSource) -> Result<Option<Dependency<D::NodeId, D::EdgeLabel>>, String>

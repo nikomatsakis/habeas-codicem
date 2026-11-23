@@ -1,8 +1,8 @@
 {
-  "requirement": "The SDK formats node inputs using `Contents::format_node_content`,\ndefined by {cite}`requirements.sdk.graph.fingerprint_content`:\n\n```rust,ignore\n// Method on Contents. Both arguments describe the already-read snapshot.\n/// Present these supplied contents as text for an agent.\nfn format_node_content(\n    &self,\n    node: &Self::NodeId,\n    contents: &Self::NodeContent,\n) -> Result<String, Self::Error>;\n```\n\nThe formatter uses the supplied contents; their fingerprint describes the same\nread. For inputs queued on an ask builder, formatting errors return\n`ValidationError::Graph`. During a `read_node` tool call, a formatting error is\nreturned to the agent as a tool error, so it can continue and recover.\n`NodeContent` and `NodeId` retain their application-defined types without\nserialization or display bounds.",
+  "requirement": "The SDK presents node inputs using the returned value's `NodeContents::format`\nunder {cite}`requirements.sdk.graph.fingerprint_content.format`.\nIts text and fingerprint describe the same retained observation.\n\n```rust,ignore\nlet contents = domain.node_content(&node_id)?;\nlet text = contents.format();\n```\n\nLoading and fallible preparation occur in `Domain::node_content` under\n{cite}`requirements.sdk.graph.fingerprint_content`. For inputs queued on an ask\nbuilder, these failures return `ValidationError::Graph`. During a `read_node`\ntool call, they are returned to the agent as a tool error, so it can continue\nand recover.",
   "determination": true,
-  "rationale": "The reviewed tests cover each obligation in `requirements.sdk.graph.agent-calls.judge.rendering`.\n\n- **Formatting through `Contents::format_node_content` for queued inputs.**\n  - `explicit_insertions_preserve_order_repetition_and_selection_snapshots` queues current-node and successor contents. It asserts that the agent receives the formatted text in order.\n  - It also asserts the node reads are exactly `[1, 3, 2, 3, 1]`. The formatter therefore works on the supplied snapshot, and nothing is reread.\n  - `default_tool_accepts_scalar_results_and_keeps_the_exact_prefix` checks that the delivered user message contains the formatted content.\n  - `behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer` checks that the formatted text of both nodes reaches the agent in order. It also checks that each node was read once.\n- **Formatter uses the supplied contents, and the fingerprint describes the same read.**\n  - `identities_remain_stable_and_fingerprinting_uses_the_supplied_snapshot` formats the snapshot, then changes the underlying content. It asserts that formatting still yields \"before\", matching the snapshot's fingerprint, and that only one read happened.\n  - `domain_formats_supplied_contents_without_resolving_a_replacement` shows the real `HabeasDomain` formatter using supplied contents for a file that does not exist on disk. It also checks that a mismatched node type returns an error.\n  - `authoring_keeps_the_prepared_subject_snapshot_and_concrete_version` and `runner_does_not_store_a_missing_agent_error_and_supports_intermediate_calls` check that the recorded dependency fingerprints match the supplied reads.\n- **Formatting errors for queued inputs return `ValidationError::Graph`.**\n  - `queued_reads_selection_and_rendering_fail_before_agent_invocation` sets `fail_format`. It asserts `Err(ValidationError::Graph(\"render\"))`, no recorded dependencies, and no agent call.\n- **Formatting errors during a `read_node` tool call are returned to the agent as a tool error.**\n  - `node_rendering_tool_errors_allow_recovery_without_recording_undelivered_contents` makes the formatter fail. The agent receives a tool result with `is_error`, the name `read_node` and the error text. The agent then submits successfully. The test also asserts that no dependency was recorded for contents that were never delivered.\n- **Successful `read_node` rendering.** `validator_agent_executions_isolate_conversations_and_dependency_traces` and the concurrent-agent tests use the `distinct_pages` formatter, which covers the successful path.\n- **No serialization or display bounds on `NodeContent` and `NodeId`.** This is a compile-time constraint. The test fixtures use plain application types such as `Node(u8)` and `Content(String)` with the formatter, and they compile.\n\nI found no unexercised obligation or weak assertion.",
-  "references": "be8dfa22dce3f9297803609deae03b7b9d0aafd2150eb790d6da62f8e199b8aa",
+  "rationale": "The reviewed tests cover each obligation in `judge.rendering`.\n\n**1. Inputs are presented through `NodeContents::format`.**\n- In `crates/habeas-sdk/tests/agent.rs`, the test memory domain stores the fingerprint text in `Content.0` and the `format()` output in `Content.1`. The `Content` impl's `format` returns `Content.1`. The `distinct_pages` formatter makes the formatted text differ from the fingerprint: it produces `ALPHA-CONTENTS:source` repeated many times, while the fingerprint is just `source`.\n- `validator_agent_executions_isolate_conversations_and_dependency_traces` uses `distinct_pages`. The `ParallelConversations` provider asserts that the first request's history contains the formatted `ALPHA-CONTENTS` or `BETA-CONTENTS` marker. It also asserts that later `get_node_page` results contain the right marker and none from the other conversation. The same test asserts that the recorded dependency fingerprints are the plain `\"source\"`. A presenter that sent the fingerprint instead of `format()` would therefore fail.\n- `explicit_insertions_preserve_order_repetition_and_selection_snapshots` checks which inputs are delivered, in what order, with repeats, and that each is read once (`reads == [1, 3, 2, 3, 1]`).\n- `default_tool_accepts_scalar_results_and_keeps_the_exact_prefix` and `behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer` check the delivered text. The latter also checks input order in the delivered message.\n\n**2. Text and fingerprint describe the same retained observation.**\n- `identities_remain_stable_and_fingerprinting_uses_the_supplied_snapshot` in `contracts.rs` mutates the underlying content after the read. It then asserts that `format()` still returns `\"before\"`, that `fingerprint()` equals the snapshot's fingerprint, and that only one read occurred.\n- `src/sdk.rs#mod[tests]/fn[domain_formats_supplied_contents_without_resolving_a_replacement]` shows that formatting uses the supplied snapshot without re-reading the source.\n\n**3. Failures return the right error for each path.**\n- For queued builder inputs, `queued_reads_selection_and_rendering_fail_before_agent_invocation` forces a read failure (`fail_read`) and a preparation failure (`fail_prepare`). It asserts `Err(ValidationError::Graph(\"read\"))` and `Err(ValidationError::Graph(\"render\"))`. It also asserts that no dependency is recorded and that the agent is never invoked.\n- For `read_node` tool calls, `node_preparation_tool_errors_allow_recovery_without_recording_undelivered_contents` makes the formatter or preparation fail. It asserts that the agent receives a tool result with `is_error` set, named `read_node`, carrying the error text. It then asserts that the agent continues to a second request and submits. It also asserts that no dependency is recorded for undelivered contents.\n\nThe remaining marked tests reference this requirement, but they only exercise it incidentally. They are `runner_does_not_store_a_missing_agent_error_and_supports_intermediate_calls` and `authoring_keeps_the_prepared_subject_snapshot_and_concrete_version`.\n\nThe `fingerprint_content` and `fingerprint_content.format` requirements are cited context. The \"no further reads or fallible preparation in format\" obligation belongs to them.\n\nI found no untested obligation and no inadequate assertion. No `{fixme}` acknowledgments apply.",
+  "references": "400ce2fae3e1cd536e3789d41a52c2378909e7648f02664ebecde71e1444554c",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.agent-calls.judge.rendering",
@@ -11,25 +11,46 @@
       ],
       "text": [
         ":::{req} judge.rendering",
-        "The SDK formats node inputs using `Contents::format_node_content`,",
-        "defined by {cite}`requirements.sdk.graph.fingerprint_content`:",
+        "The SDK presents node inputs using the returned value's `NodeContents::format`",
+        "under {cite}`requirements.sdk.graph.fingerprint_content.format`.",
+        "Its text and fingerprint describe the same retained observation.",
         "",
         "```rust,ignore",
-        "// Method on Contents. Both arguments describe the already-read snapshot.",
-        "/// Present these supplied contents as text for an agent.",
-        "fn format_node_content(",
-        "    &self,",
-        "    node: &Self::NodeId,",
-        "    contents: &Self::NodeContent,",
-        ") -> Result<String, Self::Error>;",
+        "let contents = domain.node_content(&node_id)?;",
+        "let text = contents.format();",
         "```",
         "",
-        "The formatter uses the supplied contents; their fingerprint describes the same",
-        "read. For inputs queued on an ask builder, formatting errors return",
-        "`ValidationError::Graph`. During a `read_node` tool call, a formatting error is",
-        "returned to the agent as a tool error, so it can continue and recover.",
-        "`NodeContent` and `NodeId` retain their application-defined types without",
-        "serialization or display bounds.",
+        "Loading and fallible preparation occur in `Domain::node_content` under",
+        "{cite}`requirements.sdk.graph.fingerprint_content`. For inputs queued on an ask",
+        "builder, these failures return `ValidationError::Graph`. During a `read_node`",
+        "tool call, they are returned to the agent as a tool error, so it can continue",
+        "and recover.",
+        ":::"
+      ]
+    },
+    {
+      "requirements": "requirements.sdk.graph.fingerprint_content.format",
+      "matches": [
+        "requirements.sdk.graph.fingerprint_content.format"
+      ],
+      "text": [
+        ":::{req} fingerprint_content.format",
+        "`habeas_sdk::domain::NodeContents::format` presents the retained",
+        "{term}`requirements.sdk.graph.node_contents` as text for an agent:",
+        "",
+        "```rust,ignore",
+        "pub trait NodeContents: Send + Sync {",
+        "    /// Present these retained contents as text for an agent.",
+        "    /// Use the same observation described by fingerprint().",
+        "    /// Everything needed for presentation is retained in this value.",
+        "    fn format(&self) -> String;",
+        "",
+        "    // ... fingerprint method introduced below ...",
+        "}",
+        "```",
+        "",
+        "Formatting uses the retained value and completes without further resource reads",
+        "or fallible preparation.",
         ":::"
       ]
     },
@@ -40,33 +61,27 @@
       ],
       "text": [
         ":::{req} fingerprint_content",
+        "{cite}`requirements.sdk.domain`",
+        "",
+        "`habeas_sdk::domain::Domain` reads an",
+        "{term}`requirements.sdk.application_domain`'s nodes as values implementing",
+        "`habeas_sdk::domain::NodeContents`. Reading includes the loading and preparation",
+        "needed to fingerprint and format the returned value; failures return the",
+        "domain's error:",
+        "",
         "```rust,ignore",
-        "pub trait Contents: Graph {",
+        "pub trait Domain: Clone + Send + Sync {",
+        "    // ... node identities, paths, and edge members ...",
+        "",
         "    /// The application's representation of a node's contents.",
-        "    type NodeContent: Send + Sync;",
+        "    type NodeContent: NodeContents;",
         "",
-        "    /// Fetch the contents of a node.",
+        "    /// Load and prepare this node's contents.",
         "    fn node_content(&self, node: &Self::NodeId) -> Result<Self::NodeContent, Self::Error>;",
+        "}",
         "",
-        "    /// Describe the supplied observation, without rereading the node or",
-        "    /// querying mutable external state.",
-        "    ///",
-        "    /// The same node and contents under the same rules give the same",
-        "    /// fingerprint. Everything needed is in the identity, contents, or",
-        "    /// configured rules. When the rules change, change the scheme.",
-        "    fn fingerprint(",
-        "        &self,",
-        "        node: &Self::NodeId,",
-        "        content: &Self::NodeContent,",
-        "    ) -> Fingerprint;",
-        "",
-        "    /// Present these already-read contents as text for an agent.",
-        "    /// Use the supplied contents so the text and fingerprint describe the same read.",
-        "    fn format_node_content(",
-        "        &self,",
-        "        node: &Self::NodeId,",
-        "        contents: &Self::NodeContent,",
-        "    ) -> Result<String, Self::Error>;",
+        "pub trait NodeContents: Send + Sync {",
+        "    // ... fingerprint and format methods introduced below ...",
         "}",
         "```",
         ":::"
@@ -84,8 +99,8 @@
     },
     {
       "file": "crates/habeas-sdk/tests/agent.rs",
-      "item": "fn[node_rendering_tool_errors_allow_recovery_without_recording_undelivered_contents]",
-      "hash": "b7e2426eba927a9c3c2aa8341c7d8ee427cc3be544f451c891da0f445dcb6f0b"
+      "item": "fn[node_preparation_tool_errors_allow_recovery_without_recording_undelivered_contents]",
+      "hash": "780a3e78a00800bcb04f1a2364be39b80d6e42346f543fa81fbe291519d4c5cd"
     },
     {
       "file": "crates/habeas-sdk/tests/agent.rs",
@@ -95,7 +110,7 @@
     {
       "file": "crates/habeas-sdk/tests/contracts.rs",
       "item": "fn[identities_remain_stable_and_fingerprinting_uses_the_supplied_snapshot]",
-      "hash": "3fc01801df479145b6d4b795efa66f52c7ba4652a2901a3e50990f17ee847023"
+      "hash": "5b555ba404f2d41c5bdc2c21146317c227c55eccb1c51b9ba507b0a7493be76a"
     },
     {
       "file": "crates/habeas-sdk/tests/validation.rs",
@@ -110,7 +125,7 @@
     {
       "file": "crates/habeas-sdk/tests/validation.rs",
       "item": "fn[queued_reads_selection_and_rendering_fail_before_agent_invocation]",
-      "hash": "fd110523e4e752b05cfe7dcb5228f94fd6d979f9dd26cb5c0d57d9d98407dc4d"
+      "hash": "d047c0d9cb4460688bc6c736c010d6d6a333f62c665d41e304d17ed21d3263ae"
     },
     {
       "file": "src/authoring/sdk.rs",
@@ -120,12 +135,78 @@
     {
       "file": "src/sdk.rs",
       "item": "mod[tests]/fn[domain_formats_supplied_contents_without_resolving_a_replacement]",
-      "hash": "f4d7b1b820bd1fb826e222d20ab273bb419cc71426bdef3a9129e1c837032101"
+      "hash": "5fa8d5e8ed4b0b9dc48dd397ee5954a664a7c320da908024026c5aeeaad2760a"
+    },
+    {
+      "definition": "requirements.sdk.application_domain",
+      "text": [
+        "::::{definition} application_domain",
+        ":phrase: application domain",
+        "",
+        ":::{cite} requirements.sdk.domain",
+        "An *application domain* is the application's graph, node contents, and evidence",
+        "storage, made available together for criterion execution. In the SDK, it",
+        "implements [`Domain`](../rustdocs/habeas_sdk/domain/trait.Domain.html) to supply",
+        "its shared types, node and edge operations, and evidence persistence.",
+        ":::",
+        "::::"
+      ]
+    },
+    {
+      "definition": "requirements.sdk.graph.node",
+      "text": [
+        ":::{definition} node",
+        ":phrase: graph node",
+        "",
+        "A *graph node* is a thing identified in the application's graph, such as a",
+        "requirement, a function, a test, or an issue. The application's",
+        "[`Domain::NodeId`](../../rustdocs/habeas_sdk/domain/trait.Domain.html#associatedtype.NodeId)",
+        "identifies it; its contents and the criteria evaluated on it are separate from",
+        "that identity.",
+        ":::"
+      ]
+    },
+    {
+      "definition": "requirements.sdk.graph.node_contents",
+      "text": [
+        ":::{definition} node_contents",
+        ":phrase: node contents",
+        "",
+        "*Node contents* are the application-defined data read from a",
+        "{term}`requirements.sdk.graph.node` as inputs when evaluating a",
+        "{term}`requirements.sdk.graph.validation.criterion`. An agent uses these inputs",
+        "to assess whether the criterion holds in the project. They can be source text,",
+        "parsed code, issue data, or another structured value. In the SDK,",
+        "[`Domain::NodeContent`](../../rustdocs/habeas_sdk/domain/trait.Domain.html#associatedtype.NodeContent)",
+        "represents this value and",
+        "[`Domain::node_content`](../../rustdocs/habeas_sdk/domain/trait.Domain.html#tymethod.node_content)",
+        "obtains it. The value implements",
+        "[`NodeContents`](../../rustdocs/habeas_sdk/domain/trait.NodeContents.html)",
+        "to supply its fingerprint and agent text.",
+        ":::"
+      ]
+    },
+    {
+      "definition": "requirements.sdk.graph.validation.criterion",
+      "text": [
+        ":::{definition} criterion",
+        ":phrase: criterion",
+        "",
+        "A *criterion* is a value describing a test to perform on a",
+        "{term}`requirements.sdk.graph.node`.",
+        "In the SDK, its type implements",
+        "[`Criterion<D>`](../../../rustdocs/habeas_sdk/graph/trait.Criterion.html) for the",
+        "{term}`requirements.sdk.application_domain`. Its",
+        "[`Criterion::Ok`](../../../rustdocs/habeas_sdk/graph/trait.Criterion.html#associatedtype.Ok)",
+        "type describes the completed answer, which can include a negative assessment.",
+        "An execution error means no completed answer was produced.",
+        ":::"
+      ]
     },
     {
       "file": "crates/habeas-sdk/tests/agent.rs",
-      "item": "struct[Memory]",
-      "hash": "565c538114197abba5831912c0ce8485c97f2f89100d3647640517a9036c49e7"
+      "item": "impl[ParallelConversations/CompletionProvider]/fn[complete]",
+      "hash": "9b76c57be2910b2f98ffe6cb68c23fcf71f2ee1afad1aafdceccb1d3122f530e"
     },
     {
       "file": "crates/habeas-sdk/tests/agent.rs",
@@ -134,8 +215,8 @@
     },
     {
       "file": "crates/habeas-sdk/tests/agent.rs",
-      "item": "impl[Memory/Contents]/fn[format_node_content]",
-      "hash": "2b4cb190fdf0daf77a97e7d2f102e83d41792bbdd9d69b4e468f11eb014a7c11"
+      "item": "impl[Memory/Domain]/fn[node_content]",
+      "hash": "fa846ed496bfbbf139d6226555032c70dc773fba2c5f494680f06576f7c13c10"
     },
     {
       "file": "crates/habeas-sdk/tests/agent.rs",
@@ -143,24 +224,19 @@
       "hash": "71b30a6c494353acecdeadc53d2f250a6e34cb8a697572bfa3cde2d13c5970cc"
     },
     {
-      "file": "crates/habeas-sdk/tests/contracts.rs",
-      "item": "impl[Application/Contents]/fn[format_node_content]",
-      "hash": "4ef5897e8093496a8ab4f2634becf37d681994c461d4739472935b90b582b901"
-    },
-    {
       "file": "crates/habeas-sdk/tests/validation.rs",
-      "item": "impl[Memory/Contents]/fn[format_node_content]",
-      "hash": "815dff9e7ba116a5dbac8f7609749bbaa455d0aa9890c826d798edfc4e2f7024"
+      "item": "impl[Memory/Domain]/fn[node_content]",
+      "hash": "48e6e232c127fbbe6657844de47a68192f416aa79b7b135d4ef2a13968cdd9b7"
     },
     {
       "file": "crates/habeas-sdk/tests/agent.rs",
-      "item": "struct[Node]",
-      "hash": "37a5d012a8c68e204aa82707b29ccf1782aab55095e84abb1a0e498034e1b462"
+      "item": "impl[Question/Criterion<Memory>]/fn[execute]",
+      "hash": "b1906e0c4845a2120f414886d7f7afa2029fed7cfedeae7855f77c3a8aa45ea3"
     },
     {
-      "file": "crates/habeas-sdk/tests/contracts.rs",
-      "item": "struct[Node]",
-      "hash": "6432ba1c03e5d58df823ea2106175d9c26356019b703ba3906c9d80ba040abd6"
+      "file": "crates/habeas-sdk/tests/agent.rs",
+      "item": "impl[Content/NodeContents]/fn[format]",
+      "hash": "2e13a9c71949603081544527e9cca6f70d48b4adb337c3f825ccc593226a8f91"
     }
   ],
   "format_version": 1,
@@ -173,7 +249,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "be8dfa22dce3f9297803609deae03b7b9d0aafd2150eb790d6da62f8e199b8aa"
+          "value": "400ce2fae3e1cd536e3789d41a52c2378909e7648f02664ebecde71e1444554c"
         }
       ]
     },
@@ -185,7 +261,7 @@
         "Mandatory",
         {
           "scheme": "node-path-set-sha256-v1",
-          "value": "f47f07ee732ddc6e6e9a6e82d2222bd038572343738be731d5d1842fae525a81"
+          "value": "64263d2bd634ae70de11db6b119def0dce26d7ec03dbdddc075c2b8e60404b0e"
         }
       ]
     },
@@ -196,18 +272,29 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "2240ab0a4a2fb2dcee37db2e6d435e45632a750f0ba4036bd74beb8fc8b4fd7a"
+          "value": "c3e1855d9c4755f24e0ba31214b28482dd2980fd45219a0d7dcd5bf903643fc0"
         }
       ]
     },
     {
       "Node": [
         {
-          "Requirement": "requirements.sdk.graph.fingerprinting.fingerprint_content"
+          "Requirement": "requirements.sdk.graph.fingerprint_content.format"
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "d365fb018bf385ee2ca11d4d3031839f05099ba49211652f24dbfd8e553bb43d"
+          "value": "a78a00df47265e2ffa6341d4f4ec3fff87f1a9c4e61edd4aa38af62d58b37295"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Requirement": "requirements.sdk.graph.fingerprint_content"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "e31781819df7eb642e6de772f112763807e31734f625a300c4a453fffbf97eb8"
         }
       ]
     },
@@ -253,12 +340,12 @@
               "scheme": "repo",
               "location": "crates/habeas-sdk/tests/agent.rs"
             },
-            "selector": "fn[node_rendering_tool_errors_allow_recovery_without_recording_undelivered_contents]"
+            "selector": "fn[node_preparation_tool_errors_allow_recovery_without_recording_undelivered_contents]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "85634904971a778d5c49894dd3f9f2b213eed866a22202d43d071a069af608c7"
+          "value": "72e165d01c107db8ed43e47a9c56e2faa7a7281b0799d13f20e08d49baef5b39"
         }
       ]
     },
@@ -292,7 +379,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "62a182ff054e274be28e7d3b1262b5d3cc5f3047e0e55f4f844ba77c7f2f9695"
+          "value": "9a5ace818f6db87f1b12f52bed3f6835f338dea305408ee84f35ad2c347cf83a"
         }
       ]
     },
@@ -343,7 +430,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "7f1bfa7adae1f9d11b91c40ee5c64b10950910c16e9426d01dab22f3f49783a9"
+          "value": "486994bba7d4f498d1fefcedf9fc754da52baaca3625a2158f5c397f51689c61"
         }
       ]
     },
@@ -377,7 +464,51 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "54b12524c5c23e1b75c58adb16eaa84ade104659cae4fd701fb72526b7040e1d"
+          "value": "7702d2eb6481ae04124aab1977e354e163a62b7a00b68dd7a335124ee5d79b5f"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Definition": "requirements.sdk.application_domain"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "06b6b74d72930371b54914feda84291d29d853e0f7c28f21c70e05e159e03c3c"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Definition": "requirements.sdk.graph.node"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "675c31eae718cabdbe8f87dcaefd03186850a1d220bc3ce771880ab561390b8c"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Definition": "requirements.sdk.graph.node_contents"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "26295b24a606a52f8d6061b8bf64e86e9507be9b1c8a8b1466a259680a7b3434"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Definition": "requirements.sdk.graph.validation.criterion"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "73e6737929f8def28d03ab42c2712d51df6131e53c8330c6c9ce8e04c4bab4b1"
         }
       ]
     },
@@ -389,12 +520,12 @@
               "scheme": "repo",
               "location": "crates/habeas-sdk/tests/agent.rs"
             },
-            "selector": "struct[Memory]"
+            "selector": "impl[ParallelConversations/CompletionProvider]/fn[complete]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "aa6f6a068cf59d391f2bd2f174633f768666d3230b1ee0461329de998750340b"
+          "value": "bffe151f9f62fca6482eb02b8e8ffd94cb155d303aeb1549e016cd45594784d8"
         }
       ]
     },
@@ -423,12 +554,12 @@
               "scheme": "repo",
               "location": "crates/habeas-sdk/tests/agent.rs"
             },
-            "selector": "impl[Memory/Contents]/fn[format_node_content]"
+            "selector": "impl[Memory/Domain]/fn[node_content]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "b650e59e28f66b1d42c38b7aa543b337777d05bfc07d4748d09df4f8fa77d4c8"
+          "value": "c2eac87a0cd4883500753e041f54d388005c4737db01fec3d5f9e0feeced1323"
         }
       ]
     },
@@ -455,31 +586,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/contracts.rs"
-            },
-            "selector": "impl[Application/Contents]/fn[format_node_content]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "aabc535d3731e394e98d7deb75ed9e39966b0c49365055f11a18f5984935a083"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
               "location": "crates/habeas-sdk/tests/validation.rs"
             },
-            "selector": "impl[Memory/Contents]/fn[format_node_content]"
+            "selector": "impl[Memory/Domain]/fn[node_content]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "0c53962008c3d51810822ce89de7532b94dc99981c58b0d60e37a48f8dd2d297"
+          "value": "0881a391361d49d8a1037f71f1f17f82304edf60df648cf948dfe2decbe07928"
         }
       ]
     },
@@ -491,12 +605,12 @@
               "scheme": "repo",
               "location": "crates/habeas-sdk/tests/agent.rs"
             },
-            "selector": "struct[Node]"
+            "selector": "impl[Question/Criterion<Memory>]/fn[execute]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "dd4a201006d469e027fb8f7ed4890dc5a8ee7252210ee6df4664916375b672ff"
+          "value": "91befb8fadfd6af35ef65b634dc6a8f772ac8d9f9fd3595c8ac1961519d73e29"
         }
       ]
     },
@@ -506,14 +620,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/contracts.rs"
+              "location": "crates/habeas-sdk/tests/agent.rs"
             },
-            "selector": "struct[Node]"
+            "selector": "impl[Content/NodeContents]/fn[format]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "124c6b0c72fe4c4863e1dac2896d9f0a717336d624cb5e70f269ceedf5969755"
+          "value": "1e480e75b099e303f4525ced07f0861d64489fca14fac8cd936140ef1cd9e428"
         }
       ]
     }

@@ -6,9 +6,10 @@ use crate::{
     sdk::{HabeasDomain, HabeasEdgeLabel, HabeasNode, input_fingerprint},
 };
 use habeas_sdk::{
+    domain::{Domain, NodeContents},
     graph::{
-        Contents, Criterion, CriterionPath, Fingerprint, Graph, InspectionContext, NodePath,
-        Storage, ValidationContext, ValidationError,
+        Criterion, CriterionPath, Fingerprint, InspectionContext, NodePath, ValidationContext,
+        ValidationError,
     },
     procedure::{Agent, AgentRequest},
 };
@@ -57,7 +58,24 @@ struct ReviewGraph<'a> {
     agent_failure: Arc<Mutex<Option<io::Error>>>,
 }
 
-impl Graph for ReviewGraph<'_> {
+struct ReviewContent {
+    fingerprint: Fingerprint,
+    text: String,
+}
+impl NodeContents for ReviewContent {
+    // {impl}`requirements.sdk.graph.fingerprint_content.fingerprint`
+    fn fingerprint(&self) -> Fingerprint {
+        self.fingerprint.clone()
+    }
+    // {impl}`requirements.sdk.graph.fingerprint_content.format`
+    // {impl}`requirements.sdk.graph.agent-calls.judge.rendering`
+    fn format(&self) -> String {
+        self.text.clone()
+    }
+}
+
+// {impl}`requirements.sdk.domain`
+impl Domain for ReviewGraph<'_> {
     type NodeId = HabeasNode;
     type EdgeLabel = HabeasEdgeLabel;
     type Error = io::Error;
@@ -83,20 +101,7 @@ impl Graph for ReviewGraph<'_> {
             self.domain().outgoing_edges(node, label)
         }
     }
-}
 
-impl ReviewGraph<'_> {
-    // {cite}`habeas:util`
-    fn domain(&self) -> HabeasDomain<'_> {
-        HabeasDomain {
-            root: &self.root,
-            definitions: &self.definitions,
-            outlines: &self.outlines,
-        }
-    }
-}
-
-impl Storage for ReviewGraph<'_> {
     // {impl}`requirements.sdk.graph.evidence.evidence_storage`
     async fn load_evidence(
         &self,
@@ -117,42 +122,44 @@ impl Storage for ReviewGraph<'_> {
             .store_evidence(source, criterion, record)
             .await
     }
-}
 
-// {impl}`requirements.sdk.domain`
-impl Contents for ReviewGraph<'_> {
-    type NodeContent = Value;
+    type NodeContent = ReviewContent;
 
-    // {cite}`habeas:util`
-    fn node_content(&self, node: &HabeasNode) -> io::Result<Value> {
-        if matches!(node, HabeasNode::ReferenceSet(_)) {
-            return Ok(json!({"reference_set": self.reference_set}));
-        }
-        if let Some((_, input)) = self.mandatory.iter().find(|(id, _)| id == node) {
-            return Ok(input.clone());
-        }
-        let selector = node.selector()?;
-        let contents = self.domain().node_content(node)?;
-        Ok(selector.to_model_input(&contents))
-    }
-
-    // {cite}`habeas:util`
-    fn fingerprint(&self, node: &HabeasNode, content: &Value) -> Fingerprint {
-        if matches!(node, HabeasNode::ReferenceSet(_)) {
-            return Fingerprint {
+    // {impl}`requirements.sdk.graph.fingerprint_content`
+    fn node_content(&self, node: &HabeasNode) -> io::Result<ReviewContent> {
+        let model = if matches!(node, HabeasNode::ReferenceSet(_)) {
+            json!({"reference_set": self.reference_set})
+        } else if let Some((_, input)) = self.mandatory.iter().find(|(id, _)| id == node) {
+            input.clone()
+        } else {
+            let selector = node.selector()?;
+            let contents = self.domain().node_content(node)?;
+            selector.to_model_input(&contents.resolved)
+        };
+        let fingerprint = if matches!(node, HabeasNode::ReferenceSet(_)) {
+            Fingerprint {
                 scheme: "habeas-reference-set-v1".into(),
-                value: content["reference_set"]
+                value: model["reference_set"]
                     .as_str()
                     .expect("reference digest")
                     .into(),
-            };
-        }
-        input_fingerprint(&model_recorded_input(content))
+            }
+        } else {
+            input_fingerprint(&model_recorded_input(&model))
+        };
+        let text = serde_json::to_string(&model).map_err(io::Error::other)?;
+        Ok(ReviewContent { fingerprint, text })
     }
+}
 
-    // {impl}`requirements.sdk.graph.agent-calls.judge.rendering`
-    fn format_node_content(&self, _: &HabeasNode, contents: &Value) -> io::Result<String> {
-        serde_json::to_string(contents).map_err(io::Error::other)
+impl ReviewGraph<'_> {
+    // {cite}`habeas:util`
+    fn domain(&self) -> HabeasDomain<'_> {
+        HabeasDomain {
+            root: &self.root,
+            definitions: &self.definitions,
+            outlines: &self.outlines,
+        }
     }
 }
 
@@ -543,19 +550,15 @@ mod tests {
         assert!(inspection.dependencies().is_empty());
         let delivered = inspection.read(&source).unwrap();
         assert_eq!(
-            delivered,
-            selector.to_model_input(&graph.domain().node_content(&source).unwrap())
+            serde_json::from_str::<Value>(&delivered.format()).unwrap(),
+            selector.to_model_input(&graph.domain().node_content(&source).unwrap().resolved)
         );
-        assert!(
-            serde_json::to_string(&delivered)
-                .unwrap()
-                .contains("call();")
-        );
+        assert!(delivered.format().contains("call();"));
         assert_eq!(
             inspection.dependencies(),
             vec![habeas_sdk::graph::Dependency::Node(
                 source.clone(),
-                graph.fingerprint(&source, &delivered)
+                delivered.fingerprint()
             )]
         );
         assert!(
@@ -908,7 +911,7 @@ mod tests {
     // {test}`requirements.ci.requirement_text`
     #[tokio::test]
     async fn every_review_kind_loads_both_formats_and_reports_each_application_failure_once() {
-        use habeas_sdk::graph::Storage;
+        use habeas_sdk::domain::Domain;
         let source = format!(
             "{}\n// {{cite}}`requirements.rule`\nfn helper() {{}}\n// {{test}}`requirements.sample`\n#[test]\nfn sample() {{}}\n",
             crate::sites::tests::SOURCE

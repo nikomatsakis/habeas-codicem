@@ -1,3 +1,4 @@
+use habeas_sdk::domain::{Domain, NodeContents};
 use habeas_sdk::{graph::*, storage::*};
 use serde::{Serialize, Serializer};
 use serde_json::json;
@@ -396,7 +397,27 @@ fn concurrent_readers_only_observe_complete_records_from_competing_writes() {
 #[derive(Clone)]
 struct StoredGraph(FileEvidenceStorage);
 
-impl Graph for StoredGraph {
+enum UnreadContents {}
+impl NodeContents for UnreadContents {
+    // :::{cite} habeas:coverage
+    // UnreadContents is uninhabited: this storage-only fixture cannot construct
+    // a value or call a content method. The implementation discharges the
+    // Domain associated-type bound; its empty match has no executable case.
+    // :::
+    fn fingerprint(&self) -> Fingerprint {
+        match *self {}
+    }
+    // :::{cite} habeas:coverage
+    // Formatting requires a value of the uninhabited UnreadContents type.
+    // This empty match has no executable case; storage tests deliberately
+    // supply no content values and reject node reads at the domain boundary.
+    // :::
+    fn format(&self) -> String {
+        match *self {}
+    }
+}
+
+impl Domain for StoredGraph {
     type NodeId = String;
     type EdgeLabel = ();
 
@@ -406,7 +427,7 @@ impl Graph for StoredGraph {
         NodePath::new(vec!["consumer".into(), node.clone()])
     }
     // :::{cite} habeas:coverage
-    // Contents requires this callback even for a storage-only consumer. The
+    // Domain requires this callback even for a storage-only consumer. The
     // delegation test must use only node_path; discovering edges would be
     // an unwanted graph access, which this guard rejects. Traversal fixtures
     // separately exercise edge discovery.
@@ -414,8 +435,7 @@ impl Graph for StoredGraph {
     fn outgoing_edges(&self, _: &String, _: ()) -> Result<Vec<String>, Self::Error> {
         panic!("storage operations must not discover graph edges")
     }
-}
-impl Storage for StoredGraph {
+
     async fn load_evidence(
         &self,
         node: &String,
@@ -431,38 +451,17 @@ impl Storage for StoredGraph {
     ) -> Result<(), Self::Error> {
         self.0.store(&self.node_path(node), criterion, record).await
     }
-}
 
-impl Contents for StoredGraph {
-    type NodeContent = ();
+    type NodeContent = UnreadContents;
 
     // :::{cite} habeas:coverage
     // This storage-only consumer must delegate load/store using node_path
-    // without resolving contents. Contents requires the callback, but invoking
+    // without resolving contents. Domain requires the callback, but invoking
     // this guard would violate the no-content-read invariant of the test.
     // Other graph fixtures exercise content resolution.
     // :::
-    fn node_content(&self, _: &String) -> Result<(), Self::Error> {
+    fn node_content(&self, _: &String) -> Result<UnreadContents, Self::Error> {
         panic!("storage operations must not read graph contents")
-    }
-
-    // :::{cite} habeas:coverage
-    // These checks load and store recorded dependencies without checking their
-    // freshness. Fingerprinting is outside the storage and output-decoding
-    // operations being tested, so this guard must remain unused.
-    // Other domain fixtures exercise tracked fingerprint observations.
-    // :::
-    fn fingerprint(&self, _: &String, _: &()) -> Fingerprint {
-        panic!("storage and output-decoding checks must not resolve contents")
-    }
-
-    // :::{cite} habeas:coverage
-    // This storage-only domain verifies output decoding without reading or
-    // presenting node contents. A formatter call would be an unwanted graph
-    // access. Agent fixtures exercise formatting separately.
-    // :::
-    fn format_node_content(&self, _: &String, _: &()) -> Result<String, Self::Error> {
-        panic!("storage operations must not format graph contents")
     }
 }
 
