@@ -1,7 +1,8 @@
-//! Habeas configuration adapters for the SDK source-access machinery.
+//! Habeas source access and configuration policy.
 use std::io;
 use std::path::{Path, PathBuf};
-pub(crate) use trust_but_verify::access::*;
+mod policy;
+pub(crate) use policy::*;
 
 // {impl}`requirements.configuration.evidence_paths`
 // {impl}`requirements.configuration.workspace_location`
@@ -39,7 +40,7 @@ pub(crate) fn load_discovery_sources(root: &Path) -> io::Result<DiscoverySources
 // {impl}`requirements.ci.input_containment`
 pub(crate) fn resolve_evidence_file(root: &Path, file: &str) -> io::Result<PathBuf> {
     let root = std::fs::canonicalize(root)?;
-    trust_but_verify::access::resolve_evidence_file(&root, file, || load_policy(&root))
+    policy::resolve_evidence_file(&root, file, || load_policy(&root))
 }
 
 #[cfg(test)]

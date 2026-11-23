@@ -1,4 +1,4 @@
-//! Resource exploration independent of filesystem paths and graph meaning.
+//! Built-in project inspection and its internal source adapters.
 
 use crate::outline::language::Registry;
 use crate::{
@@ -10,11 +10,10 @@ use crate::{
 use serde_json::{Map, Value};
 use std::{
     future::Future,
-    path::{Path, PathBuf},
-    sync::Arc,
+    path::{Component, Path, PathBuf},
+    sync::{Arc, Mutex},
 };
 
-pub type LanguageRegistry = Registry;
 pub type LanguageId = String;
 
 // {cite}`habeas:util`
@@ -26,11 +25,16 @@ pub struct SourceScope {
 impl SourceScope {
     // {cite}`habeas:util`
     pub fn contains(&self, id: &ResourceId) -> bool {
-        let prefix = self.prefix.trim_end_matches('/').trim_start_matches("./");
-        prefix.is_empty()
-            || prefix == "."
-            || id.location == prefix
-            || id.location.starts_with(&format!("{prefix}/"))
+        let mut prefix = PathBuf::new();
+        for component in Path::new(&self.prefix).components() {
+            match component {
+                Component::Normal(part) => prefix.push(part),
+                Component::CurDir => {}
+                Component::ParentDir if prefix.pop() => {}
+                _ => return false,
+            }
+        }
+        Path::new(&id.location).starts_with(prefix)
     }
 }
 
@@ -109,6 +113,64 @@ pub struct SearchResults<T> {
 }
 pub type TextMatches = SearchResults<TextMatch>;
 pub type StructuralMatches = SearchResults<StructuralMatch>;
+
+/// Filesystem inspection rooted in a project directory.
+///
+/// Listing, reading, outlining, and searching share the project's `.gitignore`
+/// rules. Untracked files are available unless ignored. The outline languages
+/// enabled at compile time are selected by file extension.
+pub struct Sources {
+    pub(crate) analysis: SourceAnalysis<LocalSources>,
+}
+
+impl Sources {
+    // {impl}`requirements.sdk.sources.provider`
+    /// Inspect the project directory with the SDK's built-in defaults.
+    pub fn new(root: impl Into<PathBuf>) -> Self {
+        #[cfg(feature = "default-languages")]
+        let languages = crate::outline::languages::registry();
+        #[cfg(not(feature = "default-languages"))]
+        let languages = Registry::new([]);
+        Self {
+            analysis: SourceAnalysis::new(LocalSources::new(root), languages),
+        }
+    }
+
+    // {impl}`requirements.sdk.graph.context-tools.list_sources.fn`
+    // {impl}`requirements.sdk.sources.provider.errors`
+    /// List available project files within a relative path scope.
+    pub async fn list(&self, scope: &SourceScope) -> Result<Vec<ResourceId>, SourceError> {
+        self.analysis.provider.list(scope).await
+    }
+
+    // {impl}`requirements.sdk.sources.provider.errors`
+    /// Read an available project file, including a successful empty file.
+    pub async fn read(&self, id: &ResourceId) -> Result<SourceFile, SourceError> {
+        self.analysis.provider.read(id).await
+    }
+
+    // {impl}`requirements.sdk.graph.context-tools.outline_source.fn`
+    // {impl}`requirements.sdk.sources.provider_defaults`
+    /// Read and outline one file snapshot using its extension's language.
+    pub async fn parse(&self, id: &ResourceId) -> Result<ParsedSource, SourceError> {
+        self.analysis.parse(id).await
+    }
+
+    // {impl}`requirements.sdk.graph.context-tools.search_text.fn`
+    /// Search the available files with a regular expression.
+    pub async fn search_text(&self, query: &TextQuery) -> Result<TextMatches, SourceError> {
+        self.analysis.provider.search_text(query).await
+    }
+
+    // {impl}`requirements.sdk.graph.context-tools.search_structure.fn`
+    /// Search the available files with the selected language's syntax rules.
+    pub async fn search_structure(
+        &self,
+        query: &StructuralQuery,
+    ) -> Result<StructuralMatches, SourceError> {
+        self.analysis.search_structure(query).await
+    }
+}
 
 // {impl}`requirements.sdk.sources.provider`
 // {impl}`requirements.sdk.sources.provider.errors`
@@ -285,10 +347,33 @@ impl LocalSources {
         Self { root: root.into() }
     }
 
-    fn path(&self, location: &str) -> Result<PathBuf, SourceError> {
+    fn project_directory(&self) -> Result<PathBuf, SourceError> {
         let root = self.root.canonicalize()?;
-        let path = root.join(location).canonicalize()?;
-        if !path.starts_with(&root) {
+        if !root.is_dir() {
+            return Err(SourceError::Invalid(
+                "project root must be a directory".into(),
+            ));
+        }
+        Ok(root)
+    }
+
+    fn path(&self, location: &str) -> Result<PathBuf, SourceError> {
+        let root = self.project_directory()?;
+        let mut relative = PathBuf::new();
+        for component in Path::new(location).components() {
+            match component {
+                Component::Normal(part) => relative.push(part),
+                Component::CurDir => {}
+                Component::ParentDir if relative.pop() => {}
+                _ => {
+                    return Err(SourceError::Invalid(
+                        "source path must be relative to the project directory".into(),
+                    ));
+                }
+            }
+        }
+        let path = root.join(relative);
+        if !path.canonicalize()?.starts_with(&root) {
             return Err(SourceError::Invalid(
                 "source is outside the selected root".into(),
             ));
@@ -297,12 +382,59 @@ impl LocalSources {
     }
 
     pub fn list_sync(&self, scope: &SourceScope) -> Result<Vec<ResourceId>, SourceError> {
-        let root = self.root.canonicalize()?;
+        let root = self.project_directory()?;
         let selected = self.path(&scope.prefix)?;
         let mut resources = Vec::new();
-        for entry in ignore::WalkBuilder::new(selected).hidden(false).build() {
+        let filter_root = root.clone();
+        let filter_scope = selected.clone();
+        let visibility_error = Arc::new(Mutex::new(None));
+        let filter_error = visibility_error.clone();
+        let mut walker = ignore::WalkBuilder::new(&root);
+        walker
+            .hidden(false)
+            .parents(false)
+            .ignore(false)
+            .git_global(false)
+            .git_exclude(false)
+            .require_git(false)
+            .follow_links(true)
+            .filter_entry(move |entry| {
+                let path = entry.path();
+                if !filter_scope.starts_with(path) && !path.starts_with(&filter_scope) {
+                    return false;
+                }
+                if git_metadata(&filter_root, path) {
+                    return false;
+                }
+                match path.canonicalize() {
+                    Ok(target) => {
+                        if !target.starts_with(&filter_root) {
+                            return false;
+                        }
+                        if target == path {
+                            return true;
+                        }
+                        match project_path_visible(&filter_root, &target) {
+                            Ok(visible) => visible,
+                            Err(error) => {
+                                *filter_error.lock().expect("visibility error lock") = Some(error);
+                                false
+                            }
+                        }
+                    }
+                    // Let the walker report filesystem errors.
+                    Err(_) => true,
+                }
+            });
+        for entry in walker.build() {
             let entry = entry.map_err(|error| SourceError::Invalid(error.to_string()))?;
+            if let Some(error) = entry.error() {
+                return Err(SourceError::Invalid(error.to_string()));
+            }
             if !entry.file_type().is_some_and(|kind| kind.is_file()) {
+                continue;
+            }
+            if !entry.path().starts_with(&selected) {
                 continue;
             }
             let location = entry
@@ -317,6 +449,13 @@ impl LocalSources {
                 location,
             });
         }
+        if let Some(error) = visibility_error
+            .lock()
+            .expect("visibility error lock")
+            .take()
+        {
+            return Err(error);
+        }
         resources.sort_by(|a, b| a.location.cmp(&b.location));
         Ok(resources)
     }
@@ -328,12 +467,24 @@ impl LocalSources {
                 id.scheme
             )));
         }
+        let path = self.path(&id.location)?;
+        let root = self.project_directory()?;
+        let target = path.canonicalize()?;
+        if !project_path_visible(&root, &path)?
+            || (target != path && !project_path_visible(&root, &target)?)
+        {
+            return Err(SourceError::Invalid(format!(
+                "source is excluded from project inspection: {}",
+                id.location
+            )));
+        }
         Ok(SourceFile {
-            bytes: std::fs::read(self.path(&id.location)?)?.into(),
+            bytes: std::fs::read(path)?.into(),
             language: None,
         })
     }
 
+    #[cfg(test)]
     pub fn parse_sync(
         &self,
         id: &ResourceId,
@@ -341,6 +492,53 @@ impl LocalSources {
     ) -> Result<ParsedSource, SourceError> {
         parse_snapshot(id, self.read_sync(id)?, languages)
     }
+}
+
+fn git_metadata(root: &Path, path: &Path) -> bool {
+    path.strip_prefix(root).is_ok_and(|relative| {
+        relative
+            .components()
+            .any(|part| matches!(part, Component::Normal(name) if name == ".git"))
+    })
+}
+
+/// Apply each directory's rules in precedence order, stopping at ignored
+/// directories so a nested exception cannot reopen an excluded parent.
+fn project_path_visible(root: &Path, path: &Path) -> Result<bool, SourceError> {
+    use ignore::gitignore::GitignoreBuilder;
+
+    if git_metadata(root, path) {
+        return Ok(false);
+    }
+    let relative = path
+        .strip_prefix(root)
+        .map_err(|error| SourceError::Invalid(error.to_string()))?;
+    let mut directory = root.to_path_buf();
+    let mut rules = Vec::new();
+    for part in relative.components() {
+        let ignore_file = directory.join(".gitignore");
+        if ignore_file.is_file() {
+            let mut builder = GitignoreBuilder::new(&directory);
+            if let Some(error) = builder.add(ignore_file) {
+                return Err(SourceError::Invalid(error.to_string()));
+            }
+            rules.push(
+                builder
+                    .build()
+                    .map_err(|error| SourceError::Invalid(error.to_string()))?,
+            );
+        }
+        directory.push(part);
+        let matched = rules
+            .iter()
+            .rev()
+            .map(|rule| rule.matched(&directory, directory.is_dir()))
+            .find(|matched| !matched.is_none());
+        if matched.is_some_and(|matched| matched.is_ignore()) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 impl SourceProvider for LocalSources {
     type Error = SourceError;
@@ -380,3 +578,6 @@ impl<P: SourceProvider> SourceAnalysis<P> {
         self.provider.search_structure(query, &self.languages).await
     }
 }
+
+#[cfg(test)]
+mod tests;

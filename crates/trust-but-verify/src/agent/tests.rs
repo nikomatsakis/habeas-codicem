@@ -1,3 +1,6 @@
+use super::sources::SourceTools;
+use crate::domain::{Domain, NodeContents};
+use crate::{agent::*, graph::*, procedure::Context, resource::*, sources::*};
 use rig_core::{
     completion::{CompletionRequest, CompletionResponse, FinishReason, ToolDefinition, Usage},
     message::{
@@ -13,8 +16,6 @@ use std::{
     io,
     sync::{Arc, Mutex},
 };
-use trust_but_verify::domain::{Domain, NodeContents};
-use trust_but_verify::{agent::*, graph::*, procedure::Context, resource::*, sources::*};
 
 // The test application chooses its own completed-answer format.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -853,21 +854,15 @@ async fn source_tools_keep_search_discovery_separate_from_delivered_source_reads
     let root = tempfile::tempdir().unwrap();
     std::fs::write(root.path().join("note.txt"), "observed source\n").unwrap();
     let graph = Memory::new("unrelated graph bytes".into());
-    let factory = SourceTools {
-        analysis: SourceAnalysis::new(
-            LocalSources::new(root.path()),
-            trust_but_verify::language::Registry::new([]),
-        ),
-        observation: |_: &OutlineId, parsed: &ParsedSource| {
-            Ok(Some(Dependency::Node(
-                Node(7),
-                Fingerprint {
-                    scheme: "provided-snapshot".into(),
-                    value: parsed.source.text().unwrap().into(),
-                },
-            )))
-        },
-    };
+    let factory = super::SourceTools::new(root.path(), |_: &OutlineId, parsed: &ParsedSource| {
+        Ok(Some(Dependency::Node(
+            Node(7),
+            Fingerprint {
+                scheme: "provided-snapshot".into(),
+                value: parsed.source.text().unwrap().into(),
+            },
+        )))
+    });
     let agent = ToolAgent::new(Script::new(vec![
         Some(vec![("search_text", json!({"pattern":"observed"}))]),
         Some(vec![(
@@ -903,7 +898,7 @@ async fn source_reads_track_optional_dependencies_and_empty_searches_remain_disc
         let factory = SourceTools {
             analysis: SourceAnalysis::new(
                 LocalSources::new(root.path()),
-                trust_but_verify::language::Registry::new([]),
+                crate::language::Registry::new([]),
             ),
             observation: move |id: &OutlineId, parsed: &ParsedSource| {
                 assert_eq!(id.resource.location, "note.txt");
@@ -1071,7 +1066,7 @@ async fn source_discovery_and_its_pages_do_not_register_reads() {
     let factory = SourceTools {
         analysis: SourceAnalysis::new(
             LocalSources::new(root.path()),
-            trust_but_verify::language::Registry::new([]),
+            crate::language::Registry::new([]),
         ),
         observation: move |_: &OutlineId, _: &ParsedSource| {
             *seen.lock().unwrap() += 1;
@@ -1136,7 +1131,7 @@ impl SourceProvider for CachedProvider {
     async fn parse(
         &self,
         resource: &ResourceId,
-        languages: &trust_but_verify::language::Registry,
+        languages: &crate::language::Registry,
     ) -> Result<ParsedSource, SourceError> {
         parse_snapshot(
             resource,
@@ -1415,10 +1410,7 @@ async fn generic_conversations_can_use_default_telemetry_through_retry_and_conti
 async fn cached_selected_source_reads_record_exact_delivered_contents_and_errors_add_no_input() {
     let graph = Memory::new("different current source".into());
     let factory = SourceTools {
-        analysis: SourceAnalysis::new(
-            CachedProvider,
-            trust_but_verify::outline::languages::registry(),
-        ),
+        analysis: SourceAnalysis::new(CachedProvider, crate::outline::languages::registry()),
         observation: |id: &OutlineId, parsed: &ParsedSource| {
             let index = parsed
                 .outline
@@ -1887,7 +1879,7 @@ async fn source_read_pages_retain_text_and_dependencies_without_another_read() {
     let factory = SourceTools {
         analysis: SourceAnalysis::new(
             LocalSources::new(root.path()),
-            trust_but_verify::language::Registry::new([]),
+            crate::language::Registry::new([]),
         ),
         observation: move |id: &OutlineId, parsed: &ParsedSource| {
             assert_eq!(id.selector, "");
@@ -1991,7 +1983,7 @@ async fn source_tools_forward_arguments_and_present_discovery_and_read_results()
         async fn search_structure(
             &self,
             query: &StructuralQuery,
-            _: &trust_but_verify::language::Registry,
+            _: &crate::language::Registry,
         ) -> Result<StructuralMatches, SourceError> {
             self.0.lock().unwrap().push(json!({"structure":query.language,"rule":query.rule,"prefix":query.scope.prefix,"limit":query.limit}));
             if query.language == "error" {
@@ -2022,7 +2014,7 @@ async fn source_tools_forward_arguments_and_present_discovery_and_read_results()
     let factory = SourceTools {
         analysis: SourceAnalysis::new(
             Provider(calls.clone()),
-            trust_but_verify::outline::languages::registry(),
+            crate::outline::languages::registry(),
         ),
         observation: move |id: &OutlineId, parsed: &ParsedSource| {
             observed.lock().unwrap().push(id.clone());
@@ -2192,7 +2184,7 @@ async fn source_outlines_present_every_top_level_and_nested_item() {
     let factory = SourceTools {
         analysis: SourceAnalysis::new(
             LocalSources::new(root.path()),
-            trust_but_verify::outline::languages::registry(),
+            crate::outline::languages::registry(),
         ),
         observation: |_: &OutlineId,
                       _: &ParsedSource|
@@ -2244,7 +2236,7 @@ async fn empty_structural_search_results_remain_discovery() {
     let factory = SourceTools {
         analysis: SourceAnalysis::new(
             LocalSources::new(root.path()),
-            trust_but_verify::outline::languages::registry(),
+            crate::outline::languages::registry(),
         ),
         observation: move |_: &OutlineId,
                            _: &ParsedSource|

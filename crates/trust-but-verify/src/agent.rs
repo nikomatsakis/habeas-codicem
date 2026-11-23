@@ -16,8 +16,47 @@ mod backoff;
 mod sources;
 mod tools;
 pub use backoff::{ProviderBackoff, RETRY_LIMIT, Retry, failure_codes, retry_after};
-pub use sources::SourceTools;
 pub use tools::{NoTools, ToolAgent, ToolDelivery, ToolFactory, ToolSession};
+
+/// Built-in project source tools with an application graph-observation mapping.
+///
+/// File access and outline languages use the SDK's defaults. The mapping
+/// receives the exact snapshot delivered to the agent.
+pub struct SourceTools<F> {
+    inner: sources::SourceTools<crate::sources::LocalSources, F>,
+}
+
+impl<F> SourceTools<F> {
+    // {impl}`requirements.sdk.sources.provider`
+    /// Inspect this project directory and map selected items into the graph.
+    pub fn new(root: impl Into<std::path::PathBuf>, observation: F) -> Self {
+        Self {
+            inner: sources::SourceTools {
+                analysis: crate::Sources::new(root).analysis,
+                observation,
+            },
+        }
+    }
+}
+
+impl<D, F> ToolFactory<D> for SourceTools<F>
+where
+    D: crate::domain::Domain,
+    F: Fn(
+            &crate::resource::OutlineId,
+            &crate::ParsedSource,
+        ) -> Result<Option<crate::graph::Dependency<D::NodeId, D::EdgeLabel>>, String>
+        + Send
+        + Sync,
+{
+    fn session<'a>(&'a self) -> Box<dyn ToolSession<D> + 'a>
+    where
+        D::NodeId: 'a,
+        D::EdgeLabel: 'a,
+    {
+        self.inner.session()
+    }
+}
 
 pub trait CompletionProvider: Send + Sync {
     // {cite}`habeas:util`
@@ -30,6 +69,9 @@ pub trait CompletionProvider: Send + Sync {
         None
     }
 }
+
+#[cfg(test)]
+mod tests;
 
 // {cite}`habeas:util`
 pub enum Submission<T> {

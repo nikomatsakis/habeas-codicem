@@ -583,24 +583,8 @@ fn check_project_file(root: &Path, file: &str) -> Result<PathBuf, String> {
 
 pub(crate) fn read_project_file(root: &Path, file: &str) -> Result<(PathBuf, String), String> {
     let path = check_project_file(root, file)?;
-    // Habeas has already checked its explicit allow/disallow and build-output
-    // policy. A provider scope can therefore include an allowed external file.
-    let (scope, location) = match path.strip_prefix(root) {
-        Ok(relative) => (root, relative),
-        Err(_) => (
-            path.parent().expect("source parent"),
-            Path::new(path.file_name().expect("source name")),
-        ),
-    };
-    let resource = trust_but_verify::resource::ResourceId {
-        scheme: "repo".into(),
-        location: location.to_string_lossy().into_owned(),
-    };
-    let source = trust_but_verify::sources::LocalSources::new(scope)
-        .read_sync(&resource)
-        .map_err(|error| format!("cannot read {file}: {error}"))?;
-    let content = source
-        .text()
+    let bytes = fs::read(&path).map_err(|error| format!("cannot read {file}: {error}"))?;
+    let content = std::str::from_utf8(&bytes)
         .map_err(|error| format!("cannot read {file}: {error}"))?
         .to_owned();
     Ok((path, content))

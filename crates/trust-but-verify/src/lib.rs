@@ -1,10 +1,9 @@
 //! Typed graph observations, deterministic checks, and explicit model authoring.
 //!
-//! Consumers own domain meaning, resource resolution, and evidence persistence.
-//! Source tooling lives in [`outline`]; its language collection is available
-//! through the `default-languages` feature.
+//! Consumers own domain meaning, source-node mappings, and evidence persistence.
+//! [`Sources`] inspects project files using `.gitignore` defaults. Source
+//! outlines and their bundled languages live in [`outline`].
 
-pub mod access;
 pub mod outline;
 pub mod redaction;
 pub mod search;
@@ -14,7 +13,11 @@ pub mod agent;
 pub mod domain;
 pub mod graph;
 pub mod procedure;
-pub mod sources;
+mod sources;
+pub use sources::{
+    LanguageId, ParsedSource, SearchResults, SourceError, SourceFile, SourceScope, Sources,
+    StructuralMatch, StructuralMatches, StructuralQuery, TextMatch, TextMatches, TextQuery,
+};
 pub mod storage;
 pub use outline::language;
 pub mod resource;
