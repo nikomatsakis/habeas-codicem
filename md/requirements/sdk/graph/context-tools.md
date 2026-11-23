@@ -253,6 +253,8 @@ The SDK offers this `SourceProvider` method. Its source tools expose the
 
 ```rust,ignore
 pub trait SourceProvider: Send + Sync {
+    // ...
+
     type Error: From<SourceError> + Send;
 
     /// List resource identities within this scope.
@@ -261,7 +263,7 @@ pub trait SourceProvider: Send + Sync {
         scope: &SourceScope,
     ) -> impl Future<Output = Result<Vec<ResourceId>, Self::Error>> + Send;
 
-    // Other provider methods omitted.
+    // ...
 }
 ```
 :::
@@ -326,6 +328,8 @@ delegation. Its source tools expose the `search_text` command.
 
 ```rust,ignore
 pub trait SourceProvider: Send + Sync {
+    // ...
+
     type Error: From<SourceError> + Send;
 
     /// Search source text.
@@ -336,7 +340,7 @@ pub trait SourceProvider: Send + Sync {
         defaults::search_text(self, query)
     }
 
-    // Other provider methods omitted.
+    // ...
 }
 ```
 :::

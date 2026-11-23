@@ -129,6 +129,8 @@ use std::future::Future;
 
 // Defined in trust_but_verify::domain.
 pub trait Domain: Clone + Send + Sync {
+    // ...
+
     /// Ok(None) means absent; Err means loading failed.
     fn load_evidence(
         &self,
@@ -146,6 +148,8 @@ pub trait Domain: Clone + Send + Sync {
         criterion: &CriterionPath,
         record: &Record<Self::NodeId, Self::EdgeLabel>,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send;
+
+    // ...
 }
 ```
 

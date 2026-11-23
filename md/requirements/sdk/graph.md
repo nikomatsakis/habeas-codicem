@@ -26,10 +26,12 @@ error type is introduced in {cite}`requirements.sdk.errors`:
 
 ```rust,ignore
 pub trait Domain: Clone + Send + Sync {
+    // ...
+
     /// The *identifier* identifies a particular node in the graph.
     type NodeId: Clone + Eq + Send + Sync;
 
-    // ... additional graph members ...
+    // ...
 }
 ```
 :::
@@ -112,6 +114,8 @@ pub trait Domain: Clone + Send + Sync {
     /// And distinct `NodeId`s get distinct `NodePath`s.
     /// The mapping stays stable across runs and changes to node contents.
     fn node_path(&self, node: &Self::NodeId) -> NodePath;
+
+    // ...
 }
 ```
 :::
@@ -154,17 +158,19 @@ domain's error:
 
 ```rust,ignore
 pub trait Domain: Clone + Send + Sync {
-    // ... node identities, paths, and edge members ...
+    // ...
 
     /// The application's representation of a node's contents.
     type NodeContent: NodeContents;
 
     /// Load and prepare this node's contents.
     fn node_content(&self, node: &Self::NodeId) -> Result<Self::NodeContent, Self::Error>;
+
+    // ...
 }
 
 pub trait NodeContents: Send + Sync {
-    // ... fingerprint and format methods introduced below ...
+    // ...
 }
 ```
 :::
@@ -177,12 +183,14 @@ pub trait NodeContents: Send + Sync {
 
 ```rust,ignore
 pub trait NodeContents: Send + Sync {
+    // ...
+
     /// Present these retained contents as text for an agent.
     /// Use the same observation described by fingerprint().
     /// Everything needed for presentation is retained in this value.
     fn format(&self) -> String;
 
-    // ... fingerprint method introduced below ...
+    // ...
 }
 ```
 
@@ -235,6 +243,8 @@ read under
 
 ```rust,ignore
 pub trait NodeContents: Send + Sync {
+    // ...
+
     /// Describe these retained contents without further resource reads
     /// or querying mutable external state.
     ///
@@ -243,7 +253,7 @@ pub trait NodeContents: Send + Sync {
     /// its rules and their version. When the rules change, change the scheme.
     fn fingerprint(&self) -> Fingerprint;
 
-    // ... format method introduced above ...
+    // ...
 }
 ```
 :::

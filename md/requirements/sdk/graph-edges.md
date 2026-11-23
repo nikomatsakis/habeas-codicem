@@ -26,10 +26,12 @@ The {term}`requirements.sdk.application_domain` uses
 
 ```rust,ignore
 pub trait Domain: Clone + Send + Sync {
+    // ...
+
     /// The label describes the kind of relationship between two nodes.
     type EdgeLabel: Clone + Send + Sync;
 
-    // ... additional graph members ...
+    // ...
 }
 ```
 :::
@@ -52,6 +54,8 @@ pub trait Domain: Clone + Send + Sync {
         source_node: &Self::NodeId,
         label: Self::EdgeLabel,
     ) -> Result<Vec<Self::NodeId>, Self::Error>;
+
+    // ...
 }
 ```
 :::

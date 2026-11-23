@@ -28,7 +28,7 @@ Every {term}`requirements.sdk.graph.validation.criterion` type implements
 ```rust,ignore
 // Defined in trust_but_verify::graph.
 pub trait Criterion<D: Domain>: Send + Sized {
-    // ... members introduced in the following sections ...
+    // ...
 }
 ```
 :::
@@ -45,11 +45,13 @@ defines the criterion's completed answer:
 use serde::{Serialize, de::DeserializeOwned};
 
 pub trait Criterion<D: Domain>: Send + Sized {
+    // ...
+
     /// The completed answer, including any negative assessment.
     /// Its Serde JSON representation must reconstruct the completed answer.
     type Ok: Serialize + DeserializeOwned + Send;
 
-    // ... additional members introduced below ...
+    // ...
 }
 ```
 :::
@@ -79,9 +81,11 @@ struct TestReview {
 }
 
 impl Criterion<HabeasDomain> for BehavioralAdequacy {
+    // ...
+
     type Ok = TestReview;
 
-    // ... remaining members introduced in the following sections ...
+    // ...
 }
 ```
 :::
@@ -106,10 +110,12 @@ without changing the criterion's source node.
 
 ```rust,ignore
 pub trait Criterion<D: Domain>: Send + Sized {
+    // ...
+
     /// The node this question is about.
     fn source_node_id(&self) -> D::NodeId;
 
-    // ... additional members ...
+    // ...
 }
 ```
 :::
@@ -155,10 +161,12 @@ impl CriterionPath {
 }
 
 pub trait Criterion<D: Domain>: Send + Sized {
+    // ...
+
     /// Identify this question relative to its source node.
     fn criterion_path(&self) -> CriterionPath;
 
-    // ... additional members ...
+    // ...
 }
 ```
 
@@ -179,11 +187,13 @@ completed answer's encoding:
 
 ```rust,ignore
 pub trait Criterion<D: Domain>: Send + Sized {
+    // ...
+
     /// Version of these review rules and the result's encoding.
     /// Change it when an old answer should no longer be reused.
     fn revision(&self) -> String;
 
-    // ... execute is introduced below ...
+    // ...
 }
 ```
 
@@ -217,13 +227,15 @@ pub enum ValidationError<E> {
 }
 
 pub trait Criterion<D: Domain>: Send + Sized {
+    // ...
+
     /// Select inputs through cx and compute the completed answer.
     fn execute(
         self,
         cx: &mut ValidationContext<'_, D>,
     ) -> impl Future<Output = Result<Self::Ok, ValidationError<D::Error>>> + Send;
 
-    // ... answer and identity members introduced above ...
+    // ...
 }
 ```
 

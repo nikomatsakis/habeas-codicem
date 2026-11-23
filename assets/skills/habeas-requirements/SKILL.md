@@ -127,6 +127,10 @@ before formal interfaces, and later chapters can develop that example.
   and structure. Put meaning and semantic guarantees in comments beside the
   declaration; keep each comment focused on that declaration's concept.
   Use prose for motivation, connections, and interpretation.
+- Mark partial trait declarations and implementations with a standalone
+  `// ...` before and after the members shown, separated from them by blank
+  lines. A skeleton with no members shown needs one `// ...`. Keep omission
+  markers out of complete declarations.
 - Make universal properties explicit. "Every application domain implements
   `Clone`" states a requirement; "a cloneable application domain" suggests that
   cloning distinguishes a subset. Review qualifiers against the intended

@@ -221,6 +221,8 @@ to its size. Its result uses the public items, spans, and hashes under
 
 ```rust,ignore
 pub trait OutlineLang: Clone + Send + Sync {
+    // ...
+
     /// Stable name of this language implementation.
     fn name(&self) -> &str;
 
@@ -230,7 +232,7 @@ pub trait OutlineLang: Clone + Send + Sync {
     /// Interpret supplied text into selectable items and structural hashes.
     fn outline(&self, source: &str) -> Result<Outline, OutlineError>;
 
-    // ... fingerprint_scheme is introduced below ...
+    // ...
 }
 ```
 :::
@@ -286,10 +288,12 @@ scheme used to compute their hashes.
 
 ```rust,ignore
 pub trait OutlineLang: Clone + Send + Sync {
+    // ...
+
     /// Identify the structural-hash rules and their version.
     fn fingerprint_scheme(&self) -> &str;
 
-    // ... other language methods ...
+    // ...
 }
 
 impl OutlineContent {

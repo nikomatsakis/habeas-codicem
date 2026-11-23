@@ -118,10 +118,7 @@ time:
 // Defined in trust_but_verify::domain.
 /// Application data and operations used to evaluate criteria.
 pub trait Domain: Clone + Send + Sync {
-    // ... shared error type introduced below ...
-    // ... node identities and contents in Graph nodes ...
-    // ... labeled relationships in Graph edges ...
-    // ... evidence persistence in Storage ...
+    // ...
 }
 ```
 :::
@@ -136,8 +133,12 @@ use it to report internal errors:
 ```rust,ignore
 // Defined in trust_but_verify::domain.
 pub trait Domain: Clone + Send + Sync {
+    // ...
+
     /// Application-defined errors from domain operations.
     type Error: Send;
+
+    // ...
 }
 ```
 :::

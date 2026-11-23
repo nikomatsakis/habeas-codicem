@@ -77,6 +77,8 @@ Selected public declarations are:
 
 ```rust,ignore
 pub trait SourceProvider: Send + Sync {
+    // ...
+
     type Error: From<SourceError> + Send;
 
     /// Enumerate resource identities within this scope.
@@ -90,6 +92,8 @@ pub trait SourceProvider: Send + Sync {
         &self,
         resource: &ResourceId,
     ) -> impl Future<Output = Result<SourceFile, Self::Error>> + Send;
+
+    // ...
 }
 ```
 
