@@ -23,13 +23,12 @@ inspection tools, and records dependencies.
 | Node contents, formatting, and fingerprint rules | Recording and comparing supplied observations |
 | Criteria, `Context` values, and the meaning of their answers | Criterion execution and typed ask builders |
 | Serializable agent configuration loaded by the application | Supported agents, fixed tools, and backend integration |
-| Resource access and source-item-to-node mapping | Source discovery and the outline module |
+| Project directory and source-item-to-node mapping | Filesystem inspection respecting `.gitignore` and the outline module |
 | Evidence location and command acceptance policy | Evidence comparison and storage helpers |
 
-Resource access means choosing the repository root or other resource namespace,
-which sources are available, and how to obtain their bytes. For a source node,
-the application uses `trust_but_verify::outline` to resolve a selector against the file
-snapshot it read, then returns the selected item as node contents.
+Source inspection operates on the selected project directory and respects
+`.gitignore`. The application maps a selected file and outline item into its
+graph, then supplies its contents through `Domain`.
 
 ## Start with one requirement and its inputs
 
@@ -161,7 +160,7 @@ The chapters introduce each interface and the tools used with it:
 | [Agent harness](sdk/graph/agent-harness.md) | Agent configuration, fixed inspection tools, and structured submissions. | [`AgentConfig`](sdk/graph/agent-harness.md#habeas-req-requirements.sdk.graph.agent-harness.agent_config) |
 | [Storage](sdk/graph/evidence.md) | Where and how evidence is saved. | [`Domain`](../rustdocs/trust_but_verify/domain/trait.Domain.html) |
 | [Filesystem evidence storage](sdk/filesystem-storage.md) | Filesystem persistence for SDK evidence records. | [`Domain`](../rustdocs/trust_but_verify/domain/trait.Domain.html), [`FileStorage`](sdk/filesystem-storage.md#habeas-req-requirements.sdk.filesystem-storage.interface) |
-| [Sources and inspection](sdk/sources.md) | Resource access and source-item-to-node mapping. | [`SourceProvider`](../rustdocs/trust_but_verify/sources/trait.SourceProvider.html), [`SourceNodes`](sdk/sources.md#habeas-req-requirements.sdk.sources.source_nodes) |
+| [Sources and inspection](sdk/sources.md) | Project files, discovery, and source-item-to-node mapping. | [`Sources`](../rustdocs/trust_but_verify/struct.Sources.html), [`SourceNodes`](sdk/sources.md#habeas-req-requirements.sdk.sources.source_nodes) |
 | [Source outlines](sdk/outlines.md) | Default language selection and ready-to-use source contents. | [`OutlineId`](sdk/outlines.md#habeas-req-requirements.sdk.outlines.address_identity), [`OutlineLang`](sdk/outlines.md#habeas-req-requirements.sdk.outlines.language_provider), [`OutlineContent`](sdk/outlines.md#habeas-req-requirements.sdk.outlines.parser) |
 
 ## Putting it all together

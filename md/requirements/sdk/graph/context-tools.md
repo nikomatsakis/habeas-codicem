@@ -197,8 +197,7 @@ records no successful observation.
 
 A source item has a file path and an outline selector, such as a function
 within a file. Discovery identifies files through
-[source resources](../sources.md#identify-source-resources); the application
-maps those resource identities into outline paths.
+[source files](../sources.md#identify-source-files) in the project directory.
 
 :::{req} read_source.fn
 The SDK exposes a tracked source read for domains supplying the source-node
@@ -219,11 +218,13 @@ impl<'d, D: Domain + SourceNodes> InspectionContext<'d, D> {
 :::{req} read_source.behavior
 The agent's `read_source` tool accepts a resource identity and an optional
 outline selector. An omitted or empty selector identifies the whole resource.
-The application maps that resource and selector to an `OutlineId` under
+The project-relative path and selector identify an `OutlineId` under
 {cite}`requirements.sdk.sources.source_nodes`. The Rust operation accepts the
 `OutlineId` directly. It maps that outline identity into the application's
 graph, then obtains its node contents through `Domain::node_content`.
-Mapping and read failures return errors.
+The selected file belongs to the project scope under
+{cite}`requirements.sdk.sources.local_provider`. Mapping and read failures
+return errors.
 
 The Rust caller receives `D::NodeContent`; the agent receives those same
 contents presented by `NodeContents::format` under
@@ -248,20 +249,15 @@ enclose its use when its contents contribute to an assessment.
 List resources when choosing a file or other source to inspect.
 
 :::{req} list_sources.fn
-The SDK offers this `SourceProvider` method. Its source tools expose the
-`list_sources` command using the application's source provider.
+The SDK offers this `Sources` method. Its source tools expose the
+`list_sources` command within the project directory.
 
 ```rust,ignore
-pub trait SourceProvider: Send + Sync {
+impl Sources {
     // ...
 
-    type Error: From<SourceError> + Send;
-
-    /// List resource identities within this scope.
-    fn list(
-        &self,
-        scope: &SourceScope,
-    ) -> impl Future<Output = Result<Vec<ResourceId>, Self::Error>> + Send;
+    /// List file identities within this scope.
+    pub async fn list(&self, scope: &SourceScope) -> Result<Vec<ResourceId>, SourceError>;
 
     // ...
 }
@@ -271,7 +267,7 @@ pub trait SourceProvider: Send + Sync {
 :::{req} list_sources.behavior
 The SDK's source tools expose `list_sources` with an optional
 scope prefix, represented in Rust by `SourceScope::prefix`.
-It returns the resource identities supplied by `SourceProvider::list` under
+It returns the file identities supplied by `Sources::list` under
 {cite}`requirements.sdk.sources.provider`.
 :::
 
@@ -289,22 +285,26 @@ An outline identifies the items within a source, so a caller can select one
 for a content read.
 
 :::{req} outline_source.fn
-The SDK offers this `SourceAnalysis` method and exposes the `outline_source`
+The SDK offers this `Sources` method and exposes the `outline_source`
 command through its source tools.
 
 ```rust,ignore
-impl<P: SourceProvider> SourceAnalysis<P> {
+impl Sources {
+    // ...
+
     /// Parse a source resource.
-    pub async fn parse(&self, id: &ResourceId) -> Result<ParsedSource, P::Error>;
+    pub async fn parse(&self, id: &ResourceId) -> Result<ParsedSource, SourceError>;
+
+    // ...
 }
 ```
 :::
 
 :::{req} outline_source.behavior
 The SDK's `outline_source` tool accepts a resource identity and delegates to
-`SourceAnalysis::parse`, including the source provider's parsing override.
-The default obtains one resource snapshot through the provider and parses
-that snapshot with the outline library.
+`Sources::parse`. It reads one file snapshot and parses those supplied bytes
+with the outline library, respecting the project scope under
+{cite}`requirements.sdk.sources.local_provider`.
 
 The tool returns the selectors and kinds in `parsed.contents.outline()`
 under {cite}`requirements.sdk.outlines.items`. The Rust parse result retains
@@ -323,22 +323,15 @@ of a selected item records that item's contents and fingerprint.
 Use a regular expression to locate relevant source text.
 
 :::{req} search_text.fn
-The SDK offers this `SourceProvider` method and its shown default
-delegation. Its source tools expose the `search_text` command.
+The SDK offers this `Sources` method. Its source tools expose the
+`search_text` command.
 
 ```rust,ignore
-pub trait SourceProvider: Send + Sync {
+impl Sources {
     // ...
 
-    type Error: From<SourceError> + Send;
-
-    /// Search source text.
-    fn search_text(
-        &self,
-        query: &TextQuery,
-    ) -> impl Future<Output = Result<TextMatches, Self::Error>> + Send {
-        defaults::search_text(self, query)
-    }
+    /// Search available project files.
+    pub async fn search_text(&self, query: &TextQuery) -> Result<TextMatches, SourceError>;
 
     // ...
 }
@@ -349,7 +342,7 @@ pub trait SourceProvider: Send + Sync {
 The SDK's source tools expose `search_text` with a regular
 expression and optional scope prefix, context-window size, and match limit.
 These correspond to `TextQuery`'s `pattern`, `scope`, `context_lines`, and
-`limit`. It uses `SourceProvider::search_text` and returns each match's
+`limit`. It uses `Sources::search_text` and returns each match's
 resource identity, line number, and excerpt, together with whether the search
 is complete, under
 {cite}`requirements.sdk.sources.provider_results.search_completeness`.
@@ -369,16 +362,20 @@ Use a language and a structural query to locate syntax, such as calls to a
 particular function.
 
 :::{req} search_structure.fn
-The SDK offers this `SourceAnalysis` method and exposes the `search_structure`
+The SDK offers this `Sources` method and exposes the `search_structure`
 command through its source tools.
 
 ```rust,ignore
-impl<P: SourceProvider> SourceAnalysis<P> {
+impl Sources {
+    // ...
+
     /// Search source structure.
     pub async fn search_structure(
         &self,
         query: &StructuralQuery,
-    ) -> Result<StructuralMatches, P::Error>;
+    ) -> Result<StructuralMatches, SourceError>;
+
+    // ...
 }
 ```
 :::
@@ -386,7 +383,7 @@ impl<P: SourceProvider> SourceAnalysis<P> {
 :::{req} search_structure.behavior
 The SDK's source tools expose `search_structure` with a language
 and an ast-grep rule, plus an optional scope prefix and match limit. It uses
-`SourceAnalysis::search_structure`; `StructuralQuery` holds the `language`,
+`Sources::search_structure`; `StructuralQuery` holds the `language`,
 `rule`, `scope`, and `limit`. Each match contains its resource identity, item
 selector, and excerpt. The caller maps the resource and selector to an
 `OutlineId` under {cite}`requirements.sdk.sources.source_nodes` when selecting

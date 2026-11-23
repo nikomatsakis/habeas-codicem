@@ -351,7 +351,7 @@ selector naming, attachments, and structural-hashing rules:
 
 :::{req} language_provider.structural_search
 An outline language can additionally supply the syntax capability used by the
-SDK's [structural search](sources.md#providers-can-specialize-parsing-and-search).
+SDK's [structural search](sources.md#outline-and-search-the-available-files).
 Requesting structural search for a language without that capability returns an
 unsupported-language error. Plain text supplies outlining only.
 :::

@@ -13,7 +13,7 @@ live under `requirements.sdk.graph`, `requirements.sdk.sources`, and
 | `references.structural_hash` | Structural fingerprints and identity | Which fingerprint each evidence input uses |
 | `references.outline_comments` | Comment classification and attachment hooks | Reference discovery and ownership |
 | `authoring.delivered_inputs` | Record observations actually supplied to a procedure | Evidence input fields and source coverage |
-| `authoring.text_search`, `authoring.structural_search` | Fixed source tools, typed inspection operations, result completeness, and recording policy | Resource scope, node identities, and reference relationships |
+| `authoring.text_search`, `authoring.structural_search` | Fixed source tools, typed inspection operations, result completeness, and recording policy | Project directory, node identities, and reference relationships |
 | `ci.reference_set` | Outgoing-edge selection changes invalidate saved judgments | Which reference roles form a requirement's root set |
 | `ci.outline_inputs` | Re-read observations and compare fingerprints | JSON schema, diagnostics, and evidence lookup |
 | `authoring.deterministic_validation` | Checking saved results without an agent capability | CI acceptance policy and reported errors |
@@ -57,6 +57,7 @@ design described by these SDK chapters.
 | --- | --- |
 | `Agent<D>`, `CompletionProvider`, `Conversation`, and `ToolAgent::with_tools` as application extension points | Configure SDK-supplied agents through `AgentConfig`; keep conversation and tool machinery inside the SDK. |
 | HC's backend construction and backend configuration types | Supply serializable backend configuration from the SDK while retaining HC's configuration loading, paths, and overrides. |
+| Application-specific access policy in the SDK | Keep Habeas configuration and tracked-file rules in `habeas`; TBV inspection uses its project directory and `.gitignore`. |
 | `SourceTools` observation callbacks that may return no dependency | Map source items into application nodes and require tracked source reads to record supplied node snapshots. |
 | Static language registrations and manual registry assembly | Add filename-based selection and explicit cheaply cloneable `OutlineLang` values in `trust_but_verify::outline`. |
 | Outline selection followed by manual content and fingerprint assembly | Return owned `OutlineContent` values with retained text, structural hash, and scheme; supply their SDK `NodeContents` implementation. |
