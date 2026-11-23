@@ -1,7 +1,7 @@
 # Graph nodes
 
 The application gives each graph node an identity, a stable path, and contents.
-`Graph` identifies and reads nodes. The returned `NodeContents` values supply
+`Domain` identifies and reads nodes. The returned `NodeContents` values supply
 their fingerprints and the text used in
 [agent calls](graph/agent-calls.md#format-node-contents-for-the-agent).
 
@@ -12,18 +12,20 @@ their fingerprints and the text used in
 
 A *graph node* is a thing identified in the application's graph, such as a
 requirement, a function, a test, or an issue. The application's
-[`Graph::NodeId`](../../rustdocs/habeas_sdk/graph/trait.Graph.html#associatedtype.NodeId)
+[`Domain::NodeId`](../../rustdocs/habeas_sdk/domain/trait.Domain.html#associatedtype.NodeId)
 identifies it; its contents and the criteria evaluated on it are separate from
 that identity.
 :::
 
 :::{req} domain_types
+{cite}`requirements.sdk.domain`
+
 The {term}`requirements.sdk.application_domain` implements
-`habeas_sdk::domain::Graph` to define its node-identity type. `Graph` inherits its
-error type from {cite}`requirements.sdk.errors`:
+`habeas_sdk::domain::Domain` to define its node-identity type. Its
+error type is introduced in {cite}`requirements.sdk.errors`:
 
 ```rust,ignore
-pub trait Graph: Types + Send + Sync {
+pub trait Domain: Clone + Send + Sync {
     /// The *identifier* identifies a particular node in the graph.
     type NodeId: Clone + Eq + Send + Sync;
 
@@ -49,7 +51,7 @@ pub enum ReviewNodeId {
 }
 ```
 
-Its `Graph` implementation sets `type NodeId = ReviewNodeId;`. For example,
+Its `Domain` implementation sets `type NodeId = ReviewNodeId;`. For example,
 `ReviewNodeId::Requirement(vec!["sdk".into(), "errors".into()])` identifies a
 requirement, while `ReviewNodeId::Source { file: "src/lib.rs".into(),
 selector: "fn[validate]".into() }` identifies a function.
@@ -67,9 +69,9 @@ A *node path* is an ordered sequence of string segments describing a graph
 node's identity.
 In the SDK, [`NodePath`](../../rustdocs/habeas_sdk/graph/struct.NodePath.html)
 represents this path.
-[`Graph::node_path`](../../rustdocs/habeas_sdk/graph/trait.Graph.html#tymethod.node_path)
+[`Domain::node_path`](../../rustdocs/habeas_sdk/domain/trait.Domain.html#tymethod.node_path)
 maps each application-defined
-[`NodeId`](../../rustdocs/habeas_sdk/graph/trait.Graph.html#associatedtype.NodeId)
+[`NodeId`](../../rustdocs/habeas_sdk/domain/trait.Domain.html#associatedtype.NodeId)
 to a distinct path that stays stable across runs and changes to the node's
 contents.
 :::
@@ -95,10 +97,12 @@ impl NodePath {
 :::
 
 :::{req} node_path_method
-`habeas_sdk::domain::Graph::node_path` converts a node identity to its stable path:
+{cite}`requirements.sdk.domain`
+
+`habeas_sdk::domain::Domain::node_path` converts a node identity to its stable path:
 
 ```rust,ignore
-pub trait Graph: Types + Send + Sync {
+pub trait Domain: Clone + Send + Sync {
     // ...
 
     /// Convert a `NodeId` into its `NodePath`.
@@ -131,23 +135,25 @@ Its `node_path` implementation maps that identity to
 {term}`requirements.sdk.graph.validation.criterion`. An agent uses these inputs
 to assess whether the criterion holds in the project. They can be source text,
 parsed code, issue data, or another structured value. In the SDK,
-[`Graph::NodeContent`](#habeas-req-requirements.sdk.graph.fingerprint_content)
+[`Domain::NodeContent`](../../rustdocs/habeas_sdk/domain/trait.Domain.html#associatedtype.NodeContent)
 represents this value and
-[`Graph::node_content`](#habeas-req-requirements.sdk.graph.fingerprint_content)
+[`Domain::node_content`](../../rustdocs/habeas_sdk/domain/trait.Domain.html#tymethod.node_content)
 obtains it. The value implements
-[`NodeContents`](#habeas-req-requirements.sdk.graph.fingerprint_content)
+[`NodeContents`](../../rustdocs/habeas_sdk/domain/trait.NodeContents.html)
 to supply its fingerprint and agent text.
 :::
 
 :::{req} fingerprint_content
-`habeas_sdk::domain::Graph` reads an
+{cite}`requirements.sdk.domain`
+
+`habeas_sdk::domain::Domain` reads an
 {term}`requirements.sdk.application_domain`'s nodes as values implementing
 `habeas_sdk::domain::NodeContents`. Reading includes the loading and preparation
 needed to fingerprint and format the returned value; failures return the
 domain's error:
 
 ```rust,ignore
-pub trait Graph: Types + Send + Sync {
+pub trait Domain: Clone + Send + Sync {
     // ... node identities, paths, and edge members ...
 
     /// The application's representation of a node's contents.
@@ -253,19 +259,19 @@ pub struct Snapshot<T> {
 ```
 
 This type lives in `habeas_sdk::graph`. For node reads, the SDK constructs it from
-the contents returned by `Graph::node_content` and their
+the contents returned by `Domain::node_content` and their
 `NodeContents::fingerprint` under
 {cite}`requirements.sdk.graph.fingerprint_content.fingerprint`, without another read.
 :::
 
-To read `check_token`, the SDK calls `Graph::node_content`, fingerprints the
+To read `check_token`, the SDK calls `Domain::node_content`, fingerprints the
 returned value, and packages both in a
 {term}`requirements.sdk.graph.content_snapshot`.
 The procedure receives the contents; the SDK retains the fingerprint so it can
 check freshness later. Conceptually, the tracked context does this:
 
 ```rust,ignore
-let content = graph.node_content(&check_token_id)?;
+let content = domain.node_content(&check_token_id)?;
 let fingerprint = content.fingerprint();
 let snapshot = Snapshot { content, fingerprint };
 ```
@@ -309,7 +315,7 @@ assert!(original.format().contains("fn check_token()"));
 
 [`SelectedSource`](outlines.md#habeas-req-requirements.sdk.outlines.selection)
 implements `NodeContents` through the SDK. An application can use it directly
-as `Graph::NodeContent`, or include it in a content enum alongside issue data
+as `Domain::NodeContent`, or include it in a content enum alongside issue data
 and other node kinds. The selection retains its source snapshot and supplies
 both its structural fingerprint and formatted excerpt.
 

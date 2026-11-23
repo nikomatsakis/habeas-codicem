@@ -37,7 +37,7 @@ enum HcEdge {
 The domain interprets each identity. Reading a source node uses HC's resource
 access and `habeas-sdk-outline` to select from a file snapshot. Reading a
 GitHub issue uses HC's GitHub client and cache. Reading a requirement obtains
-its declaration. The SDK obtains each value through HC's `Graph`
+its declaration. The SDK obtains each value through HC's `Domain`
 implementation.
 
 Each returned value implements `NodeContents`. HC's content enum delegates
@@ -248,7 +248,7 @@ tool can present those contents and record their fingerprint.
 HC represents a GitHub issue by a stable owner, repository, and issue-number
 identity. Reading the node supplies the issue's title, opening post, and
 open/closed status as one snapshot. HC computes its fingerprint and formatted
-text from that supplied snapshot through `Graph`.
+text from that supplied snapshot through `Domain`.
 
 For illustration:
 

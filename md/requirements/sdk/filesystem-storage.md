@@ -1,7 +1,7 @@
 # Filesystem evidence storage
 
-Use `FileEvidenceStorage` to implement `Storage` with a directory of
-JSON records. The application chooses the directory and uses `Graph::node_path` to obtain
+Use `FileEvidenceStorage` to implement the evidence methods of `Domain` with a directory of
+JSON records. The application chooses the directory and uses `Domain::node_path` to obtain
 a stable [`NodePath`](graph.md#give-nodes-a-stable-path), paired with the validation's
 `CriterionPath`. The helper handles serialization, file access, and replacing
 saved {term}`requirements.sdk.graph.evidence.verification_evidence`.
@@ -60,7 +60,7 @@ An application holds a store alongside its graph data. Its `load_evidence`
 method obtains `let path = self.node_path(source)` and delegates to
 `store.load(&path, criterion).await`; `store_evidence` delegates to
 `store.store(&path, criterion, record).await`. It maps
-`FileStorageError` into its own `Types::Error`.
+`FileStorageError` into its own `Domain::Error`.
 
 ## Map node paths into the directory
 

@@ -55,9 +55,7 @@ design described by these SDK chapters.
 
 | Current interface or contract | Required change |
 | --- | --- |
-| `Graph::Error` | Define the common domain error as `Types::Error`, with `Graph: Types`. |
-| Separate `Graph` and `Contents` traits | Put `NodeContent` and `node_content` on `Graph`; returned values implement `NodeContents::fingerprint` and `NodeContents::format`. |
-| `Graph`, `Storage`, and `Domain` in `habeas_sdk::graph` | Define the domain traits, including `Types`, in `habeas_sdk::domain`. |
+| Node content operations | Return prepared values implementing `NodeContents::fingerprint` and `NodeContents::format` from `Domain::node_content`. |
 | `Agent<D>`, `CompletionProvider`, `Conversation`, and `ToolAgent::with_tools` as application extension points | Configure SDK-supplied agents through `AgentConfig`; keep conversation and tool machinery inside the SDK. |
 | HC's backend construction and backend configuration types | Supply serializable backend configuration from the SDK while retaining HC's configuration loading, paths, and overrides. |
 | `SourceTools` observation callbacks that may return no dependency | Map source items into application nodes and require tracked source reads to record supplied node snapshots. |

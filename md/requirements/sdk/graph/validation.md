@@ -157,7 +157,7 @@ A *criterion path* is an ordered sequence of string segments identifying a
 {term}`requirements.sdk.graph.validation.source_node`.
 [`CriterionPath`](../../../rustdocs/habeas_sdk/graph/struct.CriterionPath.html)
 represents this path, while
-[`NodeId`](../../../rustdocs/habeas_sdk/graph/trait.Graph.html#associatedtype.NodeId)
+[`NodeId`](../../../rustdocs/habeas_sdk/domain/trait.Domain.html#associatedtype.NodeId)
 and its stable
 {term}`requirements.sdk.graph.node_path` identify the source node.
 For example, a requirement might use `["text"]`, `["behavior"]`, and

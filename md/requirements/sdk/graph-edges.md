@@ -11,7 +11,7 @@ labels to look up related nodes.
 
 A *labeled edge* is a directed relationship from one
 {term}`requirements.sdk.graph.node` to another, with an application-defined
-[`Graph::EdgeLabel`](../../rustdocs/habeas_sdk/graph/trait.Graph.html#associatedtype.EdgeLabel)
+[`Domain::EdgeLabel`](../../rustdocs/habeas_sdk/domain/trait.Domain.html#associatedtype.EdgeLabel)
 describing the relationship.
 The targets of a node's outgoing edges with a given label are its successors
 for that label. In Habeas Codicem, labels can identify a requirement's
@@ -19,11 +19,13 @@ implementations or tests.
 :::
 
 :::{req} label
+{cite}`requirements.sdk.domain`
+
 The {term}`requirements.sdk.application_domain` uses
-`habeas_sdk::domain::Graph::EdgeLabel` to describe relationships between its nodes:
+`habeas_sdk::domain::Domain::EdgeLabel` to describe relationships between its nodes:
 
 ```rust,ignore
-pub trait Graph: Types + Send + Sync {
+pub trait Domain: Clone + Send + Sync {
     /// The label describes the kind of relationship between two nodes.
     type EdgeLabel: Clone + Send + Sync;
 
@@ -35,11 +37,13 @@ pub trait Graph: Types + Send + Sync {
 ## Find a node's successors
 
 :::{req} outgoing_edges
-The `habeas_sdk::domain::Graph` trait includes a method for obtaining a node's
+{cite}`requirements.sdk.domain`
+
+The `habeas_sdk::domain::Domain` trait includes a method for obtaining a node's
 successors with a given label:
 
 ```rust,ignore
-pub trait Graph: Types + Send + Sync {
+pub trait Domain: Clone + Send + Sync {
     // ...
 
     /// Return the target node identities for this source and label.

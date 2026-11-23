@@ -79,7 +79,7 @@ flowchart TD
     Code["Criterion code: cx.inspection()"] --> Context["Execution's InspectionContext"]
     Agent["Agent request"] --> Tools["SDK graph tools"]
     Tools --> Context
-    Context --> Graph["Graph: read prepared NodeContents"]
+    Context --> Graph["Domain: read prepared NodeContents"]
     Context --> Trace["Execution's recorded inputs"]
 ```
 
@@ -100,7 +100,7 @@ The SDK offers this `InspectionContext` method and exposes it to the agent
 as the `read_node` command.
 
 ```rust,ignore
-impl<'d, D: Graph> InspectionContext<'d, D> {
+impl<'d, D: Domain> InspectionContext<'d, D> {
     /// Read the contents of this graph node.
     pub fn read(&self, node: &D::NodeId) -> Result<D::NodeContent, D::Error>;
 }
@@ -139,7 +139,7 @@ The SDK offers this `InspectionContext` method and exposes it to the agent
 as the `outgoing_edges` command.
 
 ```rust,ignore
-impl<'d, D: Graph> InspectionContext<'d, D> {
+impl<'d, D: Domain> InspectionContext<'d, D> {
     /// Obtain this source's targets for the label.
     pub fn outgoing_edges(
         &self,
@@ -204,7 +204,7 @@ impl<'d, D: Domain + SourceNodes> InspectionContext<'d, D> {
 `read_source` accepts a resource identity and an optional outline selector.
 An omitted or empty selector identifies the whole resource. The operation maps
 that `OutlineId` into the application's graph, then obtains its node contents
-through `Graph::node_content`. Mapping and read failures return errors.
+through `Domain::node_content`. Mapping and read failures return errors.
 
 The Rust caller receives `D::NodeContent`; the agent receives those same
 contents presented by `NodeContents::format` under
@@ -388,7 +388,7 @@ can use the same page-continuation facility through inspection.
 The public Rust interface has this shape:
 
 ```rust,ignore
-impl<'d, D: Graph> InspectionContext<'d, D> {
+impl<'d, D: Domain> InspectionContext<'d, D> {
     /// Return a continuation from the same prepared result snapshot.
     pub fn read_page(
         &self,

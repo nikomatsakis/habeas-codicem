@@ -174,7 +174,7 @@ impl SelectedSource {
 :::{req} node_contents
 Habeas SDK implements `habeas_sdk::domain::NodeContents` for
 `habeas_sdk_outline::SelectedSource`, making an outline selection usable
-directly as `Graph::NodeContent` under
+directly as `Domain::NodeContent` under
 {cite}`requirements.sdk.graph.fingerprint_content`.
 
 Its `fingerprint()` returns the selected item's retained structural hash and

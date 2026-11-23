@@ -3,7 +3,7 @@
 Habeas Codicem owns its graph's node identities and their contents. For a node
 such as `Source(src/auth.rs, fn[check_token])`, HC obtains the file snapshot,
 asks the [outline library](outlines.md) to resolve the selector, and returns
-its application-defined contents. HC supplies those contents through `Graph`;
+its application-defined contents. HC supplies those contents through `Domain`;
 the SDK's tracked inspection records the read.
 
 Source discovery is useful before a node is known. The SDK supplies the tools
@@ -40,7 +40,7 @@ The outline library interprets supplied source text independently of its origin.
 
 ```mermaid
 flowchart TD
-    Read["SDK tracked read: HC source node"] --> HC["HC Graph::node_content"]
+    Read["SDK tracked read: HC source node"] --> HC["HC Domain::node_content"]
     HC --> Bytes["HC resource access: obtain one file snapshot"]
     Bytes --> Parse["habeas-sdk-outline: infer language and resolve selector"]
     Parse --> Content["HC NodeContent: selected source from that snapshot"]
@@ -266,7 +266,7 @@ An application supporting SDK source inspection supplies access to its source
 provider and a mapping from `OutlineId` to its graph's `NodeId`. The mapped node
 represents the requested resource and selector; an unsupported or invalid
 address returns an error. The SDK's source read uses that mapping and the
-application's `Graph` interface.
+application's `Domain` interface.
 
 The application owns the mapping and the interpretation of that node's contents.
 :::
@@ -274,7 +274,7 @@ The application owns the mapping and the interpretation of that node's contents.
 This trait sketch names the two capabilities; its declaration is illustrative:
 
 ```rust,ignore
-pub trait SourceNodes: Graph {
+pub trait SourceNodes: Domain {
     type Sources: SourceProvider;
 
     fn sources(&self) -> &SourceAnalysis<Self::Sources>;
@@ -282,7 +282,7 @@ pub trait SourceNodes: Graph {
 }
 ```
 
-For a source node, HC's `Graph::node_content` obtains a snapshot and invokes
+For a source node, HC's `Domain::node_content` obtains a snapshot and invokes
 the outline library. The returned selection supplies its fingerprint and agent
 text through `NodeContents` under
 {cite}`requirements.sdk.outlines.node_contents`, so the dependency and model
@@ -290,7 +290,7 @@ text describe the same read.
 
 :::{req} provider_observations
 The tracked source-read operation resolves the selected `OutlineId` through
-the application's source-node mapping and reads that node through `Graph`.
+the application's source-node mapping and reads that node through `Domain`.
 Successful reads delivered to the caller record that node's identity and the
 fingerprint of its supplied contents, whether obtained from a cache, provider
 default, or override.
@@ -312,7 +312,7 @@ flowchart TD
     Agent["SDK agent tools"] --> Context["Tracked inspection context"]
     Code["Deterministic criterion"] --> Context
     Context --> Mapping["Application maps OutlineId to NodeId"]
-    Mapping --> Graph["Application Graph resolves the selected node"]
+    Mapping --> Graph["Application Domain resolves the selected node"]
     Graph --> Trace["SDK records supplied node contents and fingerprint"]
 ```
 

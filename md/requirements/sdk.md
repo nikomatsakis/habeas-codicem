@@ -19,7 +19,7 @@ inspection tools, and records dependencies.
 
 | Application supplies | SDK supplies |
 | --- | --- |
-| Node identities, paths, and labeled relationships | Graph and tracked inspection interfaces |
+| Node identities, paths, and labeled relationships | Domain and tracked inspection interfaces |
 | Node contents, formatting, and fingerprint rules | Recording and comparing supplied observations |
 | Criteria, `Context` values, and the meaning of their answers | Criterion execution and typed ask builders |
 | Serializable agent configuration loaded by the application | Supported agents, fixed tools, and backend integration |
@@ -103,50 +103,39 @@ relevant.
 :::{cite} requirements.sdk.domain
 An *application domain* is the application's graph, node contents, and evidence
 storage, made available together for criterion execution. In the SDK, it
-implements [`Domain`](../rustdocs/habeas_sdk/graph/trait.Domain.html), combining
-`Clone`, [`Types`](#habeas-req-requirements.sdk.domain),
-[`Graph`](../rustdocs/habeas_sdk/graph/trait.Graph.html), and
-[`Storage`](../rustdocs/habeas_sdk/graph/trait.Storage.html).
+implements [`Domain`](../rustdocs/habeas_sdk/domain/trait.Domain.html) to supply
+its shared types, node and edge operations, and evidence persistence.
 :::
 ::::
 
 :::{req} domain
-Every {term}`requirements.sdk.application_domain` must implement `Clone`,
-`Types`, `Graph`, and `Storage`. The SDK provides a blanket
-`habeas_sdk::domain::Domain` implementation for values implementing these traits:
+Every {term}`requirements.sdk.application_domain` implements
+`habeas_sdk::domain::Domain`. A domain is cloneable and safe to share between
+executions. The following chapters introduce its members one capability at a
+time:
 
 ```rust,ignore
 // Defined in habeas_sdk::domain.
-/// Combines the application's shared types, graph, contents, and storage.
-pub trait Domain: Clone + Types + Graph + Storage {}
-
-impl<T: Clone + Types + Graph + Storage> Domain for T {}
-
-pub trait Types {
-    /* ... associated types defined below ... */
-}
-
-pub trait Graph: Types + Send + Sync {
-    // Defines node identities and contents, labeled edges, and successors.
-    // Reads values implementing NodeContents.
-    /* ... members defined in the Graph nodes and Graph edges chapters ... */
-}
-
-pub trait Storage: Graph {
-    // Defines how evidence is stored and loaded.
-    /* ... members defined in the Storage chapter ... */
+/// Application data and operations used to evaluate criteria.
+pub trait Domain: Clone + Send + Sync {
+    // ... shared error type introduced below ...
+    // ... node identities and contents in Graph nodes ...
+    // ... labeled relationships in Graph edges ...
+    // ... evidence persistence in Storage ...
 }
 ```
 :::
 
 :::{req} errors
-The {term}`requirements.sdk.application_domain` trait `Types` defines the central
-`Error` associated type shared by the other domain traits to report internal
-errors from their operations:
+{cite}`requirements.sdk.domain`
+
+The {term}`requirements.sdk.application_domain` defines its central `Error`
+associated type on `Domain`. Node reads, edge queries, and evidence persistence
+use it to report internal errors:
 
 ```rust,ignore
 // Defined in habeas_sdk::domain.
-pub trait Types {
+pub trait Domain: Clone + Send + Sync {
     /// Application-defined errors from domain operations.
     type Error: Send;
 }
@@ -162,21 +151,21 @@ The chapters introduce each interface and the tools used with it:
 
 | Chapter | Purpose | Related traits and types |
 | --- | --- | --- |
-| [Graph nodes](sdk/graph.md) | Node identities, stable paths, contents, and fingerprints. | [`Graph`](../rustdocs/habeas_sdk/graph/trait.Graph.html), [`NodeContents`](sdk/graph.md#habeas-req-requirements.sdk.graph.fingerprint_content) |
-| [Graph edges](sdk/graph-edges.md) | Relationship labels, successor lookup, and target-set fingerprints. | [`Graph`](../rustdocs/habeas_sdk/graph/trait.Graph.html) |
+| [Graph nodes](sdk/graph.md) | Node identities, stable paths, contents, and fingerprints. | [`Domain`](../rustdocs/habeas_sdk/domain/trait.Domain.html), [`NodeContents`](../rustdocs/habeas_sdk/domain/trait.NodeContents.html) |
+| [Graph edges](sdk/graph-edges.md) | Relationship labels, successor lookup, and target-set fingerprints. | [`Domain`](../rustdocs/habeas_sdk/domain/trait.Domain.html) |
 | [Criteria definition](sdk/graph/validation.md) | Criterion types, completed answers, and criterion paths. | [`Criterion`](../rustdocs/habeas_sdk/graph/trait.Criterion.html) |
-| [Validators](sdk/graph/validators.md) | Constructing a validator and running criterion values. | [`Domain`](../rustdocs/habeas_sdk/graph/trait.Domain.html), [`Validator`](../rustdocs/habeas_sdk/graph/struct.Validator.html) |
+| [Validators](sdk/graph/validators.md) | Constructing a validator and running criterion values. | [`Domain`](../rustdocs/habeas_sdk/domain/trait.Domain.html), [`Validator`](../rustdocs/habeas_sdk/graph/struct.Validator.html) |
 | [Criteria evaluation](sdk/graph/execution.md) | Using a criterion's context to ask an agent and read tracked inputs. | [`Criterion`](../rustdocs/habeas_sdk/graph/trait.Criterion.html), [`ValidationContext`](../rustdocs/habeas_sdk/procedure/struct.ValidationContext.html) |
 | [Agent calls](sdk/graph/agent-calls.md) | Prompt construction and typed answers. | [`Context`](../rustdocs/habeas_sdk/procedure/trait.Context.html), [`Ask`](../rustdocs/habeas_sdk/procedure/struct.Ask.html) |
 | [Context tools](sdk/graph/context-tools.md) | Source discovery and tracked content reads. | [`InspectionContext`](../rustdocs/habeas_sdk/graph/struct.InspectionContext.html) |
 | [Agent harness](sdk/graph/agent-harness.md) | Agent configuration, fixed inspection tools, and structured submissions. | [`AgentConfig`](sdk/graph/agent-harness.md#habeas-req-requirements.sdk.graph.agent-harness.agent_config) |
-| [Storage](sdk/graph/evidence.md) | Where and how evidence is saved. | [`Storage`](../rustdocs/habeas_sdk/graph/trait.Storage.html) |
-| [Filesystem evidence storage](sdk/filesystem-storage.md) | Filesystem persistence for SDK evidence records. | [`Storage`](../rustdocs/habeas_sdk/graph/trait.Storage.html), [`FileStorage`](sdk/filesystem-storage.md#habeas-req-requirements.sdk.filesystem-storage.interface) |
+| [Storage](sdk/graph/evidence.md) | Where and how evidence is saved. | [`Domain`](../rustdocs/habeas_sdk/domain/trait.Domain.html) |
+| [Filesystem evidence storage](sdk/filesystem-storage.md) | Filesystem persistence for SDK evidence records. | [`Domain`](../rustdocs/habeas_sdk/domain/trait.Domain.html), [`FileStorage`](sdk/filesystem-storage.md#habeas-req-requirements.sdk.filesystem-storage.interface) |
 | [Sources and inspection](sdk/sources.md) | Resource access and source-item-to-node mapping. | [`SourceProvider`](../rustdocs/habeas_sdk/sources/trait.SourceProvider.html), [`SourceNodes`](sdk/sources.md#habeas-req-requirements.sdk.sources.source_nodes) |
 | [Source outlines](sdk/outlines.md) | Default language selection and ready-to-use source contents. | [`Language`](sdk/outlines.md#habeas-req-requirements.sdk.outlines.additional_languages), [`Outliner`](sdk/outlines.md#habeas-req-requirements.sdk.outlines.parser), [`SelectedSource`](sdk/outlines.md#habeas-req-requirements.sdk.outlines.selection) |
 
 ## Putting it all together
 
 The [Habeas Codicem integration](sdk/habeas.md) defines the `habeas` CLI workflow in
-terms of the SDK, providing an example of how to use these traits and building
+terms of the SDK, providing an example of how to use the domain interface and building
 blocks together.

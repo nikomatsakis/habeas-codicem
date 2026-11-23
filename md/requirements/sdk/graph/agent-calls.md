@@ -211,11 +211,11 @@ under {cite}`requirements.sdk.graph.fingerprint_content.format`.
 Its text and fingerprint describe the same retained observation.
 
 ```rust,ignore
-let contents = graph.node_content(&node_id)?;
+let contents = domain.node_content(&node_id)?;
 let text = contents.format();
 ```
 
-Loading and fallible preparation occur in `Graph::node_content` under
+Loading and fallible preparation occur in `Domain::node_content` under
 {cite}`requirements.sdk.graph.fingerprint_content`. For inputs queued on an ask
 builder, these failures return `ValidationError::Graph`. During a `read_node`
 tool call, they are returned to the agent as a tool error, so it can continue

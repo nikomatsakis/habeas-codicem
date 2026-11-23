@@ -119,14 +119,16 @@ Its node identities and edge labels keep their domain-defined types.
 ## Look up a source and criterion
 
 :::{req} evidence_storage
-`habeas_sdk::domain::Storage` provides evidence persistence for the
+{cite}`requirements.sdk.domain`
+
+`habeas_sdk::domain::Domain` provides evidence persistence for the
 {term}`requirements.sdk.application_domain`:
 
 ```rust,ignore
 use std::future::Future;
 
 // Defined in habeas_sdk::domain.
-pub trait Storage: Graph {
+pub trait Domain: Clone + Send + Sync {
     /// Ok(None) means absent; Err means loading failed.
     fn load_evidence(
         &self,
@@ -235,7 +237,7 @@ prompts, and additional contents delivered by tools contribute to this trace.
 Discovering a node alone does not record its contents as an input.
 :::
 
-Calling `Graph::node_content` directly resolves a node. Reading through the
+Calling `Domain::node_content` directly resolves a node. Reading through the
 context's inspection interface also records the observation:
 
 ```rust,ignore
