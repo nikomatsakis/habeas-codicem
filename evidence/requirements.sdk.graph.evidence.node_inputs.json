@@ -1,8 +1,8 @@
 {
   "requirement": "Finishing a verification includes every successful tracked node read in its\n`Fingerprinted`, whether ordinary code or a model tool requested it. Each observation\ncontains the node identity and the fingerprint of the contents actually supplied.\n\nA failed read returns an error without inventing a successful observation.\nRepeating an identical observation adds no information. Reading the same\nidentity with two different fingerprints preserves both observations.",
   "determination": true,
-  "rationale": "I judged the reviewed tests adequate for every obligation in `requirements.sdk.graph.evidence.node_inputs`. I did not request implementation source, because the supplied tests were enough to map each obligation.\n\n**1. Every successful tracked read is included in the finished `Fingerprinted`, whether ordinary code or a model tool requested it.**\n- Ordinary code: `tests/validation.rs#fn[snapshots_record_exact_reads_and_retain_distinct_versions]` calls `inspection.read` directly. It then calls `finish` and asserts `record.dependencies` equals the recorded observations.\n- Ordinary code mixed with an agent call: `tests/validation.rs#fn[later_lighter_agent_calls_preserve_the_contexts_existing_trace]` interleaves direct reads (nodes 2 and 3) with `contents_of_current_node` and `contents_of_successors`. It asserts the full ordered dependency list and that `finish` returns the same list.\n- Model tools: `src/agent/tests.rs#fn[graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery]` has the model call `outgoing_edges`, `read_node` and `get_node_page`. It asserts the exact observations and that `record.dependencies == observations` after `finish`.\n- Model tools on source: `src/agent/tests.rs#fn[cached_selected_source_reads_record_exact_delivered_contents_and_errors_add_no_input]` covers `search_structure`, `outline_source` and `read_source` through a custom observation factory.\n- Concurrency: `tests/validation.rs#fn[concurrent_single_node_validations_keep_separate_traces]` checks that each stored record carries its own node and edge observations.\n- Persistence: `tests/contracts.rs#fn[changing_one_criteria_input_does_not_invalidate_another]` asserts that persisted evidence dependencies equal the node-3 read. It also asserts that a changed node 2 invalidates only the criterion that read it.\n\n**2. Each observation holds the node identity and the fingerprint of the contents actually supplied.**\n- The `Dependency::Node(id, fingerprint)` assertions compare exact values.\n- `src/agent/tests.rs#fn[graph_read_pages_retain_the_prepared_snapshot_after_contents_change]` changes the contents after `read_node` has prepared its pages. It asserts the recorded fingerprint equals the original delivered contents, and that the delivered page contains the original text and not the replacement.\n- The 18,000-character case in `graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery` asserts the fingerprint equals the full contents. In the same test, fetching a prepared page does not add a second observation.\n- The cached-source test uses a provider whose current source differs from the cached one. It asserts the observation holds the delivered `fn observed() { call(); }` text.\n\n**3. A failed read returns an error and invents no observation.**\n- `snapshots_record_exact_reads_and_retain_distinct_versions` reads missing node 2. It asserts the error and that the dependencies contain only the node-1 observations.\n- In the cached-source test, `read_source` of `fn[missing]` adds no input. The final dependencies are exactly one entry.\n- In `graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery`, a failed `ask` leaves the dependencies empty. A failed `contents_of_current_node` call after a read keeps exactly one observation.\n- I found no test where a model's `read_node` call fails on a missing node. Ordinary code and the tools share the inspection mechanism, so I do not treat this as a named gap.\n\n**4. A repeated identical observation adds no information.**\n- In `snapshots_record_exact_reads_and_retain_distinct_versions`, the graph is read for node 1 three times with the same contents: once through `read`, and the rest in the `read_snapshot` call. The assertion on `graph.state.lock().unwrap().reads` shows `[1, 1, 1, 2]`, so the first three reads are node 1, yet the dependencies hold one `before` entry.\n\n**5. The same identity with two different fingerprints preserves both observations.**\n- The same test changes node 1 from \"before\" to \"after\" and asserts both `Dependency::Node(1, ...)` entries, in order. They survive `finish`, and `record_is_current` returns false.\n\nNo obligation is untested, so I found no gap.",
-  "references": "d8b0530b2e74bfd5d46239a1c4dc67e0a622c8b4dfdb8db8e3e1da191d442b85",
+  "rationale": "The reviewed tests cover every obligation in `requirements.sdk.graph.evidence.node_inputs`. I found no gap.\n\n**Obligations and the tests that check them**\n\n1. **Every successful tracked node read goes into the finished record, whether ordinary code or a model tool made it.**\n   - Ordinary code: `tests/validation.rs#fn[later_lighter_agent_calls_preserve_the_contexts_existing_trace]` reads nodes directly before and after an agent call. It asserts that the exact retained list, including both direct reads, appears in `finish(...).dependencies`. A later lighter call leaves that list unchanged.\n   - Model tool: `agent/tests.rs#fn[graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery]` drives `read_node` through the agent. It asserts the `Dependency::Node(Node(2), …)` observation and then that `record.dependencies == observations`.\n   - Also covered: the concurrent per-node traces in `tests/validation.rs#fn[concurrent_single_node_validations_keep_separate_traces]`, and the criteria-level record contents in `tests/contracts.rs#fn[changing_one_criteria_input_does_not_invalidate_another]`.\n   - Source tools: `agent/tests.rs#fn[cached_selected_source_reads_record_exact_delivered_contents_and_errors_add_no_input]` checks `read_source` observations.\n\n2. **Each observation holds the node identity and the fingerprint of the contents actually supplied.**\n   - `tests/validation.rs#fn[snapshots_record_exact_reads_and_retain_distinct_versions]` and `#fn[direct_reads_return_complete_unicode_contents_and_snapshots]` assert `Dependency::Node(id, fp(...))` for each read. The second test covers empty and large multi-byte Unicode contents. It also replaces the contents after a read, and the recorded fingerprint stays that of the original.\n   - `agent/tests.rs#fn[graph_read_pages_retain_the_prepared_snapshot_after_contents_change]` changes the graph mid-conversation. It asserts the single recorded fingerprint equals the original delivered contents and that the paged output has no replacement text.\n   - The source-tool test asserts the exact delivered text and scheme.\n\n3. **A failed read returns an error without inventing an observation.**\n   - In `snapshots_record_exact_reads_and_retain_distinct_versions`, `read(&2)` errors and the dependency list holds only the two node 1 observations.\n   - `direct_reads_return_complete_unicode_contents_and_snapshots` asserts `failed.read(&9)` errors and `failed.dependencies()` is empty.\n   - The source-tool test reads a missing selector and asserts the final dependencies are exactly one observation.\n\n4. **Repeating an identical observation adds no information.** In `snapshots_record_exact_reads_and_retain_distinct_versions`, node 1 is read three times: `read`, `read_snapshot`, and `read_snapshot` again. The graph's `reads` assertion is `[1, 1, 1, 2]`. The dependencies contain the \"before\" observation only once. The unicode test likewise gets one observation from two reads.\n\n5. **The same identity with two different fingerprints preserves both.** `snapshots_record_exact_reads_and_retain_distinct_versions` asserts `[Node(1, before), Node(1, after)]` both in the live trace and in `record.dependencies`. It also checks that the resulting record is no longer current.\n\n**Notes**\n- I checked `graph.rs#impl[InspectionContext<'d, D>]/fn[record_read]` for one specific question: does deduplication compare against all earlier observations? It does, using `any`. A non-adjacent repeat (A, B, A) has no dedicated test, but the tested repeat case and the retained-versions case together check the obligation's stated behavior. I don't count this as a gap.\n- The `{test}` markings on all the cited tests are present, so there is no marking gap.",
+  "references": "1f280cc1cb97dd1216146152bd28924c2d510beac827f9f2336b1af48b99b363",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.evidence.node_inputs",
@@ -55,6 +55,26 @@
       "file": "crates/trust-but-verify/tests/validation.rs",
       "item": "fn[concurrent_single_node_validations_keep_separate_traces]",
       "hash": "115849fed971c0f86fe91027c5874818c0a7a0d3e2f9137ac0bd76f1e9b73367"
+    },
+    {
+      "file": "crates/trust-but-verify/tests/validation.rs",
+      "item": "fn[direct_reads_return_complete_unicode_contents_and_snapshots]",
+      "hash": "0c5cd83984b6af9f4c86bb8bf6748d5c5f00206386a8d5236b3d0a90f577bc52"
+    },
+    {
+      "file": "crates/trust-but-verify/src/graph.rs",
+      "item": "impl[Trace<T>]/fn[observe]",
+      "hash": "fa885062d48485dd2a27b50ee23dd8343f5ac5724c4ad11adea90108cc95ebd3"
+    },
+    {
+      "file": "crates/trust-but-verify/src/graph.rs",
+      "item": "impl[InspectionContext<'d,%20D>]/fn[record_read]",
+      "hash": "decc9fc2168f398781906a9ce38be3ffda02b723b45b951c6e809d4f37b3d781"
+    },
+    {
+      "file": "crates/trust-but-verify/src/graph.rs",
+      "item": "impl[InspectionContext<'d,%20D>]/fn[read_snapshot]",
+      "hash": "9d83a55fbc94f8e721811d5cbf87d789c183235d0d5b3816967eef5acce7cbce"
     }
   ],
   "format_version": 1,
@@ -67,7 +87,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "d8b0530b2e74bfd5d46239a1c4dc67e0a622c8b4dfdb8db8e3e1da191d442b85"
+          "value": "1f280cc1cb97dd1216146152bd28924c2d510beac827f9f2336b1af48b99b363"
         }
       ]
     },
@@ -79,7 +99,7 @@
         "Mandatory",
         {
           "scheme": "node-path-set-sha256-v1",
-          "value": "4adf761161c82c64b63ecf53863f988c8370007314f541b1524c0a77bc0ea176"
+          "value": "76b767dec0c6d007bda00826a538fa4eeb4068cdcc22f6bc63ef878ddfd064e6"
         }
       ]
     },
@@ -210,6 +230,74 @@
         {
           "scheme": "habeas-input-v1",
           "value": "e4c7ec8146ca073341a7bc75c49859dafeca4e224ce4edf6ca177c303293d2be"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/tests/validation.rs"
+            },
+            "selector": "fn[direct_reads_return_complete_unicode_contents_and_snapshots]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "f7a65fa01b647968cd49ff992ca28b6dcb1a1e5092cff1758a7dcdce36165a77"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/graph.rs"
+            },
+            "selector": "impl[Trace<T>]/fn[observe]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "9732cf3cf1089530f1848b766adc0975c14adc03a9a10b4882d872b6b538431e"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/graph.rs"
+            },
+            "selector": "impl[InspectionContext<'d,%20D>]/fn[record_read]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "fc9580fcbf3a7cb2adc7b287d8db75dd8d70e60c71a44385d01088da558afd44"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/graph.rs"
+            },
+            "selector": "impl[InspectionContext<'d,%20D>]/fn[read_snapshot]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "ce1f5c9ab424b7c44192df5f2d92c68d4fdafee9efcb21837e31b6db255f6f29"
         }
       ]
     }

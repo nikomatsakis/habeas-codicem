@@ -237,6 +237,7 @@ fn returned_node_page(request: &CompletionRequest, index: usize) -> u64 {
 // {test}`requirements.sdk.graph.agent-calls.judge.caching`
 // {test}`requirements.sdk.graph.domain_types`
 // {test}`requirements.sdk.graph.agent-calls.judge.rendering`
+// {test}`requirements.sdk.graph.context-tools.read_node.fn`
 #[tokio::test]
 async fn default_tool_accepts_scalar_results_and_keeps_the_exact_prefix() {
     let mut graph = Memory::new("source".into());
@@ -845,6 +846,7 @@ async fn typed_submission_references_resolve_and_invalid_results_are_agent_error
 // {test}`requirements.sdk.graph.agent-calls.author_procedure`
 // {test}`requirements.sdk.graph.evidence.node_inputs`
 // {test}`requirements.sdk.graph.snapshot`
+// {test}`requirements.sdk.graph.context-tools.read_node.fn`
 // {test}`requirements.sdk.graph.context-tools.read_node.behavior`
 // {test}`requirements.sdk.graph.context-tools.read_node.inputs`
 // {test}`requirements.sdk.graph.context-tools.pages.behavior`
@@ -1255,6 +1257,7 @@ async fn queued_contents_and_graph_read_tools_redact_credentials_before_delivery
 // {test}`requirements.sdk.graph.context-tools.outline_source.behavior`
 // {test}`requirements.sdk.graph.context-tools.outline_source.fn`
 // {test}`requirements.sdk.graph.context-tools.outline_source.inputs`
+// {test}`requirements.sdk.graph.context-tools.search_text.fn`
 // {test}`requirements.sdk.graph.context-tools.search_text.behavior`
 // {test}`requirements.sdk.graph.context-tools.search_text.inputs`
 // {test}`requirements.sdk.graph.context-tools.pages.behavior`
@@ -1960,6 +1963,7 @@ async fn application_tool_factories_create_fresh_state_for_each_agent_call() {
 }
 
 // {test}`requirements.sdk.graph.agent-harness.tool_agent`
+// {test}`requirements.sdk.graph.context-tools.pages.fn`
 #[tokio::test]
 async fn application_tools_preserve_graph_tools_in_the_same_conversation() {
     let contents = "x".repeat(18_000);

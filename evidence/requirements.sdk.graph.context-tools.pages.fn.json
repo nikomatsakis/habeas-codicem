@@ -1,8 +1,8 @@
 {
-  "requirement": "The SDK exposes continuation operations for prepared node and source results\nthrough its fixed `get_node_page` and `get_source_page` tools. Criterion code\ncan use the same page-continuation facility through inspection.\n\nThe public Rust interface has this shape:\n\n```rust,ignore\nimpl<'d, D: Domain> InspectionContext<'d, D> {\n    // ...\n\n    /// Prepare the first page and later continuation IDs from one node read.\n    pub fn read_paged(\n        &self,\n        node: &D::NodeId,\n    ) -> Result<PagedText, D::Error>;\n\n    /// Return a continuation from the same prepared result snapshot.\n    pub fn read_page(\n        &self,\n        page: &PageId,\n    ) -> Result<String, PageError>;\n\n    // ...\n}\n```\n\n`PagedText` contains the initial response text and a `Vec<PageId>` identifying\nits later continuations. The caller receives response text; the SDK privately retains each page's\ndependency metadata. `PageError` reports continuation failures such as an\nunknown page ID or an ID belonging to another inspection context.",
+  "requirement": "The SDK exposes continuation operations for prepared node and source results\nthrough its fixed `get_node_page` and `get_source_page` agent tools. Each accepts\na page ID issued with a prepared tool result and returns the corresponding page.",
   "determination": true,
-  "rationale": "The tests adequately check `requirements.sdk.graph.context-tools.pages.fn`.\n\nI derived five obligations from the requirement text. I read all the supplied tests and did not request implementation source.\n\n1. **`read_paged` returns a `PagedText`.** It must hold the initial response text and a `Vec<PageId>` of later continuations, all prepared from one node read.\n   - `direct_pages_retain_unicode_snapshots_without_rereads_or_new_dependencies` in `tests/validation.rs` checks that the first page has 8,192 characters and that there are 2 `PageId`s. It checks that `response.text` plus the pages equals the original text. Only one node read is recorded.\n   - `direct_paged_empty_failed_and_redacted_reads_keep_delivery_accounting` covers an empty node (no pages), a failed read (the error is returned and no dependencies are recorded), and a multi-page node with redaction.\n\n2. **`read_page` returns a continuation from the same prepared snapshot.**\n   - The unicode test changes the underlying contents to \"replacement\" after `read_paged`. It asserts that the pages still return the original text.\n   - It also asserts that only one read occurred, and that a page read a second time returns the same text.\n   - The page IDs round-trip through serde.\n\n3. **The SDK privately retains dependency metadata.** The caller receives only text.\n   - The unicode test asserts that `inspection.dependencies()` is unchanged after each `read_page`. That is, it stays a single `Dependency::Node` carrying the original fingerprint.\n   - The test also asserts that the final record is not current once the contents have changed.\n\n4. **`PageError` reports continuation failures.** The requirement names an unknown page ID and an ID belonging to another inspection context.\n   - `direct_page_ids_are_context_scoped_and_unknown_ids_record_nothing` asserts `PageError::WrongContext` when a second context reads the first context's page. It asserts `PageError::UnknownPage` for an out-of-range index.\n   - The same test checks the `Display` text of both variants and that no extra dependencies or reads are recorded. It also checks that a replacement context rejects the old context's page.\n\n5. **The fixed `get_node_page` and `get_source_page` tools expose the same continuation facility.**\n   - `graph_read_pages_retain_the_prepared_snapshot_after_contents_change` in `agent/tests.rs` runs `read_node` and then `get_node_page`. It asserts that the page contains the original snapshot and not the replacement, and that the dependency fingerprint matches the original.\n   - `source_read_pages_retain_text_and_dependencies_without_another_read` covers `get_source_page`. It checks the dependencies on every page and that the observation ran exactly once.\n   - `fixed_tools_deliver_domain_contents_with_mandatory_snapshot_dependencies` in `project_sources.rs` covers a page ID from a peer session, a page ID used in the wrong session, an unknown page and a fresh session. All of these must return errors. It also checks that the pages have the expected dependencies and retained text.\n\nAll of these tests carry `{test}` references to the subject. I found no unaddressed obligation, no wrong expected result, and no marking gap.",
-  "references": "3eed91d22a123631d6f655292e25060029cc8b2a8d3db64a0a80f036ee13f924",
+  "rationale": "The subject has two obligations. The SDK must expose fixed `get_node_page` and `get_source_page` tools. Each tool must accept a page ID issued with a prepared result and return the corresponding page. The reviewed tests cover both.\n\n**Node pages**\n- `application_tools_preserve_graph_tools_in_the_same_conversation` (`agent/tests.rs`) checks that every request's tool list includes `get_node_page` next to `read_node`.\n- In the same test, the scripted provider (`Script`'s `CompletionProvider::complete`) replaces the `prepared_page` index with the real page ID from the `read_node` result. It does this through the helper `returned_node_page`.\n- The test then asserts that the `get_node_page` delivery is exactly `{\"page\": <ID of page 1>, \"text\": \"x\" * 8192}`. That is the page the issued ID refers to.\n- `graph_read_pages_retain_the_prepared_snapshot_after_contents_change` also fetches a page by its issued ID. It asserts that the page text comes from the original snapshot.\n\n**Source pages**\n- `fixed_tools_deliver_domain_contents_with_mandatory_snapshot_dependencies` (`agent/project_sources.rs`) asserts that the fixed tool list ends with `get_source_page`.\n- The same test dispatches `get_source_page` with each page ID from a `read_source` envelope. It asserts that the pages concatenate to the full 20,000-character text and that the dependencies are preserved.\n- It also checks that an unknown page ID (999999), page 0 on a fresh session, and a page ID issued to a different session are all rejected.\n- `source_read_pages_retain_text_and_dependencies_without_another_read` fetches every issued page. It reassembles the complete JSON result and compares it to the original text, so each page is the correct one.\n\nI found no obligation of the subject without a test, and no assertion that contradicts it.",
+  "references": "b64973cb760a6dd71a521297d1c69623fd9c205ce5e62ea603edd73547fe22cd",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.context-tools.pages.fn",
@@ -12,35 +12,8 @@
       "text": [
         ":::{req} pages.fn",
         "The SDK exposes continuation operations for prepared node and source results",
-        "through its fixed `get_node_page` and `get_source_page` tools. Criterion code",
-        "can use the same page-continuation facility through inspection.",
-        "",
-        "The public Rust interface has this shape:",
-        "",
-        "```rust,ignore",
-        "impl<'d, D: Domain> InspectionContext<'d, D> {",
-        "    // ...",
-        "",
-        "    /// Prepare the first page and later continuation IDs from one node read.",
-        "    pub fn read_paged(",
-        "        &self,",
-        "        node: &D::NodeId,",
-        "    ) -> Result<PagedText, D::Error>;",
-        "",
-        "    /// Return a continuation from the same prepared result snapshot.",
-        "    pub fn read_page(",
-        "        &self,",
-        "        page: &PageId,",
-        "    ) -> Result<String, PageError>;",
-        "",
-        "    // ...",
-        "}",
-        "```",
-        "",
-        "`PagedText` contains the initial response text and a `Vec<PageId>` identifying",
-        "its later continuations. The caller receives response text; the SDK privately retains each page's",
-        "dependency metadata. `PageError` reports continuation failures such as an",
-        "unknown page ID or an ID belonging to another inspection context.",
+        "through its fixed `get_node_page` and `get_source_page` agent tools. Each accepts",
+        "a page ID issued with a prepared tool result and returns the corresponding page.",
         ":::"
       ]
     },
@@ -48,6 +21,11 @@
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
       "item": "mod[tests]/fn[fixed_tools_deliver_domain_contents_with_mandatory_snapshot_dependencies]",
       "hash": "283f01f5306b517d055960be8fd5ec8cf869a394c2e684f1d6f2d025e950d698"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/tests.rs",
+      "item": "fn[application_tools_preserve_graph_tools_in_the_same_conversation]",
+      "hash": "e5849b83357e6a59783cfb5450174895a447b1e824cca606fdb085a3df9bf4b3"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
@@ -60,19 +38,14 @@
       "hash": "f919b3440aa4cff8d25cf42bc7ed1f8b5ebe52a6a29474e5abddcbaaadaa801a"
     },
     {
-      "file": "crates/trust-but-verify/tests/validation.rs",
-      "item": "fn[direct_pages_retain_unicode_snapshots_without_rereads_or_new_dependencies]",
-      "hash": "7330020345780df978c41a1f893e66f16cbdc1431e0e5723aa8cbc4c0468e926"
+      "file": "crates/trust-but-verify/src/agent/tests.rs",
+      "item": "impl[Script/CompletionProvider]/fn[complete]",
+      "hash": "916fd0cc1ee75477b2cbab5acfc8b8b579915945f92ca61dfa386e2220743f0b"
     },
     {
-      "file": "crates/trust-but-verify/tests/validation.rs",
-      "item": "fn[direct_page_ids_are_context_scoped_and_unknown_ids_record_nothing]",
-      "hash": "93514aceb006b17e9414aca898068955e2550de27bf8b09f0a113268865b838b"
-    },
-    {
-      "file": "crates/trust-but-verify/tests/validation.rs",
-      "item": "fn[direct_paged_empty_failed_and_redacted_reads_keep_delivery_accounting]",
-      "hash": "260837264ace02288ee837abdc94c96718da81d50ad81a8b925e8c6d52934fa7"
+      "file": "crates/trust-but-verify/src/agent/tests.rs",
+      "item": "fn[returned_node_page]",
+      "hash": "ab7f21aeb22437feb3dddad5210f6bc5b318e83379546317e4aea7adc79cae54"
     }
   ],
   "format_version": 1,
@@ -85,7 +58,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "3eed91d22a123631d6f655292e25060029cc8b2a8d3db64a0a80f036ee13f924"
+          "value": "b64973cb760a6dd71a521297d1c69623fd9c205ce5e62ea603edd73547fe22cd"
         }
       ]
     },
@@ -97,7 +70,7 @@
         "Mandatory",
         {
           "scheme": "node-path-set-sha256-v1",
-          "value": "ff67661f0341fea850376437a7b8e9c1e1368e2aa19e7ed4df846a94eb7da9aa"
+          "value": "3c165b5f75b012c37ca4cd586768fef63208e3ba8f65c7473ba0b3c0d434d008"
         }
       ]
     },
@@ -108,7 +81,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "52b7a9aed52279cbecb9215913af1485ddb8533b65570fb5e3ace6db19dde0ac"
+          "value": "6e58d6745278412a2d3f06c0749f576a8176630458ba6aeb3e505a8593c02b12"
         }
       ]
     },
@@ -126,6 +99,23 @@
         {
           "scheme": "habeas-input-v1",
           "value": "ce305a4430e03c8bcf296b8787556627a98f02ecf9d3b91d016eba2574125fc0"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/tests.rs"
+            },
+            "selector": "fn[application_tools_preserve_graph_tools_in_the_same_conversation]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "3a9cf799b9aeeb294a8f105f8bb68b8201e4fb3e7f228a83a61c586cda402c90"
         }
       ]
     },
@@ -169,14 +159,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/validation.rs"
+              "location": "crates/trust-but-verify/src/agent/tests.rs"
             },
-            "selector": "fn[direct_pages_retain_unicode_snapshots_without_rereads_or_new_dependencies]"
+            "selector": "impl[Script/CompletionProvider]/fn[complete]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "d466428dca067ae4e760da467c2e52847babe96a2270c4c39a3fe9fcce1de04a"
+          "value": "42f557d57667cb3ae7194c7fd6246ef088ce119b9798c56f8785811c2f2622bc"
         }
       ]
     },
@@ -186,31 +176,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/validation.rs"
+              "location": "crates/trust-but-verify/src/agent/tests.rs"
             },
-            "selector": "fn[direct_page_ids_are_context_scoped_and_unknown_ids_record_nothing]"
+            "selector": "fn[returned_node_page]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "420bfdb7984eeaabe6a35354bafacf05dbd10aa3bd8429a11285c025b305b0f2"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/validation.rs"
-            },
-            "selector": "fn[direct_paged_empty_failed_and_redacted_reads_keep_delivery_accounting]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "fb5169b18f2dc6d4abcdb5254bbb561351c47a47cb3b501398a115132e277a1f"
+          "value": "c11c0eeec52339fa6122ba8d0e1307ed1c497688d797b7b74653766471a25b0d"
         }
       ]
     }

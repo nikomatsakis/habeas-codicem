@@ -151,6 +151,7 @@ mod tests {
     // {test}`requirements.sdk.graph.context-tools.outline_source.inputs`
     // {test}`requirements.sdk.graph.context-tools.outline_source.behavior`
     // {test}`requirements.sdk.graph.context-tools.search_text.inputs`
+    // {test}`requirements.sdk.graph.context-tools.search_text.fn`
     // {test}`requirements.sdk.graph.context-tools.search_structure.inputs`
     // {test}`requirements.sdk.graph.context-tools.pages.inputs`
     // {test}`requirements.sdk.graph.context-tools.pages.fn`
@@ -513,6 +514,84 @@ mod tests {
         assert_eq!(domain.0.lock().unwrap().reads, 2);
     }
 
+    // {test}`requirements.sdk.sources.redaction`
+    #[tokio::test]
+    async fn search_excerpts_redact_credentials_before_serialization_and_paging() {
+        let root = tempfile::tempdir().unwrap();
+        let token = format!("gh{}_{}", "p", "16C7e42F292c6912E7710c838347Ae178B4a");
+        let key_body = [
+            "MIIEowIBAAKCAQEAu1SU1LfVLPHCozMxH2Mo4lgOEePzNm0tRgeLezV6ffAt0gun",
+            "VTLw7onLRnrq0/IzW7yWR7QkrmBL7jTKEn5u+qKhbwKfBstIs+bMY2Zkp18gnTxK",
+            "LxoS2tFczGkPLPgizskuemMghRniWaoLcyehkd3qqGElvW/VDL5AaWTg0nLVkjRo",
+        ];
+        let key = format!(
+            "-----BEGIN {}-----\n{}\n-----END {}-----",
+            "RSA PRIVATE KEY",
+            key_body.join("\n"),
+            "RSA PRIVATE KEY"
+        );
+        let padding = "é".repeat(9_000);
+        let raw = format!(
+            "fn chosen() {{\n    let token = \"{token}\";\n    let key = r#\"{key}\"#;\n    let padding = \"{padding}\";\n}}"
+        );
+        let expected = format!(
+            "fn chosen() {{\n    let token = \"[REDACTED:GitHub Token]\";\n    let key = r#\"[REDACTED:Private Key Block]\n\n\n\n-----END RSA PRIVATE KEY-----\"#;\n    let padding = \"{padding}\";\n}}"
+        );
+        std::fs::write(root.path().join("code.rs"), &raw).unwrap();
+        let domain = project("domain contents are not read for search");
+        let tools = ProjectSources {
+            sources: Sources::new(root.path()),
+            domain: domain.clone(),
+        };
+        let mut session = tools.session();
+        let queries = [(
+            "search_text",
+            json!({"prefix":"code.rs","pattern":"fn chosen","context_lines":20}),
+        )];
+        #[cfg(feature = "default-languages")]
+        let queries = [
+            queries[0].clone(),
+            (
+                "search_structure",
+                json!({"prefix":"code.rs","language":"rust","rule":{"rule":{"kind":"function_item"}}}),
+            ),
+        ];
+        for (tool, args) in queries {
+            let first = session.dispatch(tool, &args).await.unwrap();
+            assert!(first.dependencies.is_empty());
+            let prepared: Value = serde_json::from_str(&first.text).unwrap();
+            let pages = prepared["pages"].as_array().unwrap();
+            assert!(pages.len() > 1);
+            let mut serialized = prepared["text"].as_str().unwrap().to_owned();
+            for page in &pages[1..] {
+                let returned = session
+                    .dispatch("get_source_page", &json!({"page":page}))
+                    .await
+                    .unwrap();
+                assert!(returned.dependencies.is_empty());
+                serialized.push_str(&returned.text);
+            }
+            let result: Value = serde_json::from_str(&serialized).unwrap();
+            assert_eq!(result["complete"], true);
+            assert_eq!(result["matches"].as_array().unwrap().len(), 1);
+            let excerpt = result["matches"][0]["excerpt"].as_str().unwrap();
+            assert!(
+                excerpt == expected,
+                "{tool} must redact complete credentials and preserve surrounding text"
+            );
+            assert_eq!(excerpt.lines().count(), raw.lines().count());
+            assert!(!serialized.contains(&token));
+            for line in key_body {
+                assert!(!serialized.contains(line));
+            }
+        }
+        assert_eq!(
+            std::fs::read_to_string(root.path().join("code.rs")).unwrap(),
+            raw
+        );
+        assert_eq!(domain.0.lock().unwrap().reads, 0);
+    }
+
     // {test}`requirements.sdk.graph.context-tools.outline_source.behavior`
     // {test}`requirements.sdk.graph.context-tools.outline_source.inputs`
     // {test}`requirements.sdk.sources.local_provider`
@@ -620,6 +699,7 @@ where
     // {impl}`requirements.sdk.graph.context-tools.read_source.behavior`
     // {impl}`requirements.sdk.graph.context-tools.read_source.inputs`
     // {impl}`requirements.sdk.graph.context-tools.pages.inputs`
+    // {impl}`requirements.sdk.sources.redaction`
     fn dispatch<'a>(
         &'a mut self,
         name: &'a str,
@@ -693,7 +773,8 @@ where
                         .node_content(&node)
                         .map_err(|error| io::Error::other(error.to_string()))?;
                     dependencies.push(Dependency::Node(node, contents.fingerprint()));
-                    json!({"node":item,"text":contents.format()})
+                    let text = crate::redaction::redact_text(&contents.format()).into_owned();
+                    json!({"node":item,"text":text})
                 }
                 "search_text" => {
                     let matches = self
@@ -708,7 +789,8 @@ where
                         .await
                         .map_err(io::Error::other)?;
                     json!({"complete":matches.complete,"matches":matches.matches.into_iter().map(|found|
-                        json!({"path":found.path,"line":found.line,"excerpt":found.excerpt})).collect::<Vec<_>>()})
+                        json!({"path":found.path,"line":found.line,
+                            "excerpt":crate::redaction::redact_text(&found.excerpt)})).collect::<Vec<_>>()})
                 }
                 "search_structure" => {
                     let matches = self
@@ -726,7 +808,8 @@ where
                         .await
                         .map_err(io::Error::other)?;
                     json!({"complete":matches.complete,"matches":matches.matches.into_iter().map(|found|
-                        json!({"node":found.node,"excerpt":found.excerpt})).collect::<Vec<_>>()})
+                        json!({"node":found.node,
+                            "excerpt":crate::redaction::redact_text(&found.excerpt)})).collect::<Vec<_>>()})
                 }
                 "get_source_page" => {
                     let page = optional_number("page")?
@@ -742,8 +825,7 @@ where
                 }
                 _ => return Err(io::Error::other(format!("unknown source tool {name:?}"))),
             };
-            let serialized = serde_json::to_string(&result).map_err(io::Error::other)?;
-            let text = crate::redaction::redact_text(&serialized).into_owned();
+            let text = serde_json::to_string(&result).map_err(io::Error::other)?;
             let chars: Vec<_> = text.chars().collect();
             if chars.len() <= 8192 {
                 return Ok(ToolDelivery { text, dependencies });

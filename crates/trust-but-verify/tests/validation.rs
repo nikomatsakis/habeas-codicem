@@ -15,7 +15,6 @@ use std::{
 };
 use trust_but_verify::domain::Domain;
 use trust_but_verify::domain::NodeContents;
-use trust_but_verify::graph::pages::{PageError, PageId};
 use trust_but_verify::graph::validator::Validator;
 use trust_but_verify::graph::*;
 use trust_but_verify::request::Agent;
@@ -1442,136 +1441,49 @@ async fn queued_reads_selection_and_rendering_fail_before_agent_invocation() {
     assert_eq!(agent.requests.lock().unwrap().len(), initial_calls);
 }
 
-// {test}`requirements.sdk.graph.context-tools.pages.fn`
-// {test}`requirements.sdk.graph.context-tools.pages.behavior`
-// {test}`requirements.sdk.graph.context-tools.pages.inputs`
+// {test}`requirements.sdk.graph.context-tools.read_node.fn`
+// {test}`requirements.sdk.graph.context-tools.read_node.behavior`
+// {test}`requirements.sdk.graph.context-tools.read_node.inputs`
+// {test}`requirements.sdk.graph.evidence.node_inputs`
+// {test}`requirements.sdk.graph.snapshot`
 #[test]
-fn direct_pages_retain_unicode_snapshots_without_rereads_or_new_dependencies() {
-    let graph = Memory::default();
-    let original = format!("{}{}", "é".repeat(8_200), "終".repeat(8_200));
-    graph
-        .state
-        .lock()
-        .unwrap()
-        .contents
-        .insert(1, original.clone());
-    let inspection = InspectionContext::new(&graph);
-    let response = inspection.read_paged(&1).unwrap();
-    assert_eq!(response.text.chars().count(), 8_192);
-    assert_eq!(response.pages.len(), 2);
-    assert_eq!(
-        inspection.dependencies(),
-        vec![Dependency::Node(1, fp(original.clone()))]
-    );
-    graph
-        .state
-        .lock()
-        .unwrap()
-        .contents
-        .insert(1, "replacement".into());
-    let mut returned = response.text.clone();
-    for page in &response.pages {
-        let wire = serde_json::to_string(page).unwrap();
-        let decoded: PageId = serde_json::from_str(&wire).unwrap();
-        assert_eq!(&decoded, page);
-        returned.push_str(&inspection.read_page(&decoded).unwrap());
+fn direct_reads_return_complete_unicode_contents_and_snapshots() {
+    for original in [
+        String::new(),
+        format!("{}{}end", "é".repeat(8_200), "終".repeat(8_200)),
+    ] {
+        let graph = Memory::default();
+        graph
+            .state
+            .lock()
+            .unwrap()
+            .contents
+            .insert(1, original.clone());
+        let inspection = InspectionContext::new(&graph);
+        let contents = inspection.read(&1).unwrap();
+        assert_eq!(contents.format(), original);
+        let snapshot = inspection.read_snapshot(&1).unwrap();
+        assert_eq!(snapshot.content.format(), original);
+        assert_eq!(snapshot.fingerprint, fp(original.clone()));
         assert_eq!(
             inspection.dependencies(),
             vec![Dependency::Node(1, fp(original.clone()))]
         );
+        graph
+            .state
+            .lock()
+            .unwrap()
+            .contents
+            .insert(1, "replacement".into());
+        assert_eq!(contents.format(), original);
+        assert_eq!(snapshot.content.format(), original);
+        assert_eq!(graph.state.lock().unwrap().reads, [1, 1]);
+        let record = inspection.finish("v1".into(), true).unwrap();
+        assert!(!record_is_current(&graph, "v1", &record).unwrap());
+        let failed = InspectionContext::new(&graph);
+        assert_eq!(failed.read(&9).unwrap_err(), "missing");
+        assert!(failed.dependencies().is_empty());
     }
-    assert_eq!(returned, original);
-    assert_eq!(graph.state.lock().unwrap().reads, vec![1]);
-    assert_eq!(
-        inspection.read_page(&response.pages[0]).unwrap(),
-        "é".repeat(8) + &"終".repeat(8_184)
-    );
-    assert_eq!(graph.state.lock().unwrap().reads, vec![1]);
-    assert_eq!(inspection.dependencies().len(), 1);
-    let old_record = inspection.finish("v1".into(), true).unwrap();
-    assert!(!record_is_current(&graph, "v1", &old_record).unwrap());
-}
-
-// {test}`requirements.sdk.graph.context-tools.pages.fn`
-// {test}`requirements.sdk.graph.context-tools.pages.behavior`
-// {test}`requirements.sdk.graph.context-tools.pages.inputs`
-#[test]
-fn direct_page_ids_are_context_scoped_and_unknown_ids_record_nothing() {
-    let graph = Memory::default();
-    graph
-        .state
-        .lock()
-        .unwrap()
-        .contents
-        .insert(1, "x".repeat(8_193));
-    let first = InspectionContext::new(&graph);
-    let response = first.read_paged(&1).unwrap();
-    let second = InspectionContext::new(&graph);
-    assert_eq!(
-        second.read_page(&response.pages[0]).unwrap_err(),
-        PageError::WrongContext
-    );
-    assert!(second.dependencies().is_empty());
-    let mut unknown = serde_json::to_value(&response.pages[0]).unwrap();
-    unknown["index"] = json!(usize::MAX);
-    let unknown: PageId = serde_json::from_value(unknown).unwrap();
-    assert_eq!(
-        first.read_page(&unknown).unwrap_err(),
-        PageError::UnknownPage
-    );
-    assert_eq!(PageError::UnknownPage.to_string(), "unknown page ID");
-    assert!(
-        PageError::WrongContext
-            .to_string()
-            .contains("another inspection context")
-    );
-    assert_eq!(first.dependencies().len(), 1);
-    assert_eq!(graph.state.lock().unwrap().reads, vec![1]);
-    drop(first);
-    let replacement = InspectionContext::new(&graph);
-    assert!(replacement.read_page(&response.pages[0]).is_err());
-}
-
-// {test}`requirements.sdk.graph.context-tools.pages.fn`
-// {test}`requirements.sdk.graph.context-tools.pages.inputs`
-// {test}`requirements.sdk.sources.redaction`
-#[test]
-fn direct_paged_empty_failed_and_redacted_reads_keep_delivery_accounting() {
-    let graph = Memory::default();
-    graph
-        .state
-        .lock()
-        .unwrap()
-        .contents
-        .insert(1, String::new());
-    let inspection = InspectionContext::new(&graph);
-    let empty = inspection.read_paged(&1).unwrap();
-    assert_eq!(empty.text, "");
-    assert!(empty.pages.is_empty());
-    assert_eq!(inspection.dependencies(), vec![Dependency::Node(1, fp(""))]);
-    let failed = InspectionContext::new(&graph);
-    assert_eq!(failed.read_paged(&9).unwrap_err(), "missing");
-    assert!(failed.dependencies().is_empty());
-    let token = format!("gh{}_{}", "p", "16C7e42F292c6912E7710c838347Ae178B4a");
-    let source = format!("{}\n{token}\nend", "visible\n".repeat(1_100));
-    graph
-        .state
-        .lock()
-        .unwrap()
-        .contents
-        .insert(2, source.clone());
-    let response = inspection.read_paged(&2).unwrap();
-    let mut rendered = response.text;
-    for page in &response.pages {
-        rendered.push_str(&inspection.read_page(page).unwrap());
-    }
-    assert!(!rendered.contains(&token));
-    assert!(rendered.contains("[REDACTED:GitHub Token]"));
-    assert_eq!(rendered.lines().count(), source.lines().count());
-    assert_eq!(
-        inspection.dependencies(),
-        vec![Dependency::Node(1, fp("")), Dependency::Node(2, fp(source))]
-    );
 }
 
 // {test}`requirements.sdk.graph.hierarchical-paths`

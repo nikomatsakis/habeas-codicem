@@ -6,11 +6,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{future::Future, sync::Mutex};
 
-pub mod pages;
 #[path = "graph/runtime.rs"]
 pub mod validator;
 use crate::request::ValidationContext;
-use pages::{PageError, PageId, PagedText};
 
 // {impl}`requirements.sdk.graph.fingerprint`
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -102,35 +100,35 @@ pub struct Record<N, L = ()> {
 /// The captured evidence metadata is available through read-only accessors.
 ///
 /// ```compile_fail,E0616
-/// use trust_but_verify::{Domain, Fingerprinted};
+/// use trust_but_verify::{domain::Domain, graph::Fingerprinted};
 /// fn change_revision<D: Domain>(answer: &mut Fingerprinted<D, bool>) {
 ///     answer.revision = "different rules".into();
 /// }
 /// ```
 ///
 /// ```compile_fail,E0616
-/// use trust_but_verify::{CriterionPath, Domain, Fingerprinted};
+/// use trust_but_verify::{domain::Domain, graph::{CriterionPath, Fingerprinted}};
 /// fn change_source<D: Domain>(answer: &mut Fingerprinted<D, bool>, source: D::NodeId) {
 ///     answer.source = source;
 /// }
 /// ```
 ///
 /// ```compile_fail,E0616
-/// use trust_but_verify::{CriterionPath, Domain, Fingerprinted};
+/// use trust_but_verify::{domain::Domain, graph::{CriterionPath, Fingerprinted}};
 /// fn change_question<D: Domain>(answer: &mut Fingerprinted<D, bool>) {
 ///     answer.criterion = CriterionPath::new(vec![]);
 /// }
 /// ```
 ///
 /// ```compile_fail,E0616
-/// use trust_but_verify::{Domain, Fingerprinted};
+/// use trust_but_verify::{domain::Domain, graph::Fingerprinted};
 /// fn change_inputs<D: Domain>(answer: &mut Fingerprinted<D, bool>) {
 ///     answer.dependencies.clear();
 /// }
 /// ```
 ///
 /// ```compile_fail,E0616
-/// use trust_but_verify::{Domain, Fingerprinted};
+/// use trust_but_verify::{domain::Domain, graph::Fingerprinted};
 /// fn change_answer<D: Domain>(answer: &mut Fingerprinted<D, bool>) {
 ///     answer.output = false;
 /// }
@@ -271,7 +269,6 @@ pub trait Criterion<D: Domain>: Send + Sized {
 pub struct InspectionContext<'d, D: Domain> {
     graph: &'d D,
     observations: Mutex<Vec<Dependency<D::NodeId, D::EdgeLabel>>>,
-    pages: Mutex<pages::Pages<D::NodeId>>,
 }
 
 impl<'d, D: Domain> InspectionContext<'d, D> {
@@ -280,7 +277,6 @@ impl<'d, D: Domain> InspectionContext<'d, D> {
         Self {
             graph,
             observations: Mutex::new(Vec::new()),
-            pages: Mutex::new(pages::Pages::new()),
         }
     }
 
@@ -305,36 +301,7 @@ impl<'d, D: Domain> InspectionContext<'d, D> {
         Ok(snapshot)
     }
 
-    /// Format a retained node observation into an initial page and continuations.
-    // {impl}`requirements.sdk.graph.context-tools.pages.fn`
-    // {impl}`requirements.sdk.graph.context-tools.pages.inputs`
-    pub fn read_paged(&self, node: &D::NodeId) -> Result<PagedText, D::Error> {
-        let snapshot = self.prepare_read(node)?;
-        let text = crate::redaction::redact_text(&snapshot.content.format()).into_owned();
-        let result = self.pages.lock().expect("page storage poisoned").prepare(
-            text,
-            node.clone(),
-            snapshot.fingerprint.clone(),
-        );
-        self.record_read(node.clone(), snapshot.fingerprint);
-        Ok(result)
-    }
-
-    /// Return a continuation from the same prepared snapshot without rereading.
-    // {impl}`requirements.sdk.graph.context-tools.pages.fn`
-    // {impl}`requirements.sdk.graph.context-tools.pages.behavior`
-    // {impl}`requirements.sdk.graph.context-tools.pages.inputs`
-    pub fn read_page(&self, page: &PageId) -> Result<String, PageError> {
-        let prepared = self
-            .pages
-            .lock()
-            .expect("page storage poisoned")
-            .read(page)?;
-        self.record_read(prepared.node, prepared.fingerprint);
-        Ok(prepared.text)
-    }
-
-    /// Prepare a paged result without claiming its delivery.
+    /// Prepare a retained node observation without claiming its delivery.
     pub(crate) fn prepare_read(
         &self,
         node: &D::NodeId,

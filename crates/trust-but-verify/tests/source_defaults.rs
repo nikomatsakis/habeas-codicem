@@ -28,6 +28,7 @@ fn git(root: &Path, args: &[&str]) {
 // {test}`requirements.sdk.sources.provider_defaults.composition`
 // {test}`requirements.sdk.sources.provider_results`
 // {test}`requirements.sdk.graph.context-tools.list_sources.behavior`
+// {test}`requirements.sdk.graph.context-tools.search_text.fn`
 // {test}`requirements.sdk.graph.context-tools.search_text.behavior`
 #[tokio::test]
 async fn gitignore_is_shared_by_all_operations_with_or_without_a_git_repository() {
