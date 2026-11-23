@@ -171,11 +171,11 @@ The chapters introduce each interface and the tools used with it:
 | [Validators](sdk/graph/validators.md) | Constructing a validator and running criterion values. | [`Domain`](../rustdocs/trust_but_verify/trait.Domain.html), [`Validator`](../rustdocs/trust_but_verify/struct.Validator.html) |
 | [Agent calls](sdk/graph/agent-calls.md) | Prompt construction and typed answers. | [`Context`](../rustdocs/trust_but_verify/trait.Context.html), [`Ask`](../rustdocs/trust_but_verify/struct.Ask.html) |
 | [Context tools](sdk/graph/context-tools.md) | Source discovery, tracked content reads, and edge selections. | [`InspectionContext`](../rustdocs/trust_but_verify/struct.InspectionContext.html) |
-| [Agent harness](sdk/graph/agent-harness.md) | Agent configuration, fixed inspection tools, and structured submissions. | [`AgentConfig`](sdk/graph/agent-harness.md#habeas-req-requirements.sdk.graph.agent-harness.agent_config) |
+| [Agent harness](sdk/graph/agent-harness.md) | Agent configuration, fixed inspection tools, and structured submissions. | [`AgentConfig`](../rustdocs/trust_but_verify/enum.AgentConfig.html) |
 | [Storage](sdk/graph/evidence.md) | Where and how evidence is saved. | [`Domain`](../rustdocs/trust_but_verify/trait.Domain.html) |
-| [Filesystem evidence storage](sdk/filesystem-storage.md) | Filesystem persistence for SDK evidence records. | [`Domain`](../rustdocs/trust_but_verify/trait.Domain.html), [`FileEvidenceStorage`](../rustdocs/trust_but_verify/storage/struct.FileEvidenceStorage.html) |
+| [Filesystem evidence storage](sdk/filesystem-storage.md) | Filesystem persistence for SDK evidence records. | [`Domain`](../rustdocs/trust_but_verify/trait.Domain.html), [`FileEvidenceStorage`](../rustdocs/trust_but_verify/struct.FileEvidenceStorage.html) |
 | [Sources and inspection](sdk/sources.md) | Project files, discovery, and source-item-to-node mapping. | [`Sources`](../rustdocs/trust_but_verify/struct.Sources.html), [`SourceNodes`](../rustdocs/trust_but_verify/trait.SourceNodes.html) |
-| [Source outlines](sdk/outlines.md) | Default language selection and ready-to-use source contents. | [`OutlineId`](../rustdocs/trust_but_verify/outline/struct.OutlineId.html), [`OutlineLang`](../rustdocs/trust_but_verify/outline/trait.OutlineLang.html), [`OutlineContent`](../rustdocs/trust_but_verify/outline/struct.OutlineContent.html) |
+| [Source outlines](sdk/outlines.md) | Default language selection and ready-to-use source contents. | [`OutlineId`](../rustdocs/trust_but_verify/struct.OutlineId.html), [`OutlineLang`](../rustdocs/trust_but_verify/trait.OutlineLang.html), [`OutlineContent`](../rustdocs/trust_but_verify/struct.OutlineContent.html) |
 
 ## Putting it all together
 

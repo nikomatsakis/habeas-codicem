@@ -1,9 +1,14 @@
 # Source outlines
 
 Use an outline to select a function, requirement, configuration entry, or other
-item from a file. `OutlineId` identifies the item; `OutlineContent` loads its
+item from a file.
+[`OutlineId`](../../rustdocs/trust_but_verify/struct.OutlineId.html)
+identifies the item;
+[`OutlineContent`](../../rustdocs/trust_but_verify/struct.OutlineContent.html) loads its
 contents and supplies the text and structural fingerprint used in a review.
-The filename selects an `OutlineLang`, or the caller supplies one explicitly.
+The filename selects an
+[`OutlineLang`](../../rustdocs/trust_but_verify/trait.OutlineLang.html), or the
+caller supplies one explicitly.
 
 :::{req} independent
 The `trust-but-verify` crate's `outline` module provides language selection,
@@ -28,8 +33,9 @@ items and how they are named and nested.
 
 An *item selector* identifies an item within a
 {term}`requirements.sdk.outlines.outline`, such as `mod[auth]/fn[check_token]`.
-The empty selector identifies the file root. An `OutlineId` pairs the selector
-with the file's path.
+The empty selector identifies the file root.
+[`OutlineId`](../../rustdocs/trust_but_verify/struct.OutlineId.html) pairs the
+selector with the file's path.
 :::
 
 :::{req} address_identity
@@ -64,7 +70,9 @@ let function_id = OutlineId {
 :phrase: outline contents
 
 *Outline contents* are the prepared contents of one selected outline item,
-represented by `OutlineContent`. The value retains its source snapshot and the
+represented by
+[`OutlineContent`](../../rustdocs/trust_but_verify/struct.OutlineContent.html).
+The value retains its source snapshot and the
 language's fingerprinting rules, so its text and fingerprint describe the same
 observation.
 :::
@@ -142,7 +150,7 @@ impl OutlineContent {
     /// Address of the selected item.
     pub fn id(&self) -> &OutlineId;
 
-    /// Selected text from the retained snapshot, including attached source.
+    /// Original selected text, including attached source, before redaction.
     pub fn text(&self) -> &str;
 }
 ```
@@ -206,7 +214,8 @@ for item in &file.outline().items {
 :::{definition} language_definition
 :phrase: outline language
 
-An *outline language* is a cheaply cloneable implementation of `OutlineLang`.
+An *outline language* is a cheaply cloneable implementation of
+[`OutlineLang`](../../rustdocs/trust_but_verify/trait.OutlineLang.html).
 It claims filename extensions and defines the selectable items, their names,
 and their structural hashes. Each supplied language has its own implementation,
 such as `languages::Rust` or `languages::Markdown`.
@@ -314,9 +323,11 @@ impl OutlineContent {
 
 Its `fingerprint()` returns the selected item's retained structural hash and
 scheme under {cite}`requirements.sdk.graph.node_content.fingerprint`.
-Its `format()` returns the selected source text under
+Its `format()` returns the selected source text with recognized credentials
+redacted under {cite}`requirements.sdk.sources.redaction` and
 {cite}`requirements.sdk.graph.node_content.format`.
 Both operations describe the source snapshot retained by the value.
+`text()` retains the original selected bytes for source inspection.
 :::
 
 ```rust,ignore
@@ -352,6 +363,22 @@ selector naming, attachments, and structural-hashing rules:
 :::{req} language_provider.structural_search
 An outline language can additionally supply the syntax capability used by the
 SDK's [structural search](sources.md#outline-and-search-the-available-files).
-Requesting structural search for a language without that capability returns an
-unsupported-language error. Plain text supplies outlining only.
+The operation returns matched byte ranges within the supplied source:
+
+```rust,ignore
+pub trait OutlineLang: Clone + Send + Sync {
+    // ...
+
+    fn search_structure(
+        &self,
+        source: &str,
+        rule: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<Vec<std::ops::Range<usize>>, OutlineError>;
+
+    // ...
+}
+```
+
+The default implementation returns an unsupported-language error. Plain text
+supplies outlining only.
 :::

@@ -48,7 +48,11 @@ the validator; the domain supplies the mapping under
 ```rust,ignore
 use trust_but_verify::{SourceNodes, Sources, Validator};
 
-impl<D: SourceNodes> Validator<D> {
+impl<D: SourceNodes + 'static> Validator<D>
+where
+    D::EdgeLabel: serde::de::DeserializeOwned + schemars::JsonSchema + PartialEq,
+    D::Error: std::fmt::Display,
+{
     // ...
 
     pub fn with_sources(self, sources: Sources) -> Self;
@@ -119,7 +123,7 @@ an unsupported or invalid address returns an error. The SDK reads the mapped
 node through the application's `Domain` interface.
 
 ```rust,ignore
-use trust_but_verify::{Domain, outline::OutlineId};
+use trust_but_verify::{Domain, OutlineId};
 
 pub trait SourceNodes: Domain {
     fn source_node(&self, item: &OutlineId) -> Result<Self::NodeId, Self::Error>;
@@ -149,7 +153,7 @@ The graph's recording and freshness contracts apply under
 TBV automatically redacts recognized credentials in source excerpts delivered
 by its inspection tools and in node text supplied to its agent requests.
 The built-in rules replace recognized secret regions with redaction markers
-while preserving line breaks. Source structural hashes use the same redacted
+while preserving line breaks. SDK-supplied outline languages use the same redacted
 regions, so changing only a recognized credential does not change its
 structural fingerprint.
 

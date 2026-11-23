@@ -418,17 +418,28 @@ The public Rust interface has this shape:
 
 ```rust,ignore
 impl<'d, D: Domain> InspectionContext<'d, D> {
+    // ...
+
+    /// Prepare the first page and later continuation IDs from one node read.
+    pub fn read_paged(
+        &self,
+        node: &D::NodeId,
+    ) -> Result<PagedText, D::Error>;
+
     /// Return a continuation from the same prepared result snapshot.
     pub fn read_page(
         &self,
         page: &PageId,
     ) -> Result<String, PageError>;
+
+    // ...
 }
 ```
 
-The caller receives response text; the SDK privately retains each page's
+`PagedText` contains the initial response text and a `Vec<PageId>` identifying
+its later continuations. The caller receives response text; the SDK privately retains each page's
 dependency metadata. `PageError` reports continuation failures such as an
-unknown page ID. The page-ID and error representations are illustrative here.
+unknown page ID or an ID belonging to another inspection context.
 :::
 
 :::{req} pages.behavior

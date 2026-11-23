@@ -11,7 +11,7 @@ the SDK handles the model conversation and the inspection tools.
 An *agent harness* runs an agent request: it sends instructions and inputs to
 the configured model, executes requested tools, and obtains a structured answer.
 TBV supplies the harness and its tools. The application supplies
-[`Context` values](../../../rustdocs/trust_but_verify/procedure/trait.Context.html),
+[`Context` values](../../../rustdocs/trust_but_verify/trait.Context.html),
 node contents, and
 the answer type.
 :::
@@ -67,17 +67,28 @@ preserves its settings.
 
 :::{req} with_agent
 The SDK configures a validator's supplied agent from an application-provided
-`AgentConfig`. It does not persist the agent configuration.
+[`AgentConfig`](../../../rustdocs/trust_but_verify/enum.AgentConfig.html).
+It does not persist the agent configuration.
 
 ```rust,ignore
-use trust_but_verify::agent::AgentConfig;
+use trust_but_verify::{AgentConfig, Domain, Validator};
 
 impl<D: Domain> Validator<D> {
+    // ...
+
     /// Configure the SDK agent used by this validator's ask requests.
-    pub fn with_agent(self, config: AgentConfig) -> Self;
+    pub fn with_agent(self, config: AgentConfig) -> Self
+    where
+        D: 'static,
+        D::EdgeLabel: serde::de::DeserializeOwned + schemars::JsonSchema + PartialEq,
+        D::Error: std::fmt::Display;
+
+    // ...
 }
 ```
 
+The label bounds let the fixed tools accept typed edge labels, and `Display`
+lets them report domain errors to the agent.
 Criteria obtain the configured agent through their `ValidationContext`.
 Constructing a validator without this configuration still permits deterministic
 criteria under {cite}`requirements.sdk.graph.validation.deterministic_procedures`.
@@ -92,7 +103,7 @@ Here `domain` supplies the application's graph, contents, and storage. This
 illustrative Bedrock configuration selects a model, AWS profile, and region:
 
 ```rust,ignore
-use trust_but_verify::agent::{AgentConfig, BedrockConfig};
+use trust_but_verify::{AgentConfig, agent::BedrockConfig};
 
 let config = AgentConfig::Bedrock(BedrockConfig {
     model: "us.anthropic.claude-sonnet-5-5".into(),
