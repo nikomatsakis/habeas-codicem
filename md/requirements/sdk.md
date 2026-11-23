@@ -1,17 +1,21 @@
 # The trust-but-verify SDK
 
 :::{req} public_api
-The primary SDK interfaces are available at the crate root: `Domain`,
-`NodeContents`, `SourceNodes`, `Criterion`, `Validator`, `ValidationContext`, `InspectionContext`,
-`Context`, `Ask`, their request phases, and the graph observation and evidence
-types used in their signatures. `Sources` and its query and result types are
-also available there.
+Each public SDK item has one defining module path. The SDK exposes no public
+re-exports. Its public modules follow the interfaces introduced in these chapters:
 
-The supporting public modules are `agent` for supported agent configuration,
-`graph` for graph observations and evidence, `outline` for source outlines and
-languages, and `storage` for filesystem evidence storage. Source access,
-search engines, redaction, provider transports, and conversation machinery are
-implementation details of those interfaces.
+- `domain`: application data and the `Domain`, `NodeContents`, and `SourceNodes` traits.
+- `graph`: criterion definitions, graph observations, and evidence; `graph::validator`
+  runs criteria, and `graph::pages` contains paged inspection results.
+- `request`: `ValidationContext`, typed `Ask` builders, context values, and request phases.
+- `agent`: configuration for the supplied agents.
+- `sources`: project inspection, search queries, and their results.
+- `outline`: selectable source contents and language rules; `outline::languages`
+  supplies bundled languages, and `outline::selector` defines selector syntax.
+- `storage`: filesystem evidence storage.
+
+Source access, search engines, redaction, provider transports, and conversation
+machinery are implementation details of those interfaces.
 :::
 
 The trust-but-verify SDK (TBV) supplies tracked criterion execution and
