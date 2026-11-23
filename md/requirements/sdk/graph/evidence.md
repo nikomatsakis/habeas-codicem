@@ -10,9 +10,12 @@ contents without replacing one another's answers.
 
 *Evidence* is a {term}`requirements.sdk.graph.validation.criterion`'s completed
 answer, its review-rule revision, and the recorded inputs used to produce it.
-It belongs to the criterion's source node and criterion path. `Fingerprinted`
-carries the typed answer and these observations; `Record` holds the encoded
-answer, revision, and dependencies for storage under that source/criterion key.
+It belongs to the criterion's source node and criterion path.
+[`Fingerprinted`](../../../rustdocs/habeas_sdk/graph/struct.Fingerprinted.html)
+carries the typed answer and these observations;
+[`Record`](../../../rustdocs/habeas_sdk/graph/struct.Record.html) holds the
+encoded answer, revision, and dependencies for storage under that
+source/criterion key.
 :::
 
 `Validator::verify` returns a `Fingerprinted` containing the completed result and the
@@ -116,10 +119,13 @@ Its node identities and edge labels keep their domain-defined types.
 ## Look up a source and criterion
 
 :::{req} evidence_storage
+`habeas_sdk::domain::Storage` provides evidence persistence for the
+{term}`requirements.sdk.application_domain`:
+
 ```rust,ignore
 use std::future::Future;
 
-// Defined in habeas_sdk::graph.
+// Defined in habeas_sdk::domain.
 pub trait Storage: Graph {
     /// Ok(None) means absent; Err means loading failed.
     fn load_evidence(
@@ -148,7 +154,6 @@ pair would produce the same segments.
 
 Different criteria of a source have independent records. A revision change
 invalidates the same criterion's record rather than creating another key.
-The interface requires neither filesystem paths nor global evidence listing.
 
 Successful loads observe either an old or new complete record, or absence
 before the first save. Successful competing saves leave one complete record;
@@ -156,8 +161,7 @@ its revision, dependencies, and output all belong to that save. No ordering
 between competing saves is guaranteed.
 :::
 
-An application can use files, a database, or an in-memory store. A memory backend
-still implements the required storage interface. [Filesystem evidence
+An application can use files, a database, or an in-memory store. [Filesystem evidence
 storage](../filesystem-storage.md) supplies a JSON-backed helper.
 
 ## Retain the completed result and its observations
@@ -180,8 +184,8 @@ pub struct Record<N, L = ()> {
 ```
 
 Saving encodes the completed result using its Serde JSON representation and
-preserves the dependencies captured in `Fingerprinted`; there is no required boolean,
-rationale, or metadata shape. `Record`, `Dependency`, and `Fingerprint` support
+preserves the dependencies captured in `Fingerprinted`.
+`Record`, `Dependency`, and `Fingerprint` support
 Serde when their type parameters do. The graph's node
 identities and edge labels need not implement Serde unless its storage backend
 requires those bounds.
@@ -203,8 +207,7 @@ including when the saved revision or inputs are stale. Missing evidence returns
 reuse workflow under {cite}`requirements.sdk.graph.evidence.procedure_identity`.
 :::
 
-The SDK does not infer validity from the returned Rust value. A completed
-negative assessment is saved and reused in the same way as a positive one.
+A completed negative assessment is saved and reused in the same way as a positive one.
 Applications sharing a source/criterion key and revision agree on its result
 encoding and meaning.
 
@@ -214,9 +217,10 @@ encoding and meaning.
 :phrase: dependency
 
 A *dependency* is a recorded observation of a node's contents or of the target
-set of a node's outgoing edges with a given label. Its `Dependency` value stores
-the node identity, the edge label when applicable, and the
-{term}`requirements.sdk.graph.fingerprinting.observation_fingerprint` for
+set of a node's outgoing edges with a given label. Its
+[`Dependency`](../../../rustdocs/habeas_sdk/graph/enum.Dependency.html) value
+stores the node identity, the edge label when applicable, and the
+{term}`requirements.sdk.graph.observation_fingerprint` for
 later comparison.
 :::
 
@@ -231,7 +235,7 @@ prompts, and additional contents delivered by tools contribute to this trace.
 Discovering a node alone does not record its contents as an input.
 :::
 
-Calling `Contents::node_content` directly resolves a node. Reading through the
+Calling `Graph::node_content` directly resolves a node. Reading through the
 context's inspection interface also records the observation:
 
 ```rust,ignore
@@ -241,9 +245,8 @@ let helper = inspection.read(&helper_id)?;
 ```
 
 The caller receives contents while the context retains the source identity and
-its fingerprint. A source node's identity alone does not make its contents an
-input. An outgoing selection becomes an observation when the procedure or an
-awaited builder explicitly asks for that label.
+its fingerprint. An outgoing selection becomes an observation when the procedure
+or an awaited builder explicitly asks for that label.
 
 :::{req} dependencies
 ```rust,ignore
@@ -266,17 +269,12 @@ Repeating an identical observation adds no information. Reading the same
 identity with two different fingerprints preserves both observations.
 :::
 
-Prepared source pages are not observations until delivered. The SDK's
-`observe_read` method lets a delivery adapter report the snapshot it actually
-supplied without fetching it again. The adapter is responsible for reporting
-that snapshot accurately; arbitrary filesystem or network reads by consumer
-code are not automatically tracked.
+The SDK records a prepared source page when its contents are delivered, using
+the fingerprint of that retained snapshot.
 
-An empty observed successor set has a fingerprint too. Adding the first test
-can invalidate a criterion that previously established the absence of behavioral
-obligations; adding the first implementation root can invalidate the analogous
-structural assessment. Changing an input observed by one criterion does not
-invalidate another criterion that did not observe it.
+An empty observed successor set has a fingerprint too. Adding the first edge
+for that label changes its fingerprint. Each criterion's input freshness is
+checked against its own recorded dependencies.
 
 ## Identify the saved assessment
 
@@ -288,8 +286,8 @@ record; its saved revision identifies the review rules used to produce it.
 
 Changing review instructions, deterministic rules, input-selection policy, or
 result encoding in a way that invalidates an old answer requires a changed
-revision. This is independent of model selection and the agent's context-prefix
-cache fingerprint. A stored legacy revision `*` retains the matching behavior of
+revision. This is independent of model selection.
+A stored legacy revision `*` retains the matching behavior of
 {cite}`requirements.sdk.graph.evidence.checking_records.procedure_match`.
 :::
 
@@ -371,15 +369,11 @@ mismatch returns `Ok(false)` and permits an early return; it need not resolve
 later dependencies. An encountered dependency-resolution failure returns an
 error.
 
-It uses the current state that the caller intends to inspect, rather than
-reusing source snapshots from an earlier invocation without establishing that
-they remain current. These reads are separate from a criterion execution's
-dependency trace.
-
-Freshness checking has a separate observation scope from execution. Reads used
-only to check old evidence do not become dependencies of the new result. A
-checked snapshot can be reused if it still represents the current state; when
-execution explicitly reads or delivers it, its fingerprint enters the new trace.
+The method observes the current state that the caller intends to inspect.
+Freshness checking has a separate observation scope from criterion execution.
+Checked observations enter the new trace when execution explicitly reads
+or delivers them.
+A checked snapshot can be reused if it still represents the current state.
 :::
 
 :::{req} checking_records.procedure_match
@@ -397,11 +391,7 @@ criterion only, and does not supply evidence for other criteria.
 :::
 
 The wildcard represents a supported legacy record that did not capture its
-review-rule version. It does not certify a criterion that was never assessed.
-Habeas chooses how to map its legacy assessments to the corresponding criteria.
-
-A current record need not contain a favorable assessment. The SDK supplies the
-comparisons; Habeas owns its reuse and acceptance policies.
+review-rule version.
 
 ## Reuse the filesystem storage helper
 
@@ -413,9 +403,5 @@ path and preserves segment boundaries under
 {cite}`requirements.sdk.filesystem-storage.keys`.
 :::
 
-[Criteria definition](validation.md) defines the criterion, and
-[Validators](validators.md) explains how to run it.
-The methods above compose verification with this
-chapter's evidence workflow.
-[Filesystem evidence
-storage](../filesystem-storage.md) defines the helper and its encoding.
+[Filesystem evidence storage](../filesystem-storage.md) defines the helper
+and its encoding.

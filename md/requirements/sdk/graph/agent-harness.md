@@ -1,162 +1,140 @@
 # Agent harness
 
-The ask builder defines what the agent receives and the answer type it should
-return. An {term}`requirements.sdk.graph.agent-harness.agent_harness` runs
-that request. Configure it once on the validator; criteria then use the same
-`ask` interface.
+A criterion describes the question, supplies its context and inputs, and awaits
+an application-defined answer. Habeas SDK runs the agent that answers that
+request. The application chooses a supported backend through configuration;
+the SDK handles the model conversation and the inspection tools.
 
 :::{definition} agent_harness
 :phrase: agent harness
 
-An *agent harness* is the conversation machinery behind an agent request:
-it turns the request into provider messages and handles tool calls. On success,
-it returns an accepted submission as JSON, which the SDK's ask builder decodes
-into the requested answer type. `Agent<D>` is the conversation interface, and `ToolAgent` is the
-supplied implementation. A `CompletionProvider` transports model requests
-and responses; the harness manages the conversation.
+An *agent harness* runs an agent request: it sends instructions and inputs to
+the configured model, executes requested tools, and obtains a structured answer.
+Habeas SDK supplies the harness and its tools. The application supplies
+[`Context` values](../../../rustdocs/habeas_sdk/procedure/trait.Context.html),
+node contents, and
+the answer type.
 :::
 
 ```mermaid
 flowchart TD
-    Ask["Ask: instructions, node contents, result schema"] --> Harness["Agent harness"]
-    Harness --> Provider["CompletionProvider: transport messages"]
-    Provider --> Tools["Agent requests a tool"]
-    Tools --> Inspection["Tracked inspection"]
-    Inspection --> Domain["Domain: node contents and formatting"]
-    Domain --> Harness
-    Provider --> Submit["Structured submission"]
-    Submit --> Answer["Ask decodes the answer into R"]
+    App["Application: context, selected nodes, answer type"] --> Ask["SDK ask builder"]
+    Config["Application: agent configuration"] --> Harness["SDK agent harness"]
+    Ask --> Harness
+    Harness --> Backend["SDK backend integration"]
+    Backend --> Model["Configured model"]
+    Model --> Tools["SDK inspection tools"]
+    Tools --> Context["Execution's tracked inspection context"]
+    Context --> Domain["Application: graph and node contents"]
+    Model --> Submit["SDK structured submission"]
+    Submit --> Answer["Typed answer returned to criterion"]
 ```
-
-## The agent interface
-
-`Agent<D>`, defined in `habeas_sdk::procedure`, is the interface the ask builder
-uses to run a model conversation. Its `AgentRequest` contains the prepared
-instructions, node contents, result schema, and submission-tool name.
-The accompanying `InspectionContext` records additional inputs delivered
-during the conversation.
-
-```rust,ignore
-use futures::future::BoxFuture;
-
-// Defined in habeas_sdk::procedure.
-pub trait Agent<D: Contents>: Send + Sync {
-    /// Run this request and return the accepted submitted answer as JSON.
-    /// Record additional delivered inputs through inspection.
-    fn run<'a>(
-        &'a self,
-        request: AgentRequest<D::NodeId>,
-        inspection: &'a InspectionContext<'_, D>,
-    ) -> BoxFuture<'a, Result<serde_json::Value, std::io::Error>>;
-}
-```
-
-The ask builder decodes that JSON into its answer type `R`. `ToolAgent`
-implements this interface with a provider conversation and inspection tools.
-Applications can instead [implement their own conversation
-adapter](#adapt-an-existing-conversation). A validator shares the chosen
-implementation through `Arc<dyn Agent<D>>`.
 
 ## Configure the validator's agent
 
-Choose the agent once when configuring a validator. Its criteria then use that
-agent through their contexts' `ask` requests.
+Choose the backend and model once when constructing the validator. All criteria
+run through the same SDK interface, regardless of which supported backend is
+selected.
 
-:::{req} with_agent
+:::{req} agent_config
+Habeas SDK exposes configuration for its supplied Bedrock, OpenAI, and Ollama
+agents. The configuration selects a backend and carries its model, connection,
+credential-selection, and model-option settings.
+
+The public type's shape is:
+
 ```rust,ignore
-use habeas_sdk::procedure::Agent;
-use std::sync::Arc;
+// Defined in habeas_sdk::agent.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
+pub enum AgentConfig {
+    Bedrock(BedrockConfig),
+    OpenAi(OpenAiConfig),
+    Ollama(OllamaConfig),
+}
 
-// Method on Validator<D>.
-/// Share this agent with execution contexts.
-pub fn with_agent(
-    self,
-    agent: Arc<dyn Agent<D>>,
-) -> Self;
+// The backend-specific configuration types contain their respective settings.
+// Their individual fields are omitted here.
 ```
 :::
 
-## Configure the supplied harness
+:::{req} agent_config.serialization
+`AgentConfig` and its backend-specific configuration types implement Serde
+serialization and deserialization. An application can embed them in its own
+configuration types; serializing and deserializing a supported configuration
+preserves its settings.
+:::
 
-The SDK supplies `ToolAgent` for applications that want a provider conversation
-with graph-inspection tools. A `CompletionProvider` transports requests to the
-chosen backend; `ToolAgent` handles the conversation and tool dispatch.
+:::{req} with_agent
+The SDK configures a validator's supplied agent from an application-provided
+`AgentConfig`. It does not persist the agent configuration.
 
-:::{req} tool_agent
 ```rust,ignore
-// Defined in habeas_sdk::agent.
-/// Provider conversations with graph tools and optional application tools.
-pub struct ToolAgent<P, T = NoTools> { /* fields omitted */ }
+use habeas_sdk::agent::AgentConfig;
 
-impl<P> ToolAgent<P> {
-    /// Use the provider with graph tools and no additional application tools.
-    pub fn new(provider: P) -> Self;
-}
-
-impl<P, T> ToolAgent<P, T> {
-    /// Use this factory for additional application tools, with fresh state per call.
-    pub fn with_tools<U>(self, tools: U) -> ToolAgent<P, U>;
+impl<D: Domain> Validator<D> {
+    /// Configure the SDK agent used by this validator's ask requests.
+    pub fn with_agent(self, config: AgentConfig) -> Self;
 }
 ```
 
-`ToolAgent<P, T>` implements `Agent<D>` when `D: Domain`,
-`P: CompletionProvider`, and `T: ToolFactory<D>`. Its graph-tool adapter requires `D::EdgeLabel` to implement
-`DeserializeOwned`, `JsonSchema`, and `PartialEq`, and `D::Error` to implement
-`Display`. These bounds describe and decode tool arguments and errors; they do
-not constrain ordinary graph operations.
-
-Each call creates a fresh conversation and tool session. Graph-node reads use
-the domain's formatter under
-{cite}`requirements.sdk.graph.agent-calls.judge.rendering` and record delivered
-inputs under {cite}`requirements.sdk.graph.agent-calls.author_procedure`.
+Criteria obtain the configured agent through their `ValidationContext`.
+Constructing a validator without this configuration still permits deterministic
+criteria under {cite}`requirements.sdk.graph.execution.deterministic_procedures`.
 :::
 
 :::{example} setup
-{cite}`requirements.sdk.graph.agent-harness.tool_agent`
+{cite}`requirements.sdk.graph.agent-harness.agent_config`
 {cite}`requirements.sdk.graph.agent-harness.with_agent`
 {cite}`requirements.sdk.graph.validators.validator`
 
-Here `provider` implements `CompletionProvider`, and `domain` is the
-application's domain with the adapter's label and error bounds described above.
-The provider lives for the lifetime required by the shared `Arc<dyn Agent<D>>`.
-The validator shares the agent across criterion executions:
+Here `domain` supplies the application's graph, contents, and storage. This
+illustrative Bedrock configuration selects a model, AWS profile, and region:
 
 ```rust,ignore
-use habeas_sdk::{agent::ToolAgent, graph::Validator};
-use std::sync::Arc;
+use habeas_sdk::agent::{AgentConfig, BedrockConfig};
 
-let agent = Arc::new(ToolAgent::new(provider));
-let validator = Validator::new(domain).with_agent(agent);
+let config = AgentConfig::Bedrock(BedrockConfig {
+    model: "us.anthropic.claude-sonnet-5-5".into(),
+    aws_profile: Some("development".into()),
+    region: Some("us-east-1".into()),
+    credentials: None,
+    options: Default::default(),
+});
+let validator = Validator::new(domain).with_agent(config);
 ```
-
-The application implements `Contents::format_node_content` to present its node
-contents; the harness obtains that formatter through the execution's domain.
 :::
 
-## Expose inspection tools
+## Run the supplied harness
 
-The supplied harness exposes these graph tools:
+:::{req} tool_agent
+Habeas SDK owns the model conversation, supported backend integrations, tool
+dispatch, and structured submission used by its ask builder.
+:::
 
-| Tool | Purpose |
-| --- | --- |
-| `outgoing_edges` | Select a known node's outgoing targets by label and make those targets available to read. |
-| `read_node` | Read and format a known node's contents; return the first page and any continuation page IDs. |
-| `get_node_page` | Deliver a further page from a prepared node read. |
+:::{req} tool_agent.isolation
+Each awaited ask builder has independent conversation, paging, and submission
+state. Calls in the same criterion contribute their delivered
+inputs to that criterion's shared trace under
+{cite}`requirements.sdk.graph.agent-calls.author_procedure`.
+:::
 
-A `ToolFactory<D>` adds application tools through `with_tools`. For each call,
-its `session` method creates a `ToolSession<D>`. The session supplies the tool
-definitions and dispatches calls, returning a `ToolDelivery` containing the
-response text and the exact dependencies delivered with it.
+:::{req} fixed_tools
+The SDK supplies the inspection tools described in
+[Context tools](context-tools.md). Graph tools invoke the application's graph
+and contents interfaces; source tools invoke its source interfaces and
+source-node mapping.
 
-`SourceTools` is one such factory. It exposes source listing, text and structural
-search, outlines, reads, and paging through a `SourceAnalysis`. Its observation
-callback maps a delivered parsed-source snapshot into a domain dependency.
-[Context tools](context-tools.md) explains which operations record inputs and
-which are discovery only.
+The SDK provides a fixed set of tools and their input-recording policy.
+Application-specific node kinds use the SDK's ordinary node-read tool.
+:::
+
+Source tools use the application's
+[source-node mapping](../sources.md#connect-source-items-to-graph-nodes).
 
 ## Submit a structured answer
 
-The default submission tool is `submit_result`. The builder's `R: JsonSchema`
+The SDK submission tool is `submit_result`. The builder's `R: JsonSchema`
 defines the schema of its `result` argument. For the `TestReview` example in
 [Agent calls](agent-calls.md#example-review-a-requirements-tests), a submission
 looks like this:
@@ -170,50 +148,10 @@ looks like this:
 }
 ```
 
-The harness accepts exactly one structured submission and the builder decodes it
-into `R`, under {cite}`requirements.sdk.graph.agent-calls.judge.submission`.
+The SDK accepts exactly one structured submission and decodes it into `R`,
+under {cite}`requirements.sdk.graph.agent-calls.judge.submission`.
 Assistant prose is conversation text; the submitted value is the answer.
 
-## Adapt an existing conversation
-
-An application with its own tool names or acceptance policy can implement
-`Agent<D>` instead of using `ToolAgent`. That implementation receives the
-prepared request and tracked inspection interface. It can reuse the SDK's
-`converse` loop by implementing `Conversation`:
-
-```rust,ignore
-// Selected members of habeas_sdk::agent::Conversation.
-pub trait Conversation: Send {
-    type Output: Send;
-
-    /// Describe the tools made available in this conversation.
-    fn tools(&self) -> std::io::Result<Vec<ToolDefinition>>;
-
-    /// Accept an answer, or ask the agent to revise its submission.
-    fn submit(
-        &mut self,
-        name: &str,
-        arguments: &serde_json::Value,
-    ) -> std::io::Result<Submission<Self::Output>>;
-
-    /// Dispatch an inspection or application-tool call.
-    fn dispatch(
-        &mut self,
-        name: &str,
-        arguments: &serde_json::Value,
-    ) -> impl std::future::Future<Output = std::io::Result<String>> + Send;
-
-    // ... delivery, usage, and retry callbacks ...
-}
-```
-
-The `submit` argument to `converse` names the terminal tool, while
-`Conversation::submit` defines its acceptance checks. `Submission::Accepted`
-finishes the call; `Submission::Retry` sends a correction to the agent and
-continues the conversation.
-
-This is the adapter used by Habeas to retain `submit_judgment`,
-`submit_verification`, rationale checks, and the `finish_search` gate. The
-application's adapter supplies those policies; they are not hidden configuration
-on the ask builder. [Putting it together in Habeas](../habeas.md) follows that
-integration.
+The criterion can inspect that answer, perform more computation, or make
+another ask request. The application interprets the completed answer under
+{cite}`requirements.sdk.graph.validation.output_policy`.

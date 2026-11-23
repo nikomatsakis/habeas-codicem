@@ -333,7 +333,7 @@ impl habeas_sdk::graph::Storage for HabeasDomain<'_> {
     }
 }
 
-// {impl}`requirements.sdk.graph.fingerprinting.fingerprint_content`
+// {impl}`requirements.sdk.graph.fingerprint_content`
 impl Contents for HabeasDomain<'_> {
     type NodeContent = ResolvedInput;
 
@@ -545,8 +545,8 @@ mod tests {
         assert_eq!(fs::read_dir(root.path()).unwrap().count(), 0);
     }
 
-    // {test}`requirements.sdk.graph.habeas-test`
-    // {test}`requirements.sdk.graph.outgoing_edges`
+    // {test}`requirements.sdk.graph-edges.habeas-test`
+    // {test}`requirements.sdk.graph-edges.outgoing_edges`
     #[test]
     fn test_edges_select_only_tests_for_the_requested_requirement() {
         let root = tempfile::tempdir().unwrap();
@@ -751,8 +751,8 @@ mod tests {
 
     // {test}`requirements.sdk.graph.evidence.checking_records`
     // {test}`requirements.sdk.graph.domain_types`
-    // {test}`requirements.sdk.graph.fingerprinting.fingerprint_content`
-    // {test}`requirements.sdk.graph.fingerprinting.snapshot`
+    // {test}`requirements.sdk.graph.fingerprint_content`
+    // {test}`requirements.sdk.graph.snapshot`
     #[test]
     fn requirement_edges_and_input_freshness_use_the_sdk() {
         let root = tempfile::tempdir().unwrap();

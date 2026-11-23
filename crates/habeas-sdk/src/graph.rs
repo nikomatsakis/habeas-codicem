@@ -8,14 +8,14 @@ mod runtime;
 pub use crate::procedure::ValidationContext;
 pub use runtime::Validator;
 
-// {impl}`requirements.sdk.graph.fingerprinting.fingerprint`
+// {impl}`requirements.sdk.graph.fingerprint`
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Fingerprint {
     pub scheme: String,
     pub value: String,
 }
 
-// {impl}`requirements.sdk.graph.fingerprinting.snapshot`
+// {impl}`requirements.sdk.graph.snapshot`
 #[derive(Clone, Debug)]
 pub struct Snapshot<T> {
     pub content: T,
@@ -79,7 +79,8 @@ impl CriterionPath {
 }
 
 // {impl}`requirements.sdk.graph.domain_types`
-// {impl}`requirements.sdk.graph.outgoing_edges`
+// {impl}`requirements.sdk.graph-edges.label`
+// {impl}`requirements.sdk.graph-edges.outgoing_edges`
 pub trait Graph: Send + Sync {
     type NodeId: Clone + Eq + Send + Sync;
     type EdgeLabel: Clone + Send + Sync;
@@ -94,7 +95,7 @@ pub trait Graph: Send + Sync {
     ) -> Result<Vec<Self::NodeId>, Self::Error>;
 }
 
-// {impl}`requirements.sdk.graph.fingerprinting.fingerprint_content`
+// {impl}`requirements.sdk.graph.fingerprint_content`
 pub trait Contents: Graph {
     /// The application's representation of a node's contents.
     type NodeContent: Send + Sync;
@@ -102,7 +103,7 @@ pub trait Contents: Graph {
     /// Fetch the contents of a node.
     fn node_content(&self, node: &Self::NodeId) -> Result<Self::NodeContent, Self::Error>;
 
-    // {impl}`requirements.sdk.graph.fingerprinting.fingerprint_content`
+    // {impl}`requirements.sdk.graph.fingerprint_content`
     /// Fingerprint these supplied contents under the application's change rules.
     fn fingerprint(&self, node: &Self::NodeId, content: &Self::NodeContent) -> Fingerprint;
 
@@ -319,7 +320,7 @@ impl<'d, D: Contents> InspectionContext<'d, D> {
     }
 
     // {impl}`requirements.sdk.graph.evidence.node_inputs`
-    // {impl}`requirements.sdk.graph.fingerprinting.snapshot`
+    // {impl}`requirements.sdk.graph.snapshot`
     pub fn read_snapshot(&self, node: &D::NodeId) -> Result<Snapshot<D::NodeContent>, D::Error> {
         let snapshot = self.prepare_read(node)?;
         self.observe_read(node.clone(), snapshot.fingerprint.clone());
@@ -339,6 +340,7 @@ impl<'d, D: Contents> InspectionContext<'d, D> {
     // {impl}`requirements.sdk.graph.context-tools.outgoing_edges.behavior`
     // {impl}`requirements.sdk.graph.context-tools.outgoing_edges.fn`
     // {impl}`requirements.sdk.graph.context-tools.outgoing_edges.inputs`
+    // {impl}`requirements.sdk.graph-edges.snapshot`
     pub fn outgoing_edges(
         &self,
         node: &D::NodeId,
@@ -469,7 +471,7 @@ fn dependencies_are_current<D: Contents>(
 /// Hash the target set without requiring serialization or hashing of opaque IDs.
 /// JSON encodes segment boundaries and Unicode unambiguously; ordering and
 /// duplicate edges do not affect membership. Empty selections have a digest too.
-// {impl}`requirements.sdk.graph.outgoing_edges`
+// {impl}`requirements.sdk.graph-edges.snapshot`
 pub fn edge_fingerprint<D: Graph>(graph: &D, targets: &[D::NodeId]) -> Fingerprint {
     let mut paths = targets
         .iter()

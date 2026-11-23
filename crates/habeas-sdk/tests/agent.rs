@@ -479,7 +479,7 @@ async fn validator_agent_executions_isolate_conversations_and_dependency_traces(
 }
 
 // {test}`requirements.sdk.graph.context-tools.tracked_inspection`
-// {test}`requirements.sdk.graph.fingerprinting.snapshot`
+// {test}`requirements.sdk.graph.snapshot`
 // {test}`requirements.sdk.graph.validators.validate_node`
 // {test}`requirements.sdk.graph.evidence.check_node`
 // {test}`requirements.sdk.graph.evidence.store_evidence`
@@ -803,7 +803,7 @@ async fn typed_submission_references_resolve_and_invalid_results_are_agent_error
 // {test}`requirements.sdk.graph.context-tools.tracked_inspection`
 // {test}`requirements.sdk.graph.agent-calls.author_procedure`
 // {test}`requirements.sdk.graph.evidence.node_inputs`
-// {test}`requirements.sdk.graph.fingerprinting.snapshot`
+// {test}`requirements.sdk.graph.snapshot`
 // {test}`requirements.sdk.graph.context-tools.read_node.behavior`
 // {test}`requirements.sdk.graph.context-tools.read_node.inputs`
 // {test}`requirements.sdk.graph.context-tools.pages.behavior`

@@ -7,8 +7,8 @@ Consider this source:
 expires = true
 ```
 
-The `habeas-language-toml` crate supplies this outline definition. The default
-registry selects it for `.toml` files.
+The default `habeas-sdk-outline` parser includes this language implementation
+and selects it for `.toml` files.
 
 The {term}`requirements.sdk.sources.selector` `table[auth]/pair[expires]` identifies the nested entry in this example.
 The resource address identifies the file separately from this selector.
@@ -25,6 +25,3 @@ Comments are excluded from structural fingerprints.
 
 The [shared source machinery](../sources.md) defines selector encoding, duplicate
 names, and the distinction between node contents and structural fingerprints.
-These rules describe the current provider. Their existing requirements live
-in [References and Rust items](../../references.md) pending the
-[requirements reorganization](../requirements-map.md).

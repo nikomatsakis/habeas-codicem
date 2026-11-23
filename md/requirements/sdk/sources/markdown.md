@@ -39,8 +39,8 @@ section[Authentication]
   block@f                     ```text ... ```
 ```
 
-The default registry selects `habeas-language-markdown` for `.md` and
-`.markdown` resources.
+The default `habeas-sdk-outline` parser selects its Markdown implementation
+for `.md` and `.markdown` resources.
 
 ## Paragraphs are selectable inputs
 
@@ -81,7 +81,8 @@ file or directive body, excluding the enclosing directive's closing fence.
 :::{req} fenced_blocks.contents
 Colon-fenced directive bodies are outlined recursively as Markdown. Ordinary
 fenced code-block contents remain literal, creating no nested paragraph or
-directive nodes.
+directive nodes. Backtick fences with a directive name such as `{note}` in
+their info string are literal code blocks.
 :::
 
 Colon fences use at least three colons, including longer runs such as `::::::`.
@@ -100,12 +101,6 @@ from colon-directive recognition. Fence-like text in inline code or raw HTML
 introduces no outline directive blocks.
 :::
 
-These outline boundaries supply the containers needed for citation ownership.
-An inline citation in ordinary prose belongs to its paragraph; inside a
-requirement or other directive it belongs to the nearest enclosing directive
-block. Choosing that citation owner is Habeas policy, separate from exposing
-paragraphs and blocks in the Markdown outline.
-
 ## Sections and comments
 
 Sections use `section`, named from their heading text. ATX and setext headings
@@ -117,19 +112,10 @@ comment blocks.
 
 The [shared source machinery](../sources.md) defines selector encoding, duplicate
 names, and the distinction between node contents and structural fingerprints.
-The existing requirements for sections and comment handling live in
-[References and Rust items](../../references.md) pending the
-[requirements reorganization](../requirements-map.md).
 
 ## Incomplete fences and directive syntax
 
 An unfinished directive remains selectable while editing. At file scope, its
 block extends through the end of the file; inside another directive, it extends
 through that directive's body, stopping before the outer closing fence. A
-heading within the body does not terminate the block. Habeas can still diagnose
-a missing requirement terminator independently.
-
-The outline uses MyST's colon nesting convention, rather than implementing
-all MyST directive semantics. Backtick fences, including those whose info string
-starts with `{note}` or another directive name, remain literal blocks.
-Interpreting backtick directives would be a separate extension.
+heading within the body does not terminate the block.

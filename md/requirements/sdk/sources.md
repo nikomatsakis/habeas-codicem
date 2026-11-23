@@ -1,72 +1,54 @@
 # Sources and inspection
 
-Suppose the agent reviewing our expiration requirement wants to inspect
-`check_token` in `src/auth.rs`:
+Habeas Codicem owns its graph's node identities and their contents. For a node
+such as `Source(src/auth.rs, fn[check_token])`, HC obtains the file snapshot,
+asks the [outline library](outlines.md) to resolve the selector, and returns
+its application-defined contents. HC supplies those contents through `Graph`;
+the SDK's tracked inspection records the read.
 
-```rust
-fn check_token(expires_at: u64, now: u64) -> bool {
-    now < expires_at
-}
-```
+Source discovery is useful before a node is known. The SDK supplies the tools
+for listing resources, outlining them, and searching text or syntax. The
+application supplies resource access and maps discovered source items into its
+graph. These are data interfaces used by the fixed SDK tools.
 
-The application can read that file, but the review needs the function rather
-than an arbitrary range of lines. It may also need to find other calls to
-`check_token`. The SDK's source machinery gives these operations a common home:
-reading resources, identifying items within them, and searching their contents.
-
-## Separate where content comes from from how it is interpreted
+## Separate resource access from language interpretation
 
 :::{definition} resource
 :phrase: source resource
 
-A *source resource* is a unit of source identified by `ResourceId` and made
+A *source resource* is a unit of source identified by
+[`ResourceId`](../../rustdocs/habeas_sdk/resource/struct.ResourceId.html) and made
 available through a source provider. Its scheme and location identify it
-independently of any item within it; its bytes can change without changing that
-address. A resource can be a local file, a Git revision's file, an editor buffer, or content
-exposed by another backend.
+independently of any item within it; its bytes can change without changing
+that address. A resource can be a checkout file, a Git revision's file, an
+editor buffer, or generated text.
 :::
 
 :::{definition} outline
 :phrase: source outline
 
-A *source outline* is the SDK's structured view of one source snapshot. Its
-items describe the source's organization, with selectors for addressing them,
-spans in that snapshot, and structural hashes. Language-specific outline rules
-or the plain-text fallback determine which source constructs become outline items.
+A *source outline* is a structured view of one source snapshot. Its items have
+selectors, spans within that snapshot, and structural hashes.
+`habeas-sdk-outline` constructs this view using a language implementation or
+the plain-text fallback.
 :::
 
-For this example, a local {term}`requirements.sdk.sources.source_provider`
-supplies the bytes of `src/auth.rs`.
-A registered Rust {term}`requirements.sdk.sources.language_definition` supplies
-a tree-sitter grammar and rules for identifying functions. The SDK's default
-parser combines them to produce
-an outline containing `fn[check_token]`.
+HC chooses its repository root, which resources it makes available, and how
+to obtain their bytes. A filesystem provider is a convenient implementation;
+other applications can provide source from an editor or database.
+The outline library interprets supplied source text independently of its origin.
 
 ```mermaid
 flowchart TD
-    Read["Inspect check_token"] --> Provider["Source provider reads src/auth.rs"]
-    Provider --> Bytes["Source bytes from one read"]
-    Bytes --> Parse["SDK default parser"]
-    Rust["Registered Rust grammar and outline rules"] --> Parse
-    Parse --> Outline["Outline item: fn[check_token]"]
-    Outline --> Contents["Function contents and fingerprint"]
+    Read["SDK tracked read: HC source node"] --> HC["HC Graph::node_content"]
+    HC --> Bytes["HC resource access: obtain one file snapshot"]
+    Bytes --> Parse["habeas-sdk-outline: infer language and resolve selector"]
+    Parse --> Content["HC NodeContent: selected source from that snapshot"]
+    Content --> Describe["NodeContents: retained fingerprint and agent text"]
+    Describe --> Track["SDK: record supplied contents"]
 ```
 
-These responsibilities generalize beyond a checkout. A provider could read a
-Git revision, an editor buffer, generated content, or a database. The same
-language definition can interpret Rust from any of those locations. Conversely,
-one local provider can serve Rust, Python, and Markdown resources.
-
-The graph has no mandatory source-node variant. Habeas can put
-`Source(OutlineId)` in its node identity enum and delegate reads of that variant
-to source inspection. Other graph nodes, such as GitHub issues, can be resolved
-without passing through a parser at all.
-
 ## Identify something before reading it
-
-A declaration and a source item each need an identity. An identity tells us
-*which thing* to read; it does not tell us which version we will get. A function
-can keep its identity while its body changes.
 
 :::{definition} selector
 :phrase: item selector
@@ -74,14 +56,11 @@ can keep its identity while its body changes.
 An *item selector* is an address for an item within a
 {term}`requirements.sdk.sources.outline`, such as `fn[check_token]`.
 The empty selector addresses the resource root. The resource address and
-selector together form an `OutlineId`. A selector identifies the item
-independently of its line number; the outline item's spans refer to the
-source snapshot used to build that outline.
+selector together form an
+[`OutlineId`](../../rustdocs/habeas_sdk/resource/struct.OutlineId.html).
+Selectors identify items independently of their line numbers; item spans refer
+to the snapshot used to build the outline.
 :::
-
-For source code, the SDK separates the
-{term}`requirements.sdk.sources.resource` from the
-{term}`requirements.sdk.sources.selector` within it:
 
 ```rust,ignore
 let function = OutlineId {
@@ -93,21 +72,16 @@ let function = OutlineId {
 };
 ```
 
-Here `repo` is a namespace interpreted by Habeas. The location identifies a
-resource in that namespace; the selector identifies a function within it.
-Another application could resolve `https` resources or use `generated` for the
-output of a generator. Constructing an address does not fetch anything.
-
-A graph node does not have to be source code. A requirement might be identified
-by its name, and an imported review might be identified by a database key. The
-application chooses its node identity type. None of these identities requires a
-filename or source span. When we parse text, the resulting outline spans refer
-to that particular text snapshot, wherever the text came from.
+HC interprets `repo` as its repository namespace. Constructing this address
+fetches no source and creates no dependency. The address is suitable for a
+saved node identity; the resolved document holds the parser and source snapshot.
 
 :::{req} source_addresses
+The public resource and source-item addresses are defined in
+`habeas_sdk_outline` and re-exported by `habeas_sdk::resource`:
+
 ```rust,ignore
-// Public address types in habeas_sdk::resource.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ResourceId {
     /// Namespace interpreted by the application, such as "repo".
     pub scheme: String,
@@ -115,7 +89,7 @@ pub struct ResourceId {
     pub location: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct OutlineId {
     pub resource: ResourceId,
     /// Item within the resource, such as "fn[check_token]".
@@ -123,8 +97,9 @@ pub struct OutlineId {
 }
 ```
 
-The application defines resource resolution, including any URI parsing or
-resource fetching.
+The application defines resource resolution, including fetching. The address's
+identity is independent of parsed source and runtime language handles under
+{cite}`requirements.sdk.outlines.address_identity`.
 :::
 
 ## The application supplies a source provider
@@ -132,52 +107,34 @@ resource fetching.
 :::{definition} source_provider
 :phrase: source provider
 
-A *source provider* is the adapter through which source inspection lists
-resources and reads a
-{term}`requirements.sdk.sources.resource`'s bytes. The SDK's `SourceProvider`
-interface also allows provider-specific parsing and search. Resource access
-belongs to the provider; language interpretation is described separately by
-a {term}`requirements.sdk.sources.language_definition`.
+A *source provider* is the application's resource-access interface for listing
+source resources and obtaining their bytes. The SDK's
+[`SourceProvider`](../../rustdocs/habeas_sdk/sources/trait.SourceProvider.html)
+also supplies reusable parsing and search defaults. A provider can specialize
+how those operations execute while preserving their results and scope.
 :::
 
-For a checkout, listing resources might return `src/auth.rs` and
-`tests/auth.rs`; reading either resource returns its bytes. A database-backed
-provider could expose the same logical resources without creating local files.
-The application chooses the provider and the set of resources it exposes.
-
-The `SourceProvider` interface starts with listing and reading. This sketch
-shows their roles; names and types used only in the sketch are illustrative:
+For HC, a provider exposes the repository files available for inspection. It
+can reuse the SDK's filesystem provider with HC's root and access rules.
+Selected public declarations are:
 
 ```rust,ignore
-pub trait SourceProvider {
-    type Error;
+pub trait SourceProvider: Send + Sync {
+    type Error: From<SourceError> + Send;
 
-    /// Enumerate resources in the requested scope, including nonlocal resources.
-    async fn list(
+    /// Enumerate resource identities within this scope.
+    fn list(
         &self,
         scope: &SourceScope,
-    ) -> Result<Vec<ResourceId>, Self::Error>;
+    ) -> impl Future<Output = Result<Vec<ResourceId>, Self::Error>> + Send;
 
-    /// Read one resource's bytes. An empty resource is a successful read.
-    async fn read(
+    /// Obtain one resource snapshot; an empty resource is a successful read.
+    fn read(
         &self,
-        id: &ResourceId,
-    ) -> Result<SourceFile, Self::Error>;
-
-    // Parsing and search methods follow below.
-}
-
-pub struct SourceFile {
-    pub bytes: Arc<[u8]>,
-    /// Explicit language selection, or None to select by resource name.
-    pub language: Option<LanguageId>,
+        resource: &ResourceId,
+    ) -> impl Future<Output = Result<SourceFile, Self::Error>> + Send;
 }
 ```
-
-A resource's optional language identifier selects a registered definition
-explicitly. This is useful for generated content with no file extension. When
-there is no explicit identifier, the registry can select a language using the
-resource name. The source provider does not need to implement a grammar.
 
 :::{req} provider
 The SDK exposes a source-provider interface for enumerating resource identities
@@ -190,10 +147,6 @@ Listing and reading failures are errors, distinct from successful empty
 listings and successful reads of empty resources.
 :::
 
-The SDK also supplies a local-filesystem implementation. It uses the same
-interface as an application-supplied provider, so choosing local storage does
-not change the graph model or the inspection operations available to a review.
-
 :::{req} local_provider
 The SDK supplies a local-filesystem provider for listing and reading resources
 within an application-selected scope.
@@ -204,100 +157,78 @@ within an application-selected scope.
 :::{definition} language_definition
 :phrase: language definition
 
-A *language definition* is a registered description of a source language:
-its grammar and outline rules, along with its language identifier and
-resource-name matching. The SDK's `LanguageProvider` supplies this description
-so the shared parser can build a
-{term}`requirements.sdk.sources.outline`. It describes how to interpret source;
-the source provider supplies the bytes.
+A *language definition* is an implementation of the outline library's
+[`Language`](#habeas-req-requirements.sdk.sources.language_provider) trait: it
+names a language, identifies filename extensions, and
+interprets supplied source into an outline.
 :::
 
-For `check_token`, the Rust grammar recognizes a `function_item`; the Rust
-outline definition maps it to the kind `fn` and takes its name from the
-function's name field. A Python definition maps `function_definition` to `def`.
-The shared outline engine uses these mappings to name items and organize them
-by their syntactic containment.
-
-An application supplies a collection of these language definitions. The default
-collection is convenient for Habeas; a different application can replace it or
-register additional languages. In illustrative assembly code:
-
-```rust,ignore
-let sources = SourceAnalysis::new(
-    LocalSources::new(repository_root),
-    LanguageRegistry::new()
-        .register(Rust)
-        .register(Python),
-);
-```
-
-`habeas-language` defines the existing provider trait and profile vocabulary.
-Each `habeas-language-*` crate supplies a language implementation, and
-`habeas-languages` assembles the default collection. A language provider defines
-parsing and outline interpretation; a source provider supplies resources and
-inspection operations. Neither defines what makes a requirement valid.
+[Source outlines](outlines.md#use-the-default-languages) describes automatic
+selection and optional registration of additional languages.
 
 :::{req} language_provider
-The language interface lives in `habeas-language`:
+`habeas-sdk-outline` exposes a language interface implemented by each supplied
+language implementation and usable by additional application-defined languages:
 
 ```rust,ignore
-use tree_sitter::Language;
+pub trait Language: Send + Sync {
+    /// Stable name for this language implementation.
+    fn name(&self) -> &str;
 
-pub trait LanguageProvider: Sync {
-    /// Rules mapping syntax to named outline items.
-    fn profile(&'static self) -> &'static Profile;
-    /// The tree-sitter grammar used to parse the resource.
-    fn grammar(&self) -> fn() -> Language;
+    /// Filename extensions recognized by this implementation, without dots.
+    fn extensions(&self) -> &[&str];
+
+    /// Interpret supplied text into outline items and structural hashes.
+    fn outline(&self, source: &str) -> Result<Outline, OutlineError>;
+
+    // ... fingerprint_scheme introduced below ...
 }
 ```
 :::
 
-`Profile` describes outline interpretation; `Language` is `tree_sitter::Language`.
+:::{req} language_provider.fingerprint_scheme
+Each language implementation supplies the scheme identifying its structural-hash
+rules and their version. A change to those rules uses a different scheme; an
+update preserving the calculation can retain the scheme.
+
+```rust,ignore
+pub trait Language: Send + Sync {
+    /// Identify the structural-hash rules and their version.
+    fn fingerprint_scheme(&self) -> &str;
+
+    // ... other language methods ...
+}
+```
+:::
+
+:::{req} language_provider.structural_search
+A language implementation can additionally provide the syntax capability
+used by the SDK's structural-search default. Outline-only implementations
+remain valid language implementations. Requesting structural search for
+a language without that capability returns an unsupported-language error,
+rather than a successful empty result.
+:::
+
+The trait above shows its outline-facing members.
 
 ## Providers can specialize parsing and search
 
-Suppose a database provider already has an index of every call to `check_token`.
-Reading every resource to repeat that search would discard the benefit of the
-index. Parsing and search therefore belong on the source-provider interface,
-with reusable SDK implementations as defaults.
+Source access and source interpretation remain separate even when a provider
+uses a cached parse or an existing search index. The SDK's defaults combine
+provider access with the independent outline library.
 
-Continuing the illustrative trait above:
+The following assembly sketch uses the default languages:
 
 ```rust,ignore
-async fn parse(
-    &self,
-    id: &ResourceId,
-    languages: &LanguageRegistry,
-) -> Result<ParsedSource, Self::Error> {
-    defaults::parse(self, id, languages).await
-}
-
-async fn search_text(
-    &self,
-    query: &TextQuery,
-) -> Result<TextMatches, Self::Error> {
-    defaults::search_text(self, query).await
-}
-
-async fn search_structure(
-    &self,
-    query: &StructuralQuery,
-    languages: &LanguageRegistry,
-) -> Result<StructuralMatches, Self::Error> {
-    defaults::search_structure(self, query, languages).await
-}
+let sources = SourceAnalysis::new(LocalSources::new(repository_root));
 ```
-
-The default text search enumerates resources and reads their contents. The
-default parser reads a resource and applies its selected language definition.
-The default structural search enumerates resources and calls the provider's
-parsing operation. A provider that overrides parsing can therefore reuse the
-shared structural-search implementation.
 
 :::{req} provider_defaults
 Source providers can override parsing, text search, and structural search.
-The SDK supplies defaults for all three, so listing, reading, and a supplied
-language registry suffice to support them.
+The SDK supplies defaults for all three. Listing and reading, together with
+the default outline parser, support parsing and text search. Structural search
+additionally uses the selected language's syntax capability under
+{cite}`requirements.sdk.sources.language_provider.structural_search`.
 :::
 
 :::{req} provider_defaults.composition
@@ -305,25 +236,19 @@ The defaults compose through the provider's operations:
 
 | Default operation | Uses |
 | --- | --- |
-| Parsing | Provider reading and the selected language definition |
+| Parsing | Provider reading and the outline library's selected language |
 | Text search | Provider listing and reading |
 | Structural search | Provider listing and parsing, including any parsing override |
 :::
 
-An override changes how an operation is executed. A database index still needs
-to answer the requested search over the requested scope; approximate index
-matches can be candidates that the provider verifies. A cached parse must stay
-paired with the source bytes it describes. Reading the file again to attach
-newer bytes would produce an inconsistent result.
-
 :::{req} provider_results
 An override preserves the requested scope and semantics, including the selected
-language definition for parsing and structural search.
+language for parsing and structural search.
 :::
 
 :::{req} provider_results.parse_snapshot
 A parse result retains the source snapshot it describes. A cached parse stays
-paired with those bytes, rather than bytes from a different source snapshot.
+paired with those same bytes.
 :::
 
 :::{req} provider_results.search_completeness
@@ -331,63 +256,85 @@ Search results distinguish complete results from truncated or incomplete
 ones. An operation failure is an error, rather than a complete empty result.
 :::
 
+## Connect source items to graph nodes
+
+The application maps discovered source addresses to graph node identities. For HC,
+`src/auth.rs` with selector `fn[check_token]` becomes `HcNodeId::Source(address)`.
+
+:::{req} source_nodes
+An application supporting SDK source inspection supplies access to its source
+provider and a mapping from `OutlineId` to its graph's `NodeId`. The mapped node
+represents the requested resource and selector; an unsupported or invalid
+address returns an error. The SDK's source read uses that mapping and the
+application's `Graph` interface.
+
+The application owns the mapping and the interpretation of that node's contents.
+:::
+
+This trait sketch names the two capabilities; its declaration is illustrative:
+
+```rust,ignore
+pub trait SourceNodes: Graph {
+    type Sources: SourceProvider;
+
+    fn sources(&self) -> &SourceAnalysis<Self::Sources>;
+    fn source_node(&self, item: &OutlineId) -> Result<Self::NodeId, Self::Error>;
+}
+```
+
+For a source node, HC's `Graph::node_content` obtains a snapshot and invokes
+the outline library. The returned selection supplies its fingerprint and agent
+text through `NodeContents` under
+{cite}`requirements.sdk.outlines.node_contents`, so the dependency and model
+text describe the same read.
+
+:::{req} provider_observations
+The tracked source-read operation resolves the selected `OutlineId` through
+the application's source-node mapping and reads that node through `Graph`.
+Successful reads delivered to the caller record that node's identity and the
+fingerprint of its supplied contents, whether obtained from a cache, provider
+default, or override.
+
+The graph's recording and freshness contracts apply under
+{cite}`requirements.sdk.graph.evidence.node_inputs` and
+{cite}`requirements.sdk.graph.evidence.checking_records`.
+:::
+
 ## Inspection runs through the tracked context
 
-The requirement-review agent asks a tool to read `check_token`. That tool calls
-the inspection context, which dispatches to the configured source provider.
-Deterministic validation code calls the same context directly. Both routes
-observe the same source operations, regardless of whether the provider uses
-SDK defaults or optimized implementations.
+Deterministic criterion code and SDK agent tools use the same inspection
+operations. A direct tracked read records its returned input. An agent read
+records the prepared input when it is delivered, including any continuation
+pages; preparing an undelivered result does not record a read.
 
 ```mermaid
 flowchart TD
-    Agent["Agent tool adapter"] --> Context["Tracked inspection context"]
-    Code["Deterministic procedure"] --> Context
-    Context --> Provider["Configured source provider"]
-    Provider --> Default["SDK default implementation"]
-    Provider --> Custom["Provider override"]
-    Default --> Result["Observation returned to context"]
-    Custom --> Result
-    Result --> Return["Supply result"]
-    Return --> Record["Record delivered source-node reads"]
+    Agent["SDK agent tools"] --> Context["Tracked inspection context"]
+    Code["Deterministic criterion"] --> Context
+    Context --> Mapping["Application maps OutlineId to NodeId"]
+    Mapping --> Graph["Application Graph resolves the selected node"]
+    Graph --> Trace["SDK records supplied node contents and fingerprint"]
 ```
 
-The graph's [input-recording contracts](graph/evidence.md#remember-what-a-procedure-actually-reads)
-cover node reads and outgoing-edge selections. Providers execute operations;
-the inspection context records source-node reads delivered to the procedure.
-An override cannot bypass recording a delivered read merely because it answered
-from a cache or database.
+Calling the independent outline library or a source provider directly does not
+record evidence. HC uses those libraries inside `node_content`; the enclosing
+SDK read records the resulting node observation.
 
-:::{req} provider_observations
-The tracked inspection context records successful source-node reads delivered
-to the procedure as assessment dependencies, whether the provider uses defaults
-or overrides. Each fingerprint describes the contents delivered to the caller.
-:::
-
-The SDK search tools use the shared source-provider and parsing operations to
-locate sources. They do not record search result sets, including empty results,
-as assessment dependencies. This tool policy is fixed for now; a hook to
-customize it is deferred. Provider overrides change how an operation executes,
-not this dependency policy. A subsequent tracked source-node read records that
-node as an input. Locating a function does not establish that its full contents
-were examined.
+Listing, outlining, and searching help choose nodes to read. The fixed SDK
+policy does not record those discovery result sets as evidence inputs.
+A subsequent tracked read records the selected node.
+[Context tools](graph/context-tools.md) gives each operation's signatures,
+returned data, and input-recording semantics.
 
 ## Each language defines its outline
 
-For the example at the start, `fn[check_token]` selects the function independently
-of its line number. An empty selector selects the resource root. Nested items
-use slash-separated segments; reserved characters in names are percent-encoded.
-Anonymous items use identity-hash prefixes and duplicate named siblings use
-occurrence suffixes.
+An empty selector identifies the source root. Nested items use slash-separated
+segments; reserved characters in names are percent-encoded. Anonymous items use
+identity-hash prefixes and duplicate named siblings use occurrence suffixes.
+The outline library applies these shared rules and the selected language's
+naming, attachment, and comment rules.
 
-Node contents are the text supplied to a procedure. A structural fingerprint
-captures which changes to that text matter for freshness. Shared structural
-hashing ignores ordinary whitespace; language definitions specify comment
-handling and the syntax attached to an item. The graph only compares the
-resulting fingerprint, without interpreting these language rules.
-
-Each page starts with a source example and its resulting selector, then explains
-the language's outline definition:
+The language chapters explain those rules with source examples:
 
 - [Rust](sources/rust.md)
 - [Python](sources/python.md)
@@ -398,8 +345,5 @@ the language's outline definition:
 - [YAML](sources/yaml.md)
 - [Plain-text fallback](sources/plain-text.md)
 
-Existing detailed selector and structural-hash requirements remain in
-[References and Rust items](../references.md). The
-[allocation plan](requirements-map.md) identifies how to separate their shared
-rules, language definitions, and Habeas policy. The next chapter
-[puts the SDK pieces together in Habeas](habeas.md).
+[References and Rust items](../references.md) specifies the detailed selector
+and structural-hash rules.

@@ -7,8 +7,8 @@ auth:
   expires: true
 ```
 
-The `habeas-language-yaml` crate supplies this outline definition. The default
-registry selects it for `.yml` and `.yaml` files.
+The default `habeas-sdk-outline` parser includes this language implementation
+and selects it for `.yml` and `.yaml` files.
 
 The {term}`requirements.sdk.sources.selector` `pair[auth]/pair[expires]` identifies the nested entry in this example.
 The resource address identifies the file separately from this selector.
@@ -26,6 +26,3 @@ outside the preceding outline item.
 
 The [shared source machinery](../sources.md) defines selector encoding, duplicate
 names, and the distinction between node contents and structural fingerprints.
-These rules describe the current provider. Their existing requirements live
-in [References and Rust items](../../references.md) pending the
-[requirements reorganization](../requirements-map.md).

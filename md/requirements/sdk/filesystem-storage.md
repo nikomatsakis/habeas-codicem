@@ -4,8 +4,7 @@ Use `FileEvidenceStorage` to implement `Storage` with a directory of
 JSON records. The application chooses the directory and uses `Graph::node_path` to obtain
 a stable [`NodePath`](graph.md#give-nodes-a-stable-path), paired with the validation's
 `CriterionPath`. The helper handles serialization, file access, and replacing
-saved records; it does not decide whether the
-{term}`requirements.sdk.graph.evidence.verification_evidence` is current.
+saved {term}`requirements.sdk.graph.evidence.verification_evidence`.
 
 ## Configure the store
 
@@ -54,21 +53,20 @@ impl FileEvidenceStorage {
 `Record`, `Dependency`, and `Fingerprint` support Serde when their type
 parameters do. `Criterion::Ok` is always serializable; its JSON value is
 already in the record. Serialization bounds on node identities and edge labels
-belong to this helper's use, rather than `Graph` itself.
+apply when using this helper.
 :::
 
 An application holds a store alongside its graph data. Its `load_evidence`
 method obtains `let path = self.node_path(source)` and delegates to
 `store.load(&path, criterion).await`; `store_evidence` delegates to
 `store.store(&path, criterion, record).await`. It maps
-`FileStorageError` into its own `Graph::Error`.
+`FileStorageError` into its own `Types::Error`.
 
 ## Map node paths into the directory
 
 The graph supplies stable, unique paths under
 {cite}`requirements.sdk.graph.node_path_method`. The helper preserves segment
-boundaries when mapping those paths to files. No requirement names, source
-paths, or CLI conventions are built into it.
+boundaries when mapping those paths to files.
 
 :::{req} keys
 For each `NodePath` segment, the helper uses `s` followed by the lowercase
@@ -90,9 +88,7 @@ For example, source `["a"]` with criterion `["b", "c"]` maps to
 `["c"]` maps to `s61/s62/criteria/s63/record.json`. Both paths empty select
 `criteria/record.json` under the root.
 
-The configured directory is application-owned. It can be relative or absolute;
-applications sharing it must agree on source paths, criterion paths, and records. The helper
-does not enumerate records or apply an evidence-retention policy.
+The configured root can be a relative or absolute directory.
 
 ## Load and replace records
 
@@ -127,8 +123,7 @@ no temporary file belonging to that operation.
 :::
 
 Atomic replacement does not promise durability across power loss or recovery
-of temporary files after a process crash. Applications needing transactions
-across several nodes can implement `Storage` with another backend.
+of temporary files after a process crash.
 
 The SDK still owns [freshness checking](graph/evidence.md#compare-the-saved-observations).
 A successfully loaded record may be stale or contain a negative judgment.

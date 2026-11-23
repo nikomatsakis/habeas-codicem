@@ -54,9 +54,8 @@ related source; assessments of that target remain separate.
 
 ## Agent tools call the same context as ordinary code
 
-The SDK's graph tools are adapters around the inspection API available to the
-criterion. They translate tool arguments and format results; the shared context
-prepares reads and records observations.
+The SDK's graph tools call the same inspection operations as criterion code.
+The shared context prepares reads and records observations.
 
 :::{req} shared_context
 ```rust,ignore
@@ -67,9 +66,9 @@ impl<'d, D: Domain> ValidationContext<'d, D> {
 ```
 
 `ValidationContext::inspection()` exposes the execution's `InspectionContext`.
-The ask builder passes that context to `Agent::run`. The supplied `ToolAgent`
-implements graph-node reads, outgoing-edge queries, and delivery recording by
-delegating to that same context's operations.
+The SDK's supplied agent uses that same context for graph-node reads,
+outgoing-edge queries, and delivery recording. The application supplies data
+through its domain; the SDK supplies and dispatches the tools.
 
 Borrowing the context does not record an input. The reads and edge selections
 performed through it contribute the observations described below.
@@ -78,29 +77,30 @@ performed through it contribute the observations described below.
 ```mermaid
 flowchart TD
     Code["Criterion code: cx.inspection()"] --> Context["Execution's InspectionContext"]
-    Agent["Agent request"] --> Tools["ToolAgent graph tools"]
+    Agent["Agent request"] --> Tools["SDK graph tools"]
     Tools --> Context
-    Context --> Contents["Contents: read and fingerprint"]
+    Context --> Graph["Graph: read prepared NodeContents"]
     Context --> Trace["Execution's recorded inputs"]
 ```
 
-For source exploration, `SourceTools` adapts the
-provider and parser operations described in [Sources and inspection](../sources.md).
-That chapter explains how applications configure sources and languages.
-The source-tool names, such as `read_source`, are commands exposed to the agent.
-The signatures below show the Rust methods those commands use.
+Source discovery uses the resource access and independent outline library
+described in [Sources and inspection](../sources.md). The application maps
+source addresses into its graph and resolves their contents. The SDK's
+`read_source` tool uses that mapping, then performs the same tracked node read
+as criterion code. The signatures below describe the Rust operations behind
+the fixed tools.
 
 ## Reading the contents of a graph node
 
 Use a node's identity to obtain its application-defined
-[contents](fingerprinting.md).
+[contents](../graph.md#read-node-contents).
 
 :::{req} read_node.fn
-The SDK offers this `InspectionContext` method. The supplied `ToolAgent`
-also exposes the `read_node` command.
+The SDK offers this `InspectionContext` method and exposes it to the agent
+as the `read_node` command.
 
 ```rust,ignore
-impl<'d, D: Contents> InspectionContext<'d, D> {
+impl<'d, D: Graph> InspectionContext<'d, D> {
     /// Read the contents of this graph node.
     pub fn read(&self, node: &D::NodeId) -> Result<D::NodeContent, D::Error>;
 }
@@ -111,7 +111,7 @@ impl<'d, D: Contents> InspectionContext<'d, D> {
 `InspectionContext::read` returns the node's application-defined
 `D::NodeContent`, or the domain's read error.
 
-`ToolAgent`'s `read_node` accepts a known node's `NodePath` and returns its
+The SDK's `read_node` tool accepts a known node's `NodePath` and returns its
 contents formatted under
 {cite}`requirements.sdk.graph.agent-calls.judge.rendering`.
 :::
@@ -124,7 +124,7 @@ successful observation. The evidence becomes stale when a later read of that
 node has a different fingerprint; a failure to resolve it is reported by
 {cite}`requirements.sdk.graph.evidence.checking_records`.
 
-`ToolAgent` prepares the contents and their fingerprint together and records
+The SDK prepares the contents and their fingerprint together and records
 the observation when those contents are delivered. The dependency describes
 the supplied contents, rather than a replacement read.
 :::
@@ -135,11 +135,11 @@ Select relationships by their label. A criterion can use the returned node
 identities to choose additional reads.
 
 :::{req} outgoing_edges.fn
-The SDK offers this `InspectionContext` method. The supplied `ToolAgent`
-also exposes the `outgoing_edges` command.
+The SDK offers this `InspectionContext` method and exposes it to the agent
+as the `outgoing_edges` command.
 
 ```rust,ignore
-impl<'d, D: Contents> InspectionContext<'d, D> {
+impl<'d, D: Graph> InspectionContext<'d, D> {
     /// Obtain this source's targets for the label.
     pub fn outgoing_edges(
         &self,
@@ -155,12 +155,12 @@ impl<'d, D: Contents> InspectionContext<'d, D> {
 :::{req} outgoing_edges.behavior
 `InspectionContext::outgoing_edges` returns the target node identities and a
 fingerprint of their set of stable `NodePath`s, under
-{cite}`requirements.sdk.graph.fingerprinting.snapshot`. The returned vector
+{cite}`requirements.sdk.graph-edges.snapshot`. The returned vector
 preserves the graph's ordering and duplicates.
 
-`ToolAgent`'s `outgoing_edges` accepts a known source `NodePath` and a typed
-label argument and returns the target paths. The adapter's label bounds follow
-{cite}`requirements.sdk.graph.agent-harness.tool_agent`.
+The SDK's `outgoing_edges` tool accepts a known source `NodePath` and a typed
+label argument and returns the target paths. The SDK obtains those identities through the
+application's graph.
 :::
 
 :::{req} outgoing_edges.inputs
@@ -174,7 +174,7 @@ contents records a separate node dependency. These observations follow
 {cite}`requirements.sdk.graph.evidence.checking_records`.
 
 `InspectionContext::outgoing_edges` records the selection when returning it.
-`ToolAgent` records the prepared selection when delivered. A failed selection
+The SDK agent records the prepared selection when delivered. A failed selection
 records no successful observation.
 :::
 
@@ -185,39 +185,43 @@ function within a file. Source identities are defined in
 [Sources and inspection](../sources.md#identify-something-before-reading-it).
 
 :::{req} read_source.fn
-The SDK offers this `SourceAnalysis` method. The supplied `SourceTools`
-also exposes the `read_source` command.
+The SDK exposes a tracked source read for domains supplying the source-node
+mapping under {cite}`requirements.sdk.sources.source_nodes`. It is available
+as the agent's `read_source` command.
+
+The Rust interface has this shape; `SourceNodes` names the capability sketched
+in the source chapter:
 
 ```rust,ignore
-impl<P: SourceProvider> SourceAnalysis<P> {
-    /// Parse a source resource.
-    pub async fn parse(&self, id: &ResourceId) -> Result<ParsedSource, P::Error>;
+impl<'d, D: Domain + SourceNodes> InspectionContext<'d, D> {
+    /// Map this source address into the graph and read its node contents.
+    pub fn read_source(&self, item: &OutlineId) -> Result<D::NodeContent, D::Error>;
 }
 ```
 :::
 
 :::{req} read_source.behavior
-The supplied `SourceTools` adapter exposes `read_source` with a resource
-identity and an optional outline selector. It calls `SourceAnalysis::parse`
-and selects the requested item from the returned snapshot's outline.
-An omitted or empty selector selects the whole resource.
-`SourceAnalysis::parse` returns a `ParsedSource` containing the resource
-identity, source bytes, and outline from the same snapshot, under
-{cite}`requirements.sdk.sources.provider_results.parse_snapshot`. The tool
-result contains the selected `OutlineId` and its text.
+`read_source` accepts a resource identity and an optional outline selector.
+An omitted or empty selector identifies the whole resource. The operation maps
+that `OutlineId` into the application's graph, then obtains its node contents
+through `Graph::node_content`. Mapping and read failures return errors.
+
+The Rust caller receives `D::NodeContent`; the agent receives those same
+contents presented by `NodeContents::format` under
+{cite}`requirements.sdk.graph.fingerprint_content.format`.
 :::
 
 :::{req} read_source.inputs
-The adapter's observation callback receives the selected identity and the
-parsed source snapshot. `ToolAgent` records any dependency it returns when
-those contents are delivered, under
-{cite}`requirements.sdk.sources.provider_observations`.
-The callback maps the source item into the application's graph: a node
-dependency records its identity and the fingerprint of the supplied contents.
-That dependency becomes stale when the node's fingerprint changes. A callback
-returning `None` supplies no dependency; calling `SourceAnalysis::parse`
-directly also records none. Dependency comparison follows
-{cite}`requirements.sdk.graph.evidence.checking_records`.
+A successful source read records the mapped node's identity and the fingerprint
+of the supplied contents under
+{cite}`requirements.sdk.sources.provider_observations`. Direct tracked reads
+record when returning the contents; agent reads record when delivering them.
+Failures record no successful observation.
+
+The dependency becomes stale when that node's fingerprint changes. The source
+mapping cannot return an untracked successful read. Calling the standalone
+outline parser directly records no graph dependency; a tracked node read must
+enclose its use when its contents contribute to an assessment.
 :::
 
 ## Listing source resources
@@ -225,8 +229,8 @@ directly also records none. Dependency comparison follows
 List resources when choosing a file or other source to inspect.
 
 :::{req} list_sources.fn
-The SDK offers this `SourceProvider` method. The supplied `SourceTools`
-also exposes the `list_sources` command.
+The SDK offers this `SourceProvider` method. Its source tools expose the
+`list_sources` command using the application's source provider.
 
 ```rust,ignore
 pub trait SourceProvider: Send + Sync {
@@ -244,14 +248,14 @@ pub trait SourceProvider: Send + Sync {
 :::
 
 :::{req} list_sources.behavior
-The supplied `SourceTools` adapter exposes `list_sources` with an optional
+The SDK's source tools expose `list_sources` with an optional
 scope prefix, represented in Rust by `SourceScope::prefix`.
 It returns the resource identities supplied by `SourceProvider::list` under
 {cite}`requirements.sdk.sources.provider`.
 :::
 
 :::{req} list_sources.inputs
-`SourceTools`'s `list_sources` result is discovery and
+The SDK's `list_sources` result is discovery and
 records neither the returned identity set nor the resources' contents as
 evidence inputs. Adding or removing a listed resource therefore does not by
 itself invalidate the evidence. Subsequent tracked reads record their own
@@ -264,8 +268,8 @@ An outline identifies the items within a source, so a caller can select one
 for a content read.
 
 :::{req} outline_source.fn
-The SDK offers this `SourceAnalysis` method. The supplied `SourceTools`
-also exposes the `outline_source` command.
+The SDK offers this `SourceAnalysis` method and exposes the `outline_source`
+command through its source tools.
 
 ```rust,ignore
 impl<P: SourceProvider> SourceAnalysis<P> {
@@ -276,15 +280,18 @@ impl<P: SourceProvider> SourceAnalysis<P> {
 :::
 
 :::{req} outline_source.behavior
-The supplied `SourceTools` adapter exposes `outline_source` with a resource
-identity. It parses that resource through `SourceAnalysis` and returns its
-items' selectors and kinds. The Rust result is a `ParsedSource` containing
-the resource identity, source bytes, and `Outline`; the tool presents the
-outline's selectors and kinds.
+The SDK's `outline_source` tool accepts a resource identity and delegates to
+`SourceAnalysis::parse`, including the source provider's parsing override.
+The default obtains one resource snapshot through the provider and parses
+that snapshot with the outline library.
+
+The tool returns the parsed outline's selectors and kinds. The Rust parse
+result retains the resource identity and the parsed source snapshot under
+{cite}`requirements.sdk.sources.provider_results.parse_snapshot`.
 :::
 
 :::{req} outline_source.inputs
-`SourceTools`'s `outline_source` result is discovery and records no evidence inputs. Changes to
+The SDK's `outline_source` result is discovery and records no evidence inputs. Changes to
 that outline alone do not invalidate the evidence. A subsequent tracked read
 of a selected item records that item's contents and fingerprint.
 :::
@@ -295,7 +302,7 @@ Use a regular expression to locate relevant source text.
 
 :::{req} search_text.fn
 The SDK offers this `SourceProvider` method and its shown default
-delegation. The supplied `SourceTools` also exposes the `search_text` command.
+delegation. Its source tools expose the `search_text` command.
 
 ```rust,ignore
 pub trait SourceProvider: Send + Sync {
@@ -315,7 +322,7 @@ pub trait SourceProvider: Send + Sync {
 :::
 
 :::{req} search_text.behavior
-The supplied `SourceTools` adapter exposes `search_text` with a regular
+The SDK's source tools expose `search_text` with a regular
 expression and optional scope prefix, context-window size, and match limit.
 These correspond to `TextQuery`'s `pattern`, `scope`, `context_lines`, and
 `limit`. It uses `SourceProvider::search_text` and returns each match's
@@ -325,7 +332,7 @@ is complete, under
 :::
 
 :::{req} search_text.inputs
-`SourceTools`'s `search_text` results and their pages are discovery. They record neither the matching
+The SDK's `search_text` results and their pages are discovery. They record neither the matching
 identity set nor the excerpts as evidence inputs, including when no matches
 are returned. Changes to those results do not by themselves invalidate the
 evidence. Read a matched item through a tracked operation to record a
@@ -338,8 +345,8 @@ Use a language and a structural query to locate syntax, such as calls to a
 particular function.
 
 :::{req} search_structure.fn
-The SDK offers this `SourceAnalysis` method. The supplied `SourceTools`
-also exposes the `search_structure` command.
+The SDK offers this `SourceAnalysis` method and exposes the `search_structure`
+command through its source tools.
 
 ```rust,ignore
 impl<P: SourceProvider> SourceAnalysis<P> {
@@ -353,7 +360,7 @@ impl<P: SourceProvider> SourceAnalysis<P> {
 :::
 
 :::{req} search_structure.behavior
-The supplied `SourceTools` adapter exposes `search_structure` with a language
+The SDK's source tools expose `search_structure` with a language
 and an ast-grep rule, plus an optional scope prefix and match limit. It uses
 `SourceAnalysis::search_structure`; `StructuralQuery` holds the `language`,
 `rule`, `scope`, and `limit`. Each match contains an `OutlineId` and an
@@ -362,98 +369,59 @@ excerpt; the result also states whether the search is complete, under
 :::
 
 :::{req} search_structure.inputs
-`SourceTools`'s `search_structure` results and their pages are discovery and record no evidence inputs,
+The SDK's `search_structure` results and their pages are discovery and record no evidence inputs,
 including an empty result. Changes to matches or excerpts do not by themselves
 invalidate the evidence. A subsequent tracked read records the selected
 item's contents and fingerprint.
 :::
 
-The SDK's discovery policy is fixed for now. Habeas also offers `finish_search`
-to record the enclosing source nodes of excerpts that an assessment relied on;
-see [Authoring evidence](../../authoring.md#account-for-search-snippets).
-
 ## Continuing a paged result
 
 Long results arrive in pages. Fetch another page to continue reading the same
-prepared result.
+prepared result. The SDK retains the prepared text and its dependencies.
 
 :::{req} pages.fn
-The SDK offers these dispatch interfaces. The supplied `ToolAgent` exposes
-`get_node_page`, and `SourceTools` exposes `get_source_page`.
+The SDK exposes continuation operations for prepared node and source results
+through its fixed `get_node_page` and `get_source_page` tools. Criterion code
+can use the same page-continuation facility through inspection.
+
+The public Rust interface has this shape:
 
 ```rust,ignore
-// Graph-tool calls go through the harness's Conversation.
-pub trait Conversation: Send {
-    type Output: Send;
-
-    fn dispatch(
-        &mut self,
-        name: &str,
-        arguments: &serde_json::Value,
-    ) -> impl Future<Output = std::io::Result<String>> + Send;
-
-    // Other conversation methods omitted.
-}
-
-// Source-tool calls go through the factory's per-conversation ToolSession.
-pub trait ToolSession<D: Graph>: Send {
-    fn dispatch<'a>(
-        &'a mut self,
-        name: &'a str,
-        arguments: &'a serde_json::Value,
-    ) -> BoxFuture<'a, std::io::Result<ToolDelivery<D::NodeId, D::EdgeLabel>>>;
-
-    // Other session methods omitted.
+impl<'d, D: Graph> InspectionContext<'d, D> {
+    /// Return a continuation from the same prepared result snapshot.
+    pub fn read_page(
+        &self,
+        page: &PageId,
+    ) -> Result<String, PageError>;
 }
 ```
+
+The caller receives response text; the SDK privately retains each page's
+dependency metadata. `PageError` reports continuation failures such as an
+unknown page ID. The page-ID and error representations are illustrative here.
 :::
 
 :::{req} pages.behavior
-`ToolAgent` exposes `get_node_page`, and `SourceTools` exposes
-`get_source_page`, accepting page IDs returned by their prepared results.
-They are dispatched with the tool name and a `{"page": page_id}` argument.
-The graph dispatcher returns response text; a source session returns
-`ToolDelivery`, containing response text and any dependencies awaiting delivery.
-
-A continuation returns the stored text and dependency metadata from the
-prepared result without fetching replacement contents.
+The SDK's `get_node_page` and `get_source_page` accept page IDs issued by the
+originating execution or conversation's prepared results. A page ID cannot
+retrieve another execution's result. A continuation returns stored text
+without fetching replacement contents. Unknown or unavailable page IDs return
+errors.
 :::
 
 :::{req} pages.inputs
-When `ToolAgent` delivers a read page, it records the dependencies retained by that page under
-{cite}`requirements.sdk.graph.evidence.node_inputs`. Each page of a graph-node
-read carries the original node identity and content fingerprint; reading a
-later page does not observe a newer version. A change to that node's
-fingerprint can invalidate the evidence even if it happens between pages.
-Source-read pages retain whatever dependency the observation callback supplied.
-Discovery pages record no evidence inputs, just like the original discovery
-result.
+A delivered read page records the dependencies retained by that page under
+{cite}`requirements.sdk.graph.evidence.node_inputs`. Each continuation of a
+node or mapped source read retains the original node identity and content
+fingerprint; reading a later page does not observe a newer version. A change
+to that node's fingerprint can invalidate the evidence even if it happens
+between pages. Direct inspection records on return; agent tools record on
+delivery. Discovery pages record no evidence inputs, just like their initial
+result. Preparing an undelivered page records no read.
 :::
 
-## Habeas's application tools
-
-Habeas supplies its own names and selectors for these operations.
-`habeas` reads source items, requirements, examples, or terminology definitions;
-`list_files`, `outline`, `ripgrep`, and `ast_grep` provide source discovery.
-`references` finds connections to declarations, optionally filtered by reference
-role. [Authoring evidence](../../authoring.md) specifies these argument forms.
-
-### Inspecting external issue state
-
-Habeas's supplementary `github` tool retrieves issue data without recording
-evidence inputs. An application can represent issue state as a graph node and
-use a tracked node read when the answer depends on it; see
-[Habeas external nodes](../habeas.md#nodes-can-refer-to-external-state).
-
-Structured submissions are explained separately in
-[Agent harness](agent-harness.md#submit-a-structured-answer).
-
 ## Stay inside the tracked interface
-
-Application code or an agent with its own shell could run ripgrep, read a file,
-or fetch a URL independently. The SDK cannot observe those reads. A judgment
-that relies on them would have an incomplete dependency record, so later
-changes could escape the freshness check.
 
 :::{req} tracked_inspection
 Criteria and their agents should use the SDK's context inspection
@@ -464,9 +432,8 @@ process, or network I/O outside that interface. Discovery-only results do not
 count as full reads of the nodes they locate.
 :::
 
-An application integrating its own tool must explicitly connect its delivered
-observations to the SDK's tracking interface. Merely making the tool available
-to the agent does not do this. Prefer a context operation when one exists;
-otherwise the adapter must report the identity and fingerprint of the exact
-contents delivered, without refetching them. See
-[Remember what a procedure actually reads](evidence.md#remember-what-a-procedure-actually-reads).
+Application code performs source parsing or network access inside its domain's
+node-content implementation. A tracked inspection read then records the node
+value returned by that implementation.
+[Remember what a procedure actually reads](evidence.md#remember-what-a-procedure-actually-reads)
+describes the resulting dependency trace.

@@ -202,7 +202,7 @@ async fn persist<O: Serialize + serde::de::DeserializeOwned + Send>(
 }
 
 // {test}`requirements.sdk.graph.domain_types`
-// {test}`requirements.sdk.graph.outgoing_edges`
+// {test}`requirements.sdk.graph-edges.outgoing_edges`
 // {test}`requirements.sdk.graph.node_path_method`
 #[test]
 fn graph_relationships_work_without_node_contents_or_storage() {
@@ -1161,8 +1161,8 @@ fn hierarchical_requirement_identity_maps_each_component_to_a_path_segment() {
 
 // {test}`requirements.sdk.graph.node_path_method`
 // {test}`requirements.sdk.graph.node_path_struct`
-// {test}`requirements.sdk.graph.fingerprinting.fingerprint_content`
-// {test}`requirements.sdk.graph.fingerprinting.snapshot`
+// {test}`requirements.sdk.graph.fingerprint_content`
+// {test}`requirements.sdk.graph.snapshot`
 // {test}`requirements.sdk.graph.agent-calls.judge.rendering`
 #[test]
 fn identities_remain_stable_and_fingerprinting_uses_the_supplied_snapshot() {

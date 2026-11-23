@@ -6,11 +6,11 @@ then returns its completed answer with a trace of the inputs it used.
 
 ## Run criteria with a validator
 
+:::{req} validator
 A `Validator<D>` owns a cloneable domain. Construct it with `new`, then submit a
 criterion to `verify` to evaluate it and return its answer with the inputs used
 to produce it.
 
-:::{req} validator
 ```rust,ignore
 // Defined in habeas_sdk::graph.
 /// Domain access and configuration shared by criterion executions.
@@ -62,8 +62,9 @@ completed answer.
 {cite}`requirements.sdk.graph.evidence.inputs`
 
 We can now instantiate `BehavioralAdequacy` and evaluate it with a `Validator`.
-Here `domain` supplies Habeas's graph, contents, and storage, and `agent`
-implements the [agent interface](agent-harness.md#the-agent-interface).
+Here `domain` supplies Habeas Codicem's graph, contents, and storage, and
+`agent_config` selects one of the
+[SDK-supplied agents](agent-harness.md#configure-the-validators-agent).
 [`with_agent`](agent-harness.md#configure-the-validators-agent) configures that
 agent for the criterion's requests.
 The `refresh_evidence` helper reuses the previous answer when the review rules
@@ -71,7 +72,7 @@ and inputs are current, or evaluates the criterion again:
 
 ```rust,ignore
 let validator = Validator::new(domain.clone())
-    .with_agent(agent.clone());
+    .with_agent(agent_config.clone());
 
 let inputs = validator.refresh_evidence(BehavioralAdequacy {
     requirement: requirement.clone(),
@@ -83,7 +84,6 @@ println!("{}: {}", assessment.adequate, assessment.rationale);
 ```
 :::
 
-This chapter focuses on running a criterion with a validator.
 [Storage](evidence.md#refresh-evidence) defines `refresh_evidence` and explains
 the load, check, verify, and store steps it combines.
 [Criteria evaluation](execution.md) fills in the criterion's execution method.

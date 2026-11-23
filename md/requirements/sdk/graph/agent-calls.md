@@ -1,19 +1,23 @@
 # Agent calls
 
 An agent call combines reusable instructions with selected
-{term}`requirements.sdk.graph.fingerprinting.node_contents` and
+{term}`requirements.sdk.graph.node_contents` and
 returns an application-defined answer. A criterion starts the request with
 `cx.ask::<R>()`, adds context and inputs, then awaits an `R`.
 
 This chapter covers that caller-facing interface. [Agent harness](agent-harness.md)
-covers provider setup, the tools exposed to the agent, and how a structured
-submission becomes the answer.
+covers the configuration of SDK-supplied agents, their fixed tools, and how a
+structured submission becomes the answer.
 
 ## Compose reusable context
 
-A `Context` value supplies text for the beginning of the prompt. The question is
-one of these values. Putting common instructions before node contents gives the
-provider a prefix it can cache across reviews of different nodes.
+A `Context` value supplies text for the beginning of the prompt, including the
+question and reusable instructions.
+
+The application defines its instructions and review policies as
+`Context`-implementing types, or uses the supplied string implementations.
+Agent configuration selects the model; context supplies the question and
+instructions. Node inputs are selected through the tracked operations below.
 
 :::{req} agent_context
 ```rust,ignore
@@ -201,35 +205,25 @@ Input-resolution failures return `ValidationError::Graph`.
 
 ## Format node contents for the agent
 
-`Contents::node_content` returns the application's `NodeContent`. Its
-formatter converts that value into text for the prompt. For example, Habeas
-presents requirement text and parsed functions as source excerpts. The SDK uses
-the identity and fingerprint from the same read to track that input.
-
 :::{req} judge.rendering
-The SDK formats node inputs using `Contents::format_node_content`,
-defined by {cite}`requirements.sdk.graph.fingerprinting.fingerprint_content`:
+The SDK presents node inputs using the returned value's `NodeContents::format`
+under {cite}`requirements.sdk.graph.fingerprint_content.format`.
+Its text and fingerprint describe the same retained observation.
 
 ```rust,ignore
-// Method on Contents. Both arguments describe the already-read snapshot.
-/// Present these supplied contents as text for an agent.
-fn format_node_content(
-    &self,
-    node: &Self::NodeId,
-    contents: &Self::NodeContent,
-) -> Result<String, Self::Error>;
+let contents = graph.node_content(&node_id)?;
+let text = contents.format();
 ```
 
-The formatter uses the supplied contents; their fingerprint describes the same
-read. For inputs queued on an ask builder, formatting errors return
-`ValidationError::Graph`. During a `read_node` tool call, a formatting error is
-returned to the agent as a tool error, so it can continue and recover.
-`NodeContent` and `NodeId` retain their application-defined types without
-serialization or display bounds.
+Loading and fallible preparation occur in `Graph::node_content` under
+{cite}`requirements.sdk.graph.fingerprint_content`. For inputs queued on an ask
+builder, these failures return `ValidationError::Graph`. During a `read_node`
+tool call, they are returned to the agent as a tool error, so it can continue
+and recover.
 :::
 
 :::{req} judge.caching
-The provider adapter makes the rendered prefix available to its supported
+The SDK's backend integration makes the rendered prefix available to its supported
 prompt-caching mechanism. The prefix includes all context, including the
 question, and precedes node contents. A cache hit is not guaranteed.
 The prefix fingerprint follows
@@ -244,10 +238,9 @@ the builder decodes the accepted submission into `R`.
 
 :::{req} judge.submission
 The SDK derives the submission tool's JSON schema from `R` using `schemars`
-and instructs the agent to finish through that tool. Its default name is
-`submit_result` in the supplied `ToolAgent` harness. An application implementing
-`Agent<D>` can supply its own submission name and acceptance rules, as described
-in [Agent harness](agent-harness.md#adapt-an-existing-conversation).
+and instructs the agent to finish through the SDK's `submit_result` tool.
+The SDK owns the submission protocol under
+{cite}`requirements.sdk.graph.agent-harness.tool_agent`.
 
 A successful call returns exactly one accepted submitted value, deserialized
 into `R`. Ordinary assistant text does not count. Ending without a valid
@@ -256,7 +249,8 @@ submissions return `ValidationError::Agent`.
 :::
 
 [Agent harness](agent-harness.md#submit-a-structured-answer) explains the tool's
-arguments and how an application can adapt its own conversation loop.
+arguments. The criterion can interpret the typed answer and ask further
+questions using the same builder; its application owns the assessment policy.
 
 ## Combine inputs from several calls
 
@@ -297,9 +291,8 @@ submission state remain independent, while updates to the trace are synchronized
 Calls can run concurrently without holding an exclusive context borrow across
 an agent interaction or locking the whole context for the conversation.
 
-The context is the same interface used by deterministic criteria under
-{cite}`requirements.sdk.graph.validation.criterion_trait`; its domain includes
-evidence storage.
+The same context supports deterministic criteria under
+{cite}`requirements.sdk.graph.validation.criterion_trait`.
 :::
 
 :::{req} procedures
@@ -314,7 +307,7 @@ may propagate that error or handle it and compute its answer another way.
 :::{req} model_capability
 Without a configured agent, awaiting returns
 `ValidationError::NoAgentConfigured`. It invokes no provider, resolves and
-renders no queued node insertions, and fabricates no response. If the callback
+renders no queued node insertions, and fabricates no response. If the criterion
 propagates the error, the runner reports it without storing a completed
-judgment. Deterministic validations need no separate callback trait.
+judgment.
 :::

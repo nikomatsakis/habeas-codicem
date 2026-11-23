@@ -349,7 +349,7 @@ struct Answer {
     n: usize,
 }
 
-// {test}`requirements.sdk.graph.fingerprinting.snapshot`
+// {test}`requirements.sdk.graph.snapshot`
 // {test}`requirements.sdk.graph.evidence.node_inputs`
 // {test}`requirements.sdk.graph.context-tools.tracked_inspection`
 // {test}`requirements.sdk.graph.context-tools.read_node.behavior`
@@ -443,7 +443,7 @@ fn a_matching_dependency_does_not_hide_a_later_changed_dependency() {
 
 // {test}`requirements.sdk.graph.evidence.checking_records.procedure_match`
 // {test}`requirements.sdk.graph.evidence.checking_records`
-// {test}`requirements.sdk.graph.fingerprinting.fingerprint`
+// {test}`requirements.sdk.graph.fingerprint`
 #[test]
 fn wildcard_versions_still_check_inputs_and_errors() {
     let graph = Memory::default();
@@ -498,8 +498,8 @@ fn wildcard_versions_still_check_inputs_and_errors() {
 
 // {test}`requirements.sdk.graph.evidence.checking_records`
 // {test}`requirements.sdk.graph.context-tools.root_inputs`
-// {test}`requirements.sdk.graph.outgoing_edges`
-// {test}`requirements.sdk.graph.fingerprinting.snapshot`
+// {test}`requirements.sdk.graph-edges.outgoing_edges`
+// {test}`requirements.sdk.graph-edges.snapshot`
 // {test}`requirements.sdk.graph.context-tools.outgoing_edges.behavior`
 // {test}`requirements.sdk.graph.context-tools.outgoing_edges.inputs`
 #[test]
@@ -713,7 +713,7 @@ async fn dropped_builders_and_missing_agents_do_not_resolve_queued_inputs() {
 // {test}`requirements.sdk.graph.agent-calls.judge.phases`
 // {test}`requirements.sdk.graph.agent-calls.judge.rendering`
 // {test}`requirements.sdk.graph.agent-calls.judge.submission`
-// {test}`requirements.sdk.graph.fingerprinting.snapshot`
+// {test}`requirements.sdk.graph.snapshot`
 #[tokio::test]
 async fn explicit_insertions_preserve_order_repetition_and_selection_snapshots() {
     let graph = Memory::default();

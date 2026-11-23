@@ -1,159 +1,164 @@
-# Putting it together in Habeas
+# Putting it together in Habeas Codicem
 
-Suppose a test or an explicitly read helper changes after its requirement review was saved.
-Running CI reports that the old evidence is stale. Running `habeas author --all`
-selects that requirement for another review, gathers its initial inputs, and
-invokes the configured agent. The SDK provides the mechanisms described in
-[Graph](graph.md) and [Sources](sources.md); Habeas decides which reviews to run
-and what their results mean.
+Habeas Codicem (HC) defines the requirements graph and the policy used by
+`habeas author`, `habeas status`, and repository validation. Habeas SDK runs
+HC's criteria, provides their inspection tools and configured agents, and
+records the inputs used to compute each answer.
+
+## Supply data and validation policy
+
+HC's domain defines its `NodeId`, labeled relationships, `NodeContent`, and
+evidence storage. A simplified application model has these shapes; the
+particular variants and fields are illustrative:
+
+```rust,ignore
+enum HcNodeId {
+    Requirement(RequirementId),
+    Fixme(FixmeId),
+    Source(OutlineId),
+    GithubIssue(IssueId),
+}
+
+enum HcNodeContent {
+    Requirement(RequirementText),
+    Fixme(FixmeText),
+    Source(SelectedSource),
+    GithubIssue(GithubIssueContents),
+}
+
+enum HcEdge {
+    Impl,
+    Test,
+    AcknowledgesGap,
+    TrackingIssue,
+}
+```
+
+The domain interprets each identity. Reading a source node uses HC's resource
+access and `habeas-sdk-outline` to select from a file snapshot. Reading a
+GitHub issue uses HC's GitHub client and cache. Reading a requirement obtains
+its declaration. The SDK obtains each value through HC's `Graph`
+implementation.
+
+Each returned value implements `NodeContents`. HC's content enum delegates
+fingerprinting and formatting to its contained value:
+
+```rust,ignore
+impl NodeContents for HcNodeContent {
+    fn fingerprint(&self) -> Fingerprint {
+        match self {
+            Self::Requirement(contents) => contents.fingerprint(),
+            Self::Fixme(contents) => contents.fingerprint(),
+            Self::Source(contents) => contents.fingerprint(),
+            Self::GithubIssue(contents) => contents.fingerprint(),
+        }
+    }
+
+    fn format(&self) -> String {
+        match self {
+            Self::Requirement(contents) => contents.format(),
+            Self::Fixme(contents) => contents.format(),
+            Self::Source(contents) => contents.format(),
+            Self::GithubIssue(contents) => contents.format(),
+        }
+    }
+}
+```
+
+The SDK supplies these operations for `SelectedSource` under
+{cite}`requirements.sdk.outlines.node_contents`. HC supplies them for its issue
+data and other application-defined values.
+
+HC's criterion types specify the questions. Its `Context` implementations
+supply the review instructions and conventions. HC loads SDK agent
+configuration through its own [configuration policy](../configuration.md),
+then constructs a validator:
+
+```rust,ignore
+let validator = Validator::new(hc_domain).with_agent(agent_config);
+let result = validator.verify(review_criterion).await?;
+
+// HC interprets result.output() according to its validation policy.
+```
+
+The SDK supplies the agent, fixed tools, paging,
+and structured submission. HC performs confirmation, assesses rationales, and
+combines answers inside its criteria and command policy. Those computations can
+make further `ask` requests with additional `Context` and tracked inputs.
 
 ## Follow `habeas author --all`
 
-The batch command begins with repository inspection, not model inference.
-Habeas discovers the current declarations, references, sites, and evidence;
-selects the reviews needing work; and preserves current records unless forced.
-It also handles orphaned reviews. When there is nothing to author, it returns
-without resolving model configuration or credentials.
+HC discovers declarations, references, sites, and saved evidence. It selects
+reviews needing work and leaves current records alone unless forced.
+It resolves agent configuration and credentials only when there is work to author.
 
 ```mermaid
 flowchart TD
-    Start["habeas author --all"] --> Inspect
-    subgraph Client["Habeas: batch and review policy"]
-        Inspect["Inspect repository and saved evidence"] --> Select["Remove orphaned reviews; select work"]
-        Select --> Needed{"Reviews needed?"}
-        Needed -->|no| Done["Return without a model"]
-        Needed -->|yes| Configure["Resolve provider, policy, concurrency"]
-        Configure --> Prepare["Create context identifying each review subject"]
-        Prepare --> Run["Run the subject's review"]
-        Run --> Confirm["Apply confirmation and disagreement policy"]
-        Confirm --> Save["Write Habeas evidence and usage records"]
-    end
-    subgraph Core["SDK: mechanisms used during a review"]
-        Context["ValidationContext and typed ask builders"] --> Trace["Track delivered reads and observed edge selections"]
-        Trace --> Record["Return Fingerprinted with answer and dependencies"]
-    end
-    Run --> Context
-    Record --> Confirm
+    Start["habeas author --all"] --> Inspect["HC: inspect repository and saved evidence"]
+    Inspect --> Select["HC: select required reviews"]
+    Select --> Needed{"Any reviews needed?"}
+    Needed -->|no| Done["Return without a model"]
+    Needed -->|yes| Configure["HC: obtain SDK agent configuration and review policy"]
+    Configure --> Run["SDK: execute HC criterion"]
+    Run --> Ask["SDK: ask builder and fixed inspection tools"]
+    Ask --> Read["HC domain: supply contents from repository or external sources"]
+    Read --> Record["SDK: completed answer and observed dependencies"]
+    Record --> Interpret["HC: apply review and confirmation policy"]
+    Interpret --> Save["HC storage: persist SDK record and application review fields"]
 ```
 
-The batch scheduler is Habeas code (`src/authoring/batch.rs`). It knows what a
-requirement, citation, or site review is, which stale records need replacement,
-and what to do with disagreement. None of that follows merely from having a
-graph, so extracting the graph does not transfer these decisions to the SDK.
+For behavioral adequacy, the HC criterion inserts the requirement and its test
+nodes. Implementation source is available through the SDK's tools when a
+specific question requires it. For structural assessment, HC selects the
+implementation roots as mandatory inputs. Reference metadata and acknowledgments
+can have their own node contents.
 
-Inside an individual review, the division is more precise:
+Inside an ask request, the SDK records inputs actually delivered to the agent.
+It records a prepared page when its contents are delivered. Deterministic criterion
+code reads through `ValidationContext::inspection()` and records the contents
+returned to it. Both paths contribute to the enclosing criterion's trace.
 
-```mermaid
-sequenceDiagram
-    participant H as Habeas review procedure
-    participant S as SDK validation context
-    participant D as Habeas domain adapter
-    participant J as Shared conversation harness and Habeas adapters
-    participant M as Model provider
-    H->>S: Read nodes and select relationships
-    S->>D: Resolve content and fingerprint
-    D-->>S: Snapshot
-    S-->>H: Content, dependency retained
-    H->>S: Context prefix, current-node and selected-successor insertions
-    H->>S: Await typed ask builder
-    S->>J: Execute request with tracked inspection
-    J->>M: Context prefix and delivered input pages
-    M-->>J: Tool requests or judgment
-    J->>S: Record snapshots actually delivered
-    J-->>S: Structured judgment
-    S-->>H: Typed review answer
-    H->>H: Interpret result, continue or finish
-```
+## Interpret the completed answer
 
-Habeas implements this boundary in `src/authoring/sdk.rs`. Its
-`Criterion::execute` procedure receives the context. For a requirement
-review, it builds a reusable context prefix from its review instructions and
-question, inserts the subject and its mandatory content inputs, then awaits
-the builder. For test-adequacy review, implementation references do not
-automatically supply source. For [structural assessment](../authoring.md#structural-assessment),
-implementation roots become mandatory inputs; the review checks the stated
-structure and flags runtime obligations that need test evidence.
-Comment-only acknowledgments and reference metadata remain protected by the
-reference-set snapshot without reading their containing implementation.
+:::{req} assessment_policy
+HC selects the criteria required for each review and interprets their completed
+answers according to its validation policy. It applies the required-review and
+determination rules under {cite}`requirements.ci.outcomes` and
+{cite}`requirements.ci.determination` to decide whether an SDK execution
+returning `Ok(value)` constitutes a passing application review.
 
-The SDK makes Habeas's conversation harness reusable: tool dispatch, paging,
-retries, structured submission, and search accounting support different typed
-results. Habeas's adapters retain its prompts, review policy, rationale
-correction, `submit_judgment` and `submit_verification` names, and the
-`finish_search` gate. The provider clients can remain transport adapters.
-Searches still record only the enclosing nodes of explicitly selected excerpts;
-tracking search result sets and adding a hook to change that policy are deferred.
+The SDK's `Criterion::Ok` is an application-defined completed answer under
+{cite}`requirements.sdk.graph.validation.output_policy`. An execution error
+is distinct from a completed negative assessment.
+:::
 
-Assessments and verifications share the conversation loop through Habeas's
-adapters. The saved record retains the SDK trace, including confirmation reads.
-
-That delivery distinction matters to the SDK contract: a prepared page that the
-model never receives is not an observed input. A model tool can therefore use
-the harness's delivery adapter to record observations, while a deterministic
-procedure can read directly through `ValidationContext::inspection`.
-
-## Follow the CI test
-
-The project's test calls `habeas::validate()`. It inspects the repository and
-reports validation failures; it does not enter the authoring path to fill in
-missing or stale evidence.
+Freshness is another question. An answer can be current and negative, or
+previously favorable and now stale. A missing required review is also an HC
+validation finding, independently of whether other records are current.
 
 ```mermaid
 flowchart TD
-    Test["Cargo test: habeas::validate()"] --> Discover
-    subgraph Client["Habeas: CI policy and evidence format"]
-        Discover["Discover declarations, references, sites, and evidence"] --> Forms["Validate forms, endpoint resolution, and record schemas"]
-        Forms --> Coverage["Check required coverage, reference sets, and review presence"]
-        Coverage --> Inputs["Resolve recorded inputs and compare recorded fields"]
-        Inputs --> Verdict["Interpret determinations and acknowledgment consistency"]
-        Verdict --> Report["Aggregate findings; fail test if any remain"]
-    end
-    subgraph Core["SDK freshness mechanisms"]
-        Check["Read-only checker and record comparison"] --> Domain["Graph resolves content and fingerprints"]
-    end
-    Inputs --> Check
-    Domain --> Inputs
+    Saved["Saved answer and dependencies"] --> Check["SDK: compare criterion revision and input fingerprints"]
+    Current["HC domain: current contents"] --> Check
+    Check --> State["Freshness result"]
+    State --> Policy["HC: required reviews and acceptable answers"]
+    Saved --> Policy
+    Policy --> Command["HC command's success or reported findings"]
 ```
 
-The diagram groups checks by responsibility; the inspector interleaves these
-checks as it visits records and references.
-
-`src/evidence.rs`, `src/citations.rs`, and `src/sites.rs` own Habeas's
-schemas, reference sets, coverage, and judgments. The consumer port delegates
-record freshness to the SDK checker while retaining these application checks
-and their detailed diagnostics. Habeas loads missing legacy procedure versions
-as `*` under
-{cite}`requirements.sdk.habeas.evidence_conversion.legacy_freshness`; the same
-SDK comparison handles those records and records with concrete versions.
-Habeas's current review uses the criterion path `["review"]` alongside its
-subject identity. The validation value supplies its review revision independently
-of model configuration; the same revision is used for freshness comparison.
-
-The SDK's comparison feeds Habeas's CI policy:
-
-```mermaid
-flowchart TD
-    R["Saved SDK record"] --> F["SDK: compare procedure identity and dependencies"]
-    Current["Current domain snapshots"] --> F
-    F --> State["Current, stale, or resolution error"]
-    State --> H["Consumer: is the saved verdict acceptable?"]
-    H --> CI["Consumer's CI result"]
-```
-
-A current negative judgment is still negative. A missing review is still
-missing even if every existing record is current. Checking freshness is SDK
-machinery; deciding which reviews are required and which judgments satisfy the
-project is Habeas policy.
+HC owns the evidence schema and detailed diagnostics. Its storage recognizes
+legacy formats and delegates SDK record comparison while retaining
+application checks for subject identity, reference roles, coverage, and
+acknowledgment consistency.
 
 ## Upgrade existing evidence in place
 
-Habeas's storage adapter recognizes its existing formats temporarily and
+Habeas Codicem's storage adapter recognizes its existing formats temporarily and
 converts them to a versioned representation of SDK records at the same evidence
-locations. The generic filesystem helper's encoded directory layout does not
-replace Habeas's filenames.
+locations.
 
 :::{req} evidence_format
-Habeas uses a versioned JSON representation of the SDK record: procedure
+Habeas Codicem uses a versioned JSON representation of the SDK record: procedure
 identity, dependencies, and judgment, together with the application-owned
 information needed for requirement, example, citation, and site reviews.
 
@@ -167,7 +172,7 @@ information needed for requirement, example, citation, and site reviews.
 
 Equivalent information receives the same application validation in both legacy
 and versioned records. Versioned fields can live in application-owned output and SDK
-dependencies instead of the legacy top-level layout. Outline inputs retain no
+dependencies. Outline inputs retain no
 source text in the versioned representation.
 :::
 
@@ -176,7 +181,7 @@ The versioned representation under
 {cite}`requirements.sdk.habeas.evidence_format` is distinguishable from the
 unversioned legacy formats under {cite}`requirements.ci.schema`,
 {cite}`requirements.references.citation_review`, and
-{cite}`requirements.references.site_review`. Habeas temporarily accepts those
+{cite}`requirements.references.site_review`. Habeas Codicem temporarily accepts those
 legacy formats for loading alongside the supported versioned format.
 :::
 
@@ -186,7 +191,7 @@ count as absent evidence and are not retried as a different representation.
 :::
 
 :::{req} evidence_conversion
-Habeas supports in-place conversion of legacy evidence to the versioned
+Habeas Codicem supports in-place conversion of legacy evidence to the versioned
 representation under {cite}`requirements.sdk.habeas.evidence_format`, preserving
 the historical values of its judgments, rationales, recorded inputs, and all
 review-specific fields.
@@ -218,13 +223,9 @@ complete record. Failure before replacement leaves the original file unchanged.
 Converting an already-upgraded record leaves the file unchanged.
 :::
 
-Dropping support for the old reader can follow after migration. The legacy
-procedure version `*` remains distinguishable from a concrete version;
-format conversion alone does not establish which review rules produced it.
-
 :::{req} evidence_conversion.legacy_freshness
 When loading a supported legacy evidence record that did not capture its
-procedure version, Habeas represents that missing version as `*`.
+procedure version, Habeas Codicem represents that missing version as `*`.
 In-place conversion preserves this wildcard rather than assigning the current
 version. The wildcard matches any
 requested review revision under
@@ -233,18 +234,52 @@ The record is current when its recorded inputs and all existing application
 freshness checks still match. Version matching leaves the subject, reference-set,
 input, determination, citation, and site checks intact.
 
-For new assessments, Habeas's validation value supplies a concrete review revision
+For new assessments, Habeas Codicem's validation value supplies a concrete review revision
 other than `*`, and the assessment records it.
 :::
 
 ## Nodes can refer to external state
 
-The nodes in the first example came from repository files. A node can also
-identify something outside the repository, such as a GitHub issue. Its identity
-might be `example/auth#42`; its contents are the issue data fetched from GitHub,
-including its description and current state.
+A GitHub issue is application data just as a source file is. HC defines its
+identity and the contents returned by reading it. The SDK's ordinary node-read
+tool can present those contents and record their fingerprint.
 
-For example, an issue-only FIXME connects a source item to its tracking issue:
+:::{req} github_nodes
+HC represents a GitHub issue by a stable owner, repository, and issue-number
+identity. Reading the node supplies the issue's title, opening post, and
+open/closed status as one snapshot. HC computes its fingerprint and formatted
+text from that supplied snapshot through `Graph`.
+
+For illustration:
+
+```rust,ignore
+struct GithubIssueContents {
+    title: String,
+    opening_post: String,
+    status: IssueStatus,
+}
+
+enum IssueStatus {
+    Open,
+    Closed,
+}
+```
+:::
+
+:::{req} github_nodes.inputs
+A tracked read of an HC GitHub issue node records its identity and a fingerprint
+of the supplied title, opening post, and status under
+{cite}`requirements.sdk.graph.evidence.node_inputs`.
+Changing any of those supplied fields changes the fingerprint under the same
+fingerprinting rules. The fingerprint excludes cache fetch time and TTL;
+refetching otherwise unchanged issue contents does not change it.
+
+The fingerprint describes the issue contents supplied under HC's
+[redaction policy](../authoring.md#habeas-req-requirements.authoring.redaction),
+including the text presented to an agent.
+:::
+
+### Link a FIXME to its tracking issue
 
 ```rust,ignore
 // :::{fixme}
@@ -254,30 +289,87 @@ For example, an issue-only FIXME connects a source item to its tracking issue:
 fn check_without_clock() { /* ... */ }
 ```
 
+:::{req} fixme_graph
+HC represents a FIXME acknowledgment as a graph node and exposes its tracking
+issue relationships as labeled edges to GitHub issue nodes. A named FIXME also
+connects the acknowledgment to the requirement whose gap it acknowledges;
+an unnamed FIXME connects directly to its tracking issues.
+Each issue named by the acknowledgment is available through its tracking edges.
+:::
+
 ```mermaid
 flowchart TD
-    F["check_without_clock"] -->|tracks work with| G["GitHub issue example/auth#42"]
+    R["Requirement, when named"] -->|acknowledged gap| F["FIXME: clock unavailable"]
+    F -->|tracking issue| G["GithubIssue(example/auth#42)"]
+    Source["check_without_clock"] -->|contains acknowledgment| F
 ```
 
-The source item is one node; the issue is another. Resolving the source node
-reads code, while resolving the issue node fetches external data. Both supply
-contents that a validation procedure can examine. Neither the node identity nor
-the graph abstraction requires those contents to live in a source file.
+The relationship makes an issue available to a criterion. Selecting the edges
+records their target identity set; reading an issue records its contents.
 
-The application defines the check that uses this relationship. If the check
-requires the tracking issue to remain open, it can inspect the fetched state
-deterministically. It does not need to ask an agent to determine whether the
-state field says `open`.
+### Check status and relevance separately
 
-External inputs also explain why evidence cannot be tied only to a repository
-revision. The issue can close without any code changing. A judgment that relies
-on the issue being open must account for that state when checking whether its
-inputs are still current.
+:::{req} github_nodes.open
+HC's validation policy requires each issue linked by a FIXME to remain open.
+A deterministic criterion reads the issue through the SDK's tracked inspection
+interface and assesses its supplied status. `Closed` produces a completed
+failing assessment; `Open` satisfies this status check. The check does not
+require a configured agent.
+:::
 
-A named FIXME can contribute both relationships: from a requirement to the
-source that acknowledges its gap, and from that source to a tracking issue.
-The unnamed form above contributes only the issue relationship. The requirement
-relationship selects code for review; the issue relationship brings external
-state into the graph.
+:::{req} github_nodes.related
+HC's FIXME review uses an agent criterion to assess whether each linked issue's
+title and opening post describe the FIXME's acknowledged gap. It selects the
+FIXME's tracking-issue edges through the SDK's tracked interface and supplies
+the FIXME and selected issue contents through tracked reads or ask insertions.
+
+A completed assessment that an issue is unrelated fails that issue's relevance
+check.
+:::
+
+The two questions have different criterion identities. The following execution
+sketch omits those identity and revision methods:
+
+```rust,ignore
+let issue = cx.inspection().read(&issue_id)?;
+let open = match issue {
+    HcNodeContent::GithubIssue(issue) => matches!(issue.status, IssueStatus::Open),
+    _ => return Err(unexpected_node_contents()),
+};
+```
+
+An illustrative relevance request on a FIXME node is:
+
+```rust,ignore
+let related: RelevanceAssessment = cx.ask()
+    .context(&fixme_review_policy)
+    .context("Check whether the linked issues describe this FIXME's gap.")
+    .contents_of_current_node()
+    .contents_of_successors(HcEdge::TrackingIssue)
+    .await?;
+```
+
+Once HC observes a refreshed issue snapshot with a changed fingerprint, evidence
+recording the earlier snapshot becomes stale. Reevaluating the open-issue
+criterion for a closed issue produces a failing assessment. Changes to the
+supplied title or opening post invalidate both whole-issue assessments even
+when the status remains open. Until refresh, reads can continue observing the
+cached snapshot. Both criteria read the whole-issue snapshot.
+
+### Cache issue snapshots in HC
+
+:::{req} github_nodes.cache
+HC's issue-content implementation can cache a fetched issue snapshot with a
+fetch time and an application-selected TTL. When caching is enabled, reads
+within the TTL reuse that snapshot. After expiry, a network-enabled read obtains
+a refreshed snapshot before returning contents, or reports a refresh failure.
+The returned contents, formatter, and fingerprint remain based on the same
+snapshot.
+:::
+
+A TTL of about one day is a possible HC policy. Under that policy, a remotely
+closed or edited issue may appear unchanged until the cached snapshot expires
+or HC explicitly refreshes it. Cache expiry alone is not a content change;
+a refreshed snapshot changes evidence only when its fingerprint differs.
 
 <a id="an-edge-carries-an-obligation"></a>

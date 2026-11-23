@@ -157,7 +157,7 @@ async fn source_and_criterion_boundaries_preserve_independent_records() {
 // {test}`requirements.sdk.filesystem-storage.store`
 // {test}`requirements.sdk.graph.evidence.record`
 // {test}`requirements.sdk.graph.evidence.dependencies`
-// {test}`requirements.sdk.graph.fingerprinting.fingerprint`
+// {test}`requirements.sdk.graph.fingerprint`
 #[tokio::test]
 async fn records_round_trip_and_malformed_or_incompatible_data_is_an_error() {
     let temp = tempfile::tempdir().unwrap();

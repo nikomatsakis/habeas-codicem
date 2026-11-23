@@ -351,7 +351,7 @@ fn edge_parameters<L: schemars::JsonSchema>(path: &Value) -> Value {
 mod tests {
     use super::*;
 
-    // {test}`requirements.sdk.graph.outgoing_edges`
+    // {test}`requirements.sdk.graph-edges.outgoing_edges`
     #[test]
     fn nested_label_schema_references_resolve_from_the_tool_parameters_root() {
         #[derive(schemars::JsonSchema)]

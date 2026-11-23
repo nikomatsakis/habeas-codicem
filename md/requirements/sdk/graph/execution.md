@@ -59,15 +59,15 @@ async fn execute(
 ```
 
 The [`ask` builder](agent-calls.md#build-a-request) determines what is given to
-the [configured agent](agent-harness.md#configure-the-supplied-harness):
+the [configured agent](agent-harness.md#configure-the-validators-agent):
 
 - [`context()`](agent-calls.md#compose-reusable-context) provides common context,
   including the question.
 - [`contents_of_current_node()`](agent-calls.md#deliver-and-record-node-inputs)
-  provides the [contents](fingerprinting.md) of the criterion's source node:
+  provides the [contents](../graph.md#read-node-contents) of the criterion's source node:
   here, the requirement.
 - [`contents_of_successors(label)`](agent-calls.md#deliver-and-record-node-inputs)
-  provides the [contents](fingerprinting.md) of its successors with that label:
+  provides the [contents](../graph.md#read-node-contents) of its successors with that label:
   here, the requirement's tests.
 
 For any additional information the answer relies on, use
@@ -92,7 +92,7 @@ application check when the answer may be stale.
 :::{req} deterministic_procedures
 `Criterion::execute` can compute an answer without a configured model provider.
 A criterion can compute its answer directly using tracked inputs; deterministic
-execution needs no configured agent. Evidence storage is still required.
+execution needs no configured agent.
 :::
 
 :::{cite} requirements.sdk.graph.execution.deterministic_procedures

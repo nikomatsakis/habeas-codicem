@@ -13,10 +13,22 @@ graph node. This chapter describes the criterion's type, answer, and identity.
 
 A *criterion* is a value describing a test to perform on a
 {term}`requirements.sdk.graph.node`.
-In the SDK, its type implements `Criterion<D>` for the
-{term}`requirements.sdk.application_domain`. Its `Criterion::Ok` type describes
-the completed answer, which can include a negative assessment. An execution
-error means no completed answer was produced.
+In the SDK, its type implements
+[`Criterion<D>`](../../../rustdocs/habeas_sdk/graph/trait.Criterion.html) for the
+{term}`requirements.sdk.application_domain`. Its
+[`Criterion::Ok`](../../../rustdocs/habeas_sdk/graph/trait.Criterion.html#associatedtype.Ok)
+type describes the completed answer, which can include a negative assessment.
+An execution error means no completed answer was produced.
+:::
+
+:::{definition} source_node
+:phrase: source node
+
+A *source node* is the {term}`requirements.sdk.graph.node` on which a
+{term}`requirements.sdk.graph.validation.criterion` is evaluated, identified by
+[`Criterion::source_node_id`](../../../rustdocs/habeas_sdk/graph/trait.Criterion.html#tymethod.source_node_id).
+Tracked reads of its own contents or those of other nodes can supply inputs
+without changing the criterion's source node.
 :::
 
 :::{req} criterion_trait
@@ -67,7 +79,7 @@ belong in its identity or revision.
 {cite}`requirements.sdk.graph.validation.criterion_trait`
 {cite}`requirements.sdk.graph.validation.criterion_path`
 
-As an example, consider how Habeas reviews requirements for behavioral adequacy:
+As an example, consider how Habeas Codicem reviews requirements for behavioral adequacy:
 whether their tests cover the required observable behavior and edge cases.
 The following `BehavioralAdequacy` criterion models that question. Its fields
 identify the requirement and review policy; `TestReview` describes the answer:
@@ -107,28 +119,56 @@ impl Criterion<HabeasDomain> for BehavioralAdequacy {
 ```
 :::
 
-The criterion defines its answer through `Ok`. Here, an `Ok(TestReview {
-adequate: false, ... })` is a completed assessment finding a gap. An `Err` means
-the evaluation failed to produce a completed answer.
+## The application interprets criterion results
+
+:::{req} output_policy
+Habeas SDK treats `Criterion::Ok` as an application-defined completed answer.
+When returning or saving that answer, it does not interpret whether the answer
+is favorable or satisfies an application requirement. A negative assessment
+can be returned as `Ok(value)`; `Err` represents an execution error instead.
+:::
+
+:::{example} result_interpretation
+{cite}`requirements.sdk.graph.validation.output_policy`
+{cite}`requirements.sdk.habeas.assessment_policy`
+
+Suppose the `BehavioralAdequacy` criterion above returns this completed answer:
+
+```rust,ignore
+Ok(TestReview {
+    adequate: false,
+    rationale: "No test covers expired tokens.".into(),
+})
+```
+
+In this example, HC's validation policy requires `adequate` to be `true`.
+HC reports the inadequate tests and `habeas status` returns an error, even when
+the saved answer is current. The SDK returns the completed answer;
+HC applies the judgment that makes this a validation failure.
+:::
 
 ## Give the criterion a stable path
 
-:::{definition} source_node
-:phrase: source node
+:::{definition} question_path
+:phrase: criterion path
 
-A *source node* is the {term}`requirements.sdk.graph.node` on which a
-{term}`requirements.sdk.graph.validation.criterion` is evaluated, identified by
-`Criterion::source_node_id`. Tracked reads of its own contents or those of other
-nodes can supply inputs without changing the criterion's source node.
+A *criterion path* is an ordered sequence of string segments identifying a
+{term}`requirements.sdk.graph.validation.criterion`'s question relative to its
+{term}`requirements.sdk.graph.validation.source_node`.
+[`CriterionPath`](../../../rustdocs/habeas_sdk/graph/struct.CriterionPath.html)
+represents this path, while
+[`NodeId`](../../../rustdocs/habeas_sdk/graph/trait.Graph.html#associatedtype.NodeId)
+and its stable
+{term}`requirements.sdk.graph.node_path` identify the source node.
+For example, a requirement might use `["text"]`, `["behavior"]`, and
+`["structure"]`; a source item's citation checks might use
+`["citations", "requirements.auth.expiration"]`.
 :::
 
-A `NodeId` and its stable `NodePath` identify the
-{term}`requirements.sdk.graph.validation.source_node`. `CriterionPath`
-identifies a question relative to that source. For example, a requirement might
-use `["text"]`, `["behavior"]`, and `["structure"]`; a source item's citation
-checks might use `["citations", "requirements.auth.expiration"]`.
-
 :::{req} criterion_path
+`habeas_sdk::graph::CriterionPath` represents a
+{term}`requirements.sdk.graph.validation.question_path`:
+
 ```rust,ignore
 // Defined in habeas_sdk::graph.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
