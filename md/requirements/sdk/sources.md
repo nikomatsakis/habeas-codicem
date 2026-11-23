@@ -24,14 +24,6 @@ that address. A resource can be a checkout file, a Git revision's file, an
 editor buffer, or generated text.
 :::
 
-:::{definition} outline
-:phrase: source outline
-
-A *source outline* is a structured view of one source snapshot. Its items have
-selectors, spans within that snapshot, and structural hashes.
-`habeas-sdk-outline` constructs this view using a language implementation or
-the plain-text fallback.
-:::
 
 HC chooses its repository root, which resources it makes available, and how
 to obtain their bytes. A filesystem provider is a convenient implementation;
@@ -50,17 +42,6 @@ flowchart TD
 
 ## Identify something before reading it
 
-:::{definition} selector
-:phrase: item selector
-
-An *item selector* is an address for an item within a
-{term}`requirements.sdk.sources.outline`, such as `fn[check_token]`.
-The empty selector addresses the resource root. The resource address and
-selector together form an
-[`OutlineId`](../../rustdocs/habeas_sdk/resource/struct.OutlineId.html).
-Selectors identify items independently of their line numbers; item spans refer
-to the snapshot used to build the outline.
-:::
 
 ```rust,ignore
 let function = OutlineId {
@@ -154,60 +135,12 @@ within an application-selected scope.
 
 ## Register the languages that interpret those resources
 
-:::{definition} language_definition
-:phrase: language definition
-
-A *language definition* is an implementation of the outline library's
-[`Language`](#habeas-req-requirements.sdk.sources.language_provider) trait: it
-names a language, identifies filename extensions, and
-interprets supplied source into an outline.
-:::
 
 [Source outlines](outlines.md#use-the-default-languages) describes automatic
 selection and optional registration of additional languages.
 
-:::{req} language_provider
-`habeas-sdk-outline` exposes a language interface implemented by each supplied
-language implementation and usable by additional application-defined languages:
 
-```rust,ignore
-pub trait Language: Send + Sync {
-    /// Stable name for this language implementation.
-    fn name(&self) -> &str;
 
-    /// Filename extensions recognized by this implementation, without dots.
-    fn extensions(&self) -> &[&str];
-
-    /// Interpret supplied text into outline items and structural hashes.
-    fn outline(&self, source: &str) -> Result<Outline, OutlineError>;
-
-    // ... fingerprint_scheme introduced below ...
-}
-```
-:::
-
-:::{req} language_provider.fingerprint_scheme
-Each language implementation supplies the scheme identifying its structural-hash
-rules and their version. A change to those rules uses a different scheme; an
-update preserving the calculation can retain the scheme.
-
-```rust,ignore
-pub trait Language: Send + Sync {
-    /// Identify the structural-hash rules and their version.
-    fn fingerprint_scheme(&self) -> &str;
-
-    // ... other language methods ...
-}
-```
-:::
-
-:::{req} language_provider.structural_search
-A language implementation can additionally provide the syntax capability
-used by the SDK's structural-search default. Outline-only implementations
-remain valid language implementations. Requesting structural search for
-a language without that capability returns an unsupported-language error,
-rather than a successful empty result.
-:::
 
 The trait above shows its outline-facing members.
 
@@ -228,7 +161,7 @@ Source providers can override parsing, text search, and structural search.
 The SDK supplies defaults for all three. Listing and reading, together with
 the default outline parser, support parsing and text search. Structural search
 additionally uses the selected language's syntax capability under
-{cite}`requirements.sdk.sources.language_provider.structural_search`.
+{cite}`requirements.sdk.outlines.language_provider.structural_search`.
 :::
 
 :::{req} provider_defaults.composition

@@ -9,7 +9,7 @@ fn check_token() -> bool { true }
 The default `habeas-sdk-outline` parser includes this language implementation
 and selects it for `.rs` files.
 
-The {term}`requirements.sdk.sources.selector` `fn[check_token]` identifies the item in this example.
+The {term}`requirements.sdk.outlines.selector` `fn[check_token]` identifies the item in this example.
 The resource address identifies the file separately from this selector.
 
 ## Outline rules

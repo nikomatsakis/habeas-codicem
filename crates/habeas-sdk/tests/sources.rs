@@ -393,7 +393,7 @@ impl SourceProvider for CachedParse {
     }
 }
 
-// {test}`requirements.sdk.sources.language_provider`
+// {test}`requirements.sdk.outlines.language_provider`
 #[cfg(feature = "default-languages")]
 #[test]
 fn registered_grammars_match_their_profiles_and_parse_the_selected_language() {

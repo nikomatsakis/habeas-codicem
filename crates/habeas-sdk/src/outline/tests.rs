@@ -1367,7 +1367,7 @@ fn inner_and_outer_doc_comments_hash_in_separate_groups() {
     );
 }
 
-// {test}`requirements.sdk.sources.language_provider`
+// {test}`requirements.sdk.outlines.language_provider`
 #[test]
 fn custom_provider_handles_generated_content_and_structural_search() {
     use crate::language::{LanguageProvider, Profile, Registry};

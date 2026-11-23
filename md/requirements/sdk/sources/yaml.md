@@ -10,7 +10,7 @@ auth:
 The default `habeas-sdk-outline` parser includes this language implementation
 and selects it for `.yml` and `.yaml` files.
 
-The {term}`requirements.sdk.sources.selector` `pair[auth]/pair[expires]` identifies the nested entry in this example.
+The {term}`requirements.sdk.outlines.selector` `pair[auth]/pair[expires]` identifies the nested entry in this example.
 The resource address identifies the file separately from this selector.
 
 ## Outline rules

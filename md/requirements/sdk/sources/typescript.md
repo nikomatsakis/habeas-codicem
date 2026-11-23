@@ -9,7 +9,7 @@ function checkToken(): boolean { return true; }
 The default `habeas-sdk-outline` parser includes this language implementation
 and selects TypeScript for `.ts`, `.mts`, and `.cts` files and TSX for `.tsx`.
 
-The {term}`requirements.sdk.sources.selector` `function[checkToken]` identifies the item in this example.
+The {term}`requirements.sdk.outlines.selector` `function[checkToken]` identifies the item in this example.
 The resource address identifies the file separately from this selector.
 
 ## Outline rules

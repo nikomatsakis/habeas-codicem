@@ -49,7 +49,7 @@ impl Outliner {
 A parsed document retains the source text, selected language implementation,
 and outline describing that same snapshot, including the scheme used for its
 structural hashes under
-{cite}`requirements.sdk.sources.language_provider.fingerprint_scheme`.
+{cite}`requirements.sdk.outlines.language_provider.fingerprint_scheme`.
 Its item spans, selected text, and structural hashes are derived from that
 snapshot. A cached document keeps its outline and fingerprinting scheme paired
 with those same bytes.
@@ -104,7 +104,7 @@ describes HC's mapping into the graph.
 ## Supply a language implementation
 
 A language is a value implementing the shared interface under
-{cite}`requirements.sdk.sources.language_provider`. Its implementation
+{cite}`requirements.sdk.outlines.language_provider`. Its implementation
 interprets source text into outline items and structural hashes. The supplied
 language implementations use their respective grammar and naming rules.
 
@@ -182,4 +182,77 @@ scheme under {cite}`requirements.sdk.graph.node_content.fingerprint`.
 Its `format()` returns the selected source text under
 {cite}`requirements.sdk.graph.node_content.format`.
 Both operations describe the source snapshot retained by the selection.
+:::
+
+:::{definition} outline
+:phrase: source outline
+
+A *source outline* is a structured view of one source snapshot. Its items have
+selectors, spans within that snapshot, and structural hashes.
+`habeas-sdk-outline` constructs this view using a language implementation or
+the plain-text fallback.
+:::
+
+:::{definition} selector
+:phrase: item selector
+
+An *item selector* is an address for an item within a
+{term}`requirements.sdk.outlines.outline`, such as `fn[check_token]`.
+The empty selector addresses the resource root. The resource address and
+selector together form an
+[`OutlineId`](../../rustdocs/habeas_sdk/resource/struct.OutlineId.html).
+Selectors identify items independently of their line numbers; item spans refer
+to the snapshot used to build the outline.
+:::
+
+:::{definition} language_definition
+:phrase: language definition
+
+A *language definition* is an implementation of the outline library's
+[`Language`](#habeas-req-requirements.sdk.sources.language_provider) trait: it
+names a language, identifies filename extensions, and
+interprets supplied source into an outline.
+:::
+
+:::{req} language_provider
+`habeas-sdk-outline` exposes a language interface implemented by each supplied
+language implementation and usable by additional application-defined languages:
+
+```rust,ignore
+pub trait Language: Send + Sync {
+    /// Stable name for this language implementation.
+    fn name(&self) -> &str;
+
+    /// Filename extensions recognized by this implementation, without dots.
+    fn extensions(&self) -> &[&str];
+
+    /// Interpret supplied text into outline items and structural hashes.
+    fn outline(&self, source: &str) -> Result<Outline, OutlineError>;
+
+    // ... fingerprint_scheme introduced below ...
+}
+```
+:::
+
+:::{req} language_provider.fingerprint_scheme
+Each language implementation supplies the scheme identifying its structural-hash
+rules and their version. A change to those rules uses a different scheme; an
+update preserving the calculation can retain the scheme.
+
+```rust,ignore
+pub trait Language: Send + Sync {
+    /// Identify the structural-hash rules and their version.
+    fn fingerprint_scheme(&self) -> &str;
+
+    // ... other language methods ...
+}
+```
+:::
+
+:::{req} language_provider.structural_search
+A language implementation can additionally provide the syntax capability
+used by the SDK's structural-search default. Outline-only implementations
+remain valid language implementations. Requesting structural search for
+a language without that capability returns an unsupported-language error,
+rather than a successful empty result.
 :::
