@@ -207,7 +207,7 @@ Input-resolution failures return `ValidationError::Graph`.
 
 :::{req} judge.rendering
 The SDK presents node inputs using the returned value's `NodeContents::format`
-under {cite}`requirements.sdk.graph.fingerprint_content.format`.
+under {cite}`requirements.sdk.graph.node_content.format`.
 Its text and fingerprint describe the same retained observation.
 
 ```rust,ignore
@@ -216,7 +216,7 @@ let text = contents.format();
 ```
 
 Loading and fallible preparation occur in `Domain::node_content` under
-{cite}`requirements.sdk.graph.fingerprint_content`. For inputs queued on an ask
+{cite}`requirements.sdk.graph.node_content`. For inputs queued on an ask
 builder, these failures return `ValidationError::Graph`. During a `read_node`
 tool call, they are returned to the agent as a tool error, so it can continue
 and recover.

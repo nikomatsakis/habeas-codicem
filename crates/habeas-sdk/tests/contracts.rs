@@ -1209,9 +1209,9 @@ fn hierarchical_requirement_identity_maps_each_component_to_a_path_segment() {
 
 // {test}`requirements.sdk.graph.node_path_method`
 // {test}`requirements.sdk.graph.node_path_struct`
-// {test}`requirements.sdk.graph.fingerprint_content`
-// {test}`requirements.sdk.graph.fingerprint_content.fingerprint`
-// {test}`requirements.sdk.graph.fingerprint_content.format`
+// {test}`requirements.sdk.graph.node_content`
+// {test}`requirements.sdk.graph.node_content.fingerprint`
+// {test}`requirements.sdk.graph.node_content.format`
 // {test}`requirements.sdk.graph.snapshot`
 // {test}`requirements.sdk.graph.agent-calls.judge.rendering`
 #[test]

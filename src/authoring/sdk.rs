@@ -63,11 +63,11 @@ struct ReviewContent {
     text: String,
 }
 impl NodeContents for ReviewContent {
-    // {impl}`requirements.sdk.graph.fingerprint_content.fingerprint`
+    // {impl}`requirements.sdk.graph.node_content.fingerprint`
     fn fingerprint(&self) -> Fingerprint {
         self.fingerprint.clone()
     }
-    // {impl}`requirements.sdk.graph.fingerprint_content.format`
+    // {impl}`requirements.sdk.graph.node_content.format`
     // {impl}`requirements.sdk.graph.agent-calls.judge.rendering`
     fn format(&self) -> String {
         self.text.clone()
@@ -125,7 +125,7 @@ impl Domain for ReviewGraph<'_> {
 
     type NodeContent = ReviewContent;
 
-    // {impl}`requirements.sdk.graph.fingerprint_content`
+    // {impl}`requirements.sdk.graph.node_content`
     fn node_content(&self, node: &HabeasNode) -> io::Result<ReviewContent> {
         let model = if matches!(node, HabeasNode::ReferenceSet(_)) {
             json!({"reference_set": self.reference_set})

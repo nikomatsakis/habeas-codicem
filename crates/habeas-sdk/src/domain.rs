@@ -17,7 +17,7 @@ pub trait Domain: Clone + Send + Sync {
     type NodeId: Clone + Eq + Send + Sync;
 
     /// The application's representation of a node's prepared contents.
-    // {impl}`requirements.sdk.graph.fingerprint_content`
+    // {impl}`requirements.sdk.graph.node_content`
     type NodeContent: NodeContents;
 
     /// The kind of relationship between two nodes.
@@ -29,7 +29,7 @@ pub trait Domain: Clone + Send + Sync {
     fn node_path(&self, node: &Self::NodeId) -> NodePath;
 
     /// Load and prepare contents for fingerprinting and presentation.
-    // {impl}`requirements.sdk.graph.fingerprint_content`
+    // {impl}`requirements.sdk.graph.node_content`
     fn node_content(&self, node: &Self::NodeId) -> Result<Self::NodeContent, Self::Error>;
 
     /// Select targets with this label, preserving order and duplicates.
@@ -59,18 +59,18 @@ pub trait Domain: Clone + Send + Sync {
 }
 
 /// A retained observation, ready for fingerprinting and presentation.
-// {impl}`requirements.sdk.graph.fingerprint_content`
+// {impl}`requirements.sdk.graph.node_content`
 pub trait NodeContents: Send + Sync {
     /// Describe these retained contents without rereading external state.
     ///
     /// The same contents under the same rules give the same fingerprint.
     /// Retain the rules and their version; change the scheme when rules change.
-    // {impl}`requirements.sdk.graph.fingerprint_content.fingerprint`
+    // {impl}`requirements.sdk.graph.node_content.fingerprint`
     fn fingerprint(&self) -> Fingerprint;
 
     /// Present the same observation described by `fingerprint`.
     ///
     /// All resource reads and fallible preparation happen when loading contents.
-    // {impl}`requirements.sdk.graph.fingerprint_content.format`
+    // {impl}`requirements.sdk.graph.node_content.format`
     fn format(&self) -> String;
 }

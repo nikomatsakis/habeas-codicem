@@ -208,7 +208,7 @@ through `Domain::node_content`. Mapping and read failures return errors.
 
 The Rust caller receives `D::NodeContent`; the agent receives those same
 contents presented by `NodeContents::format` under
-{cite}`requirements.sdk.graph.fingerprint_content.format`.
+{cite}`requirements.sdk.graph.node_content.format`.
 :::
 
 :::{req} read_source.inputs

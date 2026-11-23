@@ -143,7 +143,7 @@ obtains it. The value implements
 to supply its fingerprint and agent text.
 :::
 
-:::{req} fingerprint_content
+:::{req} node_content
 {cite}`requirements.sdk.domain`
 
 `habeas_sdk::domain::Domain` reads an
@@ -171,7 +171,7 @@ pub trait NodeContents: Send + Sync {
 
 ## Format node contents for an agent
 
-:::{req} fingerprint_content.format
+:::{req} node_content.format
 `habeas_sdk::domain::NodeContents::format` presents the retained
 {term}`requirements.sdk.graph.node_contents` as text for an agent:
 
@@ -227,11 +227,11 @@ This type lives in `habeas_sdk::graph`. Each `NodeContents` implementation
 supplies the rules used to describe its contents.
 :::
 
-:::{req} fingerprint_content.fingerprint
+:::{req} node_content.fingerprint
 `habeas_sdk::domain::NodeContents::fingerprint` describes the
 {term}`requirements.sdk.graph.observation_fingerprint` of the retained contents
 read under
-{cite}`requirements.sdk.graph.fingerprint_content`:
+{cite}`requirements.sdk.graph.node_content`:
 
 ```rust,ignore
 pub trait NodeContents: Send + Sync {
@@ -261,7 +261,7 @@ pub struct Snapshot<T> {
 This type lives in `habeas_sdk::graph`. For node reads, the SDK constructs it from
 the contents returned by `Domain::node_content` and their
 `NodeContents::fingerprint` under
-{cite}`requirements.sdk.graph.fingerprint_content.fingerprint`, without another read.
+{cite}`requirements.sdk.graph.node_content.fingerprint`, without another read.
 :::
 
 To read `check_token`, the SDK calls `Domain::node_content`, fingerprints the
@@ -282,8 +282,8 @@ associate one observation's contents with another observation's fingerprint.
 
 :::{example} structural-fingerprint
 {cite}`requirements.sdk.graph.fingerprint`
-{cite}`requirements.sdk.graph.fingerprint_content.fingerprint`
-{cite}`requirements.sdk.graph.fingerprint_content.format`
+{cite}`requirements.sdk.graph.node_content.fingerprint`
+{cite}`requirements.sdk.graph.node_content.format`
 {cite}`requirements.sdk.outlines.node_contents`
 {cite}`requirements.references.structural_hash`
 

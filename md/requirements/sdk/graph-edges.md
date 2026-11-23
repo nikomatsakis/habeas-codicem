@@ -102,7 +102,7 @@ encoding under a versioned scheme, including when the set is empty. Changing
 order, duplicate edges, or another label's relationships leaves this fingerprint
 unchanged. Reading target contents is a separate observation;
 `NodeContents::fingerprint` describes those contents under
-{cite}`requirements.sdk.graph.fingerprint_content.fingerprint`.
+{cite}`requirements.sdk.graph.node_content.fingerprint`.
 
 The returned vector preserves the graph's ordering and duplicates.
 :::

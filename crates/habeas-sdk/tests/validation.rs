@@ -452,8 +452,8 @@ fn a_matching_dependency_does_not_hide_a_later_changed_dependency() {
 // {test}`requirements.sdk.graph.evidence.checking_records.procedure_match`
 // {test}`requirements.sdk.graph.evidence.checking_records`
 // {test}`requirements.sdk.graph.fingerprint`
-// {test}`requirements.sdk.graph.fingerprint_content`
-// {test}`requirements.sdk.graph.fingerprint_content.fingerprint`
+// {test}`requirements.sdk.graph.node_content`
+// {test}`requirements.sdk.graph.node_content.fingerprint`
 #[test]
 fn wildcard_versions_still_check_inputs_and_errors() {
     let graph = Memory::default();
@@ -1309,7 +1309,7 @@ fn agent_errors_expose_the_agreed_string_payload() {
 // {test}`requirements.sdk.graph.agent-calls.judge.node_contents`
 // {test}`requirements.sdk.graph.agent-calls.judge.rendering`
 // {test}`requirements.sdk.graph.agent-calls.author_procedure`
-// {test}`requirements.sdk.graph.fingerprint_content`
+// {test}`requirements.sdk.graph.node_content`
 #[tokio::test]
 async fn queued_reads_selection_and_rendering_fail_before_agent_invocation() {
     let graph = Memory::default();

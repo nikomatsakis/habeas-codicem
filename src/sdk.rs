@@ -140,11 +140,11 @@ impl HabeasNodeContent {
 }
 
 impl NodeContents for HabeasNodeContent {
-    // {impl}`requirements.sdk.graph.fingerprint_content.fingerprint`
+    // {impl}`requirements.sdk.graph.node_content.fingerprint`
     fn fingerprint(&self) -> Fingerprint {
         self.fingerprint.clone()
     }
-    // {impl}`requirements.sdk.graph.fingerprint_content.format`
+    // {impl}`requirements.sdk.graph.node_content.format`
     // {impl}`requirements.sdk.graph.agent-calls.judge.rendering`
     fn format(&self) -> String {
         self.text.clone()
@@ -278,7 +278,7 @@ impl Domain for HabeasDomain<'_> {
 
     type NodeContent = HabeasNodeContent;
 
-    // {impl}`requirements.sdk.graph.fingerprint_content`
+    // {impl}`requirements.sdk.graph.node_content`
     fn node_content(&self, node: &HabeasNode) -> std::io::Result<HabeasNodeContent> {
         let resolved = if let HabeasNode::ReferenceSet(id) = node {
             ResolvedInput {
@@ -436,7 +436,7 @@ mod tests {
 
     // {test}`requirements.sdk.domain`
     // {test}`requirements.sdk.graph.agent-calls.judge.rendering`
-    // {test}`requirements.sdk.graph.fingerprint_content.format`
+    // {test}`requirements.sdk.graph.node_content.format`
     #[test]
     fn domain_formats_supplied_contents_without_resolving_a_replacement() {
         let root = tempfile::tempdir().unwrap();
@@ -757,8 +757,8 @@ mod tests {
 
     // {test}`requirements.sdk.graph.evidence.checking_records`
     // {test}`requirements.sdk.graph.domain_types`
-    // {test}`requirements.sdk.graph.fingerprint_content`
-    // {test}`requirements.sdk.graph.fingerprint_content.fingerprint`
+    // {test}`requirements.sdk.graph.node_content`
+    // {test}`requirements.sdk.graph.node_content.fingerprint`
     // {test}`requirements.sdk.graph.snapshot`
     #[test]
     fn requirement_edges_and_input_freshness_use_the_sdk() {
