@@ -1,4 +1,4 @@
-use habeas_sdk::{
+use trust_but_verify::{
     resource::{OutlineId, ResourceId},
     search::RegexSearch,
 };

@@ -592,11 +592,11 @@ pub(crate) fn read_project_file(root: &Path, file: &str) -> Result<(PathBuf, Str
             Path::new(path.file_name().expect("source name")),
         ),
     };
-    let resource = habeas_sdk::resource::ResourceId {
+    let resource = trust_but_verify::resource::ResourceId {
         scheme: "repo".into(),
         location: location.to_string_lossy().into_owned(),
     };
-    let source = habeas_sdk::sources::LocalSources::new(scope)
+    let source = trust_but_verify::sources::LocalSources::new(scope)
         .read_sync(&resource)
         .map_err(|error| format!("cannot read {file}: {error}"))?;
     let content = source

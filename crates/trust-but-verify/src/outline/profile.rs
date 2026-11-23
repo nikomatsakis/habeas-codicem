@@ -1,13 +1,13 @@
 //! Shared profile vocabulary and optional default-language conveniences.
-pub use habeas_language::*;
+pub use crate::outline::language::*;
 
 #[cfg(feature = "default-languages")]
-pub use habeas_languages::profiles;
+pub use crate::outline::languages::profiles;
 
 #[cfg(feature = "default-languages")]
 // {cite}`habeas:util`
 pub fn profile_for_path(path: &std::path::Path) -> &'static Profile {
-    habeas_languages::registry()
+    crate::outline::languages::registry()
         .for_path(path)
         .map(|provider| provider.profile())
         .unwrap_or(&super::plain::PROFILE)

@@ -1,9 +1,4 @@
 use futures::future::BoxFuture;
-use habeas_sdk::domain::{Domain, NodeContents};
-use habeas_sdk::{
-    graph::*,
-    procedure::{Agent, AgentRequest, Context, context_fingerprint},
-};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -17,6 +12,11 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
     },
+};
+use trust_but_verify::domain::{Domain, NodeContents};
+use trust_but_verify::{
+    graph::*,
+    procedure::{Agent, AgentRequest, Context, context_fingerprint},
 };
 
 // The test application chooses its own completed-answer format.

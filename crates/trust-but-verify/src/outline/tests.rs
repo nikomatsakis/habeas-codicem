@@ -174,32 +174,25 @@ fn every_profile_mapping_is_documented() {
 #[test]
 fn grammar_dependencies_are_pinned_to_exact_versions() {
     let version = regex::Regex::new(r"^=\d+\.\d+\.\d+$").unwrap();
-    let crates = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
-    for language in [
-        "css",
-        "markdown",
-        "python",
-        "rust",
-        "toml",
-        "typescript",
-        "yaml",
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+    let manifest: toml::Table = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let dependencies = manifest["dependencies"].as_table().unwrap();
+    for name in [
+        "tree-sitter",
+        "tree-sitter-css",
+        "tree-sitter-md",
+        "tree-sitter-python",
+        "tree-sitter-rust",
+        "tree-sitter-toml-ng",
+        "tree-sitter-typescript",
+        "tree-sitter-yaml",
     ] {
-        let path = crates.join(format!("habeas-language-{language}/Cargo.toml"));
-        let manifest: toml::Table =
-            toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        let dependencies = manifest["dependencies"].as_table().unwrap();
-        let grammars: Vec<_> = dependencies
-            .iter()
-            .filter(|(name, _)| name.starts_with("tree-sitter-"))
-            .collect();
-        assert!(!grammars.is_empty(), "{}", path.display());
-        for (name, dependency) in grammars {
-            let pin = dependency
-                .as_str()
-                .or_else(|| dependency.get("version").and_then(toml::Value::as_str))
-                .unwrap();
-            assert!(version.is_match(pin), "{name}: {pin}");
-        }
+        let dependency = &dependencies[name];
+        let pin = dependency
+            .as_str()
+            .or_else(|| dependency.get("version").and_then(toml::Value::as_str))
+            .unwrap();
+        assert!(version.is_match(pin), "{name}: {pin}");
     }
 }
 
@@ -1375,7 +1368,7 @@ fn custom_provider_handles_generated_content_and_structural_search() {
     static CUSTOM_PROFILE: Profile = Profile {
         name: "application-rust",
         extensions: &["app"],
-        ..habeas_languages::rust::PROFILE
+        ..crate::outline::languages::rust::PROFILE
     };
     struct Custom;
     impl LanguageProvider for Custom {
@@ -1383,7 +1376,7 @@ fn custom_provider_handles_generated_content_and_structural_search() {
             &CUSTOM_PROFILE
         }
         fn grammar(&self) -> fn() -> tree_sitter::Language {
-            habeas_languages::rust::PROFILE.language.unwrap()
+            crate::outline::languages::rust::PROFILE.language.unwrap()
         }
     }
     let registry = Registry::new([&Custom as &dyn LanguageProvider]);

@@ -2,7 +2,7 @@
 
 use tree_sitter::Node;
 
-use habeas_language::{KindRule, NameRule, Profile, text};
+use crate::outline::language::{KindRule, NameRule, Profile, text};
 
 /// Names an impl by its syntactic self type and optional trait path.
 fn impl_name(node: Node<'_>, source: &str) -> Option<(Vec<String>, usize)> {
@@ -167,7 +167,7 @@ pub static PROFILE: Profile = Profile {
 // {cite}`habeas:util`
 pub struct Provider;
 
-impl habeas_language::LanguageProvider for Provider {
+impl crate::outline::language::LanguageProvider for Provider {
     // {cite}`habeas:util`
     fn profile(&'static self) -> &'static Profile {
         &PROFILE

@@ -5,12 +5,12 @@ use crate::{
     evidence::Declaration,
     inputs::{InputSelector, OutlineCache, ResolvedInput},
 };
-use habeas_sdk::{
+use std::{collections::BTreeMap, path::Path};
+use trust_but_verify::{
     domain::{Domain, NodeContents},
     graph::{CriterionPath, Fingerprint, InspectionContext, NodePath},
     resource::{OutlineId, ResourceId},
 };
-use std::{collections::BTreeMap, path::Path};
 
 // {cite}`habeas:util`
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -244,7 +244,7 @@ impl Domain for HabeasDomain<'_> {
         &self,
         node: &HabeasNode,
         criterion: &CriterionPath,
-    ) -> std::io::Result<Option<habeas_sdk::graph::Record<HabeasNode, HabeasEdgeLabel>>> {
+    ) -> std::io::Result<Option<trust_but_verify::graph::Record<HabeasNode, HabeasEdgeLabel>>> {
         if criterion != &review_criterion() {
             return Ok(None);
         }
@@ -265,7 +265,7 @@ impl Domain for HabeasDomain<'_> {
         &self,
         node: &HabeasNode,
         criterion: &CriterionPath,
-        record: &habeas_sdk::graph::Record<HabeasNode, HabeasEdgeLabel>,
+        record: &trust_but_verify::graph::Record<HabeasNode, HabeasEdgeLabel>,
     ) -> std::io::Result<()> {
         if criterion != &review_criterion() {
             return Err(std::io::Error::other("unsupported Habeas review criterion"));
@@ -431,8 +431,8 @@ pub(crate) fn resolve_input(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use habeas_sdk::graph::{Dependency, Record};
     use std::fs;
+    use trust_but_verify::graph::{Dependency, Record};
 
     // {test}`requirements.sdk.domain`
     // {test}`requirements.sdk.graph.agent-calls.judge.rendering`
@@ -830,7 +830,9 @@ mod tests {
                 serde_json::json!({"determination": true, "rationale": "ready"}),
             )
             .unwrap();
-        assert!(habeas_sdk::graph::record_is_current(&domain, "test-review-v1", &record).unwrap());
+        assert!(
+            trust_but_verify::graph::record_is_current(&domain, "test-review-v1", &record).unwrap()
+        );
         let reference = format!("// {{{}}}`requirements.ready`\nfn ready() {{}}\n", "impl");
         fs::write(root.path().join("src/lib.rs"), reference).unwrap();
         let fresh_outlines = OutlineCache::default();
@@ -844,7 +846,8 @@ mod tests {
             reference_fingerprint
         );
         assert!(
-            !habeas_sdk::graph::record_is_current(&changed, "test-review-v1", &record).unwrap()
+            !trust_but_verify::graph::record_is_current(&changed, "test-review-v1", &record)
+                .unwrap()
         );
         let snapshot = changed
             .outgoing_edges(&subject, HabeasEdgeLabel::Implements)

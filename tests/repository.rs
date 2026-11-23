@@ -542,7 +542,7 @@ fn workflow_job_marks_belong_to_the_job_that_follows() {
     ] {
         let file = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(path);
         let source = std::fs::read_to_string(&file).unwrap();
-        let outline = habeas_sdk::outline::parse(&file, &source).unwrap();
+        let outline = trust_but_verify::outline::parse(&file, &source).unwrap();
         for (index, line) in source.lines().enumerate() {
             let Some(job) = source.lines().nth(index + 1) else {
                 continue;
@@ -596,30 +596,12 @@ fn workspace_contains_frontend_and_sdk_but_not_the_vendor_fork() {
         .map(|package| package["name"].as_str().unwrap())
         .collect();
     names.sort();
-    assert!(names.contains(&"habeas"));
-    assert!(names.contains(&"habeas-sdk"));
-    assert!(!names.contains(&"habeas-rig"));
-    for name in [
-        "habeas-language",
-        "habeas-languages",
-        "habeas-language-rust",
-        "habeas-language-python",
-        "habeas-language-markdown",
-        "habeas-language-typescript",
-        "habeas-language-css",
-        "habeas-language-toml",
-        "habeas-language-yaml",
-    ] {
-        assert!(
-            names.contains(&name),
-            "missing language workspace member {name}"
-        );
-    }
+    assert_eq!(names, ["habeas", "trust-but-verify"]);
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    assert!(root.join("crates/habeas-sdk/src/lib.rs").is_file());
+    assert!(root.join("crates/trust-but-verify/src/lib.rs").is_file());
     let manifest = repository_toml("Cargo.toml");
     assert_eq!(
-        manifest["dependencies"]["habeas-sdk"]["path"].as_str(),
-        Some("crates/habeas-sdk")
+        manifest["dependencies"]["trust-but-verify"]["path"].as_str(),
+        Some("crates/trust-but-verify")
     );
 }

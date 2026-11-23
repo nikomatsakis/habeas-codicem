@@ -6,6 +6,9 @@
 //! every [`OutlineComment`] with the node it belongs to.
 
 mod hash;
+pub mod language;
+#[cfg(feature = "default-languages")]
+pub mod languages;
 mod markdown;
 pub mod plain;
 pub mod profile;
@@ -16,9 +19,9 @@ use std::fmt;
 
 use tree_sitter::{Node, Parser, Tree};
 
-use crate::redaction::Redaction;
 #[cfg(feature = "default-languages")]
-pub use habeas_languages::rust::PROFILE as RUST_PROFILE;
+pub use crate::outline::languages::rust::PROFILE as RUST_PROFILE;
+use crate::redaction::Redaction;
 use hash::Encoder;
 pub use profile::{LanguageProvider, Profile, Registry};
 use profile::{NameRule, text};

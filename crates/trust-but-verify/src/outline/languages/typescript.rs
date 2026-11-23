@@ -1,6 +1,6 @@
 //! TypeScript and TSX outline profiles.
 
-use habeas_language::{KindRule, NameRule, Profile, kind_is_comment, never};
+use crate::outline::language::{KindRule, NameRule, Profile, kind_is_comment, never};
 
 const KINDS: &[KindRule] = &[
     KindRule::new("function_declaration", "function", NameRule::Field("name")),
@@ -43,7 +43,7 @@ const TYPESCRIPT: Profile = Profile {
     kinds: KINDS,
     is_comment: kind_is_comment,
     hashes_comment: never,
-    comment_prose: habeas_language::whole_comment,
+    comment_prose: crate::outline::language::whole_comment,
     comment_binds_to_container: never,
     trailing_comments_outside: false,
     attaches: never,
@@ -65,7 +65,7 @@ pub static TSX_PROFILE: Profile = Profile {
 // {cite}`habeas:util`
 pub struct Provider;
 
-impl habeas_language::LanguageProvider for Provider {
+impl crate::outline::language::LanguageProvider for Provider {
     // {cite}`habeas:util`
     fn profile(&'static self) -> &'static Profile {
         &PROFILE
@@ -80,7 +80,7 @@ impl habeas_language::LanguageProvider for Provider {
 // {cite}`habeas:util`
 pub struct TsxProvider;
 
-impl habeas_language::LanguageProvider for TsxProvider {
+impl crate::outline::language::LanguageProvider for TsxProvider {
     // {cite}`habeas:util`
     fn profile(&'static self) -> &'static Profile {
         &TSX_PROFILE

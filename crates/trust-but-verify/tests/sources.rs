@@ -1,9 +1,9 @@
-use habeas_sdk::language::Registry;
-use habeas_sdk::{resource::ResourceId, sources::*};
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicUsize, Ordering},
 };
+use trust_but_verify::language::Registry;
+use trust_but_verify::{resource::ResourceId, sources::*};
 
 fn id(location: &str) -> ResourceId {
     ResourceId {
@@ -14,7 +14,7 @@ fn id(location: &str) -> ResourceId {
 fn registry() -> Registry {
     #[cfg(feature = "default-languages")]
     {
-        habeas_languages::registry()
+        trust_but_verify::outline::languages::registry()
     }
     #[cfg(not(feature = "default-languages"))]
     {
@@ -660,7 +660,7 @@ async fn list_read_only_provider_supports_selected_language_parse_and_structural
 // {test}`requirements.sdk.sources.source_addresses`
 #[test]
 fn addresses_preserve_opaque_fields_and_compare_each_identity_component() {
-    use habeas_sdk::resource::OutlineId;
+    use trust_but_verify::resource::OutlineId;
     let address = OutlineId {
         resource: ResourceId {
             scheme: "custom".into(),

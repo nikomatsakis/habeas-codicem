@@ -1,6 +1,6 @@
 //! TOML outline profile.
 
-use habeas_language::{KindRule, NameRule, Profile, kind_is_comment, never};
+use crate::outline::language::{KindRule, NameRule, Profile, kind_is_comment, never};
 
 const KEYS: &[&str] = &["bare_key", "quoted_key", "dotted_key"];
 
@@ -20,7 +20,7 @@ pub static PROFILE: Profile = Profile {
     kinds: KINDS,
     is_comment: kind_is_comment,
     hashes_comment: never,
-    comment_prose: habeas_language::whole_comment,
+    comment_prose: crate::outline::language::whole_comment,
     comment_binds_to_container: never,
     trailing_comments_outside: false,
     attaches: never,
@@ -30,7 +30,7 @@ pub static PROFILE: Profile = Profile {
 // {cite}`habeas:util`
 pub struct Provider;
 
-impl habeas_language::LanguageProvider for Provider {
+impl crate::outline::language::LanguageProvider for Provider {
     // {cite}`habeas:util`
     fn profile(&'static self) -> &'static Profile {
         &PROFILE

@@ -59,7 +59,7 @@ pub(crate) struct AssessmentSources {
     issue_states: Vec<Vec<(String, &'static str)>>,
     /// GitHub reads for the `github` tool and the states above.
     pub(crate) github: GithubIssues,
-    recorded: habeas_sdk::graph::Trace<Value>,
+    recorded: trust_but_verify::graph::Trace<Value>,
 }
 
 impl AssessmentSources {
@@ -327,7 +327,7 @@ impl AssessmentSources {
             mandatory,
             issue_states,
             github,
-            recorded: habeas_sdk::graph::Trace::default(),
+            recorded: trust_but_verify::graph::Trace::default(),
         })
     }
 
@@ -424,7 +424,7 @@ impl AssessmentSources {
             mandatory,
             issue_states,
             github,
-            recorded: habeas_sdk::graph::Trace::default(),
+            recorded: trust_but_verify::graph::Trace::default(),
         })
     }
 
@@ -543,7 +543,7 @@ impl AssessmentSources {
             mandatory,
             issue_states,
             github,
-            recorded: habeas_sdk::graph::Trace::default(),
+            recorded: trust_but_verify::graph::Trace::default(),
         })
     }
 

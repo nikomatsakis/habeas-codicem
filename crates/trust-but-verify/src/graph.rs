@@ -26,7 +26,7 @@ pub struct Snapshot<T> {
 /// An ordered path with read-only access to its segments.
 ///
 /// ```compile_fail
-/// use habeas_sdk::graph::NodePath;
+/// use trust_but_verify::graph::NodePath;
 /// let mut path = NodePath::new(vec!["part".into()]);
 /// path.segments.clear();
 /// ```
@@ -54,7 +54,7 @@ impl NodePath {
 /// An ordered path with read-only access to its segments.
 ///
 /// ```compile_fail
-/// use habeas_sdk::graph::CriterionPath;
+/// use trust_but_verify::graph::CriterionPath;
 /// let mut path = CriterionPath::new(vec!["part".into()]);
 /// path.segments.clear();
 /// ```
@@ -99,7 +99,7 @@ pub struct Record<N, L = ()> {
 /// The captured evidence metadata is available through read-only accessors.
 ///
 /// ```compile_fail
-/// use habeas_sdk::{domain::Domain, graph::Fingerprinted};
+/// use trust_but_verify::{domain::Domain, graph::Fingerprinted};
 /// fn change_revision<D: Domain>(answer: &mut Fingerprinted<D, bool>) {
 ///     answer.revision = "different rules".into();
 /// }

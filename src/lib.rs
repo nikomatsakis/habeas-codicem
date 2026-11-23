@@ -19,7 +19,7 @@ mod github;
 mod index;
 mod inputs;
 pub mod judgment;
-pub(crate) use habeas_sdk::outline;
+pub(crate) use trust_but_verify::outline;
 mod evidence_format;
 mod redaction;
 mod refactor;

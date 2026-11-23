@@ -1,11 +1,11 @@
-use habeas_sdk::domain::{Domain, NodeContents};
-use habeas_sdk::{graph::*, storage::*};
 use serde::{Serialize, Serializer};
 use serde_json::json;
 use std::sync::{
     Arc, Barrier,
     atomic::{AtomicUsize, Ordering},
 };
+use trust_but_verify::domain::{Domain, NodeContents};
+use trust_but_verify::{graph::*, storage::*};
 
 fn criterion() -> CriterionPath {
     CriterionPath::new(vec![])

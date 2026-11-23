@@ -1,5 +1,3 @@
-use habeas_sdk::domain::{Domain, NodeContents};
-use habeas_sdk::graph::*;
 use serde::{Deserialize, Serialize, Serializer};
 use serde_json::json;
 use std::{
@@ -7,6 +5,8 @@ use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex},
 };
+use trust_but_verify::domain::{Domain, NodeContents};
+use trust_but_verify::graph::*;
 
 // Opaque graph identities and contents deliberately do not implement Serde,
 // Hash, or Display. Only completed answers need serialization.

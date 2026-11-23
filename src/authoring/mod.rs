@@ -677,7 +677,10 @@ fn confirmed_record(
 fn merge_review_inputs(
     value: &mut Value,
     assessments: &[&Value],
-    extra: &[habeas_sdk::graph::Dependency<crate::sdk::HabeasNode, crate::sdk::HabeasEdgeLabel>],
+    extra: &[trust_but_verify::graph::Dependency<
+        crate::sdk::HabeasNode,
+        crate::sdk::HabeasEdgeLabel,
+    >],
     extra_inputs: &[Value],
 ) {
     for field in ["dependencies", "inputs"] {
@@ -1124,8 +1127,9 @@ struct Verification {
     acknowledgments: Vec<String>,
     rationale: String,
     applies: Option<bool>,
-    dependencies:
-        Vec<habeas_sdk::graph::Dependency<crate::sdk::HabeasNode, crate::sdk::HabeasEdgeLabel>>,
+    dependencies: Vec<
+        trust_but_verify::graph::Dependency<crate::sdk::HabeasNode, crate::sdk::HabeasEdgeLabel>,
+    >,
     inputs: Vec<Value>,
 }
 
@@ -1401,7 +1405,7 @@ async fn converse_observed<T: Send>(
         pages: pages::ResultPages::default(),
         rejection: line_numbers::Rejection::default(),
     };
-    habeas_sdk::agent::converse(provider, &mut adapter, prompt.request(), submit).await
+    trust_but_verify::agent::converse(provider, &mut adapter, prompt.request(), submit).await
 }
 
 // {cite}`habeas:util`
@@ -1417,7 +1421,7 @@ struct HabeasConversation<'a, F> {
     rejection: line_numbers::Rejection,
 }
 
-impl<T: Send, F: Fn(&Value) -> io::Result<T> + Send> habeas_sdk::agent::Conversation
+impl<T: Send, F: Fn(&Value) -> io::Result<T> + Send> trust_but_verify::agent::Conversation
     for HabeasConversation<'_, F>
 {
     type Output = T;
@@ -1430,8 +1434,8 @@ impl<T: Send, F: Fn(&Value) -> io::Result<T> + Send> habeas_sdk::agent::Conversa
         &mut self,
         submit: &str,
         arguments: &Value,
-    ) -> io::Result<habeas_sdk::agent::Submission<T>> {
-        use habeas_sdk::agent::Submission;
+    ) -> io::Result<trust_but_verify::agent::Submission<T>> {
+        use trust_but_verify::agent::Submission;
         let resubmitted = self.rejection.resubmitted(arguments);
         let result = (self.parse)(resubmitted.as_ref().unwrap_or(arguments))?;
         let outstanding = self.pages.outstanding_searches();

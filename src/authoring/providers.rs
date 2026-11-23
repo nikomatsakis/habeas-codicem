@@ -10,9 +10,9 @@ use serde_json::{Map, Value};
 
 use crate::config::{BackendConfig, BedrockConfig};
 
-pub(super) use habeas_sdk::agent::{CompletionProvider, failure_codes};
+pub(super) use trust_but_verify::agent::{CompletionProvider, failure_codes};
 #[cfg(test)]
-pub(super) use habeas_sdk::agent::{ProviderBackoff, RETRY_LIMIT, Retry, retry_after};
+pub(super) use trust_but_verify::agent::{ProviderBackoff, RETRY_LIMIT, Retry, retry_after};
 
 /// Preserve the provider report for the shared harness's retry classifier.
 // {cite}`habeas:util`

@@ -5,7 +5,8 @@ use crate::{
     inputs::{InputSelector, OutlineCache, recorded_input},
     sdk::{HabeasDomain, HabeasEdgeLabel, HabeasNode, input_fingerprint},
 };
-use habeas_sdk::{
+use std::sync::{Arc, Mutex};
+use trust_but_verify::{
     domain::{Domain, NodeContents},
     graph::{
         Criterion, CriterionPath, Fingerprint, InspectionContext, NodePath, ValidationContext,
@@ -13,7 +14,6 @@ use habeas_sdk::{
     },
     procedure::{Agent, AgentRequest},
 };
-use std::sync::{Arc, Mutex};
 
 // {cite}`habeas:util`
 #[derive(serde::Deserialize, schemars::JsonSchema)]
@@ -107,7 +107,7 @@ impl Domain for ReviewGraph<'_> {
         &self,
         source: &HabeasNode,
         criterion: &CriterionPath,
-    ) -> io::Result<Option<habeas_sdk::graph::Record<HabeasNode, HabeasEdgeLabel>>> {
+    ) -> io::Result<Option<trust_but_verify::graph::Record<HabeasNode, HabeasEdgeLabel>>> {
         self.domain().load_evidence(source, criterion).await
     }
 
@@ -116,7 +116,7 @@ impl Domain for ReviewGraph<'_> {
         &self,
         source: &HabeasNode,
         criterion: &CriterionPath,
-        record: &habeas_sdk::graph::Record<HabeasNode, HabeasEdgeLabel>,
+        record: &trust_but_verify::graph::Record<HabeasNode, HabeasEdgeLabel>,
     ) -> io::Result<()> {
         self.domain()
             .store_evidence(source, criterion, record)
@@ -427,7 +427,7 @@ async fn run(
     sources: &mut AssessmentSources,
     usage: &mut UsageLog,
     operation: Operation,
-) -> io::Result<habeas_sdk::graph::Record<HabeasNode, HabeasEdgeLabel>> {
+) -> io::Result<trust_but_verify::graph::Record<HabeasNode, HabeasEdgeLabel>> {
     let subject = match &sources.subject_kind {
         AssessmentKind::Definition(..) => {
             AuthoringSubject::Definition(sources.subject_name.clone())
@@ -556,7 +556,7 @@ mod tests {
         assert!(delivered.format().contains("call();"));
         assert_eq!(
             inspection.dependencies(),
-            vec![habeas_sdk::graph::Dependency::Node(
+            vec![trust_but_verify::graph::Dependency::Node(
                 source.clone(),
                 delivered.fingerprint()
             )]
@@ -586,7 +586,7 @@ mod tests {
     // {test}`requirements.sdk.habeas.evidence_format.loading`
     #[tokio::test]
     async fn review_graph_persists_and_reuses_a_negative_validation_through_the_sdk() {
-        use habeas_sdk::graph::{Validator, procedure_matches};
+        use trust_but_verify::graph::{Validator, procedure_matches};
 
         let root = inputs::tests::project();
         let state = tempfile::tempdir().unwrap();
@@ -772,7 +772,7 @@ mod tests {
         assert!(
             record
                 .dependencies
-                .contains(&habeas_sdk::graph::Dependency::Node(
+                .contains(&trust_but_verify::graph::Dependency::Node(
                     node,
                     input_fingerprint(&original)
                 ))
@@ -785,8 +785,12 @@ mod tests {
             outlines: &outlines,
         };
         assert!(
-            !habeas_sdk::graph::record_is_current(&graph, crate::sdk::REVIEW_VERSION, &record)
-                .unwrap()
+            !trust_but_verify::graph::record_is_current(
+                &graph,
+                crate::sdk::REVIEW_VERSION,
+                &record
+            )
+            .unwrap()
         );
     }
 
@@ -856,7 +860,7 @@ mod tests {
             assert!(
                 record
                     .dependencies
-                    .contains(&habeas_sdk::graph::Dependency::Node(
+                    .contains(&trust_but_verify::graph::Dependency::Node(
                         node,
                         input_fingerprint(input)
                     ))
@@ -915,7 +919,7 @@ mod tests {
     // {test}`requirements.ci.requirement_text`
     #[tokio::test]
     async fn every_review_kind_loads_both_formats_and_reports_each_application_failure_once() {
-        use habeas_sdk::domain::Domain;
+        use trust_but_verify::domain::Domain;
         let source = format!(
             "{}\n// {{cite}}`requirements.rule`\nfn helper() {{}}\n// {{test}}`requirements.sample`\n#[test]\nfn sample() {{}}\n",
             crate::sites::tests::SOURCE

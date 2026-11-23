@@ -1,5 +1,3 @@
-use habeas_sdk::domain::{Domain, NodeContents};
-use habeas_sdk::{agent::*, graph::*, procedure::Context, resource::*, sources::*};
 use rig_core::{
     completion::{CompletionRequest, CompletionResponse, FinishReason, ToolDefinition, Usage},
     message::{
@@ -15,6 +13,8 @@ use std::{
     io,
     sync::{Arc, Mutex},
 };
+use trust_but_verify::domain::{Domain, NodeContents};
+use trust_but_verify::{agent::*, graph::*, procedure::Context, resource::*, sources::*};
 
 // The test application chooses its own completed-answer format.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -856,7 +856,7 @@ async fn source_tools_keep_search_discovery_separate_from_delivered_source_reads
     let factory = SourceTools {
         analysis: SourceAnalysis::new(
             LocalSources::new(root.path()),
-            habeas_sdk::language::Registry::new([]),
+            trust_but_verify::language::Registry::new([]),
         ),
         observation: |_: &OutlineId, parsed: &ParsedSource| {
             Ok(Some(Dependency::Node(
@@ -903,7 +903,7 @@ async fn source_reads_track_optional_dependencies_and_empty_searches_remain_disc
         let factory = SourceTools {
             analysis: SourceAnalysis::new(
                 LocalSources::new(root.path()),
-                habeas_sdk::language::Registry::new([]),
+                trust_but_verify::language::Registry::new([]),
             ),
             observation: move |id: &OutlineId, parsed: &ParsedSource| {
                 assert_eq!(id.resource.location, "note.txt");
@@ -1071,7 +1071,7 @@ async fn source_discovery_and_its_pages_do_not_register_reads() {
     let factory = SourceTools {
         analysis: SourceAnalysis::new(
             LocalSources::new(root.path()),
-            habeas_sdk::language::Registry::new([]),
+            trust_but_verify::language::Registry::new([]),
         ),
         observation: move |_: &OutlineId, _: &ParsedSource| {
             *seen.lock().unwrap() += 1;
@@ -1136,7 +1136,7 @@ impl SourceProvider for CachedProvider {
     async fn parse(
         &self,
         resource: &ResourceId,
-        languages: &habeas_sdk::language::Registry,
+        languages: &trust_but_verify::language::Registry,
     ) -> Result<ParsedSource, SourceError> {
         parse_snapshot(
             resource,
@@ -1415,7 +1415,10 @@ async fn generic_conversations_can_use_default_telemetry_through_retry_and_conti
 async fn cached_selected_source_reads_record_exact_delivered_contents_and_errors_add_no_input() {
     let graph = Memory::new("different current source".into());
     let factory = SourceTools {
-        analysis: SourceAnalysis::new(CachedProvider, habeas_languages::registry()),
+        analysis: SourceAnalysis::new(
+            CachedProvider,
+            trust_but_verify::outline::languages::registry(),
+        ),
         observation: |id: &OutlineId, parsed: &ParsedSource| {
             let index = parsed
                 .outline
@@ -1884,7 +1887,7 @@ async fn source_read_pages_retain_text_and_dependencies_without_another_read() {
     let factory = SourceTools {
         analysis: SourceAnalysis::new(
             LocalSources::new(root.path()),
-            habeas_sdk::language::Registry::new([]),
+            trust_but_verify::language::Registry::new([]),
         ),
         observation: move |id: &OutlineId, parsed: &ParsedSource| {
             assert_eq!(id.selector, "");
@@ -1988,7 +1991,7 @@ async fn source_tools_forward_arguments_and_present_discovery_and_read_results()
         async fn search_structure(
             &self,
             query: &StructuralQuery,
-            _: &habeas_sdk::language::Registry,
+            _: &trust_but_verify::language::Registry,
         ) -> Result<StructuralMatches, SourceError> {
             self.0.lock().unwrap().push(json!({"structure":query.language,"rule":query.rule,"prefix":query.scope.prefix,"limit":query.limit}));
             if query.language == "error" {
@@ -2017,7 +2020,10 @@ async fn source_tools_forward_arguments_and_present_discovery_and_read_results()
     let reads = Arc::new(Mutex::new(Vec::new()));
     let observed = reads.clone();
     let factory = SourceTools {
-        analysis: SourceAnalysis::new(Provider(calls.clone()), habeas_languages::registry()),
+        analysis: SourceAnalysis::new(
+            Provider(calls.clone()),
+            trust_but_verify::outline::languages::registry(),
+        ),
         observation: move |id: &OutlineId, parsed: &ParsedSource| {
             observed.lock().unwrap().push(id.clone());
             assert_eq!(
@@ -2184,7 +2190,10 @@ async fn source_outlines_present_every_top_level_and_nested_item() {
     let text = "fn top() {}\nstruct Thing;\nimpl Thing { fn nested(&self) {} }\nfn last() {}\n";
     std::fs::write(root.path().join("outline.rs"), text).unwrap();
     let factory = SourceTools {
-        analysis: SourceAnalysis::new(LocalSources::new(root.path()), habeas_languages::registry()),
+        analysis: SourceAnalysis::new(
+            LocalSources::new(root.path()),
+            trust_but_verify::outline::languages::registry(),
+        ),
         observation: |_: &OutlineId,
                       _: &ParsedSource|
          -> Result<Option<Dependency<Node, Label>>, String> {
@@ -2233,7 +2242,10 @@ async fn empty_structural_search_results_remain_discovery() {
     let observations = Arc::new(Mutex::new(0));
     let called = observations.clone();
     let factory = SourceTools {
-        analysis: SourceAnalysis::new(LocalSources::new(root.path()), habeas_languages::registry()),
+        analysis: SourceAnalysis::new(
+            LocalSources::new(root.path()),
+            trust_but_verify::outline::languages::registry(),
+        ),
         observation: move |_: &OutlineId,
                            _: &ParsedSource|
               -> Result<Option<Dependency<Node, Label>>, String> {

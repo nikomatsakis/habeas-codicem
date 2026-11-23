@@ -95,11 +95,11 @@ def main():
         # The stub is a standalone consumer dependency, not a copy of the
         # repository workspace. Both local dependencies point back into it.
         manifest = manifest[manifest.index("[package]") :]
-        sdk_path = 'path = "crates/habeas-sdk"'
+        sdk_path = 'path = "crates/trust-but-verify"'
         if manifest.count(sdk_path) != 1:
             raise AssertionError("Habeas's SDK dependency changed")
         manifest = manifest.replace(
-            sdk_path, f"path = {json.dumps(str(repo / 'crates' / 'habeas-sdk'))}", 1
+            sdk_path, f"path = {json.dumps(str(repo / 'crates' / 'trust-but-verify'))}", 1
         )
         fork_path = 'path = "vendor/habeas-rig"'
         if manifest.count(fork_path) != 1:

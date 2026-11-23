@@ -10,10 +10,18 @@ const PAGE: &str = "<!doctype html><html><head><title>Native SDK Rustdoc</title>
 
 fn fixture() -> TempDir {
     let root = TempDir::new().unwrap();
-    for directory in ["md", "target/doc/habeas_sdk", "target/doc/static.files"] {
+    for directory in [
+        "md",
+        "target/doc/trust_but_verify",
+        "target/doc/static.files",
+    ] {
         fs::create_dir_all(root.path().join(directory)).unwrap();
     }
-    fs::write(root.path().join("target/doc/habeas_sdk/index.html"), PAGE).unwrap();
+    fs::write(
+        root.path().join("target/doc/trust_but_verify/index.html"),
+        PAGE,
+    )
+    .unwrap();
     fs::write(
         root.path().join("target/doc/static.files/style.css"),
         "body { color: teal; }",
@@ -34,7 +42,7 @@ fn configuration() -> Config {
         .set("preprocessor.habeas.rustdocs.path", "target/doc")
         .unwrap();
     config
-        .set("preprocessor.habeas.rustdocs.crate", "habeas_sdk")
+        .set("preprocessor.habeas.rustdocs.crate", "trust_but_verify")
         .unwrap();
     config
 }
@@ -43,7 +51,7 @@ fn book() -> Book {
     let mut book = Book::new();
     book.push_item(Chapter::new(
         "Intro",
-        "# Intro\n\n[API](rustdocs/habeas_sdk/index.html)".into(),
+        "# Intro\n\n[API](rustdocs/trust_but_verify/index.html)".into(),
         "intro.md",
         Vec::new(),
     ));
@@ -68,12 +76,12 @@ fn rustdocs_import_preserves_native_pages_assets_search_and_navigation() {
         .unwrap();
     assert_eq!(
         entry.path.as_deref(),
-        Some(Path::new("rustdocs/habeas_sdk/index.html"))
+        Some(Path::new("rustdocs/trust_but_verify/index.html"))
     );
     assert!(entry.source_path.is_none());
     let assets = root.path().join("md/rustdocs");
     assert_eq!(
-        fs::read_to_string(assets.join("habeas_sdk/index.html")).unwrap(),
+        fs::read_to_string(assets.join("trust_but_verify/index.html")).unwrap(),
         PAGE
     );
     assert_eq!(
@@ -89,7 +97,7 @@ fn rustdocs_import_preserves_native_pages_assets_search_and_navigation() {
             .find(|chapter| chapter.name == "Intro")
             .unwrap()
             .content
-            .contains("[API](rustdocs/habeas_sdk/index.html)")
+            .contains("[API](rustdocs/trust_but_verify/index.html)")
     );
 }
 
@@ -98,19 +106,24 @@ fn rustdocs_import_preserves_native_pages_assets_search_and_navigation() {
 fn rustdocs_rebuild_replaces_generated_assets_and_removes_obsolete_pages() {
     let root = fixture();
     fs::write(
-        root.path().join("target/doc/habeas_sdk/old.html"),
+        root.path().join("target/doc/trust_but_verify/old.html"),
         "obsolete",
     )
     .unwrap();
     habeas::rustdocs::preprocess(&mut book(), root.path(), &configuration()).unwrap();
-    fs::remove_file(root.path().join("target/doc/habeas_sdk/old.html")).unwrap();
+    fs::remove_file(root.path().join("target/doc/trust_but_verify/old.html")).unwrap();
     fs::write(
         root.path().join("target/doc/static.files/style.css"),
         "updated",
     )
     .unwrap();
     habeas::rustdocs::preprocess(&mut book(), root.path(), &configuration()).unwrap();
-    assert!(!root.path().join("md/rustdocs/habeas_sdk/old.html").exists());
+    assert!(
+        !root
+            .path()
+            .join("md/rustdocs/trust_but_verify/old.html")
+            .exists()
+    );
     assert_eq!(
         fs::read_to_string(root.path().join("md/rustdocs/static.files/style.css")).unwrap(),
         "updated"
@@ -138,7 +151,7 @@ fn rustdocs_import_errors_preserve_authored_assets_and_chapters() {
     collision.push_item(Chapter::new(
         "Authored API",
         "Keep me".into(),
-        "rustdocs/habeas_sdk/index.md",
+        "rustdocs/trust_but_verify/index.md",
         Vec::new(),
     ));
     let error =
@@ -175,7 +188,10 @@ fn rustdocs_rejects_collisions_with_configured_assets_and_redirects() {
     config
         .set(
             "output.html.redirect",
-            std::collections::HashMap::from([("/rustdocs/habeas_sdk/index.html", "intro.html")]),
+            std::collections::HashMap::from([(
+                "/rustdocs/trust_but_verify/index.html",
+                "intro.html",
+            )]),
         )
         .unwrap();
     let error = habeas::rustdocs::preprocess(&mut book(), root.path(), &config).unwrap_err();
@@ -215,8 +231,8 @@ fn rustdocs_import_reports_unsupported_entries_and_overlapping_directories() {
     config
         .set("preprocessor.habeas.rustdocs.path", "md")
         .unwrap();
-    fs::create_dir_all(root.path().join("md/habeas_sdk")).unwrap();
-    fs::write(root.path().join("md/habeas_sdk/index.html"), PAGE).unwrap();
+    fs::create_dir_all(root.path().join("md/trust_but_verify")).unwrap();
+    fs::write(root.path().join("md/trust_but_verify/index.html"), PAGE).unwrap();
     let error = habeas::rustdocs::preprocess(&mut book(), root.path(), &config).unwrap_err();
     assert!(
         error.to_string().contains("must not contain each other"),
@@ -234,8 +250,11 @@ fn rustdocs_import_reports_unsupported_entries_and_overlapping_directories() {
     fs::remove_file(root.path().join("target/doc/.habeas-rustdocs-owner")).unwrap();
     #[cfg(unix)]
     {
-        std::os::unix::fs::symlink("habeas_sdk/index.html", root.path().join("target/doc/link"))
-            .unwrap();
+        std::os::unix::fs::symlink(
+            "trust_but_verify/index.html",
+            root.path().join("target/doc/link"),
+        )
+        .unwrap();
         let error =
             habeas::rustdocs::preprocess(&mut book(), root.path(), &configuration()).unwrap_err();
         assert!(
@@ -351,7 +370,7 @@ fn rustdocs_directives_are_whole_closed_empty_chapters() {
     habeas::rustdocs::preprocess(&mut book, root.path(), &configuration()).unwrap();
     assert_eq!(
         book.chapters().next().unwrap().path.as_deref(),
-        Some(Path::new("rustdocs/habeas_sdk/index.html"))
+        Some(Path::new("rustdocs/trust_but_verify/index.html"))
     );
 }
 
@@ -384,7 +403,7 @@ fn rustdocs_mdbook_build_publishes_native_site_and_prefix_safe_links() {
         env!("CARGO_BIN_EXE_habeas").replace('\'', "'\\''")
     );
     fs::write(root.path().join("book.toml"), format!(
-        "[book]\nsrc = 'md'\n[preprocessor.habeas]\ncommand = {command:?}\nrenderers = ['habeas']\n[preprocessor.habeas.rustdocs]\npath = 'target/doc'\ncrate = 'habeas_sdk'\n[output.habeas]\ncommand = {renderer:?}\n[output.habeas.html]\nsite-url = '/project-prefix/'\n"
+        "[book]\nsrc = 'md'\n[preprocessor.habeas]\ncommand = {command:?}\nrenderers = ['habeas']\n[preprocessor.habeas.rustdocs]\npath = 'target/doc'\ncrate = 'trust_but_verify'\n[output.habeas]\ncommand = {renderer:?}\n[output.habeas.html]\nsite-url = '/project-prefix/'\n"
     )).unwrap();
     fs::write(
         root.path().join("md/SUMMARY.md"),
@@ -393,7 +412,7 @@ fn rustdocs_mdbook_build_publishes_native_site_and_prefix_safe_links() {
     .unwrap();
     fs::write(
         root.path().join("md/intro.md"),
-        "# Intro\n\n[API](rustdocs/habeas_sdk/index.html)\n",
+        "# Intro\n\n[API](rustdocs/trust_but_verify/index.html)\n",
     )
     .unwrap();
     fs::write(root.path().join("md/rustdocs.md"), ":::{rustdocs}\n:::\n").unwrap();
@@ -409,7 +428,7 @@ fn rustdocs_mdbook_build_publishes_native_site_and_prefix_safe_links() {
     );
     let rendered = root.path().join("book");
     assert_eq!(
-        fs::read_to_string(rendered.join("rustdocs/habeas_sdk/index.html")).unwrap(),
+        fs::read_to_string(rendered.join("rustdocs/trust_but_verify/index.html")).unwrap(),
         PAGE
     );
     assert!(rendered.join("rustdocs/static.files/style.css").is_file());
@@ -420,12 +439,12 @@ fn rustdocs_mdbook_build_publishes_native_site_and_prefix_safe_links() {
     assert!(rendered.join("rustdocs/search-index.js").is_file());
     let intro = fs::read_to_string(rendered.join("intro.html")).unwrap();
     assert!(
-        intro.contains("href=\"rustdocs/habeas_sdk/index.html\""),
+        intro.contains("href=\"rustdocs/trust_but_verify/index.html\""),
         "{intro}"
     );
     let toc = fs::read_to_string(rendered.join("toc.html")).unwrap();
     assert!(
-        toc.contains("href=\"rustdocs/habeas_sdk/index.html\" target=\"_parent\""),
+        toc.contains("href=\"rustdocs/trust_but_verify/index.html\" target=\"_parent\""),
         "{toc}"
     );
 }
@@ -467,7 +486,7 @@ fn rustdocs_ci_generates_workspace_site_before_building_the_published_book() {
         toml::from_str(&fs::read_to_string(root.join("book.toml")).unwrap()).unwrap();
     assert_eq!(
         config["preprocessor"]["habeas"]["rustdocs"]["crate"].as_str(),
-        Some("habeas_sdk")
+        Some("trust_but_verify")
     );
     assert_eq!(
         config["preprocessor"]["habeas"]["rustdocs"]["path"].as_str(),

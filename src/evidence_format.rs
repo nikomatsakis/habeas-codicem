@@ -4,12 +4,12 @@ use crate::{
     judgment::Judgment,
     sdk::{HabeasDomain, HabeasEdgeLabel, HabeasNode, input_fingerprint},
 };
-use habeas_sdk::graph::{Dependency, Fingerprint, Record};
 use serde_json::{Value, json};
 use std::{
     io::{self, Write},
     path::Path,
 };
+use trust_but_verify::graph::{Dependency, Fingerprint, Record};
 
 const SDK_FIELDS: [&str; 3] = ["format_version", "review_version", "dependencies"];
 
@@ -381,7 +381,7 @@ pub(crate) fn check_native(
                                     == Some(&fingerprint.value))))
                 }
             });
-            habeas_sdk::graph::record_is_current(domain, crate::sdk::REVIEW_VERSION, &record)
+            trust_but_verify::graph::record_is_current(domain, crate::sdk::REVIEW_VERSION, &record)
     }) {
         Ok(true) => {}
         Ok(false) => errors.push(format!("{label}: review version or SDK dependency changed")),
@@ -393,8 +393,8 @@ pub(crate) fn check_native(
 mod tests {
     use super::*;
     use crate::{authoring::AuthoringSubject, inputs::OutlineCache};
-    use habeas_sdk::domain::Domain;
     use std::collections::BTreeMap;
+    use trust_but_verify::domain::Domain;
 
     fn legacy(subject: &AuthoringSubject) -> Value {
         let base = json!({"determination":{"FIXME":["example/project#7"]},
@@ -637,12 +637,17 @@ mod tests {
             .dependencies
             .retain(|dependency| matches!(dependency, Dependency::Node(node, _) if !matches!(node, HabeasNode::ReferenceSet(_))));
         assert!(
-            habeas_sdk::graph::record_is_current(&graph, "future-review-version", &record).unwrap()
+            trust_but_verify::graph::record_is_current(&graph, "future-review-version", &record)
+                .unwrap()
         );
         record.revision = "old-concrete-version".into();
         assert!(
-            !habeas_sdk::graph::record_is_current(&graph, crate::sdk::REVIEW_VERSION, &record)
-                .unwrap()
+            !trust_but_verify::graph::record_is_current(
+                &graph,
+                crate::sdk::REVIEW_VERSION,
+                &record
+            )
+            .unwrap()
         );
         record.revision = "*".into();
         std::fs::write(
@@ -655,7 +660,7 @@ mod tests {
             definitions: &changed_definitions,
             ..graph
         };
-        assert!(!habeas_sdk::graph::record_is_current(&changed, "any", &record).unwrap());
+        assert!(!trust_but_verify::graph::record_is_current(&changed, "any", &record).unwrap());
     }
     // {test}`requirements.sdk.habeas.evidence_conversion.atomic`
     #[test]

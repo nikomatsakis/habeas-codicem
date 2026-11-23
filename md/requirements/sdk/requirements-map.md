@@ -9,7 +9,7 @@ live under `requirements.sdk.graph`, `requirements.sdk.sources`, and
 
 | Existing contract | Shared SDK responsibility | HC specialization |
 | --- | --- | --- |
-| `references.outlines`, `references.outline_selectors` | Independent outline crate, default language selection, and stable selectors | Repository discovery and source-item-to-node mapping |
+| `references.outlines`, `references.outline_selectors` | Outline module, default language selection, and stable selectors | Repository discovery and source-item-to-node mapping |
 | `references.structural_hash` | Structural fingerprints and identity | Which fingerprint each evidence input uses |
 | `references.outline_comments` | Comment classification and attachment hooks | Reference discovery and ownership |
 | `authoring.delivered_inputs` | Record observations actually supplied to a procedure | Evidence input fields and source coverage |

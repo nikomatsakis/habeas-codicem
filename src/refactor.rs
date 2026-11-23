@@ -23,8 +23,8 @@ use crate::ReferenceKind;
 use crate::evidence::{Anchor, Declaration, SourceReference, display_path};
 use crate::inputs::{InputSelector, OutlineCache};
 use crate::sdk::{HabeasDomain, HabeasNode, RequirementId, input_fingerprint};
-use habeas_sdk::domain::Domain;
-use habeas_sdk::graph::Dependency;
+use trust_but_verify::domain::Domain;
+use trust_but_verify::graph::Dependency;
 
 // {impl}`requirements.refactor.invalid_mappings`
 /// A failure of `habeas refactor`: an invalid mapping, reported as a usage
@@ -116,7 +116,7 @@ impl Mappings {
                 *value = mapped;
             }
         };
-        let source = |value: &mut habeas_sdk::resource::OutlineId| {
+        let source = |value: &mut trust_but_verify::resource::OutlineId| {
             if value.resource.scheme == "repo" {
                 let mapped = if back {
                     self.node_back(&value.resource.location, &value.selector)
@@ -857,7 +857,7 @@ fn rewrite_sdk_dependencies(
                 .iter()
                 .map(|target| states.mappings.sdk_node(target, true))
                 .collect::<Vec<_>>();
-            if habeas_sdk::graph::edge_fingerprint(&before, &targets) != *fingerprint {
+            if trust_but_verify::graph::edge_fingerprint(&before, &targets) != *fingerprint {
                 return Err(format!("SDK edge observation for {node:?} changed"));
             }
             let mapped_id =
@@ -871,7 +871,7 @@ fn rewrite_sdk_dependencies(
                 .iter()
                 .map(|target| states.mappings.sdk_node(target, false))
                 .collect::<Vec<_>>();
-            *fingerprint = habeas_sdk::graph::edge_fingerprint(&after, &targets);
+            *fingerprint = trust_but_verify::graph::edge_fingerprint(&after, &targets);
             *id = mapped_id;
             continue;
         }

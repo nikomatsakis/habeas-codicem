@@ -1,17 +1,17 @@
 //! The default language collection. Applications may register their own set.
 
-pub use habeas_language_css as css;
-pub use habeas_language_markdown as markdown;
-pub use habeas_language_python as python;
-pub use habeas_language_rust as rust;
-pub use habeas_language_toml as toml;
-pub use habeas_language_typescript as typescript;
-pub use habeas_language_yaml as yaml;
+pub mod css;
+pub mod markdown;
+pub mod python;
+pub mod rust;
+pub mod toml;
+pub mod typescript;
+pub mod yaml;
 
 // {cite}`habeas:util`
-pub fn registry() -> habeas_language::Registry {
-    habeas_language::Registry::new([
-        &rust::Provider as &dyn habeas_language::LanguageProvider,
+pub fn registry() -> crate::outline::language::Registry {
+    crate::outline::language::Registry::new([
+        &rust::Provider as &dyn crate::outline::language::LanguageProvider,
         &python::Provider,
         &typescript::Provider,
         &typescript::TsxProvider,
@@ -23,7 +23,7 @@ pub fn registry() -> habeas_language::Registry {
 }
 
 // {cite}`habeas:util`
-pub fn profiles() -> [&'static habeas_language::Profile; 8] {
+pub fn profiles() -> [&'static crate::outline::language::Profile; 8] {
     [
         &rust::PROFILE,
         &python::PROFILE,

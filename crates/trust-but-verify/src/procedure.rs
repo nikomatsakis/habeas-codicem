@@ -181,14 +181,14 @@ pub struct ContextPhase;
 /// The reusable prefix is sealed after the first node insertion.
 ///
 /// ```compile_fail
-/// use habeas_sdk::{domain::Domain, procedure::ValidationContext};
+/// use trust_but_verify::{domain::Domain, procedure::ValidationContext};
 /// fn too_late<D: Domain>(ctx: &ValidationContext<'_, D>) {
 ///     ctx.ask::<bool>().contents_of_current_node().context(String::new());
 /// }
 /// ```
 ///
 /// ```compile_fail
-/// use habeas_sdk::{domain::Domain, procedure::ValidationContext};
+/// use trust_but_verify::{domain::Domain, procedure::ValidationContext};
 /// fn too_late<D: Domain>(ctx: &ValidationContext<'_, D>, label: D::EdgeLabel)
 /// where D::EdgeLabel: PartialEq {
 ///     ctx.ask::<bool>().contents_of_successors(label).context(String::new());

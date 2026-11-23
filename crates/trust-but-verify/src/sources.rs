@@ -1,12 +1,12 @@
 //! Resource exploration independent of filesystem paths and graph meaning.
 
+use crate::outline::language::Registry;
 use crate::{
     outline::{self, Outline},
     resource::{OutlineId, ResourceId},
     search::RegexSearch,
     structural::{StructuralRule, innermost_node},
 };
-use habeas_language::Registry;
 use serde_json::{Map, Value};
 use std::{
     future::Future,

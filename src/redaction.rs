@@ -1,4 +1,4 @@
-pub(crate) use habeas_sdk::redaction::*;
+pub(crate) use trust_but_verify::redaction::*;
 
 #[cfg(test)]
 pub(crate) mod tests {
