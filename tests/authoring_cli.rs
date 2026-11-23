@@ -381,6 +381,7 @@ fn implementation_discovery_has_no_text_or_evidence_until_the_model_requests_a_r
 // {test}`requirements.authoring.invocation`
 // {test}`requirements.configuration.serialization`
 // {test}`requirements.ci.fixme_implementation_gap`
+// {test}`requirements.sdk.habeas.assessment_policy`
 // {test}`requirements.authoring.finish_search.empty`
 // {test}`requirements.authoring.finish_search.completion`
 #[test]
@@ -922,6 +923,7 @@ fn explicit_untracked_reads_return_an_untracked_error_and_the_assessment_continu
 }
 
 // {test}`requirements.authoring.negative_assessment`
+// {test}`requirements.sdk.habeas.assessment_policy`
 // {test}`requirements.authoring.usage_storage`
 // {test}`requirements.authoring.persistence`
 // {test}`requirements.ci.fixme_with_unacknowledged_gap`
@@ -995,6 +997,7 @@ fn false_is_a_completed_assessment() {
 }
 
 // {test}`requirements.authoring.negative_assessment`
+// {test}`requirements.sdk.habeas.assessment_policy`
 #[test]
 fn negative_assessment_records_additional_reads_and_fails_validation() {
     let rationale =
@@ -1049,6 +1052,66 @@ fn negative_assessment_records_additional_reads_and_fails_validation() {
         ))),
         "{:?}",
         report.errors
+    );
+}
+
+// {test}`requirements.authoring.negative_assessment`
+// {test}`requirements.sdk.habeas.assessment_policy`
+// {test}`requirements.sdk.graph.validation.result_interpretation`
+// {test}`requirements.cli.status`
+#[test]
+fn completed_inadequate_expiration_review_is_current_and_reported_by_status() {
+    let rationale = "No test covers expired tokens.";
+    let server = Server::start(vec![reply(vec![call(
+        "submit",
+        "submit_judgment",
+        json!({"determination":false,"rationale":rationale}),
+    )])]);
+    let fixture = Fixture::new(&server.endpoint);
+    common::coverage_setup(&fixture.project);
+    fs::write(
+        fixture.project.join("md/requirements.md"),
+        ":::{req} ready\nExpired tokens MUST be rejected.\n:::\n",
+    )
+    .unwrap();
+    fs::write(
+        fixture.project.join("src/lib.rs"),
+        "// {impl}`requirements.ready`\n\
+         pub fn valid_token(now: u64, expiration: u64) -> bool { now < expiration }\n\
+         // {test}`requirements.ready`\n\
+         #[test]\n\
+         fn unexpired_token() { assert!(valid_token(10, 20)); }\n",
+    )
+    .unwrap();
+    let authored = fixture.run(&["author", SUBJECT]);
+    assert!(authored.status.success(), "{authored:?}");
+    assert_eq!(server.finish().len(), 1);
+    assert_eq!(fixture.usage()["outcome"], "completed");
+    let saved = fs::read(&fixture.evidence).unwrap();
+    let value: Value = serde_json::from_slice(&saved).unwrap();
+    assert_eq!(value["determination"], false);
+    assert_eq!(value["rationale"], rationale);
+    assert_eq!(value["review_version"], "habeas-review-v1");
+
+    let report = habeas::validate_repository(&fixture.project).unwrap();
+    assert_eq!(
+        report.errors,
+        [format!(
+            "evidence/{SUBJECT}.json: determination is false: {rationale}"
+        )],
+        "the completed review is rejected solely by HC's assessment policy"
+    );
+    let status = fixture.run(&["status", SUBJECT, "--all"]);
+    assert!(status.status.success(), "{status:?}");
+    let text = String::from_utf8(status.stdout).unwrap();
+    assert!(text.contains("Determination false"), "{text}");
+    assert!(text.contains(rationale), "{text}");
+    assert!(!text.contains("Invalid"), "{text}");
+    assert!(!text.contains("changed"), "{text}");
+    assert_eq!(
+        fs::read(&fixture.evidence).unwrap(),
+        saved,
+        "status must preserve the saved completed answer"
     );
 }
 
@@ -1657,6 +1720,7 @@ fn ordinary_status_ignores_invalid_user_authoring_configuration() {
 // {test}`requirements.authoring.deterministic_validation`
 // {test}`requirements.authoring.configuration`
 // {test}`requirements.sdk.habeas.evidence_conversion.writes`
+// {test}`requirements.sdk.habeas.assessment_policy`
 #[test]
 fn missing_or_stale_evidence_fails_validation_without_contacting_the_provider() {
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();

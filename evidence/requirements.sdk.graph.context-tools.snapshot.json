@@ -1,7 +1,7 @@
 {
   "requirement": "For a tracked label-specific edge query, the SDK constructs a\n{term}`requirements.sdk.graph.content_snapshot` from the returned targets and\ntheir target-set fingerprint, without another query.\n\nIt sorts and deduplicates the targets' `NodePath`s and hashes an unambiguous\nencoding under a versioned scheme, including when the set is empty. Changing\norder, duplicate edges, or another label's relationships leaves this fingerprint\nunchanged. Reading target contents is a separate observation;\n`NodeContents::fingerprint` describes those contents under\n{cite}`requirements.sdk.graph.node_content.fingerprint`.\n\nThe returned vector preserves the graph's ordering and duplicates.",
   "determination": true,
-  "rationale": "The two marked tests cover every obligation in `requirements.sdk.graph.context-tools.snapshot`.\n\n**Obligations and where they are tested**\n\n- **Snapshot built from the returned targets with no second query.**\n  - `crates/trust-but-verify/tests/validation.rs#fn[labeled_selections_track_only_target_membership_without_reading_contents]` clears the recorded `selections`, calls `inspection().outgoing_edges(&1, 7)`, and asserts `selections == [1]`. That shows exactly one edge query.\n  - The same test asserts `snapshot.fingerprint == edge_fingerprint(&graph, &[3, 5])`.\n  - I read `graph.rs#fn[prepare_edges]` only to see how this is built. It queries once, then fingerprints that result.\n- **Sorted and deduplicated `NodePath`s, hashed under a versioned scheme, including the empty set.**\n  - `crates/trust-but-verify/tests/contracts.rs#fn[edge_fingerprints_preserve_path_boundaries_and_version_membership_encoding]` pins the exact empty-set fingerprint. The scheme is `node-path-set-sha256-v1` and the digest is a literal hex string.\n  - The same test pins the digest of the single path `[\"a/b\"]`.\n  - It asserts `edge_fingerprint(&[0, 1, 0]) == edge_fingerprint(&[1, 0])`.\n  - The validation test checks the actual content `[5, 3, 5]` against the fingerprint of `[3, 5]`.\n  - A missing sort would fail because the unsorted `[5, 3, 5]` differs from the sorted `[3, 5]`. A missing dedup would fail for the same reason.\n- **Unambiguous encoding.** The contracts test builds 11 distinct path sets and asserts every pair of fingerprints differs from each other and from the empty one. The sets cover:\n  - `a/b` versus `a`,`b`\n  - the empty string\n  - the empty path\n  - composed versus decomposed é\n  - quote, newline and backslash characters\n  - `a/b`,`c` versus `a`,`b/c`\n\n  Every fingerprint also shares the same scheme.\n- **Order, duplicates and other labels leave the fingerprint unchanged.**\n  - Order and duplicates are covered by the two checks above.\n  - Other labels: adding an edge with label 8 leaves the empty record current. Changing the label-8 edge to `(8, 99)` leaves the label-7 record current. Changing a label-7 target from 5 to 6 makes it stale.\n- **Target contents are not read.** Both tests assert `reads.is_empty()`.\n- **The returned vector preserves graph order and duplicates.** The validation test asserts `snapshot.content == [5, 3, 5]`, and `successors` also returns `[5, 3, 5]`.\n\nThe cited `NodeContents::fingerprint` requirement is context only and is not reassessed. The tests are marked with `{test}` for the subject. I found no unacknowledged gap.",
+  "rationale": "The two tests marked `{test}` for `requirements.sdk.graph.context-tools.snapshot` cover every obligation in its text.\n\n**Obligations and the tests that cover them**\n\n1. **Snapshot built from the returned targets and their target-set fingerprint, without another query.**\n   - `crates/trust-but-verify/tests/validation.rs#fn[labeled_selections_track_only_target_membership_without_reading_contents]` calls `inspection().outgoing_edges(&1, 7)`.\n   - It asserts that the `Memory` domain's `selections` log holds exactly `[1]` afterwards, so exactly one graph query ran.\n   - It asserts `snapshot.content == [5, 3, 5]`.\n   - It asserts `snapshot.fingerprint == edge_fingerprint(&graph, &[3, 5])`.\n   - It also asserts that the recorded `Dependency::OutgoingEdges` carries that same fingerprint, and that `reads` stays empty, so no target contents were read.\n2. **Sort, deduplicate, and hash an unambiguous encoding under a versioned scheme, including the empty set.**\n   - `crates/trust-but-verify/tests/contracts.rs#fn[edge_fingerprints_preserve_path_boundaries_and_version_membership_encoding]` pins the empty-set fingerprint to scheme `node-path-set-sha256-v1` and a fixed digest.\n   - It pins the digest of a single-path set.\n   - It builds 11 distinct path sets that probe encoding ambiguity: `a/b` against `[\"a\",\"b\"]`, the empty segment against no segments, `é` against `e\\u{301}`, quote, newline and backslash characters, and `[\"a/b\",\"c\"]` against `[\"a\",\"b/c\"]`.\n   - It asserts all of them have the same scheme, differ from the empty fingerprint, and differ pairwise.\n   - The same function compares `[0,1,0]` with `[1,0]` and asserts they give the same fingerprint, which covers sorting and deduplication.\n3. **Fingerprint unchanged by order, duplicate edges, or another label's relationships.**\n   - Order and duplicates are covered by the `[0,1,0]` against `[1,0]` assertion above.\n   - In the validation test, the live edges `[5,3,5]` are fingerprinted as `[3,5]`.\n   - The same test later changes only label 8's edges, with the label-7 targets the same, and asserts `record_is_current` is still true.\n   - It then changes a label-7 target and asserts `record_is_current` is false.\n4. **Returned vector preserves the graph's ordering and duplicates.**\n   - `successors(&7) == [5, 3, 5]` and `snapshot.content == [5, 3, 5]` in the validation test.\n\n**Checks outside the tests' direct scope**\n\n- The cited `requirements.sdk.graph.node_content.fingerprint` is context only. This requirement says reading target contents is a separate observation. The validation test's `reads.is_empty()` assertion shows the edge query does not read contents.\n- Failure of the edge query is also tested. The edge-failure case leaves the dependencies unchanged and `record_is_current` returns the error.\n\n**Marking**\n\nThe agent-tool test `agent_edge_tools_record_selections_without_validating_targets` also checks that exactly one lookup happens. It is not marked for this requirement, but the marked validation test already covers that obligation, so this is not a gap.\n\nNo acknowledgments apply, and I found no unaddressed gap.",
   "references": "e2cdd275a8de673c64cf38807b368a7cfd87621f4e89b7a4114c19a8a2d6e1f4",
   "inputs": [
     {
@@ -33,13 +33,15 @@
       ],
       "text": [
         ":::{req} node_content.fingerprint",
-        "`habeas_sdk::domain::NodeContents::fingerprint` describes the",
+        "`trust_but_verify::NodeContents::fingerprint` describes the",
         "{term}`requirements.sdk.graph.observation_fingerprint` of the retained contents",
         "read under",
         "{cite}`requirements.sdk.graph.node_content`:",
         "",
         "```rust,ignore",
         "pub trait NodeContents: Send + Sync {",
+        "    // ...",
+        "",
         "    /// Describe these retained contents without further resource reads",
         "    /// or querying mutable external state.",
         "    ///",
@@ -48,7 +50,7 @@
         "    /// its rules and their version. When the rules change, change the scheme.",
         "    fn fingerprint(&self) -> Fingerprint;",
         "",
-        "    // ... format method introduced above ...",
+        "    // ...",
         "}",
         "```",
         ":::"
@@ -72,7 +74,7 @@
         "",
         "A *snapshot* is the contents obtained by one observation, paired with the",
         "{term}`requirements.sdk.graph.observation_fingerprint` of those",
-        "same contents. [`Snapshot<T>`](../../rustdocs/habeas_sdk/graph/struct.Snapshot.html)",
+        "same contents. [`Snapshot<T>`](../../rustdocs/trust_but_verify/struct.Snapshot.html)",
         "represents that pair.",
         ":::"
       ]
@@ -85,7 +87,7 @@
         "",
         "A *fingerprint* is a digest together with the scheme identifying how it was",
         "computed, represented by",
-        "[`Fingerprint`](../../rustdocs/habeas_sdk/graph/struct.Fingerprint.html).",
+        "[`Fingerprint`](../../rustdocs/trust_but_verify/struct.Fingerprint.html).",
         "It describes an observation under those rules; it does not identify the node or",
         "say whether a criterion's answer is favorable.",
         "Both the scheme and digest participate in comparisons.",
@@ -103,14 +105,14 @@
       "hash": "664f7b18d745ea1b4e5962c384c521546946ebd381b339054fefdb2539212436"
     },
     {
-      "file": "crates/trust-but-verify/src/graph.rs",
-      "item": "impl[InspectionContext<'d,%20D>]/fn[prepare_edges]",
-      "hash": "68e766136ad846da3a33cb489ff7613fa3c8d1acfa87fe0d26c48c8d08f68242"
+      "file": "crates/trust-but-verify/src/agent/tests.rs",
+      "item": "fn[agent_edge_tools_record_selections_without_validating_targets]",
+      "hash": "39a3d475cde697c642fabda78e23d50d97dc586c00d89c74cf3af1ad0e3898c7"
     },
     {
-      "file": "crates/trust-but-verify/tests/validation.rs",
-      "item": "impl[Memory/Domain]/fn[node_path]",
-      "hash": "89ecd83777890b98d7e124b1c0b9337f16733d6d7cabc12f026b00abe72b3e7d"
+      "file": "crates/trust-but-verify/src/graph.rs",
+      "item": "impl[InspectionContext<'d,%20D>]/fn[prepare_edges]",
+      "hash": "69aa7c41cf321790c2e0b8b755f8a73ef7fb8c35e5236e903fdbf903313cb372"
     },
     {
       "file": "crates/trust-but-verify/tests/validation.rs",
@@ -162,7 +164,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "9825e02efb7dce43455bf0c5c78883daa10c9f875e0301f1d4bb718e8ad15e86"
+          "value": "3199c7d3fa51a1e2bfad5c1d2dc1cb1363fdd9050ab4735a78909721ba3c9f61"
         }
       ]
     },
@@ -207,7 +209,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "9d6b2e1407ac6b6a398815aadf549f5f0f6b3da3f5582f3de0438acbbe983ba2"
+          "value": "9b3d390d40fe2d60a62641283d6798a5e09029c289d25986e95fa69f92204a53"
         }
       ]
     },
@@ -218,7 +220,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "8f3b005dcb65d44e239ffd14604dfc52f1c25dfea7fff994451e27d356187064"
+          "value": "812d49b0c43b7764782bc5c6f53b8183bacd5dd36693b87ebabea973d27e3205"
         }
       ]
     },
@@ -262,14 +264,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/src/graph.rs"
+              "location": "crates/trust-but-verify/src/agent/tests.rs"
             },
-            "selector": "impl[InspectionContext<'d,%20D>]/fn[prepare_edges]"
+            "selector": "fn[agent_edge_tools_record_selections_without_validating_targets]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "6b6e92f73409992914297595c9dd894c93492073e7b528a7ad6b2ed2a49b73ca"
+          "value": "4675a37f3b78331cbaf00ac32f9bb15f4d5289ca5eb9d2f9e9731f4cfeb3687c"
         }
       ]
     },
@@ -279,14 +281,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/validation.rs"
+              "location": "crates/trust-but-verify/src/graph.rs"
             },
-            "selector": "impl[Memory/Domain]/fn[node_path]"
+            "selector": "impl[InspectionContext<'d,%20D>]/fn[prepare_edges]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "c1c57cf6128b93e4e5398e98ff53b65c26e29eb9846b053cb8df649158eb1d5f"
+          "value": "99a92fcceef65c15ed7a8f9119154ed7716bc59911dd811f0971763c32d29d8e"
         }
       ]
     },

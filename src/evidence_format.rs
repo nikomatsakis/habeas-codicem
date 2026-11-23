@@ -394,7 +394,7 @@ mod tests {
     use super::*;
     use crate::{authoring::AuthoringSubject, inputs::OutlineCache};
     use std::collections::BTreeMap;
-    use trust_but_verify::domain::Domain;
+    use trust_but_verify::Domain;
 
     fn legacy(subject: &AuthoringSubject) -> Value {
         let base = json!({"determination":{"FIXME":["example/project#7"]},
@@ -435,19 +435,33 @@ mod tests {
     #[test]
     fn legacy_conversion_preserves_every_historical_field_without_resolving_sources() {
         let subjects = [
-            AuthoringSubject::Definition("old.ready".into()),
-            AuthoringSubject::Citation {
-                file: "deleted.rs".into(),
-                item: "fn[old]".into(),
-            },
-            AuthoringSubject::Site {
-                requirement: "old.ready".into(),
-                file: "deleted.rs".into(),
-                item: "fn[old]".into(),
-            },
+            (
+                "requirement",
+                AuthoringSubject::Definition("old.ready".into()),
+            ),
+            ("example", AuthoringSubject::Definition("old.sample".into())),
+            (
+                "citation",
+                AuthoringSubject::Citation {
+                    file: "deleted.rs".into(),
+                    item: "fn[old]".into(),
+                },
+            ),
+            (
+                "site",
+                AuthoringSubject::Site {
+                    requirement: "old.ready".into(),
+                    file: "deleted.rs".into(),
+                    item: "fn[old]".into(),
+                },
+            ),
         ];
-        for subject in subjects {
-            let old = legacy(&subject);
+        for (kind, subject) in subjects {
+            let mut old = legacy(&subject);
+            if kind == "example" {
+                let text = old.as_object_mut().unwrap().remove("requirement").unwrap();
+                old["example"] = text;
+            }
             let node = HabeasNode::review_subject(&subject);
             let record = decode(&old, &node).unwrap();
             assert_eq!(record.revision, "*");

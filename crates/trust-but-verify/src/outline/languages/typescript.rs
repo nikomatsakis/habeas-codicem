@@ -31,7 +31,7 @@ const KINDS: &[KindRule] = &[
     KindRule::new("type_alias_declaration", "type", NameRule::Field("name")),
     KindRule::new("enum_declaration", "enum", NameRule::Field("name")),
     KindRule::new("internal_module", "namespace", NameRule::Field("name")),
-    KindRule::new("module", "namespace", NameRule::Field("name")),
+    KindRule::new("module", "namespace", NameRule::Field("name")).when(|node| node.is_named()),
 ];
 
 // {impl}`requirements.references.outline_comments`

@@ -1,8 +1,8 @@
 {
-  "requirement": "The tracked inspection context records successful source-node reads delivered\nto the procedure as assessment dependencies, whether the provider uses defaults\nor overrides. Each fingerprint describes the contents delivered to the caller.",
+  "requirement": "The tracked source-read operation resolves the selected `OutlineId` through\nthe application's source-node mapping and reads that node through `Domain`.\nSuccessful reads delivered to the caller record that node's identity and the\nfingerprint of its supplied contents.\n\nThe graph's recording and freshness contracts apply under\n{cite}`requirements.sdk.graph.evidence.node_inputs` and\n{cite}`requirements.sdk.graph.evidence.checking_records`.",
   "determination": true,
-  "rationale": "**Obligations derived from `requirements.sdk.sources.provider_observations`**\n1. The tracked inspection context records a successful source-node read that was delivered to the procedure as an assessment dependency.\n2. This holds whether the provider uses the default `parse` or overrides it.\n3. Each fingerprint describes the contents delivered to the caller. It is not a refetch or the graph's own content.\n4. Reads that were not successful, and discovery that is not a source-node read, add no dependency. This is implied by the words \"successful source-node reads\".\n\n**Test mapping**\n- `crates/habeas-sdk/tests/agent.rs#fn[source_tools_keep_search_discovery_separate_from_delivered_source_reads]`\n  - It uses `LocalSources` with its default provider behavior and runs `search_text`, then `read_source` of the whole file, through a `ToolAgent`.\n  - It asserts that the context's `inspection().dependencies()` holds exactly one `Dependency::Node(Node(7), …)`.\n  - It asserts the fingerprint value equals the delivered file text, `\"observed source\\n\"`. The graph holds unrelated bytes, so the fingerprint cannot come from the graph.\n  - This covers obligation 1, the default-provider half of obligation 2, and the whole-source content part of obligation 3. It also shows search discovery adds no dependency.\n- `crates/habeas-sdk/tests/agent.rs#fn[cached_selected_source_reads_record_exact_delivered_contents_and_errors_add_no_input]`\n  - It uses `CachedProvider`, which overrides `parse` with a cached snapshot. Its `read` returns an error, so any refetch would fail.\n  - The graph content differs from the delivered source.\n  - The script runs `search_structure`, `outline_source`, a successful `read_source` of `fn[observed]`, and a failing `read_source` of `fn[missing]`.\n  - It asserts the dependency list is exactly one `Node(7)` entry. The fingerprint value is `\"fn observed() { call(); }\"` with scheme `selected-content`.\n  - This covers the override half of obligation 2. It covers obligation 3 for a selected node, using the delivered snapshot rather than a refetch or the graph. It covers obligation 4 for the failed read and for the structural search and outline calls.\n- `crates/habeas-sdk/tests/agent.rs#fn[source_discovery_and_its_pages_do_not_register_reads]`\n  - It dispatches `list_sources`, `search_text`, and `outline_source` directly on a session. It also fetches their result pages through `get_source_page`, using a 1500-line file so the results are paged.\n  - It asserts every delivery and every page has empty `dependencies`, and that the observation callback is never called.\n  - This covers obligation 4 for discovery and paging.\n\n**Gaps considered**\n- Wrong behavior the tests would accept: a fingerprint built from a refetch or from graph content, a provider override that skips recording, discovery calls that register reads, or failed reads that register. The refetch-rejecting `CachedProvider`, the differing graph contents, the exact-list assertions, and the zero-call assertion rule each of these out.\n- No acknowledgments apply, and none are needed.\n- All three tests carry `{test}` references to the subject, so there is no marking gap.\n\nThe tests exercise each obligation and assert its outcome.",
-  "references": "efafba41a52a10ad470c49517619d9e98491f7305cadb85183b43eeb6dbf625f",
+  "rationale": "The tests adequately check `requirements.sdk.sources.provider_observations`. I did not read the implementation source or the `project` test helper. The judgment rests on the supplied test text.\n\n**Obligations derived from the text**\n1. The tracked source-read operation resolves the selected `OutlineId` through the application's source-node mapping.\n2. It reads the mapped node through `Domain`, so the contents come from the domain and not from disk.\n3. A successful read that is delivered to the caller records the node identity and the fingerprint of the supplied contents.\n4. Failed reads are not recorded. This comes from the cited `node_inputs` context, and the subject's wording \"Successful reads delivered\" implies it. Mapping failures fall under the same rule.\n\nThe cited requirements `node_inputs` and `checking_records` are context only. I did not reassess their tests.\n\n**Coverage**\n- **Mapping and domain read.**\n  - `agent/project_sources.rs#mod[tests]/fn[fixed_tools_deliver_domain_contents_with_mandatory_snapshot_dependencies]` dispatches `read_source` on `source.txt`. The disk holds \"disk text\" and the domain holds \"prepared domain contents\".\n  - It asserts that the delivered text contains the domain contents and not the disk text.\n  - It asserts `domain.read_nodes == [\"source-node\"]`, which shows the `OutlineId` was resolved to the mapped node.\n  - It asserts that the dependency is exactly `Dependency::Node(\"source-node\", Content(\"prepared domain contents\").fingerprint())`. The fingerprint is computed independently of the read result.\n- **Recording on direct reads.**\n  - `agent/project_sources.rs#mod[tests]/fn[direct_source_reads_preserve_mapping_errors_and_record_only_successful_returns]` calls `InspectionContext::read_source` directly.\n  - An unmapped path and an unknown selector both return an \"unsupported source item\" error. `inspection.dependencies()` stays empty, and the domain's `reads` and `read_nodes` show no domain read.\n  - A forced domain read failure returns the error and again records nothing.\n  - A successful read records exactly `Dependency::Node(\"source-node\", returned.fingerprint())`.\n  - The record's freshness follows the domain: `record_is_current` is true before the domain text changes and false after.\n- **Dependencies on later deliveries.** In the fixed-tools test, the error cases (ignored path, `..` path, unknown selector, malformed selector) do not increase the domain read count. Paged `get_source_page` deliveries carry the same dependencies as the initial read, so the observation is of the contents supplied.\n- **Discovery tools.** `agent/tests.rs#fn[source_discovery_and_its_pages_do_not_register_reads]` shows that listing, searching and outlining add no observations, so only delivered reads are recorded. `agent/tests.rs#fn[source_tools_keep_search_discovery_separate_from_delivered_source_reads]` shows a search followed by a read yields exactly one recorded observation. `agent/tests.rs#fn[cached_selected_source_reads_record_exact_delivered_contents_and_errors_add_no_input]` shows the recorded fingerprint is of the delivered selected contents and that a failed `fn[missing]` read adds no input.\n- **End to end.** `source_capable_validator_tracks_deterministic_reads_and_reuses_saved_results` and `supplied_agent_uses_attached_project_tools_in_both_configuration_orders` check the dependencies on the verified result. They use `Dependency::Node(..., Content.fingerprint())`. They also check that the mapped domain content, not the disk content, is delivered, in both configuration orders.\n\nNo plausible violating behavior slips through. A read that bypasses the mapping or reads from disk would fail the delivered-text and `read_nodes` assertions. A wrong fingerprint or identity would fail the exact dependency equality. Recording a failed read would fail the empty-dependencies assertions.",
+  "references": "11cc78bac58fc5c4076bc114a6328c8612b74a49320b967a6c4e9c2953593350",
   "inputs": [
     {
       "requirements": "requirements.sdk.sources.provider_observations",
@@ -11,54 +11,99 @@
       ],
       "text": [
         ":::{req} provider_observations",
-        "The tracked inspection context records successful source-node reads delivered",
-        "to the procedure as assessment dependencies, whether the provider uses defaults",
-        "or overrides. Each fingerprint describes the contents delivered to the caller.",
+        "The tracked source-read operation resolves the selected `OutlineId` through",
+        "the application's source-node mapping and reads that node through `Domain`.",
+        "Successful reads delivered to the caller record that node's identity and the",
+        "fingerprint of its supplied contents.",
+        "",
+        "The graph's recording and freshness contracts apply under",
+        "{cite}`requirements.sdk.graph.evidence.node_inputs` and",
+        "{cite}`requirements.sdk.graph.evidence.checking_records`.",
         ":::"
       ]
     },
     {
-      "file": "crates/habeas-sdk/tests/agent.rs",
-      "item": "fn[source_tools_keep_search_discovery_separate_from_delivered_source_reads]",
-      "hash": "6f6a5d0359977f95c526e78887e4fd745d386378ca3639d3976a85abdb1bb74e"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/agent.rs",
-      "item": "fn[source_discovery_and_its_pages_do_not_register_reads]",
-      "hash": "d5dc4993c51766a6e907398117cb5d882b9ed73d864be6fb4d272fe4f1324822"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/agent.rs",
-      "item": "fn[cached_selected_source_reads_record_exact_delivered_contents_and_errors_add_no_input]",
-      "hash": "9506aea38c76a0ce95a660e4024145963fb87742e7c87765a033cf08ba020291"
-    },
-    {
-      "file": "crates/habeas-sdk/src/agent/sources.rs",
-      "item": "impl[SourceSession<'_,%20P,%20F,%20D::NodeId,%20D::EdgeLabel>/ToolSession<D>]/fn[dispatch]",
-      "hash": "9bb0bd13f0143dd8ae775c147672da649efc939318809d901e6df66cab4a3893"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/agent.rs",
-      "item": "struct[CachedProvider]",
-      "hash": "5cd6ac0c478d6821d88f16f9668cd229e4a1a549e030123767792283808944c9"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/agent.rs",
-      "item": "impl[CachedProvider/SourceProvider]",
-      "hash": "45eed4a4549223f268548132370d21ba1fd2dde4f4dddf9dab5320cb43f4cd7e"
-    },
-    {
-      "requirements": "requirements.sdk.sources.provider_defaults",
+      "requirements": "requirements.sdk.graph.evidence.node_inputs",
       "matches": [
-        "requirements.sdk.sources.provider_defaults"
+        "requirements.sdk.graph.evidence.node_inputs"
       ],
       "text": [
-        ":::{req} provider_defaults",
-        "Source providers can override parsing, text search, and structural search.",
-        "The SDK supplies defaults for all three, so listing, reading, and a supplied",
-        "language registry suffice to support them.",
+        ":::{req} node_inputs",
+        "Finishing a verification includes every successful tracked node read in its",
+        "`Fingerprinted`, whether ordinary code or a model tool requested it. Each observation",
+        "contains the node identity and the fingerprint of the contents actually supplied.",
+        "",
+        "A failed read returns an error without inventing a successful observation.",
+        "Repeating an identical observation adds no information. Reading the same",
+        "identity with two different fingerprints preserves both observations.",
         ":::"
       ]
+    },
+    {
+      "requirements": "requirements.sdk.graph.evidence.checking_records",
+      "matches": [
+        "requirements.sdk.graph.evidence.checking_records"
+      ],
+      "text": [
+        ":::{req} checking_records",
+        "```rust,ignore",
+        "// Method on Validator<D>.",
+        "/// Compare each recorded input with the current domain state.",
+        "/// Return true when every fingerprint still matches, including an empty trace.",
+        "pub fn check_inputs<O>(",
+        "    &self,",
+        "    inputs: &Fingerprinted<D, O>,",
+        ") -> Result<bool, D::Error>;",
+        "```",
+        "",
+        "The method resolves the recorded dependencies through graph operations and",
+        "fingerprinting, comparing each with its saved observation. A fingerprint",
+        "mismatch returns `Ok(false)` and permits an early return; it need not resolve",
+        "later dependencies. An encountered dependency-resolution failure returns an",
+        "error.",
+        "",
+        "The method observes the current state that the caller intends to inspect.",
+        "Freshness checking has a separate observation scope from criterion execution.",
+        "Checked observations enter the new trace when execution explicitly reads",
+        "or delivers them.",
+        "A checked snapshot can be reused if it still represents the current state.",
+        ":::"
+      ]
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/configured.rs",
+      "item": "mod[tests]/fn[supplied_agent_uses_attached_project_tools_in_both_configuration_orders]",
+      "hash": "0f79a2bae12944a0ea525269a2968607f3ab2e851bf954ab526dca0ba7d8a59a"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/project_sources.rs",
+      "item": "mod[tests]/fn[fixed_tools_deliver_domain_contents_with_mandatory_snapshot_dependencies]",
+      "hash": "283f01f5306b517d055960be8fd5ec8cf869a394c2e684f1d6f2d025e950d698"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/project_sources.rs",
+      "item": "mod[tests]/fn[source_capable_validator_tracks_deterministic_reads_and_reuses_saved_results]",
+      "hash": "c787f70923af20cf2558977f5bf353488d9f5a04e1834db3be71ce5d13205cd2"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/project_sources.rs",
+      "item": "mod[tests]/fn[direct_source_reads_preserve_mapping_errors_and_record_only_successful_returns]",
+      "hash": "74e7352dcaedd09a079419bd2e96b4e4680f1302833a8f7ba446162809005b62"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/tests.rs",
+      "item": "fn[source_tools_keep_search_discovery_separate_from_delivered_source_reads]",
+      "hash": "e2c5ca55f33612a8327fd76444dfc72df073e6750366e5bbdef10a9c9d5143c0"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/tests.rs",
+      "item": "fn[source_discovery_and_its_pages_do_not_register_reads]",
+      "hash": "5a61a193c493225feedcfbf45a0760b1b5d1973529bb7955c2530d7b7d53675f"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/tests.rs",
+      "item": "fn[cached_selected_source_reads_record_exact_delivered_contents_and_errors_add_no_input]",
+      "hash": "7386be2ddbca9d88e14ca3125015ec4c1556961b55bb126db8cfea733add13f0"
     }
   ],
   "format_version": 1,
@@ -71,7 +116,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "efafba41a52a10ad470c49517619d9e98491f7305cadb85183b43eeb6dbf625f"
+          "value": "11cc78bac58fc5c4076bc114a6328c8612b74a49320b967a6c4e9c2953593350"
         }
       ]
     },
@@ -83,7 +128,7 @@
         "Mandatory",
         {
           "scheme": "node-path-set-sha256-v1",
-          "value": "58c3d2a2076789373aeda723edecfdefa043ef6df972c035dd10ba53c4d216b6"
+          "value": "edd093196abd44b4c3d25e27707d4ada6b99308735d61af1ae965a34a0fc9646"
         }
       ]
     },
@@ -94,7 +139,29 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "c3088589896348c3fda8a11aff199aa817ef2612714a23e36efb85de925330d2"
+          "value": "521d6beb3b7885b059c663052e22b168b7340d86fc37586074c06b4818a05012"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Requirement": "requirements.sdk.graph.evidence.node_inputs"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "9752b8662b43a4a86d2b91ce206009bb135d4ea545a37e3be5aacba644042c9d"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Requirement": "requirements.sdk.graph.evidence.checking_records"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "962cd411fc64e2fcae8f78a0af6666292adf69607a32fc309b287b8da58cc0da"
         }
       ]
     },
@@ -104,14 +171,82 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/agent.rs"
+              "location": "crates/trust-but-verify/src/agent/configured.rs"
+            },
+            "selector": "mod[tests]/fn[supplied_agent_uses_attached_project_tools_in_both_configuration_orders]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "1b4dadbf7c3ec0a7989e80d7634ec8e3104c297f027e0fcd53a1ed200e75d24d"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/project_sources.rs"
+            },
+            "selector": "mod[tests]/fn[fixed_tools_deliver_domain_contents_with_mandatory_snapshot_dependencies]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "ce305a4430e03c8bcf296b8787556627a98f02ecf9d3b91d016eba2574125fc0"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/project_sources.rs"
+            },
+            "selector": "mod[tests]/fn[source_capable_validator_tracks_deterministic_reads_and_reuses_saved_results]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "ef149487803df9873d141a05ea1e71fb42c40b2f8835710906cb1978728ec713"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/project_sources.rs"
+            },
+            "selector": "mod[tests]/fn[direct_source_reads_preserve_mapping_errors_and_record_only_successful_returns]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "fba2bcabd8bf11ae8f77346e187eb5591a70c67ec42959f6a0ea2812d06a3f15"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/tests.rs"
             },
             "selector": "fn[source_tools_keep_search_discovery_separate_from_delivered_source_reads]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "84156ca7579395fdaa909acd719611606e025b59cafb21b4889ecc2fc4b86c75"
+          "value": "1e8b9d27d51aae098bcbebe17aaf8aa044d4a2c2a2828e223905f251df2399b8"
         }
       ]
     },
@@ -121,14 +256,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/agent.rs"
+              "location": "crates/trust-but-verify/src/agent/tests.rs"
             },
             "selector": "fn[source_discovery_and_its_pages_do_not_register_reads]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "78a824411fd83c3e5e47316d1e975bc0aa63d13ecdc7c0c1833639bbd9f7b352"
+          "value": "e0c79c55afea8df889c56cbafac745444f2031ee21b97eac6fffd7d452a1bf15"
         }
       ]
     },
@@ -138,76 +273,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/agent.rs"
+              "location": "crates/trust-but-verify/src/agent/tests.rs"
             },
             "selector": "fn[cached_selected_source_reads_record_exact_delivered_contents_and_errors_add_no_input]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "356b35ce38c0933f48f6ee7cee07ecc4db0a4cbad1efc0fba885ad27f411ad42"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/src/agent/sources.rs"
-            },
-            "selector": "impl[SourceSession<'_,%20P,%20F,%20D::NodeId,%20D::EdgeLabel>/ToolSession<D>]/fn[dispatch]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "0638b31fbef861153edfbfc541997707458e9776db371e70a33e9f545f8540ee"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/agent.rs"
-            },
-            "selector": "struct[CachedProvider]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "b2491f09495d00a3a19c0c23cd046203853fa4eea70fc3a0609f763550d00337"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/agent.rs"
-            },
-            "selector": "impl[CachedProvider/SourceProvider]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "ac2e23a1d585551812b886ff75dc7531d3e2652252475bb52426b5efb329e7d4"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Requirement": "requirements.sdk.sources.provider_defaults"
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "98e7154378fe056fe53a52e89c7ea6588cf00191c2d2503240911859c0e1b1fe"
+          "value": "459fe765ac36ea136c37db2d356326a88226d0cb994f175b9cf3cc401f3e03e2"
         }
       ]
     }

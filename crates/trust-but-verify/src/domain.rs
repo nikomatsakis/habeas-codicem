@@ -74,3 +74,9 @@ pub trait NodeContents: Send + Sync {
     // {impl}`requirements.sdk.graph.node_content.format`
     fn format(&self) -> String;
 }
+
+/// Map a project file and outline selector to a node in this domain.
+// {impl}`requirements.sdk.sources.source_nodes`
+pub trait SourceNodes: Domain {
+    fn source_node(&self, item: &crate::outline::OutlineId) -> Result<Self::NodeId, Self::Error>;
+}

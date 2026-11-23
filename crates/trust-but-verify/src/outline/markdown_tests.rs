@@ -1,13 +1,13 @@
-use super::{Outline, parse};
+use super::{LegacyOutline, parse};
 use std::path::Path;
 
 // {cite}`habeas:util`
-fn outline(source: &str) -> Outline {
+fn outline(source: &str) -> LegacyOutline {
     parse(Path::new("a.md"), source).unwrap_or_else(|error| panic!("{source:?}: {error}"))
 }
 
 // {cite}`habeas:util`
-fn kinds(outline: &Outline) -> Vec<(&str, Option<usize>, usize, usize)> {
+fn kinds(outline: &LegacyOutline) -> Vec<(&str, Option<usize>, usize, usize)> {
     outline.nodes[1..]
         .iter()
         .map(|node| (node.kind, node.parent, node.line_start, node.line_end))
@@ -60,6 +60,7 @@ fn markdown_views_respect_profile_field_and_child_naming_rules() {
 }
 
 // {test}`requirements.sdk.sources.markdown.paragraphs`
+// {test}`requirements.sdk.sources.markdown.sections`
 // {test}`requirements.sdk.sources.markdown.fenced_blocks`
 // {test}`requirements.sdk.sources.markdown.fenced_blocks.contents`
 // {test}`requirements.references.outlines`
@@ -305,6 +306,7 @@ fn two_colons_and_inline_directive_text_do_not_open_containers() {
 
 // {test}`requirements.sdk.sources.markdown.paragraphs`
 // {test}`requirements.sdk.sources.markdown.fenced_blocks`
+// {test}`requirements.sdk.sources.markdown.fingerprints`
 // {test}`requirements.references.structural_hash`
 // {test}`requirements.references.selector_duplicate_names`
 #[test]

@@ -2,7 +2,7 @@
 pub use crate::outline::language::*;
 
 #[cfg(feature = "default-languages")]
-pub use crate::outline::languages::profiles;
+pub(crate) use crate::outline::languages::profiles;
 
 #[cfg(feature = "default-languages")]
 // {cite}`habeas:util`

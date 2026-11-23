@@ -5,8 +5,8 @@ use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex},
 };
-use trust_but_verify::domain::{Domain, NodeContents};
 use trust_but_verify::graph::*;
+use trust_but_verify::{Domain, NodeContents};
 
 // Opaque graph identities and contents deliberately do not implement Serde,
 // Hash, or Display. Only completed answers need serialization.
@@ -338,6 +338,7 @@ async fn domain_relationships_accept_opaque_types_and_send_only_errors() {
 // {test}`requirements.sdk.domain`
 // {test}`requirements.sdk.graph.evidence.inputs`
 // {test}`requirements.sdk.graph.evidence.checking_records`
+// {test}`requirements.sdk.graph.validation.output_policy`
 #[tokio::test]
 async fn criteria_keep_typed_answers_and_persist_only_when_requested() {
     let domain = Application::default();

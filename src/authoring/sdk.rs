@@ -7,12 +7,12 @@ use crate::{
 };
 use std::sync::{Arc, Mutex};
 use trust_but_verify::{
-    domain::{Domain, NodeContents},
+    __habeas::procedure::{Agent, AgentRequest},
+    Domain, NodeContents,
     graph::{
         Criterion, CriterionPath, Fingerprint, InspectionContext, NodePath, ValidationContext,
         ValidationError,
     },
-    procedure::{Agent, AgentRequest},
 };
 
 // {cite}`habeas:util`
@@ -378,6 +378,7 @@ where
 
 // {impl}`requirements.sdk.habeas.evidence_format`
 // {impl}`requirements.sdk.habeas.evidence_conversion.legacy_freshness`
+// {impl}`requirements.sdk.habeas.assessment_policy`
 pub(super) async fn assess(
     provider: &impl CompletionProvider,
     sources: &mut AssessmentSources,
@@ -617,7 +618,7 @@ mod tests {
             json!({"determination":false,"rationale":"The readiness case is missing."}),
         )]));
         let agent = Arc::new(ReviewAgent(provider.clone()));
-        let validator = Validator::new(graph.clone()).with_agent(agent);
+        let validator = Validator::new(graph.clone()).with_agent_adapter(agent);
         let review = || Review { node: node.clone() };
         let path = node.evidence_path(root.path()).unwrap();
         assert_eq!(review().source_node_id(), node);
@@ -691,6 +692,7 @@ mod tests {
 
     // {test}`requirements.authoring.provider_backoff`
     // {test}`requirements.authoring.usage_requests.failures`
+    // {test}`requirements.sdk.habeas.assessment_policy`
     #[tokio::test]
     async fn sdk_string_errors_preserve_habeas_provider_reports_and_error_kinds() {
         struct FailingProvider(io::ErrorKind);
@@ -914,12 +916,13 @@ mod tests {
     // {test}`requirements.sdk.habeas.evidence_format.errors`
     // {test}`requirements.sdk.habeas.evidence_format.loading`
     // {test}`requirements.sdk.habeas.evidence_conversion.legacy_freshness`
+    // {test}`requirements.sdk.habeas.assessment_policy`
     // {test}`requirements.ci.schema`
     // {test}`requirements.ci.errors`
     // {test}`requirements.ci.requirement_text`
     #[tokio::test]
     async fn every_review_kind_loads_both_formats_and_reports_each_application_failure_once() {
-        use trust_but_verify::domain::Domain;
+        use trust_but_verify::Domain;
         let source = format!(
             "{}\n// {{cite}}`requirements.rule`\nfn helper() {{}}\n// {{test}}`requirements.sample`\n#[test]\nfn sample() {{}}\n",
             crate::sites::tests::SOURCE

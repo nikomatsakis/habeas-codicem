@@ -1,7 +1,4 @@
-use std::path::Path;
-
-use super::{Redaction, credential_fields, is_configuration_file_for, redact_text};
-use crate::outline::{Outline, parse_redacted, profile_for_path};
+use super::{Redaction, redact_text};
 
 // Credential-shaped values are assembled at run time so this source holds
 // no literal match of a `secretshape` rule.
@@ -23,34 +20,8 @@ pub(crate) fn private_key() -> String {
     .join("\n")
 }
 
-fn outline(path: &str, source: &str, redaction: &Redaction) -> Outline {
-    parse_redacted(profile_for_path(Path::new(path)), source, redaction)
-        .unwrap_or_else(|error| panic!("{path}: {error}"))
-}
-
-/// Every outline property except hashes: kinds, names, selectors of named
-/// nodes, structure, and line and byte ranges.
-fn structure(outline: &Outline) -> Vec<String> {
-    outline
-        .nodes
-        .iter()
-        .map(|node| {
-            format!(
-                "{} {:?} {:?} {:?} {}-{} {}-{}",
-                node.kind,
-                node.name,
-                node.parent,
-                node.children,
-                node.line_start,
-                node.line_end,
-                node.byte_start,
-                node.byte_end
-            )
-        })
-        .collect()
-}
-
 // {test}`requirements.authoring.redaction`
+// {test}`requirements.sdk.sources.redaction`
 #[test]
 fn private_keys_are_redacted_from_header_through_body_keeping_lines() {
     let key = private_key();
@@ -67,9 +38,7 @@ fn private_keys_are_redacted_from_header_through_body_keeping_lines() {
 
     let rust =
         format!("const KEY: &str = r\"{key}\";\n\nfn after() -> usize {{\n    KEY.len()\n}}\n");
-    let redacted = Redaction::of_file(Path::new("src/key.rs"), &rust)
-        .apply(&rust)
-        .into_owned();
+    let redacted = Redaction::of_text(&rust).apply(&rust).into_owned();
     assert!(!redacted.contains("MIIEow"), "{redacted}");
     assert!(!redacted.contains("VTLw7o"), "{redacted}");
     assert!(!redacted.contains("LxoS2t"), "{redacted}");
@@ -82,6 +51,7 @@ fn private_keys_are_redacted_from_header_through_body_keeping_lines() {
 }
 
 // {test}`requirements.authoring.redaction`
+// {test}`requirements.sdk.sources.redaction`
 #[test]
 fn tokens_in_code_are_redacted_without_adjacent_code() {
     let token = github_token();
@@ -95,6 +65,7 @@ fn tokens_in_code_are_redacted_without_adjacent_code() {
 }
 
 // {test}`requirements.authoring.redaction`
+// {test}`requirements.sdk.sources.redaction`
 #[test]
 fn heuristic_findings_alone_are_not_redacted() {
     let source = "const DIGEST: &str = \"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\";\n\
@@ -104,7 +75,18 @@ fn heuristic_findings_alone_are_not_redacted() {
     assert_eq!(redact_text(source), source);
 }
 
+// {test}`requirements.sdk.sources.redaction`
+#[test]
+fn configuration_keys_do_not_add_sdk_specific_secret_rules() {
+    let text = "version = 1\n[authoring.configs.local]\napi_key = 'plain-key'\n";
+    assert_eq!(redact_text(text), text);
+    let token = github_token();
+    let text = format!("api_key = '{token}'\n");
+    assert_eq!(redact_text(&text), "api_key = '[REDACTED:GitHub Token]'\n");
+}
+
 // {test}`requirements.authoring.redaction`
+// {test}`requirements.sdk.sources.redaction`
 #[test]
 fn slices_concatenate_to_the_redacted_whole() {
     let source = format!("a {}\nb\n", private_key());
@@ -121,6 +103,7 @@ fn slices_concatenate_to_the_redacted_whole() {
 }
 
 // {test}`requirements.authoring.redaction`
+// {test}`requirements.sdk.sources.redaction`
 #[test]
 fn regions_extend_both_ways_keep_crlf_and_scan_past_a_mebibyte() {
     let token = github_token();

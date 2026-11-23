@@ -1,7 +1,7 @@
 {
   "example": "Two search results remain outstanding; one has no matches. Submission MUST\nreturn an error naming both UUIDs. Finishing only the first MUST leave\nsubmission rejected with the second UUID. Finishing the empty search with\n`used: []` MUST permit an otherwise valid subsequent submission.\n{test}`requirements.authoring.submission.searches`\n{test}`requirements.authoring.submission.searches.recovery`",
   "determination": true,
-  "rationale": "The example describes a concrete case with three expected outcomes. The test `src/authoring/mod.rs#mod[tests]/fn[every_submission_kind_waits_for_all_searches_and_can_recover]` carries a {test} reference to it and checks each outcome. I did not read the `SearchProvider` or `delivered_searches` helpers. I relied on the test's own assertions and request counts.\n\n**Setup.** The first scripted turn issues a `ripgrep` call that has matches and an `ast_grep` call for `absent()` that has none. The test asserts that exactly two searches were delivered, which gives the two outstanding results, one of them empty.\n\n**Outcome 1: submission returns an error naming both UUIDs.**\n- The second turn includes a submission together with `finish_search`, `habeas` and `ripgrep` calls. The submission is made while both searches are still open.\n- The test asserts that `requests[2]` contains the \"not run: the response also made a submission\" message.\n- It also asserts that this message contains both `search_id` values, \"Call finish_search for every listed search_id\" and \"then resubmit\".\n- The test asserts that the accompanying `finish_search` is skipped (`tool_skipped.finish_search == 1`), so both searches stay open. It also asserts that the other accompanying calls are skipped, and that the skipped `habeas` call does not record `fn[untouched]`.\n\n**Outcome 2: finishing only the first search leaves submission rejected with the second UUID.**\n- The next turn runs `Finish(0, [\"1\"])` alone. The turn after that submits again.\n- The test asserts that `requests[4]` contains \"outstanding searches\" and the second search's UUID, and does not contain the first search's UUID.\n- The total request count of 6 shows that this submission was not accepted. If it had been, the run would have ended with fewer requests.\n\n**Outcome 3: finishing the empty search with `used: []` permits a valid submission.**\n- The test runs `Finish(1, vec![])` and then submits again.\n- `assess` or `verify` returns successfully (`unwrap`). The `requests.len() == 6` check confirms the final submission was the sixth turn.\n- For `submit_judgment`, the test checks that the evidence contains `fn[helper]` with a hash. For `submit_verification`, it checks `!result.real`.\n- The log assertions confirm `finish_search` was called 3 times and that two failures were recorded.\n\nThe test loops over both `submit_judgment` and `submit_verification`, so the behaviour is checked for each submission kind. I found no gap.",
+  "rationale": "The example `requirements.authoring.search_accounting.recovery` gives a concrete case: two outstanding searches, one empty. It states three expected outcomes. The test `src/authoring/mod.rs#mod[tests]/fn[every_submission_kind_waits_for_all_searches_and_can_recover]` carries a `{test}` reference to it and covers each outcome. It runs for both `submit_judgment` and `submit_verification`.\n\n- **Setup:** The first turn calls `ripgrep` with a pattern that matches and `ast_grep` with `absent()`, which matches nothing. The test then finds two delivered results with distinct `search_id`s in `requests[1]`, using `delivered_searches`, which looks for objects that have both `search_id` and `matches`. The empty search therefore has its own ID.\n- **Error naming both UUIDs:** The second turn submits while both searches are still open. The test asserts that the resulting error text, `requests[2]`, contains both `searches[0]` and `searches[1]` IDs. It also contains the instruction \"Call finish_search for every listed search_id\" and \"then resubmit\". Both submission kinds are checked.\n- **Finishing only the first leaves the second outstanding:** The test finishes search 0 with `used:[\"1\"]`, then submits. It asserts that the rejection text, `requests[4]`, contains \"outstanding searches\", does not contain the first UUID, and does contain the second UUID.\n- **Finishing the empty search with `used: []`:** The test runs `Finish(1, vec![])`, then submits again, and the submission succeeds. For `submit_judgment`, `assess` returns Ok. For `submit_verification`, `verify` returns Ok with `real == false`. The test asserts exactly 6 requests.\n- **Supporting accounting:** Further assertions check the `finish_search` call and skip counts, and that exactly 2 tool failures were recorded, one for each rejected submission.\n\nOne caveat: the first rejection is a submission made alongside other calls, so it also carries the \"not run: the response also made a submission\" text. It still exercises a submission with both IDs outstanding, and the assertions match the example's wording. I found no unresolved gap.",
   "references": "63f37c1e456c2dd9c2eb1b67e5792fd2697897bf96d443a1ea85dce81b23c1ef",
   "inputs": [
     {
@@ -27,36 +27,73 @@
     },
     {
       "file": "src/authoring/mod.rs",
-      "item": "mod[tests]/impl[SearchProvider/CompletionProvider]",
-      "hash": "70bbc645a2a03bc40c052199813352da9f14ad166a47e580569e307394764069"
-    },
-    {
-      "file": "src/authoring/mod.rs",
       "item": "mod[tests]/fn[delivered_searches]",
       "hash": "92b393a2f7d8c748ef9408c4e791f884ac99fb07a9fb1e170f9ca7d11d0af970"
     },
     {
-      "file": "src/authoring/mod.rs",
-      "item": "mod[tests]/struct[SearchProvider]",
-      "hash": "9042539e2da2dea68bae329a5a11bea7a08571a4f47a3014f756ccec8182ad0a"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "impl[HabeasConversation<'_,%20F>/habeas_sdk::agent::Conversation]/fn[submit]",
-      "hash": "7b4bf34d2563fa7764af6a1cce752c2a0f08e72c80317bd3b9ba6fc73b9499a4"
+      "requirements": "requirements.authoring.submission.searches*",
+      "matches": [
+        "requirements.authoring.submission.searches",
+        "requirements.authoring.submission.searches.accompanying_calls",
+        "requirements.authoring.submission.searches.diagnostic",
+        "requirements.authoring.submission.searches.line_numbers",
+        "requirements.authoring.submission.searches.recovery"
+      ],
+      "text": [
+        ":::{req} submission.searches",
+        "An otherwise valid `submit_judgment` or `submit_verification` call MUST be",
+        "rejected while any search remains outstanding.",
+        ":::",
+        "",
+        ":::{req} submission.searches.accompanying_calls",
+        "Non-submission tool calls accompanying a submission, including `finish_search`,",
+        "MUST be skipped, even when the submission is rejected for outstanding searches.",
+        ":::",
+        "",
+        ":::{req} submission.searches.diagnostic",
+        "The tool error for an outstanding-search rejection MUST list",
+        "every outstanding UUID and explain that `finish_search` is required before",
+        "resubmitting.",
+        ":::",
+        "",
+        ":::{req} submission.searches.line_numbers",
+        "After validating submission arguments or resolving the UUID resubmission",
+        "form, the outstanding-search gate MUST precede line-number rejection or",
+        "acceptance. An outstanding-search rejection MUST NOT consume the line-number",
+        "resubmission or submission reminder.",
+        ":::",
+        "",
+        ":::{req} submission.searches.recovery",
+        "An outstanding-search rejection MUST leave the assessment open for the model",
+        "to finish its searches and submit again. It MUST NOT accept a judgment or",
+        "publish evidence.",
+        ":::"
+      ]
     }
   ],
   "format_version": 1,
   "review_version": "habeas-review-v1",
   "dependencies": [
     {
-      "OutgoingEdges": [
+      "Node": [
         {
-          "Requirement": "requirements.authoring.search_accounting.recovery"
+          "ReferenceSet": "requirements.authoring.search_accounting.recovery"
         },
         {
           "scheme": "habeas-reference-set-v1",
           "value": "63f37c1e456c2dd9c2eb1b67e5792fd2697897bf96d443a1ea85dce81b23c1ef"
+        }
+      ]
+    },
+    {
+      "OutgoingEdges": [
+        {
+          "Requirement": "requirements.authoring.search_accounting.recovery"
+        },
+        "Mandatory",
+        {
+          "scheme": "node-path-set-sha256-v1",
+          "value": "beb14159e689676a4c8e406f71e31f7a7ab8b701c2bad207174c415a40e9573f"
         }
       ]
     },
@@ -96,23 +133,6 @@
               "scheme": "repo",
               "location": "src/authoring/mod.rs"
             },
-            "selector": "mod[tests]/impl[SearchProvider/CompletionProvider]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "e7edfb9a909c65631afc85b615777fa9bdf56fa3ce2d0579346792b7b0f5a40b"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/authoring/mod.rs"
-            },
             "selector": "mod[tests]/fn[delivered_searches]"
           }
         },
@@ -125,34 +145,11 @@
     {
       "Node": [
         {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/authoring/mod.rs"
-            },
-            "selector": "mod[tests]/struct[SearchProvider]"
-          }
+          "RequirementSelection": "requirements.authoring.submission.searches*"
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "6e4eb52b67fb5316e6d90adcce87dacb9f500a76db4ac807a48d7e0de524e943"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/authoring/mod.rs"
-            },
-            "selector": "impl[HabeasConversation<'_,%20F>/habeas_sdk::agent::Conversation]/fn[submit]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "1b25af4d265a147793bdfd8d6fbea8cd35403b5bcc5d552df15c7f9617bb6012"
+          "value": "fa3f9994ceb9e6a5fba7e8775c8b2d048dcb229a4bf7327446b106aa0a4911b3"
         }
       ]
     }

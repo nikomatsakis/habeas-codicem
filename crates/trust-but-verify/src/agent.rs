@@ -1,9 +1,8 @@
-//! The reusable tool conversation loop. Applications supply review policy,
-//! source-tool adapters, and telemetry; providers only transport requests.
+//! Configure the SDK's supplied Bedrock, OpenAI, and Ollama agents.
 
 use rig_core::{
     completion::{CompletionRequest, CompletionResponse, FinishReason, ToolDefinition},
-    message::{Message, ToolResultContent, UserContent, turn_failure},
+    message::{Message, ToolResultContent, turn_failure},
 };
 use serde_json::Value;
 use std::{
@@ -12,20 +11,48 @@ use std::{
     time::{Duration, Instant},
 };
 
+// {impl}`requirements.sdk.graph.context-tools.pages.behavior`
+pub(super) fn next_page_id() -> usize {
+    static NEXT_PAGE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    NEXT_PAGE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+#[path = "agent/backoff.rs"]
 mod backoff;
+#[path = "agent/config.rs"]
+mod config;
+#[path = "agent/configured.rs"]
+mod configured;
+#[path = "agent/project_sources.rs"]
+pub(crate) mod project_sources;
+#[path = "agent/providers.rs"]
+pub(crate) mod providers;
+#[path = "agent/sources.rs"]
+#[cfg(test)]
 mod sources;
+#[path = "agent/tools.rs"]
 mod tools;
-pub use backoff::{ProviderBackoff, RETRY_LIMIT, Retry, failure_codes, retry_after};
+#[doc(hidden)]
+pub use backoff::{ProviderBackoff, RETRY_LIMIT, Retry, failure_codes};
+pub use config::{
+    AgentConfig, BedrockConfig, BedrockCredentials, OllamaConfig, OpenAiConfig, OptionValue,
+    SecretString,
+};
+pub(crate) use configured::ConfiguredAgent;
+#[doc(hidden)]
 pub use tools::{NoTools, ToolAgent, ToolDelivery, ToolFactory, ToolSession};
 
 /// Built-in project source tools with an application graph-observation mapping.
 ///
 /// File access and outline languages use the SDK's defaults. The mapping
 /// receives the exact snapshot delivered to the agent.
+#[doc(hidden)]
+#[cfg(test)]
 pub struct SourceTools<F> {
     inner: sources::SourceTools<crate::sources::LocalSources, F>,
 }
 
+#[cfg(test)]
 impl<F> SourceTools<F> {
     // {impl}`requirements.sdk.sources.provider`
     /// Inspect this project directory and map selected items into the graph.
@@ -39,12 +66,13 @@ impl<F> SourceTools<F> {
     }
 }
 
+#[cfg(test)]
 impl<D, F> ToolFactory<D> for SourceTools<F>
 where
     D: crate::domain::Domain,
     F: Fn(
             &crate::resource::OutlineId,
-            &crate::ParsedSource,
+            &crate::sources::ParsedSource,
         ) -> Result<Option<crate::graph::Dependency<D::NodeId, D::EdgeLabel>>, String>
         + Send
         + Sync,
@@ -58,6 +86,7 @@ where
     }
 }
 
+#[doc(hidden)]
 pub trait CompletionProvider: Send + Sync {
     // {cite}`habeas:util`
     fn complete(
@@ -71,9 +100,11 @@ pub trait CompletionProvider: Send + Sync {
 }
 
 #[cfg(test)]
+#[path = "agent/tests.rs"]
 mod tests;
 
 // {cite}`habeas:util`
+#[doc(hidden)]
 pub enum Submission<T> {
     Accepted(T),
     Retry(String),
@@ -81,6 +112,7 @@ pub enum Submission<T> {
 
 /// One call's state. A factory can create independent sessions for concurrent
 /// calls while their delivered reads contribute to the same inspection trace.
+#[doc(hidden)]
 pub trait Conversation: Send {
     type Output: Send;
 
@@ -129,9 +161,12 @@ pub trait Conversation: Send {
 }
 
 // {impl}`requirements.sdk.graph.agent-calls.judge.submission`
+// {impl}`requirements.sdk.graph.agent-harness.submission.acceptance`
+// {impl}`requirements.sdk.graph.agent-harness.submission.reminder`
 // {impl}`requirements.authoring.submission_count`
 // {impl}`requirements.authoring.provider_backoff`
 // {impl}`requirements.authoring.output_limit`
+#[doc(hidden)]
 pub async fn converse<P: CompletionProvider, C: Conversation>(
     provider: &P,
     session: &mut C,
@@ -205,6 +240,37 @@ pub async fn converse<P: CompletionProvider, C: Conversation>(
             .iter()
             .filter(|call| call.function.name.as_str() == submit)
             .collect();
+        // Habeas's authoring bridge retains its separate submission protocol.
+        if calls.is_empty() || (submit == "submit_result" && submissions.len() > 1) {
+            if reminded {
+                return Err(io::Error::other(format!(
+                    "model must invoke {submit} exactly once, even after a reminder; {} submissions received",
+                    submissions.len()
+                )));
+            }
+            reminded = true;
+            request.chat_history.extend(response.message());
+            if !calls.is_empty() {
+                let results = calls
+                    .iter()
+                    .map(|call| {
+                        session.tool(call.function.name.as_str(), true);
+                        call.error_result(vec![ToolResultContent::text(format!(
+                            "not run: invoke {submit} exactly once"
+                        ))])
+                    })
+                    .collect();
+                request.chat_history.push(Message::tool_results(results));
+            }
+            let reminder = if submit == "submit_result" {
+                format!("Reminder: you MUST invoke {submit} exactly once to submit your result.")
+            } else {
+                format!("Reminder: you MUST submit your result with the {submit} tool.")
+            };
+            request.chat_history.push(Message::user(reminder));
+            session.save()?;
+            continue;
+        }
         if !submissions.is_empty() {
             for call in &calls {
                 if call.function.name.as_str() != submit {
@@ -252,22 +318,6 @@ pub async fn converse<P: CompletionProvider, C: Conversation>(
                     continue;
                 }
             }
-        }
-        if calls.is_empty() {
-            if reminded {
-                return Err(io::Error::other(format!(
-                    "model finished without invoking {submit}, even after a reminder"
-                )));
-            }
-            reminded = true;
-            request.chat_history.extend(response.message());
-            request.chat_history.push(Message::User {
-                content: vec![UserContent::text(format!(
-                    "Reminder: you MUST submit your result with the {submit} tool."
-                ))],
-            });
-            session.save()?;
-            continue;
         }
         request.chat_history.push(
             response

@@ -5,8 +5,10 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{future::Future, sync::Mutex};
 
+mod pages;
 mod runtime;
 pub use crate::procedure::ValidationContext;
+pub use pages::{PageError, PageId, PagedText};
 pub use runtime::Validator;
 
 // {impl}`requirements.sdk.graph.fingerprint`
@@ -98,10 +100,38 @@ pub struct Record<N, L = ()> {
 ///
 /// The captured evidence metadata is available through read-only accessors.
 ///
-/// ```compile_fail
-/// use trust_but_verify::{domain::Domain, graph::Fingerprinted};
+/// ```compile_fail,E0616
+/// use trust_but_verify::{Domain, Fingerprinted};
 /// fn change_revision<D: Domain>(answer: &mut Fingerprinted<D, bool>) {
 ///     answer.revision = "different rules".into();
+/// }
+/// ```
+///
+/// ```compile_fail,E0616
+/// use trust_but_verify::{CriterionPath, Domain, Fingerprinted};
+/// fn change_source<D: Domain>(answer: &mut Fingerprinted<D, bool>, source: D::NodeId) {
+///     answer.source = source;
+/// }
+/// ```
+///
+/// ```compile_fail,E0616
+/// use trust_but_verify::{CriterionPath, Domain, Fingerprinted};
+/// fn change_question<D: Domain>(answer: &mut Fingerprinted<D, bool>) {
+///     answer.criterion = CriterionPath::new(vec![]);
+/// }
+/// ```
+///
+/// ```compile_fail,E0616
+/// use trust_but_verify::{Domain, Fingerprinted};
+/// fn change_inputs<D: Domain>(answer: &mut Fingerprinted<D, bool>) {
+///     answer.dependencies.clear();
+/// }
+/// ```
+///
+/// ```compile_fail,E0616
+/// use trust_but_verify::{Domain, Fingerprinted};
+/// fn change_answer<D: Domain>(answer: &mut Fingerprinted<D, bool>) {
+///     answer.output = false;
 /// }
 /// ```
 // {test}`requirements.sdk.graph.evidence.inputs`
@@ -150,9 +180,12 @@ impl<D: Domain, O> Fingerprinted<D, O> {
 // {cite}`habeas:util`
 /// An ordered, deduplicated log for adapters retaining their own wire inputs.
 #[derive(Clone, Debug)]
+#[doc(hidden)]
+#[cfg(feature = "habeas-integration")]
 pub struct Trace<T> {
     observations: Vec<T>,
 }
+#[cfg(feature = "habeas-integration")]
 impl<T> Default for Trace<T> {
     // {cite}`habeas:util`
     fn default() -> Self {
@@ -161,6 +194,7 @@ impl<T> Default for Trace<T> {
         }
     }
 }
+#[cfg(feature = "habeas-integration")]
 impl<T: PartialEq> Trace<T> {
     // {cite}`habeas:util`
     pub fn observe(&mut self, value: T) {
@@ -236,6 +270,7 @@ pub trait Criterion<D: Domain>: Send + Sized {
 pub struct InspectionContext<'d, D: Domain> {
     graph: &'d D,
     observations: Mutex<Vec<Dependency<D::NodeId, D::EdgeLabel>>>,
+    pages: Mutex<pages::Pages<D::NodeId>>,
 }
 
 impl<'d, D: Domain> InspectionContext<'d, D> {
@@ -244,6 +279,7 @@ impl<'d, D: Domain> InspectionContext<'d, D> {
         Self {
             graph,
             observations: Mutex::new(Vec::new()),
+            pages: Mutex::new(pages::Pages::new()),
         }
     }
 
@@ -264,12 +300,44 @@ impl<'d, D: Domain> InspectionContext<'d, D> {
     // {impl}`requirements.sdk.graph.snapshot`
     pub fn read_snapshot(&self, node: &D::NodeId) -> Result<Snapshot<D::NodeContent>, D::Error> {
         let snapshot = self.prepare_read(node)?;
-        self.observe_read(node.clone(), snapshot.fingerprint.clone());
+        self.record_read(node.clone(), snapshot.fingerprint.clone());
         Ok(snapshot)
     }
 
+    /// Format a retained node observation into an initial page and continuations.
+    // {impl}`requirements.sdk.graph.context-tools.pages.fn`
+    // {impl}`requirements.sdk.graph.context-tools.pages.inputs`
+    pub fn read_paged(&self, node: &D::NodeId) -> Result<PagedText, D::Error> {
+        let snapshot = self.prepare_read(node)?;
+        let text = crate::redaction::redact_text(&snapshot.content.format()).into_owned();
+        let result = self.pages.lock().expect("page storage poisoned").prepare(
+            text,
+            node.clone(),
+            snapshot.fingerprint.clone(),
+        );
+        self.record_read(node.clone(), snapshot.fingerprint);
+        Ok(result)
+    }
+
+    /// Return a continuation from the same prepared snapshot without rereading.
+    // {impl}`requirements.sdk.graph.context-tools.pages.fn`
+    // {impl}`requirements.sdk.graph.context-tools.pages.behavior`
+    // {impl}`requirements.sdk.graph.context-tools.pages.inputs`
+    pub fn read_page(&self, page: &PageId) -> Result<String, PageError> {
+        let prepared = self
+            .pages
+            .lock()
+            .expect("page storage poisoned")
+            .read(page)?;
+        self.record_read(prepared.node, prepared.fingerprint);
+        Ok(prepared.text)
+    }
+
     /// Prepare a paged result without claiming its delivery.
-    pub fn prepare_read(&self, node: &D::NodeId) -> Result<Snapshot<D::NodeContent>, D::Error> {
+    pub(crate) fn prepare_read(
+        &self,
+        node: &D::NodeId,
+    ) -> Result<Snapshot<D::NodeContent>, D::Error> {
         let content = self.graph.node_content(node)?;
         let fingerprint = content.fingerprint();
         Ok(Snapshot {
@@ -297,7 +365,7 @@ impl<'d, D: Domain> InspectionContext<'d, D> {
 
     /// Prepare a relationship result without claiming delivery.
     // {cite}`habeas:util`
-    pub fn prepare_edges(
+    pub(crate) fn prepare_edges(
         &self,
         node: &D::NodeId,
         label: D::EdgeLabel,
@@ -311,7 +379,7 @@ impl<'d, D: Domain> InspectionContext<'d, D> {
     }
 
     /// Import the fingerprint of the exact snapshot delivered to the caller.
-    pub fn observe_read(&self, node: D::NodeId, fingerprint: Fingerprint) {
+    pub(crate) fn record_read(&self, node: D::NodeId, fingerprint: Fingerprint) {
         let mut observations = self.observations.lock().expect("dependency trace poisoned");
         if !observations.iter().any(|dependency| {
             matches!(dependency,
@@ -321,9 +389,20 @@ impl<'d, D: Domain> InspectionContext<'d, D> {
         }
     }
 
+    /// Habeas adapter hook for a delivered, retained observation.
+    #[doc(hidden)]
+    #[cfg(feature = "habeas-integration")]
+    pub fn observe_read(&self, node: D::NodeId, fingerprint: Fingerprint) {
+        self.record_read(node, fingerprint);
+    }
+
     // {cite}`habeas:util`
-    pub fn observe_edges(&self, node: D::NodeId, label: D::EdgeLabel, fingerprint: Fingerprint)
-    where
+    pub(crate) fn observe_edges(
+        &self,
+        node: D::NodeId,
+        label: D::EdgeLabel,
+        fingerprint: Fingerprint,
+    ) where
         D::EdgeLabel: PartialEq,
     {
         self.observe_edges_by(node, label, fingerprint, |a, b| a == b);
@@ -366,6 +445,18 @@ impl<'d, D: Domain> InspectionContext<'d, D> {
             dependencies: self.dependencies(),
             output: serde_json::to_value(output)?,
         })
+    }
+}
+
+impl<D: crate::SourceNodes> InspectionContext<'_, D> {
+    // {impl}`requirements.sdk.graph.context-tools.read_source.fn`
+    // {impl}`requirements.sdk.sources.provider_observations`
+    pub fn read_source(
+        &self,
+        item: &crate::outline::OutlineId,
+    ) -> Result<D::NodeContent, D::Error> {
+        let node = self.graph.source_node(item)?;
+        self.read(&node)
     }
 }
 

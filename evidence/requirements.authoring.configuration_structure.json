@@ -1,7 +1,7 @@
 {
   "requirement": "{impl}`requirements.configuration.feature_sections`\nHabeas MUST define its authoring configuration using these data structures:\n\n```text\nUserAuthoringConfig {\n    default: Optional<ConfigName>,\n    configs: Map<ConfigName, AuthoringConfig>,\n    projects: Map<CanonicalProjectRoot, ProjectSelection>,\n}\n\nWorkspaceAuthoringConfig {\n    default: Optional<ConfigName>,\n    configs: Map<ConfigName, AuthoringConfig>,  // omitted means empty\n}\n\nProjectSelection {\n    config: ConfigName,\n}\n\nAuthoringConfig {\n    backend: BackendConfig,                   // tagged union, flattened in TOML\n    concurrency: Optional<PositiveInteger>,   // simultaneous assessments\n    policy: Optional<AssessmentPolicy>,       // default: Once for OpenAI; Confirm otherwise\n}\n\nAssessmentPolicy = Confirm | Once             // TOML: \"confirm\" or \"once\"\n\nBackendConfig = Bedrock(BedrockConfig) | Ollama(OllamaConfig) | Openai(OpenAiConfig)\n\nBedrockConfig {\n    model: ModelId,                           // model ID or inference-profile ID/ARN\n    aws_profile: Optional<String>,\n    region: Optional<String>,\n    credentials: Optional<BedrockCredentials>,\n    options: Map<String, OptionValue>,\n}\n\nBedrockCredentials {\n    access_key_id: SecretString,\n    secret_access_key: SecretString,\n    session_token: Optional<SecretString>,\n}\n\nOllamaConfig {\n    model: ModelId,                           // exact identifier, including tag\n    endpoint: Optional<String>,               // default: http://localhost:11434\n    api_key_env: Optional<EnvironmentVariableName>,\n    api_key: Optional<SecretString>,\n    options: Map<String, OptionValue>,\n}\n\nOpenAiConfig {\n    model: Optional<ModelId>,                 // default: gpt-6.1-sol\n    endpoint: Optional<String>,               // default: https://api.openai.com/v1\n    api_key_env: Optional<EnvironmentVariableName>, // default: OPENAI_API_KEY\n    api_key: Optional<SecretString>,\n    options: Map<String, OptionValue>,\n}\n\nOptionValue = String | Boolean | Integer | FiniteFloat\n            | Array<OptionValue> | Map<String, OptionValue>\n\nSecretString = String                         // serialized normally; redacted in Debug\n\nModelRef {\n    backend: BackendKind,                     // Bedrock, Ollama, or Openai\n    model: ModelId,\n}\n```\n\n`ModelRef` MUST be derived from the selected backend configuration and MUST\npreserve the exact model identifier. It MUST identify the model without replacing\nconnection settings such as AWS profile, region, or Ollama endpoint.",
   "determination": true,
-  "rationale": "The reviewed tests check each part of the data-structure requirement and the `ModelRef` obligations.\n\n**Top-level structures**\n- `UserAuthoringConfig` (`default`, `configs`, `projects`): `tests/configuration.rs#fn[explicit_project_and_default_selections_choose_whole_configs]` resolves the default, a project selection and an explicit name. `fn[user_and_workspace_authoring_tables_round_trip_every_map]` round-trips `[authoring.projects.<root>]` with `config`, and also round-trips an empty `configs = {}`.\n- `WorkspaceAuthoringConfig` (`configs` omitted means empty): `fn[workspace_discovery_uses_nearest_file_without_merging_or_rewriting_it]` parses a workspace file with `default` and no `configs`. It asserts `configs` is empty and that serialization omits `configs`. `fn[user_and_workspace_authoring_tables_round_trip_every_map]` covers a populated workspace table.\n- `ProjectSelection { config }`: covered by the same tests.\n\n**`AuthoringConfig`**\n- The tagged `backend` flattened in TOML is exercised by every parse in these tests.\n- `concurrency`: `fn[authoring_concurrency_defaults_overrides_and_invalid_values]` checks that it is absent by default and not serialized when absent. It checks that a value of 7 round-trips and that `0`, `-1`, `1.5` and `'2'` are rejected, for all three backends.\n- `policy`: `fn[authoring_policy_defaults_to_confirm_and_round_trips]` covers `confirm` and `once` round-trips and rejection of invalid values. `fn[openai_policy_defaults_to_once_without_changing_explicit_policy]` covers the OpenAI default of Once, the Confirm default for other backends, and an explicit policy staying unchanged. `tests/authoring_batch.rs#fn[policy_comes_from_the_flag_then_the_configuration_then_defaults_to_confirm]` covers it end to end.\n\n**Backend configs**\n- Bedrock: `model`, `aws_profile` and `region` are asserted in `fn[user_and_workspace_authoring_tables_round_trip_every_map]`. `credentials` (with and without `session_token`) and its Debug redaction are covered in `fn[explicit_credentials_round_trip_but_diagnostics_and_debug_redact_them]`.\n- Ollama: the default endpoint is asserted, and the unmaterialized default is checked in `fn[backend_configuration_round_trips_without_materializing_defaults]`. A custom endpoint, `api_key_env`, `api_key` (resolved and redacted) and `options` are covered across the configuration tests.\n- OpenAI: `fn[openai_defaults_are_effective_only_and_explicit_values_win]` checks the default model `gpt-6.1-sol` and that explicit models win. `fn[openai_configuration_preserves_model_and_resolves_credentials]` checks the default endpoint, the default `OPENAI_API_KEY` environment name, the custom endpoint and key env, and the `api_key`/`api_key_env` conflict.\n- `OptionValue`: strings, floats, ints, bools, arrays and nested maps are parsed and asserted in `fn[backend_configuration_round_trips_without_materializing_defaults]`. Non-finite floats, including nested ones, are rejected in `fn[storage_rules_reject_each_invalid_field_with_its_setting]`.\n- `SecretString`: redaction in Debug together with normal serialization is covered by the credentials test above.\n\n**`ModelRef`**\n- `fn[user_and_workspace_authoring_tables_round_trip_every_map]` asserts full `ModelRef` equality (backend plus exact model) for a Bedrock inference-profile ARN and an ID with a tag. It also asserts that `aws_profile` and `region` stay on the backend config. For Ollama it checks the model and that the custom endpoint remains.\n- `fn[backend_configuration_round_trips_without_materializing_defaults]` and `fn[openai_configuration_preserves_model_and_resolves_credentials]` cover the Ollama and OpenAI `ModelRef`. `fn[storage_rules_reject_each_invalid_field_with_its_setting]` checks that a model ID with tags and a digest is preserved exactly.\n\n**Possible gap I did not count**\nNo test shows that a workspace file's `[authoring.projects]` is rejected. The requirement's structure simply has no `projects` field for the workspace type, and it does not state a rejection obligation. I did not treat that as a gap.\n\nEvery stated obligation is mapped to concrete scenarios with real assertions, so I found no gap.",
+  "rationale": "The reviewed tests cover each structural obligation of `requirements.authoring.configuration_structure` and assert the outcomes.\n\n**User and workspace tables**\n- `tests/configuration.rs#fn[user_and_workspace_authoring_tables_round_trip_every_map]` checks `UserAuthoringConfig`: `default`, `configs`, and `projects` keyed by canonical root, with `ProjectSelection.config`. It round-trips each table through TOML.\n- The same test checks an empty `configs` map for the user table. It also checks a populated workspace table, and it checks that the loader decodes it the same way as `WorkspaceConfig::parse`.\n- `tests/configuration.rs#fn[workspace_discovery_uses_nearest_file_without_merging_or_rewriting_it]` covers \"omitted means empty\". A workspace file with no `configs` yields an empty map, and the serialized form omits `configs`.\n- `tests/configuration.rs#fn[explicit_project_and_default_selections_choose_whole_configs]` uses `ProjectSelection { config }` for project selection and the `default` field.\n\n**`AuthoringConfig`**\n- The flattened tagged `backend` appears in every test as `backend = 'bedrock'`, `'ollama'`, or `'openai'`.\n- `tests/configuration.rs#fn[authoring_concurrency_defaults_overrides_and_invalid_values]` covers `concurrency`. It checks an absent value stays `None` and is not serialized, a value of 7 round-trips, and `0`, `-1`, `1.5`, and `'2'` are rejected.\n- `tests/configuration.rs#fn[authoring_policy_defaults_to_confirm_and_round_trips]` covers `AssessmentPolicy`. It checks the TOML names \"confirm\" and \"once\", rejects \"twice\", \"Confirm\", and `true`, and checks that an absent policy is not serialized.\n- `tests/configuration.rs#fn[openai_policy_defaults_to_once_without_changing_explicit_policy]` covers the OpenAI default of Once and an explicit \"confirm\" that stays Confirm.\n- The Confirm default for a non-OpenAI backend is checked with an Ollama config. It is not checked separately for Bedrock.\n\n**Backend structures and defaults**\n- Bedrock `model`, `aws_profile`, `region`, and `options` are checked in `tests/configuration.rs#fn[backend_configuration_round_trips_without_materializing_defaults]` and in the `user_and_workspace_authoring_tables_round_trip_every_map` test above.\n- Bedrock `credentials` with an optional `session_token` are checked in `tests/configuration.rs#fn[explicit_credentials_round_trip_but_diagnostics_and_debug_redact_them]`. That test also covers Ollama `api_key` and OpenAI `api_key`, round-trips them, and asserts the secrets do not appear in `Debug` output (`SecretString` redaction).\n- Ollama `endpoint` defaults to `http://localhost:11434` without being materialized. Its `api_key_env` and `api_key` are checked in `explicit_credentials_round_trip_but_diagnostics_and_debug_redact_them` and in `tests/configuration.rs#fn[storage_rules_reject_each_invalid_field_with_its_setting]`.\n- `tests/configuration.rs#fn[openai_configuration_preserves_model_and_resolves_credentials]` and `tests/configuration.rs#fn[openai_defaults_are_effective_only_and_explicit_values_win]` check the OpenAI defaults: model `gpt-6.1-sol`, endpoint `https://api.openai.com/v1`, and `api_key_env` `OPENAI_API_KEY`. They also check that explicit values win and that defaults are not serialized.\n- `OptionValue` is covered in `backend_configuration_round_trips_without_materializing_defaults`. It checks float, integer, boolean, array, and nested map values, and checks that non-finite floats, including nested ones, are rejected in `storage_rules_reject_each_invalid_field_with_its_setting`.\n\n**`ModelRef`**\n- `user_and_workspace_authoring_tables_round_trip_every_map` compares `model_ref()` to `ModelRef { backend: Bedrock, model }` for an ARN and an inference-profile ID. It also checks that `aws_profile` and `region` stay in the backend config.\n- Ollama and OpenAI model refs are checked for exact models, including `tiny:latest`, `name:tag@sha256:abc`, and `account-model-id`. The Ollama `endpoint` is still `http://server:11434` after `model_ref()`.\n\n**Gaps**\nI found no obligation without a test. The tests carry `{test}` references to the subject, and no gaps are acknowledged by `{fixme}`. A workspace `projects` table is outside the supplied structure. Documentation and other tests treat it as user-only, so I did not count it as a gap.",
   "references": "6b15313bcbf9ee38c946597bdc55a9865def49cccb73689dacdda77c9877e0d4",
   "inputs": [
     {
@@ -120,7 +120,7 @@
     {
       "file": "tests/configuration.rs",
       "item": "fn[explicit_credentials_round_trip_but_diagnostics_and_debug_redact_them]",
-      "hash": "b6f32f79cc5df5c37ac701067f5277f5c24fbedc55966aa71cd8f535b2f57e64"
+      "hash": "52771bf0a10b774d3d1396f143062cbb182c05aec8264c6ee16385b5fd0145a0"
     },
     {
       "file": "tests/configuration.rs",
@@ -148,29 +148,29 @@
       "hash": "694de1ad2802366f472b78c3a6bf63c800fee820e569933eadb308bd2367fb14"
     },
     {
+      "file": "tests/configuration.rs",
+      "item": "fn[feature_sections_are_scoped_and_absent_sections_use_defaults]",
+      "hash": "d84f40c8c0d842619615d9b885ab05397856bc343bdd9b95209c724f63c93ca5"
+    },
+    {
       "file": "src/config.rs",
       "item": "struct[WorkspaceAuthoringConfig]",
       "hash": "dc77877aa0ec14ccc3722764dc03c147573d21c90195f6398c6ccae78ce104c5"
     },
     {
       "file": "src/config.rs",
-      "item": "struct[UserAuthoringConfig]",
-      "hash": "d2e5b7da032551910106c5024d9b6a286b1603c0268a63b9a2b851fe3330153b"
+      "item": "struct[BedrockConfig]",
+      "hash": "e123937a7e339468258c2a8a9a0926311f6b446c5430b1aaf5668aa82d758e15"
     },
     {
-      "file": "tests/configuration.rs",
-      "item": "fn[invalid_schema_and_feature_values_report_the_configuration_path]",
-      "hash": "f0903831c57bc55e09ef682d4b1105d6d9fdf9a3dd60d12bf165e7da658811fb"
+      "file": "src/config.rs",
+      "item": "struct[OllamaConfig]",
+      "hash": "75a1dacb21ac62202f7a625fbd76627d723870f174a00fed5d8ec05515f76fc9"
     },
     {
-      "file": "tests/configuration.rs",
-      "item": "fn[authoring_documentation_shows_each_configuration_task]",
-      "hash": "3ea3afb047e7bab519f45bd38ad14b9ae7c050e0d7a9c72f2fc3d9cc6218eb05"
-    },
-    {
-      "file": "tests/configuration.rs",
-      "item": "fn[feature_sections_are_scoped_and_absent_sections_use_defaults]",
-      "hash": "d84f40c8c0d842619615d9b885ab05397856bc343bdd9b95209c724f63c93ca5"
+      "file": "src/config.rs",
+      "item": "struct[OpenAiConfig]",
+      "hash": "e461a99c1e9e9f37109a845e66b022b00f9aeae0af212d81f0dac2ebb39d0a51"
     }
   ],
   "format_version": 1,
@@ -325,7 +325,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "ad315183b985fa31a61aab9969a058cf0d4e4a71b0673e4c021a8d7fa40039b3"
+          "value": "23430f176f540a6c9fbd408f9e1e985ccefc1fd9ce36e7d015a740df889ba0e7"
         }
       ]
     },
@@ -420,6 +420,23 @@
           "Source": {
             "resource": {
               "scheme": "repo",
+              "location": "tests/configuration.rs"
+            },
+            "selector": "fn[feature_sections_are_scoped_and_absent_sections_use_defaults]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "84282a02ceae82e803e21f25b493ef1e1ff38e5b34d706cf6ab1cbea5884b29d"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
               "location": "src/config.rs"
             },
             "selector": "struct[WorkspaceAuthoringConfig]"
@@ -439,12 +456,12 @@
               "scheme": "repo",
               "location": "src/config.rs"
             },
-            "selector": "struct[UserAuthoringConfig]"
+            "selector": "struct[BedrockConfig]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "ce99958e15d154aa80cb768b3d3e1f26efd41df7570d0f0994fc30721f148906"
+          "value": "8dc46426749a2f6f174e01db871f0f90ee758a073c318aa580f25ac0bdd78432"
         }
       ]
     },
@@ -454,14 +471,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "tests/configuration.rs"
+              "location": "src/config.rs"
             },
-            "selector": "fn[invalid_schema_and_feature_values_report_the_configuration_path]"
+            "selector": "struct[OllamaConfig]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "cc148da02f11190c4a6494cc43e9957d6e4e8752387d03ee0f65ef9de877a58d"
+          "value": "1268117350c3ca1d8eb39c9d1174a2c05ee02ec53f5c274be14844d42d416abf"
         }
       ]
     },
@@ -471,31 +488,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "tests/configuration.rs"
+              "location": "src/config.rs"
             },
-            "selector": "fn[authoring_documentation_shows_each_configuration_task]"
+            "selector": "struct[OpenAiConfig]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "6aec586bdc223d1893b3fae4270474ecee5355eff86e087884086667bd9bac3b"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "tests/configuration.rs"
-            },
-            "selector": "fn[feature_sections_are_scoped_and_absent_sections_use_defaults]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "84282a02ceae82e803e21f25b493ef1e1ff38e5b34d706cf6ab1cbea5884b29d"
+          "value": "9f12043cab938d007f69bb2918daf208a5273c08d210c5c76875d7c46d48a122"
         }
       ]
     }

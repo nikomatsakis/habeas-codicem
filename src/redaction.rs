@@ -1,4 +1,47 @@
-pub(crate) use trust_but_verify::redaction::*;
+use std::{fs, ops::Range, path::Path};
+
+use toml_edit::{Item, Value};
+use trust_but_verify::__habeas::redaction::{Redaction as SourceRedaction, Region};
+pub(crate) use trust_but_verify::__habeas::redaction::{redact_lines, redact_text};
+
+/// HC's configuration recognition layered on the SDK's fixed secret rules.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Redaction(SourceRedaction);
+
+impl Redaction {
+    /// Use generic source rules for a non-configuration observation.
+    #[cfg(test)]
+    pub(crate) fn of_text(source: &str) -> Self {
+        Self(SourceRedaction::of_text(source))
+    }
+
+    /// Apply HC configuration fields as well as the generic SDK rules.
+    pub(crate) fn of_file(path: &Path, source: &str) -> Self {
+        Self::of_file_with_config(path, source, None)
+    }
+
+    // {impl}`requirements.authoring.redaction`
+    // {impl}`requirements.authoring.credentials`
+    pub(crate) fn of_file_with_config(path: &Path, source: &str, user: Option<&Path>) -> Self {
+        let generic = SourceRedaction::of_text(source);
+        Self(if is_configuration_file_for(path, user) {
+            generic.with_regions(configuration_regions(source))
+        } else {
+            generic
+        })
+    }
+}
+
+impl std::ops::Deref for Redaction {
+    type Target = SourceRedaction;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+#[cfg(test)]
+mod configuration_tests;
 
 #[cfg(test)]
 pub(crate) mod tests {
@@ -20,7 +63,6 @@ pub struct CredentialField {
     pub span: Range<usize>,
 }
 
-
 /// Whether this is a Habeas configuration file or an alias of the supplied user file.
 // {cite}`habeas:util`
 fn is_configuration_file_for(path: &Path, user: Option<&Path>) -> bool {
@@ -34,7 +76,6 @@ fn is_configuration_file_for(path: &Path, user: Option<&Path>) -> bool {
         || fs::canonicalize(user)
             .is_ok_and(|user| fs::canonicalize(path).is_ok_and(|path| path == user))
 }
-
 
 /// Regions of the explicit credential fields of a configuration file. A file
 /// that does not parse as TOML cannot be searched by field, so all of it is
@@ -55,7 +96,6 @@ fn configuration_regions(source: &str) -> Vec<Region> {
         }],
     }
 }
-
 
 /// The explicit credential fields of a Habeas configuration document: every
 /// value under an authoring configuration's `credentials`, and its `api_key`.
@@ -86,7 +126,6 @@ pub fn credential_fields(source: &str) -> Option<Vec<CredentialField>> {
     Some(fields)
 }
 
-
 /// Collects the leaf values under a credential item, each named by its key.
 // {cite}`habeas:util`
 fn item_fields(
@@ -113,7 +152,6 @@ fn item_fields(
         Item::None => {}
     }
 }
-
 
 /// Collects the leaf values of a credential value. A string is redacted
 /// inside its quotes so the replacement stays readable TOML.
@@ -156,4 +194,3 @@ fn value_fields(
         }
     }
 }
-

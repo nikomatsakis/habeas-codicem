@@ -505,6 +505,58 @@ fn evidence_rejects_disallowed_ancestors_even_when_symlinks_target_allowed_sourc
     }
 }
 
+// {test}`requirements.configuration.evidence_paths`
+// {test}`requirements.ci.input_containment`
+// {test}`requirements.ci.outline_inputs`
+#[cfg(unix)]
+#[test]
+fn validation_checks_alias_targets_for_external_allow_and_disallow() {
+    let temp = fixture();
+    let root = temp.path().join("project");
+    let external = temp.path().join("shared");
+    fs::create_dir(&external).unwrap();
+    let source = external.join("data.txt");
+    fs::write(&source, "shared contents\n").unwrap();
+    let target = toml::Value::String(source.display().to_string());
+    let allowed = format!("version = 1\n[evidence]\nallow = [{target}]\n");
+    fs::write(root.join("habeas.toml"), &allowed).unwrap();
+    let original = outline(&root, source.to_str().unwrap(), "");
+    let inside_alias = root.join("alias.txt");
+    let outside_alias = temp.path().join("outside-alias.txt");
+    for alias in [&inside_alias, &outside_alias] {
+        std::os::unix::fs::symlink(&source, alias).unwrap();
+    }
+    for name in [
+        "alias.txt".to_owned(),
+        outside_alias.to_str().unwrap().to_owned(),
+    ] {
+        let mut input = original.clone();
+        input["file"] = json!(name);
+        write_inputs(&root, vec![input]);
+        fs::write(root.join("habeas.toml"), "version = 1\n").unwrap();
+        let errors = validate_repository(&root).unwrap().errors.join("\n");
+        assert!(
+            errors.contains("outside the repository"),
+            "{name}: {errors}"
+        );
+        fs::write(root.join("habeas.toml"), &allowed).unwrap();
+        let report = validate_repository(&root).unwrap();
+        assert!(report.errors.is_empty(), "{name}: {:?}", report.errors);
+
+        // Permit the alias itself, but disallow only the resolved target.
+        let alias = toml::Value::String(name.clone());
+        fs::write(
+            root.join("habeas.toml"),
+            format!("version = 1\n[evidence]\nallow = [{alias}]\ndisallow = [{target}]\n"),
+        )
+        .unwrap();
+        let errors = validate_repository(&root).unwrap().errors.join("\n");
+        assert!(errors.contains("disallowed"), "{name}: {errors}");
+        assert!(errors.contains(&name), "{errors}");
+        fs::write(root.join("habeas.toml"), &allowed).unwrap();
+    }
+}
+
 // {test}`requirements.configuration.workspace_location`
 // {test}`requirements.configuration.evidence_paths`
 // {test}`requirements.configuration.workspace_structure`
@@ -579,6 +631,56 @@ fn discovered_external_cargo_outputs_validate_freshness_and_obey_disallow() {
         write_inputs(&root, vec![input]);
         let report = validate_repository(&root).unwrap();
         assert!(report.errors.is_empty(), "{:?}", report.errors);
+        #[cfg(unix)]
+        {
+            let alias = out.join("alias.rs");
+            std::os::unix::fs::symlink(&generated, &alias).unwrap();
+            let input = outline(&root, alias.to_str().unwrap(), "fn[generated]");
+            write_inputs(&root, vec![input]);
+            let report = validate_repository(&root).unwrap();
+            assert!(report.errors.is_empty(), "{:?}", report.errors);
+
+            // A project-local alias may resolve to a discovered external output.
+            let project_alias = root.join("generated.rs");
+            std::os::unix::fs::symlink(&generated, &project_alias).unwrap();
+            let input = outline(&root, "generated.rs", "fn[generated]");
+            write_inputs(&root, vec![input]);
+            let report = validate_repository(&root).unwrap();
+            assert!(report.errors.is_empty(), "{:?}", report.errors);
+
+            // The resolved target's explicit disallow still takes precedence.
+            fs::write(
+                root.join("habeas.toml"),
+                format!(
+                    "version = 1\n[evidence]\ndisallow = [{}]\n",
+                    toml::Value::String(generated.display().to_string())
+                ),
+            )
+            .unwrap();
+            let errors = validate_repository(&root).unwrap().errors.join("\n");
+            assert!(errors.contains("disallowed"), "{errors}");
+            assert!(errors.contains("generated.rs"), "{errors}");
+            fs::write(root.join("habeas.toml"), "version = 1\n").unwrap();
+
+            // An alias outside both the project and generated output remains denied.
+            let external_alias = temp.path().join("external-alias.rs");
+            std::os::unix::fs::symlink(&generated, &external_alias).unwrap();
+            let mut input = outline(&root, "generated.rs", "fn[generated]");
+            input["file"] = json!(external_alias.to_str().unwrap());
+            write_inputs(&root, vec![input]);
+            let errors = validate_repository(&root).unwrap().errors.join("\n");
+            assert!(errors.contains("outside the repository"), "{errors}");
+            let unrelated = temp.path().join("unrelated.rs");
+            fs::write(&unrelated, "pub fn generated() {}\n").unwrap();
+            std::os::unix::fs::symlink(&unrelated, root.join("unrelated-alias.rs")).unwrap();
+            let mut input = outline(&root, "generated.rs", "fn[generated]");
+            input["file"] = json!("unrelated-alias.rs");
+            write_inputs(&root, vec![input]);
+            let errors = validate_repository(&root).unwrap().errors.join("\n");
+            assert!(errors.contains("outside the repository"), "{errors}");
+            let input = outline(&root, "generated.rs", "fn[generated]");
+            write_inputs(&root, vec![input]);
+        }
         fs::write(&generated, "pub fn generated() { changed(); }\n").unwrap();
         let errors = validate_repository(&root).unwrap().errors.join("\n");
         assert!(errors.contains("outline input changed"), "{errors}");

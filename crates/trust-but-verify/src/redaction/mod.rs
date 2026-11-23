@@ -1,4 +1,4 @@
-//! Credential redaction for source text that models receive or Habeas displays.
+//! Fixed credential redaction for source and model-visible text.
 //!
 //! Redaction locates byte regions of the original source and replaces each
 //! with `[REDACTED:<kind>]` followed by the region's line breaks, so line
@@ -6,13 +6,10 @@
 //! hashes use [`Redaction::slice`] for each text piece.
 
 use std::borrow::Cow;
-use std::fs;
 use std::ops::Range;
-use std::path::Path;
 use std::sync::OnceLock;
 
 use secretshape::Scanner;
-use toml_edit::{Item, Value};
 
 /// The rule name `secretshape` gives findings of its entropy heuristic.
 const HEURISTIC: &str = "high-entropy-token";
@@ -33,30 +30,20 @@ pub struct Redaction {
 }
 
 impl Redaction {
-    /// Redaction by `secretshape` rules alone, for text that is not a Habeas
-    /// configuration file.
+    /// Locate recognized credentials using the SDK's fixed rules.
+    // {impl}`requirements.sdk.sources.redaction`
     // {cite}`habeas:util`
     pub fn of_text(source: &str) -> Self {
         Self::merge(secret_regions(source))
     }
 
-    /// Redaction of a file: `secretshape` rules everywhere, plus explicit
-    /// credential fields in a workspace `habeas.toml`. Use
-    /// [`Self::of_file_with_config`] to include a user configuration file.
-    // {cite}`habeas:util`
-    pub fn of_file(path: &Path, source: &str) -> Self {
-        Self::of_file_with_config(path, source, None)
-    }
-
-    /// Redacts a file with an explicit consumer user-configuration location.
-    // {impl}`requirements.authoring.redaction`
-    // {impl}`requirements.authoring.credentials`
-    pub fn of_file_with_config(path: &Path, source: &str, user: Option<&Path>) -> Self {
-        let mut regions = secret_regions(source);
-        if is_configuration_file_for(path, user) {
-            regions.extend(configuration_regions(source));
-        }
-        Self::merge(regions)
+    /// Add HC's explicit configuration spans to the generic rule matches.
+    ///
+    /// This bridge is available only to the Habeas integration.
+    #[cfg(feature = "habeas-integration")]
+    pub fn with_regions(mut self, regions: Vec<Region>) -> Self {
+        self.regions.extend(regions);
+        Self::merge(self.regions)
     }
 
     /// Sorts regions and joins overlapping ones under the first one's kind.
@@ -124,8 +111,7 @@ impl Redaction {
     }
 }
 
-/// Redacts text that is not a configuration file, such as a declaration or
-/// a citation's commentary.
+/// Redacts recognized credentials in source or model-visible text.
 // {cite}`habeas:util`
 pub fn redact_text(text: &str) -> Cow<'_, str> {
     let redaction = Redaction::of_text(text);
@@ -137,6 +123,7 @@ pub fn redact_text(text: &str) -> Cow<'_, str> {
 
 /// Redacts each line of a line list as one text, keeping the line count.
 // {cite}`habeas:util`
+#[cfg(feature = "habeas-integration")]
 pub fn redact_lines(lines: &[String]) -> Vec<String> {
     let text = lines.join("\n");
     match redact_text(&text) {
@@ -227,5 +214,5 @@ fn secret_regions(source: &str) -> Vec<Region> {
     regions
 }
 
-#[cfg(all(test, feature = "default-languages"))]
+#[cfg(test)]
 mod tests;

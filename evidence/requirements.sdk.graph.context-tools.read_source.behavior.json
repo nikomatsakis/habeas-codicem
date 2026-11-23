@@ -1,8 +1,8 @@
 {
-  "requirement": "The supplied `SourceTools` adapter exposes `read_source` with a resource\nidentity and an optional outline selector. It calls `SourceAnalysis::parse`\nand selects the requested item from the returned snapshot's outline.\nAn omitted or empty selector selects the whole resource.\n`SourceAnalysis::parse` returns a `ParsedSource` containing the resource\nidentity, source bytes, and outline from the same snapshot, under\n{cite}`requirements.sdk.sources.provider_results.parse_snapshot`. The tool\nresult contains the selected `OutlineId` and its text.",
+  "requirement": "The agent's `read_source` tool accepts a project-relative file path and an\noptional outline selector. An omitted or empty selector identifies the whole file.\nThe project-relative path and selector identify an `OutlineId` under\n{cite}`requirements.sdk.sources.source_nodes`. The Rust operation accepts the\n`OutlineId` directly. It maps that outline identity into the application's\ngraph, then obtains its node contents through `Domain::node_content`.\nThe selected file belongs to the project scope under\n{cite}`requirements.sdk.sources.local_provider`. Mapping and read failures\nreturn errors.\n\nThe Rust caller receives `D::NodeContent`; the agent receives those same\ncontents presented by `NodeContents::format` under\n{cite}`requirements.sdk.graph.node_content.format`.",
   "determination": true,
-  "rationale": "The reviewed tests cover each obligation in `read_source.behavior`. I did not request implementation source, because the tests' assertions were enough to judge adequacy.\n\n**Obligations derived from the text**\n1. `SourceTools` exposes `read_source` with a resource identity and an optional selector.\n2. It parses through `SourceAnalysis::parse` and selects the item from the returned snapshot's outline.\n3. An omitted or empty selector selects the whole resource.\n4. The tool result contains the selected `OutlineId` and its text.\n5. The parse snapshot pairing is cited from `requirements.sdk.sources.provider_results.parse_snapshot`. I treated that as context and did not reassess it.\n\n**Test mapping**\n- `crates/habeas-sdk/tests/agent.rs#fn[source_tools_forward_arguments_and_present_discovery_and_read_results]` calls `read_source` through a session with three selector forms:\n  - an omitted selector,\n  - an empty selector, and\n  - `fn[chosen]`.\n  For each, it asserts that `node` equals `{resource, selector}`, with the selector defaulting to `\"\"`. It also asserts the exact `text`:\n  - the whole two-line file for the omitted and empty selectors, and\n  - only `fn chosen() { call(); }` for `fn[chosen]`.\n  The observation callback receives the `OutlineId` selectors `[\"\", \"\", \"fn[chosen]\"]`. This confirms that omitted and empty selectors normalise to the whole resource, and that the selection happens on a parsed snapshot. The provider's source text is delivered through `SourceAnalysis::parse` with the Rust language registry.\n- `fn[source_reads_track_optional_dependencies_and_empty_searches_remain_discovery]` omits the selector through the real agent and `LocalSources`. It asserts the delivered tool result exactly: `{\"node\":{\"resource\":…,\"selector\":\"\"},\"text\":[\"observed source\"]}`, and the result is not an error. It also asserts that the callback ran once for the read, and that parsing directly beforehand did not run it.\n- `fn[cached_selected_source_reads_record_exact_delivered_contents_and_errors_add_no_input]` reads `fn[observed]` from a `CachedProvider` source whose current source differs. It also reads a missing selector. The recorded fingerprint is the selected node's lines from the parsed snapshot, `fn observed() { call(); }`. This shows the selection comes from the parsed snapshot's outline and not from the current graph contents.\n- `fn[source_read_pages_retain_text_and_dependencies_without_another_read]` checks that a large whole-resource read, with the selector omitted, returns `node.selector == \"\"` and the full text. It reassembles both from pages even after the file changes on disk.\n\n**Assessment**\nThe inputs the text distinguishes are omitted, empty and specific selectors, and a missing selector. Each is exercised, and the result's `OutlineId` and text are asserted. I found no plausible violation that these tests would accept. Examples are returning the wrong node, returning only part of the text for an empty selector, or using bytes from a different snapshot.\n\nThe `parse_snapshot` obligation is cited, so it needs no separate coverage here.\n\nThere are no acknowledgments and no marking gaps.",
-  "references": "6c4db54a2aaffd08fc313a8309f763061d6158dedf4555acd65ef947dbed2c62",
+  "rationale": "The reviewed tests cover every obligation in `read_source.behavior`.\n\n**Whole-file default.** `omitted_and_explicit_empty_selectors_deliver_the_same_whole_file` in `project_sources.rs` reads once with the selector omitted and once with `\"\"`. It asserts the same node address (`path` plus empty `selector`), the same text, and the same dependency each time.\n\n**Agent and Rust inputs map to an `OutlineId`.**\n- `fixed_tools_deliver_domain_contents_with_mandatory_snapshot_dependencies` dispatches `read_source` and checks the result. The text is the domain's \"prepared domain contents\", not the disk text \"disk text\".\n- It also checks that the dependency is `Node(\"source-node\", Content.fingerprint())`, which shows the read went through `Domain::node_content`.\n- `direct_source_reads_preserve_mapping_errors_and_record_only_successful_returns` calls `inspection.read_source(&OutlineId)` directly, so the Rust operation takes an `OutlineId`.\n- It returns the domain content, and `returned.format()` equals \"prepared contents\".\n- `read_nodes` records `source-node`, which shows the mapped node was read.\n\n**Selector forwarding.**\n- The test domain's `source_node` supports only `source.txt` with an empty selector.\n- The direct test passes `line[unknown]` and the unknown path `unknown.txt`. Both fail with \"unsupported source item\", and no read occurs (`reads == 0`).\n- The dispatch test passes selectors `line[unknown]` and `fn[unclosed`. Both return errors.\n- A non-empty selector is therefore passed to the mapping step. If it were dropped, those reads would succeed.\n\n**Project scope, from the cited `local_provider`.**\n- The dispatch test reads a `.gitignore`d `ignored.txt` and `../source.txt`. Both return errors, and the read count stays at 1.\n- `supplied_agent_uses_attached_project_tools_in_both_configuration_orders` in `configured.rs` goes through a real agent loop. It reads an ignored file, and the output contains \"excluded\".\n- It then reads a visible file and gets the domain snapshot, not the disk contents. It does this in both configuration orders and with a different decoy project attached.\n\n**Mapping and read failures return errors.** The direct test and `fixed_source_reads_redact_delivery_and_propagate_preparation_errors` set `fail_read` and assert the \"prepared source read failed\" error. The direct test also asserts that failed attempts record no dependencies.\n\n**The caller gets `D::NodeContent`; the agent gets `NodeContents::format` output.**\n- The direct test checks `returned.format()` and `returned.fingerprint()`.\n- The dispatch tests check the delivered text. A text file gives `mapped[\"text\"] == \"a source snapshot\"`.\n- The long-text case checks that the paged retained text is the formatted content, with \"é\" repeated 20,000 times.\n- The retained text is unchanged after the domain changes.\n- This also supports \"formatting uses the retained value without further reads\": the read count stays at 3 across the paged reads.\n\n**Gaps.**\n- I found none. Only a successful read with a non-empty selector against the domain is not exercised in the new `OutlineId` tests. Its mapping is the domain's responsibility under `source_nodes`, and selector forwarding is already shown by the failing cases.\n- Nested ignore exceptions and Git metadata exclusion belong to `local_provider`'s own tests. They are not reassessed here.",
+  "references": "facfbc9a8f72079bd8775dedea4d4084dffc2a0b60f9abcebba6427de9fb0e98",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.context-tools.read_source.behavior",
@@ -11,53 +11,213 @@
       ],
       "text": [
         ":::{req} read_source.behavior",
-        "The supplied `SourceTools` adapter exposes `read_source` with a resource",
-        "identity and an optional outline selector. It calls `SourceAnalysis::parse`",
-        "and selects the requested item from the returned snapshot's outline.",
-        "An omitted or empty selector selects the whole resource.",
-        "`SourceAnalysis::parse` returns a `ParsedSource` containing the resource",
-        "identity, source bytes, and outline from the same snapshot, under",
-        "{cite}`requirements.sdk.sources.provider_results.parse_snapshot`. The tool",
-        "result contains the selected `OutlineId` and its text.",
+        "The agent's `read_source` tool accepts a project-relative file path and an",
+        "optional outline selector. An omitted or empty selector identifies the whole file.",
+        "The project-relative path and selector identify an `OutlineId` under",
+        "{cite}`requirements.sdk.sources.source_nodes`. The Rust operation accepts the",
+        "`OutlineId` directly. It maps that outline identity into the application's",
+        "graph, then obtains its node contents through `Domain::node_content`.",
+        "The selected file belongs to the project scope under",
+        "{cite}`requirements.sdk.sources.local_provider`. Mapping and read failures",
+        "return errors.",
+        "",
+        "The Rust caller receives `D::NodeContent`; the agent receives those same",
+        "contents presented by `NodeContents::format` under",
+        "{cite}`requirements.sdk.graph.node_content.format`.",
         ":::"
       ]
     },
     {
-      "requirements": "requirements.sdk.sources.provider_results.parse_snapshot",
+      "requirements": "requirements.sdk.sources.source_nodes",
       "matches": [
-        "requirements.sdk.sources.provider_results.parse_snapshot"
+        "requirements.sdk.sources.source_nodes"
       ],
       "text": [
-        ":::{req} provider_results.parse_snapshot",
-        "A parse result retains the source snapshot it describes. A cached parse stays",
-        "paired with those bytes, rather than bytes from a different source snapshot.",
+        ":::{req} source_nodes",
+        "An application supporting tracked source inspection maps `OutlineId` to its",
+        "graph's `NodeId`. The mapped node represents the requested path and selector;",
+        "an unsupported or invalid address returns an error. The SDK reads the mapped",
+        "node through the application's `Domain` interface.",
+        "",
+        "```rust,ignore",
+        "use trust_but_verify::{Domain, OutlineId};",
+        "",
+        "pub trait SourceNodes: Domain {",
+        "    fn source_node(&self, item: &OutlineId) -> Result<Self::NodeId, Self::Error>;",
+        "}",
+        "```",
         ":::"
       ]
     },
     {
-      "file": "crates/habeas-sdk/tests/agent.rs",
+      "requirements": "requirements.sdk.sources.local_provider",
+      "matches": [
+        "requirements.sdk.sources.local_provider"
+      ],
+      "text": [
+        ":::{req} local_provider",
+        "Source inspection uses the project directory and respects `.gitignore`,",
+        "including nested ignore files and their exceptions. Untracked files are",
+        "available unless ignored. The same scope applies to listing, reading,",
+        "outlining, text search, and structural search, including requests naming a",
+        "file or subdirectory directly.",
+        "",
+        "Files outside the project directory and Git metadata are excluded. A direct",
+        "read of an excluded file returns an error.",
+        ":::"
+      ]
+    },
+    {
+      "requirements": "requirements.sdk.graph.node_content.format",
+      "matches": [
+        "requirements.sdk.graph.node_content.format"
+      ],
+      "text": [
+        ":::{req} node_content.format",
+        "`trust_but_verify::NodeContents::format` presents the retained",
+        "{term}`requirements.sdk.graph.node_contents` as text for an agent:",
+        "",
+        "```rust,ignore",
+        "pub trait NodeContents: Send + Sync {",
+        "    // ...",
+        "",
+        "    /// Present these retained contents as text for an agent.",
+        "    /// Use the same observation described by fingerprint().",
+        "    /// Everything needed for presentation is retained in this value.",
+        "    fn format(&self) -> String;",
+        "",
+        "    // ...",
+        "}",
+        "```",
+        "",
+        "Formatting uses the retained value and completes without further resource reads",
+        "or fallible preparation.",
+        ":::"
+      ]
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/configured.rs",
+      "item": "mod[tests]/fn[supplied_agent_uses_attached_project_tools_in_both_configuration_orders]",
+      "hash": "0f79a2bae12944a0ea525269a2968607f3ab2e851bf954ab526dca0ba7d8a59a"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/project_sources.rs",
+      "item": "mod[tests]/fn[fixed_tools_deliver_domain_contents_with_mandatory_snapshot_dependencies]",
+      "hash": "283f01f5306b517d055960be8fd5ec8cf869a394c2e684f1d6f2d025e950d698"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/project_sources.rs",
+      "item": "mod[tests]/fn[omitted_and_explicit_empty_selectors_deliver_the_same_whole_file]",
+      "hash": "13537e7b8c8392087bf800dbc23f3af86cbe4fec3dd0983e4609b510309907d1"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/project_sources.rs",
+      "item": "mod[tests]/fn[source_capable_validator_tracks_deterministic_reads_and_reuses_saved_results]",
+      "hash": "c787f70923af20cf2558977f5bf353488d9f5a04e1834db3be71ce5d13205cd2"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/project_sources.rs",
+      "item": "mod[tests]/fn[direct_source_reads_preserve_mapping_errors_and_record_only_successful_returns]",
+      "hash": "74e7352dcaedd09a079419bd2e96b4e4680f1302833a8f7ba446162809005b62"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/project_sources.rs",
+      "item": "mod[tests]/fn[fixed_source_reads_redact_delivery_and_propagate_preparation_errors]",
+      "hash": "162bafdaeaa1e8c9a4776f562c3239ec741d4ce271d16083800e4238bbfecb2e"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[source_tools_keep_search_discovery_separate_from_delivered_source_reads]",
-      "hash": "6f6a5d0359977f95c526e78887e4fd745d386378ca3639d3976a85abdb1bb74e"
+      "hash": "e2c5ca55f33612a8327fd76444dfc72df073e6750366e5bbdef10a9c9d5143c0"
     },
     {
-      "file": "crates/habeas-sdk/tests/agent.rs",
+      "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[source_reads_track_optional_dependencies_and_empty_searches_remain_discovery]",
-      "hash": "f123e642e677b6fd4086d0b35128eb66a10b68886a8aceb0baa810ebbc16ce51"
+      "hash": "fe46fc4d013a7fa8a42c6e3f2353e4e07df244f0224e223f1cd7b54d04666af1"
     },
     {
-      "file": "crates/habeas-sdk/tests/agent.rs",
+      "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[cached_selected_source_reads_record_exact_delivered_contents_and_errors_add_no_input]",
-      "hash": "9506aea38c76a0ce95a660e4024145963fb87742e7c87765a033cf08ba020291"
+      "hash": "7386be2ddbca9d88e14ca3125015ec4c1556961b55bb126db8cfea733add13f0"
     },
     {
-      "file": "crates/habeas-sdk/tests/agent.rs",
+      "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[source_read_pages_retain_text_and_dependencies_without_another_read]",
-      "hash": "9e314aafc90337288ddae91f9a624feda814cbe4ad09b63b9982a2d1a34874dc"
+      "hash": "535e1e48270a507a6434e1b2a1512d40a31218b7baea1378f607425dac83a056"
     },
     {
-      "file": "crates/habeas-sdk/tests/agent.rs",
+      "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[source_tools_forward_arguments_and_present_discovery_and_read_results]",
-      "hash": "287d4c1911ff5e84e5b444a910b071e58fab1d3c9231671bf787bcaca78fe03f"
+      "hash": "6ed6b592475158f6952de3c3182e2040ba0b5a1ca56d26c11cc39016f25002bd"
+    },
+    {
+      "definition": "requirements.sdk.application_domain",
+      "text": [
+        "::::{definition} application_domain",
+        ":phrase: application domain",
+        "",
+        ":::{cite} requirements.sdk.domain",
+        "An *application domain* is the application's graph, node contents, and evidence",
+        "storage, made available together for criterion execution. In the SDK, it",
+        "implements [`Domain`](../rustdocs/trust_but_verify/trait.Domain.html) to supply",
+        "its shared types, node and edge operations, and evidence persistence.",
+        ":::",
+        "::::"
+      ]
+    },
+    {
+      "definition": "requirements.sdk.graph.node",
+      "text": [
+        ":::{definition} node",
+        ":phrase: graph node",
+        "",
+        "A *graph node* is a thing identified in the application's graph, such as a",
+        "requirement, a function, a test, or an issue. The application's",
+        "[`Domain::NodeId`](../../rustdocs/trust_but_verify/trait.Domain.html#associatedtype.NodeId)",
+        "identifies it; its contents and the criteria evaluated on it are separate from",
+        "that identity.",
+        ":::"
+      ]
+    },
+    {
+      "definition": "requirements.sdk.graph.node_contents",
+      "text": [
+        ":::{definition} node_contents",
+        ":phrase: node contents",
+        "",
+        "*Node contents* are the application-defined data read from a",
+        "{term}`requirements.sdk.graph.node` as inputs when evaluating a",
+        "{term}`requirements.sdk.graph.validation.criterion`. An agent uses these inputs",
+        "to assess whether the criterion holds in the project. They can be source text,",
+        "parsed code, issue data, or another structured value. In the SDK,",
+        "[`Domain::NodeContent`](../../rustdocs/trust_but_verify/trait.Domain.html#associatedtype.NodeContent)",
+        "represents this value and",
+        "[`Domain::node_content`](../../rustdocs/trust_but_verify/trait.Domain.html#tymethod.node_content)",
+        "obtains it. The value implements",
+        "[`NodeContents`](../../rustdocs/trust_but_verify/trait.NodeContents.html)",
+        "to supply its fingerprint and agent text.",
+        ":::"
+      ]
+    },
+    {
+      "definition": "requirements.sdk.graph.validation.criterion",
+      "text": [
+        ":::{definition} criterion",
+        ":phrase: criterion",
+        "",
+        "A *criterion* is a value describing a test to perform on a",
+        "{term}`requirements.sdk.graph.node`.",
+        "In the SDK, its type implements",
+        "[`Criterion<D>`](../../../rustdocs/trust_but_verify/trait.Criterion.html) for the",
+        "{term}`requirements.sdk.application_domain`. Its",
+        "members describe the question's answer, identity, review rules, and execution.",
+        ":::"
+      ]
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/project_sources.rs",
+      "item": "mod[tests]/impl[Project/SourceNodes]/fn[source_node]",
+      "hash": "cb3fcaeadf86e508aba0be677bf59d6f8d8a34606fac549bf012aab08b3d1131"
     }
   ],
   "format_version": 1,
@@ -70,7 +230,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "6c4db54a2aaffd08fc313a8309f763061d6158dedf4555acd65ef947dbed2c62"
+          "value": "facfbc9a8f72079bd8775dedea4d4084dffc2a0b60f9abcebba6427de9fb0e98"
         }
       ]
     },
@@ -82,7 +242,7 @@
         "Mandatory",
         {
           "scheme": "node-path-set-sha256-v1",
-          "value": "26262a0fbf3c75a4edba8333d2d62466dd81f52347570405632808ea1226d483"
+          "value": "05b6b9e2b975db166f09db701904e57b43e5858def61ab58eca4fe35f8541a12"
         }
       ]
     },
@@ -93,18 +253,40 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "2b4ee8c5a946def6a3107b705c6cdf821062a24a82f28442cb92571a03fb6c35"
+          "value": "1e6e8b4d257d41a8e3a19f31c81dd0c70bcefb163aa958cc9a607c4382a5c9fa"
         }
       ]
     },
     {
       "Node": [
         {
-          "Requirement": "requirements.sdk.sources.provider_results.parse_snapshot"
+          "Requirement": "requirements.sdk.sources.source_nodes"
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "307b8adbe5d853b0dda9c9d226f791cd9321a13ba5e0fadd015d8da1f1dbc3e6"
+          "value": "0c42fc08484cc28d4929b0729ede2dd6d014ce420f2638908846f382dcbad5be"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Requirement": "requirements.sdk.sources.local_provider"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "40db2dc632e2225b3ba0682e31c5bdaf609ded48e960bd31668e5f6dd9fc2f4c"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Requirement": "requirements.sdk.graph.node_content.format"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "12ac92a58b2b163e9bb3093f0e73ff3c8c8b233ce04e42f6e29a7847f43de16c"
         }
       ]
     },
@@ -114,14 +296,116 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/agent.rs"
+              "location": "crates/trust-but-verify/src/agent/configured.rs"
+            },
+            "selector": "mod[tests]/fn[supplied_agent_uses_attached_project_tools_in_both_configuration_orders]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "1b4dadbf7c3ec0a7989e80d7634ec8e3104c297f027e0fcd53a1ed200e75d24d"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/project_sources.rs"
+            },
+            "selector": "mod[tests]/fn[fixed_tools_deliver_domain_contents_with_mandatory_snapshot_dependencies]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "ce305a4430e03c8bcf296b8787556627a98f02ecf9d3b91d016eba2574125fc0"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/project_sources.rs"
+            },
+            "selector": "mod[tests]/fn[omitted_and_explicit_empty_selectors_deliver_the_same_whole_file]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "661a323496a1bb658428987ec24b25b35b7904bd7ca7b694e717a78487247770"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/project_sources.rs"
+            },
+            "selector": "mod[tests]/fn[source_capable_validator_tracks_deterministic_reads_and_reuses_saved_results]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "ef149487803df9873d141a05ea1e71fb42c40b2f8835710906cb1978728ec713"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/project_sources.rs"
+            },
+            "selector": "mod[tests]/fn[direct_source_reads_preserve_mapping_errors_and_record_only_successful_returns]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "fba2bcabd8bf11ae8f77346e187eb5591a70c67ec42959f6a0ea2812d06a3f15"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/project_sources.rs"
+            },
+            "selector": "mod[tests]/fn[fixed_source_reads_redact_delivery_and_propagate_preparation_errors]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "a30a519da31d9c385f0092dcb24d6df05300f25fb523858060744dfed8e5a8cb"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/tests.rs"
             },
             "selector": "fn[source_tools_keep_search_discovery_separate_from_delivered_source_reads]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "84156ca7579395fdaa909acd719611606e025b59cafb21b4889ecc2fc4b86c75"
+          "value": "1e8b9d27d51aae098bcbebe17aaf8aa044d4a2c2a2828e223905f251df2399b8"
         }
       ]
     },
@@ -131,14 +415,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/agent.rs"
+              "location": "crates/trust-but-verify/src/agent/tests.rs"
             },
             "selector": "fn[source_reads_track_optional_dependencies_and_empty_searches_remain_discovery]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "099b92e9efac7bfa5c1d2537c94af897cef1bf60d7a223f7a3cce71e2842bf63"
+          "value": "99114f4a7660355207491d3e0db46b8c6467a92309cde0c81d24f76263887a96"
         }
       ]
     },
@@ -148,14 +432,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/agent.rs"
+              "location": "crates/trust-but-verify/src/agent/tests.rs"
             },
             "selector": "fn[cached_selected_source_reads_record_exact_delivered_contents_and_errors_add_no_input]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "356b35ce38c0933f48f6ee7cee07ecc4db0a4cbad1efc0fba885ad27f411ad42"
+          "value": "459fe765ac36ea136c37db2d356326a88226d0cb994f175b9cf3cc401f3e03e2"
         }
       ]
     },
@@ -165,14 +449,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/agent.rs"
+              "location": "crates/trust-but-verify/src/agent/tests.rs"
             },
             "selector": "fn[source_read_pages_retain_text_and_dependencies_without_another_read]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "890bb876f1c9e91962c2f750902beec3c9ee4a1db6926fe4b2b13a41b6ed8cc6"
+          "value": "daf62c06685c0914c3aae31b5ff5a8e415eaae0ded3b23859385659053104bcb"
         }
       ]
     },
@@ -182,14 +466,75 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/agent.rs"
+              "location": "crates/trust-but-verify/src/agent/tests.rs"
             },
             "selector": "fn[source_tools_forward_arguments_and_present_discovery_and_read_results]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "9d263ff21e9eef63db0ccfa14f01b60a1565bacd124b3b9a79adef073fa968cb"
+          "value": "1df498b5eea4242771a65258440ccb38d5531bbb664caac0043e85c787773db4"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Definition": "requirements.sdk.application_domain"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "80830e9acc805289affe81a67fab64654078e1a68c1eeff59f81ca5b85f589dc"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Definition": "requirements.sdk.graph.node"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "52706959dc6b404c6fda63b917976cd313a4f845713b66a5a449530fee81af00"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Definition": "requirements.sdk.graph.node_contents"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "db95d00e71614f3c62fc06bfc9566c120927d885cfdfa0ea3130ae2de287a240"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Definition": "requirements.sdk.graph.validation.criterion"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "485bb5c38250360c686b79475984964b88506afddab2d3ee54db9c7ac57187db"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/project_sources.rs"
+            },
+            "selector": "mod[tests]/impl[Project/SourceNodes]/fn[source_node]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "401d9769087172372cecdc8de197eb3bfd7b6a6996d8d07c7c410e60cb9e593c"
         }
       ]
     }

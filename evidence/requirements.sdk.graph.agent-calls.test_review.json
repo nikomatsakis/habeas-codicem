@@ -1,7 +1,7 @@
 {
   "example": "{cite}`requirements.sdk.graph.agent-calls.agent_context`\n{cite}`requirements.sdk.graph.agent-calls.judge`\n{cite}`requirements.sdk.graph.agent-calls.judge.node_contents`\n{cite}`requirements.sdk.graph.agent-calls.judge.submission`\n\nThe application can package reusable instructions in its own type:\n\n```rust,ignore\nstruct Instructions {\n    text: String,\n}\n\nimpl Context for Instructions {\n    fn contents(&self) -> std::borrow::Cow<'_, String> {\n        std::borrow::Cow::Borrowed(&self.text)\n    }\n}\n```\n\nThe criterion's `TestReview` answer, introduced in the criteria chapter, is:\n\n```rust,ignore\n/// Whether the tests cover the requirement's behavior and edge cases.\n#[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]\nstruct TestReview {\n    adequate: bool,\n    rationale: String,\n}\n```\n\nHere `review_policy` and `project_conventions` are `Instructions` values shared\nacross reviews, and `question` is a `&str` describing the test-adequacy question:\n\n```rust,ignore\nlet answer: TestReview = cx.ask()\n    .context((&review_policy, &project_conventions))\n    .context(question)\n    .contents_of_current_node()\n    .contents_of_successors(HabeasEdgeLabel::Tests)\n    .await?;\n```\n\nThe tuple combines the first two instruction values. Calling\n`.context(&review_policy)` and then `.context(&project_conventions)` produces the\nsame prefix. A slice or vector handles a variable number of contexts of one type;\ntuples combine different types.\n\nThe request supplies the instructions first, followed by the requirement and its\ntests. Awaiting returns the submitted `TestReview`. Its type can be inferred\nfrom the receiving variable, as above, or chosen with `cx.ask::<TestReview>()`.",
   "determination": true,
-  "rationale": "The example `requirements.sdk.graph.agent-calls.test_review` is a concrete case. It uses `Instructions` and `TestReview` types, a two-instruction tuple context, a question, `contents_of_current_node()` and `contents_of_successors(HabeasEdgeLabel::Tests)`. Its expected behavior is stated: the same prefix from tuple, repeated, slice and vector forms; instructions first, then the requirement and its tests; and the submitted `TestReview` returned. Type inference and `ask::<TestReview>()` are both allowed.\n\nThe only `{test}` reference is `crates/trust-but-verify/src/agent/tests.rs#fn[test_review_example_combines_instructions_before_requirement_and_test_contents]`. It checks each outcome:\n\n- **Setup.** `Memory` is the domain. Node 1 has contents \"Requirement\" and its successor node 2 has contents \"Tests\", via `outgoing_edges` and `node_content` in `impl[Memory/Domain]`. The test's `Instructions` struct implements `Context` as the example shows. The test's `TestReview` has the same fields as the example's. `Script` is a scripted provider that always submits the expected `TestReview` through `submit_result`.\n- **Four equivalent calls.**\n  - Tuple form: `.context((&review_policy, &project_conventions))`, with the result inferred from `let answer: TestReview`.\n  - Two separate calls: `.context(&review_policy).context(&project_conventions)`, using the turbofish `ask::<TestReview>()`.\n  - A `Vec<&Instructions>` context.\n  - A slice context.\n- **Returned value.** All four results are asserted equal to `expected`. This checks that awaiting returns the submitted `TestReview`.\n- **Same prefix.** The test asserts that exactly 4 requests were made. It also asserts that every request's `chat_history` equals the first request's. So the tuple, repeated-call, vector and slice forms give identical prefixes and requests. This matches the example's \"produces the same prefix\" claim and the two-newline separator rule.\n- **Exact prefix.** `requests[0].chat_history[0]` must equal `Message::system(\"Review policy\\n\\nProject conventions\\n\\nDo tests cover all behavior and edge cases?\")`. This pins the order, the separator, and the question's place after the two instruction values.\n- **Instructions before requirement and tests.** The prefix is the system message, and the node contents are in `chat_history[1]`. The test asserts \"Requirement\" appears before \"Tests\" in that serialized message. This checks the call order of `contents_of_current_node` and `contents_of_successors`.\n- **Dependencies.** `cx.inspection().dependencies().len() == 3`. That is the current node, the successor selection and the successor node, which agrees with `judge.node_contents`.\n\nI found no requirement-violating behavior these assertions would accept. Other tests cover the cited requirements `judge.submission` and `judge.node_contents` separately, and the instructions say not to reassess them here.",
+  "rationale": "The example `requirements.sdk.graph.agent-calls.test_review` is a concrete case with stated outcomes, and it has a `{test}` reference. The test is `test_review_example_combines_instructions_before_requirement_and_test_contents` in `crates/trust-but-verify/src/agent/tests.rs`. I checked the outcomes against its inputs and assertions.\n\n**Setup**\n- The test uses a `Memory` domain with node 1 contents \"Requirement\" and node 2 contents \"Tests\".\n- `Memory`'s `outgoing_edges` returns node 2 as the only successor of node 1.\n- The scripted `ToolAgent` answers every request by calling `submit_result` with the expected `TestReview`.\n- `Instructions` implements `Context` by borrowing its text, as in the example.\n\n**Outcomes**\n- **Tuple, and chained calls producing the same prefix.** The test builds the first request with `.context((&review_policy, &project_conventions)).context(question)`. A second request chains `.context(&review_policy).context(&project_conventions).context(question)`. The test asserts that all four requests have `chat_history` equal to `requests[0].chat_history`, and that exactly four requests were made.\n- **Prefix rendering and order.** `requests[0].chat_history[0]` must equal `Message::system(\"Review policy\\n\\nProject conventions\\n\\nDo tests cover all behavior and edge cases?\")`. This checks that the instructions come first, joined by two newlines, and that the question follows them. The `&C` forwarding and `&str` implementations are exercised too.\n- **Slice and vector.** `contexts.clone()` (a `Vec<&Instructions>`) and `contexts.as_slice()` give the same history as the tuple. This covers the example's remark that slices and vectors handle a variable number of contexts of one type.\n- **Requirement before tests.** `text.find(\"Requirement\") < text.find(\"Tests\")` in the serialized `chat_history[1]` checks that the current node's contents come before the `Label` successors' contents. This follows the call order of `contents_of_current_node` and `contents_of_successors(Label)`.\n- **Returned submission.** Each of `answer`, `repeated`, `vector` and `slice` is asserted equal to the expected `TestReview`. The code uses inference (`let answer: TestReview`) and `ask::<TestReview>()`, the two forms the example names.\n- **Node recording.** `cx.inspection().dependencies().len() == 3` checks that reads and selections were recorded across the four calls. This relates to the `judge.node_contents` recording, and the test does not itself pin down which three entries these are.\n\n**Cited requirements**\n- `agent_context` is covered by the combinations (tuple, `&C`, `&str`, `Vec`, slice) and the identical-prefix assertion.\n- `judge` is covered by the builder chain and the awaited results.\n- `judge.node_contents` is covered by the delivery order and the dependency recording.\n- `judge.submission` is covered by the deserialized results.\n\nI found no unresolved gap, and there are no `{fixme}` acknowledgments to consider.",
   "references": "04a5718d06d2606ee0b08ba7d2443e9616d75b7c944e179b650978c11f8b5506",
   "inputs": [
     {
@@ -74,7 +74,7 @@
         "```rust,ignore",
         "use std::borrow::Cow;",
         "",
-        "/// Reusable agent instructions, defined in habeas_sdk::procedure.",
+        "/// Reusable agent instructions, defined in trust_but_verify.",
         "pub trait Context {",
         "    /// Supply reusable text for the beginning of the agent's prompt.",
         "    fn contents(&self) -> Cow<'_, String>;",
@@ -113,7 +113,7 @@
       ],
       "text": [
         ":::{req} judge",
-        "`habeas_sdk::procedure` exposes `Ask` and its public `ContextPhase` and",
+        "`trust_but_verify` exposes `Ask` and its public `ContextPhase` and",
         "`NodePhase` state types. The validation context starts a builder:",
         "",
         "```rust,ignore",
@@ -185,15 +185,9 @@
       ],
       "text": [
         ":::{req} judge.submission",
-        "The SDK derives the submission tool's JSON schema from `R` using `schemars`",
-        "and instructs the agent to finish through the SDK's `submit_result` tool.",
-        "The SDK owns the submission protocol under",
-        "{cite}`requirements.sdk.graph.agent-harness.tool_agent`.",
-        "",
-        "A successful call returns exactly one accepted submitted value, deserialized",
-        "into `R`. Ordinary assistant text does not count. Ending without a valid",
-        "accepted submission returns an error. Provider failures and invalid terminal",
-        "submissions return `ValidationError::Agent`.",
+        "Awaiting the builder returns the harness's accepted result deserialized into",
+        "`R`. The harness obtains the submitted value under",
+        "{cite}`requirements.sdk.graph.agent-harness.submission.acceptance`.",
         ":::"
       ]
     },
@@ -209,13 +203,18 @@
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
+      "item": "impl[Instructions/Context]",
+      "hash": "228de6f8452e7280849c26941a57ddd84cfd81793dd7fd61a06c66267037e762"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "struct[Label]",
       "hash": "301bc99c70bf56636fb12b99d435b11bfee4ba2f67456cf82c19e6e12e0223f6"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
-      "item": "struct[Script]",
-      "hash": "f0046ef614ab83d8dd6ca1717c8bfa847a811b47098951677f675292e6c1bfba"
+      "item": "struct[Memory]",
+      "hash": "565c538114197abba5831912c0ce8485c97f2f89100d3647640517a9036c49e7"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
@@ -226,31 +225,6 @@
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "struct[Instructions]",
       "hash": "557f803b58c126c3876b69b5b23130488796d96cc80322488a6f05ef54f32bf9"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/tests.rs",
-      "item": "impl[Instructions/Context]/fn[contents]",
-      "hash": "90fae397d8ed89106336c4b5e22f0034ad7a3dfda5423a64d9df12a134e1913d"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/tests.rs",
-      "item": "struct[Node]",
-      "hash": "37a5d012a8c68e204aa82707b29ccf1782aab55095e84abb1a0e498034e1b462"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/tests.rs",
-      "item": "struct[Memory]",
-      "hash": "565c538114197abba5831912c0ce8485c97f2f89100d3647640517a9036c49e7"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/tests.rs",
-      "item": "impl[Instructions/Context]",
-      "hash": "228de6f8452e7280849c26941a57ddd84cfd81793dd7fd61a06c66267037e762"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/tests.rs",
-      "item": "impl[Memory]/fn[new]",
-      "hash": "63dc6af710c79845fe88bcbe7cbd88c72a328c14118db166d1d646aab00d1aa0"
     }
   ],
   "format_version": 1,
@@ -297,7 +271,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "d52c5f0aa6362a201a36d2b4e62c9325aa6c3612351141b8741d91c1c4204bdd"
+          "value": "84cb3a73aef489aa3b38af0dd2f85f400ae4da6fa203e7b365a8132b506300a1"
         }
       ]
     },
@@ -308,7 +282,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "0629b57ad895a667ce08faae9d519bff3d68e32cfa765249a504b07d97152988"
+          "value": "f84e62d6b73681c814d493563c916bde4b79871bc005407e39f2b0e33cf79f26"
         }
       ]
     },
@@ -330,7 +304,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "a69e36a9e60f137f256facd239a5c2cb8ffc6bd18bca5e6c91cb0c85ce994cdb"
+          "value": "a1df13589b646996df673c4f3c646eb9f28ebdc1575d9d8b71f4ef2a773732fc"
         }
       ]
     },
@@ -376,6 +350,23 @@
               "scheme": "repo",
               "location": "crates/trust-but-verify/src/agent/tests.rs"
             },
+            "selector": "impl[Instructions/Context]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "a74bb9406537dc3781b3197ae158574050bd64f4995faadb8af1f3a9fd14fd83"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/tests.rs"
+            },
             "selector": "struct[Label]"
           }
         },
@@ -393,12 +384,12 @@
               "scheme": "repo",
               "location": "crates/trust-but-verify/src/agent/tests.rs"
             },
-            "selector": "struct[Script]"
+            "selector": "struct[Memory]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "ca4ec6c97e9e8c40820884aba51fdd70f2ebdce2f021b006c00f8809a8813ab3"
+          "value": "707a56812edb16192bf42a1230d3fca6f8b340ebc97f8e51552dec2acee8a10c"
         }
       ]
     },
@@ -433,91 +424,6 @@
         {
           "scheme": "habeas-input-v1",
           "value": "b7bb3f8b51694eddd8592adfb2ff1348f72d302f4dfebdf0f315e8440b1ba47d"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/tests.rs"
-            },
-            "selector": "impl[Instructions/Context]/fn[contents]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "9aad609b58d74dfe5b3e0fcc6684ac65c36a16a24635dbdfb8f91ce380d3384a"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/tests.rs"
-            },
-            "selector": "struct[Node]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "91f0beae5ef08339aadd5ac7e1d805c59e6c2e6be6bffcd0c2c8190587c236b2"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/tests.rs"
-            },
-            "selector": "struct[Memory]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "707a56812edb16192bf42a1230d3fca6f8b340ebc97f8e51552dec2acee8a10c"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/tests.rs"
-            },
-            "selector": "impl[Instructions/Context]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "a74bb9406537dc3781b3197ae158574050bd64f4995faadb8af1f3a9fd14fd83"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/tests.rs"
-            },
-            "selector": "impl[Memory]/fn[new]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "3225db61a954ea96c54a30c343e75b70c625c39fa7c5182943bfae553e414f92"
         }
       ]
     }

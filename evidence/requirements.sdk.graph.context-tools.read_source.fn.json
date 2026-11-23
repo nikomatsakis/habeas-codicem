@@ -1,8 +1,8 @@
 {
-  "requirement": "The SDK exposes a tracked source read for domains supplying the source-node\nmapping under {cite}`requirements.sdk.sources.source_nodes`. It is available\nas the agent's `read_source` command.\n\nThe Rust interface has this shape; `SourceNodes` names the capability sketched\nin the source chapter:\n\n```rust,ignore\nimpl<'d, D: Domain + SourceNodes> InspectionContext<'d, D> {\n    /// Map this source address into the graph and read its node contents.\n    pub fn read_source(&self, item: &OutlineId) -> Result<D::NodeContent, D::Error>;\n}\n```",
-  "determination": false,
-  "rationale": "The requirement's structural obligation is a specific Rust interface. It is `impl<'d, D: Domain + SourceNodes> InspectionContext<'d, D> { pub fn read_source(&self, item: &OutlineId) -> Result<D::NodeContent, D::Error> }`. The `SourceNodes` capability is the application-supplied mapping from `OutlineId` to `NodeId`.\n\nI found no source that provides this interface:\n- A search of `crates` for `fn read_source` and `SourceNodes` returned nothing. There is no `SourceNodes` trait and no `read_source` method on `InspectionContext`.\n- `crates/habeas-sdk/src/graph.rs#impl[InspectionContext<'d, D>]` is bounded only by `D: Domain`. It exposes `read`, `read_snapshot` and `prepare_read`, and all three take a `D::NodeId`, not an `OutlineId`.\n- The two supplied implementation roots do not supply the signature either:\n  - `crates/habeas-sdk/src/agent/sources.rs#impl[SourceSession<…>/ToolSession<D>]/fn[definitions]` only builds the JSON tool definitions, including the `read_source` agent-command schema. This covers the \"available as the agent's `read_source` command\" sentence. It is not the Rust method.\n  - `crates/habeas-sdk/src/sources.rs#impl[SourceAnalysis<P>]/fn[parse]` only delegates to the provider's `parse`. It takes a `ResourceId` and returns a `ParsedSource`. It has no `OutlineId` parameter, no `Domain` or `SourceNodes` bound, and does not return `D::NodeContent`.\n- The tool dispatch in `crates/habeas-sdk/src/agent/sources.rs` takes a closure `F: Fn(&OutlineId, &ParsedSource) -> Result<Option<Dependency<…>>, String>`. It does not use a `SourceNodes` trait bound on the domain. Dispatch also carries separate requirements (`read_source.behavior` and `read_source.inputs`), so it is not the method this requirement specifies.\n\nThe required method on `InspectionContext` is therefore missing, and so is the `SourceNodes` bound it depends on. This is a structural gap. No {fixme} acknowledges it. I did not assess behavior or tests, since the structural obligation already fails.",
-  "references": "bec396e8c7fd3e9dcd4940731b52be23f0a72bff93ed7ef9a3b9bae12ae5cc1e",
+  "requirement": "The SDK exposes a tracked source read for domains supplying the source-node\nmapping under {cite}`requirements.sdk.sources.source_nodes`. It is available\nas the agent's `read_source` command.\n\n`SourceNodes` supplies the mapping capability defined in the source chapter:\n\n```rust,ignore\nimpl<'d, D: SourceNodes> InspectionContext<'d, D> {\n    // ...\n\n    /// Map this source address into the graph and read its node contents.\n    pub fn read_source(&self, item: &OutlineId) -> Result<D::NodeContent, D::Error>;\n\n    // ...\n}\n```",
+  "determination": true,
+  "rationale": "The tests adequately check `requirements.sdk.graph.context-tools.read_source.fn`.\n\n**Obligations derived from the text:**\n1. `InspectionContext<'d, D: SourceNodes>` exposes `read_source(&self, &OutlineId) -> Result<D::NodeContent, D::Error>`. It maps the address through `SourceNodes` and reads the node through `Domain`.\n2. The same capability is available as the agent's `read_source` command.\n\nThe behavior details are left to the sibling `read_source.behavior` and `read_source.inputs` requirements. The mapping rule in `source_nodes` is cited context.\n\n**Test coverage:**\n- **Direct API signature and mapping.** `direct_source_reads_preserve_mapping_errors_and_record_only_successful_returns` in `crates/trust-but-verify/src/agent/project_sources.rs` calls `InspectionContext::new(&domain).read_source(&OutlineId)`.\n  - It checks `Ok` results (`returned.format()` equals the prepared contents) and the `Err` results from the mapping.\n  - Unknown paths and selectors give `unsupported source item`, and `domain.reads` and `read_nodes` stay empty, so no read happens after a failed mapping.\n  - With `fail_read` set, the error is the read failure and no dependency is recorded.\n  - For a supported address, the mapped node `source-node` is the one read, and the dependency is recorded with the returned fingerprint.\n  - Because it compiles and runs against a domain implementing `SourceNodes`, it also exercises the declared signature and error type.\n- **Agent command.** `fixed_tools_deliver_domain_contents_with_mandatory_snapshot_dependencies` asserts that the tool definitions include `read_source`, in order. It dispatches `read_source` for `source.txt` and asserts that the text comes from the domain (`prepared domain contents`, not the on-disk text). It also asserts that the dependency is `Dependency::Node(\"source-node\", fingerprint)` and that the domain read the node `source-node`.\n- **Validator integration.** `source_capable_validator_tracks_deterministic_reads_and_reuses_saved_results` shows the read works end to end through a `Validator` configured with sources, with the dependency recorded.\n\n**Gaps:** None found. Both obligations have tests that exercise the behavior and assert the outcome. All three tests carry `{test}` references to the subject.",
+  "references": "4671b4284c4fa418ecd69de3521e294050d879dcd73da146533afef207fd35b7",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.context-tools.read_source.fn",
@@ -15,13 +15,16 @@
         "mapping under {cite}`requirements.sdk.sources.source_nodes`. It is available",
         "as the agent's `read_source` command.",
         "",
-        "The Rust interface has this shape; `SourceNodes` names the capability sketched",
-        "in the source chapter:",
+        "`SourceNodes` supplies the mapping capability defined in the source chapter:",
         "",
         "```rust,ignore",
-        "impl<'d, D: Domain + SourceNodes> InspectionContext<'d, D> {",
+        "impl<'d, D: SourceNodes> InspectionContext<'d, D> {",
+        "    // ...",
+        "",
         "    /// Map this source address into the graph and read its node contents.",
         "    pub fn read_source(&self, item: &OutlineId) -> Result<D::NodeContent, D::Error>;",
+        "",
+        "    // ...",
         "}",
         "```",
         ":::"
@@ -34,60 +37,35 @@
       ],
       "text": [
         ":::{req} source_nodes",
-        "An application supporting SDK source inspection supplies access to its source",
-        "provider and a mapping from `OutlineId` to its graph's `NodeId`. The mapped node",
-        "represents the requested resource and selector; an unsupported or invalid",
-        "address returns an error. The SDK's source read uses that mapping and the",
-        "application's `Domain` interface.",
+        "An application supporting tracked source inspection maps `OutlineId` to its",
+        "graph's `NodeId`. The mapped node represents the requested path and selector;",
+        "an unsupported or invalid address returns an error. The SDK reads the mapped",
+        "node through the application's `Domain` interface.",
         "",
-        "The application owns the mapping and the interpretation of that node's contents.",
+        "```rust,ignore",
+        "use trust_but_verify::{Domain, OutlineId};",
+        "",
+        "pub trait SourceNodes: Domain {",
+        "    fn source_node(&self, item: &OutlineId) -> Result<Self::NodeId, Self::Error>;",
+        "}",
+        "```",
         ":::"
       ]
     },
     {
-      "file": "crates/habeas-sdk/src/agent/sources.rs",
-      "item": "impl[SourceSession<'_,%20P,%20F,%20D::NodeId,%20D::EdgeLabel>/ToolSession<D>]/fn[definitions]",
-      "hash": "107aa8abde437785110eb951f9299fea1d7cfccd27164a5f217fb85b7ab0edea"
+      "file": "crates/trust-but-verify/src/agent/project_sources.rs",
+      "item": "mod[tests]/fn[fixed_tools_deliver_domain_contents_with_mandatory_snapshot_dependencies]",
+      "hash": "283f01f5306b517d055960be8fd5ec8cf869a394c2e684f1d6f2d025e950d698"
     },
     {
-      "file": "crates/habeas-sdk/src/sources.rs",
-      "item": "impl[SourceAnalysis<P>]/fn[parse]",
-      "hash": "50ad18d4faf16372219939a3e708a86c32c6acda351aadba71b3fec5174ecbeb"
+      "file": "crates/trust-but-verify/src/agent/project_sources.rs",
+      "item": "mod[tests]/fn[source_capable_validator_tracks_deterministic_reads_and_reuses_saved_results]",
+      "hash": "c787f70923af20cf2558977f5bf353488d9f5a04e1834db3be71ce5d13205cd2"
     },
     {
-      "file": "crates/habeas-sdk/src/graph.rs",
-      "item": "struct[InspectionContext]",
-      "hash": "d9db5dc6696887f6d84842620d5bd71357ea53cb5854cf56d1db5bb31d563755"
-    },
-    {
-      "file": "crates/habeas-sdk/src/graph.rs",
-      "item": "impl[InspectionContext<'d,%20D>]",
-      "hash": "d7a9149e5c9b4b680b81d34753a641650b17851f3c6ad62b295d3bd8a2d959c5"
-    },
-    {
-      "file": "crates/habeas-sdk/src/agent/sources.rs",
-      "item": "impl[SourceTools<P,%20F>/ToolFactory<D>]",
-      "hash": "ce1144e76cc2435fce1ea4f1dc7da42887a3880d114b872157f77862c88a3e0b"
-    },
-    {
-      "file": "crates/habeas-sdk/src/agent/sources.rs",
-      "item": "impl[SourceSession<'_,%20P,%20F,%20D::NodeId,%20D::EdgeLabel>/ToolSession<D>]",
-      "hash": "d022a8a44a13c7c7a4a92720c2b3feb58556581cf70d5b5e0ca879785de79c90"
-    },
-    {
-      "file": "crates/habeas-sdk/src/graph.rs",
-      "item": "impl[InspectionContext<'d,%20D>]/fn[read]",
-      "hash": "cd7c42800fc0fbb9f6edd1e82969b1ba3fa53418a3bdeaabe53823808e8e954f"
-    },
-    {
-      "file": "crates/habeas-sdk/src/graph.rs",
-      "item": "impl[InspectionContext<'d,%20D>]/fn[read_snapshot]",
-      "hash": "4b4987d9a1ee8e433c918f930d0411df0f67d1aba31090c8df477cff76e0a78b"
-    },
-    {
-      "file": "crates/habeas-sdk/src/graph.rs",
-      "item": "impl[InspectionContext<'d,%20D>]/fn[prepare_read]",
-      "hash": "a5d387842a4e4a8df9aa5d17ddfdf2714933d0c92b8b3f8c22384c7c1a839327"
+      "file": "crates/trust-but-verify/src/agent/project_sources.rs",
+      "item": "mod[tests]/fn[direct_source_reads_preserve_mapping_errors_and_record_only_successful_returns]",
+      "hash": "74e7352dcaedd09a079419bd2e96b4e4680f1302833a8f7ba446162809005b62"
     }
   ],
   "format_version": 1,
@@ -100,7 +78,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "bec396e8c7fd3e9dcd4940731b52be23f0a72bff93ed7ef9a3b9bae12ae5cc1e"
+          "value": "4671b4284c4fa418ecd69de3521e294050d879dcd73da146533afef207fd35b7"
         }
       ]
     },
@@ -112,7 +90,7 @@
         "Mandatory",
         {
           "scheme": "node-path-set-sha256-v1",
-          "value": "036e1c1b83d71c0aab178efa60ec46b419499780401b8482e5768a0c0af8405d"
+          "value": "00e76d67fff2ba26ef6a99630e97b51c575652862cf79ec77b1bc2c2128999f3"
         }
       ]
     },
@@ -123,7 +101,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "1d77edae018570f48c7e11c6a5758a0e5e35f0c592e452ecdbe38c0844d764fd"
+          "value": "96cb41b63ab460bfe4c96353438db7307d64b6c97ee0a5e9df9fdac5e4d56718"
         }
       ]
     },
@@ -134,7 +112,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "e218ad12953a8811f22784e5762f79f6a7a502e01f06a166d7ba4f2304979fcf"
+          "value": "0c42fc08484cc28d4929b0729ede2dd6d014ce420f2638908846f382dcbad5be"
         }
       ]
     },
@@ -144,14 +122,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/habeas-sdk/src/agent/sources.rs"
+              "location": "crates/trust-but-verify/src/agent/project_sources.rs"
             },
-            "selector": "impl[SourceSession<'_,%20P,%20F,%20D::NodeId,%20D::EdgeLabel>/ToolSession<D>]/fn[definitions]"
+            "selector": "mod[tests]/fn[fixed_tools_deliver_domain_contents_with_mandatory_snapshot_dependencies]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "4274ec8c89cd3b9cc5e84031532a3c1f6f2a1cca0a58fab36daaccd2b423f865"
+          "value": "ce305a4430e03c8bcf296b8787556627a98f02ecf9d3b91d016eba2574125fc0"
         }
       ]
     },
@@ -161,14 +139,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/habeas-sdk/src/sources.rs"
+              "location": "crates/trust-but-verify/src/agent/project_sources.rs"
             },
-            "selector": "impl[SourceAnalysis<P>]/fn[parse]"
+            "selector": "mod[tests]/fn[source_capable_validator_tracks_deterministic_reads_and_reuses_saved_results]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "3cd2d21066b198f588d6c8e694d3cd9a768f3fdb582210977f9d131c3c18ca2f"
+          "value": "ef149487803df9873d141a05ea1e71fb42c40b2f8835710906cb1978728ec713"
         }
       ]
     },
@@ -178,116 +156,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/habeas-sdk/src/graph.rs"
+              "location": "crates/trust-but-verify/src/agent/project_sources.rs"
             },
-            "selector": "struct[InspectionContext]"
+            "selector": "mod[tests]/fn[direct_source_reads_preserve_mapping_errors_and_record_only_successful_returns]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "c7d4ed5f5ad2f2b9ecc09f4f82606580c1cb5d24da64453e91509b8ebf4982ee"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/src/graph.rs"
-            },
-            "selector": "impl[InspectionContext<'d,%20D>]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "8be7f5ebb3a72bdc0e74ec6ee0cd519e977215aab67e2f86c2c0b26410fb858f"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/src/agent/sources.rs"
-            },
-            "selector": "impl[SourceTools<P,%20F>/ToolFactory<D>]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "36161fca49843a73fc5df85a77edf13f461f655fb767f5291b80e62be115e7ab"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/src/agent/sources.rs"
-            },
-            "selector": "impl[SourceSession<'_,%20P,%20F,%20D::NodeId,%20D::EdgeLabel>/ToolSession<D>]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "52d6f412bf311a7d6b7f7c9012ae25ab8fd539628820fef6aa2d65afb2e33f60"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/src/graph.rs"
-            },
-            "selector": "impl[InspectionContext<'d,%20D>]/fn[read]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "fa5c424f3b1abdcd8b5aee45117ed9e26274b4e1fc1e2c74b5df07247c30f465"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/src/graph.rs"
-            },
-            "selector": "impl[InspectionContext<'d,%20D>]/fn[read_snapshot]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "fb9cb2bacab4dbb6e8d221a5e641921beea520de9d3ce6408dd9464cf1f6c1c2"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/src/graph.rs"
-            },
-            "selector": "impl[InspectionContext<'d,%20D>]/fn[prepare_read]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "33d344a12a82b9e71ddbc0815d190e092f630c80fc909db5c61e59f66d562006"
+          "value": "fba2bcabd8bf11ae8f77346e187eb5591a70c67ec42959f6a0ea2812d06a3f15"
         }
       ]
     }

@@ -13,7 +13,7 @@ use ast_grep_core::tree_sitter::{LanguageExt, StrDoc, TSLanguage};
 use ast_grep_core::{Language, Pattern, PatternError};
 use serde_json::{Map, Value};
 
-use crate::outline::{Outline, Profile};
+use crate::outline::{LegacyOutline, Profile};
 
 // {cite}`habeas:util`
 /// An outline profile with a grammar, as an ast-grep language.
@@ -209,7 +209,7 @@ fn error_chain(error: &dyn std::error::Error) -> String {
 /// outline was parsed from. A match within a comment belongs to the
 /// comment's owner; a node contains the lines attached before it.
 // {impl}`requirements.references.outline_comments`
-pub fn innermost_node(outline: &Outline, _source: &str, range: &Range<usize>) -> usize {
+pub fn innermost_node(outline: &LegacyOutline, _source: &str, range: &Range<usize>) -> usize {
     if let Some(comment) = outline
         .comments
         .iter()

@@ -1,8 +1,8 @@
 {
-  "requirement": "```rust,ignore\n// Defined in habeas_sdk::graph.\n/// Input selection and tracked observations for one criterion execution.\npub struct ValidationContext<'cx, D: Domain> { /* private fields */ }\n\nimpl<'cx, D: Domain> ValidationContext<'cx, D> {\n    /// The source node this criterion examines.\n    pub fn node_id(&self) -> &D::NodeId;\n\n    /// Tracked graph reads and edge selections for this execution.\n    pub fn inspection(&self) -> &InspectionContext<'cx, D>;\n\n    /// Select outgoing edges by label, preserving their order and duplicates.\n    /// Record this label's target-set fingerprint even when nothing matches.\n    /// Target contents enter the trace when explicitly read or inserted.\n    pub fn successors(\n        &self,\n        label: &D::EdgeLabel,\n    ) -> Result<Vec<D::NodeId>, D::Error>\n    where\n        D::EdgeLabel: PartialEq;\n}\n```\n\nLabels match by equality. A change to the recorded target set makes prior\nevidence stale, including adding an edge to an empty selection. Target contents\nbecome dependencies through tracked reads or agent insertions. An edge selects a\nrelated source; assessments of that target remain separate.",
+  "requirement": "```rust,ignore\n// Defined in trust_but_verify.\n/// Input selection and tracked observations for one criterion execution.\npub struct ValidationContext<'cx, D: Domain> { /* private fields */ }\n\nimpl<'cx, D: Domain> ValidationContext<'cx, D> {\n    /// The source node this criterion examines.\n    pub fn node_id(&self) -> &D::NodeId;\n\n    /// Tracked graph reads and edge selections for this execution.\n    pub fn inspection(&self) -> &InspectionContext<'cx, D>;\n\n    /// Select outgoing edges by label, preserving their order and duplicates.\n    /// Record this label's target-set fingerprint even when nothing matches.\n    /// Target contents enter the trace when explicitly read or inserted.\n    pub fn successors(\n        &self,\n        label: &D::EdgeLabel,\n    ) -> Result<Vec<D::NodeId>, D::Error>\n    where\n        D::EdgeLabel: PartialEq;\n}\n```\n\nLabels match by equality. A change to the recorded target set makes prior\nevidence stale, including adding an edge to an empty selection. Target contents\nbecome dependencies through tracked reads or agent insertions. An edge selects a\nrelated source; assessments of that target remain separate.",
   "determination": true,
-  "rationale": "The three marked tests cover every obligation in `requirements.sdk.graph.context-tools.root_inputs`.\n\n**Obligations and the tests that cover them**\n- **`node_id` and `inspection`.** `validation.rs#fn[labeled_selections_track_only_target_membership_without_reading_contents]` asserts `ctx.node_id() == &1`. It also calls `ctx.inspection()` to read `outgoing_edges`, `finish` and `dependencies`.\n- **Selection by label equality, with order and duplicates preserved.** The same test sets edges `[(8,2),(7,5),(7,3),(7,5)]`. It asserts `successors(&7) == [5,3,5]`, so the label-8 edge is excluded and the order and duplicate 5 are kept.\n- **Fingerprint recorded even when nothing matches.** `successors(&7)` is first called on a node with no edges, and `finish` is called on that context. After an edge `(7, …)` is added, `record_is_current` is false for that `empty` record. This covers the requirement that adding an edge to an empty selection makes prior evidence stale. `contracts.rs#fn[absence_certification_is_invalidated_by_the_first_selected_root]` does the same through the `Validator` and `check_inputs`. The record whose label gained an edge is stale, and the record for the other label stays current.\n- **Trace contents.** The recorded dependency list equals exactly `[Dependency::OutgoingEdges(1, 7, edge_fingerprint(&[3,5]))]`. No node-content dependency appears, and the test asserts `reads.is_empty()`. This shows that `successors` does not read target contents.\n- **Stale and non-stale transitions.** Changes to edges with other labels, and to unrelated targets, leave the record current. Changing a label-7 target (5 to 6) makes it stale.\n- **Failure case.** With `fail_edges` set, `successors` returns `Err(\"edges\")`, the dependencies are unchanged, and `record_is_current` propagates the error.\n- **Target contents become dependencies through tracked reads.** `validation.rs#fn[concurrent_single_node_validations_keep_separate_traces]` runs three concurrent validations. Each record holds its own `Dependency::Node` content dependency and its own `OutgoingEdges` dependency. The edge dependency fingerprints only the target set, and each trace contains only its own node's dependencies.\n\n**Not separately tested**\n- The sentence \"assessments of that target remain separate\" is a statement about the design. No further test is needed beyond the separate-trace assertions above.\n\nI found no scenario where a plausible violation would pass these tests.",
-  "references": "af81224ae011383e2e984fb24d2a20adb69526ea178b7e8176521df167ef88a3",
+  "rationale": "I judged the tests adequate for `requirements.sdk.graph.context-tools.root_inputs`. I did not request implementation source, because the supplied tests were enough to map each obligation.\n\n**Obligations and the tests that cover them**\n\n- **`node_id` and `inspection`:** `validation.rs#fn[labeled_selections_track_only_target_membership_without_reading_contents]` asserts that `ctx.node_id()` equals 1. It also uses `ctx.inspection()` to finish a record and to call `outgoing_edges`.\n- **`successors` selects by label and preserves order and duplicates:**\n  - The same test sets edges to `[(8,2),(7,5),(7,3),(7,5)]` and asserts that `successors(&7)` returns `[5,3,5]`.\n  - That result keeps the order and the duplicate, and it excludes the label-8 edge, so equality matching is checked.\n  - `explicit_insertions_preserve_order_repetition_and_selection_snapshots` also uses edges with duplicates, `(7,3),(8,99),(7,2),(7,3)`.\n- **A fingerprint is recorded even when nothing matches:**\n  - The test calls `successors(&7)` on an empty selection and asserts that a selection was recorded (`selections == [1]`).\n  - It finishes a record from that call. The record becomes stale once a label-7 edge appears, which shows the empty selection's fingerprint was tracked.\n- **A change to the target set makes evidence stale, including adding an edge to an empty selection:**\n  - `record_is_current` is false after edges are added to the previously empty selection.\n  - It is also false when a target changes from 5 to 6.\n  - It stays true when only unrelated label-8 edges change, or when the order and duplicates change without changing the set.\n  - The recorded dependency is exactly `Dependency::OutgoingEdges(1, 7, edge_fingerprint(&graph, &[3,5]))`.\n  - `contracts.rs#fn[absence_certification_is_invalidated_by_the_first_selected_root]` checks the same behavior through persisted evidence and `check_inputs`. The record for the changed root is invalid, and the other record stays valid.\n- **Target contents become dependencies only through tracked reads or agent insertions:**\n  - In the first test, `graph.state.reads` is empty after selection and staleness checks, so selecting does not read contents. The trace holds only the `OutgoingEdges` dependency.\n  - In the insertion test, `contents_of_successors` reads the targets in order `[1,3,2,3,1]`. The dependencies then add `Dependency::Node` entries for 1, 3 and 2 next to the edge fingerprint.\n  - `concurrent_single_node_validations_keep_separate_traces` checks that tracked reads inside a callback produce `Node` dependencies per node.\n- **An edge selects a source, and the target's assessment stays separate:** The dependency list contains only edge-set fingerprints and explicitly read nodes. No assessment-of-target dependency appears, and no reads happen on selection.\n- **Error path:** With `fail_edges` set, `successors` returns `Err(\"edges\")` and leaves the recorded dependencies unchanged. `record_is_current` also returns `Err(\"edges\")`.\n\nI found no unexercised obligation and no plausible violating behavior that these tests would accept.",
+  "references": "eae4947bcdfa8b6517aeeb46faa0739da47a0193334d16c1b0f922383a168bd2",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.context-tools.root_inputs",
@@ -12,7 +12,7 @@
       "text": [
         ":::{req} root_inputs",
         "```rust,ignore",
-        "// Defined in habeas_sdk::graph.",
+        "// Defined in trust_but_verify.",
         "/// Input selection and tracked observations for one criterion execution.",
         "pub struct ValidationContext<'cx, D: Domain> { /* private fields */ }",
         "",
@@ -43,29 +43,24 @@
       ]
     },
     {
-      "file": "crates/habeas-sdk/tests/contracts.rs",
+      "file": "crates/trust-but-verify/tests/contracts.rs",
       "item": "fn[absence_certification_is_invalidated_by_the_first_selected_root]",
       "hash": "aa112badce29d6d3b837b24ed72b936f518eea81e98369d32d90cc0fbab43d15"
     },
     {
-      "file": "crates/habeas-sdk/tests/validation.rs",
+      "file": "crates/trust-but-verify/tests/validation.rs",
       "item": "fn[labeled_selections_track_only_target_membership_without_reading_contents]",
-      "hash": "8473cabd5a09d6750cd3a3d456feda1fb3dd09be458b2380b0bdb9ea70d0f9fa"
+      "hash": "8416597f011beef763e47a1110064ca4c3e3502459799dac35b41921bd20da8e"
     },
     {
-      "file": "crates/habeas-sdk/tests/validation.rs",
-      "item": "fn[concurrent_single_node_validations_keep_separate_traces]",
-      "hash": "115849fed971c0f86fe91027c5874818c0a7a0d3e2f9137ac0bd76f1e9b73367"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/contracts.rs",
-      "item": "impl[Review<O>/Criterion<Application>]/fn[execute]",
-      "hash": "45e6abfee7fbc7d81ac66a1afebac62efd0c77c5ff6a5518dbe8634f3300f406"
-    },
-    {
-      "file": "crates/habeas-sdk/tests/validation.rs",
+      "file": "crates/trust-but-verify/tests/validation.rs",
       "item": "fn[explicit_insertions_preserve_order_repetition_and_selection_snapshots]",
       "hash": "0610eb8340c13104b553c1cc7a312492818e7617c248a60fe259516c1976f252"
+    },
+    {
+      "file": "crates/trust-but-verify/tests/validation.rs",
+      "item": "fn[concurrent_single_node_validations_keep_separate_traces]",
+      "hash": "115849fed971c0f86fe91027c5874818c0a7a0d3e2f9137ac0bd76f1e9b73367"
     }
   ],
   "format_version": 1,
@@ -78,7 +73,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "af81224ae011383e2e984fb24d2a20adb69526ea178b7e8176521df167ef88a3"
+          "value": "eae4947bcdfa8b6517aeeb46faa0739da47a0193334d16c1b0f922383a168bd2"
         }
       ]
     },
@@ -90,7 +85,7 @@
         "Mandatory",
         {
           "scheme": "node-path-set-sha256-v1",
-          "value": "a0ab623812b6e5bf3299ad926d7aa6f350056e02bd842913bd09a1592d0a2a40"
+          "value": "ced6b02cd97d9a967502c23710df6a203d6ba07a4d86feff8612430446645ca4"
         }
       ]
     },
@@ -101,7 +96,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "8a2730019f0e84ff9f041896556f62bc78d21dfcc7f20b5514dd41a180c40a90"
+          "value": "92fa2baea4aa504a2e9d7071cfa05b074d94c8c26131a783de3696f0e81d9749"
         }
       ]
     },
@@ -111,14 +106,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/contracts.rs"
+              "location": "crates/trust-but-verify/tests/contracts.rs"
             },
             "selector": "fn[absence_certification_is_invalidated_by_the_first_selected_root]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "de1f0bfa2061227736e9730eba259484d62e4504ed301fe7fc6cae48569c293b"
+          "value": "ea60f0840af1e68906c666f724891c889a6c4b4978f459308cd401eba42accc3"
         }
       ]
     },
@@ -128,14 +123,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/validation.rs"
+              "location": "crates/trust-but-verify/tests/validation.rs"
             },
             "selector": "fn[labeled_selections_track_only_target_membership_without_reading_contents]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "d9d875910ac6cd666bb1de0af1481f232023f4e3934a4b63db3004b35fccdf86"
+          "value": "b98f9ee3dd328d0d5ad1327cff4adceb1aac7b3988489859a1bb54afbff21b89"
         }
       ]
     },
@@ -145,48 +140,31 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/validation.rs"
-            },
-            "selector": "fn[concurrent_single_node_validations_keep_separate_traces]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "8c465be4fc0956d99d8f378ca08d771bb6fc111e5b9d498621fa52a1844fdd55"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/contracts.rs"
-            },
-            "selector": "impl[Review<O>/Criterion<Application>]/fn[execute]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "b431f44490677f9fb837c1b9589b7d0438d9c78b8a9418f65c5ab1c60844eed9"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/validation.rs"
+              "location": "crates/trust-but-verify/tests/validation.rs"
             },
             "selector": "fn[explicit_insertions_preserve_order_repetition_and_selection_snapshots]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "b45ea148e5b3abde4caf677bcab060d49fdeff20e73f8494e27d3b95a44c38c9"
+          "value": "f4e468fd2c254908a3cc16264e4f476c7ab6ed212932eadf9329deaf796dc473"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/tests/validation.rs"
+            },
+            "selector": "fn[concurrent_single_node_validations_keep_separate_traces]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "e4c7ec8146ca073341a7bc75c49859dafeca4e224ce4edf6ca177c303293d2be"
         }
       ]
     }

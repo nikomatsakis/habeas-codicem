@@ -1,8 +1,8 @@
 {
   "requirement": "```rust,ignore\n// Method on Validator<D>.\n/// Encode the answer and atomically replace this source/criterion's record.\npub fn store_evidence<O: serde::Serialize>(\n    &self,\n    inputs: &Fingerprinted<D, O>,\n) -> impl Future<Output = Result<(), ValidationError<D::Error>>> + Send;\n```\n\nThe method saves under the source identity and criterion path captured in\n`Fingerprinted`, preserving its revision, input trace, and completed answer. Encoding follows\n{cite}`requirements.sdk.graph.evidence.record.output`; atomic replacement follows\n{cite}`requirements.sdk.graph.evidence.evidence_storage`. The result type needs\nno `Sync` bound: the method encodes the answer and captures the record and\nstorage key before constructing the storage future.",
   "determination": true,
-  "rationale": "The reviewed tests adequately check `requirements.sdk.graph.evidence.store_evidence`. I did not request implementation source, and no search was delivered.\n\n**Obligations and the tests that cover them**\n\n1. **Save under the captured source identity and criterion path.**\n   - `crates/trust-but-verify/tests/contracts.rs#fn[criteria_keep_typed_answers_and_persist_only_when_requested]` stores three criteria (`behavior`, `structure`, `text`) for one source. It checks that each is loaded back through `load_evidence` and that the stored records differ by criterion path. Executing again without an explicit store leaves the saved record unchanged.\n   - `crates/trust-but-verify/src/agent/tests.rs#fn[agent_edge_tools_record_selections_without_validating_targets]` asserts the stored record's node key is 1.\n   - `crates/trust-but-verify/tests/validation.rs#fn[runner_does_not_store_a_missing_agent_error_and_supports_intermediate_calls]` reads `records[&1]`.\n   - `crates/trust-but-verify/tests/storage.rs#fn[malformed_records_are_storage_errors_and_bad_outputs_are_output_errors]` stores through the file-backed storage and finds the file at `record_path(node_path(source), criterion)`.\n   - Most tests use source node 1. A key-routing defect would not be caught by this alone, but it is covered by comparing against the loaded record and the separate criterion paths.\n2. **Preserve revision, input trace and completed answer.**\n   - `crates/trust-but-verify/tests/contracts.rs#fn[criteria_keep_typed_answers_and_persist_only_when_requested]` compares the loaded record's output, source, criterion path, revision and dependencies with the verified value. It also asserts the raw stored JSON output.\n   - `crates/trust-but-verify/tests/contracts.rs#fn[concurrent_same_criterion_executions_keep_complete_independent_records]` and `crates/trust-but-verify/tests/contracts.rs#fn[input_checking_and_execution_keep_separate_observations]` assert non-empty stored dependencies with their fingerprints and a non-default revision.\n   - `crates/trust-but-verify/src/agent/tests.rs#fn[agent_edge_tools_record_selections_without_validating_targets]` and `crates/trust-but-verify/src/agent/tests.rs#fn[behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer]` assert that stored dependencies equal the produced ones, including edge observations.\n3. **Encoding failure (cited `record.output`).** `crates/trust-but-verify/tests/contracts.rs#fn[serialization_failure_leaves_the_existing_record_unchanged]` stores an unencodable answer. It asserts `ValidationError::Output` with the message, an unchanged record (revision, dependencies and output) and one write only.\n4. **Storage failure (cited `record.output`).** `crates/trust-but-verify/tests/validation.rs#fn[resolution_storage_and_callback_errors_are_not_judgments]` forces a store failure. It asserts `ValidationError::Graph(\"store\")` and that no record is written.\n5. **Atomic replacement (cited `evidence_storage`).** Replacement is covered by `crates/trust-but-verify/tests/contracts.rs#fn[typed_loading_reports_decode_errors_even_for_stale_evidence]`, which asserts one record remains after a second store. Competing stores are covered by `crates/trust-but-verify/tests/contracts.rs#fn[concurrent_same_criterion_executions_keep_complete_independent_records]`. It asserts that one complete record remains, with revision, dependencies and output from the same save.\n6. **No `Sync` bound on the result.** `crates/trust-but-verify/tests/contracts.rs#fn[validation_and_answer_need_send_without_sync]` stores a `Cell`-valued answer. The `Cell` is `Send` but not `Sync`. The store future is passed through the `send(...)` helper, which requires `Send`, and the saved value is loaded back and asserted.\n\nEvery obligation, including the failure cases, has a test that exercises it and asserts the outcome.",
-  "references": "866225d9d8b59ec645da5fbf5da9e9d62db4b876f303c004d5c47327a768cb9d",
+  "rationale": "The reviewed tests check each obligation of `requirements.sdk.graph.evidence.store_evidence`.\n\n**Save under the captured source and criterion path.**\n- `criteria_keep_typed_answers_and_persist_only_when_requested` saves under the `behavior`, `structure` and `text` criteria of one source. It checks that each record sits under its own path, that `load_evidence` is `None` before a save, and that `store_evidence` is the step that writes.\n- `malformed_records_are_storage_errors_and_bad_outputs_are_output_errors` in `tests/storage.rs` uses the non-trivial source id `\"opaque/é\"`. It stores through `Validator::store_evidence`, then reads the record straight from the domain at that source and criterion and finds the saved output. This shows the source identity and criterion path captured in `Fingerprinted` are the ones used.\n\n**Preserve revision, input trace and completed answer.**\n- `criteria_keep_typed_answers_and_persist_only_when_requested` compares the loaded revision, dependencies, output and source node with the stored value.\n- `input_checking_and_execution_keep_separate_observations` asserts that the saved record's dependencies are the `Dependency::Node` entry with the \"after\" fingerprint.\n- `concurrent_same_criterion_executions_keep_complete_independent_records` checks that the saved revision and dependencies match the saved output.\n- `agent_edge_tools_record_selections_without_validating_targets` checks `Dependency::OutgoingEdges` in the stored record.\n- `behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer` checks that the restored record matches on every field.\n\n**Encoding.**\n- `serialization_failure_leaves_the_existing_record_unchanged` stores an `Unencodable` answer over an existing record. It expects `ValidationError::Output`, an unchanged revision, dependencies and output, and no extra write.\n- `resolution_storage_and_callback_errors_are_not_judgments` makes storage fail and expects `ValidationError::Graph(\"store\")`, with no record written.\n- `criteria_keep_typed_answers_and_persist_only_when_requested` asserts the stored JSON shape of the output.\n\n**Atomic replacement.**\n- `typed_loading_reports_decode_errors_even_for_stale_evidence` replaces an existing record with a new store. It then asserts exactly one record remains for the key.\n- `concurrent_same_criterion_executions_keep_complete_independent_records` saves two competing records for one key with `join!`. It asserts one record remains, and that its revision, dependencies and output all come from the same save, in either order.\n\n**No `Sync` bound on the result type.** `validation_and_answer_need_send_without_sync` stores a `Cell<u32>` answer, which is `Send` but not `Sync`. It passes `validator.store_evidence(&value)` through the `send` helper and unwraps the result, so the future is checked to be `Send`.\n\nThe cited requirements `record.output` and `evidence_storage` are context only. Their relevant behaviors are also exercised by the tests above.\n\nI found no unexercised obligation and no acknowledged gap.",
+  "references": "fee20cda4b5cbc28c399ccdf5f82ec402a651edf604f0e0738ee3027b07d3c19",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.evidence.store_evidence",
@@ -59,14 +59,16 @@
         ":::{req} evidence_storage",
         "{cite}`requirements.sdk.domain`",
         "",
-        "`habeas_sdk::domain::Domain` provides evidence persistence for the",
+        "`trust_but_verify::Domain` provides evidence persistence for the",
         "{term}`requirements.sdk.application_domain`:",
         "",
         "```rust,ignore",
         "use std::future::Future;",
         "",
-        "// Defined in habeas_sdk::domain.",
+        "// Defined in trust_but_verify.",
         "pub trait Domain: Clone + Send + Sync {",
+        "    // ...",
+        "",
         "    /// Ok(None) means absent; Err means loading failed.",
         "    fn load_evidence(",
         "        &self,",
@@ -84,6 +86,8 @@
         "        criterion: &CriterionPath,",
         "        record: &Record<Self::NodeId, Self::EdgeLabel>,",
         "    ) -> impl Future<Output = Result<(), Self::Error>> + Send;",
+        "",
+        "    // ...",
         "}",
         "```",
         "",
@@ -105,12 +109,12 @@
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[agent_edge_tools_record_selections_without_validating_targets]",
-      "hash": "6a7abe1ee48a3b75741a647a1fc23c9365dfdbf32b637b2fb40aaeffa5b159d0"
+      "hash": "39a3d475cde697c642fabda78e23d50d97dc586c00d89c74cf3af1ad0e3898c7"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer]",
-      "hash": "1c6d0226ee5885409cca23fc6ec4ee77eb6eb63b9b2d92824ac8666dd74f1b68"
+      "hash": "87908a78ad10049a36e89efcf82755bdb520fb6139272dc908d403f186bb281a"
     },
     {
       "file": "crates/trust-but-verify/tests/contracts.rs",
@@ -150,7 +154,7 @@
     {
       "file": "crates/trust-but-verify/tests/validation.rs",
       "item": "fn[runner_does_not_store_a_missing_agent_error_and_supports_intermediate_calls]",
-      "hash": "03bbeba9aa6e6dc1423becfc64bb7626634686ad6796b76933524293f12d1135"
+      "hash": "ef92d36a914b81c7f8d15011c753be5105671105cb4f15126fcad9e6e7381e39"
     },
     {
       "file": "crates/trust-but-verify/tests/validation.rs",
@@ -166,7 +170,7 @@
         ":::{cite} requirements.sdk.domain",
         "An *application domain* is the application's graph, node contents, and evidence",
         "storage, made available together for criterion execution. In the SDK, it",
-        "implements [`Domain`](../rustdocs/habeas_sdk/domain/trait.Domain.html) to supply",
+        "implements [`Domain`](../rustdocs/trust_but_verify/trait.Domain.html) to supply",
         "its shared types, node and edge operations, and evidence persistence.",
         ":::",
         "::::"
@@ -188,7 +192,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "866225d9d8b59ec645da5fbf5da9e9d62db4b876f303c004d5c47327a768cb9d"
+          "value": "fee20cda4b5cbc28c399ccdf5f82ec402a651edf604f0e0738ee3027b07d3c19"
         }
       ]
     },
@@ -233,7 +237,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "df812f4b0f3d02a19f56c23a89ba94e9414799a75c4e9af4d4db26f65f265b8c"
+          "value": "f35b1f572e294e4bbfe38b994c0d7515c8a9d1fdd615bd0531e1831aa9921e5b"
         }
       ]
     },
@@ -250,7 +254,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "2825b1d3530357ae242d08688103d5ac9e379a2f4e8379451cc6a75ad87ad4c5"
+          "value": "4675a37f3b78331cbaf00ac32f9bb15f4d5289ca5eb9d2f9e9731f4cfeb3687c"
         }
       ]
     },
@@ -267,7 +271,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "c158b957053bd5d9803a46dddfbfa10b2783f3573ec42969f935da46f96185a0"
+          "value": "910dcb3f2e1a4af7a165d371f6dec4fa27eb2045c159f995fdfd0187ba0c7963"
         }
       ]
     },
@@ -403,7 +407,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "70d21f8b19470f01f6febf23a797475657706d69d58909c1c7515b9108942827"
+          "value": "595da3d6ec08a011b32ec22a42c3dd080fc1c4b8f22de86cc363bbb36957ecd4"
         }
       ]
     },
@@ -431,7 +435,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "06b6b74d72930371b54914feda84291d29d853e0f7c28f21c70e05e159e03c3c"
+          "value": "80830e9acc805289affe81a67fab64654078e1a68c1eeff59f81ca5b85f589dc"
         }
       ]
     },

@@ -7,9 +7,9 @@ use crate::{
 };
 use std::{collections::BTreeMap, path::Path};
 use trust_but_verify::{
-    domain::{Domain, NodeContents},
+    __habeas::resource::{OutlineId, ResourceId},
+    Domain, NodeContents,
     graph::{CriterionPath, Fingerprint, InspectionContext, NodePath},
-    resource::{OutlineId, ResourceId},
 };
 
 // {cite}`habeas:util`
@@ -18,6 +18,37 @@ pub(crate) struct RequirementId(pub String);
 
 // {cite}`habeas:util`
 /// Habeas node identities use the SDK's common outline address for sources.
+// :::{fixme} requirements.sdk.habeas.github_nodes
+// :github: nikomatsakis/habeas-codicem#26
+// GitHub issue graph nodes are deferred. Stable owner/repository/number identity
+// and retained title/opening-post/status contents have no implementation or tests.
+// :::
+// :::{fixme} requirements.sdk.habeas.github_nodes.inputs
+// :github: nikomatsakis/habeas-codicem#26
+// Tracked GitHub issue snapshots are deferred. Tests do not yet cover their
+// redacted contents, field-sensitive fingerprints, or fetch-time/TTL independence.
+// :::
+// :::{fixme} requirements.sdk.habeas.fixme_graph
+// :github: nikomatsakis/habeas-codicem#26
+// FIXME graph nodes and tracking-issue edges are deferred. Named/unnamed
+// acknowledgments, source ownership, and multiple issue targets have no tests.
+// :::
+// :::{fixme} requirements.sdk.habeas.github_nodes.open
+// :github: nikomatsakis/habeas-codicem#26
+// The tracked deterministic open-issue criterion is deferred. Tests do not yet
+// verify completed open/closed assessments through the SDK without an agent.
+// :::
+// :::{fixme} requirements.sdk.habeas.github_nodes.related
+// :github: nikomatsakis/habeas-codicem#26
+// The agent-based issue-relevance criterion is deferred. Tests do not yet check
+// tracking-edge selection, delivered FIXME/issue snapshots, or unrelated answers.
+// :::
+// :::{fixme} requirements.sdk.habeas.github_nodes.cache
+// :github: nikomatsakis/habeas-codicem#26
+// Application-selected TTL caching for graph issue contents is deferred. Tests
+// do not yet cover reuse, expiry refresh/failure, or snapshot-consistent formatting
+// and fingerprinting. The existing CLI issue-state cache is a separate interface.
+// :::
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) enum HabeasNode {
     Requirement(RequirementId),

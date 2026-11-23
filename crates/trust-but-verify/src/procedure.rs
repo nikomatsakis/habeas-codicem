@@ -117,6 +117,8 @@ impl<'d, D: Domain> ValidationContext<'d, D> {
     }
 
     // {cite}`habeas:util`
+    #[doc(hidden)]
+    #[cfg(any(test, feature = "habeas-integration"))]
     pub fn with_agent(graph: &'d D, node: D::NodeId, agent: &'d dyn Agent<D>) -> Self {
         Self::configured(graph, node, Some(agent))
     }
@@ -285,7 +287,10 @@ where
                     .inspection
                     .prepare_read(&node)
                     .map_err(ValidationError::Graph)?;
-                let text = snapshot.content.format();
+                let formatted = snapshot.content.format();
+                let text = crate::redaction::Redaction::of_text(&formatted)
+                    .apply(&formatted)
+                    .into_owned();
                 inputs.push(PreparedInput {
                     node,
                     text,

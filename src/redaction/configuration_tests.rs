@@ -8,7 +8,6 @@ pub(crate) fn github_token() -> String {
     format!("gh{}_{}", "p", "16C7e42F292c6912E7710c838347Ae178B4a")
 }
 
-
 /// A PEM private key block whose body lines the entropy heuristic flags.
 pub(crate) fn private_key() -> String {
     [
@@ -21,12 +20,10 @@ pub(crate) fn private_key() -> String {
     .join("\n")
 }
 
-
 fn outline(path: &str, source: &str, redaction: &Redaction) -> Outline {
     parse_redacted(profile_for_path(Path::new(path)), source, redaction)
         .unwrap_or_else(|error| panic!("{path}: {error}"))
 }
-
 
 /// Every outline property except hashes: kinds, names, selectors of named
 /// nodes, structure, and line and byte ranges.
@@ -49,7 +46,6 @@ fn structure(outline: &Outline) -> Vec<String> {
         })
         .collect()
 }
-
 
 // {test}`requirements.authoring.redaction`
 // {test}`requirements.authoring.credentials`
@@ -113,9 +109,9 @@ fn configuration_credential_fields_are_redacted_by_name_whatever_their_values() 
     );
 }
 
-
 // {test}`requirements.authoring.redaction`
 // {test}`requirements.references.structural_hash`
+// {test}`requirements.sdk.sources.redaction`
 #[test]
 fn hashes_do_not_depend_on_credential_values() {
     let config = |key: &str| {
@@ -163,9 +159,9 @@ fn hashes_do_not_depend_on_credential_values() {
     );
 }
 
-
 // {test}`requirements.authoring.redaction`
 // {test}`requirements.references.outlines`
+// {test}`requirements.sdk.sources.redaction`
 #[test]
 fn redaction_never_changes_an_outline() {
     let token = github_token();
@@ -205,7 +201,6 @@ fn redaction_never_changes_an_outline() {
     );
 }
 
-
 // {test}`requirements.authoring.redaction`
 #[test]
 fn invalid_configuration_files_are_redacted_whole_keeping_lines() {
@@ -215,7 +210,6 @@ fn invalid_configuration_files_are_redacted_whole_keeping_lines() {
         "[REDACTED:configuration]\n\n\n"
     );
 }
-
 
 // {test}`requirements.authoring.redaction`
 #[test]
@@ -245,4 +239,3 @@ fn the_user_configuration_file_and_its_aliases_are_configuration_files() {
         );
     }
 }
-

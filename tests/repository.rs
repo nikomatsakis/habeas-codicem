@@ -542,7 +542,7 @@ fn workflow_job_marks_belong_to_the_job_that_follows() {
     ] {
         let file = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(path);
         let source = std::fs::read_to_string(&file).unwrap();
-        let outline = trust_but_verify::outline::parse(&file, &source).unwrap();
+        let outline = trust_but_verify::outline::integration::parse(&file, &source).unwrap();
         for (index, line) in source.lines().enumerate() {
             let Some(job) = source.lines().nth(index + 1) else {
                 continue;

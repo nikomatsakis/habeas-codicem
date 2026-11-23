@@ -13,11 +13,11 @@ use std::{
         atomic::{AtomicUsize, Ordering},
     },
 };
-use trust_but_verify::domain::{Domain, NodeContents};
 use trust_but_verify::{
+    __habeas::procedure::{Agent, AgentRequest, Context, context_fingerprint},
     graph::*,
-    procedure::{Agent, AgentRequest, Context, context_fingerprint},
 };
+use trust_but_verify::{Domain, NodeContents};
 
 // The test application chooses its own completed-answer format.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -256,6 +256,7 @@ async fn historical_freshness_reads_do_not_enter_the_replacement_trace() {
 // {test}`requirements.sdk.graph.validators.validate_node.errors`
 // {test}`requirements.sdk.graph.agent-harness.with_agent`
 // {test}`requirements.sdk.graph.agent-calls.judge.rendering`
+// {test}`requirements.sdk.graph.validation.execute`
 #[tokio::test]
 async fn runner_does_not_store_a_missing_agent_error_and_supports_intermediate_calls() {
     let graph = Memory {
@@ -284,7 +285,7 @@ async fn runner_does_not_store_a_missing_agent_error_and_supports_intermediate_c
         assert!(state.reads.is_empty());
     }
     let agent = Arc::new(MockAgent::default());
-    let validator = validator.with_agent(agent.clone());
+    let validator = validator.with_agent_adapter(agent.clone());
     let value = validator
         .verify(Review {
             node: 1,
@@ -651,6 +652,7 @@ async fn caller_reuses_negative_answers_and_compares_revisions_explicitly() {
 // {test}`requirements.sdk.graph.evidence.check_node`
 // {test}`requirements.sdk.graph.evidence.procedure_identity`
 // {test}`requirements.sdk.graph.evidence.record.output`
+// {test}`requirements.sdk.graph.validation.execute`
 #[tokio::test]
 async fn resolution_storage_and_callback_errors_are_not_judgments() {
     let graph = Memory::default();
@@ -728,6 +730,7 @@ async fn dropped_builders_and_missing_agents_do_not_resolve_queued_inputs() {
 // {test}`requirements.sdk.graph.agent-calls.judge.rendering`
 // {test}`requirements.sdk.graph.agent-calls.judge.submission`
 // {test}`requirements.sdk.graph.snapshot`
+// {test}`requirements.sdk.graph.context-tools.root_inputs`
 #[tokio::test]
 async fn explicit_insertions_preserve_order_repetition_and_selection_snapshots() {
     let graph = Memory::default();
@@ -1256,9 +1259,19 @@ async fn concurrent_single_node_validations_keep_separate_traces() {
 }
 
 // {test}`requirements.sdk.graph.agent-calls.judge.submission`
+// {test}`requirements.sdk.graph.validation.execute`
 #[tokio::test]
 async fn invalid_typed_submission_is_an_agent_error() {
-    let graph = Memory::default();
+    let graph = Memory {
+        ask_in_callback: true,
+        ..Memory::default()
+    };
+    graph
+        .state
+        .lock()
+        .unwrap()
+        .contents
+        .insert(1, "input".into());
     let agent = MockAgent {
         invalid: true,
         ..MockAgent::default()
@@ -1268,6 +1281,69 @@ async fn invalid_typed_submission_is_an_agent_error() {
         ctx.ask::<Answer>().await,
         Err(ValidationError::Agent(_))
     ));
+    let validator = Validator::new(graph.clone()).with_agent_adapter(Arc::new(agent));
+    assert!(matches!(
+        validator
+            .verify(Review {
+                node: 1,
+                revision: "v1"
+            })
+            .await,
+        Err(ValidationError::Agent(_))
+    ));
+    let state = graph.state.lock().unwrap();
+    assert_eq!(state.reads, [1]);
+    assert!(state.records.is_empty());
+}
+
+// {test}`requirements.sdk.graph.validation.execute`
+// {test}`requirements.sdk.graph.validation.output_policy`
+// {test}`requirements.sdk.graph.validators.validate_node.errors`
+#[tokio::test]
+async fn criterion_decode_errors_are_execution_errors_and_false_is_a_completed_answer() {
+    struct ParseAnswer;
+    impl Criterion<Memory> for ParseAnswer {
+        type Ok = bool;
+        fn source_node_id(&self) -> u8 {
+            1
+        }
+        fn criterion_path(&self) -> CriterionPath {
+            CriterionPath::new(vec!["parsed-answer".into()])
+        }
+        fn revision(&self) -> String {
+            "json-boolean-v1".into()
+        }
+        async fn execute(
+            self,
+            cx: &mut ValidationContext<'_, Memory>,
+        ) -> Result<bool, ValidationError<&'static str>> {
+            let contents = cx.inspection().read(&1).map_err(ValidationError::Graph)?;
+            serde_json::from_str(&contents.format()).map_err(ValidationError::Output)
+        }
+    }
+    let graph = Memory::default();
+    let validator = Validator::new(graph.clone());
+    graph
+        .state
+        .lock()
+        .unwrap()
+        .contents
+        .insert(1, "not JSON".into());
+    let error = validator.verify(ParseAnswer).await.err().unwrap();
+    assert!(matches!(error, ValidationError::Output(error) if error.is_syntax()));
+    assert!(graph.state.lock().unwrap().records.is_empty());
+
+    graph
+        .state
+        .lock()
+        .unwrap()
+        .contents
+        .insert(1, "false".into());
+    let answer = validator.verify(ParseAnswer).await.unwrap();
+    assert!(!answer.output());
+    assert_eq!(answer.dependencies(), &[Dependency::Node(1, fp("false"))]);
+    validator.store_evidence(&answer).await.unwrap();
+    assert_eq!(graph.state.lock().unwrap().records[&1].output, json!(false));
 }
 
 // {test}`requirements.sdk.graph.agent-calls.judge.caching`
@@ -1359,4 +1435,274 @@ async fn queued_reads_selection_and_rendering_fail_before_agent_invocation() {
     ));
     assert!(ctx.inspection().dependencies().is_empty());
     assert_eq!(agent.requests.lock().unwrap().len(), initial_calls);
+}
+
+// {test}`requirements.sdk.graph.context-tools.pages.fn`
+// {test}`requirements.sdk.graph.context-tools.pages.behavior`
+// {test}`requirements.sdk.graph.context-tools.pages.inputs`
+#[test]
+fn direct_pages_retain_unicode_snapshots_without_rereads_or_new_dependencies() {
+    let graph = Memory::default();
+    let original = format!("{}{}", "é".repeat(8_200), "終".repeat(8_200));
+    graph
+        .state
+        .lock()
+        .unwrap()
+        .contents
+        .insert(1, original.clone());
+    let inspection = InspectionContext::new(&graph);
+    let response = inspection.read_paged(&1).unwrap();
+    assert_eq!(response.text.chars().count(), 8_192);
+    assert_eq!(response.pages.len(), 2);
+    assert_eq!(
+        inspection.dependencies(),
+        vec![Dependency::Node(1, fp(original.clone()))]
+    );
+    graph
+        .state
+        .lock()
+        .unwrap()
+        .contents
+        .insert(1, "replacement".into());
+    let mut returned = response.text.clone();
+    for page in &response.pages {
+        let wire = serde_json::to_string(page).unwrap();
+        let decoded: PageId = serde_json::from_str(&wire).unwrap();
+        assert_eq!(&decoded, page);
+        returned.push_str(&inspection.read_page(&decoded).unwrap());
+        assert_eq!(
+            inspection.dependencies(),
+            vec![Dependency::Node(1, fp(original.clone()))]
+        );
+    }
+    assert_eq!(returned, original);
+    assert_eq!(graph.state.lock().unwrap().reads, vec![1]);
+    assert_eq!(
+        inspection.read_page(&response.pages[0]).unwrap(),
+        "é".repeat(8) + &"終".repeat(8_184)
+    );
+    assert_eq!(graph.state.lock().unwrap().reads, vec![1]);
+    assert_eq!(inspection.dependencies().len(), 1);
+    let old_record = inspection.finish("v1".into(), true).unwrap();
+    assert!(!record_is_current(&graph, "v1", &old_record).unwrap());
+}
+
+// {test}`requirements.sdk.graph.context-tools.pages.fn`
+// {test}`requirements.sdk.graph.context-tools.pages.behavior`
+// {test}`requirements.sdk.graph.context-tools.pages.inputs`
+#[test]
+fn direct_page_ids_are_context_scoped_and_unknown_ids_record_nothing() {
+    let graph = Memory::default();
+    graph
+        .state
+        .lock()
+        .unwrap()
+        .contents
+        .insert(1, "x".repeat(8_193));
+    let first = InspectionContext::new(&graph);
+    let response = first.read_paged(&1).unwrap();
+    let second = InspectionContext::new(&graph);
+    assert_eq!(
+        second.read_page(&response.pages[0]).unwrap_err(),
+        PageError::WrongContext
+    );
+    assert!(second.dependencies().is_empty());
+    let mut unknown = serde_json::to_value(&response.pages[0]).unwrap();
+    unknown["index"] = json!(usize::MAX);
+    let unknown: PageId = serde_json::from_value(unknown).unwrap();
+    assert_eq!(
+        first.read_page(&unknown).unwrap_err(),
+        PageError::UnknownPage
+    );
+    assert_eq!(PageError::UnknownPage.to_string(), "unknown page ID");
+    assert!(
+        PageError::WrongContext
+            .to_string()
+            .contains("another inspection context")
+    );
+    assert_eq!(first.dependencies().len(), 1);
+    assert_eq!(graph.state.lock().unwrap().reads, vec![1]);
+    drop(first);
+    let replacement = InspectionContext::new(&graph);
+    assert!(replacement.read_page(&response.pages[0]).is_err());
+}
+
+// {test}`requirements.sdk.graph.context-tools.pages.fn`
+// {test}`requirements.sdk.graph.context-tools.pages.inputs`
+// {test}`requirements.sdk.sources.redaction`
+#[test]
+fn direct_paged_empty_failed_and_redacted_reads_keep_delivery_accounting() {
+    let graph = Memory::default();
+    graph
+        .state
+        .lock()
+        .unwrap()
+        .contents
+        .insert(1, String::new());
+    let inspection = InspectionContext::new(&graph);
+    let empty = inspection.read_paged(&1).unwrap();
+    assert_eq!(empty.text, "");
+    assert!(empty.pages.is_empty());
+    assert_eq!(inspection.dependencies(), vec![Dependency::Node(1, fp(""))]);
+    let failed = InspectionContext::new(&graph);
+    assert_eq!(failed.read_paged(&9).unwrap_err(), "missing");
+    assert!(failed.dependencies().is_empty());
+    let token = format!("gh{}_{}", "p", "16C7e42F292c6912E7710c838347Ae178B4a");
+    let source = format!("{}\n{token}\nend", "visible\n".repeat(1_100));
+    graph
+        .state
+        .lock()
+        .unwrap()
+        .contents
+        .insert(2, source.clone());
+    let response = inspection.read_paged(&2).unwrap();
+    let mut rendered = response.text;
+    for page in &response.pages {
+        rendered.push_str(&inspection.read_page(page).unwrap());
+    }
+    assert!(!rendered.contains(&token));
+    assert!(rendered.contains("[REDACTED:GitHub Token]"));
+    assert_eq!(rendered.lines().count(), source.lines().count());
+    assert_eq!(
+        inspection.dependencies(),
+        vec![Dependency::Node(1, fp("")), Dependency::Node(2, fp(source))]
+    );
+}
+
+// {test}`requirements.sdk.graph.node-kinds`
+// {test}`requirements.sdk.graph.domain_types`
+#[tokio::test]
+async fn enum_node_ids_distinguish_requirements_and_source_items_in_one_domain() {
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    enum ReviewNodeId {
+        Requirement(Vec<String>),
+        Source { file: String, selector: String },
+    }
+    #[derive(Clone, Default)]
+    struct ReviewDomain(Arc<Mutex<Vec<(ReviewNodeId, CriterionPath, Record<ReviewNodeId>)>>>);
+    impl Domain for ReviewDomain {
+        type Error = &'static str;
+        type NodeId = ReviewNodeId;
+        type NodeContent = Content;
+        type EdgeLabel = ();
+
+        fn node_path(&self, node: &ReviewNodeId) -> NodePath {
+            NodePath::new(match node {
+                ReviewNodeId::Requirement(parts) => {
+                    let mut path = vec!["requirement".into()];
+                    path.extend(parts.iter().cloned());
+                    path
+                }
+                ReviewNodeId::Source { file, selector } => {
+                    vec!["source".into(), file.clone(), selector.clone()]
+                }
+            })
+        }
+        fn node_content(&self, node: &ReviewNodeId) -> Result<Content, Self::Error> {
+            Ok(Content(match node {
+                ReviewNodeId::Requirement(_) => "The domain defines its shared error type.".into(),
+                ReviewNodeId::Source { .. } => "fn validate() {}".into(),
+            }))
+        }
+        fn outgoing_edges(
+            &self,
+            node: &ReviewNodeId,
+            _: (),
+        ) -> Result<Vec<ReviewNodeId>, Self::Error> {
+            Ok(match node {
+                ReviewNodeId::Requirement(_) => vec![ReviewNodeId::Source {
+                    file: "src/lib.rs".into(),
+                    selector: "fn[validate]".into(),
+                }],
+                ReviewNodeId::Source { .. } => vec![],
+            })
+        }
+        async fn load_evidence(
+            &self,
+            node: &ReviewNodeId,
+            criterion: &CriterionPath,
+        ) -> Result<Option<Record<ReviewNodeId>>, Self::Error> {
+            Ok(self
+                .0
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|(id, path, _)| id == node && path == criterion)
+                .map(|(_, _, record)| record.clone()))
+        }
+        async fn store_evidence(
+            &self,
+            node: &ReviewNodeId,
+            criterion: &CriterionPath,
+            record: &Record<ReviewNodeId>,
+        ) -> Result<(), Self::Error> {
+            self.0
+                .lock()
+                .unwrap()
+                .push((node.clone(), criterion.clone(), record.clone()));
+            Ok(())
+        }
+    }
+    let requirement = ReviewNodeId::Requirement(vec!["sdk".into(), "errors".into()]);
+    let source = ReviewNodeId::Source {
+        file: "src/lib.rs".into(),
+        selector: "fn[validate]".into(),
+    };
+    let domain = ReviewDomain::default();
+    assert_ne!(requirement, source);
+    assert_eq!(
+        domain.node_path(&requirement).segments(),
+        ["requirement", "sdk", "errors"]
+    );
+    assert_eq!(
+        domain.node_path(&source).segments(),
+        ["source", "src/lib.rs", "fn[validate]"]
+    );
+    assert_eq!(
+        domain.outgoing_edges(&requirement, ()).unwrap(),
+        [source.clone()]
+    );
+    assert!(domain.outgoing_edges(&source, ()).unwrap().is_empty());
+    let inspection = InspectionContext::new(&domain);
+    assert_eq!(
+        inspection.read(&requirement).unwrap().format(),
+        "The domain defines its shared error type."
+    );
+    assert_eq!(
+        inspection.read(&source).unwrap().format(),
+        "fn validate() {}"
+    );
+    let record = inspection.finish("enum-v1".into(), true).unwrap();
+    assert!(
+        matches!(&record.dependencies[..], [Dependency::Node(first, _), Dependency::Node(second, _)]
+            if first == &requirement && second == &source)
+    );
+    let criterion = CriterionPath::new(vec!["implementation".into()]);
+    assert!(
+        domain
+            .load_evidence(&requirement, &criterion)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    domain
+        .store_evidence(&requirement, &criterion, &record)
+        .await
+        .unwrap();
+    assert_eq!(
+        domain
+            .load_evidence(&requirement, &criterion)
+            .await
+            .unwrap()
+            .unwrap()
+            .output,
+        json!(true)
+    );
+    assert!(
+        domain
+            .load_evidence(&source, &criterion)
+            .await
+            .unwrap()
+            .is_none()
+    );
 }

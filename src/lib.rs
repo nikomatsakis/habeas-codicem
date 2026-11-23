@@ -19,7 +19,7 @@ mod github;
 mod index;
 mod inputs;
 pub mod judgment;
-pub(crate) use trust_but_verify::outline;
+pub(crate) use trust_but_verify::outline::integration as outline;
 mod evidence_format;
 mod redaction;
 mod refactor;
@@ -845,8 +845,12 @@ pub(crate) fn chapter_href(current: &Path, target: &Path, anchor: Option<&str>) 
             _ => None,
         })
         .collect::<Vec<_>>();
-    let target_html = target
-        .with_extension("html")
+    let target_output = if target.file_name() == Some(std::ffi::OsStr::new("README.md")) {
+        target.with_file_name("index.html")
+    } else {
+        target.with_extension("html")
+    };
+    let target_html = target_output
         .components()
         .filter_map(|component| match component {
             Component::Normal(part) => Some(part.to_string_lossy().into_owned()),
@@ -2224,6 +2228,27 @@ mod tests {
         assert_eq!(
             definition,
             "../requirements.html#habeas-req-requirements.cli%2Emdbook"
+        );
+    }
+
+    // {test}`requirements.index.navigation`
+    #[test]
+    fn links_to_readme_chapters_use_the_index_output() {
+        assert_eq!(
+            chapter_href(
+                Path::new("requirements-index/rules.book.md"),
+                Path::new("requirements/index/README.md"),
+                Some("habeas-req-rules.book"),
+            ),
+            "../requirements/index/index.html#habeas-req-rules.book"
+        );
+        assert_eq!(
+            chapter_href(
+                Path::new("requirements/index/README.md"),
+                Path::new("requirements/index/README.md"),
+                None,
+            ),
+            "index.html"
         );
     }
 

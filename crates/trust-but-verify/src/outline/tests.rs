@@ -1,12 +1,12 @@
 use std::path::Path;
 
-use super::{Outline, parse};
+use super::{LegacyOutline, parse};
 
-fn outline(path: &str, source: &str) -> Outline {
+fn outline(path: &str, source: &str) -> LegacyOutline {
     parse(Path::new(path), source).unwrap_or_else(|error| panic!("{path}: {error}"))
 }
 
-fn selectors(outline: &Outline) -> Vec<String> {
+fn selectors(outline: &LegacyOutline) -> Vec<String> {
     outline.nodes[1..]
         .iter()
         .map(|node| node.selector.clone())
@@ -53,6 +53,7 @@ fn profile_rules_map_only_matching_contexts_and_keep_other_nodes_transparent() {
 }
 
 // {test}`requirements.references.structural_hash`
+// {test}`requirements.sdk.sources.plain-text.fingerprints`
 #[test]
 fn hashes_include_grammar_kinds_nesting_and_sha256_digests() {
     // Identical leaf text parsed under distinct grammars has distinct kinds.
@@ -196,7 +197,7 @@ fn grammar_dependencies_are_pinned_to_exact_versions() {
     }
 }
 
-fn summary(outline: &Outline) -> Vec<String> {
+fn summary(outline: &LegacyOutline) -> Vec<String> {
     outline.nodes[1..]
         .iter()
         .map(|node| {
@@ -219,6 +220,7 @@ fn summary(outline: &Outline) -> Vec<String> {
 // {test}`requirements.references.selector_inline_and_foreign`
 // {test}`requirements.references.selector_duplicate_names`
 // {test}`requirements.references.outlines`
+// {test}`requirements.sdk.sources.rust.items`
 #[test]
 fn rust_selectors_follow_syntactic_ancestry() {
     let source = r#"
@@ -328,6 +330,7 @@ fn identity_hashes_include_own_attached_siblings_but_not_descendants() {
 // {test}`requirements.references.selector_use`
 // {test}`requirements.references.outline_selectors`
 // {test}`requirements.references.structural_hash`
+// {test}`requirements.sdk.sources.rust.items`
 #[test]
 fn anonymous_selectors_use_identity_hashes() {
     let before = outline(
@@ -362,6 +365,7 @@ fn anonymous_selectors_use_identity_hashes() {
 // {test}`requirements.references.structural_hash`
 // {test}`requirements.references.selector_raw_lines`
 // {test}`requirements.references.outlines`
+// {test}`requirements.sdk.sources.rust.fingerprints`
 #[test]
 fn hashes_skip_whitespace_and_plain_comments_but_not_doc_comments() {
     let base = concat!(
@@ -408,6 +412,7 @@ fn run_hash(source: &str) -> String {
 }
 
 // {test}`requirements.references.structural_hash`
+// {test}`requirements.sdk.sources.rust.fingerprints`
 #[test]
 fn reflowing_doc_comments_keeps_the_hash() {
     let original = run_hash("/// a\n/// b\nfn run() {}\n");
@@ -419,6 +424,8 @@ fn reflowing_doc_comments_keeps_the_hash() {
 }
 
 // {test}`requirements.references.structural_hash`
+// {test}`requirements.sdk.sources.markdown.fingerprints`
+// {test}`requirements.sdk.sources.rust.fingerprints`
 #[test]
 fn prose_words_are_encoded_separately() {
     assert_ne!(
@@ -436,6 +443,7 @@ fn prose_words_are_encoded_separately() {
 }
 
 // {test}`requirements.references.structural_hash`
+// {test}`requirements.sdk.sources.rust.fingerprints`
 #[test]
 fn editing_a_doc_comment_word_changes_the_hash() {
     let original = run_hash("/// Returns the count.\nfn run() {}\n");
@@ -448,6 +456,7 @@ fn editing_a_doc_comment_word_changes_the_hash() {
 }
 
 // {test}`requirements.references.structural_hash`
+// {test}`requirements.sdk.sources.rust.fingerprints`
 #[test]
 fn string_literals_hash_as_words() {
     assert_eq!(
@@ -479,6 +488,7 @@ fn string_literals_hash_as_words() {
 }
 
 // {test}`requirements.references.structural_hash`
+// {test}`requirements.sdk.sources.markdown.fingerprints`
 #[test]
 fn reflowing_markdown_paragraphs_keeps_the_hash() {
     let section = |source: &str| {
@@ -494,6 +504,7 @@ fn reflowing_markdown_paragraphs_keeps_the_hash() {
 }
 
 // {test}`requirements.references.structural_hash`
+// {test}`requirements.sdk.sources.rust.fingerprints`
 #[test]
 fn reflowing_inner_and_block_doc_comments_keeps_the_hash() {
     let module = |source: &str| {
@@ -517,7 +528,7 @@ fn reflowing_inner_and_block_doc_comments_keeps_the_hash() {
 
 /// The selector of the node owning the comment containing `needle`.
 // {cite}`habeas:util`
-fn comment_owner(outline: &Outline, source: &str, needle: &str) -> String {
+fn comment_owner(outline: &LegacyOutline, source: &str, needle: &str) -> String {
     let start = source.find(needle).unwrap();
     let comment = outline
         .comments
@@ -528,6 +539,7 @@ fn comment_owner(outline: &Outline, source: &str, needle: &str) -> String {
 }
 
 // {test}`requirements.references.outline_comments`
+// {test}`requirements.sdk.sources.rust.items`
 #[test]
 fn comment_runs_belong_to_the_next_node_or_their_container() {
     let source = "\
@@ -653,6 +665,8 @@ fn line_queries_find_innermost_nodes() {
 
 // {test}`requirements.references.outlines`
 // {test}`requirements.references.outline_selectors`
+// {test}`requirements.sdk.sources.plain-text.items`
+// {test}`requirements.sdk.sources.plain-text.fingerprints`
 #[test]
 fn plain_text_lines_are_interchangeable_anonymous_nodes() {
     let outline = outline("notes.txt", "alpha\n\n  beta  \nalpha\n");
@@ -707,6 +721,7 @@ fn profiles_are_selected_by_extension_case_insensitively() {
 }
 
 // {test}`requirements.references.outlines`
+// {test}`requirements.sdk.sources.python.items`
 #[test]
 fn python_profile_outlines_defs_classes_and_statements() {
     let source = "import os\n# lead\n@dec\ndef f(x):\n    return x\nclass C(B):\n    def m(self):\n        pass\nif __name__ == \"__main__\":\n    f(1)\n";
@@ -730,6 +745,7 @@ fn python_profile_outlines_defs_classes_and_statements() {
 }
 
 // {test}`requirements.references.outlines`
+// {test}`requirements.sdk.sources.typescript.items`
 #[test]
 fn typescript_profile_outlines_declarations() {
     let source = "export function f(a: number): void {}\nclass C { m(): void {} x = 1; }\ninterface I { m(): void; }\ntype T = string;\nenum E { A }\nnamespace N { function g() {} }\nconst h = () => 1;\n";
@@ -756,9 +772,10 @@ fn typescript_profile_outlines_declarations() {
 }
 
 // {test}`requirements.references.outlines`
+// {test}`requirements.sdk.sources.css.items`
 #[test]
 fn css_profile_names_rules_by_normalized_selectors() {
-    let source = "/* c */\na  >  b,\n.x { color: red; }\n@media (max-width: 600px) { a { b: c } }\n@keyframes spin { from { x: y } }\n@import \"x.css\";\n";
+    let source = "/* c */\na  >  b,\n.x { color: red; }\n@media (max-width: 600px) { a { b: c } }\n@keyframes spin { from { x: y } }\n@supports (display: grid) { a { display: grid; } }\n@import \"x.css\";\n";
     let outline = outline("a.css", source);
     assert_eq!(
         summary(&outline),
@@ -767,11 +784,14 @@ fn css_profile_names_rules_by_normalized_selectors() {
             "media[(max-width:%20600px)] 4-4",
             "media[(max-width:%20600px)]/rule[a] 4-4",
             "keyframes[spin] 5-5",
+            "supports[(display:%20grid)] 6-6",
+            "supports[(display:%20grid)]/rule[a] 6-6",
         ]
     );
 }
 
 // {test}`requirements.references.outlines`
+// {test}`requirements.sdk.sources.markdown.sections`
 #[test]
 fn markdown_profile_nests_sections_by_heading() {
     let source = "---\ntitle: x\n---\nintro\n\n# Head  *one*\npara\n<!-- note -->\n## Sub\ntext\n";
@@ -801,6 +821,8 @@ fn markdown_profile_nests_sections_by_heading() {
 }
 
 // {test}`requirements.references.outlines`
+// {test}`requirements.sdk.sources.toml.items`
+// {test}`requirements.sdk.sources.yaml.items`
 #[test]
 fn toml_and_yaml_profiles_name_keys() {
     let toml = outline(
@@ -869,6 +891,7 @@ fn anonymous_container_selectors_use_identity_hashes_and_survive_descendant_edit
 // {test}`requirements.references.selector_duplicate_names`
 // {test}`requirements.references.selector_use`
 // {test}`requirements.references.outlines`
+// {test}`requirements.sdk.sources.rust.items`
 #[test]
 fn selectors_name_syntactic_ancestry_and_duplicates() {
     let source = r#"
@@ -911,6 +934,7 @@ fn outer() { fn inner() {} }
 }
 
 // {test}`requirements.references.structural_hash`
+// {test}`requirements.sdk.sources.markdown.fingerprints`
 #[test]
 fn markdown_hashes_include_paragraph_text_between_punctuation_tokens() {
     let hash = |source: &str| outline("a.md", source).nodes[1].structural_hash.clone();
@@ -927,6 +951,7 @@ fn markdown_hashes_include_paragraph_text_between_punctuation_tokens() {
 
 // {test}`requirements.references.outlines`
 // {test}`requirements.references.outline_comments`
+// {test}`requirements.sdk.sources.rust.items`
 #[test]
 fn file_level_inner_doc_comments_and_unmapped_code_belong_to_the_root() {
     let source = "//! Crate docs.\n//! More.\nfn a() {}\n";
@@ -1070,6 +1095,7 @@ fn comment_runs_follow_the_same_rules_in_every_language() {
 }
 
 // {test}`requirements.references.outline_comments`
+// {test}`requirements.sdk.sources.markdown.fingerprints`
 #[test]
 fn markdown_comments_are_html_comment_blocks_not_inline_comments() {
     let source = "# H\nText <!-- inline --> more.\n\n<!-- block -->\n## Sub\n";
@@ -1113,7 +1139,7 @@ fn duplicate_names_are_numbered_in_source_order_without_line_numbers() {
     let source = "#[cfg(a)]\nfn run() { a() }\n#[cfg(b)]\nfn run() { b() }\n";
     let first = outline("src/lib.rs", source);
     assert_eq!(selectors(&first), ["fn[run]#1", "fn[run]#2"]);
-    let node = |outline: &Outline, selector: &str| {
+    let node = |outline: &LegacyOutline, selector: &str| {
         outline.nodes[outline.resolve(selector).unwrap()].clone()
     };
     assert_eq!(node(&first, "fn[run]#1").line_start, 1);
@@ -1143,6 +1169,7 @@ fn duplicate_names_are_numbered_in_source_order_without_line_numbers() {
 
 // {test}`requirements.references.rust_item_selectors`
 // {test}`requirements.references.outlines`
+// {test}`requirements.sdk.sources.rust.items`
 #[test]
 fn item_macros_are_anonymous_nodes_and_expression_macros_are_not() {
     let source = "\
@@ -1178,6 +1205,7 @@ mod local { other! {} }
 }
 
 // {test}`requirements.references.outline_comments`
+// {test}`requirements.sdk.sources.yaml.items`
 #[test]
 fn yaml_comments_before_a_key_belong_to_that_key_not_the_previous_one() {
     let source = "jobs:\n  first:\n    steps:\n      - run: a\n  # note for second\n  second:\n    steps:\n      - run: b\n";
@@ -1188,6 +1216,7 @@ fn yaml_comments_before_a_key_belong_to_that_key_not_the_previous_one() {
 }
 
 // {test}`requirements.references.selector_inline_and_foreign`
+// {test}`requirements.references.rust_item_selectors`
 #[test]
 fn functions_in_a_separate_module_file_are_selected_within_that_file() {
     // `src/lib.rs` declares `mod local;`; `src/local.rs` holds its body. The
@@ -1215,6 +1244,12 @@ fn node_hash(path: &str, source: &str, selector: &str) -> String {
 }
 
 // {test}`requirements.references.structural_hash`
+// {test}`requirements.sdk.sources.python.fingerprints`
+// {test}`requirements.sdk.sources.typescript.fingerprints`
+// {test}`requirements.sdk.sources.css.fingerprints`
+// {test}`requirements.sdk.sources.markdown.fingerprints`
+// {test}`requirements.sdk.sources.toml.fingerprints`
+// {test}`requirements.sdk.sources.yaml.fingerprints`
 #[test]
 fn comments_are_excluded_from_hashes_in_every_other_profile() {
     // Each case: path, selector, original source, sources differing from it
@@ -1290,6 +1325,8 @@ fn comments_are_excluded_from_hashes_in_every_other_profile() {
 }
 
 // {test}`requirements.references.structural_hash`
+// {test}`requirements.sdk.sources.python.items`
+// {test}`requirements.sdk.sources.python.fingerprints`
 #[test]
 fn python_decorators_attach_to_the_decorated_definition_for_hashing() {
     let source = "@cache\ndef f():\n    pass\n";
@@ -1322,6 +1359,7 @@ fn python_decorators_attach_to_the_decorated_definition_for_hashing() {
 }
 
 // {test}`requirements.references.structural_hash`
+// {test}`requirements.sdk.sources.plain-text.fingerprints`
 #[test]
 fn plain_text_line_hashes_ignore_whitespace_but_not_word_breaks() {
     let line = |source: &str| {
@@ -1344,6 +1382,7 @@ fn plain_text_line_hashes_ignore_whitespace_but_not_word_breaks() {
 }
 
 // {test}`requirements.references.structural_hash`
+// {test}`requirements.sdk.sources.rust.fingerprints`
 #[test]
 fn inner_and_outer_doc_comments_hash_in_separate_groups() {
     let module = |source: &str| node_hash("src/lib.rs", source, "mod[m]");
@@ -1363,7 +1402,7 @@ fn inner_and_outer_doc_comments_hash_in_separate_groups() {
 // {test}`requirements.sdk.outlines.language_provider`
 #[test]
 fn custom_provider_handles_generated_content_and_structural_search() {
-    use crate::language::{LanguageProvider, Profile, Registry};
+    use crate::outline::language::{LanguageProvider, Profile, Registry};
     use crate::structural::StructuralRule;
     static CUSTOM_PROFILE: Profile = Profile {
         name: "application-rust",

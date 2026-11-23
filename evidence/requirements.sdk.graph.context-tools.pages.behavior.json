@@ -1,8 +1,8 @@
 {
-  "requirement": "`ToolAgent` exposes `get_node_page`, and `SourceTools` exposes\n`get_source_page`, accepting page IDs returned by their prepared results.\nThey are dispatched with the tool name and a `{\"page\": page_id}` argument.\nThe graph dispatcher returns response text; a source session returns\n`ToolDelivery`, containing response text and any dependencies awaiting delivery.\n\nA continuation returns the stored text and dependency metadata from the\nprepared result without fetching replacement contents.",
+  "requirement": "The SDK's `get_node_page` and `get_source_page` accept page IDs issued by the\noriginating execution or conversation's prepared results. A page ID cannot\nretrieve another execution's result. A continuation returns stored text\nwithout fetching replacement contents. Unknown or unavailable page IDs return\nerrors.",
   "determination": true,
-  "rationale": "The reviewed tests cover each obligation in `pages.behavior`, so I found no gap. I did not read the implementation, because the test sources were enough to judge adequacy.\n\n**Graph continuation (`get_node_page`)**\n- `tests/agent.rs#fn[graph_read_pages_retain_the_prepared_snapshot_after_contents_change]` has the model call `read_node` and then `get_node_page` with `{\"page\":1}`.\n- The provider swaps the graph contents for \"replacement contents\" between the two calls.\n- The test asserts the graph was read only once (`reads == [1]`).\n- It asserts the only recorded dependency is `Dependency::Node(Node(1), fingerprint)` with the original snapshot value.\n- It asserts the page response in the chat history contains \"original snapshot\" and not \"replacement contents\".\n- Together these show that `get_node_page` is exposed, takes the `{\"page\": id}` argument, returns the stored text, does not fetch replacement contents, and does not add or alter dependencies.\n- `tests/agent.rs#fn[graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery]` also dispatches `get_node_page`. It then asserts exactly two dependencies, so the page call adds no extra observation.\n\n**Source continuation (`get_source_page`)**\n- `tests/agent.rs#fn[source_read_pages_retain_text_and_dependencies_without_another_read]` reads a multi-page source through `read_source`.\n- It overwrites the file, then dispatches `get_source_page` with `{\"page\": page}` for each ID in the prepared result's `pages`.\n- Every returned `ToolDelivery` carries `[Dependency::Node(Node(7), fingerprint)]` with the original contents.\n- The reassembled text equals the original, not the replacement.\n- The observation callback runs exactly once.\n- This covers returning the stored text plus dependency metadata without a replacement fetch, and `ToolDelivery` containing text and dependencies.\n- `tests/agent.rs#fn[source_discovery_and_its_pages_do_not_register_reads]` and `tests/agent.rs#fn[source_tools_forward_arguments_and_present_discovery_and_read_results]` cover paged discovery results (`list_sources`, `search_text`, `outline_source`, `search_structure`). Their pages are accepted by `get_source_page`, return text, carry empty dependencies, and never invoke the observation callback.\n\n**Remaining points**\n- The graph dispatcher returning text and the source session returning `ToolDelivery` are both exercised by these calls.\n- The text does not specify behaviour for an unknown page ID, so I did not require a test for it.",
-  "references": "fcbe416a74dd13fd8e6a992fbbc060e5cbe6ab7bf163fe2ce2d5a0869423db2a",
+  "rationale": "I judged the reviewed tests adequate for `requirements.sdk.graph.context-tools.pages.behavior`. I did not request implementation source. Each obligation maps to tests as follows.\n\n**1. Pages issued by the originating execution or conversation are accepted.**\n- Graph tool path:\n  - `tests.rs#fn[graph_read_pages_retain_the_prepared_snapshot_after_contents_change]` reads a node, then calls `get_node_page` with the prepared page. The call succeeds.\n  - `tests.rs#fn[graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery]` also calls `get_node_page` with a prepared page and checks the dependencies.\n- Direct inspection API: `validation.rs#fn[direct_pages_retain_unicode_snapshots_without_rereads_or_new_dependencies]` reads every page, round-trips each `PageId` through serde, and reassembles the original text.\n- Source tool path:\n  - `tests.rs#fn[source_read_pages_retain_text_and_dependencies_without_another_read]` fetches the pages from a source read and reassembles the original.\n  - `tests.rs#fn[source_tools_forward_arguments_and_present_discovery_and_read_results]` and `tests.rs#fn[source_discovery_and_its_pages_do_not_register_reads]` fetch pages for structural-search, search and list results.\n  - `project_sources.rs#fn[fixed_tools_deliver_domain_contents_with_mandatory_snapshot_dependencies]` fetches the pages from a long `read_source` result.\n\n**2. A page ID cannot retrieve another execution's result.**\n- `tests.rs#fn[graph_page_ids_from_a_populated_peer_conversation_are_rejected]` takes a page ID from one conversation that has pages and presents it to a second conversation that also has its own page. It asserts the IDs differ, that the result `is_error`, and that the message contains \"unknown page\".\n- `validation.rs#fn[direct_page_ids_are_context_scoped_and_unknown_ids_record_nothing]` asserts `PageError::WrongContext` for a page presented to a second `InspectionContext`. It also asserts the second context records no dependencies.\n- `project_sources.rs#fn[fixed_tools_deliver_domain_contents_with_mandatory_snapshot_dependencies]` checks `get_source_page` in both directions between two sessions. Both calls return errors.\n\n**3. A continuation returns stored text without fetching replacement contents.**\n- Graph tool path: `tests.rs#fn[graph_read_pages_retain_the_prepared_snapshot_after_contents_change]` swaps the contents between turns. It asserts the page contains the original text and not the replacement. It also asserts the graph was read once (`reads == [1]`) and the dependency fingerprint is the original.\n- Direct inspection API: `validation.rs#fn[direct_pages_retain_unicode_snapshots_without_rereads_or_new_dependencies]` replaces the contents. It asserts the reassembled text equals the original, `reads == [1]`, and the dependencies are unchanged.\n- Source tool path:\n  - `tests.rs#fn[source_read_pages_retain_text_and_dependencies_without_another_read]` rewrites the file. It asserts the pages still hold the original text and the observation callback ran once.\n  - `project_sources.rs#fn[fixed_tools_deliver_domain_contents_with_mandatory_snapshot_dependencies]` asserts the retained text excludes \"replacement\" and the domain read count is unchanged.\n  - `tests.rs#fn[source_tools_forward_arguments_and_present_discovery_and_read_results]` asserts that discovery pages cannot invoke the observation callback.\n\n**4. Unknown or unavailable page IDs return errors.**\n- Unknown IDs:\n  - `validation.rs#fn[direct_page_ids_are_context_scoped_and_unknown_ids_record_nothing]` asserts `PageError::UnknownPage` for an out-of-range index and checks the error messages.\n  - `project_sources.rs#fn[fixed_tools_deliver_domain_contents_with_mandatory_snapshot_dependencies]` asserts `get_source_page` errors for page `999999`, and for page `0` on a fresh session.\n- Unavailable IDs: the same direct test asserts that a page from a dropped context fails in a replacement context.\n\nThe graph tool path is checked for foreign IDs but not for a bare unknown ID. The direct API test covers the unknown case, and the tool path reports the same \"unknown page\" error shown in the foreign-ID test. I do not treat this as a gap.\n\nAll tests carry `{test}` references to the subject, so there is no marking gap. There are no acknowledgments, and I found no unacknowledged gaps.",
+  "references": "3b18a886ce7d48bd15b33d721c35f4d018a8588ea8effc1d10066f55c50b1ddc",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.context-tools.pages.behavior",
@@ -11,41 +11,58 @@
       ],
       "text": [
         ":::{req} pages.behavior",
-        "`ToolAgent` exposes `get_node_page`, and `SourceTools` exposes",
-        "`get_source_page`, accepting page IDs returned by their prepared results.",
-        "They are dispatched with the tool name and a `{\"page\": page_id}` argument.",
-        "The graph dispatcher returns response text; a source session returns",
-        "`ToolDelivery`, containing response text and any dependencies awaiting delivery.",
-        "",
-        "A continuation returns the stored text and dependency metadata from the",
-        "prepared result without fetching replacement contents.",
+        "The SDK's `get_node_page` and `get_source_page` accept page IDs issued by the",
+        "originating execution or conversation's prepared results. A page ID cannot",
+        "retrieve another execution's result. A continuation returns stored text",
+        "without fetching replacement contents. Unknown or unavailable page IDs return",
+        "errors.",
         ":::"
       ]
     },
     {
-      "file": "crates/trust-but-verify/tests/agent.rs",
+      "file": "crates/trust-but-verify/src/agent/project_sources.rs",
+      "item": "mod[tests]/fn[fixed_tools_deliver_domain_contents_with_mandatory_snapshot_dependencies]",
+      "hash": "283f01f5306b517d055960be8fd5ec8cf869a394c2e684f1d6f2d025e950d698"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery]",
-      "hash": "05a5ed0c298379e40279a1ce59ffcda7a5ae7a612fdae2d20039e69b3f942e45"
+      "hash": "3249745070764720482c2949ea26357f03c7c51071614172166799e81ebaae30"
     },
     {
-      "file": "crates/trust-but-verify/tests/agent.rs",
+      "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[source_discovery_and_its_pages_do_not_register_reads]",
-      "hash": "d5dc4993c51766a6e907398117cb5d882b9ed73d864be6fb4d272fe4f1324822"
+      "hash": "5a61a193c493225feedcfbf45a0760b1b5d1973529bb7955c2530d7b7d53675f"
     },
     {
-      "file": "crates/trust-but-verify/tests/agent.rs",
+      "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[graph_read_pages_retain_the_prepared_snapshot_after_contents_change]",
-      "hash": "9528d6d365a561767d568979c27152fe8e85837353ac32e989c2515cd4a82715"
+      "hash": "4305dbf1e36be820b5b3d1f8d9929749172f473a43e791aee94cb2ac7fb24093"
     },
     {
-      "file": "crates/trust-but-verify/tests/agent.rs",
+      "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[source_read_pages_retain_text_and_dependencies_without_another_read]",
-      "hash": "9e314aafc90337288ddae91f9a624feda814cbe4ad09b63b9982a2d1a34874dc"
+      "hash": "535e1e48270a507a6434e1b2a1512d40a31218b7baea1378f607425dac83a056"
     },
     {
-      "file": "crates/trust-but-verify/tests/agent.rs",
+      "file": "crates/trust-but-verify/src/agent/tests.rs",
+      "item": "fn[graph_page_ids_from_a_populated_peer_conversation_are_rejected]",
+      "hash": "493a3ac2b98802553ac465f96671f2d845b58927f80324937d0ccf51c664c85d"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[source_tools_forward_arguments_and_present_discovery_and_read_results]",
-      "hash": "287d4c1911ff5e84e5b444a910b071e58fab1d3c9231671bf787bcaca78fe03f"
+      "hash": "6ed6b592475158f6952de3c3182e2040ba0b5a1ca56d26c11cc39016f25002bd"
+    },
+    {
+      "file": "crates/trust-but-verify/tests/validation.rs",
+      "item": "fn[direct_pages_retain_unicode_snapshots_without_rereads_or_new_dependencies]",
+      "hash": "7330020345780df978c41a1f893e66f16cbdc1431e0e5723aa8cbc4c0468e926"
+    },
+    {
+      "file": "crates/trust-but-verify/tests/validation.rs",
+      "item": "fn[direct_page_ids_are_context_scoped_and_unknown_ids_record_nothing]",
+      "hash": "93514aceb006b17e9414aca898068955e2550de27bf8b09f0a113268865b838b"
     }
   ],
   "format_version": 1,
@@ -58,7 +75,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "fcbe416a74dd13fd8e6a992fbbc060e5cbe6ab7bf163fe2ce2d5a0869423db2a"
+          "value": "3b18a886ce7d48bd15b33d721c35f4d018a8588ea8effc1d10066f55c50b1ddc"
         }
       ]
     },
@@ -70,7 +87,7 @@
         "Mandatory",
         {
           "scheme": "node-path-set-sha256-v1",
-          "value": "abbf9f5515cbf5e3bb8c0baf7e9db0c62ccaf05a2852f89dc7e7d795339dc499"
+          "value": "b183390e5eb1c96d07d09b046b8c2cfd0b236cbc344debfe07fdba5bccd10bb9"
         }
       ]
     },
@@ -81,7 +98,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "341de0d437fa46f9b61b101cd777ef921d97e22fd05103ba5bee243d62261369"
+          "value": "200fa9ff95ab08a8a7a6d82ead2a28bb5faf20ddcfacea9430ead28ea15cece4"
         }
       ]
     },
@@ -91,14 +108,31 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/agent.rs"
+              "location": "crates/trust-but-verify/src/agent/project_sources.rs"
+            },
+            "selector": "mod[tests]/fn[fixed_tools_deliver_domain_contents_with_mandatory_snapshot_dependencies]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "ce305a4430e03c8bcf296b8787556627a98f02ecf9d3b91d016eba2574125fc0"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/tests.rs"
             },
             "selector": "fn[graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "75e168c42c569de6a1ffa104a6a54ffec7c2726490fdfa4b76d248b644fa5368"
+          "value": "0d1adf7a091be15c45f93c208a2372ae719fb5a432a4a355ce784fe6826dbbff"
         }
       ]
     },
@@ -108,14 +142,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/agent.rs"
+              "location": "crates/trust-but-verify/src/agent/tests.rs"
             },
             "selector": "fn[source_discovery_and_its_pages_do_not_register_reads]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "2f0968ceae37d27b8a739585ed4aa19263fb6e6f10fd2ab185979fe218475a7f"
+          "value": "e0c79c55afea8df889c56cbafac745444f2031ee21b97eac6fffd7d452a1bf15"
         }
       ]
     },
@@ -125,14 +159,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/agent.rs"
+              "location": "crates/trust-but-verify/src/agent/tests.rs"
             },
             "selector": "fn[graph_read_pages_retain_the_prepared_snapshot_after_contents_change]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "3fe4d63baa3551a6e88fb0a74f6d6aeaefde3859981221fcac2559de6f3ac61b"
+          "value": "17ec5e3f63d55a93227bf7a8ab3b667e3b2b7159bafcf226df330eaf47b11741"
         }
       ]
     },
@@ -142,14 +176,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/agent.rs"
+              "location": "crates/trust-but-verify/src/agent/tests.rs"
             },
             "selector": "fn[source_read_pages_retain_text_and_dependencies_without_another_read]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "024f53688ef828d81805cff1b375afa37fb236de63d6647caf736ca792ec42ed"
+          "value": "daf62c06685c0914c3aae31b5ff5a8e415eaae0ded3b23859385659053104bcb"
         }
       ]
     },
@@ -159,14 +193,65 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/agent.rs"
+              "location": "crates/trust-but-verify/src/agent/tests.rs"
+            },
+            "selector": "fn[graph_page_ids_from_a_populated_peer_conversation_are_rejected]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "c07658804cd7bc2d22af37a6417a66c18edf3087e7b026f29357b9ddcd07cd53"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/tests.rs"
             },
             "selector": "fn[source_tools_forward_arguments_and_present_discovery_and_read_results]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "931f6d0dd712016861dc98030a69ea300649a609c9fa0c150e00ab9b04692def"
+          "value": "1df498b5eea4242771a65258440ccb38d5531bbb664caac0043e85c787773db4"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/tests/validation.rs"
+            },
+            "selector": "fn[direct_pages_retain_unicode_snapshots_without_rereads_or_new_dependencies]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "d466428dca067ae4e760da467c2e52847babe96a2270c4c39a3fe9fcce1de04a"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/tests/validation.rs"
+            },
+            "selector": "fn[direct_page_ids_are_context_scoped_and_unknown_ids_record_nothing]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "420bfdb7984eeaabe6a35354bafacf05dbd10aa3bd8429a11285c025b305b0f2"
         }
       ]
     }

@@ -1,18 +1,30 @@
-//! Source outlines: per-language trees of selectable nodes with structural
-//! hashes, built from pinned tree-sitter grammars or the plain-text profile.
+//! Selectable source contents with retained text and structural fingerprints.
 //!
-//! [`parse_provider`] parses a resolved text snapshot and returns an [`Outline`]:
-//! a pre-order list of [`OutlineNode`]s whose first entry is the root, plus
-//! every [`OutlineComment`] with the node it belongs to.
+//! [`OutlineContent`] loads a file or supplied snapshot, selects an item, and
+//! implements [`crate::NodeContents`]. [`OutlineLang`] supplies language rules;
+//! [`languages`] contains the bundled languages and plain-text fallback.
 
+mod contents;
 mod hash;
-pub mod language;
-#[cfg(feature = "default-languages")]
+pub(crate) mod language;
 pub mod languages;
 mod markdown;
-pub mod plain;
-pub mod profile;
+pub(crate) mod plain;
+pub(crate) mod profile;
 mod selector;
+pub use contents::{Outline, OutlineContent, OutlineId, OutlineItem, OutlineLang};
+
+#[cfg(feature = "habeas-integration")]
+#[doc(hidden)]
+pub mod integration {
+    pub use super::language::{LanguageProvider, Profile, Registry};
+    pub use super::{
+        LegacyOutline as Outline, OutlineComment, OutlineError, OutlineNode, ResolveError,
+        comment_ranges, parse_redacted, parse_with,
+    };
+    #[cfg(feature = "default-languages")]
+    pub use super::{RUST_PROFILE, is_markdown_path, parse, profile_for_path};
+}
 
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
@@ -20,18 +32,21 @@ use std::fmt;
 use tree_sitter::{Node, Parser, Tree};
 
 #[cfg(feature = "default-languages")]
+#[doc(hidden)]
 pub use crate::outline::languages::rust::PROFILE as RUST_PROFILE;
 use crate::redaction::Redaction;
 use hash::Encoder;
-pub use profile::{LanguageProvider, Profile, Registry};
+pub(crate) use profile::{LanguageProvider, Profile};
 use profile::{NameRule, text};
 #[cfg(feature = "default-languages")]
+#[doc(hidden)]
 pub use profile::{is_markdown_path, profile_for_path};
 pub use selector::{HASH_DIGITS, Label, Segment, SelectorError, parse_selector};
 
 /// One outline node. Line numbers are one-based and inclusive.
 #[derive(Clone, Debug)]
 // {impl}`requirements.references.outlines`
+#[doc(hidden)]
 pub struct OutlineNode {
     /// Short outline kind, such as `fn`; empty for the root.
     pub kind: &'static str,
@@ -74,12 +89,13 @@ impl OutlineNode {
 /// One comment and the outline node it belongs to.
 #[derive(Clone, Debug)]
 // {impl}`requirements.references.outline_comments`
+#[doc(hidden)]
 pub struct OutlineComment {
     pub byte_start: usize,
     pub byte_end: usize,
     pub line_start: usize,
     pub line_end: usize,
-    /// Index of the owning node in [`Outline::nodes`].
+    /// Index of the owning node in [`LegacyOutline::nodes`].
     pub owner: usize,
     /// Index of the comment run containing this comment; comments of one run
     /// share it, and runs are numbered in source order.
@@ -89,7 +105,8 @@ pub struct OutlineComment {
 /// A parsed outline.
 #[derive(Clone, Debug)]
 // {impl}`requirements.references.outlines`
-pub struct Outline {
+#[doc(hidden)]
+pub struct LegacyOutline {
     pub profile: &'static Profile,
     /// Nodes in source pre-order; index 0 is the root.
     pub nodes: Vec<OutlineNode>,
@@ -117,6 +134,7 @@ impl std::error::Error for OutlineError {}
 /// A selector that does not resolve.
 #[derive(Clone, Debug, PartialEq, Eq)]
 // {cite}`habeas:util`
+#[doc(hidden)]
 pub enum ResolveError {
     Invalid(SelectorError),
     NotFound(String),
@@ -140,29 +158,28 @@ impl std::error::Error for ResolveError {}
 // {impl}`requirements.references.outlines`
 // {impl}`requirements.authoring.redaction`
 #[cfg(feature = "default-languages")]
-pub fn parse(path: &std::path::Path, source: &str) -> Result<Outline, OutlineError> {
-    parse_redacted(
-        profile_for_path(path),
-        source,
-        &Redaction::of_file(path, source),
-    )
+#[doc(hidden)]
+pub fn parse(path: &std::path::Path, source: &str) -> Result<LegacyOutline, OutlineError> {
+    parse_redacted(profile_for_path(path), source, &Redaction::of_text(source))
 }
 
 /// Parses a source with a given profile, redacting by `secretshape` rules.
 // {impl}`requirements.references.outlines`
 // {impl}`requirements.authoring.redaction`
-pub fn parse_with(profile: &'static Profile, source: &str) -> Result<Outline, OutlineError> {
+#[doc(hidden)]
+pub fn parse_with(profile: &'static Profile, source: &str) -> Result<LegacyOutline, OutlineError> {
     parse_redacted(profile, source, &Redaction::of_text(source))
 }
 
 /// Parses the original source with a given profile, hashing each text piece
 /// that overlaps a redacted region in its redacted form.
 // {impl}`requirements.references.structural_hash`
+#[doc(hidden)]
 pub fn parse_redacted(
     profile: &'static Profile,
     source: &str,
     redaction: &Redaction,
-) -> Result<Outline, OutlineError> {
+) -> Result<LegacyOutline, OutlineError> {
     parse_grammar(profile, profile.language, source, redaction)
 }
 
@@ -171,7 +188,7 @@ fn parse_grammar(
     grammar: Option<fn() -> tree_sitter::Language>,
     source: &str,
     redaction: &Redaction,
-) -> Result<Outline, OutlineError> {
+) -> Result<LegacyOutline, OutlineError> {
     let lines = LineIndex::new(source);
     let Some(language) = grammar else {
         return Ok(plain_text(profile, source, redaction, &lines));
@@ -206,6 +223,7 @@ fn parse_tree(
 /// Locate comment prose even when an unrelated syntax error prevents outlining.
 /// Recovery nodes do not make string literals or other data into comments.
 // {impl}`requirements.references.reference_contexts`
+#[doc(hidden)]
 pub fn comment_ranges(
     profile: &'static Profile,
     source: &str,
@@ -310,7 +328,7 @@ fn plain_text(
     source: &str,
     redaction: &Redaction,
     lines: &LineIndex,
-) -> Outline {
+) -> LegacyOutline {
     let mut root_hash = Encoder::new();
     let mut nodes = vec![root_node(source, lines, String::new(), String::new())];
     for (index, start) in lines.starts.iter().take(lines.count).enumerate() {
@@ -349,7 +367,7 @@ fn plain_text(
     }
     nodes[0].structural_hash = root_hash.finish();
     nodes[0].identity_hash = Encoder::new().finish();
-    Outline {
+    LegacyOutline {
         profile,
         nodes,
         comments: Vec::new(),
@@ -639,7 +657,7 @@ impl<'tree, 'source> Builder<'tree, 'source> {
     /// assigns hashes, selectors, line ranges including attached siblings,
     /// and comment owners.
     // {impl}`requirements.references.outline_selectors`
-    fn finish(self, lines: &LineIndex) -> Outline {
+    fn finish(self, lines: &LineIndex) -> LegacyOutline {
         let mut nodes = Vec::with_capacity(self.drafts.len());
         nodes.push(root_node(
             self.source,
@@ -687,7 +705,7 @@ impl<'tree, 'source> Builder<'tree, 'source> {
         }
         disambiguate(&mut nodes);
         let comments = assign_comments(&mut nodes, self.comments, self.source, lines);
-        Outline {
+        LegacyOutline {
             profile: self.profile,
             nodes,
             comments,
@@ -877,7 +895,7 @@ fn run_owner(nodes: &[OutlineNode], bytes: (usize, usize), binds_to_container: b
         .unwrap_or(container)
 }
 
-impl Outline {
+impl LegacyOutline {
     /// Resolves a selector to a node index; the empty selector is the root.
     /// A `line` segment resolves to the first line with that content.
     // {impl}`requirements.references.outline_selectors`
@@ -1017,10 +1035,11 @@ mod tests;
 /// Parse a resolved text snapshot using an explicitly selected provider. The
 /// resource may be local, remote, or generated; spans refer to `source`.
 // {cite}`habeas:util`
+#[doc(hidden)]
 pub fn parse_provider(
     provider: &'static dyn LanguageProvider,
     source: &str,
-) -> Result<Outline, OutlineError> {
+) -> Result<LegacyOutline, OutlineError> {
     parse_grammar(
         provider.profile(),
         Some(provider.grammar()),

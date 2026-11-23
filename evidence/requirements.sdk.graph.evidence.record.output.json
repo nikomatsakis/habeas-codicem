@@ -1,8 +1,8 @@
 {
   "requirement": "`Validator::store_evidence` serializes the answer in `Fingerprinted` before passing\nthe complete record to storage. A serialization failure returns\n`ValidationError::Output` and leaves the existing record unchanged. A storage\nfailure returns `ValidationError::Graph`.\n\n`Validator::load_evidence` decodes a loaded record's output into the requested\n`Criterion::Ok`. An output that cannot decode returns `ValidationError::Output`,\nincluding when the saved revision or inputs are stale. Missing evidence returns\n`Ok(None)`; malformed stored records and storage failures return\n`ValidationError::Graph`. Revision and input comparison belong to the caller's\nreuse workflow under {cite}`requirements.sdk.graph.evidence.procedure_identity`.",
   "determination": true,
-  "rationale": "I judged the supplied tests against the text of `requirements.sdk.graph.evidence.record.output`. I did not read implementation source. The reviewed tests cover every obligation in the text.\n\n**Store obligations**\n- **Serialize the answer, pass the complete record to storage.** `contracts.rs#fn[criteria_keep_typed_answers_and_persist_only_when_requested]` stores a value. It then asserts the raw stored `output` equals `json!({\"satisfied\":false,\"details\":[...]})` for one criterion and `json!(null)` for a unit-type criterion. It also checks the stored dependencies. Loading back gives the same output, revision, source node, criterion path and dependencies. `contracts.rs#fn[input_checking_and_execution_keep_separate_observations]` asserts the stored revision-and-dependency record (`Dependency::Node` with its fingerprint).\n- **Serialization failure returns `ValidationError::Output` and leaves the existing record unchanged.**\n  - `contracts.rs#fn[serialization_failure_leaves_the_existing_record_unchanged]` saves an old record. It then stores an `Unencodable` answer under a new revision, asserts `ValidationError::Output` with the \"cannot encode answer\" message, and asserts revision, dependencies and output are unchanged and writes stay at 1.\n  - `contracts.rs#fn[refresh_serialization_failure_preserves_the_saved_record]` covers the same case through refresh.\n- **Storage failure returns `ValidationError::Graph`.**\n  - `contracts.rs#fn[loading_execution_resolution_and_saving_failures_do_not_publish_answers]` and `validation.rs#fn[resolution_storage_and_callback_errors_are_not_judgments]` set `fail_store` and assert `Graph(\"store\")`. They also assert no record was written.\n  - The refresh test's \"store\" stage also asserts this.\n\n**Load obligations**\n- **Decode into the requested `Criterion::Ok`.** Loaded outputs are compared to the typed answers (`negative`, `structure`, unit). `storage.rs#fn[malformed_records_are_storage_errors_and_bad_outputs_are_output_errors]` shows the same through file-backed storage.\n- **An output that cannot decode returns `ValidationError::Output`, including when the revision or inputs are stale.**\n  - Same revision: the contracts tests load a `String` criterion over a stored object, and the refresh \"decode\" stage does the same. Both return `Output`.\n  - Stale revision: the `v2` load in `contracts.rs#fn[typed_loading_reports_decode_errors_even_for_stale_evidence]`, the \"obsolete\" revision in the `storage.rs` test, and the refresh \"stale decode\" stage.\n  - Stale inputs: `typed_loading_reports_decode_errors_even_for_stale_evidence` replaces the dependencies with an `old` fingerprint on `Node(99)` and sets `fail_read`. It asserts `Output` and that no input reads happened.\n- **Missing evidence returns `Ok(None)`.** This is asserted before and after `verify`, and for an unsaved criterion, in `contracts.rs#fn[criteria_keep_typed_answers_and_persist_only_when_requested]`.\n- **Malformed stored records and storage failures return `ValidationError::Graph`.** The `storage.rs` test writes \"not JSON\" and asserts `Graph(FileStorageError::Json(_))`, with the file unchanged. `fail_load` yields `Graph(\"load\")` in both `contracts.rs#fn[loading_execution_resolution_and_saving_failures_do_not_publish_answers]` and `validation.rs#fn[resolution_storage_and_callback_errors_are_not_judgments]`.\n- **Revision and input comparison belong to the caller.**\n  - `load_evidence` returns a stale-input record without judging it. `contracts.rs#fn[input_checking_and_execution_keep_separate_observations]` loads it and shows `check_inputs` is false.\n  - Stale-revision loading is exercised in the same tests above, with the revision and dependency comparison left to the caller and cited under `procedure_identity`.\n\nI found no gap, no ambiguity and no FIXME to acknowledge.",
-  "references": "a236610f3c0c32b22969cdc14ecf99006800e2efe51b46dc4408cdcd42f24470",
+  "rationale": "The reviewed tests cover every obligation in `requirements.sdk.graph.evidence.record.output`.\n\n**Store path**\n- **Serialization before storage.** `criteria_keep_typed_answers_and_persist_only_when_requested` stores a typed answer and a unit `()` answer. It asserts that the saved record's `output` is `json!({\"satisfied\":false,\"details\":[...]})` and `json!(null)`. The storage tests also write records through the real file store.\n- **Serialization failure.** Both `serialization_failure_leaves_the_existing_record_unchanged` and `refresh_serialization_failure_preserves_the_saved_record` use an `Unencodable` answer.\n  - Both assert `ValidationError::Output`.\n  - Both assert that the existing record's revision, dependencies and output are unchanged.\n  - The first test also asserts that the write count stays at 1. The second asserts 0 writes with a single record left.\n  - `refresh_propagates_load_decode_check_execution_and_save_errors` covers the same invariant for the refresh path.\n- **Storage failure on store.** `loading_execution_resolution_and_saving_failures_do_not_publish_answers` and `resolution_storage_and_callback_errors_are_not_judgments` set `fail_store`. They assert `ValidationError::Graph(\"store\")` and that no record is written.\n\n**Load path**\n- **Decoding into `Criterion::Ok`.** `criteria_keep_typed_answers_and_persist_only_when_requested` round-trips both the typed and unit answers. It compares the loaded `output`, source, path, revision and dependencies with the saved record.\n- **Undecodable output.**\n  - `typed_loading_reports_decode_errors_even_for_stale_evidence` loads a record whose output cannot decode. It tries the same revision and a changed revision `v2`, and the saved record also carries a stale dependency. Both loads return `ValidationError::Output`, and no input reads occur.\n  - `malformed_records_are_storage_errors_and_bad_outputs_are_output_errors` covers the same case against the file store.\n  - `input_checking_and_execution_keep_separate_observations` covers an undecodable output alongside stale inputs.\n- **Missing evidence.** Several tests assert `load_evidence(...).unwrap().is_none()`, including `criteria_keep_typed_answers_and_persist_only_when_requested`.\n- **Malformed stored record.** `malformed_records_are_storage_errors_and_bad_outputs_are_output_errors` overwrites the record file with \"not JSON\". It asserts `ValidationError::Graph(FileStorageError::Json(_))` and that the file is untouched. The in-memory domain cannot hold a malformed record, so this file-store test is the relevant one.\n- **Storage failure on load.** `loading_execution_resolution_and_saving_failures_do_not_publish_answers` and `resolution_storage_and_callback_errors_are_not_judgments` assert `Graph(\"load\")`.\n- **Revision and input comparison left to the caller.**\n  - `caller_reuses_negative_answers_and_compares_revisions_explicitly` loads a `v1` record with a `v2` descriptor. It gets `Some` and has the caller compare revisions.\n  - `input_checking_and_execution_keep_separate_observations` loads a record whose inputs are stale. It gets `Some`, and only `check_inputs` returns false.\n\nNo obligation is untested, and the assertions are specific to the required error variants and state. I found no gap.",
+  "references": "c3fe37c7de5c7863925821aa0e6a88d8576f8ead9147f62af74fe0b808b4abb5",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.evidence.record.output",
@@ -39,8 +39,8 @@
         "",
         "Changing review instructions, deterministic rules, input-selection policy, or",
         "result encoding in a way that invalidates an old answer requires a changed",
-        "revision. This is independent of model selection and the agent's context-prefix",
-        "cache fingerprint. A stored legacy revision `*` retains the matching behavior of",
+        "revision. This is independent of model selection.",
+        "A stored legacy revision `*` retains the matching behavior of",
         "{cite}`requirements.sdk.graph.evidence.checking_records.procedure_match`.",
         ":::"
       ]
@@ -89,6 +89,11 @@
       "file": "crates/trust-but-verify/tests/validation.rs",
       "item": "fn[resolution_storage_and_callback_errors_are_not_judgments]",
       "hash": "019d9b3dcaf43b538f3a14448e2ca0e42fc6f000972a6af300f11b86fb14e3ac"
+    },
+    {
+      "file": "crates/trust-but-verify/tests/validation.rs",
+      "item": "fn[caller_reuses_negative_answers_and_compares_revisions_explicitly]",
+      "hash": "e7e2db5ecf6df7409f9b32cf275f1d1ea45d5497fc96e47d477899e751c90a16"
     }
   ],
   "format_version": 1,
@@ -101,7 +106,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "a236610f3c0c32b22969cdc14ecf99006800e2efe51b46dc4408cdcd42f24470"
+          "value": "c3fe37c7de5c7863925821aa0e6a88d8576f8ead9147f62af74fe0b808b4abb5"
         }
       ]
     },
@@ -135,7 +140,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "cd323e67eee8e903811eec8dcb863febdbdb5ee6ed5e051e0b648d4e7ccf0511"
+          "value": "d1764fbfd3515ac9c8d4d6cdd93c188357d8d87101f2044621ca497c82206be3"
         }
       ]
     },
@@ -289,6 +294,23 @@
         {
           "scheme": "habeas-input-v1",
           "value": "20070e82cba9fb0f95c8851e9b9cfcb8bffcd2426707376c4ebe7fbbaff8baa7"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/tests/validation.rs"
+            },
+            "selector": "fn[caller_reuses_negative_answers_and_compares_revisions_explicitly]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "f1ec455d2849bc329594e457cff12bf5acb81b51e680c006089180d3f87e92f8"
         }
       ]
     }

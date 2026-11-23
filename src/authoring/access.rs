@@ -64,6 +64,7 @@ pub(crate) mod tests {
     }
 
     // {test}`requirements.configuration.workspace_location`
+    // {test}`requirements.configuration.evidence_paths`
     #[test]
     fn evidence_rules_are_relative_to_the_selected_workspace_file() {
         let workspace = tempfile::tempdir().unwrap();

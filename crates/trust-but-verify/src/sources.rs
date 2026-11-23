@@ -2,8 +2,8 @@
 
 use crate::outline::language::Registry;
 use crate::{
-    outline::{self, Outline},
-    resource::{OutlineId, ResourceId},
+    outline::{self, LegacyOutline},
+    resource::ResourceId,
     search::RegexSearch,
     structural::{StructuralRule, innermost_node},
 };
@@ -24,7 +24,7 @@ pub struct SourceScope {
 
 impl SourceScope {
     // {cite}`habeas:util`
-    pub fn contains(&self, id: &ResourceId) -> bool {
+    pub(crate) fn contains(&self, id: &ResourceId) -> bool {
         let mut prefix = PathBuf::new();
         for component in Path::new(&self.prefix).components() {
             match component {
@@ -55,7 +55,7 @@ impl SourceFile {
 pub struct ParsedSource {
     pub resource: ResourceId,
     pub source: SourceFile,
-    pub outline: Outline,
+    pub outline: LegacyOutline,
 }
 
 // {cite}`habeas:util`
@@ -90,7 +90,7 @@ pub struct TextQuery {
 }
 // {cite}`habeas:util`
 pub struct TextMatch {
-    pub resource: ResourceId,
+    pub path: PathBuf,
     pub line: usize,
     pub excerpt: String,
 }
@@ -103,7 +103,7 @@ pub struct StructuralQuery {
 }
 // {cite}`habeas:util`
 pub struct StructuralMatch {
-    pub node: OutlineId,
+    pub node: crate::outline::OutlineId,
     pub excerpt: String,
 }
 // {impl}`requirements.sdk.sources.provider_results.search_completeness`
@@ -124,6 +124,20 @@ pub struct Sources {
 }
 
 impl Sources {
+    pub(crate) fn check_path(&self, path: &Path) -> Result<(), SourceError> {
+        let root = self.analysis.provider.project_directory()?;
+        let requested = path
+            .to_str()
+            .ok_or_else(|| SourceError::Invalid("source path is not UTF-8".into()))?;
+        let target = self.analysis.provider.path(requested)?;
+        let original = root.join(path);
+        if !project_path_visible(&root, &original)? || !project_path_visible(&root, &target)? {
+            return Err(SourceError::Invalid(
+                "source path is excluded from the project".into(),
+            ));
+        }
+        Ok(())
+    }
     // {impl}`requirements.sdk.sources.provider`
     /// Inspect the project directory with the SDK's built-in defaults.
     pub fn new(root: impl Into<PathBuf>) -> Self {
@@ -139,21 +153,35 @@ impl Sources {
     // {impl}`requirements.sdk.graph.context-tools.list_sources.fn`
     // {impl}`requirements.sdk.sources.provider.errors`
     /// List available project files within a relative path scope.
-    pub async fn list(&self, scope: &SourceScope) -> Result<Vec<ResourceId>, SourceError> {
-        self.analysis.provider.list(scope).await
+    pub async fn list(&self, scope: &SourceScope) -> Result<Vec<PathBuf>, SourceError> {
+        Ok(self
+            .analysis
+            .provider
+            .list(scope)
+            .await?
+            .into_iter()
+            .map(|id| PathBuf::from(id.location))
+            .collect())
     }
 
     // {impl}`requirements.sdk.sources.provider.errors`
     /// Read an available project file, including a successful empty file.
-    pub async fn read(&self, id: &ResourceId) -> Result<SourceFile, SourceError> {
-        self.analysis.provider.read(id).await
+    pub async fn read(&self, path: impl AsRef<Path>) -> Result<SourceFile, SourceError> {
+        let id = project_resource(path.as_ref())?;
+        self.analysis.provider.read(&id).await
     }
 
     // {impl}`requirements.sdk.graph.context-tools.outline_source.fn`
     // {impl}`requirements.sdk.sources.provider_defaults`
     /// Read and outline one file snapshot using its extension's language.
-    pub async fn parse(&self, id: &ResourceId) -> Result<ParsedSource, SourceError> {
-        self.analysis.parse(id).await
+    pub async fn parse(
+        &self,
+        path: impl AsRef<Path>,
+    ) -> Result<crate::outline::OutlineContent, SourceError> {
+        let path = path.as_ref();
+        let file = self.read(path).await?;
+        crate::outline::OutlineContent::from_source(path, Arc::from(file.text()?))
+            .map_err(|error| SourceError::Invalid(error.to_string()))
     }
 
     // {impl}`requirements.sdk.graph.context-tools.search_text.fn`
@@ -236,6 +264,16 @@ pub fn parse_snapshot(
     })
 }
 
+fn project_resource(path: &Path) -> Result<ResourceId, SourceError> {
+    let location = path
+        .to_str()
+        .ok_or_else(|| SourceError::Invalid("source path is not UTF-8".into()))?;
+    Ok(ResourceId {
+        scheme: "repo".into(),
+        location: location.into(),
+    })
+}
+
 pub mod defaults {
     use super::*;
 
@@ -274,7 +312,7 @@ pub mod defaults {
                 let start = (line - 1).saturating_sub(query.context_lines);
                 let end = line.saturating_add(query.context_lines).min(lines.len());
                 matches.push(TextMatch {
-                    resource: id.clone(),
+                    path: PathBuf::from(&id.location),
                     line,
                     excerpt: lines[start..end].join("\n"),
                 });
@@ -322,8 +360,8 @@ pub mod defaults {
                 }
                 let node = &parsed.outline.nodes[innermost_node(&parsed.outline, text, &range)];
                 matches.push(StructuralMatch {
-                    node: OutlineId {
-                        resource: id.clone(),
+                    node: crate::outline::OutlineId {
+                        path: PathBuf::from(&id.location),
                         selector: node.selector.clone(),
                     },
                     excerpt: text[range].to_owned(),
@@ -566,6 +604,7 @@ impl<P: SourceProvider> SourceAnalysis<P> {
     // {cite}`habeas:util`
     // {impl}`requirements.sdk.graph.context-tools.read_source.fn`
     // {impl}`requirements.sdk.graph.context-tools.outline_source.fn`
+    #[cfg(test)]
     pub async fn parse(&self, id: &ResourceId) -> Result<ParsedSource, P::Error> {
         self.provider.parse(id, &self.languages).await
     }

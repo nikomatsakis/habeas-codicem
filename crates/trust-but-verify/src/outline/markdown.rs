@@ -9,7 +9,7 @@ use pulldown_cmark::{Event, Parser as CommonMark};
 use tree_sitter::Node;
 
 use super::{
-    DraftComment, Encoder, HASH_DIGITS, Label, LineIndex, NameRule, Outline, OutlineError,
+    DraftComment, Encoder, HASH_DIGITS, Label, LegacyOutline, LineIndex, NameRule, OutlineError,
     OutlineNode, Profile, Redaction, Segment, assign_comments, check_errors, disambiguate,
     parse_tree, root_node,
 };
@@ -55,6 +55,91 @@ impl View {
     }
 }
 
+/// The block grammar makes setext headings leaf blocks. Give its section
+/// parser an ATX view of those headings while retaining every original byte
+/// boundary, including the underline in the section's source span.
+// {impl}`requirements.sdk.sources.markdown.sections`
+fn setext_sections(view: &View, root: Node<'_>) -> Option<View> {
+    let mut pending = vec![root];
+    let mut headings = Vec::new();
+    while let Some(node) = pending.pop() {
+        if node.kind() == "setext_heading" {
+            let content = node.child_by_field_name("heading_content")?;
+            let mut cursor = node.walk();
+            let underline = node.named_children(&mut cursor).find(|child| {
+                matches!(child.kind(), "setext_h1_underline" | "setext_h2_underline")
+            })?;
+            let level = if underline.kind() == "setext_h1_underline" {
+                1
+            } else {
+                2
+            };
+            // The grammar can include the next line's quote/list prefix in
+            // this node. Keep that continuation for the following body line.
+            let end = view.text[underline.end_byte()..node.end_byte()]
+                .find('\n')
+                .map_or(node.end_byte(), |newline| {
+                    underline.end_byte() + newline + 1
+                });
+            let mut continuations = Vec::new();
+            continuation_ranges(content, &mut continuations);
+            headings.push((
+                node.start_byte()..end,
+                content.byte_range(),
+                level,
+                continuations,
+            ));
+        } else {
+            let mut cursor = node.walk();
+            pending.extend(node.named_children(&mut cursor));
+        }
+    }
+    if headings.is_empty() {
+        return None;
+    }
+    headings.sort_by_key(|(range, _, _, _)| range.start);
+    let mut text = Vec::new();
+    let mut offsets = Vec::new();
+    let mut copied = 0;
+    for (range, content, level, continuations) in headings {
+        for byte in copied..range.start {
+            text.push(view.text.as_bytes()[byte]);
+            offsets.push(view.offsets[byte]);
+        }
+        for marker in std::iter::repeat_n(b'#', level).chain([b' ']) {
+            text.push(marker);
+            offsets.push(view.offsets[range.start]);
+        }
+        let body_view = view.without(content.clone(), &continuations);
+        let body = &body_view.text;
+        let mut consumed = 0;
+        for (index, word) in body.split_whitespace().enumerate() {
+            let start = consumed + body[consumed..].find(word).expect("word is in heading");
+            if index != 0 {
+                text.push(b' ');
+                offsets.push(body_view.offsets[consumed]);
+            }
+            for byte in start..start + word.len() {
+                text.push(body.as_bytes()[byte]);
+                offsets.push(body_view.offsets[byte]);
+            }
+            consumed = start + word.len();
+        }
+        text.push(b'\n');
+        offsets.push(view.offsets[content.end]);
+        copied = range.end;
+    }
+    for byte in copied..view.text.len() {
+        text.push(view.text.as_bytes()[byte]);
+        offsets.push(view.offsets[byte]);
+    }
+    offsets.push(*view.offsets.last().expect("end boundary"));
+    Some(View {
+        text: String::from_utf8(text).expect("heading words retain their UTF-8 bytes"),
+        offsets,
+    })
+}
+
 /// An owned grammar node, including synthetic colon containers. Ownership is
 /// recorded here so the shared identity rule can omit outline descendants.
 // {cite}`habeas:util`
@@ -89,7 +174,7 @@ pub(super) fn parse(
     source: &str,
     redaction: &Redaction,
     lines: &LineIndex,
-) -> Result<Outline, OutlineError> {
+) -> Result<LegacyOutline, OutlineError> {
     let mut builder = Builder {
         profile,
         grammar,
@@ -121,7 +206,7 @@ pub(super) fn parse(
     }
     disambiguate(&mut builder.nodes);
     let comments = assign_comments(&mut builder.nodes, builder.comments, source, lines);
-    Ok(Outline {
+    Ok(LegacyOutline {
         profile,
         nodes: builder.nodes,
         comments,
@@ -140,11 +225,22 @@ impl Builder<'_> {
         }
         let original = parse_tree(self.profile, self.grammar, &view.text)?;
         if !view.text.contains(":::") {
+            if let Some(view) = setext_sections(&view, original.root_node()) {
+                let tree = parse_tree(self.profile, self.grammar, &view.text)?;
+                check_errors(&tree, &LineIndex::new(&view.text))?;
+                return self.copy(tree.root_node(), &view, &HashSet::new(), parent);
+            }
             check_errors(&original, &LineIndex::new(&view.text))?;
             return self.copy(original.root_node(), &view, &HashSet::new(), parent);
         }
         let (view, directives) = fences(view, original.root_node());
-        let tree = parse_tree(self.profile, self.grammar, &view.text)?;
+        let mut tree = parse_tree(self.profile, self.grammar, &view.text)?;
+        let view = if let Some(converted) = setext_sections(&view, tree.root_node()) {
+            tree = parse_tree(self.profile, self.grammar, &converted.text)?;
+            converted
+        } else {
+            view
+        };
         check_errors(&tree, &LineIndex::new(&view.text)).map_err(|mut error| {
             let local = LineIndex::new(&view.text).starts[error.line - 1];
             error.line = self.lines.line(view.offsets[local]);

@@ -728,6 +728,16 @@ fn explicit_credentials_round_trip_but_diagnostics_and_debug_redact_them() {
         local.api_key_from(|_| None).unwrap().as_deref(),
         Some("PRIVATE_OLLAMA_KEY")
     );
+    assert_eq!(
+        local.api_key().unwrap().as_deref(),
+        Some("PRIVATE_OLLAMA_KEY")
+    );
+    let BackendConfig::Openai(openai) =
+        &config.authoring.as_ref().unwrap().configs["openai"].backend
+    else {
+        panic!("wrong backend");
+    };
+    assert_eq!(openai.api_key().unwrap(), "PRIVATE_OPENAI_KEY");
     for invalid_source in [
         "version = 1\n[authoring.configs.local]\nbackend = 'ollama'\nmodel = 'm'\napi_key = ['PRIVATE_OLLAMA_KEY']\n",
         "version = 1\n[authoring.configs.local]\nbackend = 'ollama'\nmodel = 'm'\napi_key = 'PRIVATE_OLLAMA_KEY' unexpected\n",
@@ -1306,6 +1316,7 @@ fn configuration_documentation_covers_locations_structure_editing_and_removal() 
 
 // {test}`requirements.configuration.documentation`
 // {test}`requirements.authoring.configuration_documentation`
+// {test}`requirements.authoring.credentials`
 #[test]
 fn documented_configuration_examples_are_complete_valid_files() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -1365,6 +1376,36 @@ fn documented_configuration_examples_are_complete_valid_files() {
     }
     assert_eq!(literal_credential_examples, 1);
     assert!(checked >= 14, "{checked}");
+}
+
+// {test}`requirements.authoring.credentials`
+#[test]
+fn credential_documentation_warns_about_committed_and_explicitly_read_workspace_files() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let chapter = fs::read_to_string(root.join("md/requirements/authoring.md")).unwrap();
+    let guidance = chapter
+        .split_once("Literal credentials are supported")
+        .unwrap()
+        .1
+        .split_once("## Recording results")
+        .unwrap()
+        .0
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    for required in [
+        "not recommended, especially in a workspace file that might be committed",
+        "Prefer AWS profiles (`aws_profile`) or environment-variable references (`api_key_env`)",
+        "Workspace files may be committed or read as source when explicitly allowed",
+        "replace every uppercase placeholder with your own value",
+        "keep the resulting file out of version control",
+        "credential values are replaced with `[REDACTED:<field>]`",
+    ] {
+        assert!(
+            guidance.contains(required),
+            "missing credential guidance: {required}"
+        );
+    }
 }
 
 // {test}`requirements.authoring.configuration_documentation`

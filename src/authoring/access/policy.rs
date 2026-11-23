@@ -677,9 +677,10 @@ pub fn resolve_evidence_file(
     policy.check_disallow(&root.join(file), &target)?;
     if (!requested.starts_with(&root) || !target.starts_with(&root))
         && !policy.allowed(&requested, &target)
-        && !generated_roots(&root)
-            .iter()
-            .any(|directory| requested.starts_with(directory) && target.starts_with(directory))
+        && !generated_roots(&root).iter().any(|directory| {
+            target.starts_with(directory)
+                && (requested.starts_with(&root) || requested.starts_with(directory))
+        })
     {
         return Err(denied(format!(
             "{file} resolves outside the repository without an allowed evidence path"

@@ -1,4 +1,4 @@
-use crate::language::Registry;
+use crate::outline::language::Registry;
 use crate::{resource::ResourceId, sources::*};
 use std::sync::{
     Arc, Mutex,
@@ -459,7 +459,7 @@ async fn structural_search_uses_overridden_parses_their_snapshot_and_requested_s
         assert_eq!(matches.matches.len(), count);
         assert_eq!(matches.complete, complete);
         if let Some(found) = matches.matches.first() {
-            assert_eq!(found.node.resource, id("src/one.rs"));
+            assert_eq!(found.node.path, std::path::PathBuf::from("src/one.rs"));
             assert_eq!(found.node.selector, "fn[cached]");
             assert_eq!(found.excerpt, "call()");
         }
@@ -578,7 +578,10 @@ async fn list_read_only_provider_supports_selected_language_parse_and_structural
     assert_eq!(matches.matches.len(), 1);
     assert_eq!(matches.matches[0].node.selector, "fn[provided]");
     assert_eq!(matches.matches[0].excerpt, "call()");
-    assert_eq!(matches.matches[0].node.resource, id("generated"));
+    assert_eq!(
+        matches.matches[0].node.path,
+        std::path::PathBuf::from("generated")
+    );
     let malformed = StructuralQuery {
         rule: serde_json::json!({"rule":{"unknown-rule-key":true}})
             .as_object()

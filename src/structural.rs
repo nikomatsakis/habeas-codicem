@@ -8,7 +8,9 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
-pub(crate) use trust_but_verify::structural::{QueryLanguage, StructuralRule, innermost_node};
+pub(crate) use trust_but_verify::__habeas::structural::{
+    QueryLanguage, StructuralRule, innermost_node,
+};
 
 // {impl}`requirements.references.distributed`
 /// Which directive declares a query.

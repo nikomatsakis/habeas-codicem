@@ -6,7 +6,7 @@ use std::path::{Component, Path, PathBuf};
 
 use mdbook_preprocessor::book::{Book, BookItem, Chapter, SectionNumber};
 use mdbook_preprocessor::config::Config;
-use pulldown_cmark::{Event, Parser, Tag};
+use pulldown_cmark::{Event, LinkType, Parser, Tag, TagEnd};
 use serde_json::Value;
 
 use crate::evidence::{Declaration, SourceReference, collect_references, load_definitions};
@@ -662,9 +662,18 @@ fn render_detail_page(
     detail_evidence: DetailEvidence<'_>,
     sources: &RenderSources<'_>,
 ) -> String {
+    let definition_path = if definition
+        .path
+        .file_name()
+        .is_some_and(|name| name == "README.md")
+    {
+        definition.path.with_file_name("index.md")
+    } else {
+        definition.path.clone()
+    };
     let definition_href = chapter_href(
         detail_path,
-        &definition.path,
+        &definition_path,
         Some(&definition.kind.anchor(name)),
     );
     let mut header = format!("# `{name}`\n\n");
@@ -673,13 +682,161 @@ fn render_detail_page(
         header.push_str(&format!("[Requirements index]({index_href}) · "));
     }
     header.push_str(&format!("[View definition]({definition_href})\n\n"));
+    let text = rebase_markdown_destinations(&definition.text, &definition_path, detail_path);
     render_detail_sections(
         header,
         name,
-        &definition.text,
+        &text,
         definition.kind,
         detail_evidence,
         sources,
+    )
+}
+
+// {impl}`requirements.index.rustdocs`
+// {impl}`requirements.index.detail_format`
+// {impl}`requirements.index.navigation`
+fn rebase_markdown_destinations(markdown: &str, source: &Path, destination: &Path) -> String {
+    let parser = Parser::new(markdown);
+    let mut replacements = BTreeMap::new();
+    for (_, definition) in parser.reference_definitions().iter() {
+        let bytes = markdown.as_bytes();
+        let mut position = definition.span.start;
+        while position + 1 < definition.span.end {
+            if bytes[position] == b'\\' {
+                position += 2;
+            } else if &bytes[position..position + 2] == b"]:" {
+                let range = markdown_destination(markdown, position + 2, definition.span.end);
+                let url = rebase_destination(&markdown[range.clone()], source, destination);
+                replacements.insert(range.start, (range, url));
+                break;
+            } else {
+                position += 1;
+            }
+        }
+    }
+    // Children identify the end of each label, including nested images and code.
+    // Changing only destination spans preserves the rest of the author's Markdown.
+    let mut links = Vec::new();
+    for (event, range) in parser.into_offset_iter() {
+        if matches!(event, Event::End(TagEnd::Link | TagEnd::Image)) {
+            let (span, label_end, inline): (Range<usize>, usize, bool) =
+                links.pop().expect("link end follows its start");
+            if inline && let Some(closing) = markdown[label_end..span.end].find("](") {
+                let url_range = markdown_destination(markdown, label_end + closing + 2, span.end);
+                let url = rebase_destination(&markdown[url_range.clone()], source, destination);
+                replacements.insert(url_range.start, (url_range, url));
+            }
+        }
+        for (_, label_end, _) in &mut links {
+            *label_end = range.end;
+        }
+        match event {
+            Event::Start(Tag::Link { link_type, .. } | Tag::Image { link_type, .. }) => {
+                let label_start = range.start + 1;
+                links.push((range, label_start, link_type == LinkType::Inline));
+            }
+            _ => {}
+        }
+    }
+    let mut rebased = markdown.to_owned();
+    for (_, (range, url)) in replacements.into_iter().rev() {
+        rebased.replace_range(range, &url);
+    }
+    rebased
+}
+
+// {impl}`requirements.index.detail_format`
+fn markdown_destination(markdown: &str, mut start: usize, end: usize) -> Range<usize> {
+    let bytes = markdown.as_bytes();
+    while start < end && bytes[start].is_ascii_whitespace() {
+        start += 1;
+    }
+    let angled = start < end && bytes[start] == b'<';
+    start += usize::from(angled);
+    let mut cursor = start;
+    let mut parentheses = 0;
+    while cursor < end {
+        match bytes[cursor] {
+            b'\\' => cursor = (cursor + 2).min(end),
+            b'>' if angled => break,
+            b'(' if !angled => {
+                parentheses += 1;
+                cursor += 1;
+            }
+            b')' if !angled && parentheses == 0 => break,
+            b')' if !angled => {
+                parentheses -= 1;
+                cursor += 1;
+            }
+            byte if !angled && byte.is_ascii_whitespace() => break,
+            _ => cursor += 1,
+        }
+    }
+    start..cursor
+}
+
+// {impl}`requirements.index.rustdocs`
+// {impl}`requirements.index.navigation`
+fn rebase_destination(url: &str, source: &Path, destination: &Path) -> String {
+    let path_end = url.find(['?', '#']).unwrap_or(url.len());
+    let path = &url[..path_end];
+    if url.is_empty()
+        || url.starts_with('/')
+        || path
+            .split('/')
+            .next()
+            .is_some_and(|part| part.contains(':'))
+    {
+        return url.to_owned();
+    }
+    let mut target = Vec::new();
+    let source_path = if path.is_empty() {
+        source
+    } else {
+        source.parent().unwrap_or(Path::new(""))
+    };
+    for component in source_path.components() {
+        match component {
+            Component::Normal(part) => target.push(part.to_string_lossy().into_owned()),
+            Component::ParentDir if target.last().is_some_and(|part| part != "..") => {
+                target.pop();
+            }
+            Component::ParentDir => target.push("..".into()),
+            _ => {}
+        }
+    }
+    // URL separators are always '/', even on Windows. A backslash in the
+    // raw destination can be a Markdown escape and must remain intact.
+    for component in path.split('/') {
+        match component {
+            "" | "." => {}
+            ".." if target.last().is_some_and(|part| part != "..") => {
+                target.pop();
+            }
+            ".." => target.push("..".into()),
+            part => target.push(part.into()),
+        }
+    }
+    let current = destination
+        .parent()
+        .unwrap_or(Path::new(""))
+        .components()
+        .filter_map(|component| match component {
+            Component::Normal(part) => Some(part.to_string_lossy().into_owned()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let shared = current
+        .iter()
+        .zip(&target)
+        .take_while(|(left, right)| left == right)
+        .count();
+    format!(
+        "{}{}{}",
+        "../".repeat(current.len() - shared),
+        target[shared..].join("/"),
+        &url[path_end..]
     )
 }
 
@@ -1488,6 +1645,146 @@ mod tests {
             ]),
             1
         );
+    }
+
+    // {test}`requirements.index.rustdocs`
+    // {test}`requirements.index.detail_format`
+    // {test}`requirements.index.navigation`
+    #[test]
+    fn detail_pages_rebase_markdown_links_and_images_from_the_definition() {
+        use pulldown_cmark::{Event, Parser, Tag};
+
+        let text = r##"Read [**typed**](../../../rustdocs/trust_but_verify/trait.Criterion.html?view=all#associatedtype.Ok "Typed API").
+
+[![diagram](../../assets/diagram.svg?theme=dark#node)](../validation.md#criterion)
+[Reference][sdk] and ![Reference diagram][picture].
+[Local](#criterion) [Query](?view=all#criterion)
+[Spaces](<../../assets/my diagram.svg> "Image title")
+[Nested parentheses](../../assets/a(b\)c).svg)
+[Web](https://example.test/api?query=1#answer) [Mail](mailto:user@example.test)
+[Absolute](/shared/api.html) [Empty]() [Site](//example.test/api)
+
+[sdk]: ../../../rustdocs/trust_but_verify/trait.Domain.html#associatedtype.NodeId "Reference API"
+[picture]: <../../assets/picture.svg> "Reference picture"
+
+`[Literal](../../../rustdocs/not-a-link.html)`
+
+```markdown
+[Fenced](../../../rustdocs/not-a-link.html)
+[unused]: ../../../rustdocs/not-a-link.html
+```
+"##;
+        let definition = Definition {
+            path: Path::new("requirements/sdk/graph/agent-harness.md").to_owned(),
+            text: text.to_owned(),
+            kind: DefinitionKind::Requirement,
+        };
+        let temp = tempfile::tempdir().unwrap();
+        let definitions = BTreeMap::new();
+        let outlines = crate::inputs::OutlineCache::default();
+        let sources = RenderSources {
+            check_hashes: false,
+            root: temp.path(),
+            definitions: &definitions,
+            references: &[],
+            source_links: None,
+            outlines: &outlines,
+        };
+        let page = render_detail_page(
+            "requirements.agent",
+            Path::new("appendix/requirements-index/requirements.agent.md"),
+            None,
+            &definition,
+            DetailEvidence {
+                state: EvidenceState::Missing,
+                record: None,
+                errors: &[],
+                fixme_entries: &[],
+            },
+            &sources,
+        );
+        let destinations = Parser::new(&page)
+            .filter_map(|event| match event {
+                Event::Start(Tag::Link { dest_url, .. } | Tag::Image { dest_url, .. }) => {
+                    Some(dest_url.into_string())
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        for expected in [
+            "../../rustdocs/trust_but_verify/trait.Criterion.html?view=all#associatedtype.Ok",
+            "../../requirements/assets/diagram.svg?theme=dark#node",
+            "../../requirements/sdk/validation.md#criterion",
+            "../../rustdocs/trust_but_verify/trait.Domain.html#associatedtype.NodeId",
+            "../../requirements/assets/picture.svg",
+            "../../requirements/sdk/graph/agent-harness.md#criterion",
+            "../../requirements/sdk/graph/agent-harness.md?view=all#criterion",
+            "../../requirements/assets/my diagram.svg",
+            "../../requirements/assets/a(b)c).svg",
+            "https://example.test/api?query=1#answer",
+            "mailto:user@example.test",
+            "/shared/api.html",
+            "",
+            "//example.test/api",
+        ] {
+            assert!(
+                destinations.iter().any(|actual| actual == expected),
+                "{expected}: {destinations:?}"
+            );
+        }
+        assert!(page.contains("\"Typed API\""));
+        assert!(page.contains("\"Reference API\""));
+        assert!(page.contains("`[Literal](../../../rustdocs/not-a-link.html)`"));
+        assert!(page.contains("> [Fenced](../../../rustdocs/not-a-link.html)"));
+        assert!(page.contains("> [unused]: ../../../rustdocs/not-a-link.html"));
+        assert!(!destinations.iter().any(|url| url.contains("not-a-link")));
+        let cli = super::render_cli_detail_page(
+            "requirements.agent",
+            "requirements/sdk/graph/agent-harness.md",
+            text,
+            DefinitionKind::Requirement,
+            &super::LoadedDetailEvidence::load_record_path(
+                temp.path(),
+                "evidence/requirements.agent.json",
+            ),
+            &sources,
+        );
+        assert!(cli.contains("../../../rustdocs/trust_but_verify/trait.Criterion.html"));
+    }
+
+    // {test}`requirements.index.navigation`
+    #[test]
+    fn detail_pages_link_to_readme_chapters_at_their_index_output() {
+        let definition = Definition {
+            path: Path::new("requirements/index/README.md").to_owned(),
+            text: "See [the import](#import).".into(),
+            kind: DefinitionKind::Requirement,
+        };
+        let temp = tempfile::tempdir().unwrap();
+        let page = render_detail_page(
+            "requirements.index.ready",
+            Path::new("requirements-index/requirements.index.ready.md"),
+            None,
+            &definition,
+            DetailEvidence {
+                state: EvidenceState::Missing,
+                record: None,
+                errors: &[],
+                fixme_entries: &[],
+            },
+            &RenderSources {
+                check_hashes: false,
+                root: temp.path(),
+                definitions: &BTreeMap::new(),
+                references: &[],
+                source_links: None,
+                outlines: &crate::inputs::OutlineCache::default(),
+            },
+        );
+        assert!(page.contains(
+            "[View definition](../requirements/index/index.html#habeas-req-requirements.index.ready)"
+        ));
+        assert!(page.contains("[the import](../requirements/index/index.md#import)"));
     }
 
     // {test}`requirements.authoring.redaction`

@@ -141,7 +141,7 @@ where
                 known,
                 pending,
                 parameters,
-                pages: Vec::new(),
+                pages: std::collections::BTreeMap::new(),
             };
             // The exact reusable prefix is the provider's leading preamble.
             let mut opening = CompletionRequest::new(Message::user(subject));
@@ -161,7 +161,7 @@ struct GraphSession<'a, 'd, D: Domain> {
     known: Vec<D::NodeId>,
     pending: Vec<Dependency<D::NodeId, D::EdgeLabel>>,
     parameters: Value,
-    pages: Vec<(String, Dependency<D::NodeId, D::EdgeLabel>)>,
+    pages: std::collections::BTreeMap<usize, (String, Dependency<D::NodeId, D::EdgeLabel>)>,
 }
 
 impl<D> GraphSession<'_, '_, D>
@@ -186,7 +186,7 @@ where
     fn deliver_page(&mut self, page: usize) -> io::Result<String> {
         let (text, dependency) = self
             .pages
-            .get(page)
+            .get(&page)
             .ok_or_else(|| io::Error::other("unknown page"))?;
         self.pending.push(dependency.clone());
         Ok(json!({"page":page,"text":text}).to_string())
@@ -204,6 +204,8 @@ where
     // {impl}`requirements.sdk.graph.context-tools.read_node.fn`
     // {impl}`requirements.sdk.graph.context-tools.outgoing_edges.fn`
     // {impl}`requirements.sdk.graph.context-tools.pages.fn`
+    // {impl}`requirements.sdk.graph.agent-harness.submission`
+    // {impl}`requirements.sdk.graph.agent-harness.fixed_tools`
     fn tools(&self) -> io::Result<Vec<ToolDefinition>> {
         let path = json!({"type":"object","required":["segments"],"properties":{"segments":{"type":"array","items":{"type":"string"}}}});
         let mut tools: Vec<ToolDefinition> = [
@@ -220,12 +222,9 @@ where
         Ok(tools)
     }
     // {cite}`habeas:util`
+    // {impl}`requirements.sdk.graph.agent-harness.submission.invalid`
     fn submit(&mut self, _: &str, arguments: &Value) -> io::Result<Submission<Value>> {
-        let object = arguments
-            .as_object()
-            .filter(|object| object.len() == 1 && object.contains_key("result"))
-            .ok_or_else(|| io::Error::other("submit_result requires exactly result"))?;
-        Ok(Submission::Accepted(object["result"].clone()))
+        submitted_value(arguments).map(Submission::Accepted)
     }
     // {cite}`habeas:util`
     // {impl}`requirements.sdk.graph.agent-calls.judge.rendering`
@@ -244,21 +243,24 @@ where
                     .inspection
                     .prepare_read(&node)
                     .map_err(|error| io::Error::other(error.to_string()))?;
-                let text = snapshot.content.format();
+                let text = crate::redaction::redact_text(&snapshot.content.format()).into_owned();
                 let observation = Dependency::Node(node, snapshot.fingerprint);
                 // Split on character boundaries; every page retains the same snapshot.
                 let chars: Vec<char> = text.chars().collect();
-                let start = self.pages.len();
+                let mut ids = Vec::new();
                 for chunk in chars.chunks(8_192) {
+                    let id = next_page_id();
                     self.pages
-                        .push((chunk.iter().collect(), observation.clone()));
+                        .insert(id, (chunk.iter().collect(), observation.clone()));
+                    ids.push(id);
                 }
                 if chars.is_empty() {
-                    self.pages.push((String::new(), observation));
+                    let id = next_page_id();
+                    self.pages.insert(id, (String::new(), observation));
+                    ids.push(id);
                 }
-                let end = self.pages.len();
-                let first = self.deliver_page(start)?;
-                Ok(json!({"first":serde_json::from_str::<Value>(&first).expect("page"),"pages":(start..end).collect::<Vec<_>>()}).to_string())
+                let first = self.deliver_page(ids[0])?;
+                Ok(json!({"first":serde_json::from_str::<Value>(&first).expect("page"),"pages":ids}).to_string())
             }
             "get_node_page" => {
                 let page = arguments["page"]
@@ -301,7 +303,7 @@ where
         for observation in self.pending.drain(..) {
             match observation {
                 Dependency::Node(node, fingerprint) => {
-                    self.inspection.observe_read(node, fingerprint)
+                    self.inspection.record_read(node, fingerprint)
                 }
                 Dependency::OutgoingEdges(node, label, fingerprint) => {
                     self.inspection.observe_edges(node, label, fingerprint)
@@ -324,6 +326,42 @@ where
         messages.push(Message::tool_results(results));
         messages.push(Message::user(format!("The response was cut off at {limit} tokens. Continue with a shorter response and finish with submit_result.")));
         messages
+    }
+}
+
+// {impl}`requirements.sdk.graph.agent-harness.submission.invalid`
+fn submitted_value(arguments: &Value) -> io::Result<Value> {
+    let object = arguments
+        .as_object()
+        .filter(|object| object.len() == 1 && object.contains_key("result"))
+        .ok_or_else(|| io::Error::other("submit_result requires exactly result"))?;
+    Ok(object["result"].clone())
+}
+
+#[cfg(test)]
+mod submission_tests {
+    use super::*;
+
+    // {test}`requirements.sdk.graph.agent-harness.submission.invalid`
+    #[test]
+    fn submission_envelopes_require_one_result_field() {
+        for invalid in [
+            Value::Null,
+            json!([]),
+            json!("answer"),
+            json!(true),
+            json!({}),
+            json!({"other": true}),
+            json!({"result": true, "extra": false}),
+        ] {
+            assert_eq!(
+                submitted_value(&invalid).unwrap_err().to_string(),
+                "submit_result requires exactly result"
+            );
+        }
+        for result in [Value::Null, json!([]), json!({"nested": 1}), json!(false)] {
+            assert_eq!(submitted_value(&json!({"result": result})).unwrap(), result);
+        }
     }
 }
 

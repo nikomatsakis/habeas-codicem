@@ -8,11 +8,13 @@ use rig_core::message::{AssistantContent, ToolCall, ToolFunction, ToolName};
 use rig_core::{DynModel, operation::Completion};
 use serde_json::{Map, Value};
 
-use crate::config::{BackendConfig, BedrockConfig};
+use super::config::{AgentConfig as BackendConfig, BedrockConfig};
 
-pub(super) use trust_but_verify::agent::{CompletionProvider, failure_codes};
+use super::CompletionProvider;
 #[cfg(test)]
-pub(super) use trust_but_verify::agent::{ProviderBackoff, RETRY_LIMIT, Retry, retry_after};
+use super::backoff::retry_after;
+#[cfg(test)]
+use super::{ProviderBackoff, RETRY_LIMIT, Retry, failure_codes};
 
 /// Preserve the provider report for the shared harness's retry classifier.
 // {cite}`habeas:util`
@@ -24,7 +26,7 @@ fn provider_failure(error: ProviderError) -> io::Error {
 // Holds one backend-erased Rig model, so all backends share this provider
 // type; the flags and `options` hold backend-specific behavior.
 // :::
-pub(super) struct RigProvider {
+pub struct RigProvider {
     model: DynModel<Completion>,
     options: serde_json::Value,
     bedrock: bool,
@@ -38,7 +40,7 @@ impl RigProvider {
     // {impl}`requirements.authoring.credentials`
     // {impl}`requirements.authoring.cache_checkpoints`
     // {impl}`requirements.configuration.serialization`
-    pub(super) async fn connect(config: &BackendConfig) -> io::Result<Self> {
+    pub async fn connect(config: &BackendConfig) -> io::Result<Self> {
         let model = match config {
             BackendConfig::Bedrock(config) => {
                 let sdk = aws_sdk_bedrockruntime::Client::new(&bedrock_sdk_config(config).await);
@@ -46,7 +48,7 @@ impl RigProvider {
                     .completion(&config.model)
                     .erase()
             }
-            BackendConfig::Openai(config) => {
+            BackendConfig::OpenAi(config) => {
                 let key = config.api_key()?;
                 rig_core::providers::openai::OpenAIConfig::new(key)
                     .with_base_url(config.endpoint())
@@ -69,11 +71,11 @@ impl RigProvider {
             model,
             options: config.options_json()?,
             bedrock: matches!(config, BackendConfig::Bedrock(_)),
-            openai: matches!(config, BackendConfig::Openai(_)),
+            openai: matches!(config, BackendConfig::OpenAi(_)),
             caches: match config {
                 BackendConfig::Bedrock(config) => bedrock_caches(&config.model),
                 // Ollama has no checkpoints; OpenAI manages prompt caching.
-                BackendConfig::Ollama(_) | BackendConfig::Openai(_) => false,
+                BackendConfig::Ollama(_) | BackendConfig::OpenAi(_) => false,
             },
         })
     }
@@ -287,6 +289,45 @@ mod tests {
     use rig_core::completion::{FinishReason, Message, Usage};
     use rig_core::message::{Opaque, Origin, Reasoning, Text};
     use serde_json::json;
+
+    // {test}`requirements.sdk.graph.agent-harness.agent_config`
+    // {test}`requirements.sdk.graph.agent-harness.with_agent`
+    #[tokio::test]
+    async fn supported_backend_settings_create_transports_without_sending_requests() {
+        use super::super::config::{AgentConfig, OllamaConfig, OpenAiConfig};
+        let openai = AgentConfig::OpenAi(OpenAiConfig {
+            api_key: Some("local-test-key".into()),
+            ..OpenAiConfig::default()
+        });
+        let provider = std::sync::Arc::new(RigProvider::connect(&openai).await.unwrap());
+        assert_eq!(provider.output_limit(), Some(16_384));
+
+        let ollama = AgentConfig::Ollama(OllamaConfig {
+            model: "local-test".into(),
+            endpoint: None,
+            api_key_env: None,
+            api_key: None,
+            options: Default::default(),
+        });
+        let provider = RigProvider::connect(&ollama).await.unwrap();
+        assert_eq!(provider.output_limit(), None);
+        let ollama: AgentConfig = serde_json::from_value(json!({
+            "backend":"ollama", "model":"local-test", "api_key":"local-token",
+            "options":{"num_predict":128}
+        }))
+        .unwrap();
+        let provider = RigProvider::connect(&ollama).await.unwrap();
+        assert_eq!(provider.output_limit(), Some(128));
+
+        let bedrock: AgentConfig = serde_json::from_value(json!({
+            "backend":"bedrock", "model":"example", "region":"us-east-1",
+            "credentials":{"access_key_id":"TEST_ONLY", "secret_access_key":"TEST_ONLY"},
+            "options":{"maxTokens":512}
+        }))
+        .unwrap();
+        let provider = RigProvider::connect(&bedrock).await.unwrap();
+        assert_eq!(provider.output_limit(), Some(512));
+    }
 
     // {cite}`habeas:util`
     fn provider_error(status: Option<u16>, code: Option<&str>) -> ProviderError {
@@ -580,6 +621,58 @@ mod tests {
     // {test}`requirements.authoring.configuration_precedence`
     #[tokio::test]
     async fn explicit_bedrock_credentials_reach_the_sdk_without_the_default_chain() {
+        // Run with controlled environment and AWS files in an isolated process,
+        // so this regression cannot change credentials used by parallel tests.
+        const ISOLATED: &str = "TBV_EXPLICIT_CREDENTIAL_TEST_ROOT";
+        let Some(root) = std::env::var_os(ISOLATED) else {
+            let root = tempfile::tempdir().unwrap();
+            let config_file = root.path().join("config");
+            let credentials_file = root.path().join("credentials");
+            std::fs::write(&config_file, "[profile preserved]\nregion = us-east-1\n").unwrap();
+            std::fs::write(
+                &credentials_file,
+                "[preserved]\naws_access_key_id = ENV_ACCESS\naws_secret_access_key = env-secret\n",
+            )
+            .unwrap();
+            let selector = format!(
+                "{}::explicit_bedrock_credentials_reach_the_sdk_without_the_default_chain",
+                module_path!().split_once("::").unwrap().1
+            );
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .arg("--exact")
+                .arg(selector)
+                .arg("--nocapture")
+                .env(ISOLATED, root.path())
+                .env("AWS_ACCESS_KEY_ID", "ENV_ACCESS")
+                .env("AWS_SECRET_ACCESS_KEY", "env-secret")
+                .env("AWS_SESSION_TOKEN", "env-session")
+                .env("AWS_PROFILE", "preserved")
+                .env("AWS_CONFIG_FILE", config_file)
+                .env("AWS_SHARED_CREDENTIALS_FILE", credentials_file)
+                .env("AWS_EC2_METADATA_DISABLED", "true")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "isolated credential regression failed:\n{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+            return;
+        };
+        let root = std::path::PathBuf::from(root);
+        let variables = [
+            "AWS_ACCESS_KEY_ID",
+            "AWS_SECRET_ACCESS_KEY",
+            "AWS_SESSION_TOKEN",
+            "AWS_PROFILE",
+            "AWS_CONFIG_FILE",
+            "AWS_SHARED_CREDENTIALS_FILE",
+        ];
+        let before_environment = variables.map(std::env::var_os);
+        let config_before = std::fs::read(root.join("config")).unwrap();
+        let credentials_before = std::fs::read(root.join("credentials")).unwrap();
         let config: BedrockConfig = toml::from_str("model = 'test'\nregion = 'us-west-2'\n[credentials]\naccess_key_id = 'TEST_ACCESS'\nsecret_access_key = 'test-secret'\nsession_token = 'test-session'\n").unwrap();
         let sdk = bedrock_sdk_config(&config).await;
         let credentials = sdk
@@ -592,6 +685,18 @@ mod tests {
         assert_eq!(credentials.secret_access_key(), "test-secret");
         assert_eq!(credentials.session_token(), Some("test-session"));
         assert_eq!(sdk.region().unwrap().as_ref(), "us-west-2");
+        assert_eq!(variables.map(std::env::var_os), before_environment);
+        assert_eq!(std::fs::read(root.join("config")).unwrap(), config_before);
+        assert_eq!(
+            std::fs::read(root.join("credentials")).unwrap(),
+            credentials_before
+        );
+        let mut files = std::fs::read_dir(root)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect::<Vec<_>>();
+        files.sort();
+        assert_eq!(files, ["config", "credentials"]);
     }
 
     // {test}`requirements.authoring.configuration_precedence`
@@ -673,6 +778,7 @@ mod tests {
     // {test}`requirements.authoring.configuration_storage`
     // {test}`requirements.authoring.rig_configuration_mapping`
     // {test}`requirements.authoring.output_limit`
+    // {test}`requirements.sdk.graph.agent-harness.tool_agent`
     #[test]
     fn bedrock_native_option_types_are_checked_and_only_max_tokens_is_defaulted() {
         let mut request = CompletionRequest::new("prompt");
@@ -698,6 +804,7 @@ mod tests {
     }
 
     // {test}`requirements.authoring.cache_checkpoints`
+    // {test}`requirements.sdk.graph.agent-harness.tool_agent`
     #[test]
     fn cache_checkpoints_are_requested_for_caching_models() {
         assert!(bedrock_caches(
@@ -734,6 +841,7 @@ mod tests {
 
     // {test}`requirements.authoring.provider`
     // {test}`requirements.authoring.rig_configuration_mapping`
+    // {test}`requirements.sdk.graph.agent-harness.tool_agent`
     #[test]
     fn typed_client_calls_preserve_order_and_native_history() {
         let typed = json!({"toolUse":{

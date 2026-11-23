@@ -168,7 +168,7 @@ impl Script {
 }
 impl CompletionProvider for Script {
     async fn complete(&self, request: CompletionRequest) -> io::Result<CompletionResponse> {
-        self.requests.lock().unwrap().push(request);
+        self.requests.lock().unwrap().push(request.clone());
         let Some(calls) = self
             .turns
             .lock()
@@ -181,7 +181,12 @@ impl CompletionProvider for Script {
         let choice = calls
             .into_iter()
             .enumerate()
-            .map(|(index, (name, args))| {
+            .map(|(index, (name, mut args))| {
+                if name == "get_node_page" {
+                    if let Some(index) = args["prepared_page"].as_u64() {
+                        args = json!({"page":returned_node_page(&request, index as usize)});
+                    }
+                }
                 AssistantContent::ToolCall(ToolCall::from_wire(
                     format!("call-{index}"),
                     ToolFunction::new(ToolName::new(name).unwrap(), args),
@@ -198,7 +203,29 @@ impl CompletionProvider for Script {
     }
 }
 
+// {cite}`habeas:util`
+fn returned_node_page(request: &CompletionRequest, index: usize) -> u64 {
+    for message in request.chat_history.iter().rev() {
+        if let Message::User { content } = message {
+            for item in content {
+                if let UserContent::ToolResult(result) = item {
+                    if result.name.as_str() == "read_node" {
+                        let ToolResultContent::Text(text) = &result.content[0] else {
+                            panic!("expected node-read result text");
+                        };
+                        let value: Value = serde_json::from_str(&text.text).unwrap();
+                        return value["pages"][index].as_u64().unwrap();
+                    }
+                }
+            }
+        }
+    }
+    panic!("expected a prepared node page in the conversation")
+}
+
 // {test}`requirements.sdk.graph.agent-calls.judge.submission`
+// {test}`requirements.sdk.graph.agent-harness.submission`
+// {test}`requirements.sdk.graph.agent-harness.fixed_tools`
 // {test}`requirements.sdk.graph.agent-calls.judge.caching`
 // {test}`requirements.sdk.graph.domain_types`
 // {test}`requirements.sdk.graph.agent-calls.judge.rendering`
@@ -221,6 +248,19 @@ async fn default_tool_accepts_scalar_results_and_keeps_the_exact_prefix() {
         matches!(&ctx.inspection().dependencies()[0], Dependency::Node(Node(1), fingerprint) if fingerprint.value == "source")
     );
     let requests = agent.provider.requests.lock().unwrap();
+    assert_eq!(
+        requests[0]
+            .tools
+            .iter()
+            .map(|tool| tool.name.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "read_node",
+            "outgoing_edges",
+            "get_node_page",
+            "submit_result"
+        ]
+    );
     assert_eq!(requests[0].chat_history[0], Message::system("Question é"));
     assert!(
         serde_json::to_string(&requests[0].chat_history[1])
@@ -274,7 +314,7 @@ impl CompletionProvider for ParallelConversations {
         assert!(!history.contains(other), "{prefix}: {history}");
         if turn > 0 {
             // The last delivered page must belong to this conversation, even
-            // though both calls use the same numeric page IDs and tool call ID.
+            // though both calls use the same tool call ID.
             let page = serde_json::to_string(request.chat_history.last().unwrap()).unwrap();
             assert!(page.contains(contents));
             assert!(!page.contains(other), "{prefix}: {page}");
@@ -282,7 +322,10 @@ impl CompletionProvider for ParallelConversations {
         self.barrier.wait().await;
         let (name, arguments) = match turn {
             0 => ("read_node", json!({"path":{"segments":[node]}})),
-            1 => ("get_node_page", json!({"page":1})),
+            1 => (
+                "get_node_page",
+                json!({"page":returned_node_page(&request, 1)}),
+            ),
             2 => ("submit_result", json!({"result":prefix})),
             _ => panic!("unexpected conversation turn {turn}"),
         };
@@ -303,6 +346,7 @@ impl CompletionProvider for ParallelConversations {
 // {test}`requirements.sdk.graph.agent-calls.author_procedure`
 // {test}`requirements.sdk.graph.context-tools.tracked_inspection`
 // {test}`requirements.sdk.graph.agent-harness.tool_agent`
+// {test}`requirements.sdk.graph.agent-harness.tool_agent.isolation`
 // {test}`requirements.sdk.graph.context-tools.read_node.behavior`
 // {test}`requirements.sdk.graph.context-tools.read_node.inputs`
 #[tokio::test]
@@ -405,7 +449,6 @@ impl Criterion<Memory> for Question {
 // {test}`requirements.sdk.graph.agent-calls.author_procedure`
 // {test}`requirements.sdk.graph.agent-harness.tool_agent`
 // {test}`requirements.sdk.graph.agent-harness.with_agent`
-// {test}`requirements.sdk.graph.agent-harness.setup`
 #[tokio::test]
 async fn validator_agent_executions_isolate_conversations_and_dependency_traces() {
     let mut graph = Memory::new("source".into());
@@ -415,7 +458,7 @@ async fn validator_agent_executions_isolate_conversations_and_dependency_traces(
         calls: Mutex::default(),
     });
     let agent = Arc::new(agent);
-    let validator = Validator::new(graph.clone()).with_agent(agent.clone());
+    let validator = Validator::new(graph.clone()).with_agent_adapter(agent.clone());
     let question = |name: &str, successors| Question {
         name: name.into(),
         successors,
@@ -491,6 +534,7 @@ async fn validator_agent_executions_isolate_conversations_and_dependency_traces(
 // {test}`requirements.sdk.graph.evidence.inputs`
 // {test}`requirements.sdk.graph.context-tools.outgoing_edges.behavior`
 // {test}`requirements.sdk.graph.context-tools.outgoing_edges.inputs`
+// {test}`requirements.sdk.graph.agent-harness.fixed_tools`
 #[tokio::test]
 async fn agent_edge_tools_record_selections_without_validating_targets() {
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -597,7 +641,7 @@ async fn agent_edge_tools_record_selections_without_validating_targets() {
         Some(vec![("submit_result", json!({"result":true}))]),
     ]));
     let agent = Arc::new(agent);
-    let validator = Validator::new(graph.clone()).with_agent(agent.clone());
+    let validator = Validator::new(graph.clone()).with_agent_adapter(agent.clone());
     assert!(
         validator
             .load_evidence(&EdgeReview(1))
@@ -740,6 +784,9 @@ enum Decision {
 }
 
 // {test}`requirements.sdk.graph.agent-calls.judge.submission`
+// {test}`requirements.sdk.graph.agent-calls.judge.submission.decoding`
+// {test}`requirements.sdk.graph.agent-harness.submission`
+// {test}`requirements.sdk.graph.agent-harness.submission.invalid`
 #[tokio::test]
 async fn typed_submission_references_resolve_and_invalid_results_are_agent_errors() {
     let graph = Memory::new("source".into());
@@ -761,6 +808,9 @@ async fn typed_submission_references_resolve_and_invalid_results_are_agent_error
         .parameters;
     assert!(matches!(requests[0].chat_history[0], Message::User { .. }));
     assert!(schema["$defs"]["Decision"].is_object());
+    assert_eq!(schema["required"], json!(["result"]));
+    assert_eq!(schema["additionalProperties"], false);
+    assert_eq!(schema["properties"].as_object().unwrap().len(), 1);
     assert_eq!(
         schema["properties"]["result"]["properties"]["decision"]["$ref"],
         "#/$defs/Decision"
@@ -768,10 +818,8 @@ async fn typed_submission_references_resolve_and_invalid_results_are_agent_error
     drop(requests);
     for calls in [
         vec![("submit_result", json!({"result":"wrong"}))],
-        vec![
-            ("submit_result", json!({"result":true})),
-            ("submit_result", json!({"result":true})),
-        ],
+        vec![("submit_result", json!({}))],
+        vec![("submit_result", json!({"other":true}))],
         vec![("submit_result", json!({"result":true,"extra":true}))],
     ] {
         let agent = ToolAgent::new(Script::new(vec![Some(calls)]));
@@ -791,6 +839,7 @@ async fn typed_submission_references_resolve_and_invalid_results_are_agent_error
 // {test}`requirements.sdk.graph.context-tools.read_node.inputs`
 // {test}`requirements.sdk.graph.context-tools.pages.behavior`
 // {test}`requirements.sdk.graph.context-tools.pages.inputs`
+// {test}`requirements.sdk.graph.agent-harness.fixed_tools`
 #[tokio::test]
 async fn graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery() {
     let graph = Memory::new("x".repeat(18_000));
@@ -800,7 +849,7 @@ async fn graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record
             json!({"path":{"segments":["1"]},"label":null}),
         )]),
         Some(vec![("read_node", json!({"path":{"segments":["2"]}}))]),
-        Some(vec![("get_node_page", json!({"page":1}))]),
+        Some(vec![("get_node_page", json!({"prepared_page":1}))]),
         Some(vec![("submit_result", json!({"result":true}))]),
     ]));
     let ctx = ValidationContext::with_agent(&graph, Node(1), &agent);
@@ -898,7 +947,7 @@ async fn source_reads_track_optional_dependencies_and_empty_searches_remain_disc
         let factory = SourceTools {
             analysis: SourceAnalysis::new(
                 LocalSources::new(root.path()),
-                crate::language::Registry::new([]),
+                crate::outline::language::Registry::new([]),
             ),
             observation: move |id: &OutlineId, parsed: &ParsedSource| {
                 assert_eq!(id.resource.location, "note.txt");
@@ -1021,16 +1070,24 @@ impl CompletionProvider for TextOnly {
 }
 
 // {test}`requirements.sdk.graph.agent-calls.judge.submission`
+// {test}`requirements.sdk.graph.agent-harness.submission`
+// {test}`requirements.sdk.graph.agent-harness.submission.reminder`
+// {test}`requirements.sdk.graph.agent-harness.tool_agent.provider_failure`
 #[tokio::test]
 async fn assistant_text_and_provider_failure_cannot_become_typed_results() {
     let graph = Memory::new("source".into());
     let agent = ToolAgent::new(TextOnly(Mutex::default()));
     let ctx = ValidationContext::with_agent(&graph, Node(1), &agent);
     assert!(
-        matches!(ctx.ask::<bool>().await,Err(ValidationError::Agent(error)) if error.to_string().contains("without invoking submit_result"))
+        matches!(ctx.ask::<bool>().await,Err(ValidationError::Agent(error)) if error.to_string().contains("exactly once, even after a reminder"))
     );
     let requests = agent.provider.0.lock().unwrap();
     assert_eq!(requests.len(), 2);
+    let reminder = serde_json::to_string(requests[1].chat_history.last().unwrap()).unwrap();
+    assert!(
+        reminder.contains("invoke submit_result exactly once"),
+        "{reminder}"
+    );
     assert!(
         serde_json::to_string(&requests[0].chat_history)
             .unwrap()
@@ -1042,6 +1099,143 @@ async fn assistant_text_and_provider_failure_cannot_become_typed_results() {
         matches!(ctx.ask::<bool>().await,Err(ValidationError::Agent(error)) if error.to_string().contains("permanent provider failure"))
     );
     assert!(ctx.inspection().dependencies().is_empty());
+}
+
+// {test}`requirements.sdk.graph.agent-harness.submission.acceptance`
+#[tokio::test]
+async fn one_submission_accepts_only_its_value_and_skips_other_calls_and_prose() {
+    let graph = Memory::new("source".into());
+    let mut response = tool_turn(
+        FinishReason::ToolCalls,
+        vec![
+            ("read_node", json!({"path":{"segments":["1"]}})),
+            ("submit_result", json!({"result":false})),
+        ],
+    );
+    let mut choice = vec![AssistantContent::text("The answer is true.")];
+    choice.extend(response.choice.iter().cloned());
+    response.choice = choice;
+    let agent = ToolAgent::new(Scenario::new(vec![Ok(response)]));
+    let ctx = ValidationContext::with_agent(&graph, Node(1), &agent);
+    assert!(!ctx.ask::<bool>().await.unwrap());
+    assert!(graph.reads.lock().unwrap().is_empty());
+    assert!(ctx.inspection().dependencies().is_empty());
+    assert_eq!(agent.provider.requests.lock().unwrap().len(), 1);
+}
+
+// {test}`requirements.sdk.graph.agent-harness.submission.acceptance`
+// {test}`requirements.sdk.graph.agent-harness.submission.reminder`
+#[tokio::test]
+async fn count_is_checked_before_arguments_and_one_reminder_allows_recovery() {
+    let graph = Memory::new("source".into());
+    let agent = ToolAgent::new(Script::new(vec![
+        Some(vec![("read_node", json!({"path":{"segments":["1"]}}))]),
+        Some(vec![
+            ("read_node", json!({"path":{"segments":["1"]}})),
+            ("submit_result", json!({})),
+            ("submit_result", json!({"other":true})),
+        ]),
+        Some(vec![("submit_result", json!({"result":true}))]),
+    ]));
+    let ctx = ValidationContext::with_agent(&graph, Node(1), &agent);
+    assert!(ctx.ask::<bool>().await.unwrap());
+    assert_eq!(*graph.reads.lock().unwrap(), [1]);
+    assert_eq!(ctx.inspection().dependencies().len(), 1);
+    let requests = agent.provider.requests.lock().unwrap();
+    assert_eq!(requests.len(), 3);
+    let history = &requests[2].chat_history;
+    let Message::User { content } = &history[history.len() - 2] else {
+        panic!("expected skipped tool errors before reminder");
+    };
+    assert_eq!(content.len(), 3);
+    for item in content {
+        let UserContent::ToolResult(result) = item else {
+            panic!("expected one error for each skipped call");
+        };
+        assert!(result.is_error);
+        assert!(
+            serde_json::to_string(result)
+                .unwrap()
+                .contains("not run: invoke submit_result exactly once")
+        );
+    }
+    let history = serde_json::to_string(history).unwrap();
+    assert_eq!(history.matches("Reminder:").count(), 1);
+    assert!(history.contains("invoke submit_result exactly once"));
+}
+
+// {test}`requirements.sdk.graph.agent-harness.submission.acceptance`
+// {test}`requirements.sdk.graph.agent-harness.submission.reminder`
+#[tokio::test]
+async fn zero_and_multiple_submissions_share_one_reminder_and_a_second_violation_ends() {
+    let multi = || {
+        vec![
+            ("read_node", json!({"path":{"segments":["1"]}})),
+            ("submit_result", json!({"result":true})),
+            ("submit_result", json!({"result":false})),
+        ]
+    };
+    for first_multiple in [false, true] {
+        for second_multiple in [false, true] {
+            let graph = Memory::new("source".into());
+            let agent = ToolAgent::new(Script::new(vec![
+                Some(if first_multiple { multi() } else { vec![] }),
+                Some(if second_multiple { multi() } else { vec![] }),
+                Some(vec![("submit_result", json!({"result":true}))]),
+            ]));
+            let ctx = ValidationContext::with_agent(&graph, Node(1), &agent);
+            assert!(
+                matches!(ctx.ask::<bool>().await, Err(ValidationError::Agent(error))
+                    if error.to_string().contains("exactly once, even after a reminder"))
+            );
+            assert!(graph.reads.lock().unwrap().is_empty());
+            assert!(ctx.inspection().dependencies().is_empty());
+            let requests = agent.provider.requests.lock().unwrap();
+            assert_eq!(requests.len(), 2);
+            assert_eq!(
+                serde_json::to_string(&requests[1].chat_history)
+                    .unwrap()
+                    .matches("Reminder:")
+                    .count(),
+                1
+            );
+        }
+    }
+    let graph = Memory::new("source".into());
+    let agent = ToolAgent::new(Script::new(vec![
+        Some(vec![]),
+        Some(vec![("submit_result", json!({"result":true}))]),
+    ]));
+    let ctx = ValidationContext::with_agent(&graph, Node(1), &agent);
+    assert!(ctx.ask::<bool>().await.unwrap());
+    assert_eq!(agent.provider.requests.lock().unwrap().len(), 2);
+}
+
+// {test}`requirements.sdk.sources.redaction`
+// {test}`requirements.sdk.graph.agent-harness.fixed_tools`
+#[tokio::test]
+async fn queued_contents_and_graph_read_tools_redact_credentials_before_delivery() {
+    let secret = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890";
+    let original = format!("credential = {secret}\n");
+    let graph = Memory::new(original.clone());
+    let agent = ToolAgent::new(Script::new(vec![
+        Some(vec![("read_node", json!({"path":{"segments":["1"]}}))]),
+        Some(vec![("submit_result", json!({"result":true}))]),
+    ]));
+    let ctx = ValidationContext::with_agent(&graph, Node(1), &agent);
+    assert!(ctx.ask::<bool>().contents_of_current_node().await.unwrap());
+    let requests = agent.provider.requests.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    for request in requests.iter() {
+        let visible = serde_json::to_string(&request.chat_history).unwrap();
+        assert!(!visible.contains(secret), "{visible}");
+        assert!(visible.contains("[REDACTED:GitHub Token]"), "{visible}");
+    }
+    assert!(
+        matches!(&ctx.inspection().dependencies()[..], [Dependency::Node(Node(1), fingerprint)]
+            if fingerprint.value == original)
+    );
+    assert_eq!(*graph.contents.lock().unwrap(), original);
 }
 
 // {test}`requirements.sdk.graph.context-tools.tracked_inspection`
@@ -1066,7 +1260,7 @@ async fn source_discovery_and_its_pages_do_not_register_reads() {
     let factory = SourceTools {
         analysis: SourceAnalysis::new(
             LocalSources::new(root.path()),
-            crate::language::Registry::new([]),
+            crate::outline::language::Registry::new([]),
         ),
         observation: move |_: &OutlineId, _: &ParsedSource| {
             *seen.lock().unwrap() += 1;
@@ -1131,7 +1325,7 @@ impl SourceProvider for CachedProvider {
     async fn parse(
         &self,
         resource: &ResourceId,
-        languages: &crate::language::Registry,
+        languages: &crate::outline::language::Registry,
     ) -> Result<ParsedSource, SourceError> {
         parse_snapshot(
             resource,
@@ -1481,7 +1675,6 @@ impl Criterion<Memory> for BehavioralAdequacy {
 // {test}`requirements.sdk.graph.validators.evaluate_criterion`
 // {test}`requirements.sdk.graph.evidence.refresh_evidence`
 // {test}`requirements.sdk.graph.evidence.store_evidence`
-// {test}`requirements.sdk.graph.agent-harness.setup`
 // {test}`requirements.sdk.graph.agent-harness.tool_agent`
 // {test}`requirements.sdk.domain`
 // {test}`requirements.sdk.graph.agent-calls.judge.rendering`
@@ -1501,7 +1694,7 @@ async fn behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprin
         json!({"result":expected}),
     )])]);
     let agent = Arc::new(ToolAgent::new(provider));
-    let validator = Validator::new(domain.clone()).with_agent(agent.clone());
+    let validator = Validator::new(domain.clone()).with_agent_adapter(agent.clone());
     let inputs = validator
         .refresh_evidence(BehavioralAdequacy {
             requirement: Node(1),
@@ -1757,7 +1950,7 @@ async fn application_tools_preserve_graph_tools_in_the_same_conversation() {
             ("read_node", json!({"path":{"segments":["2"]}})),
             ("increment", json!({})),
         ]),
-        Some(vec![("get_node_page", json!({"page":1}))]),
+        Some(vec![("get_node_page", json!({"prepared_page":1}))]),
         Some(vec![("submit_result", json!({"result":true}))]),
     ]))
     .with_tools(CounterTools(created));
@@ -1805,12 +1998,13 @@ async fn application_tools_preserve_graph_tools_in_the_same_conversation() {
     assert_eq!(deliveries[0][1], "counter=1");
     assert_eq!(
         serde_json::from_str::<Value>(&deliveries[1][0]).unwrap(),
-        json!({"first":{"page":0,"text":"x".repeat(8_192)},"pages":[0,1,2]})
+        json!({"first":{"page":returned_node_page(&requests[2],0),"text":"x".repeat(8_192)},
+            "pages":[returned_node_page(&requests[2],0),returned_node_page(&requests[2],1),returned_node_page(&requests[2],2)]})
     );
     assert_eq!(deliveries[1][1], "counter=2");
     assert_eq!(
         serde_json::from_str::<Value>(&deliveries[2][0]).unwrap(),
-        json!({"page":1,"text":"x".repeat(8_192)})
+        json!({"page":returned_node_page(&requests[2],1),"text":"x".repeat(8_192)})
     );
     let observations = ctx.inspection().dependencies();
     assert_eq!(observations.len(), 2);
@@ -1826,6 +2020,7 @@ async fn application_tools_preserve_graph_tools_in_the_same_conversation() {
 
 // {test}`requirements.sdk.graph.context-tools.pages.behavior`
 // {test}`requirements.sdk.graph.context-tools.pages.inputs`
+// {test}`requirements.sdk.graph.context-tools.pages.fn`
 // {test}`requirements.sdk.graph.context-tools.read_node.inputs`
 // {test}`requirements.sdk.graph.evidence.node_inputs`
 #[tokio::test]
@@ -1848,7 +2043,7 @@ async fn graph_read_pages_retain_the_prepared_snapshot_after_contents_change() {
         graph: graph.clone(),
         script: Script::new(vec![
             Some(vec![("read_node", json!({"path":{"segments":["1"]}}))]),
-            Some(vec![("get_node_page", json!({"page":1}))]),
+            Some(vec![("get_node_page", json!({"prepared_page":1}))]),
             Some(vec![("submit_result", json!({"result":true}))]),
         ]),
     });
@@ -1866,6 +2061,7 @@ async fn graph_read_pages_retain_the_prepared_snapshot_after_contents_change() {
 
 // {test}`requirements.sdk.graph.context-tools.pages.behavior`
 // {test}`requirements.sdk.graph.context-tools.pages.inputs`
+// {test}`requirements.sdk.graph.context-tools.pages.fn`
 // {test}`requirements.sdk.graph.context-tools.read_source.behavior`
 // {test}`requirements.sdk.graph.context-tools.read_source.inputs`
 #[tokio::test]
@@ -1879,7 +2075,7 @@ async fn source_read_pages_retain_text_and_dependencies_without_another_read() {
     let factory = SourceTools {
         analysis: SourceAnalysis::new(
             LocalSources::new(root.path()),
-            crate::language::Registry::new([]),
+            crate::outline::language::Registry::new([]),
         ),
         observation: move |id: &OutlineId, parsed: &ParsedSource| {
             assert_eq!(id.selector, "");
@@ -1929,6 +2125,60 @@ async fn source_read_pages_retain_text_and_dependencies_without_another_read() {
     assert_eq!(*observed.lock().unwrap(), 1);
 }
 
+// {test}`requirements.sdk.graph.context-tools.pages.behavior`
+// {test}`requirements.sdk.graph.agent-harness.tool_agent.isolation`
+#[tokio::test]
+async fn graph_page_ids_from_a_populated_peer_conversation_are_rejected() {
+    struct ForeignPage {
+        state: Mutex<(usize, Option<u64>)>,
+    }
+    impl CompletionProvider for ForeignPage {
+        async fn complete(&self, request: CompletionRequest) -> io::Result<CompletionResponse> {
+            let mut state = self.state.lock().unwrap();
+            let call = match state.0 {
+                0 | 2 => ("read_node", json!({"path":{"segments":["1"]}})),
+                1 => {
+                    state.1 = Some(returned_node_page(&request, 1));
+                    ("submit_result", json!({"result":true}))
+                }
+                3 => {
+                    let local = returned_node_page(&request, 1);
+                    let foreign = state.1.unwrap();
+                    assert_ne!(local, foreign);
+                    ("get_node_page", json!({"page":foreign}))
+                }
+                4 => {
+                    let Message::User { content } = request.chat_history.last().unwrap() else {
+                        panic!("expected foreign-page error");
+                    };
+                    let [UserContent::ToolResult(result)] = content.as_slice() else {
+                        panic!("expected one foreign-page result");
+                    };
+                    assert!(result.is_error);
+                    assert!(
+                        serde_json::to_string(result)
+                            .unwrap()
+                            .contains("unknown page")
+                    );
+                    ("submit_result", json!({"result":true}))
+                }
+                _ => panic!("unexpected page fixture request"),
+            };
+            state.0 += 1;
+            Ok(tool_turn(FinishReason::ToolCalls, vec![call]))
+        }
+    }
+    let graph = Memory::new("long contents ".repeat(1500));
+    let agent = ToolAgent::new(ForeignPage {
+        state: Mutex::new((0, None)),
+    });
+    let ctx = ValidationContext::with_agent(&graph, Node(1), &agent);
+    assert!(ctx.ask::<bool>().await.unwrap());
+    assert!(ctx.ask::<bool>().await.unwrap());
+    assert_eq!(*graph.reads.lock().unwrap(), [1, 1]);
+    assert_eq!(agent.provider.state.lock().unwrap().0, 5);
+}
+
 #[cfg(feature = "default-languages")]
 // {test}`requirements.sdk.graph.context-tools.read_source.behavior`
 // {test}`requirements.sdk.graph.context-tools.read_source.inputs`
@@ -1971,10 +2221,7 @@ async fn source_tools_forward_arguments_and_present_discovery_and_read_results()
             Ok(TextMatches {
                 complete: query.limit.is_none(),
                 matches: vec![TextMatch {
-                    resource: ResourceId {
-                        scheme: "generated".into(),
-                        location: "source".into(),
-                    },
+                    path: "source".into(),
                     line: 7,
                     excerpt: "text excerpt".into(),
                 }],
@@ -1983,7 +2230,7 @@ async fn source_tools_forward_arguments_and_present_discovery_and_read_results()
         async fn search_structure(
             &self,
             query: &StructuralQuery,
-            _: &crate::language::Registry,
+            _: &crate::outline::language::Registry,
         ) -> Result<StructuralMatches, SourceError> {
             self.0.lock().unwrap().push(json!({"structure":query.language,"rule":query.rule,"prefix":query.scope.prefix,"limit":query.limit}));
             if query.language == "error" {
@@ -1992,11 +2239,8 @@ async fn source_tools_forward_arguments_and_present_discovery_and_read_results()
             Ok(StructuralMatches {
                 complete: query.limit.is_none(),
                 matches: vec![StructuralMatch {
-                    node: OutlineId {
-                        resource: ResourceId {
-                            scheme: "generated".into(),
-                            location: "source".into(),
-                        },
+                    node: crate::outline::OutlineId {
+                        path: "source".into(),
                         selector: "fn[chosen]".into(),
                     },
                     excerpt: if query.scope.prefix == "paged" {
@@ -2052,7 +2296,7 @@ async fn source_tools_forward_arguments_and_present_discovery_and_read_results()
         let delivery = session.dispatch("search_text", &args).await.unwrap();
         assert_eq!(
             serde_json::from_str::<Value>(&delivery.text).unwrap(),
-            json!({"complete":prefix.is_none(),"matches":[{"resource":resource,"line":7,"excerpt":"text excerpt"}]})
+            json!({"complete":prefix.is_none(),"matches":[{"path":"source","line":7,"excerpt":"text excerpt"}]})
         );
         assert!(delivery.dependencies.is_empty());
         args["language"] = json!("rust");
@@ -2060,7 +2304,7 @@ async fn source_tools_forward_arguments_and_present_discovery_and_read_results()
         let delivery = session.dispatch("search_structure", &args).await.unwrap();
         assert_eq!(
             serde_json::from_str::<Value>(&delivery.text).unwrap(),
-            json!({"complete":prefix.is_none(),"matches":[{"node":{"resource":resource,"selector":"fn[chosen]"},"excerpt":"structural excerpt"}]})
+            json!({"complete":prefix.is_none(),"matches":[{"node":{"path":"source","selector":"fn[chosen]"},"excerpt":"structural excerpt"}]})
         );
         assert!(delivery.dependencies.is_empty());
     }

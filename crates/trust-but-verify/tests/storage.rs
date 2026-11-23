@@ -4,7 +4,7 @@ use std::sync::{
     Arc, Barrier,
     atomic::{AtomicUsize, Ordering},
 };
-use trust_but_verify::domain::{Domain, NodeContents};
+use trust_but_verify::{Domain, NodeContents};
 use trust_but_verify::{graph::*, storage::*};
 
 fn criterion() -> CriterionPath {
@@ -33,6 +33,30 @@ fn record(id: &str) -> Record<String> {
         ],
         output: json!({"result": false, "rationale": "a negative review", "metadata": {"id": id, "padding": "x".repeat(8192)}}),
     }
+}
+
+// {test}`requirements.sdk.sources.redaction`
+// {test}`requirements.sdk.filesystem-storage.store`
+// {test}`requirements.sdk.filesystem-storage.load`
+#[tokio::test]
+async fn storage_preserves_completed_answers_containing_credential_shaped_text() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = FileEvidenceStorage::new(temp.path());
+    let path = NodePath::new(vec!["answer".into()]);
+    let mut answer = record("unmodified");
+    // A synthetic token that the model-input scanner recognizes. Completed
+    // application answers must still round-trip exactly through evidence storage.
+    let token = format!("ghp_{}", "a".repeat(36));
+    answer.output = json!({"quoted_input": token, "satisfied": false});
+    store.store(&path, &criterion(), &answer).await.unwrap();
+    let saved = store
+        .load::<String, ()>(&path, &criterion())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(saved.output, answer.output);
+    let bytes = std::fs::read_to_string(store.record_path(&path, &criterion())).unwrap();
+    assert!(bytes.contains(&token));
 }
 
 // {test}`requirements.sdk.filesystem-storage.interface`

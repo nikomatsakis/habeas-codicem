@@ -159,7 +159,7 @@ where
                         .await
                         .map_err(|error| invalid(error.to_string()))?;
                     json!({"complete":matches.complete,"matches":matches.matches.into_iter().map(|m| json!({
-                        "resource":m.resource,"line":m.line,"excerpt":m.excerpt
+                        "path":m.path,"line":m.line,"excerpt":m.excerpt
                     })).collect::<Vec<_>>()})
                 }
                 "search_structure" => {

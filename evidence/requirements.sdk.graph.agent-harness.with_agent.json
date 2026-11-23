@@ -1,8 +1,8 @@
 {
-  "requirement": "```rust,ignore\nuse habeas_sdk::procedure::Agent;\nuse std::sync::Arc;\n\n// Method on Validator<D>.\n/// Share this agent with execution contexts.\npub fn with_agent(\n    self,\n    agent: Arc<dyn Agent<D>>,\n) -> Self;\n```",
+  "requirement": "The SDK configures a validator's supplied agent from an application-provided\n[`AgentConfig`](../../../rustdocs/trust_but_verify/enum.AgentConfig.html).\nIt does not persist the agent configuration.\n\n```rust,ignore\nuse trust_but_verify::{AgentConfig, Domain, Validator};\n\nimpl<D: Domain> Validator<D> {\n    // ...\n\n    /// Configure the SDK agent used by this validator's ask requests.\n    pub fn with_agent(self, config: AgentConfig) -> Self\n    where\n        D: 'static,\n        D::EdgeLabel: serde::de::DeserializeOwned + schemars::JsonSchema + PartialEq,\n        D::Error: std::fmt::Display;\n\n    // ...\n}\n```\n\nThe label bounds let the fixed tools accept typed edge labels, and `Display`\nlets them report domain errors to the agent.\nCriteria obtain the configured agent through their `ValidationContext`.\nConstructing a validator without this configuration still permits deterministic\ncriteria under {cite}`requirements.sdk.graph.validation.deterministic_procedures`.",
   "determination": true,
-  "rationale": "I judged this from the two supplied tests and did not request any implementation source. `requirements.sdk.graph.agent-harness.with_agent` is a builder method on `Validator<D>`. It takes an `Arc<dyn Agent<D>>` and returns `Self`. Its only stated obligation is to share that agent with execution contexts. The text names no failure cases, boundaries or other modes.\n\nBoth tests carry a `{test}` reference to the requirement, and together they cover the obligation:\n\n- **Agent reaches executions:** `crates/habeas-sdk/tests/agent.rs#fn[validator_agent_executions_isolate_conversations_and_dependency_traces]` builds `Validator::new(graph.clone()).with_agent(agent.clone())`.\n  - Two concurrent `verify` calls, \"alpha\" and \"beta\", run under a barrier and a timeout. Both complete, so both executions reached the shared agent.\n  - The test asserts each execution's output (\"alpha\" and \"beta\").\n  - It asserts that the provider on the original `Arc` recorded 3 calls for each. That shows the same agent instance was used by both execution contexts.\n  - It asserts the stored dependency traces for each execution.\n- **Agent absent, then attached:** `crates/habeas-sdk/tests/validation.rs#fn[runner_does_not_store_a_missing_agent_error_and_supports_intermediate_calls]` first verifies on a validator without an agent. It asserts `ValidationError::NoAgentConfigured` and that no records or reads were stored.\n  - It then calls `with_agent(agent.clone())` and verifies again. The result is `Ok` and the output is true.\n  - It asserts that the shared `MockAgent` received the requests (`requests.len() == 2`), including the intermediate-call request.\n  - That contrast shows `with_agent` is what supplies the agent, and that the returned `Self` is a working validator.\n\nI found no plausible violation these tests would accept. If `with_agent` dropped the agent, or gave each execution a copy that was not shared, the call-count and request-count assertions would fail. No `{fixme}` acknowledgments apply.",
-  "references": "39da1613ab737bb2e626a8042e8be0a10ab892f1aeefb88169cc3dddef25d3d0",
+  "rationale": "The reviewed tests adequately cover every obligation in `with_agent`.\n\n**Obligations and the tests that check them**\n\n1. **The SDK configures the validator's agent from a supplied `AgentConfig`.**\n   - `supplied_openai_backend_runs_independent_calls_against_a_local_transport` builds an `AgentConfig::OpenAi` with a local endpoint and passes it to `with_agent`. It checks the real requests that arrive: model, token limit, fixed tool list, `submit_result` schema, and that a tool result is carried into the next turn. It also checks that two `verify` calls make independent requests.\n   - `supplied_ollama_backend_delivers_tools_and_results_over_native_chat` does the same for `AgentConfig::Ollama`. It checks the endpoint path, auth header, model, options, and tool delivery.\n   - `supported_backend_settings_create_transports_without_sending_requests` checks that each backend variant produces a transport.\n   - `validator_agent_executions_isolate_conversations_and_dependency_traces` and `runner_does_not_store_a_missing_agent_error_and_supports_intermediate_calls` show criteria reaching the configured agent through the validation context. The second test also shows `NoAgentConfigured` when no agent was supplied.\n   - `configured_agents_initialize_only_when_asked_and_report_setup_errors` checks that the provider is not created until an ask is awaited. It also checks that a missing credential surfaces as `ValidationError::Agent` when the ask is awaited.\n\n2. **The SDK does not persist the agent configuration.**\n   - `supplied_openai_backend_runs_independent_calls_against_a_local_transport` stores evidence and asserts the saved domain JSON contains none of the API key, model name, `backend`, or `api_key`.\n   - `bedrock_configuration_attaches_to_a_validator_without_being_persisted` asserts the saved JSON has no `backend` field and does not contain the profile or model strings.\n\n3. **The signature and bounds.** `TestDomain` satisfies the bounds, so every `with_agent` call in these tests compiles against them. This is a compile-time property with no runtime behavior to assert.\n\n4. **A validator built without this configuration still permits deterministic criteria, under the cited `deterministic_procedures`.**\n   - `deterministic_validation_uses_required_storage_without_an_agent` uses `Validator::new` with no agent. It runs a deterministic criterion, stores the evidence, and asserts the output and the dependency.\n   - `configured_agents_initialize_only_when_asked_and_report_setup_errors` runs a deterministic criterion on a validator whose agent configuration would fail. The criterion still succeeds and the agent is not initialized.\n\nI did not find an uncovered obligation, and no `{fixme}` acknowledgments apply. The `{test}` markings on these tests are present.",
+  "references": "582b2e2b921df6f802e051b4314d3181589a51bbd3cf3cab8d7c9e412b6e1b5e",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.agent-harness.with_agent",
@@ -11,29 +11,97 @@
       ],
       "text": [
         ":::{req} with_agent",
-        "```rust,ignore",
-        "use habeas_sdk::procedure::Agent;",
-        "use std::sync::Arc;",
+        "The SDK configures a validator's supplied agent from an application-provided",
+        "[`AgentConfig`](../../../rustdocs/trust_but_verify/enum.AgentConfig.html).",
+        "It does not persist the agent configuration.",
         "",
-        "// Method on Validator<D>.",
-        "/// Share this agent with execution contexts.",
-        "pub fn with_agent(",
-        "    self,",
-        "    agent: Arc<dyn Agent<D>>,",
-        ") -> Self;",
+        "```rust,ignore",
+        "use trust_but_verify::{AgentConfig, Domain, Validator};",
+        "",
+        "impl<D: Domain> Validator<D> {",
+        "    // ...",
+        "",
+        "    /// Configure the SDK agent used by this validator's ask requests.",
+        "    pub fn with_agent(self, config: AgentConfig) -> Self",
+        "    where",
+        "        D: 'static,",
+        "        D::EdgeLabel: serde::de::DeserializeOwned + schemars::JsonSchema + PartialEq,",
+        "        D::Error: std::fmt::Display;",
+        "",
+        "    // ...",
+        "}",
         "```",
+        "",
+        "The label bounds let the fixed tools accept typed edge labels, and `Display`",
+        "lets them report domain errors to the agent.",
+        "Criteria obtain the configured agent through their `ValidationContext`.",
+        "Constructing a validator without this configuration still permits deterministic",
+        "criteria under {cite}`requirements.sdk.graph.validation.deterministic_procedures`.",
         ":::"
       ]
     },
     {
-      "file": "crates/habeas-sdk/tests/agent.rs",
-      "item": "fn[validator_agent_executions_isolate_conversations_and_dependency_traces]",
-      "hash": "e39e00db9a2c71613240e7bae59a9807f9865a74a3563130001f2563ff15d8d8"
+      "requirements": "requirements.sdk.graph.validation.deterministic_procedures",
+      "matches": [
+        "requirements.sdk.graph.validation.deterministic_procedures"
+      ],
+      "text": [
+        ":::{req} deterministic_procedures",
+        "`Criterion::execute` can compute an answer without a configured model provider.",
+        "A criterion can compute its answer directly using tracked inputs; deterministic",
+        "execution needs no configured agent.",
+        ":::"
+      ]
     },
     {
-      "file": "crates/habeas-sdk/tests/validation.rs",
+      "file": "crates/trust-but-verify/src/agent/configured.rs",
+      "item": "mod[tests]/fn[configured_agents_initialize_only_when_asked_and_report_setup_errors]",
+      "hash": "fdaaffebe78b32784800c036315cb4087dbeb10336224fa82abd2f969e5b58e5"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/configured.rs",
+      "item": "mod[tests]/fn[bedrock_configuration_attaches_to_a_validator_without_being_persisted]",
+      "hash": "829501563a774326e910279a7a7d15c4534a18b8e15202ccb2d2e44f3903a8fe"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/configured.rs",
+      "item": "mod[tests]/fn[supplied_openai_backend_runs_independent_calls_against_a_local_transport]",
+      "hash": "3b5571a50dec140a727e1b07004a3acd761380ec7664e703137315816986b39b"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/configured.rs",
+      "item": "mod[tests]/fn[supplied_ollama_backend_delivers_tools_and_results_over_native_chat]",
+      "hash": "6aac9e9bf26be0e2544d3cb664aea3b88c9385c0a4df56b10e897334f4a41679"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/providers.rs",
+      "item": "mod[tests]/fn[supported_backend_settings_create_transports_without_sending_requests]",
+      "hash": "a5d4c98815f4a52923f27b3867bf45da920f100f90df7ceb533f9eee654261a5"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/tests.rs",
+      "item": "fn[validator_agent_executions_isolate_conversations_and_dependency_traces]",
+      "hash": "b14421a83f24733d16818973dd31842cd2988ecbeb72626c1ca91ca1f33e6399"
+    },
+    {
+      "file": "crates/trust-but-verify/tests/validation.rs",
       "item": "fn[runner_does_not_store_a_missing_agent_error_and_supports_intermediate_calls]",
-      "hash": "03bbeba9aa6e6dc1423becfc64bb7626634686ad6796b76933524293f12d1135"
+      "hash": "ef92d36a914b81c7f8d15011c753be5105671105cb4f15126fcad9e6e7381e39"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/tests.rs",
+      "item": "fn[deterministic_validation_uses_required_storage_without_an_agent]",
+      "hash": "6855ceb72cad4207905aa0be9cadc3210222330178b8fb3ab152cdfe7279b242"
+    },
+    {
+      "file": "crates/trust-but-verify/src/graph/runtime.rs",
+      "item": "impl[Validator<D>]#1/fn[with_agent]",
+      "hash": "59ee38eaf4aef041fbad7411c1c5e74a2d1302cca0960f6065df634dd640563b"
+    },
+    {
+      "file": "crates/trust-but-verify/tests/validation.rs",
+      "item": "fn[caller_reuses_negative_answers_and_compares_revisions_explicitly]",
+      "hash": "e7e2db5ecf6df7409f9b32cf275f1d1ea45d5497fc96e47d477899e751c90a16"
     }
   ],
   "format_version": 1,
@@ -46,7 +114,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "39da1613ab737bb2e626a8042e8be0a10ab892f1aeefb88169cc3dddef25d3d0"
+          "value": "582b2e2b921df6f802e051b4314d3181589a51bbd3cf3cab8d7c9e412b6e1b5e"
         }
       ]
     },
@@ -58,7 +126,7 @@
         "Mandatory",
         {
           "scheme": "node-path-set-sha256-v1",
-          "value": "d0b57ba9e0e5ef90a1d55e2dbcd760820c24a58bc0bbe1998b3dc26beb371e1e"
+          "value": "9314eca696f70de95ce60efa19c33235a1ae5cea9add9317626c3969d0254cb9"
         }
       ]
     },
@@ -69,7 +137,18 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "add0ea2540f0d937184a06cc3d7c52d1a6315fda4f87a1513d11ec405b3f9c8c"
+          "value": "3dcd3608cc07db4d16f3be872d76890e9854d9bba6f21d2af6d3d8b11d2b1295"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Requirement": "requirements.sdk.graph.validation.deterministic_procedures"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "081322dcaaf6917e19055f960c67d27e33283a306419c7b34dff948bb46ed218"
         }
       ]
     },
@@ -79,14 +158,99 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/agent.rs"
+              "location": "crates/trust-but-verify/src/agent/configured.rs"
+            },
+            "selector": "mod[tests]/fn[configured_agents_initialize_only_when_asked_and_report_setup_errors]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "be0ea5a80925f3c2306650f800811dcad22b3c4fc5c9a342b9133dcef4383979"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/configured.rs"
+            },
+            "selector": "mod[tests]/fn[bedrock_configuration_attaches_to_a_validator_without_being_persisted]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "2dd42e195e7d05b81b6faaf27dba6dd94763abf7fa8806bae16533f570c7fc0d"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/configured.rs"
+            },
+            "selector": "mod[tests]/fn[supplied_openai_backend_runs_independent_calls_against_a_local_transport]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "ca44ad8a3b08e2f511998a3486cced5d2afe013120c3035a24919b18400c43b7"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/configured.rs"
+            },
+            "selector": "mod[tests]/fn[supplied_ollama_backend_delivers_tools_and_results_over_native_chat]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "dcef2b205482c6f47e4b8658e22d8620dd9ee173b94e39dfa33c1de3df1f7088"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/providers.rs"
+            },
+            "selector": "mod[tests]/fn[supported_backend_settings_create_transports_without_sending_requests]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "19f1da1a6890f27a7e69b3ddc2bd10f085af31f897492cc8cd5a66a6eff4ea4b"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/tests.rs"
             },
             "selector": "fn[validator_agent_executions_isolate_conversations_and_dependency_traces]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "1a97e526e190c34b43bec034a83701645bca0a852bb550d4fcedb9341bd57753"
+          "value": "345e4a934dc194621b2f60ebd7a39bf2c77b6bc6d92e08bb87e66e12376752a7"
         }
       ]
     },
@@ -96,14 +260,65 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/habeas-sdk/tests/validation.rs"
+              "location": "crates/trust-but-verify/tests/validation.rs"
             },
             "selector": "fn[runner_does_not_store_a_missing_agent_error_and_supports_intermediate_calls]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "e6cb5a1ba0c1c9ac526c6f2fe7f02b1f56c16b9c7e1a7a34d6f540216a97e9d2"
+          "value": "595da3d6ec08a011b32ec22a42c3dd080fc1c4b8f22de86cc363bbb36957ecd4"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/tests.rs"
+            },
+            "selector": "fn[deterministic_validation_uses_required_storage_without_an_agent]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "2829341695131ae63f20531291092a3f030a3f8b07e160f5c8588379e78fd47a"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/graph/runtime.rs"
+            },
+            "selector": "impl[Validator<D>]#1/fn[with_agent]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "61ba1d4b52e45b1a58c84320bae375c536668fea7f55ec8c4f8a4af0c3bf7369"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/tests/validation.rs"
+            },
+            "selector": "fn[caller_reuses_negative_answers_and_compares_revisions_explicitly]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "f1ec455d2849bc329594e457cff12bf5acb81b51e680c006089180d3f87e92f8"
         }
       ]
     }

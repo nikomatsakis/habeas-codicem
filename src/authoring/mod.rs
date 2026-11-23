@@ -1405,7 +1405,7 @@ async fn converse_observed<T: Send>(
         pages: pages::ResultPages::default(),
         rejection: line_numbers::Rejection::default(),
     };
-    trust_but_verify::agent::converse(provider, &mut adapter, prompt.request(), submit).await
+    trust_but_verify::__habeas::converse(provider, &mut adapter, prompt.request(), submit).await
 }
 
 // {cite}`habeas:util`
@@ -1421,7 +1421,7 @@ struct HabeasConversation<'a, F> {
     rejection: line_numbers::Rejection,
 }
 
-impl<T: Send, F: Fn(&Value) -> io::Result<T> + Send> trust_but_verify::agent::Conversation
+impl<T: Send, F: Fn(&Value) -> io::Result<T> + Send> trust_but_verify::__habeas::Conversation
     for HabeasConversation<'_, F>
 {
     type Output = T;
@@ -1434,8 +1434,8 @@ impl<T: Send, F: Fn(&Value) -> io::Result<T> + Send> trust_but_verify::agent::Co
         &mut self,
         submit: &str,
         arguments: &Value,
-    ) -> io::Result<trust_but_verify::agent::Submission<T>> {
-        use trust_but_verify::agent::Submission;
+    ) -> io::Result<trust_but_verify::__habeas::Submission<T>> {
+        use trust_but_verify::__habeas::Submission;
         let resubmitted = self.rejection.resubmitted(arguments);
         let result = (self.parse)(resubmitted.as_ref().unwrap_or(arguments))?;
         let outstanding = self.pages.outstanding_searches();
@@ -2212,6 +2212,7 @@ mod tests {
     }
 
     // {test}`requirements.authoring.provider_backoff`
+    // {test}`requirements.authoring.usage_requests.failures`
     #[tokio::test(start_paused = true)]
     async fn permanent_provider_failure_returns_without_waiting_or_retrying() {
         let (_project, _state, mut sources, mut usage) = retry_fixture();
