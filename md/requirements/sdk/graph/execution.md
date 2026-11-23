@@ -105,36 +105,5 @@ execution needs no configured agent. Evidence storage is still required.
 A criterion can also read inputs and compute part or all of its answer directly.
 The context exposes the source identity and tracked graph operations:
 
-:::{req} root_inputs
-```rust,ignore
-// Defined in habeas_sdk::graph.
-/// Input selection and tracked observations for one criterion execution.
-pub struct ValidationContext<'cx, D: Domain> { /* private fields */ }
-
-impl<'cx, D: Domain> ValidationContext<'cx, D> {
-    /// The source node this criterion examines.
-    pub fn node_id(&self) -> &D::NodeId;
-
-    /// Tracked graph reads and edge selections for this execution.
-    pub fn inspection(&self) -> &InspectionContext<'cx, D>;
-
-    /// Select outgoing edges by label, preserving their order and duplicates.
-    /// Record this label's target-set fingerprint even when nothing matches.
-    /// Target contents enter the trace when explicitly read or inserted.
-    pub fn successors(
-        &self,
-        label: &D::EdgeLabel,
-    ) -> Result<Vec<D::NodeId>, D::Error>
-    where
-        D::EdgeLabel: PartialEq;
-}
-```
-
-Labels match by equality. A change to the recorded target set makes prior
-evidence stale, including adding an edge to an empty selection. Target contents
-become dependencies through tracked reads or agent insertions. An edge selects a
-related source; assessments of that target remain separate.
-:::
-
 [Context tools](context-tools.md) covers content reads, filesystem exploration,
 and source search.

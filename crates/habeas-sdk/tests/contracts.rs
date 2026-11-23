@@ -951,7 +951,7 @@ async fn concurrent_refreshes_execute_independently_and_store_complete_records()
     assert_eq!(saved.dependencies, winner.dependencies());
 }
 
-// {test}`requirements.sdk.graph.execution.root_inputs`
+// {test}`requirements.sdk.graph.context-tools.root_inputs`
 // {test}`requirements.sdk.graph.evidence.checking_records`
 #[tokio::test]
 async fn absence_certification_is_invalidated_by_the_first_selected_root() {

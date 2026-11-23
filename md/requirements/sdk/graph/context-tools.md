@@ -16,6 +16,42 @@ contents using that identifier.
 Searches and outlines help choose what to read. The read records the chosen
 contents and their fingerprint, so a later change can make the answer stale.
 
+## Access the criterion's source and inputs
+
+Before reading additional inputs, criterion code can identify its source
+and select related nodes through its validation context.
+
+:::{req} root_inputs
+```rust,ignore
+// Defined in habeas_sdk::graph.
+/// Input selection and tracked observations for one criterion execution.
+pub struct ValidationContext<'cx, D: Domain> { /* private fields */ }
+
+impl<'cx, D: Domain> ValidationContext<'cx, D> {
+    /// The source node this criterion examines.
+    pub fn node_id(&self) -> &D::NodeId;
+
+    /// Tracked graph reads and edge selections for this execution.
+    pub fn inspection(&self) -> &InspectionContext<'cx, D>;
+
+    /// Select outgoing edges by label, preserving their order and duplicates.
+    /// Record this label's target-set fingerprint even when nothing matches.
+    /// Target contents enter the trace when explicitly read or inserted.
+    pub fn successors(
+        &self,
+        label: &D::EdgeLabel,
+    ) -> Result<Vec<D::NodeId>, D::Error>
+    where
+        D::EdgeLabel: PartialEq;
+}
+```
+
+Labels match by equality. A change to the recorded target set makes prior
+evidence stale, including adding an edge to an empty selection. Target contents
+become dependencies through tracked reads or agent insertions. An edge selects a
+related source; assessments of that target remain separate.
+:::
+
 ## Agent tools call the same context as ordinary code
 
 The SDK's graph tools are adapters around the inspection API available to the

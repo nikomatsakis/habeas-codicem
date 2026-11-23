@@ -497,7 +497,7 @@ fn wildcard_versions_still_check_inputs_and_errors() {
 }
 
 // {test}`requirements.sdk.graph.evidence.checking_records`
-// {test}`requirements.sdk.graph.execution.root_inputs`
+// {test}`requirements.sdk.graph.context-tools.root_inputs`
 // {test}`requirements.sdk.graph.outgoing_edges`
 // {test}`requirements.sdk.graph.fingerprinting.snapshot`
 // {test}`requirements.sdk.graph.context-tools.outgoing_edges.behavior`
@@ -1180,7 +1180,7 @@ async fn later_lighter_agent_calls_preserve_the_contexts_existing_trace() {
 
 // {test}`requirements.sdk.domain`
 // {test}`requirements.sdk.graph.validators.validate_node`
-// {test}`requirements.sdk.graph.execution.root_inputs`
+// {test}`requirements.sdk.graph.context-tools.root_inputs`
 // {test}`requirements.sdk.graph.evidence.node_inputs`
 #[tokio::test]
 async fn concurrent_single_node_validations_keep_separate_traces() {
