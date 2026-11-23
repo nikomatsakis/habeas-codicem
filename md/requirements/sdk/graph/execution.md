@@ -9,9 +9,41 @@ from [Criteria definition](validation.md).
 
 ## Execute the criterion with a context
 
-`execute` receives a `ValidationContext` for its
-{term}`requirements.sdk.graph.validation.source_node`. Its `ask` method
-starts a typed agent request. Add instructions and node contents to the builder,
+:::{req} execute
+{cite}`requirements.sdk.graph.validation.criterion_trait`
+
+`Criterion::execute` receives a context for its
+{term}`requirements.sdk.graph.validation.source_node` and computes its
+completed answer:
+
+```rust,ignore
+use std::future::Future;
+
+// Defined in habeas_sdk::graph.
+pub enum ValidationError<E> {
+    Graph(E),
+    NoAgentConfigured,
+    Agent(String),
+    Output(serde_json::Error),
+}
+
+pub trait Criterion<D: Domain>: Send + Sized {
+    /// Select inputs through cx and compute the completed answer.
+    fn execute(
+        self,
+        cx: &mut ValidationContext<'_, D>,
+    ) -> impl Future<Output = Result<Self::Ok, ValidationError<D::Error>>> + Send;
+
+    // ... answer and identity members introduced in Criteria definition ...
+}
+```
+
+An `Ok` value is the answer defined by
+{cite}`requirements.sdk.graph.validation.criterion_trait.answer`.
+An `Err` value reports an execution error.
+:::
+
+The context's `ask` method starts a typed agent request. Add instructions and node contents to the builder,
 then await the answer. The context records the inputs the agent reads so the SDK
 can tell when a saved answer needs to be recomputed.
 
