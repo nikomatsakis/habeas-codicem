@@ -365,6 +365,160 @@ fn a_moved_requirement_renames_its_references_and_evidence() {
     );
 }
 
+// {test}`requirements.refactor.record_fields`
+// {test}`requirements.refactor.equivalence`
+// {test}`requirements.refactor.whole_record`
+// {test}`requirements.refactor.dry_run`
+#[test]
+fn versioned_records_preserve_sdk_dependencies_across_verified_moves() {
+    use sha2::{Digest, Sha256};
+
+    // Independently construct the wire dependencies from the fixture's
+    // observations. Reusing this after the move checks every updated hash.
+    let observation = |input: &Value| {
+        let node = if let Some(selection) = input.get("requirements") {
+            json!({"Requirement": selection})
+        } else {
+            json!({"Source": {
+                "resource": {"scheme": "repo", "location": input["file"]},
+                "selector": input["item"],
+            }})
+        };
+        let digest: String = Sha256::digest(serde_json::to_vec(input).unwrap())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        json!({"Node": [node, {"scheme": "habeas-input-v1", "value": digest}]})
+    };
+    let versioned = |mut record: Value, name: &str| {
+        let mut dependencies: Vec<Value> = record["inputs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(&observation)
+            .collect();
+        dependencies.push(json!({"Node": [
+            {"ReferenceSet": name},
+            {"scheme": "habeas-reference-set-v1", "value": record["references"]},
+        ]}));
+        let test_file = record["inputs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|input| input["item"] == "fn[verify]")
+            .unwrap()["file"]
+            .clone();
+        let target_paths = json!([["source", "repo", test_file, "fn[verify]"]]);
+        let membership: String = Sha256::digest(serde_json::to_vec(&target_paths).unwrap())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        dependencies.push(json!({"OutgoingEdges": [
+            {"Requirement": name},
+            "Mandatory",
+            {"scheme": "node-path-set-sha256-v1", "value": membership},
+        ]}));
+        record["format_version"] = json!(1);
+        record["review_version"] = json!("*");
+        record["dependencies"] = json!(dependencies);
+        record
+    };
+
+    for scenario in ["rename", "move", "file", "edit", "extra", "bad-extra"] {
+        let temp = project();
+        let root = temp.path();
+        author(root);
+        let old_path = root.join("evidence/rules.load.json");
+        let record: Value = serde_json::from_slice(&fs::read(&old_path).unwrap()).unwrap();
+        let mut native = versioned(record, "rules.load");
+        if matches!(scenario, "extra" | "bad-extra") {
+            let mut extra = observation(&requirements_input(
+                "rules.check",
+                &["rules.check"],
+                &CHECK_TEXT,
+            ));
+            if scenario == "bad-extra" {
+                extra["Node"][1]["value"] = json!("0".repeat(64));
+            }
+            native["dependencies"].as_array_mut().unwrap().push(extra);
+        }
+        fs::write(&old_path, serde_json::to_vec_pretty(&native).unwrap()).unwrap();
+        if scenario == "bad-extra" {
+            assert!(!errors(root).is_empty());
+        } else {
+            assert_eq!(errors(root), Vec::<String>::new());
+        }
+        let (mapping, subject) = match scenario {
+            "file" => {
+                fs::rename(root.join("src/config.rs"), root.join("src/settings.rs")).unwrap();
+                ("src/config.rs=src/settings.rs", "rules.load")
+            }
+            "extra" | "bad-extra" => {
+                let chapter = fs::read_to_string(root.join("md/rules.md")).unwrap();
+                fs::write(
+                    root.join("md/rules.md"),
+                    chapter.replace(":::{req} check", ":::{req} inspect"),
+                )
+                .unwrap();
+                ("rules.check=rules.inspect", "rules.load")
+            }
+            "rename" => {
+                let chapter = fs::read_to_string(root.join("md/rules.md")).unwrap();
+                fs::write(
+                    root.join("md/rules.md"),
+                    chapter.replace(":::{req} load", ":::{req} read"),
+                )
+                .unwrap();
+                ("rules.load=rules.read", "rules.read")
+            }
+            _ => {
+                move_load(root, if scenario == "edit" { " parse();" } else { "" });
+                (
+                    "src/config.rs#fn[load]=src/config/load.rs#fn[load]",
+                    "rules.load",
+                )
+            }
+        };
+        let before = snapshot(root);
+        let preview = refactor(root, &["--dry-run", "--map", mapping]);
+        assert!(preview.status.success(), "{preview:?}");
+        assert_eq!(snapshot(root), before);
+        let output = refactor(root, &["--map", mapping]);
+        assert!(output.status.success(), "{output:?}");
+        if matches!(scenario, "edit" | "bad-extra") {
+            assert_eq!(
+                fs::read(&old_path).unwrap(),
+                before["evidence/rules.load.json"]
+            );
+            assert!(
+                stdout(&output).contains("Left 1 records unchanged"),
+                "{output:?}"
+            );
+            assert!(!errors(root).is_empty());
+            continue;
+        }
+        let migrated: Value = serde_json::from_slice(
+            &fs::read(root.join(format!("evidence/{subject}.json"))).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(migrated["determination"], true);
+        assert_eq!(migrated["review_version"], "*");
+        let mut expected = versioned(migrated.clone(), subject);
+        if scenario == "extra" {
+            expected["dependencies"]
+                .as_array_mut()
+                .unwrap()
+                .push(observation(&requirements_input(
+                    "rules.inspect",
+                    &["rules.inspect"],
+                    &[":::{req} inspect", "The data MUST be checked.", ":::"],
+                )));
+        }
+        assert_eq!(migrated, expected);
+        assert_eq!(errors(root), Vec::<String>::new(), "{scenario}");
+    }
+}
+
 // {test}`requirements.refactor.reference_rewrite`
 // {test}`requirements.refactor.reference_digest`
 // {test}`requirements.refactor.rationale.paths`

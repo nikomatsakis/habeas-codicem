@@ -19,7 +19,7 @@ pub(crate) fn is_versioned(value: &Value) -> bool {
 }
 
 // {cite}`habeas:util`
-fn versioned_fields(
+pub(crate) fn versioned_fields(
     value: &Value,
 ) -> io::Result<(String, Vec<Dependency<HabeasNode, HabeasEdgeLabel>>)> {
     if value["format_version"].as_u64() != Some(1) {

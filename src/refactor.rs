@@ -22,6 +22,9 @@ use serde_json::{Value, json};
 use crate::ReferenceKind;
 use crate::evidence::{Anchor, Declaration, SourceReference, display_path};
 use crate::inputs::{InputSelector, OutlineCache};
+use crate::sdk::{HabeasDomain, HabeasNode, RequirementId, input_fingerprint};
+use habeas_sdk::domain::Domain;
+use habeas_sdk::graph::Dependency;
 
 // {impl}`requirements.refactor.invalid_mappings`
 /// A failure of `habeas refactor`: an invalid mapping, reported as a usage
@@ -101,6 +104,47 @@ pub(crate) struct Mappings {
 
 // {impl}`requirements.refactor.mappings`
 impl Mappings {
+    /// Map SDK identities while preserving their node kind.
+    fn sdk_node(&self, node: &HabeasNode, back: bool) -> HabeasNode {
+        let name = |value: &mut String| {
+            let mapped = if back {
+                self.name_back(value)
+            } else {
+                self.name(value)
+            };
+            if let Some(mapped) = mapped {
+                *value = mapped;
+            }
+        };
+        let source = |value: &mut habeas_sdk::resource::OutlineId| {
+            if value.resource.scheme == "repo" {
+                let mapped = if back {
+                    self.node_back(&value.resource.location, &value.selector)
+                } else {
+                    self.node(&value.resource.location, &value.selector)
+                };
+                if let Some((file, item)) = mapped {
+                    value.resource.location = file;
+                    value.selector = item;
+                }
+            }
+        };
+        let mut mapped = node.clone();
+        match &mut mapped {
+            HabeasNode::Requirement(id) | HabeasNode::ReferenceSet(id) => name(&mut id.0),
+            HabeasNode::RequirementSelection(value) | HabeasNode::Definition(value) => name(value),
+            HabeasNode::Source(value) | HabeasNode::CitationReview(value) => source(value),
+            HabeasNode::SiteReview {
+                requirement,
+                source: value,
+            } => {
+                name(requirement);
+                source(value);
+            }
+        }
+        mapped
+    }
+
     /// A definition name's new name, if a mapping covers it.
     fn name(&self, name: &str) -> Option<String> {
         self.names
@@ -719,6 +763,150 @@ fn rewrite_input(states: &States, input: &Value) -> Option<Result<Value, String>
     }
 }
 
+/// Keep SDK observations in sync with the application inputs whose rewrites
+/// have been verified. Unrepresented observations cannot be refreshed safely.
+// {impl}`requirements.refactor.record_fields`
+// {impl}`requirements.refactor.whole_record`
+fn rewrite_sdk_dependencies(
+    states: &States,
+    record: &Value,
+    value: &mut Value,
+) -> Result<bool, String> {
+    if !crate::evidence_format::is_versioned(record) {
+        return Ok(false);
+    }
+    let (_, mut dependencies) =
+        crate::evidence_format::versioned_fields(record).map_err(|error| error.to_string())?;
+    let original = dependencies.clone();
+    let inputs = record["inputs"]
+        .as_array()
+        .ok_or("invalid evidence inputs")?;
+    for dependency in &mut dependencies {
+        if let Dependency::Node(node, fingerprint) = dependency {
+            if let Some(index) = inputs.iter().position(|input| {
+                InputSelector::from_input(input)
+                    .is_some_and(|selector| HabeasNode::from(&selector) == *node)
+                    && input_fingerprint(input) == *fingerprint
+            }) {
+                let input = &value["inputs"][index];
+                let selector =
+                    InputSelector::from_input(input).ok_or("invalid rewritten evidence input")?;
+                *node = HabeasNode::from(&selector);
+                *fingerprint = input_fingerprint(input);
+                continue;
+            }
+            if let HabeasNode::ReferenceSet(id) = node
+                && fingerprint.scheme == "habeas-reference-set-v1"
+                && record["references"].as_str() == Some(&fingerprint.value)
+            {
+                if let Some(new) = states.mappings.name(&id.0) {
+                    *id = RequirementId(new);
+                }
+                fingerprint.value = value["references"]
+                    .as_str()
+                    .ok_or("invalid rewritten reference digest")?
+                    .to_owned();
+                continue;
+            }
+            let selection = match node {
+                HabeasNode::Requirement(id) => Some(InputSelector::Requirements {
+                    requirements: id.0.clone(),
+                }),
+                HabeasNode::RequirementSelection(selection) => Some(InputSelector::Requirements {
+                    requirements: selection.clone(),
+                }),
+                HabeasNode::Definition(name) => Some(InputSelector::Definition {
+                    definition: name.clone(),
+                }),
+                _ => None,
+            };
+            if let Some(selection) = selection {
+                let before = selection
+                    .resolve(
+                        &states.root,
+                        &states.definitions_back,
+                        &states.outlines_back,
+                    )
+                    .map(|resolved| selection.to_input(&resolved));
+                if let Ok(before) = before
+                    && input_fingerprint(&before) == *fingerprint
+                    && let Some(rewritten) = rewrite_input(states, &before)
+                {
+                    let rewritten = rewritten?;
+                    *node = HabeasNode::from(
+                        &InputSelector::from_input(&rewritten)
+                            .ok_or("invalid rewritten SDK observation")?,
+                    );
+                    *fingerprint = input_fingerprint(&rewritten);
+                    continue;
+                }
+            }
+        }
+        if let Dependency::OutgoingEdges(HabeasNode::Requirement(id), label, fingerprint) =
+            dependency
+        {
+            let node = HabeasNode::Requirement(id.clone());
+            let before = HabeasDomain {
+                root: &states.root,
+                definitions: &states.definitions_back,
+                outlines: &states.outlines_back,
+            };
+            let targets = before
+                .outgoing_edges(&node, label.clone())
+                .map_err(|error| error.to_string())?
+                .iter()
+                .map(|target| states.mappings.sdk_node(target, true))
+                .collect::<Vec<_>>();
+            if habeas_sdk::graph::edge_fingerprint(&before, &targets) != *fingerprint {
+                return Err(format!("SDK edge observation for {node:?} changed"));
+            }
+            let mapped_id =
+                RequirementId(states.mappings.name(&id.0).unwrap_or_else(|| id.0.clone()));
+            let after = HabeasDomain {
+                root: &states.root,
+                definitions: &states.definitions_post,
+                outlines: &states.outlines_post,
+            };
+            let targets = targets
+                .iter()
+                .map(|target| states.mappings.sdk_node(target, false))
+                .collect::<Vec<_>>();
+            *fingerprint = habeas_sdk::graph::edge_fingerprint(&after, &targets);
+            *id = mapped_id;
+            continue;
+        }
+        let node = match dependency {
+            Dependency::Node(node, _) | Dependency::OutgoingEdges(node, _, _) => node,
+        };
+        let affected = match node {
+            HabeasNode::ReferenceSet(id) => states.mappings.name(&id.0).is_some(),
+            _ => match node.selector().map_err(|error| error.to_string())? {
+                InputSelector::Requirements { requirements } => {
+                    states.mappings.selection(&requirements).is_some()
+                }
+                InputSelector::Definition { definition } => {
+                    states.mappings.name(&definition).is_some()
+                }
+                InputSelector::Outline { file, item } => {
+                    states.mappings.node(&file, &item).is_some()
+                        || states.rewritten.contains_key(&file)
+                }
+            },
+        };
+        if affected {
+            return Err(format!(
+                "SDK dependency {node:?} has no matching verified application input"
+            ));
+        }
+    }
+    if dependencies == original {
+        return Ok(false);
+    }
+    value["dependencies"] =
+        serde_json::to_value(dependencies).map_err(|error| error.to_string())?;
+    Ok(true)
+}
+
 /// Decides one record under the mappings.
 // {impl}`requirements.refactor.whole_record`
 // {impl}`requirements.refactor.subject_text`
@@ -871,6 +1059,47 @@ fn rewrite_record(states: &States, path: &str, record: &Value) -> io::Result<Out
                     failures.push(format!("inputs[{index}]: {error}"));
                     changed = true;
                 }
+            }
+        }
+    }
+    let sdk_affected = crate::evidence_format::is_versioned(record)
+        && crate::evidence_format::versioned_fields(record).is_ok_and(|(_, dependencies)| {
+            dependencies.iter().any(|dependency| {
+                let node = match dependency {
+                    Dependency::Node(node, _) | Dependency::OutgoingEdges(node, _, _) => node,
+                };
+                states.mappings.sdk_node(node, false) != *node
+                    || node.selector().is_ok_and(|selector| match selector {
+                        InputSelector::Outline { file, .. } => states.rewritten.contains_key(&file),
+                        InputSelector::Requirements { requirements } => {
+                            states
+                                .definitions_back
+                                .get(&requirements)
+                                .map(|d| &d.raw_lines)
+                                != states
+                                    .definitions_post
+                                    .get(&requirements)
+                                    .map(|d| &d.raw_lines)
+                        }
+                        InputSelector::Definition { definition } => {
+                            states
+                                .definitions_back
+                                .get(&definition)
+                                .map(|d| &d.raw_lines)
+                                != states
+                                    .definitions_post
+                                    .get(&definition)
+                                    .map(|d| &d.raw_lines)
+                        }
+                    })
+            })
+        });
+    if changed || sdk_affected {
+        match rewrite_sdk_dependencies(states, record, &mut value) {
+            Ok(rewritten) => changed |= rewritten,
+            Err(error) => {
+                failures.push(error);
+                changed = true;
             }
         }
     }
