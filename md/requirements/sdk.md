@@ -6,7 +6,7 @@ re-exports. Its public modules follow the interfaces introduced in these chapter
 
 - `domain`: application data and the `Domain`, `NodeContents`, and `SourceNodes` traits.
 - `graph`: criterion definitions, graph observations, and evidence; `graph::validator`
-  runs criteria, and `graph::pages` contains paged inspection results.
+  runs criteria.
 - `request`: `ValidationContext`, typed `Ask` builders, context values, and request phases.
 - `agent`: configuration for the supplied agents.
 - `sources`: project inspection, search queries, and their results.
@@ -14,8 +14,8 @@ re-exports. Its public modules follow the interfaces introduced in these chapter
   supplies bundled languages, and `outline::selector` defines selector syntax.
 - `storage`: filesystem evidence storage.
 
-Source access, search engines, redaction, provider transports, and conversation
-machinery are implementation details of those interfaces.
+Source access, search engines, redaction, provider transports, agent-result paging,
+and conversation machinery are implementation details of those interfaces.
 :::
 
 The trust-but-verify SDK (TBV) supplies tracked criterion execution and

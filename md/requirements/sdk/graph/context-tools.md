@@ -108,7 +108,7 @@ impl<'d, D: Domain> InspectionContext<'d, D> {
 :::
 
 :::{req} read_node.behavior
-`InspectionContext::read` returns the node's application-defined
+`InspectionContext::read` returns the node's complete application-defined
 `D::NodeContent`, or the domain's read error.
 
 The SDK's `read_node` tool accepts a known node's `NodePath` and returns its
@@ -406,48 +406,23 @@ item's contents and fingerprint.
 
 ## Continuing a paged result
 
-Long results arrive in pages. Fetch another page to continue reading the same
-prepared result. The SDK retains the prepared text and its dependencies.
+The agent's `read_node` and source tools return long results in pages. Fetch
+another page to continue reading the same prepared result. The SDK retains the
+prepared text and its dependencies.
 
 :::{req} pages.fn
 The SDK exposes continuation operations for prepared node and source results
-through its fixed `get_node_page` and `get_source_page` tools. Criterion code
-can use the same page-continuation facility through inspection.
-
-The public Rust interface has this shape:
-
-```rust,ignore
-impl<'d, D: Domain> InspectionContext<'d, D> {
-    // ...
-
-    /// Prepare the first page and later continuation IDs from one node read.
-    pub fn read_paged(
-        &self,
-        node: &D::NodeId,
-    ) -> Result<PagedText, D::Error>;
-
-    /// Return a continuation from the same prepared result snapshot.
-    pub fn read_page(
-        &self,
-        page: &PageId,
-    ) -> Result<String, PageError>;
-
-    // ...
-}
-```
-
-`PagedText` contains the initial response text and a `Vec<PageId>` identifying
-its later continuations. The caller receives response text; the SDK privately retains each page's
-dependency metadata. `PageError` reports continuation failures such as an
-unknown page ID or an ID belonging to another inspection context.
+through its fixed `get_node_page` and `get_source_page` agent tools. Each accepts
+a page ID issued with a prepared tool result and returns the corresponding page.
 :::
 
 :::{req} pages.behavior
 The SDK's `get_node_page` and `get_source_page` accept page IDs issued by the
-originating execution or conversation's prepared results. A page ID cannot
-retrieve another execution's result. A continuation returns stored text
-without fetching replacement contents. Unknown or unavailable page IDs return
-errors.
+originating conversation's prepared results. A page ID cannot retrieve another
+conversation's result, under
+{cite}`requirements.sdk.graph.agent-harness.tool_agent.isolation`.
+A continuation returns stored text without fetching replacement contents.
+Unknown or unavailable page IDs return errors.
 :::
 
 :::{req} pages.inputs
@@ -456,9 +431,9 @@ A delivered read page records the dependencies retained by that page under
 node or mapped source read retains the original node identity and content
 fingerprint; reading a later page does not observe a newer version. A change
 to that node's fingerprint can invalidate the evidence even if it happens
-between pages. Direct inspection records on return; agent tools record on
-delivery. Discovery pages record no evidence inputs, just like their initial
-result. Preparing an undelivered page records no read.
+between pages. Agent tools record on delivery. Discovery pages record no evidence
+inputs, just like their initial result. Preparing an undelivered page records
+no read.
 :::
 
 ## Stay inside the tracked interface
