@@ -237,20 +237,20 @@ harness exposes a structured submission tool with that schema, and awaiting
 the builder decodes the accepted submission into `R`.
 
 :::{req} judge.submission
-The SDK derives the submission tool's JSON schema from `R` using `schemars`
-and instructs the agent to finish through the SDK's `submit_result` tool.
-The SDK owns the submission protocol under
-{cite}`requirements.sdk.graph.agent-harness.tool_agent`.
-
-A successful call returns exactly one accepted submitted value, deserialized
-into `R`. Ordinary assistant text does not count. Ending without a valid
-accepted submission returns an error. Provider failures and invalid terminal
-submissions return `ValidationError::Agent`.
+Awaiting the builder returns the harness's accepted result deserialized into
+`R`. The harness obtains the submitted value under
+{cite}`requirements.sdk.graph.agent-harness.submission.acceptance`.
 :::
 
-[Agent harness](agent-harness.md#submit-a-structured-answer) explains the tool's
-arguments. The criterion can interpret the typed answer and ask further
-questions using the same builder; its application owns the assessment policy.
+:::{req} judge.submission.decoding
+If the accepted result cannot be deserialized into `R`, awaiting the builder
+returns `ValidationError::Agent`.
+:::
+
+[Agent harness](agent-harness.md#submit-a-structured-answer) defines the submission
+tool, its schema, and its reminder and error behavior. The criterion can interpret
+the typed answer and make another ask request; its application owns the assessment
+policy.
 
 ## Combine inputs from several calls
 

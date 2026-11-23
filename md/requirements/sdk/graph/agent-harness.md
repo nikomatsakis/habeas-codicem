@@ -119,6 +119,11 @@ inputs to that criterion's shared trace under
 {cite}`requirements.sdk.graph.agent-calls.author_procedure`.
 :::
 
+:::{req} tool_agent.provider_failure
+A provider failure that ends the model conversation returns
+`ValidationError::Agent` to the awaiting ask builder.
+:::
+
 :::{req} fixed_tools
 The SDK supplies the inspection tools described in
 [Context tools](context-tools.md). Graph tools invoke the application's graph
@@ -134,8 +139,44 @@ Source tools use the application's
 
 ## Submit a structured answer
 
-The SDK submission tool is `submit_result`. The builder's `R: JsonSchema`
-defines the schema of its `result` argument. For the `TestReview` example in
+:::{req} submission
+The harness exposes `submit_result`, accepting exactly one argument named
+`result`. It derives that argument's JSON schema from the ask builder's
+`R: JsonSchema` using `schemars`, and instructs the model to finish by calling
+this tool.
+:::
+
+:::{req} submission.acceptance
+The harness checks the submission count in a complete model response before
+checking submission arguments. Exactly one `submit_result` call whose arguments
+are an object containing only the `result` field supplies that field's value as
+the accepted answer and ends the conversation. A successful request returns
+exactly one accepted answer. Other tool calls in that response are skipped.
+Assistant prose remains conversation text.
+:::
+
+:::{req} submission.reminder
+A complete response requesting only inspection tools continues the conversation
+through those tools.
+
+If a complete response has no tool calls or contains multiple `submit_result` calls,
+the harness accepts no answer and gives one reminder instructing the model to
+invoke `submit_result` exactly once.
+
+For multiple submissions, the harness returns tool errors for every call in
+that response and executes none of them. The request has one submission reminder
+in total. If either count violation occurs after that reminder, the request
+ends with `ValidationError::Agent`.
+:::
+
+:::{req} submission.invalid
+For a response with exactly one `submit_result` call, arguments other than an
+object containing only the `result` field end the request with
+`ValidationError::Agent`. Decoding the field's value into `R` follows
+{cite}`requirements.sdk.graph.agent-calls.judge.submission.decoding`.
+:::
+
+For the `TestReview` example in
 [Agent calls](agent-calls.md#example-review-a-requirements-tests), a submission
 looks like this:
 
@@ -147,10 +188,6 @@ looks like this:
   }
 }
 ```
-
-The SDK accepts exactly one structured submission and decodes it into `R`,
-under {cite}`requirements.sdk.graph.agent-calls.judge.submission`.
-Assistant prose is conversation text; the submitted value is the answer.
 
 The criterion can inspect that answer, perform more computation, or make
 another ask request. The application interprets the completed answer under
