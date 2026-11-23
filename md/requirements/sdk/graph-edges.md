@@ -82,27 +82,3 @@ fn test_something() {
 }
 ```
 :::
-
-## Fingerprint the selected targets
-
-A [tracked edge query](graph/context-tools.md#selecting-a-nodes-outgoing-edges)
-returns the target identities together with a
-{term}`requirements.sdk.graph.observation_fingerprint` of their set of stable
-{term}`requirements.sdk.graph.node_path`s. This makes the selected relationships
-part of the recorded inputs, so adding or removing a target can make evidence
-stale.
-
-:::{req} snapshot
-For a tracked label-specific edge query, the SDK constructs a
-{term}`requirements.sdk.graph.content_snapshot` from the returned targets and
-their target-set fingerprint, without another query.
-
-It sorts and deduplicates the targets' `NodePath`s and hashes an unambiguous
-encoding under a versioned scheme, including when the set is empty. Changing
-order, duplicate edges, or another label's relationships leaves this fingerprint
-unchanged. Reading target contents is a separate observation;
-`NodeContents::fingerprint` describes those contents under
-{cite}`requirements.sdk.graph.node_content.fingerprint`.
-
-The returned vector preserves the graph's ordering and duplicates.
-:::

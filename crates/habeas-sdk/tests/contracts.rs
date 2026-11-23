@@ -1254,7 +1254,7 @@ fn identities_remain_stable_and_fingerprinting_uses_the_supplied_snapshot() {
     }
 }
 
-// {test}`requirements.sdk.graph-edges.snapshot`
+// {test}`requirements.sdk.graph.context-tools.snapshot`
 #[test]
 fn edge_fingerprints_preserve_path_boundaries_and_version_membership_encoding() {
     let mut domain = Application::default();

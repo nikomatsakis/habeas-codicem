@@ -277,7 +277,7 @@ impl<'d, D: Domain> InspectionContext<'d, D> {
     // {impl}`requirements.sdk.graph.context-tools.outgoing_edges.behavior`
     // {impl}`requirements.sdk.graph.context-tools.outgoing_edges.fn`
     // {impl}`requirements.sdk.graph.context-tools.outgoing_edges.inputs`
-    // {impl}`requirements.sdk.graph-edges.snapshot`
+    // {impl}`requirements.sdk.graph.context-tools.snapshot`
     pub fn outgoing_edges(
         &self,
         node: &D::NodeId,
@@ -408,7 +408,7 @@ fn dependencies_are_current<D: Domain>(
 /// Hash the target set without requiring serialization or hashing of opaque IDs.
 /// JSON encodes segment boundaries and Unicode unambiguously; ordering and
 /// duplicate edges do not affect membership. Empty selections have a digest too.
-// {impl}`requirements.sdk.graph-edges.snapshot`
+// {impl}`requirements.sdk.graph.context-tools.snapshot`
 pub fn edge_fingerprint<D: Domain>(graph: &D, targets: &[D::NodeId]) -> Fingerprint {
     let mut paths = targets
         .iter()

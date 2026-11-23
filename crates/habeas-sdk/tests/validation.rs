@@ -509,7 +509,7 @@ fn wildcard_versions_still_check_inputs_and_errors() {
 // {test}`requirements.sdk.graph.evidence.checking_records`
 // {test}`requirements.sdk.graph.context-tools.root_inputs`
 // {test}`requirements.sdk.graph-edges.outgoing_edges`
-// {test}`requirements.sdk.graph-edges.snapshot`
+// {test}`requirements.sdk.graph.context-tools.snapshot`
 // {test}`requirements.sdk.graph.context-tools.outgoing_edges.behavior`
 // {test}`requirements.sdk.graph.context-tools.outgoing_edges.inputs`
 #[test]

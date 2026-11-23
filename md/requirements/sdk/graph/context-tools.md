@@ -155,12 +155,27 @@ impl<'d, D: Domain> InspectionContext<'d, D> {
 :::{req} outgoing_edges.behavior
 `InspectionContext::outgoing_edges` returns the target node identities and a
 fingerprint of their set of stable `NodePath`s, under
-{cite}`requirements.sdk.graph-edges.snapshot`. The returned vector
+{cite}`requirements.sdk.graph.context-tools.snapshot`. The returned vector
 preserves the graph's ordering and duplicates.
 
 The SDK's `outgoing_edges` tool accepts a known source `NodePath` and a typed
 label argument and returns the target paths. The SDK obtains those identities through the
 application's graph.
+:::
+
+:::{req} snapshot
+For a tracked label-specific edge query, the SDK constructs a
+{term}`requirements.sdk.graph.content_snapshot` from the returned targets and
+their target-set fingerprint, without another query.
+
+It sorts and deduplicates the targets' `NodePath`s and hashes an unambiguous
+encoding under a versioned scheme, including when the set is empty. Changing
+order, duplicate edges, or another label's relationships leaves this fingerprint
+unchanged. Reading target contents is a separate observation;
+`NodeContents::fingerprint` describes those contents under
+{cite}`requirements.sdk.graph.node_content.fingerprint`.
+
+The returned vector preserves the graph's ordering and duplicates.
 :::
 
 :::{req} outgoing_edges.inputs
