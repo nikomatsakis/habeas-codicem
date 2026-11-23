@@ -42,6 +42,7 @@
     - [Plain-text fallback](./requirements/sdk/sources/plain-text.md)
   - [Putting it together in Habeas Codicem](./requirements/sdk/habeas.md)
   - [Requirements allocation](./requirements/sdk/requirements-map.md)
+  - [Public API inventory](./requirements/sdk/public-api.md)
 
 # Appendix
 
