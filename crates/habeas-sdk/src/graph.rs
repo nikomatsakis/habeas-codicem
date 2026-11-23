@@ -174,7 +174,7 @@ impl<T: PartialEq> Trace<T> {
     }
 }
 
-// {impl}`requirements.sdk.graph.validation.criterion_trait`
+// {impl}`requirements.sdk.graph.execution.execute`
 #[derive(Debug)]
 pub enum ValidationError<E> {
     Graph(E),
@@ -209,18 +209,22 @@ impl<E: std::error::Error + 'static> std::error::Error for ValidationError<E> {
 // {impl}`requirements.sdk.graph.validation.criterion_trait`
 pub trait Criterion<D: Domain>: Send + Sized {
     /// The completed answer, serialized for storage and reconstructed on reuse.
+    // {impl}`requirements.sdk.graph.validation.criterion_trait.answer`
     type Ok: Serialize + serde::de::DeserializeOwned + Send;
 
     /// The node this question is about.
+    // {impl}`requirements.sdk.graph.validation.criterion_trait.source_node_id`
     fn source_node_id(&self) -> D::NodeId;
     /// Identify this question within the source node's saved evidence.
+    // {impl}`requirements.sdk.graph.validation.criterion_path`
     fn criterion_path(&self) -> CriterionPath;
     /// Version of the review rules and output encoding.
     /// Change it when an old answer should no longer be reused.
+    // {impl}`requirements.sdk.graph.validation.criterion_trait.revision`
     fn revision(&self) -> String;
 
     /// Select inputs through the context and compute the completed answer.
-    // {impl}`requirements.sdk.graph.validation.criterion_trait`
+    // {impl}`requirements.sdk.graph.execution.execute`
     fn execute(
         self,
         ctx: &mut ValidationContext<'_, D>,

@@ -43,9 +43,10 @@ An `Ok` value is the answer defined by
 An `Err` value reports an execution error.
 :::
 
-The context's `ask` method starts a typed agent request. Add instructions and node contents to the builder,
-then await the answer. The context records the inputs the agent reads so the SDK
-can tell when a saved answer needs to be recomputed.
+The context's `ask` method starts a typed agent request. Add instructions and
+node contents to the builder, then await the answer. The context records the
+inputs the agent reads so the SDK can tell when a saved answer needs to be
+recomputed.
 
 ```rust,ignore
 use habeas_sdk::procedure::{Ask, ContextPhase};

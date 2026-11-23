@@ -991,6 +991,7 @@ async fn source_reads_track_optional_dependencies_and_empty_searches_remain_disc
 // {test}`requirements.sdk.domain`
 // {test}`requirements.sdk.graph.agent-calls.author_procedure`
 // {test}`requirements.sdk.graph.execution.deterministic_procedures`
+// {test}`requirements.sdk.graph.execution.execute`
 #[tokio::test]
 async fn deterministic_validation_uses_required_storage_without_an_agent() {
     let graph = Memory::new("ordinary computation".into());
