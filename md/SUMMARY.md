@@ -20,7 +20,7 @@
   - [Project layout](./requirements/layout.md)
   - [Refactoring](./requirements/refactor.md)
   - [Test execution coverage](./requirements/test-coverage.md)
-- [Habeas SDK](./requirements/sdk.md)
+- [The trust-but-verify SDK](./requirements/sdk.md)
   - [Graph nodes](./requirements/sdk/graph.md)
   - [Graph edges](./requirements/sdk/graph-edges.md)
   - [Criteria](./requirements/sdk/graph/validation.md)

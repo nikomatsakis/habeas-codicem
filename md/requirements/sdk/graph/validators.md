@@ -12,7 +12,7 @@ criterion to `verify` to evaluate it and return its answer with the inputs used
 to produce it.
 
 ```rust,ignore
-// Defined in habeas_sdk::graph.
+// Defined in trust_but_verify::graph.
 /// Domain access and configuration shared by criterion executions.
 pub struct Validator<D: Domain> { /* private fields */ }
 

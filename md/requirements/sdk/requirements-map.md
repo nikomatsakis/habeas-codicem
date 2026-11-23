@@ -1,4 +1,4 @@
-# Allocating requirements to Habeas SDK and Habeas Codicem
+# Allocating requirements to TBV and Habeas Codicem
 
 This page maps existing HC contracts to their proposed SDK homes and records
 the implementation work and API choices needed to align them. SDK contracts
@@ -31,7 +31,7 @@ the Rust documentation-comment rules from the shared structural-hash contract.
 Place Markdown comment classification with Markdown, and give each other
 provider's grammar mapping, naming, and comment rules its own page.
 
-Use the [language chapters](sources.md#each-language-defines-its-outline) for
+Use the [language chapters](outlines.md#language-specific-rules) for
 each language's contracts and examples.
 
 ## Habeas Codicem application contracts
@@ -58,8 +58,8 @@ design described by these SDK chapters.
 | `Agent<D>`, `CompletionProvider`, `Conversation`, and `ToolAgent::with_tools` as application extension points | Configure SDK-supplied agents through `AgentConfig`; keep conversation and tool machinery inside the SDK. |
 | HC's backend construction and backend configuration types | Supply serializable backend configuration from the SDK while retaining HC's configuration loading, paths, and overrides. |
 | `SourceTools` observation callbacks that may return no dependency | Map source items into application nodes and require tracked source reads to record supplied node snapshots. |
-| `habeas_sdk::outline`, static language registrations, and manual registry assembly | Provide `habeas-sdk-outline`, default filename-based selection, and optional additional `Language` implementations. |
-| Outline selection followed by manual content and fingerprint assembly | Return owned `SelectedSource` values with retained text, structural hash, and scheme; supply their SDK `NodeContents` implementation. |
+| Static language registrations and manual registry assembly | Add filename-based selection and explicit cheaply cloneable `OutlineLang` values in `trust_but_verify::outline`. |
+| Outline selection followed by manual content and fingerprint assembly | Return owned `OutlineContent` values with retained text, structural hash, and scheme; supply their SDK `NodeContents` implementation. |
 | `requirements.authoring.github_reads` | Use HC issue nodes and criteria for GitHub reads and issue checks. |
 | `requirements.authoring.initial_prompt` and the authoring tool-specific contracts | Use the SDK's fixed inspection and submission tools. Preserve application review instructions, reference relationships, redaction, and complete input accounting. |
 | `requirements.authoring.text_search`, `requirements.authoring.structural_search`, and `requirements.authoring.finish_search` | Preserve complete selected-excerpt accounting when adopting SDK-owned search and input tracking. |
@@ -85,13 +85,9 @@ decisions before implementation:
   credential setup failures as `ValidationError::Agent` when an ask is awaited,
   preserving deterministic execution without model setup. A fallible setup
   method is the alternative.
-- **Additional languages.** Define what happens when a registration duplicates
-  a language name or claims an already-supported extension. Recommend explicit
-  replacement or a reported conflict. This
-  decision determines the final registration signature.
-- **Structural-search capability.** The outline-facing `Language` methods are
+- **Structural-search capability.** The outline-facing `OutlineLang` methods are
   sufficient for outlining, but ast-grep search also needs syntax support.
-  Recommend an optional grammar or equivalent syntax capability and an explicit
+  Specify an optional syntax capability and an explicit
   unsupported-language error for outline-only implementations.
 - **External access failures.** Decide how offline validation, missing issues,
   and failed refreshes affect an HC command. Recommend domain read errors for
@@ -102,7 +98,6 @@ decisions before implementation:
   conversion preserves old judgments; the new criterion requires a new
   assessment.
 
-The outline address representation is also proposed here for review:
-`OutlineId` retains serializable resource and selector data, while the resolved
-document holds `Arc<dyn Language>`. This keeps persisted node identity separate
-from the runtime language handle.
+`OutlineId` stores a serializable file path and selector. `OutlineContent`
+retains the loaded source snapshot and the selected `OutlineLang`
+fingerprinting rules.

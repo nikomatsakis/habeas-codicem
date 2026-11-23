@@ -1,8 +1,8 @@
-# Habeas SDK
+# The trust-but-verify SDK
 
-Habeas SDK supplies tracked criterion execution and configured agents for an
-application-defined graph. Habeas Codicem (HC), the mdBook and requirements
-tooling, is one application of it.
+The trust-but-verify SDK (TBV) supplies tracked criterion execution and
+configured agents for an application-defined graph. Habeas Codicem (HC), the
+mdBook and requirements tooling, is one application of it.
 A node identifies a thing: a requirement, a function, a test, or a GitHub issue.
 The application can ask several questions about the same node. Each
 {term}`requirements.sdk.graph.validation.criterion`
@@ -14,7 +14,7 @@ an answer and whether that answer satisfies its validation policy.
 ## Define application data and policy
 
 The application interprets its node identities, obtains their contents, and
-chooses which criteria to run. Habeas SDK runs agent conversations, supplies
+chooses which criteria to run. TBV runs agent conversations, supplies
 inspection tools, and records dependencies.
 
 | Application supplies | SDK supplies |
@@ -23,12 +23,12 @@ inspection tools, and records dependencies.
 | Node contents, formatting, and fingerprint rules | Recording and comparing supplied observations |
 | Criteria, `Context` values, and the meaning of their answers | Criterion execution and typed ask builders |
 | Serializable agent configuration loaded by the application | Supported agents, fixed tools, and backend integration |
-| Resource access and source-item-to-node mapping | Source discovery and the independent outline library |
+| Resource access and source-item-to-node mapping | Source discovery and the outline module |
 | Evidence location and command acceptance policy | Evidence comparison and storage helpers |
 
 Resource access means choosing the repository root or other resource namespace,
 which sources are available, and how to obtain their bytes. For a source node,
-the application uses `habeas-sdk-outline` to resolve a selector against the file
+the application uses `trust_but_verify::outline` to resolve a selector against the file
 snapshot it read, then returns the selected item as node contents.
 
 ## Start with one requirement and its inputs
@@ -103,19 +103,19 @@ relevant.
 :::{cite} requirements.sdk.domain
 An *application domain* is the application's graph, node contents, and evidence
 storage, made available together for criterion execution. In the SDK, it
-implements [`Domain`](../rustdocs/habeas_sdk/domain/trait.Domain.html) to supply
+implements [`Domain`](../rustdocs/trust_but_verify/domain/trait.Domain.html) to supply
 its shared types, node and edge operations, and evidence persistence.
 :::
 ::::
 
 :::{req} domain
 Every {term}`requirements.sdk.application_domain` implements
-`habeas_sdk::domain::Domain`. A domain is cloneable and safe to share between
+`trust_but_verify::domain::Domain`. A domain is cloneable and safe to share between
 executions. The following chapters introduce its members one capability at a
 time:
 
 ```rust,ignore
-// Defined in habeas_sdk::domain.
+// Defined in trust_but_verify::domain.
 /// Application data and operations used to evaluate criteria.
 pub trait Domain: Clone + Send + Sync {
     // ... shared error type introduced below ...
@@ -134,7 +134,7 @@ associated type on `Domain`. Node reads, edge queries, and evidence persistence
 use it to report internal errors:
 
 ```rust,ignore
-// Defined in habeas_sdk::domain.
+// Defined in trust_but_verify::domain.
 pub trait Domain: Clone + Send + Sync {
     /// Application-defined errors from domain operations.
     type Error: Send;
@@ -151,17 +151,17 @@ The chapters introduce each interface and the tools used with it:
 
 | Chapter | Purpose | Related traits and types |
 | --- | --- | --- |
-| [Graph nodes](sdk/graph.md) | Node identities, stable paths, contents, and fingerprints. | [`Domain`](../rustdocs/habeas_sdk/domain/trait.Domain.html), [`NodeContents`](../rustdocs/habeas_sdk/domain/trait.NodeContents.html) |
-| [Graph edges](sdk/graph-edges.md) | Relationship labels and successor lookup. | [`Domain`](../rustdocs/habeas_sdk/domain/trait.Domain.html) |
-| [Criteria](sdk/graph/validation.md) | Criterion types, completed answers, identity, review rules, and execution. | [`Criterion`](../rustdocs/habeas_sdk/graph/trait.Criterion.html) |
-| [Validators](sdk/graph/validators.md) | Constructing a validator and running criterion values. | [`Domain`](../rustdocs/habeas_sdk/domain/trait.Domain.html), [`Validator`](../rustdocs/habeas_sdk/graph/struct.Validator.html) |
-| [Agent calls](sdk/graph/agent-calls.md) | Prompt construction and typed answers. | [`Context`](../rustdocs/habeas_sdk/procedure/trait.Context.html), [`Ask`](../rustdocs/habeas_sdk/procedure/struct.Ask.html) |
-| [Context tools](sdk/graph/context-tools.md) | Source discovery, tracked content reads, and edge selections. | [`InspectionContext`](../rustdocs/habeas_sdk/graph/struct.InspectionContext.html) |
+| [Graph nodes](sdk/graph.md) | Node identities, stable paths, contents, and fingerprints. | [`Domain`](../rustdocs/trust_but_verify/domain/trait.Domain.html), [`NodeContents`](../rustdocs/trust_but_verify/domain/trait.NodeContents.html) |
+| [Graph edges](sdk/graph-edges.md) | Relationship labels and successor lookup. | [`Domain`](../rustdocs/trust_but_verify/domain/trait.Domain.html) |
+| [Criteria](sdk/graph/validation.md) | Criterion types, completed answers, identity, review rules, and execution. | [`Criterion`](../rustdocs/trust_but_verify/graph/trait.Criterion.html) |
+| [Validators](sdk/graph/validators.md) | Constructing a validator and running criterion values. | [`Domain`](../rustdocs/trust_but_verify/domain/trait.Domain.html), [`Validator`](../rustdocs/trust_but_verify/graph/struct.Validator.html) |
+| [Agent calls](sdk/graph/agent-calls.md) | Prompt construction and typed answers. | [`Context`](../rustdocs/trust_but_verify/procedure/trait.Context.html), [`Ask`](../rustdocs/trust_but_verify/procedure/struct.Ask.html) |
+| [Context tools](sdk/graph/context-tools.md) | Source discovery, tracked content reads, and edge selections. | [`InspectionContext`](../rustdocs/trust_but_verify/graph/struct.InspectionContext.html) |
 | [Agent harness](sdk/graph/agent-harness.md) | Agent configuration, fixed inspection tools, and structured submissions. | [`AgentConfig`](sdk/graph/agent-harness.md#habeas-req-requirements.sdk.graph.agent-harness.agent_config) |
-| [Storage](sdk/graph/evidence.md) | Where and how evidence is saved. | [`Domain`](../rustdocs/habeas_sdk/domain/trait.Domain.html) |
-| [Filesystem evidence storage](sdk/filesystem-storage.md) | Filesystem persistence for SDK evidence records. | [`Domain`](../rustdocs/habeas_sdk/domain/trait.Domain.html), [`FileStorage`](sdk/filesystem-storage.md#habeas-req-requirements.sdk.filesystem-storage.interface) |
-| [Sources and inspection](sdk/sources.md) | Resource access and source-item-to-node mapping. | [`SourceProvider`](../rustdocs/habeas_sdk/sources/trait.SourceProvider.html), [`SourceNodes`](sdk/sources.md#habeas-req-requirements.sdk.sources.source_nodes) |
-| [Source outlines](sdk/outlines.md) | Default language selection and ready-to-use source contents. | [`Language`](sdk/outlines.md#habeas-req-requirements.sdk.outlines.additional_languages), [`Outliner`](sdk/outlines.md#habeas-req-requirements.sdk.outlines.parser), [`SelectedSource`](sdk/outlines.md#habeas-req-requirements.sdk.outlines.selection) |
+| [Storage](sdk/graph/evidence.md) | Where and how evidence is saved. | [`Domain`](../rustdocs/trust_but_verify/domain/trait.Domain.html) |
+| [Filesystem evidence storage](sdk/filesystem-storage.md) | Filesystem persistence for SDK evidence records. | [`Domain`](../rustdocs/trust_but_verify/domain/trait.Domain.html), [`FileStorage`](sdk/filesystem-storage.md#habeas-req-requirements.sdk.filesystem-storage.interface) |
+| [Sources and inspection](sdk/sources.md) | Resource access and source-item-to-node mapping. | [`SourceProvider`](../rustdocs/trust_but_verify/sources/trait.SourceProvider.html), [`SourceNodes`](sdk/sources.md#habeas-req-requirements.sdk.sources.source_nodes) |
+| [Source outlines](sdk/outlines.md) | Default language selection and ready-to-use source contents. | [`OutlineId`](sdk/outlines.md#habeas-req-requirements.sdk.outlines.address_identity), [`OutlineLang`](sdk/outlines.md#habeas-req-requirements.sdk.outlines.language_provider), [`OutlineContent`](sdk/outlines.md#habeas-req-requirements.sdk.outlines.parser) |
 
 ## Putting it all together
 

@@ -1,7 +1,70 @@
-# Markdown outline definition
+# Markdown outlines
 
-Consider this source, which combines a paragraph, a directive, and a literal
-code example:
+Select Markdown sections, paragraphs, directives, and code blocks. Each item
+has its own outline identity, source text, and structural fingerprint.
+
+## Choose Markdown
+
+:::{req} language
+`languages::Markdown` implements `OutlineLang` under
+{cite}`requirements.sdk.outlines.language_provider`. Its default value is
+cheaply cloneable and claims `.md` and `.markdown`.
+Filename-based constructors select it under
+{cite}`requirements.sdk.outlines.defaults`.
+:::
+
+## Select a section
+
+:::{req} sections
+Sections use `section`, named from whitespace-normalized heading text. ATX and
+setext headings are supported. Content before the first heading can form an
+anonymous section. Section nesting follows heading levels; other outline items
+appear beneath their nearest enclosing container. Selectors follow
+{cite}`requirements.references.outline_selectors`.
+:::
+
+## Select a paragraph
+
+:::{req} paragraphs
+A paragraph has no declared name. Each prose paragraph has an anonymous
+`paragraph` node under its nearest
+enclosing outline container. This includes paragraphs before the first heading
+and inside list items, quotations, and directive bodies. Their selectors follow
+{cite}`requirements.references.outline_selectors`. Heading text and literal
+code-block contents create no paragraph nodes. Syntax that has no outline node
+is transparent when finding the enclosing container.
+:::
+
+## Select a fenced block
+
+:::{req} fenced_blocks
+Colon-fenced directives and fenced code blocks have anonymous `block` nodes
+with selectors under {cite}`requirements.references.outline_selectors`.
+A block contains its opening fence, body, and closing fence when present.
+Its parent is the nearest enclosing outline container.
+An unclosed colon fence retains its block through the end of the enclosing
+file or directive body, excluding the enclosing directive's closing fence.
+:::
+
+:::{req} fenced_blocks.contents
+Colon-fenced directive bodies are outlined recursively as Markdown. Ordinary
+fenced code-block contents remain literal, creating no nested paragraph or
+directive nodes. Backtick fences with a directive name such as `{note}` in
+their info string are literal code blocks.
+:::
+
+:::{req} fence_precedence
+Colon directive fences use three or more colons and support nested directives
+with shorter inner fences. A colon-only closing fence has at least as many
+colons as its opener, followed only by optional whitespace.
+Backtick and tilde code fences follow CommonMark rules and shield their contents
+from colon-directive recognition. Fence-like text in inline code or raw HTML
+introduces no outline directive blocks.
+:::
+
+For this source, the four-colon note contains a three-colon tip. The inner
+closing fence ends the tip without ending the note. The final code block
+contains literal text:
 
 `````markdown
 # Authentication
@@ -21,12 +84,6 @@ hi
 ```
 `````
 
-The section is named `section[Authentication]`. Its paragraph and fenced blocks
-need their own outline identities so that a review can select one explanation
-without selecting the entire section. Paragraphs are anonymous children, as are
-the fenced blocks. Each uses the shared content-derived
-identity scheme rather than a line number.
-
 The outline has this shape; the letters stand in for hash prefixes:
 
 ```text
@@ -39,83 +96,17 @@ section[Authentication]
   block@f                     ```text ... ```
 ```
 
-The default `habeas-sdk-outline` parser selects its Markdown implementation
-for `.md` and `.markdown` resources.
+## Fingerprint the contents
 
-## Paragraphs are selectable inputs
+:::{req} fingerprints
+Structural hashes use SHA-256 over the unambiguous structural encoding and
+whitespace-separated words under {cite}`requirements.references.structural_hash`.
+The fingerprint scheme identifies these rules and their version under
+{cite}`requirements.sdk.outlines.language_provider.fingerprint_scheme`.
 
-A paragraph such as “Tokens expire.” has no declared name. Its identity is
-computed using the shared anonymous-item rules. Paragraphs also occur within
-lists, quotations, and directive bodies. Their outline parent is the nearest
-enclosing outline container; syntax that has no outline node is transparent.
-
-:::{req} paragraphs
-Each prose paragraph has an anonymous `paragraph` node under its nearest
-enclosing outline container. This includes paragraphs before the first heading
-and inside list items, quotations, and directive bodies. Their selectors follow
-{cite}`requirements.references.outline_selectors`. Heading text and literal
-code-block contents create no paragraph nodes.
+HTML comment blocks are excluded from structural hashes. Inline HTML comments
+within paragraph text remain ordinary paragraph text. Paragraph and directive
+prose uses word-based hashing. Reflowing whitespace within the same paragraph,
+while preserving its words and surrounding outline structure, preserves the
+hash. Changing its words changes the structural encoding.
 :::
-
-## Fences create containers
-
-The outer note in the example uses four colons so that it can contain a
-three-colon tip. The inner closing fence ends the tip without ending the note.
-This follows MyST's convention of using longer outer fences for nesting.
-[MyST syntax overview](https://mystmd.org/guide/syntax-overview).
-
-A literal code block is also an outline node, but its contents are code rather
-than Markdown children. Thus `hi` in the example belongs to the code block;
-it does not create a paragraph node. A code example containing `:::{req}` must
-remain an example, rather than introduce a nested requirement container.
-
-:::{req} fenced_blocks
-Colon-fenced directives and fenced code blocks have anonymous `block` nodes
-with selectors under {cite}`requirements.references.outline_selectors`.
-A block contains its opening fence, body, and closing fence when present.
-Its parent is the nearest enclosing outline container.
-An unclosed colon fence retains its block through the end of the enclosing
-file or directive body, excluding the enclosing directive's closing fence.
-:::
-
-:::{req} fenced_blocks.contents
-Colon-fenced directive bodies are outlined recursively as Markdown. Ordinary
-fenced code-block contents remain literal, creating no nested paragraph or
-directive nodes. Backtick fences with a directive name such as `{note}` in
-their info string are literal code blocks.
-:::
-
-Colon fences use at least three colons, including longer runs such as `::::::`.
-A closing line contains only a colon run and optional whitespace, with at least
-as many colons as its opener. Backtick and tilde code fences retain their
-CommonMark delimiter rules. In particular, shorter delimiter runs inside a code
-block cannot end it, and apparent directives inside it remain literal.
-[MyST colon-fence rules](https://myst-parser.readthedocs.io/en/stable/syntax/optional.html#code-fences-using-colons).
-
-:::{req} fence_precedence
-Colon directive fences use three or more colons and support nested directives
-with shorter inner fences. A colon-only closing fence has at least as many
-colons as its opener.
-Backtick and tilde code fences follow CommonMark rules and shield their contents
-from colon-directive recognition. Fence-like text in inline code or raw HTML
-introduces no outline directive blocks.
-:::
-
-## Sections and comments
-
-Sections use `section`, named from their heading text. ATX and setext headings
-are supported. Content before a heading can form an anonymous section.
-
-HTML comment blocks are recognized as comments and excluded from structural
-fingerprints. Inline HTML comments within paragraph text are not classified as
-comment blocks.
-
-The [shared source machinery](../sources.md) defines selector encoding, duplicate
-names, and the distinction between node contents and structural fingerprints.
-
-## Incomplete fences and directive syntax
-
-An unfinished directive remains selectable while editing. At file scope, its
-block extends through the end of the file; inside another directive, it extends
-through that directive's body, stopping before the outer closing fence. A
-heading within the body does not terminate the block.

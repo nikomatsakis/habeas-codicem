@@ -12,7 +12,7 @@ their fingerprints and the text used in
 
 A *graph node* is a thing identified in the application's graph, such as a
 requirement, a function, a test, or an issue. The application's
-[`Domain::NodeId`](../../rustdocs/habeas_sdk/domain/trait.Domain.html#associatedtype.NodeId)
+[`Domain::NodeId`](../../rustdocs/trust_but_verify/domain/trait.Domain.html#associatedtype.NodeId)
 identifies it; its contents and the criteria evaluated on it are separate from
 that identity.
 :::
@@ -21,7 +21,7 @@ that identity.
 {cite}`requirements.sdk.domain`
 
 The {term}`requirements.sdk.application_domain` implements
-`habeas_sdk::domain::Domain` to define its node-identity type. Its
+`trust_but_verify::domain::Domain` to define its node-identity type. Its
 error type is introduced in {cite}`requirements.sdk.errors`:
 
 ```rust,ignore
@@ -67,17 +67,17 @@ The application chooses its `NodeId` type. The SDK uses a
 
 A *node path* is an ordered sequence of string segments describing a graph
 node's identity.
-In the SDK, [`NodePath`](../../rustdocs/habeas_sdk/graph/struct.NodePath.html)
+In the SDK, [`NodePath`](../../rustdocs/trust_but_verify/graph/struct.NodePath.html)
 represents this path.
-[`Domain::node_path`](../../rustdocs/habeas_sdk/domain/trait.Domain.html#tymethod.node_path)
+[`Domain::node_path`](../../rustdocs/trust_but_verify/domain/trait.Domain.html#tymethod.node_path)
 maps each application-defined
-[`NodeId`](../../rustdocs/habeas_sdk/domain/trait.Domain.html#associatedtype.NodeId)
+[`NodeId`](../../rustdocs/trust_but_verify/domain/trait.Domain.html#associatedtype.NodeId)
 to a distinct path that stays stable across runs and changes to the node's
 contents.
 :::
 
 :::{req} node_path_struct
-`habeas_sdk::graph::NodePath` describes the logical structure of a node identity:
+`trust_but_verify::graph::NodePath` describes the logical structure of a node identity:
 
 ```rust,ignore
 /// Defines the logical structure of a node-id.
@@ -99,7 +99,7 @@ impl NodePath {
 :::{req} node_path_method
 {cite}`requirements.sdk.domain`
 
-`habeas_sdk::domain::Domain::node_path` converts a node identity to its stable path:
+`trust_but_verify::domain::Domain::node_path` converts a node identity to its stable path:
 
 ```rust,ignore
 pub trait Domain: Clone + Send + Sync {
@@ -135,20 +135,20 @@ Its `node_path` implementation maps that identity to
 {term}`requirements.sdk.graph.validation.criterion`. An agent uses these inputs
 to assess whether the criterion holds in the project. They can be source text,
 parsed code, issue data, or another structured value. In the SDK,
-[`Domain::NodeContent`](../../rustdocs/habeas_sdk/domain/trait.Domain.html#associatedtype.NodeContent)
+[`Domain::NodeContent`](../../rustdocs/trust_but_verify/domain/trait.Domain.html#associatedtype.NodeContent)
 represents this value and
-[`Domain::node_content`](../../rustdocs/habeas_sdk/domain/trait.Domain.html#tymethod.node_content)
+[`Domain::node_content`](../../rustdocs/trust_but_verify/domain/trait.Domain.html#tymethod.node_content)
 obtains it. The value implements
-[`NodeContents`](../../rustdocs/habeas_sdk/domain/trait.NodeContents.html)
+[`NodeContents`](../../rustdocs/trust_but_verify/domain/trait.NodeContents.html)
 to supply its fingerprint and agent text.
 :::
 
 :::{req} node_content
 {cite}`requirements.sdk.domain`
 
-`habeas_sdk::domain::Domain` reads an
+`trust_but_verify::domain::Domain` reads an
 {term}`requirements.sdk.application_domain`'s nodes as values implementing
-`habeas_sdk::domain::NodeContents`. Reading includes the loading and preparation
+`trust_but_verify::domain::NodeContents`. Reading includes the loading and preparation
 needed to fingerprint and format the returned value; failures return the
 domain's error:
 
@@ -172,7 +172,7 @@ pub trait NodeContents: Send + Sync {
 ## Format node contents for an agent
 
 :::{req} node_content.format
-`habeas_sdk::domain::NodeContents::format` presents the retained
+`trust_but_verify::domain::NodeContents::format` presents the retained
 {term}`requirements.sdk.graph.node_contents` as text for an agent:
 
 ```rust,ignore
@@ -197,7 +197,7 @@ or fallible preparation.
 
 A *fingerprint* is a digest together with the scheme identifying how it was
 computed, represented by
-[`Fingerprint`](../../rustdocs/habeas_sdk/graph/struct.Fingerprint.html).
+[`Fingerprint`](../../rustdocs/trust_but_verify/graph/struct.Fingerprint.html).
 It describes an observation under those rules; it does not identify the node or
 say whether a criterion's answer is favorable.
 Both the scheme and digest participate in comparisons.
@@ -208,7 +208,7 @@ Both the scheme and digest participate in comparisons.
 
 A *snapshot* is the contents obtained by one observation, paired with the
 {term}`requirements.sdk.graph.observation_fingerprint` of those
-same contents. [`Snapshot<T>`](../../rustdocs/habeas_sdk/graph/struct.Snapshot.html)
+same contents. [`Snapshot<T>`](../../rustdocs/trust_but_verify/graph/struct.Snapshot.html)
 represents that pair.
 :::
 
@@ -223,12 +223,12 @@ pub struct Fingerprint {
 }
 ```
 
-This type lives in `habeas_sdk::graph`. Each `NodeContents` implementation
+This type lives in `trust_but_verify::graph`. Each `NodeContents` implementation
 supplies the rules used to describe its contents.
 :::
 
 :::{req} node_content.fingerprint
-`habeas_sdk::domain::NodeContents::fingerprint` describes the
+`trust_but_verify::domain::NodeContents::fingerprint` describes the
 {term}`requirements.sdk.graph.observation_fingerprint` of the retained contents
 read under
 {cite}`requirements.sdk.graph.node_content`:
@@ -258,7 +258,7 @@ pub struct Snapshot<T> {
 }
 ```
 
-This type lives in `habeas_sdk::graph`. For node reads, the SDK constructs it from
+This type lives in `trust_but_verify::graph`. For node reads, the SDK constructs it from
 the contents returned by `Domain::node_content` and their
 `NodeContents::fingerprint` under
 {cite}`requirements.sdk.graph.node_content.fingerprint`, without another read.
@@ -291,14 +291,14 @@ The [outline library](outlines.md) supplies contents with a structural
 fingerprint and source text ready for the agent:
 
 ```rust,ignore
-use habeas_sdk::domain::NodeContents;
-use habeas_sdk_outline::Outliner;
-use std::path::Path;
+use trust_but_verify::domain::NodeContents;
+use trust_but_verify::outline::OutlineContent;
 
-let outliner = Outliner::default();
 let select = |source: &str| {
-    let document = outliner.parse(Path::new("auth.rs"), source.into()).unwrap();
-    document.select("fn[check_token]").unwrap()
+    OutlineContent::from_source("auth.rs", source.into())
+        .unwrap()
+        .select("fn[check_token]")
+        .unwrap()
 };
 
 let original = select("fn check_token() { allow(); }");
@@ -313,8 +313,8 @@ assert!(original.format().contains("fn check_token()"));
 
 ## Use outlines as node contents
 
-[`SelectedSource`](outlines.md#habeas-req-requirements.sdk.outlines.selection)
-implements `NodeContents` through the SDK. An application can use it directly
+[`OutlineContent`](outlines.md#habeas-req-requirements.sdk.outlines.selection)
+implements `NodeContents`. An application can use it directly
 as `Domain::NodeContent`, or include it in a content enum alongside issue data
 and other node kinds. The selection retains its source snapshot and supplies
 both its structural fingerprint and formatted excerpt.

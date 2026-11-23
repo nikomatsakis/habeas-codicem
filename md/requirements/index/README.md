@@ -36,7 +36,7 @@ configuration:
 ```toml
 [preprocessor.habeas.rustdocs]
 path = "target/doc"
-crate = "habeas_sdk"
+crate = "trust_but_verify"
 ```
 
 `path` identifies the generated documentation directory relative to the project
@@ -66,7 +66,7 @@ This project's CI generates Rustdoc for the workspace before building the book.
 The published documentation includes both the book and that generated Rustdoc
 site in the same GitHub Pages deployment under
 {cite}`requirements.integration.ci`. The appendix contains a "Rustdocs" entry
-opening the `habeas_sdk` crate's documentation under
+opening the `trust_but_verify` crate's documentation under
 {cite}`requirements.index.rustdocs`.
 :::
 

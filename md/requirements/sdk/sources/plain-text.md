@@ -1,23 +1,55 @@
-# Plain-text fallback
+# Plain-text outlines
 
-When no filename extension matches a language, the default outline parser
-selects its plain-text implementation and outlines nonblank lines. For example:
+Use plain-text outlines to select individual lines from a file whose extension
+is not claimed by a supplied language.
+
+## Use the fallback language
+
+:::{req} language
+`languages::PlainText` implements `OutlineLang` under
+{cite}`requirements.sdk.outlines.language_provider`. Its default value is
+cheaply cloneable and claims no extensions. The filename-based constructors
+select it when no supplied language claims the extension, including filenames
+without an extension, under {cite}`requirements.sdk.outlines.defaults`.
+:::
+
+## Select a nonblank line
+
+:::{req} items
+A plain-text outline has a root for the whole file and one anonymous `line`
+child per nonblank line, in source order. Blank lines create no child nodes.
+Each line's selector is `line@<identity-hash-prefix>` under
+{cite}`requirements.references.outline_selectors`. The prefix derives from its
+contents rather than its line number. Identical lines are interchangeable for
+selection.
+:::
+
+For this file, the root has two children:
 
 ```text
 Tokens expire.
+
 Reject expired tokens.
 ```
 
-Each nonblank line is an anonymous `line` item. In this example, a review can
-select “Reject expired tokens.” independently of “Tokens expire.” Its
-{term}`requirements.sdk.outlines.selector`
-is `line@<identity-hash-prefix>`, with the prefix derived from contents rather
-than a line number. Identical lines are interchangeable for selection.
+A review can select “Reject expired tokens.” independently of “Tokens expire.”
+Adding an unrelated line preserves the existing lines' selectors.
 
-This fallback is a `Language` implementation in `habeas-sdk-outline`.
-The default parser selects it automatically when the
-filename has no matching language extension.
+## Fingerprint line contents
 
-The [shared outline model](../sources.md) explains how selectors become source
-node addresses. A plain-text node can supply contents and be validated just like
-any other node. Structural search is unsupported for plain text.
+:::{req} fingerprints
+Each line's structural and identity hashes are the SHA-256 digest of its
+whitespace-separated words, using the unambiguous encoding under
+{cite}`requirements.references.structural_hash`. Whitespace within a line does
+not affect its hash; word boundaries remain significant.
+
+The root hash encodes the nonblank lines in source order, including their line
+boundaries. Inserting blank lines preserves it. Reordering distinct nonblank
+lines or joining them changes the root's structural encoding.
+The scheme identifies these rules and their version under
+{cite}`requirements.sdk.outlines.language_provider.fingerprint_scheme`.
+:::
+
+Plain text supports outlining and text search. Structural search reports an
+unsupported-language error under
+{cite}`requirements.sdk.outlines.language_provider.structural_search`.

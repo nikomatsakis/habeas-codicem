@@ -1,9 +1,9 @@
 # Sources and inspection
 
 Habeas Codicem owns its graph's node identities and their contents. For a node
-such as `Source(src/auth.rs, fn[check_token])`, HC obtains the file snapshot,
-asks the [outline library](outlines.md) to resolve the selector, and returns
-its application-defined contents. HC supplies those contents through `Domain`;
+such as `Source(src/auth.rs, fn[check_token])`, HC loads an
+[`OutlineContent`](outlines.md#load-outline-contents) and returns it as its
+application-defined contents. HC supplies those contents through `Domain`;
 the SDK's tracked inspection records the read.
 
 Source discovery is useful before a node is known. The SDK supplies the tools
@@ -11,57 +11,25 @@ for listing resources, outlining them, and searching text or syntax. The
 application supplies resource access and maps discovered source items into its
 graph. These are data interfaces used by the fixed SDK tools.
 
-## Separate resource access from language interpretation
+## Identify source resources
 
 :::{definition} resource
 :phrase: source resource
 
 A *source resource* is a unit of source identified by
-[`ResourceId`](../../rustdocs/habeas_sdk/resource/struct.ResourceId.html) and made
+[`ResourceId`](../../rustdocs/trust_but_verify/resource/struct.ResourceId.html) and made
 available through a source provider. Its scheme and location identify it
 independently of any item within it; its bytes can change without changing
 that address. A resource can be a checkout file, a Git revision's file, an
 editor buffer, or generated text.
 :::
 
-
-HC chooses its repository root, which resources it makes available, and how
-to obtain their bytes. A filesystem provider is a convenient implementation;
-other applications can provide source from an editor or database.
-The outline library interprets supplied source text independently of its origin.
-
-```mermaid
-flowchart TD
-    Read["SDK tracked read: HC source node"] --> HC["HC Domain::node_content"]
-    HC --> Bytes["HC resource access: obtain one file snapshot"]
-    Bytes --> Parse["habeas-sdk-outline: infer language and resolve selector"]
-    Parse --> Content["HC NodeContent: selected source from that snapshot"]
-    Content --> Describe["NodeContents: retained fingerprint and agent text"]
-    Describe --> Track["SDK: record supplied contents"]
-```
-
-## Identify something before reading it
-
-
-```rust,ignore
-let function = OutlineId {
-    resource: ResourceId {
-        scheme: "repo".into(),
-        location: "src/auth.rs".into(),
-    },
-    selector: "fn[check_token]".into(),
-};
-```
-
-HC interprets `repo` as its repository namespace. Constructing this address
-fetches no source and creates no dependency. The address is suitable for a
-saved node identity; the resolved document holds the parser and source snapshot.
-
 :::{req} source_addresses
-The public resource and source-item addresses are defined in
-`habeas_sdk_outline` and re-exported by `habeas_sdk::resource`:
+`ResourceId` identifies a resource within an application-defined namespace.
+The application resolves that address when reading its contents.
 
 ```rust,ignore
+// Defined in trust_but_verify::resource.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ResourceId {
     /// Namespace interpreted by the application, such as "repo".
@@ -69,19 +37,27 @@ pub struct ResourceId {
     /// Address within that namespace, such as "src/auth.rs".
     pub location: String,
 }
-
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct OutlineId {
-    pub resource: ResourceId,
-    /// Item within the resource, such as "fn[check_token]".
-    pub selector: String,
-}
 ```
 
-The application defines resource resolution, including fetching. The address's
-identity is independent of parsed source and runtime language handles under
+An item within a source file uses the path and selector in `OutlineId` under
 {cite}`requirements.sdk.outlines.address_identity`.
 :::
+
+```rust,ignore
+let resource = ResourceId {
+    scheme: "repo".into(),
+    location: "src/auth.rs".into(),
+};
+let function = OutlineId {
+    path: "src/auth.rs".into(),
+    selector: "fn[check_token]".into(),
+};
+```
+
+HC exposes repository files through the `repo` namespace and uses
+repository-relative paths for their outline identities. The
+[outline chapter](outlines.md#identify-a-file-and-item) introduces item
+selectors and source contents.
 
 ## The application supplies a source provider
 
@@ -90,7 +66,7 @@ identity is independent of parsed source and runtime language handles under
 
 A *source provider* is the application's resource-access interface for listing
 source resources and obtaining their bytes. The SDK's
-[`SourceProvider`](../../rustdocs/habeas_sdk/sources/trait.SourceProvider.html)
+[`SourceProvider`](../../rustdocs/trust_but_verify/sources/trait.SourceProvider.html)
 also supplies reusable parsing and search defaults. A provider can specialize
 how those operations execute while preserving their results and scope.
 :::
@@ -133,22 +109,11 @@ The SDK supplies a local-filesystem provider for listing and reading resources
 within an application-selected scope.
 :::
 
-## Register the languages that interpret those resources
-
-
-[Source outlines](outlines.md#use-the-default-languages) describes automatic
-selection and optional registration of additional languages.
-
-
-
-
-The trait above shows its outline-facing members.
-
 ## Providers can specialize parsing and search
 
 Source access and source interpretation remain separate even when a provider
 uses a cached parse or an existing search index. The SDK's defaults combine
-provider access with the independent outline library.
+provider access with the outline module.
 
 The following assembly sketch uses the default languages:
 
@@ -159,7 +124,7 @@ let sources = SourceAnalysis::new(LocalSources::new(repository_root));
 :::{req} provider_defaults
 Source providers can override parsing, text search, and structural search.
 The SDK supplies defaults for all three. Listing and reading, together with
-the default outline parser, support parsing and text search. Structural search
+`OutlineContent::from_source`, support parsing and text search. Structural search
 additionally uses the selected language's syntax capability under
 {cite}`requirements.sdk.outlines.language_provider.structural_search`.
 :::
@@ -180,8 +145,17 @@ language for parsing and structural search.
 :::
 
 :::{req} provider_results.parse_snapshot
-A parse result retains the source snapshot it describes. A cached parse stays
-paired with those same bytes.
+A parse result retains its resource identity and the root `OutlineContent`
+prepared from that resource's source snapshot. A cached parse keeps the
+resource, outline, and bytes together under
+{cite}`requirements.sdk.outlines.snapshot`.
+
+```rust,ignore
+pub struct ParsedSource {
+    pub resource: ResourceId,
+    pub contents: OutlineContent,
+}
+```
 :::
 
 :::{req} provider_results.search_completeness
@@ -196,28 +170,40 @@ The application maps discovered source addresses to graph node identities. For H
 
 :::{req} source_nodes
 An application supporting SDK source inspection supplies access to its source
-provider and a mapping from `OutlineId` to its graph's `NodeId`. The mapped node
-represents the requested resource and selector; an unsupported or invalid
-address returns an error. The SDK's source read uses that mapping and the
-application's `Domain` interface.
+provider, a mapping from a resource and selector to `OutlineId`, and a mapping
+from `OutlineId` to its graph's `NodeId`. The outline path preserves the
+resource's identity across namespaces. The mapped node represents the requested
+path and selector; an unsupported or invalid address returns an error. The
+SDK's source read uses those mappings and the application's `Domain` interface.
 
 The application owns the mapping and the interpretation of that node's contents.
 :::
 
-This trait sketch names the two capabilities; its declaration is illustrative:
+This trait sketch names these capabilities; its declaration is illustrative:
 
 ```rust,ignore
 pub trait SourceNodes: Domain {
     type Sources: SourceProvider;
 
     fn sources(&self) -> &SourceAnalysis<Self::Sources>;
+    fn outline_id(
+        &self,
+        resource: &ResourceId,
+        selector: &str,
+    ) -> Result<OutlineId, Self::Error>;
     fn source_node(&self, item: &OutlineId) -> Result<Self::NodeId, Self::Error>;
 }
 ```
 
-For a source node, HC's `Domain::node_content` obtains a snapshot and invokes
-the outline library. The returned selection supplies its fingerprint and agent
-text through `NodeContents` under
+HC maps resources in its `repo` namespace to repository-relative outline paths.
+An application exposing other namespaces can assign distinct logical paths or
+report an unsupported mapping.
+
+For a source node, HC's `Domain::node_content` resolves its `OutlineId` and
+returns an `OutlineContent`. HC can obtain the snapshot through its source
+provider and use `OutlineContent::from_source` followed by `select`, or load a
+file's selected item directly with `OutlineContent::from_id`. The returned value
+supplies its fingerprint and agent text through `NodeContents` under
 {cite}`requirements.sdk.outlines.node_contents`, so the dependency and model
 text describe the same read.
 
@@ -249,7 +235,7 @@ flowchart TD
     Graph --> Trace["SDK records supplied node contents and fingerprint"]
 ```
 
-Calling the independent outline library or a source provider directly does not
+Calling the outline module or a source provider directly does not
 record evidence. HC uses those libraries inside `node_content`; the enclosing
 SDK read records the resulting node observation.
 
@@ -259,24 +245,9 @@ A subsequent tracked read records the selected node.
 [Context tools](graph/context-tools.md) gives each operation's signatures,
 returned data, and input-recording semantics.
 
-## Each language defines its outline
+## Follow a source item into its contents
 
-An empty selector identifies the source root. Nested items use slash-separated
-segments; reserved characters in names are percent-encoded. Anonymous items use
-identity-hash prefixes and duplicate named siblings use occurrence suffixes.
-The outline library applies these shared rules and the selected language's
-naming, attachment, and comment rules.
-
-The language chapters explain those rules with source examples:
-
-- [Rust](sources/rust.md)
-- [Python](sources/python.md)
-- [TypeScript and TSX](sources/typescript.md)
-- [Markdown](sources/markdown.md)
-- [CSS](sources/css.md)
-- [TOML](sources/toml.md)
-- [YAML](sources/yaml.md)
-- [Plain-text fallback](sources/plain-text.md)
-
-[References and Rust items](../references.md) specifies the detailed selector
-and structural-hash rules.
+[Source outlines](outlines.md) introduces `OutlineId`, `OutlineContent`, and
+`OutlineLang`, including automatic language selection and explicit language
+constructors. Its [language chapters](outlines.md#language-specific-rules)
+define the item kinds, selectors, and fingerprints for each supported language.

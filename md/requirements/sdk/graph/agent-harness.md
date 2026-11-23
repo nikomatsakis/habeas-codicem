@@ -1,7 +1,7 @@
 # Agent harness
 
 A criterion describes the question, supplies its context and inputs, and awaits
-an application-defined answer. Habeas SDK runs the agent that answers that
+an application-defined answer. TBV runs the agent that answers that
 request. The application chooses a supported backend through configuration;
 the SDK handles the model conversation and the inspection tools.
 
@@ -10,8 +10,8 @@ the SDK handles the model conversation and the inspection tools.
 
 An *agent harness* runs an agent request: it sends instructions and inputs to
 the configured model, executes requested tools, and obtains a structured answer.
-Habeas SDK supplies the harness and its tools. The application supplies
-[`Context` values](../../../rustdocs/habeas_sdk/procedure/trait.Context.html),
+TBV supplies the harness and its tools. The application supplies
+[`Context` values](../../../rustdocs/trust_but_verify/procedure/trait.Context.html),
 node contents, and
 the answer type.
 :::
@@ -37,14 +37,14 @@ run through the same SDK interface, regardless of which supported backend is
 selected.
 
 :::{req} agent_config
-Habeas SDK exposes configuration for its supplied Bedrock, OpenAI, and Ollama
+TBV exposes configuration for its supplied Bedrock, OpenAI, and Ollama
 agents. The configuration selects a backend and carries its model, connection,
 credential-selection, and model-option settings.
 
 The public type's shape is:
 
 ```rust,ignore
-// Defined in habeas_sdk::agent.
+// Defined in trust_but_verify::agent.
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
 pub enum AgentConfig {
@@ -70,7 +70,7 @@ The SDK configures a validator's supplied agent from an application-provided
 `AgentConfig`. It does not persist the agent configuration.
 
 ```rust,ignore
-use habeas_sdk::agent::AgentConfig;
+use trust_but_verify::agent::AgentConfig;
 
 impl<D: Domain> Validator<D> {
     /// Configure the SDK agent used by this validator's ask requests.
@@ -92,7 +92,7 @@ Here `domain` supplies the application's graph, contents, and storage. This
 illustrative Bedrock configuration selects a model, AWS profile, and region:
 
 ```rust,ignore
-use habeas_sdk::agent::{AgentConfig, BedrockConfig};
+use trust_but_verify::agent::{AgentConfig, BedrockConfig};
 
 let config = AgentConfig::Bedrock(BedrockConfig {
     model: "us.anthropic.claude-sonnet-5-5".into(),
@@ -108,7 +108,7 @@ let validator = Validator::new(domain).with_agent(config);
 ## Run the supplied harness
 
 :::{req} tool_agent
-Habeas SDK owns the model conversation, supported backend integrations, tool
+TBV owns the model conversation, supported backend integrations, tool
 dispatch, and structured submission used by its ask builder.
 :::
 

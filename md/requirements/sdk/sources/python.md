@@ -1,28 +1,52 @@
-# Python outline definition
+# Python outlines
 
-Consider this source:
+Select Python source items by their declared names and nesting. The outline
+supplies their source text and structural fingerprints.
+
+## Choose the language
+
+:::{req} language
+`languages::Python` implements `OutlineLang` under
+{cite}`requirements.sdk.outlines.language_provider`. Its default value is
+cheaply cloneable and claims `.py` and `.pyi`.
+Filename-based constructors select it under
+{cite}`requirements.sdk.outlines.defaults`.
+:::
+
+## Select source items
+
+:::{req} items
+The Python outline exposes the following items beneath its file root:
+
+| Construct | Kind | Name |
+| --- | --- | --- |
+| Functions and methods | `def` | Declared name |
+| Classes | `class` | Declared name |
+
+Nested definitions appear beneath their nearest enclosing outline item.
+Decorators attach to the definition they decorate and are included in its
+selected source and structural hash.
+
+Item selectors, percent encoding, anonymous identities, and duplicate-name
+suffixes follow {cite}`requirements.references.outline_selectors`.
+:::
+
+This source contains `class[Tokens]/def[check_token]`:
 
 ```python
-def check_token():
-    return True
+class Tokens:
+    def check_token(self):
+        return True
 ```
 
-The default `habeas-sdk-outline` parser includes this language implementation
-and selects it for `.py` and `.pyi` files.
+## Fingerprint the contents
 
-The {term}`requirements.sdk.outlines.selector` `def[check_token]` identifies the item in this example.
-The resource address identifies the file separately from this selector.
+:::{req} fingerprints
+Structural hashes use SHA-256 over the unambiguous structural encoding and
+whitespace-separated words under {cite}`requirements.references.structural_hash`.
+The fingerprint scheme identifies these rules and their version under
+{cite}`requirements.sdk.outlines.language_provider.fingerprint_scheme`.
 
-## Outline rules
-
-The function's declared name becomes `def[check_token]`. Class definitions use
-`class` with their declared name. Decorators attach to the definitions they
-decorate.
-
-## Comments and fingerprints
-
-Ordinary comments do not participate in structural fingerprints. Docstrings
-are source expressions, so they remain part of the parsed content.
-
-The [shared source machinery](../sources.md) defines selector encoding, duplicate
-names, and the distinction between node contents and structural fingerprints.
+Ordinary comments are excluded. Docstrings are source expressions and
+participate in hashes along with the definition's other expressions.
+:::

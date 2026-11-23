@@ -12,10 +12,10 @@ saved {term}`requirements.sdk.graph.evidence.verification_evidence`.
 ```rust,ignore
 use std::path::PathBuf;
 use serde::{Serialize, de::DeserializeOwned};
-use habeas_sdk::graph::{CriterionPath, NodePath, Record};
+use trust_but_verify::graph::{CriterionPath, NodePath, Record};
 
 /// A directory of JSON records. Send + Sync; load/store futures are Send.
-/// Defined in habeas_sdk::storage.
+/// Defined in trust_but_verify::storage.
 pub struct FileEvidenceStorage { /* private fields */ }
 
 pub enum FileStorageError {

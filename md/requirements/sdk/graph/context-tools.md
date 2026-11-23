@@ -23,7 +23,7 @@ and select related nodes through its validation context.
 
 :::{req} root_inputs
 ```rust,ignore
-// Defined in habeas_sdk::graph.
+// Defined in trust_but_verify::graph.
 /// Input selection and tracked observations for one criterion execution.
 pub struct ValidationContext<'cx, D: Domain> { /* private fields */ }
 
@@ -83,7 +83,7 @@ flowchart TD
     Context --> Trace["Execution's recorded inputs"]
 ```
 
-Source discovery uses the resource access and independent outline library
+Source discovery uses the resource access and outline module
 described in [Sources and inspection](../sources.md). The application maps
 source addresses into its graph and resolves their contents. The SDK's
 `read_source` tool uses that mapping, then performs the same tracked node read
@@ -195,9 +195,10 @@ records no successful observation.
 
 ## Reading a source item
 
-A source item is identified by a resource and an outline selector, such as a
-function within a file. Source identities are defined in
-[Sources and inspection](../sources.md#identify-something-before-reading-it).
+A source item has a file path and an outline selector, such as a function
+within a file. Discovery identifies files through
+[source resources](../sources.md#identify-source-resources); the application
+maps those resource identities into outline paths.
 
 :::{req} read_source.fn
 The SDK exposes a tracked source read for domains supplying the source-node
@@ -216,10 +217,13 @@ impl<'d, D: Domain + SourceNodes> InspectionContext<'d, D> {
 :::
 
 :::{req} read_source.behavior
-`read_source` accepts a resource identity and an optional outline selector.
-An omitted or empty selector identifies the whole resource. The operation maps
-that `OutlineId` into the application's graph, then obtains its node contents
-through `Domain::node_content`. Mapping and read failures return errors.
+The agent's `read_source` tool accepts a resource identity and an optional
+outline selector. An omitted or empty selector identifies the whole resource.
+The application maps that resource and selector to an `OutlineId` under
+{cite}`requirements.sdk.sources.source_nodes`. The Rust operation accepts the
+`OutlineId` directly. It maps that outline identity into the application's
+graph, then obtains its node contents through `Domain::node_content`.
+Mapping and read failures return errors.
 
 The Rust caller receives `D::NodeContent`; the agent receives those same
 contents presented by `NodeContents::format` under
@@ -300,8 +304,9 @@ The SDK's `outline_source` tool accepts a resource identity and delegates to
 The default obtains one resource snapshot through the provider and parses
 that snapshot with the outline library.
 
-The tool returns the parsed outline's selectors and kinds. The Rust parse
-result retains the resource identity and the parsed source snapshot under
+The tool returns the selectors and kinds in `parsed.contents.outline()`
+under {cite}`requirements.sdk.outlines.items`. The Rust parse result retains
+the resource identity and the parsed source snapshot under
 {cite}`requirements.sdk.sources.provider_results.parse_snapshot`.
 :::
 
@@ -378,8 +383,10 @@ impl<P: SourceProvider> SourceAnalysis<P> {
 The SDK's source tools expose `search_structure` with a language
 and an ast-grep rule, plus an optional scope prefix and match limit. It uses
 `SourceAnalysis::search_structure`; `StructuralQuery` holds the `language`,
-`rule`, `scope`, and `limit`. Each match contains an `OutlineId` and an
-excerpt; the result also states whether the search is complete, under
+`rule`, `scope`, and `limit`. Each match contains its resource identity, item
+selector, and excerpt. The caller maps the resource and selector to an
+`OutlineId` under {cite}`requirements.sdk.sources.source_nodes` when selecting
+a tracked read. The result also states whether the search is complete, under
 {cite}`requirements.sdk.sources.provider_results.search_completeness`.
 :::
 

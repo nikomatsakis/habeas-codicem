@@ -1,7 +1,7 @@
 # Putting it together in Habeas Codicem
 
 Habeas Codicem (HC) defines the requirements graph and the policy used by
-`habeas author`, `habeas status`, and repository validation. Habeas SDK runs
+`habeas author`, `habeas status`, and repository validation. TBV runs
 HC's criteria, provides their inspection tools and configured agents, and
 records the inputs used to compute each answer.
 
@@ -22,7 +22,7 @@ enum HcNodeId {
 enum HcNodeContent {
     Requirement(RequirementText),
     Fixme(FixmeText),
-    Source(SelectedSource),
+    Source(OutlineContent),
     GithubIssue(GithubIssueContents),
 }
 
@@ -35,7 +35,7 @@ enum HcEdge {
 ```
 
 The domain interprets each identity. Reading a source node uses HC's resource
-access and `habeas-sdk-outline` to select from a file snapshot. Reading a
+access and `trust_but_verify::outline` to select from a file snapshot. Reading a
 GitHub issue uses HC's GitHub client and cache. Reading a requirement obtains
 its declaration. The SDK obtains each value through HC's `Domain`
 implementation.
@@ -65,7 +65,7 @@ impl NodeContents for HcNodeContent {
 }
 ```
 
-The SDK supplies these operations for `SelectedSource` under
+The SDK supplies these operations for `OutlineContent` under
 {cite}`requirements.sdk.outlines.node_contents`. HC supplies them for its issue
 data and other application-defined values.
 
