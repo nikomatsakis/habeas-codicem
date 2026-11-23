@@ -32,7 +32,7 @@ pub trait Criterion<D: Domain>: Send + Sized {
 ```
 :::
 
-## The application interprets criterion results
+## Define the completed answer
 
 :::{req} criterion_trait.answer
 {cite}`requirements.sdk.graph.validation.criterion_trait`
@@ -51,13 +51,6 @@ pub trait Criterion<D: Domain>: Send + Sized {
     // ... additional members introduced below ...
 }
 ```
-:::
-
-:::{req} output_policy
-Habeas SDK treats `Criterion::Ok` as an application-defined completed answer.
-When returning or saving that answer, it does not interpret whether the answer
-is favorable or satisfies an application requirement. A negative assessment
-can be returned as `Ok(value)`; `Err` represents an execution error instead.
 :::
 
 :::{example} criterion_definition
@@ -90,25 +83,6 @@ impl Criterion<HabeasDomain> for BehavioralAdequacy {
     // ... remaining members introduced in the following sections and chapters ...
 }
 ```
-:::
-
-:::{example} result_interpretation
-{cite}`requirements.sdk.graph.validation.output_policy`
-{cite}`requirements.sdk.habeas.assessment_policy`
-
-Suppose the `BehavioralAdequacy` criterion above returns this completed answer:
-
-```rust,ignore
-Ok(TestReview {
-    adequate: false,
-    rationale: "No test covers expired tokens.".into(),
-})
-```
-
-In this example, HC's validation policy requires `adequate` to be `true`.
-HC reports the inadequate tests and `habeas status` returns an error, even when
-the saved answer is current. The SDK returns the completed answer;
-HC applies the judgment that makes this a validation failure.
 :::
 
 ## Criterion source node

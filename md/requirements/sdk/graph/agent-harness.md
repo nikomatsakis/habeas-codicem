@@ -154,4 +154,4 @@ Assistant prose is conversation text; the submitted value is the answer.
 
 The criterion can inspect that answer, perform more computation, or make
 another ask request. The application interprets the completed answer under
-{cite}`requirements.sdk.graph.validation.output_policy`.
+{cite}`requirements.sdk.graph.execution.output_policy`.
