@@ -61,7 +61,7 @@ async fn execute(
 The [`ask` builder](agent-calls.md#build-a-request) determines what is given to
 the [configured agent](agent-harness.md#configure-the-supplied-harness):
 
-- [`context`](agent-calls.md#compose-reusable-context) provides common context,
+- [`context()`](agent-calls.md#compose-reusable-context) provides common context,
   including the question. These calls come first so the provider can cache the
   shared prompt prefix.
 - [`contents_of_current_node()`](agent-calls.md#deliver-and-record-node-inputs)
