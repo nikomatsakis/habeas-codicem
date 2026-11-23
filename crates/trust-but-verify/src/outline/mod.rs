@@ -114,23 +114,6 @@ pub struct LegacyOutline {
     pub comments: Vec<OutlineComment>,
 }
 
-/// A source that its grammar cannot parse.
-#[derive(Clone, Debug, PartialEq, Eq)]
-// {cite}`habeas:util`
-pub struct OutlineError {
-    pub line: usize,
-    pub message: String,
-}
-
-impl fmt::Display for OutlineError {
-    // {cite}`habeas:util`
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "line {}: {}", self.line, self.message)
-    }
-}
-
-impl std::error::Error for OutlineError {}
-
 /// A selector that does not resolve.
 #[derive(Clone, Debug, PartialEq, Eq)]
 // {cite}`habeas:util`
