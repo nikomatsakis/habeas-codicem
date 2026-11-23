@@ -8,10 +8,10 @@ that request. Configure it once on the validator; criteria then use the same
 :::{definition} agent_harness
 :phrase: agent harness
 
-The conversation machinery behind an agent request: it turns the request into
-provider messages and handles tool calls. On success, it returns an accepted
-submission as JSON, which the SDK's ask builder decodes into the requested
-answer type. `Agent<D>` is the conversation interface, and `ToolAgent` is the
+An *agent harness* is the conversation machinery behind an agent request:
+it turns the request into provider messages and handles tool calls. On success,
+it returns an accepted submission as JSON, which the SDK's ask builder decodes
+into the requested answer type. `Agent<D>` is the conversation interface, and `ToolAgent` is the
 supplied implementation. A `CompletionProvider` transports model requests
 and responses; the harness manages the conversation.
 :::

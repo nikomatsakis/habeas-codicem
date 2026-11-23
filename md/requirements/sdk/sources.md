@@ -19,20 +19,20 @@ reading resources, identifying items within them, and searching their contents.
 :::{definition} resource
 :phrase: source resource
 
-A unit of source identified by `ResourceId` and made available through a
-source provider. Its scheme and location identify it independently of any
-item within it; its bytes can change without changing that address. A resource
-can be a local file, a Git revision's file, an editor buffer, or content
+A *source resource* is a unit of source identified by `ResourceId` and made
+available through a source provider. Its scheme and location identify it
+independently of any item within it; its bytes can change without changing that
+address. A resource can be a local file, a Git revision's file, an editor buffer, or content
 exposed by another backend.
 :::
 
 :::{definition} outline
 :phrase: source outline
 
-The SDK's structured view of one source snapshot. Its items describe
-the source's organization, with selectors for addressing them, spans in that
-snapshot, and structural hashes. Language-specific outline rules or the
-plain-text fallback determine which source constructs become outline items.
+A *source outline* is the SDK's structured view of one source snapshot. Its
+items describe the source's organization, with selectors for addressing them,
+spans in that snapshot, and structural hashes. Language-specific outline rules
+or the plain-text fallback determine which source constructs become outline items.
 :::
 
 For this example, a local {term}`requirements.sdk.sources.source_provider`
@@ -71,7 +71,7 @@ can keep its identity while its body changes.
 :::{definition} selector
 :phrase: item selector
 
-An address for an item within a
+An *item selector* is an address for an item within a
 {term}`requirements.sdk.sources.outline`, such as `fn[check_token]`.
 The empty selector addresses the resource root. The resource address and
 selector together form an `OutlineId`. A selector identifies the item
@@ -132,7 +132,8 @@ resource fetching.
 :::{definition} source_provider
 :phrase: source provider
 
-The adapter through which source inspection lists resources and reads a
+A *source provider* is the adapter through which source inspection lists
+resources and reads a
 {term}`requirements.sdk.sources.resource`'s bytes. The SDK's `SourceProvider`
 interface also allows provider-specific parsing and search. Resource access
 belongs to the provider; language interpretation is described separately by
@@ -203,9 +204,10 @@ within an application-selected scope.
 :::{definition} language_definition
 :phrase: language definition
 
-A registered description of a source language: its grammar and outline rules,
-along with its language identifier and resource-name matching. The SDK's
-`LanguageProvider` supplies this description so the shared parser can build a
+A *language definition* is a registered description of a source language:
+its grammar and outline rules, along with its language identifier and
+resource-name matching. The SDK's `LanguageProvider` supplies this description
+so the shared parser can build a
 {term}`requirements.sdk.sources.outline`. It describes how to interpret source;
 the source provider supplies the bytes.
 :::

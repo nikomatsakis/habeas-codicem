@@ -11,7 +11,8 @@ graph node. This chapter describes the criterion's type, answer, and identity.
 :::{definition} criterion
 :phrase: criterion
 
-A value describing a test to perform on a {term}`requirements.sdk.graph.node`.
+A *criterion* is a value describing a test to perform on a
+{term}`requirements.sdk.graph.node`.
 In the SDK, its type implements `Criterion<D>` for the
 {term}`requirements.sdk.application_domain`. Its `Criterion::Ok` type describes
 the completed answer, which can include a negative assessment. An execution
@@ -115,7 +116,7 @@ the evaluation failed to produce a completed answer.
 :::{definition} source_node
 :phrase: source node
 
-The {term}`requirements.sdk.graph.node` on which a
+A *source node* is the {term}`requirements.sdk.graph.node` on which a
 {term}`requirements.sdk.graph.validation.criterion` is evaluated, identified by
 `Criterion::source_node_id`. Tracked reads of its own contents or those of other
 nodes can supply inputs without changing the criterion's source node.

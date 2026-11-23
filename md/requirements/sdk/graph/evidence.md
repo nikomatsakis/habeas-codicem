@@ -8,8 +8,8 @@ contents without replacing one another's answers.
 :::{definition} verification_evidence
 :phrase: evidence
 
-A {term}`requirements.sdk.graph.validation.criterion`'s completed answer,
-its review-rule revision, and the recorded inputs used to produce it.
+*Evidence* is a {term}`requirements.sdk.graph.validation.criterion`'s completed
+answer, its review-rule revision, and the recorded inputs used to produce it.
 It belongs to the criterion's source node and criterion path. `Fingerprinted`
 carries the typed answer and these observations; `Record` holds the encoded
 answer, revision, and dependencies for storage under that source/criterion key.
@@ -213,9 +213,9 @@ encoding and meaning.
 :::{definition} dependency
 :phrase: dependency
 
-A recorded observation of a node's contents or of the target set of a node's
-outgoing edges with a given label. Its `Dependency` value stores the node
-identity, the edge label when applicable, and the
+A *dependency* is a recorded observation of a node's contents or of the target
+set of a node's outgoing edges with a given label. Its `Dependency` value stores
+the node identity, the edge label when applicable, and the
 {term}`requirements.sdk.graph.fingerprinting.observation_fingerprint` for
 later comparison.
 :::
@@ -223,7 +223,8 @@ later comparison.
 :::{definition} dependency_trace
 :phrase: dependency trace
 
-The collection of input observations recorded during one criterion execution.
+A *dependency trace* is the collection of input observations recorded during
+one criterion execution.
 Each is represented by a {term}`requirements.sdk.graph.evidence.dependency`.
 Tracked node reads and outgoing-edge selections, node contents supplied in
 prompts, and additional contents delivered by tools contribute to this trace.
@@ -338,9 +339,10 @@ storage key before constructing the storage future.
 :::{definition} input_freshness
 :phrase: input freshness
 
-Whether observing each recorded {term}`requirements.sdk.graph.evidence.dependency`
-in the state being checked produces a fingerprint matching its saved
-fingerprint. Fresh inputs do not imply a favorable answer. Reusing evidence
+*Input freshness* describes whether observing each recorded
+{term}`requirements.sdk.graph.evidence.dependency` in the state being checked
+produces a fingerprint matching its saved fingerprint. Fresh inputs do not
+imply a favorable answer. Reusing evidence
 also depends on compatibility with the criterion's current review-rule
 revision, which is checked separately.
 :::

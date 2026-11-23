@@ -79,9 +79,10 @@ validation. Fingerprints determine which changes count as relevant.
 :::{definition} application_domain
 :phrase: application domain
 
-The application's graph, node contents, and evidence storage, made available
-together for criterion execution. In the SDK, a cloneable value implementing
-`Graph`, `Contents`, and `Storage` implements the combined `Domain` trait.
+An *application domain* is the application's graph, node contents, and evidence
+storage, made available together for criterion execution. In the SDK, a
+cloneable value implementing `Graph`, `Contents`, and `Storage` implements the
+combined `Domain` trait.
 :::
 
 The {term}`requirements.sdk.application_domain` supplies these capabilities

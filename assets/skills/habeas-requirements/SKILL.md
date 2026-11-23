@@ -94,6 +94,10 @@ reader and the subject.
 
 - Explain the whole abstraction before its parts. Introduce one concept at a
   time and explain why it exists before detailing its constraints.
+- Begin a vocabulary definition's prose with the term in italics and its
+  meaning, for example, "An *agent harness* is the conversation machinery …".
+  The prose should identify the term even when its badge and annotations are
+  hidden.
 - Let code express signatures, type relationships, and structure. Put meaning
   and relevant semantic guarantees in comments beside the declaration; use prose
   for motivation and connections instead of repeating facts the code expresses.

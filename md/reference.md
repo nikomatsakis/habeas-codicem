@@ -931,8 +931,8 @@ a short display phrase, and an explanatory body:
 :::{definition} first_parent_history
 :phrase: first-parent history
 
-The sequence obtained by starting at a Git commit and repeatedly
-following its first parent until reaching a root commit.
+*First-parent history* is the sequence obtained by starting at a Git commit
+and repeatedly following its first parent until reaching a root commit.
 :::
 ```
 

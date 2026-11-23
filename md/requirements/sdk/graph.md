@@ -9,9 +9,10 @@ nodes.
 :::{definition} node
 :phrase: graph node
 
-A thing identified in the application's graph, such as a requirement, a
-function, a test, or an issue. The application's `Graph::NodeId` identifies it;
-its contents and the criteria evaluated on it are separate from that identity.
+A *graph node* is a thing identified in the application's graph, such as a
+requirement, a function, a test, or an issue. The application's `Graph::NodeId`
+identifies it; its contents and the criteria evaluated on it are separate from
+that identity.
 :::
 
 The graph can use enums to represent several node and relationship kinds.
@@ -41,8 +42,9 @@ pub trait Graph: Send + Sync {
 :::{definition} edge
 :phrase: labeled edge
 
-A directed relationship from one {term}`requirements.sdk.graph.node` to another,
-with an application-defined `Graph::EdgeLabel` describing the relationship.
+A *labeled edge* is a directed relationship from one
+{term}`requirements.sdk.graph.node` to another, with an application-defined
+`Graph::EdgeLabel` describing the relationship.
 The targets of a node's outgoing edges with a given label are its successors
 for that label. In Habeas, labels can identify a requirement's implementations
 or tests.
@@ -99,7 +101,8 @@ without knowing that type.
 :::{definition} node_path
 :phrase: node path
 
-An ordered sequence of string segments describing a graph node's identity.
+A *node path* is an ordered sequence of string segments describing a graph
+node's identity.
 In the SDK, `NodePath` represents this path. `Graph::node_path` maps each
 application-defined `NodeId` to a distinct path that stays stable across runs
 and changes to the node's contents.

@@ -7,7 +7,7 @@ which changes matter, and present them to an agent.
 :::{definition} node_contents
 :phrase: node contents
 
-The application-defined value obtained by reading a
+*Node contents* are the application-defined value obtained by reading a
 {term}`requirements.sdk.graph.node`: text, parsed source, issue data, or another
 structured value. In the SDK, `Contents::NodeContent` represents this value and
 `Contents::node_content` obtains it.
@@ -66,9 +66,10 @@ contain a negative judgment. The SDK uses these fingerprints to
 :::{definition} observation_fingerprint
 :phrase: fingerprint
 
-A digest together with the scheme identifying how it was computed,
-represented by `Fingerprint`. It describes an observation under those rules;
-it does not identify the node or say whether a criterion's answer is favorable.
+A *fingerprint* is a digest together with the scheme identifying how it was
+computed, represented by `Fingerprint`. It describes an observation under
+those rules; it does not identify the node or say whether a criterion's answer
+is favorable.
 Both the scheme and digest participate in comparisons.
 :::
 
@@ -113,7 +114,7 @@ fingerprints or automatically rerun a review.
 :::{definition} content_snapshot
 :phrase: snapshot
 
-The contents obtained by one observation, paired with the
+A *snapshot* is the contents obtained by one observation, paired with the
 {term}`requirements.sdk.graph.fingerprinting.observation_fingerprint` of those
 same contents. `Snapshot<T>` represents that pair. A node read can yield node
 contents; an outgoing-edge query can yield target identities.
