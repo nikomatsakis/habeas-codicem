@@ -1,7 +1,6 @@
 # Public API inventory
 
-This appendix collects the exports introduced throughout the SDK chapters. Each
-item links to its Rust documentation.
+This appendix collects the exports introduced throughout the SDK chapters.
 
 :::{req} exports
 With its default features, `trust-but-verify` exposes exactly the crate and module
@@ -12,97 +11,97 @@ belong to their types' individual contracts.
 The internal `habeas-integration` feature supports Habeas interoperability; its
 hidden items are outside this supported interface.
 
-- [`trust_but_verify`](../../rustdocs/trust_but_verify/index.html) (crate)
-  - [`agent`](../../rustdocs/trust_but_verify/agent/index.html) (module)
-    - [`BedrockConfig`](../../rustdocs/trust_but_verify/agent/struct.BedrockConfig.html) (struct)
-    - [`BedrockCredentials`](../../rustdocs/trust_but_verify/agent/struct.BedrockCredentials.html) (struct)
-    - [`OllamaConfig`](../../rustdocs/trust_but_verify/agent/struct.OllamaConfig.html) (struct)
-    - [`OpenAiConfig`](../../rustdocs/trust_but_verify/agent/struct.OpenAiConfig.html) (struct)
-    - [`SecretString`](../../rustdocs/trust_but_verify/agent/struct.SecretString.html) (struct)
-    - [`AgentConfig`](../../rustdocs/trust_but_verify/agent/enum.AgentConfig.html) (enum)
-    - [`OptionValue`](../../rustdocs/trust_but_verify/agent/enum.OptionValue.html) (enum)
-  - [`graph`](../../rustdocs/trust_but_verify/graph/index.html) (module)
-    - [`CriterionPath`](../../rustdocs/trust_but_verify/graph/struct.CriterionPath.html) (struct)
-    - [`Fingerprint`](../../rustdocs/trust_but_verify/graph/struct.Fingerprint.html) (struct)
-    - [`Fingerprinted`](../../rustdocs/trust_but_verify/graph/struct.Fingerprinted.html) (struct)
-    - [`InspectionContext`](../../rustdocs/trust_but_verify/graph/struct.InspectionContext.html) (struct)
-    - [`NodePath`](../../rustdocs/trust_but_verify/graph/struct.NodePath.html) (struct)
-    - [`PageId`](../../rustdocs/trust_but_verify/graph/struct.PageId.html) (struct)
-    - [`PagedText`](../../rustdocs/trust_but_verify/graph/struct.PagedText.html) (struct)
-    - [`Record`](../../rustdocs/trust_but_verify/graph/struct.Record.html) (struct)
-    - [`Snapshot`](../../rustdocs/trust_but_verify/graph/struct.Snapshot.html) (struct)
-    - [`ValidationContext`](../../rustdocs/trust_but_verify/graph/struct.ValidationContext.html) (struct)
-    - [`Validator`](../../rustdocs/trust_but_verify/graph/struct.Validator.html) (struct)
-    - [`Dependency`](../../rustdocs/trust_but_verify/graph/enum.Dependency.html) (enum)
-    - [`PageError`](../../rustdocs/trust_but_verify/graph/enum.PageError.html) (enum)
-    - [`ValidationError`](../../rustdocs/trust_but_verify/graph/enum.ValidationError.html) (enum)
-    - [`Criterion`](../../rustdocs/trust_but_verify/graph/trait.Criterion.html) (trait)
-    - [`edge_fingerprint`](../../rustdocs/trust_but_verify/graph/fn.edge_fingerprint.html) (function)
-    - [`procedure_matches`](../../rustdocs/trust_but_verify/graph/fn.procedure_matches.html) (function)
-    - [`record_is_current`](../../rustdocs/trust_but_verify/graph/fn.record_is_current.html) (function)
-  - [`outline`](../../rustdocs/trust_but_verify/outline/index.html) (module)
-    - [`languages`](../../rustdocs/trust_but_verify/outline/languages/index.html) (module)
-      - [`Css`](../../rustdocs/trust_but_verify/outline/languages/struct.Css.html) (struct)
-      - [`Markdown`](../../rustdocs/trust_but_verify/outline/languages/struct.Markdown.html) (struct)
-      - [`PlainText`](../../rustdocs/trust_but_verify/outline/languages/struct.PlainText.html) (struct)
-      - [`Python`](../../rustdocs/trust_but_verify/outline/languages/struct.Python.html) (struct)
-      - [`Rust`](../../rustdocs/trust_but_verify/outline/languages/struct.Rust.html) (struct)
-      - [`Toml`](../../rustdocs/trust_but_verify/outline/languages/struct.Toml.html) (struct)
-      - [`Tsx`](../../rustdocs/trust_but_verify/outline/languages/struct.Tsx.html) (struct)
-      - [`TypeScript`](../../rustdocs/trust_but_verify/outline/languages/struct.TypeScript.html) (struct)
-      - [`Yaml`](../../rustdocs/trust_but_verify/outline/languages/struct.Yaml.html) (struct)
-    - [`Outline`](../../rustdocs/trust_but_verify/outline/struct.Outline.html) (struct)
-    - [`OutlineContent`](../../rustdocs/trust_but_verify/outline/struct.OutlineContent.html) (struct)
-    - [`OutlineError`](../../rustdocs/trust_but_verify/outline/struct.OutlineError.html) (struct)
-    - [`OutlineId`](../../rustdocs/trust_but_verify/outline/struct.OutlineId.html) (struct)
-    - [`OutlineItem`](../../rustdocs/trust_but_verify/outline/struct.OutlineItem.html) (struct)
-    - [`Segment`](../../rustdocs/trust_but_verify/outline/struct.Segment.html) (struct)
-    - [`SelectorError`](../../rustdocs/trust_but_verify/outline/struct.SelectorError.html) (struct)
-    - [`Label`](../../rustdocs/trust_but_verify/outline/enum.Label.html) (enum)
-    - [`HASH_DIGITS`](../../rustdocs/trust_but_verify/outline/constant.HASH_DIGITS.html) (constant)
-    - [`OutlineLang`](../../rustdocs/trust_but_verify/outline/trait.OutlineLang.html) (trait)
-    - [`parse_selector`](../../rustdocs/trust_but_verify/outline/fn.parse_selector.html) (function)
-  - [`storage`](../../rustdocs/trust_but_verify/storage/index.html) (module)
-    - [`FileEvidenceStorage`](../../rustdocs/trust_but_verify/storage/struct.FileEvidenceStorage.html) (struct)
-    - [`FileStorageError`](../../rustdocs/trust_but_verify/storage/enum.FileStorageError.html) (enum)
-  - [`Ask`](../../rustdocs/trust_but_verify/struct.Ask.html) (struct)
-  - [`ContextPhase`](../../rustdocs/trust_but_verify/struct.ContextPhase.html) (struct)
-  - [`CriterionPath`](../../rustdocs/trust_but_verify/struct.CriterionPath.html) (struct)
-  - [`FileEvidenceStorage`](../../rustdocs/trust_but_verify/struct.FileEvidenceStorage.html) (struct)
-  - [`Fingerprint`](../../rustdocs/trust_but_verify/struct.Fingerprint.html) (struct)
-  - [`Fingerprinted`](../../rustdocs/trust_but_verify/struct.Fingerprinted.html) (struct)
-  - [`InspectionContext`](../../rustdocs/trust_but_verify/struct.InspectionContext.html) (struct)
-  - [`NodePath`](../../rustdocs/trust_but_verify/struct.NodePath.html) (struct)
-  - [`NodePhase`](../../rustdocs/trust_but_verify/struct.NodePhase.html) (struct)
-  - [`OutlineContent`](../../rustdocs/trust_but_verify/struct.OutlineContent.html) (struct)
-  - [`OutlineId`](../../rustdocs/trust_but_verify/struct.OutlineId.html) (struct)
-  - [`PageId`](../../rustdocs/trust_but_verify/struct.PageId.html) (struct)
-  - [`PagedText`](../../rustdocs/trust_but_verify/struct.PagedText.html) (struct)
-  - [`Record`](../../rustdocs/trust_but_verify/struct.Record.html) (struct)
-  - [`SearchResults`](../../rustdocs/trust_but_verify/struct.SearchResults.html) (struct)
-  - [`Snapshot`](../../rustdocs/trust_but_verify/struct.Snapshot.html) (struct)
-  - [`SourceFile`](../../rustdocs/trust_but_verify/struct.SourceFile.html) (struct)
-  - [`SourceScope`](../../rustdocs/trust_but_verify/struct.SourceScope.html) (struct)
-  - [`Sources`](../../rustdocs/trust_but_verify/struct.Sources.html) (struct)
-  - [`StructuralMatch`](../../rustdocs/trust_but_verify/struct.StructuralMatch.html) (struct)
-  - [`StructuralQuery`](../../rustdocs/trust_but_verify/struct.StructuralQuery.html) (struct)
-  - [`TextMatch`](../../rustdocs/trust_but_verify/struct.TextMatch.html) (struct)
-  - [`TextQuery`](../../rustdocs/trust_but_verify/struct.TextQuery.html) (struct)
-  - [`ValidationContext`](../../rustdocs/trust_but_verify/struct.ValidationContext.html) (struct)
-  - [`Validator`](../../rustdocs/trust_but_verify/struct.Validator.html) (struct)
-  - [`AgentConfig`](../../rustdocs/trust_but_verify/enum.AgentConfig.html) (enum)
-  - [`Dependency`](../../rustdocs/trust_but_verify/enum.Dependency.html) (enum)
-  - [`FileStorageError`](../../rustdocs/trust_but_verify/enum.FileStorageError.html) (enum)
-  - [`PageError`](../../rustdocs/trust_but_verify/enum.PageError.html) (enum)
-  - [`SourceError`](../../rustdocs/trust_but_verify/enum.SourceError.html) (enum)
-  - [`ValidationError`](../../rustdocs/trust_but_verify/enum.ValidationError.html) (enum)
-  - [`Context`](../../rustdocs/trust_but_verify/trait.Context.html) (trait)
-  - [`Criterion`](../../rustdocs/trust_but_verify/trait.Criterion.html) (trait)
-  - [`Domain`](../../rustdocs/trust_but_verify/trait.Domain.html) (trait)
-  - [`NodeContents`](../../rustdocs/trust_but_verify/trait.NodeContents.html) (trait)
-  - [`OutlineLang`](../../rustdocs/trust_but_verify/trait.OutlineLang.html) (trait)
-  - [`SourceNodes`](../../rustdocs/trust_but_verify/trait.SourceNodes.html) (trait)
-  - [`LanguageId`](../../rustdocs/trust_but_verify/type.LanguageId.html) (type alias)
-  - [`StructuralMatches`](../../rustdocs/trust_but_verify/type.StructuralMatches.html) (type alias)
-  - [`TextMatches`](../../rustdocs/trust_but_verify/type.TextMatches.html) (type alias)
+- `trust_but_verify`
+  - `agent`
+    - `BedrockConfig`
+    - `BedrockCredentials`
+    - `OllamaConfig`
+    - `OpenAiConfig`
+    - `SecretString`
+    - `AgentConfig`
+    - `OptionValue`
+  - `graph`
+    - `CriterionPath`
+    - `Fingerprint`
+    - `Fingerprinted`
+    - `InspectionContext`
+    - `NodePath`
+    - `PageId`
+    - `PagedText`
+    - `Record`
+    - `Snapshot`
+    - `ValidationContext`
+    - `Validator`
+    - `Dependency`
+    - `PageError`
+    - `ValidationError`
+    - `Criterion`
+    - `edge_fingerprint`
+    - `procedure_matches`
+    - `record_is_current`
+  - `outline`
+    - `languages`
+      - `Css`
+      - `Markdown`
+      - `PlainText`
+      - `Python`
+      - `Rust`
+      - `Toml`
+      - `Tsx`
+      - `TypeScript`
+      - `Yaml`
+    - `Outline`
+    - `OutlineContent`
+    - `OutlineError`
+    - `OutlineId`
+    - `OutlineItem`
+    - `Segment`
+    - `SelectorError`
+    - `Label`
+    - `HASH_DIGITS`
+    - `OutlineLang`
+    - `parse_selector`
+  - `storage`
+    - `FileEvidenceStorage`
+    - `FileStorageError`
+  - `Ask`
+  - `ContextPhase`
+  - `CriterionPath`
+  - `FileEvidenceStorage`
+  - `Fingerprint`
+  - `Fingerprinted`
+  - `InspectionContext`
+  - `NodePath`
+  - `NodePhase`
+  - `OutlineContent`
+  - `OutlineId`
+  - `PageId`
+  - `PagedText`
+  - `Record`
+  - `SearchResults`
+  - `Snapshot`
+  - `SourceFile`
+  - `SourceScope`
+  - `Sources`
+  - `StructuralMatch`
+  - `StructuralQuery`
+  - `TextMatch`
+  - `TextQuery`
+  - `ValidationContext`
+  - `Validator`
+  - `AgentConfig`
+  - `Dependency`
+  - `FileStorageError`
+  - `PageError`
+  - `SourceError`
+  - `ValidationError`
+  - `Context`
+  - `Criterion`
+  - `Domain`
+  - `NodeContents`
+  - `OutlineLang`
+  - `SourceNodes`
+  - `LanguageId`
+  - `StructuralMatches`
+  - `TextMatches`
 :::
