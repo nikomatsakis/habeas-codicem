@@ -308,7 +308,7 @@ impl OutlineContent {
 
 :::{req} node_contents
 `trust_but_verify::outline::OutlineContent` implements
-`trust_but_verify::domain::NodeContents`, making it usable directly as
+`trust_but_verify::NodeContents`, making it usable directly as
 `Domain::NodeContent` under
 {cite}`requirements.sdk.graph.node_content`.
 
@@ -320,7 +320,7 @@ Both operations describe the source snapshot retained by the value.
 :::
 
 ```rust,ignore
-use trust_but_verify::domain::NodeContents;
+use trust_but_verify::NodeContents;
 
 let contents = OutlineContent::from_id(&function_id)?;
 let fingerprint = contents.fingerprint();

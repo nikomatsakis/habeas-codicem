@@ -15,14 +15,10 @@ path identifies the file; an outline selector identifies an item within it.
 :::
 
 :::{req} source_addresses
-The source tools identify project files with `ResourceId`. Its `location` is
-a project-relative path and its `scheme` is `"repo"`.
+The source tools identify project files with project-relative `PathBuf` values.
 
 ```rust,ignore
-let file = ResourceId {
-    scheme: "repo".into(),
-    location: "src/auth.rs".into(),
-};
+let file = std::path::PathBuf::from("src/auth.rs");
 ```
 
 An item within that file uses the path and selector in `OutlineId` under
@@ -40,6 +36,25 @@ search. Construct it with the project directory:
 use trust_but_verify::Sources;
 
 let sources = Sources::new(repository_root);
+```
+:::
+
+:::{req} provider.attachment
+A validator for a source-capable domain uses the supplied project directory
+for its fixed source inspection tools. Attach `Sources` once when constructing
+the validator; the domain supplies the mapping under
+{cite}`requirements.sdk.sources.source_nodes`.
+
+```rust,ignore
+use trust_but_verify::{SourceNodes, Sources, Validator};
+
+impl<D: SourceNodes> Validator<D> {
+    // ...
+
+    pub fn with_sources(self, sources: Sources) -> Self;
+
+    // ...
+}
 ```
 :::
 
@@ -102,15 +117,15 @@ An application supporting tracked source inspection maps `OutlineId` to its
 graph's `NodeId`. The mapped node represents the requested path and selector;
 an unsupported or invalid address returns an error. The SDK reads the mapped
 node through the application's `Domain` interface.
-:::
-
-This trait sketch names the mapping capability; its declaration is illustrative:
 
 ```rust,ignore
+use trust_but_verify::{Domain, outline::OutlineId};
+
 pub trait SourceNodes: Domain {
     fn source_node(&self, item: &OutlineId) -> Result<Self::NodeId, Self::Error>;
 }
 ```
+:::
 
 For a source node, HC's `Domain::node_content` resolves its `OutlineId` and
 returns an `OutlineContent`. The returned value supplies its fingerprint and
@@ -129,6 +144,22 @@ The graph's recording and freshness contracts apply under
 :::
 
 ## Inspection runs through the tracked context
+
+:::{req} redaction
+TBV automatically redacts recognized credentials in source excerpts delivered
+by its inspection tools and in node text supplied to its agent requests.
+The built-in rules replace recognized secret regions with redaction markers
+while preserving line breaks. Source structural hashes use the same redacted
+regions, so changing only a recognized credential does not change its
+structural fingerprint.
+
+Loaded source snapshots retain the original text for selection and spans;
+redaction applies when preparing model-visible text and structural hashes.
+Filesystem evidence storage preserves the supplied record. Applications supply
+their own answer values and remain responsible for what those answers contain.
+Habeas additionally recognizes explicit credentials in its configuration files
+under {cite}`requirements.authoring.credentials`.
+:::
 
 Deterministic criterion code and SDK agent tools use the same inspection
 operations. A direct tracked read records its returned input. An agent read

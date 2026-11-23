@@ -23,7 +23,7 @@ and select related nodes through its validation context.
 
 :::{req} root_inputs
 ```rust,ignore
-// Defined in trust_but_verify::graph.
+// Defined in trust_but_verify.
 /// Input selection and tracked observations for one criterion execution.
 pub struct ValidationContext<'cx, D: Domain> { /* private fields */ }
 
@@ -83,7 +83,7 @@ flowchart TD
     Context --> Trace["Execution's recorded inputs"]
 ```
 
-Source discovery uses the resource access and outline module
+Source discovery uses the project files and outline module
 described in [Sources and inspection](../sources.md). The application maps
 source addresses into its graph and resolves their contents. The SDK's
 `read_source` tool uses that mapping, then performs the same tracked node read
@@ -204,20 +204,23 @@ The SDK exposes a tracked source read for domains supplying the source-node
 mapping under {cite}`requirements.sdk.sources.source_nodes`. It is available
 as the agent's `read_source` command.
 
-The Rust interface has this shape; `SourceNodes` names the capability sketched
-in the source chapter:
+`SourceNodes` supplies the mapping capability defined in the source chapter:
 
 ```rust,ignore
-impl<'d, D: Domain + SourceNodes> InspectionContext<'d, D> {
+impl<'d, D: SourceNodes> InspectionContext<'d, D> {
+    // ...
+
     /// Map this source address into the graph and read its node contents.
     pub fn read_source(&self, item: &OutlineId) -> Result<D::NodeContent, D::Error>;
+
+    // ...
 }
 ```
 :::
 
 :::{req} read_source.behavior
-The agent's `read_source` tool accepts a resource identity and an optional
-outline selector. An omitted or empty selector identifies the whole resource.
+The agent's `read_source` tool accepts a project-relative file path and an
+optional outline selector. An omitted or empty selector identifies the whole file.
 The project-relative path and selector identify an `OutlineId` under
 {cite}`requirements.sdk.sources.source_nodes`. The Rust operation accepts the
 `OutlineId` directly. It maps that outline identity into the application's
@@ -244,9 +247,9 @@ outline parser directly records no graph dependency; a tracked node read must
 enclose its use when its contents contribute to an assessment.
 :::
 
-## Listing source resources
+## Listing source files
 
-List resources when choosing a file or other source to inspect.
+List files when choosing a source to inspect.
 
 :::{req} list_sources.fn
 The SDK offers this `Sources` method. Its source tools expose the
@@ -257,7 +260,7 @@ impl Sources {
     // ...
 
     /// List file identities within this scope.
-    pub async fn list(&self, scope: &SourceScope) -> Result<Vec<ResourceId>, SourceError>;
+    pub async fn list(&self, scope: &SourceScope) -> Result<Vec<PathBuf>, SourceError>;
 
     // ...
 }
@@ -273,8 +276,8 @@ It returns the file identities supplied by `Sources::list` under
 
 :::{req} list_sources.inputs
 The SDK's `list_sources` result is discovery and
-records neither the returned identity set nor the resources' contents as
-evidence inputs. Adding or removing a listed resource therefore does not by
+records neither the returned identity set nor the files' contents as
+evidence inputs. Adding or removing a listed file therefore does not by
 itself invalidate the evidence. Subsequent tracked reads record their own
 dependencies.
 :::
@@ -292,8 +295,11 @@ command through its source tools.
 impl Sources {
     // ...
 
-    /// Parse a source resource.
-    pub async fn parse(&self, id: &ResourceId) -> Result<ParsedSource, SourceError>;
+    /// Outline one file snapshot.
+    pub async fn parse(
+        &self,
+        path: impl AsRef<Path>,
+    ) -> Result<OutlineContent, SourceError>;
 
     // ...
 }
@@ -301,14 +307,14 @@ impl Sources {
 :::
 
 :::{req} outline_source.behavior
-The SDK's `outline_source` tool accepts a resource identity and delegates to
+The SDK's `outline_source` tool accepts a project-relative file path and delegates to
 `Sources::parse`. It reads one file snapshot and parses those supplied bytes
 with the outline library, respecting the project scope under
 {cite}`requirements.sdk.sources.local_provider`.
 
-The tool returns the selectors and kinds in `parsed.contents.outline()`
+The tool returns the selectors and kinds in the returned `OutlineContent::outline()`
 under {cite}`requirements.sdk.outlines.items`. The Rust parse result retains
-the resource identity and the parsed source snapshot under
+the file identity and the parsed source snapshot under
 {cite}`requirements.sdk.sources.provider_results.parse_snapshot`.
 :::
 
@@ -343,7 +349,7 @@ The SDK's source tools expose `search_text` with a regular
 expression and optional scope prefix, context-window size, and match limit.
 These correspond to `TextQuery`'s `pattern`, `scope`, `context_lines`, and
 `limit`. It uses `Sources::search_text` and returns each match's
-resource identity, line number, and excerpt, together with whether the search
+file path, line number, and excerpt, together with whether the search
 is complete, under
 {cite}`requirements.sdk.sources.provider_results.search_completeness`.
 :::
@@ -384,8 +390,8 @@ impl Sources {
 The SDK's source tools expose `search_structure` with a language
 and an ast-grep rule, plus an optional scope prefix and match limit. It uses
 `Sources::search_structure`; `StructuralQuery` holds the `language`,
-`rule`, `scope`, and `limit`. Each match contains its resource identity, item
-selector, and excerpt. The caller maps the resource and selector to an
+`rule`, `scope`, and `limit`. Each match contains its file path, item
+selector, and excerpt. The caller maps the path and selector to an
 `OutlineId` under {cite}`requirements.sdk.sources.source_nodes` when selecting
 a tracked read. The result also states whether the search is complete, under
 {cite}`requirements.sdk.sources.provider_results.search_completeness`.

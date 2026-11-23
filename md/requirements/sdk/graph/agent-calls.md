@@ -23,7 +23,7 @@ instructions. Node inputs are selected through the tracked operations below.
 ```rust,ignore
 use std::borrow::Cow;
 
-/// Reusable agent instructions, defined in trust_but_verify::procedure.
+/// Reusable agent instructions, defined in trust_but_verify.
 pub trait Context {
     /// Supply reusable text for the beginning of the agent's prompt.
     fn contents(&self) -> Cow<'_, String>;
@@ -71,7 +71,7 @@ flowchart LR
 ```
 
 :::{req} judge
-`trust_but_verify::procedure` exposes `Ask` and its public `ContextPhase` and
+`trust_but_verify` exposes `Ask` and its public `ContextPhase` and
 `NodePhase` state types. The validation context starts a builder:
 
 ```rust,ignore

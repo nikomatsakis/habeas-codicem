@@ -66,7 +66,7 @@ Attributes attached to an item participate in that item's hash.
 :::
 
 ```rust,ignore
-use trust_but_verify::domain::NodeContents;
+use trust_but_verify::NodeContents;
 use trust_but_verify::outline::OutlineContent;
 
 let select = |source: &str| {

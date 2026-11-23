@@ -15,18 +15,18 @@ criterion values. [Agent calls](agent-calls.md) and
 A *criterion* is a value describing a test to perform on a
 {term}`requirements.sdk.graph.node`.
 In the SDK, its type implements
-[`Criterion<D>`](../../../rustdocs/trust_but_verify/graph/trait.Criterion.html) for the
+[`Criterion<D>`](../../../rustdocs/trust_but_verify/trait.Criterion.html) for the
 {term}`requirements.sdk.application_domain`. Its
 members describe the question's answer, identity, review rules, and execution.
 :::
 
 :::{req} criterion_trait
 Every {term}`requirements.sdk.graph.validation.criterion` type implements
-`trust_but_verify::graph::Criterion<D>` for its
+`trust_but_verify::Criterion<D>` for its
 {term}`requirements.sdk.application_domain`:
 
 ```rust,ignore
-// Defined in trust_but_verify::graph.
+// Defined in trust_but_verify.
 pub trait Criterion<D: Domain>: Send + Sized {
     // ...
 }
@@ -38,7 +38,7 @@ pub trait Criterion<D: Domain>: Send + Sized {
 :::{req} criterion_trait.answer
 {cite}`requirements.sdk.graph.validation.criterion_trait`
 
-[`Criterion::Ok`](../../../rustdocs/trust_but_verify/graph/trait.Criterion.html#associatedtype.Ok)
+[`Criterion::Ok`](../../../rustdocs/trust_but_verify/trait.Criterion.html#associatedtype.Ok)
 defines the criterion's completed answer:
 
 ```rust,ignore
@@ -97,7 +97,7 @@ impl Criterion<HabeasDomain> for BehavioralAdequacy {
 
 A *source node* is the {term}`requirements.sdk.graph.node` on which a
 {term}`requirements.sdk.graph.validation.criterion` is evaluated, identified by
-[`Criterion::source_node_id`](../../../rustdocs/trust_but_verify/graph/trait.Criterion.html#tymethod.source_node_id).
+[`Criterion::source_node_id`](../../../rustdocs/trust_but_verify/trait.Criterion.html#tymethod.source_node_id).
 Tracked reads of its own contents or those of other nodes can supply inputs
 without changing the criterion's source node.
 :::
@@ -128,9 +128,9 @@ pub trait Criterion<D: Domain>: Send + Sized {
 A *criterion path* is an ordered sequence of string segments identifying a
 {term}`requirements.sdk.graph.validation.criterion`'s question relative to its
 {term}`requirements.sdk.graph.validation.source_node`.
-[`CriterionPath`](../../../rustdocs/trust_but_verify/graph/struct.CriterionPath.html)
+[`CriterionPath`](../../../rustdocs/trust_but_verify/struct.CriterionPath.html)
 represents this path, while
-[`NodeId`](../../../rustdocs/trust_but_verify/domain/trait.Domain.html#associatedtype.NodeId)
+[`NodeId`](../../../rustdocs/trust_but_verify/trait.Domain.html#associatedtype.NodeId)
 and its stable
 {term}`requirements.sdk.graph.node_path` identify the source node.
 For example, a requirement might use `["text"]`, `["behavior"]`, and
@@ -141,11 +141,11 @@ For example, a requirement might use `["text"]`, `["behavior"]`, and
 :::{req} criterion_path
 {cite}`requirements.sdk.graph.validation.criterion_trait`
 
-`trust_but_verify::graph::CriterionPath` represents a
+`trust_but_verify::CriterionPath` represents a
 {term}`requirements.sdk.graph.validation.question_path`:
 
 ```rust,ignore
-// Defined in trust_but_verify::graph.
+// Defined in trust_but_verify.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct CriterionPath {
     segments: Vec<String>,
@@ -218,7 +218,7 @@ completed answer:
 ```rust,ignore
 use std::future::Future;
 
-// Defined in trust_but_verify::graph.
+// Defined in trust_but_verify.
 pub enum ValidationError<E> {
     Graph(E),
     NoAgentConfigured,

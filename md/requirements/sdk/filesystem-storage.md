@@ -12,7 +12,7 @@ saved {term}`requirements.sdk.graph.evidence.verification_evidence`.
 ```rust,ignore
 use std::path::PathBuf;
 use serde::{Serialize, de::DeserializeOwned};
-use trust_but_verify::graph::{CriterionPath, NodePath, Record};
+use trust_but_verify::{CriterionPath, NodePath, Record};
 
 /// A directory of JSON records. Send + Sync; load/store futures are Send.
 /// Defined in trust_but_verify::storage.
