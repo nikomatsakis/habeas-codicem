@@ -14,6 +14,51 @@ failures produce readable rendering diagnostics rather than a repository
 validation verdict.
 :::
 
+## Include Rustdoc
+
+::::{req} rustdocs
+A book can import a generated Rustdoc site through its Habeas preprocessor
+configuration:
+
+```toml
+[preprocessor.habeas.rustdocs]
+path = "target/doc"
+crate = "habeas_sdk"
+```
+
+`path` identifies the generated documentation directory relative to the project
+root; `crate` selects the landing page at `<crate>/index.html`. A chapter
+consisting of one closed, standalone `{rustdocs}` directive with an empty body
+becomes a navigation entry into that crate's Rustdoc site. The directive opens
+with at least three colons and closes with at least as many:
+
+```text
+:::{rustdocs}
+:::
+```
+
+The built book includes the imported site under `rustdocs/`, preserving its
+pages, assets, search data, and links. Selecting the chapter opens the native
+Rustdoc page in the same tab, with Rustdoc's own layout and navigation. Relative
+links from book chapters to imported item pages resolve when the publication is
+hosted under a URL prefix.
+
+The build reports a readable error if the directive has no import configuration, the
+configured directory, crate landing page, or any imported site file cannot be
+read, the import fails, or an imported file would overwrite a book output file.
+::::
+
+:::{req} rustdocs.publication
+This project's CI generates Rustdoc for the workspace before building the book.
+The published documentation includes both the book and that generated Rustdoc
+site in the same GitHub Pages deployment under
+{cite}`requirements.integration.ci`. The appendix contains a "Rustdocs" entry
+opening the `habeas_sdk` crate's documentation under
+{cite}`requirements.index.rustdocs`.
+:::
+
+## Browse requirements and evidence
+
 :::{req} chapter
 An mdBook chapter MAY contain one standalone `{requirements-index}` directive with an empty body, opened by at least three colons and closed by at least as many. A book MUST contain no more than one such directive. `habeas mdbook` MUST render a requirements index listing all requirements defined in rendered chapters, each linking to its evidence detail page under {cite}`requirements.index.detail_pages`. When a directive is present, it MUST replace the directive with the index table; otherwise, it MUST generate the chapter specified by {cite}`requirements.index.chapter.default`.
 :::
