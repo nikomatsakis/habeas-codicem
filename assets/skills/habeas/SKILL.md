@@ -26,7 +26,7 @@ tracked by issue #51 and acknowledged by fenced `{fixme}` references.
 
       | Task | Skill |
       | --- | --- |
-      | A design session, or any change to behavior, code, tests, or requirement text, including renaming code in place | habeas-requirements |
+      | A design session, or any change to behavior, code, tests, or requirement text, including renaming code in place; writing or revising reference chapters | habeas-requirements |
       | Moving code, tests, or requirements to another file, chapter, or outline node, or renaming a requirement, without changing them | habeas-refactor |
       | Creating or refreshing evidence; `habeas coverage` or `habeas status` reports Habeas findings | habeas-evidence |
       | Adopting Habeas in an existing codebase, or most of the code has no references | habeas-bootstrap-requirements |

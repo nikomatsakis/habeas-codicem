@@ -318,7 +318,7 @@ fn project_book_uses_the_repository_local_preprocessor_alias() {
     );
     assert_eq!(
         preprocessor["renderers"],
-        toml::Value::Array(vec!["html".into()])
+        toml::Value::Array(vec!["habeas".into()])
     );
     let cargo = repository_toml(".cargo/config.toml");
     assert_eq!(
@@ -347,7 +347,7 @@ fn crate_targets_are_declared_in_src() {
 #[test]
 fn book_links_to_the_repository_and_main_branch_edit_pages() {
     let book = repository_toml("book.toml");
-    let html = &book["output"]["html"];
+    let html = &book["output"]["habeas"]["html"];
     assert_eq!(
         html["git-repository-url"].as_str(),
         Some("https://github.com/nikomatsakis/habeas-codicem")
@@ -420,7 +420,7 @@ fn ci_tests_pull_requests_and_main_then_deploys_the_book_from_main() {
 
     let book = repository_toml("book.toml");
     assert_eq!(
-        book["output"]["html"]["site-url"].as_str(),
+        book["output"]["habeas"]["html"]["site-url"].as_str(),
         Some("/habeas-codicem/")
     );
 }

@@ -16,6 +16,19 @@ validation verdict.
 
 ## Include Rustdoc
 
+Use the Habeas HTML renderer to publish the book and the complete Rustdoc site:
+
+```toml
+[preprocessor.habeas]
+command = "habeas mdbook"
+renderers = ["habeas"]
+
+[output.habeas]
+command = "habeas mdbook render"
+```
+
+HTML options belong under `[output.habeas.html]`.
+
 ::::{req} rustdocs
 A book can import a generated Rustdoc site through its Habeas preprocessor
 configuration:

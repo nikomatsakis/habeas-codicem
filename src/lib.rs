@@ -24,6 +24,7 @@ mod evidence_format;
 mod redaction;
 mod refactor;
 mod rust_coverage;
+pub mod rustdocs;
 mod sdk;
 mod sites;
 mod structural;

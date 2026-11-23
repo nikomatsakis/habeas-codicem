@@ -13,6 +13,23 @@ changes in the revised text you return.
 Follow "Writing chapters" in the habeas-requirements skill. Review prose, API
 declarations, comments, and examples together for a clear explanation and
 checkable promises; illustrative examples do not automatically create promises.
+Check the surrounding reference chapter against that section's preferred flow
+and its two closing review questions. Check the distinct roles of definitions,
+requirements, and examples, and their definition → requirement(s) → example
+sequence where appropriate. Check that
+concepts are introduced before use and that each introduction develops a
+coherent concept before switching topics. Flag core explanations scattered
+across sections that force readers to assemble the concept themselves. Check
+that composition is established before its refinements, universal properties
+are stated explicitly, and comments stay focused on their declarations. Return
+mechanical fixes for paragraphs or comments that interrupt the explanation,
+recount rejected alternatives, or discuss unrelated internal mechanics.
+Preserve operational boundaries, failure cases, and recording guarantees when
+cutting prose.
+Check shared definitions and related declarations when an interface changes.
+They must describe the same composition and boundaries. Keep contract-specific
+introductions inside the requirement, and use `{term}` in assessed text when
+relying on a shared definition.
 
 Each requirement gets its own model assessment. The intended contract checks
 structure through implementation roots and behavior through tests independently;

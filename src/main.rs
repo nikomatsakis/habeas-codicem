@@ -110,6 +110,7 @@ enum Command {
 // {cite}`habeas:util`
 enum MdbookCommand {
     Supports { renderer: String },
+    Render,
 }
 
 #[derive(Subcommand)]
@@ -147,7 +148,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     if !matches!(
         cli.command,
         Command::Mdbook {
-            command: Some(MdbookCommand::Supports { .. })
+            command: Some(MdbookCommand::Supports { .. } | MdbookCommand::Render)
         } | Command::Setup { .. }
             | Command::Coverage { .. }
             | Command::CoverageCheck
@@ -183,7 +184,15 @@ fn main() -> Result<(), Box<dyn Error>> {
         Command::Mdbook { command: None } => {
             let (context, mut book) = mdbook_preprocessor::parse_input(io::stdin())?;
             habeas::preprocess_book(&mut book, &context.root)?;
+            habeas::rustdocs::preprocess(&mut book, &context.root, &context.config)?;
             serde_json::to_writer(io::stdout().lock(), &book)?;
+            Ok(())
+        }
+        Command::Mdbook {
+            command: Some(MdbookCommand::Render),
+        } => {
+            let context = mdbook_renderer::RenderContext::from_json(io::stdin())?;
+            habeas::rustdocs::render(context)?;
             Ok(())
         }
         // {impl}`requirements.cli.invocation`

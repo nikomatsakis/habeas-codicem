@@ -1,6 +1,6 @@
 ---
 name: habeas-requirements
-description: Use during design sessions and before changing code, tests, or requirement text in a project that tracks requirements with Habeas, even when the user only asks for a feature, bug fix, CLI flag, test, dependency bump, or wording tweak and never says "requirement". Drafts or edits requirements with the user (or confirms none change), has subagents review them, gets the user's agreement, then implements and adds `{impl}`/`{test}`/`{cite}` references. Not for moving code or requirements between files or outline nodes; use habeas-refactor. For validation findings, use habeas-evidence.
+description: Use during design sessions and before changing code, tests, or requirement text in a project that tracks requirements with Habeas, even when the user only asks for a feature, bug fix, CLI flag, test, dependency bump, or wording tweak and never says "requirement". Also use when writing or revising reference chapters in these projects. Drafts or edits requirements with the user (or confirms none change), has subagents review them, gets the user's agreement, then implements and adds `{impl}`/`{test}`/`{cite}` references. Not for moving code or requirements between files or outline nodes; use habeas-refactor. For validation findings, use habeas-evidence.
 ---
 
 # Habeas requirements
@@ -87,27 +87,84 @@ or outline node is a habeas-refactor task.
 
 ## Writing chapters
 
-Write chapters as explanations of the program, connecting its purpose and
-design to the interfaces, code, and tests. A useful progression for API chapters
-is purpose, commented API declaration, then a concrete example; adapt it to the
-reader and the subject.
+Write reference chapters as guided explanations of the program. Organize them
+around concepts and responsibilities, with module boundaries reflecting those
+responsibilities when explaining an API. A preferred flow is:
 
-- Explain the whole abstraction before its parts. Introduce one concept at a
-  time and explain why it exists before detailing its constraints.
+1. What the reader can do.
+2. The concept, introduced by name.
+3. Its public representation and essential relationships.
+4. Requirements explaining its operations and guarantees.
+5. A concrete example with links where the reader encounters related concepts.
+
+Within a concept, prefer **definition → requirement(s) → example**. Adapt the
+order to the reader and subject: an overview can introduce a running example
+before formal interfaces, and later chapters can develop that example.
+
+- Open with what the reader can do and how the chapter fits the surrounding
+  explanation. Use section headings that identify a concrete topic or task.
+- Show composition before its refinements. Introduce the whole and explain how
+  its constituent parts fit together, then develop each part or link to the
+  chapter that does. For example, introduce `Domain` and all its supertraits
+  together before explaining the shared error type.
+- Introduce one concept at a time. Establish its meaning before using it to
+  explain another concept, and explain why it matters before its constraints.
+  When practical, complete its introduction—definition, representation,
+  relevant guarantees, and concrete use—before switching topics. Keep related
+  aspects together so readers can understand the concept without assembling
+  fragments from later sections. Completeness is relative to the reader's
+  current task; subsidiary details can follow once the concept is established.
 - Begin a vocabulary definition's prose with the term in italics and its
   meaning, for example, "An *agent harness* is the conversation machinery …".
-  The prose should identify the term even when its badge and annotations are
-  hidden.
-- Let code express signatures, type relationships, and structure. Put meaning
-  and relevant semantic guarantees in comments beside the declaration; use prose
-  for motivation and connections instead of repeating facts the code expresses.
-- Use examples to show how an application maps its concepts into the API, such
-  as an application node identity becoming a path. Mark illustrative or omitted
-  code clearly so it cannot be mistaken for a promised interface.
+  Connect the concept to its representation in the program.
+- Layer definitions, requirements, examples, and citations onto a readable
+  narrative. Definitions establish vocabulary; requirements state promised
+  interfaces and guarantees; examples demonstrate concrete cases. Keep promised
+  contracts and their introductory explanation inside the relevant requirement.
+  The explanation should make sense with badges and annotations hidden.
+- Show public declarations in the project's language, or the relevant command
+  and configuration forms. Let them express signatures, type relationships,
+  and structure. Put meaning and semantic guarantees in comments beside the
+  declaration; keep each comment focused on that declaration's concept.
+  Use prose for motivation, connections, and interpretation.
+- Make universal properties explicit. "Every application domain implements
+  `Clone`" states a requirement; "a cloneable application domain" suggests that
+  cloning distinguishes a subset. Review qualifiers against the intended
+  membership and guarantees.
+- Explain an operation's returned information, observable effects, and relevant
+  errors where the operation is introduced. For tracked observations, explain
+  what is recorded and which changes invalidate it.
+- Develop a running example incrementally across related chapters. Use small,
+  focused examples that show how the reader's concepts map into the interface.
+  Mark illustrative or omitted code clearly so it cannot be mistaken for a
+  promised interface.
+- Name the component responsible for each action or policy. This makes data
+  flow and ownership concrete.
+- Link to definitions, requirements, and related sections where the reader
+  encounters the concept. Keep subsidiary topics in their own sections or
+  chapters. Use tables for comparisons and navigation when helpful.
+- Use `{term}` inside assessed requirements and checked citation passages when
+  relying on shared definitions, so those definitions become recorded inputs.
+  Connect repeated claims through checked citations to their contracts and
+  definition references to their vocabulary.
+  When an interface changes, reconcile its surrounding definitions and all
+  descriptions of its composition, as well as its declaration.
+- Check that every paragraph and code comment advances the explanation around
+  it. Remove tangents, decision history, commentary about rejected alternatives,
+  and internal mechanics unrelated to the public contract. Preserve meaningful
+  operational boundaries, failure cases, and recording guarantees.
 - Reduce conceptual overhead rather than aiming for fewer words. Keep a
   coherent API declaration together; split independently meaningful obligations.
+  A coherent explanation of one concept can span several separately assessed
+  requirements.
   Put detailed operational guarantees in the section that explains the
   operation, preserving guarantees that signatures cannot express.
+
+Before finishing a section, ask:
+
+- Can the reader explain this concept before leaving the section?
+- If this declaration changes, which definitions, examples, and neighboring
+  contracts must change with it?
 
 Express obligations clearly in ordinary prose or commented API declarations.
 RFC-style `MUST`, `SHOULD`, and `MAY` are optional: use them when they clarify a

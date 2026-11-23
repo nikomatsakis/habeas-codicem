@@ -46,3 +46,4 @@
 # Appendix
 
 - [Requirements index](./requirements-index.md)
+- [Rustdocs](./rustdocs.md)

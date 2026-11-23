@@ -49,11 +49,16 @@ pub(crate) struct RenderSources<'a> {
 impl SourceLinks {
     // {impl}`requirements.index.source_links`
     fn from_config(config: &Config) -> io::Result<Option<Self>> {
+        let html = if config.contains_key("output.habeas.html") {
+            "output.habeas.html"
+        } else {
+            "output.html"
+        };
         let repository = config
-            .get::<String>("output.html.git-repository-url")
+            .get::<String>(&format!("{html}.git-repository-url"))
             .map_err(io::Error::other)?;
         let edit_template = config
-            .get::<String>("output.html.edit-url-template")
+            .get::<String>(&format!("{html}.edit-url-template"))
             .map_err(io::Error::other)?;
         let (Some(repository), Some(edit_template)) = (repository, edit_template) else {
             return Ok(None);
@@ -1840,6 +1845,23 @@ Entities: &lt;entity&gt; &amp; &#x3c;numeric&#62;.
             .parse()
             .unwrap();
         let links = SourceLinks::from_config(&config).unwrap().unwrap();
+        let mut wrapped = Config::default();
+        wrapped
+            .set(
+                "output.habeas.html",
+                config
+                    .get::<serde_json::Value>("output.html")
+                    .unwrap()
+                    .unwrap(),
+            )
+            .unwrap();
+        assert_eq!(
+            SourceLinks::from_config(&wrapped)
+                .unwrap()
+                .unwrap()
+                .input_url("src/evidence.rs", 26, 37),
+            links.input_url("src/evidence.rs", 26, 37)
+        );
         assert_eq!(
             links.input_url("src/evidence.rs", 26, 37).as_deref(),
             Some("https://github.com/example/project/blob/release/src/evidence.rs#L26-L37")
