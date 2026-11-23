@@ -58,14 +58,22 @@ async fn execute(
 }
 ```
 
-The builder methods determine what is given to the agent:
+The [`ask` builder](agent-calls.md#build-a-request) determines what is given to
+the [configured agent](agent-harness.md#configure-the-supplied-harness):
 
-- `context` provides common context, including the question. These calls come
-  first so the provider can cache the shared prompt prefix.
-- `contents_of_current_node()` provides the [contents](fingerprinting.md) of the
-  criterion's source node: here, the requirement.
-- `contents_of_successors(label)` provides the [contents](fingerprinting.md) of
-  its successors with that label: here, the requirement's tests.
+- [`context`](agent-calls.md#compose-reusable-context) provides common context,
+  including the question. These calls come first so the provider can cache the
+  shared prompt prefix.
+- [`contents_of_current_node()`](agent-calls.md#deliver-and-record-node-inputs)
+  provides the [contents](fingerprinting.md) of the criterion's source node:
+  here, the requirement.
+- [`contents_of_successors(label)`](agent-calls.md#deliver-and-record-node-inputs)
+  provides the [contents](fingerprinting.md) of its successors with that label:
+  here, the requirement's tests.
+
+For any additional information the answer relies on, use
+[tracked context tools](context-tools.md), including for filesystem or network
+inputs.
 
 :::
 
@@ -82,28 +90,24 @@ application check when the answer may be stale.
 {cite}`requirements.sdk.graph.evidence.inputs`
 :::
 
-Habeas currently runs one combined `Review` criterion at `["review"]`; its
-execution selects the requirement and mandatory inputs and applies Habeas's
-review policy. This `BehavioralAdequacy` example illustrates how that harness can
-be reused for a more specific question.
-[Putting it together in Habeas](../habeas.md) follows the current review.
-
-[Agent calls](agent-calls.md) explains the `ask()` builder, prompt construction,
-and typed answers. [Agent harness](agent-harness.md) explains how providers and
-tools are configured. [Context tools](context-tools.md) explains tracked
-source discovery and content reads. Use tracked operations for information the
-answer relies on, including filesystem or network inputs.
-
 :::{req} deterministic_procedures
 `Criterion::execute` can compute an answer without a configured model provider.
 A criterion can compute its answer directly using tracked inputs; deterministic
 execution needs no configured agent. Evidence storage is still required.
 :::
 
-## Use tracked inputs directly
+:::{cite} requirements.sdk.graph.execution.deterministic_procedures
+A criterion can also compute its answer with deterministic Rust code.
+Its `ValidationContext` exposes the [inspection operations](context-tools.md)
+used by the agent's graph tools.
+[Searches and outlines](context-tools.md#find-a-node-then-read-its-contents)
+help locate code to inspect; tracked reads and edge selections record input
+identities and fingerprints, so changes to those inputs can invalidate the
+resulting evidence.
 
-A criterion can also read inputs and compute part or all of its answer directly.
-The context exposes the source identity and tracked graph operations:
-
-[Context tools](context-tools.md) covers content reads, filesystem exploration,
-and source search.
+{cite}`requirements.sdk.graph.context-tools.shared_context`
+{cite}`requirements.sdk.graph.context-tools.search_text.behavior`
+{cite}`requirements.sdk.graph.context-tools.outline_source.behavior`
+{cite}`requirements.sdk.graph.evidence.inputs`
+{cite}`requirements.sdk.graph.evidence.checking_records`
+:::
