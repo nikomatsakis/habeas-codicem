@@ -28,7 +28,7 @@ Every {term}`requirements.sdk.graph.validation.criterion` type implements
 ```rust,ignore
 // Defined in habeas_sdk::graph.
 pub trait Criterion<D: Domain>: Send + Sized {
-    // ... members introduced in the following sections and chapters ...
+    // ... members introduced in the following sections ...
 }
 ```
 :::
@@ -81,7 +81,7 @@ struct TestReview {
 impl Criterion<HabeasDomain> for BehavioralAdequacy {
     type Ok = TestReview;
 
-    // ... remaining members introduced in the following sections and chapters ...
+    // ... remaining members introduced in the following sections ...
 }
 ```
 :::
@@ -183,7 +183,7 @@ pub trait Criterion<D: Domain>: Send + Sized {
     /// Change it when an old answer should no longer be reused.
     fn revision(&self) -> String;
 
-    // ... execute is introduced in Criteria evaluation ...
+    // ... execute is introduced below ...
 }
 ```
 
@@ -223,7 +223,7 @@ pub trait Criterion<D: Domain>: Send + Sized {
         cx: &mut ValidationContext<'_, D>,
     ) -> impl Future<Output = Result<Self::Ok, ValidationError<D::Error>>> + Send;
 
-    // ... answer and identity members introduced in Criteria definition ...
+    // ... answer and identity members introduced above ...
 }
 ```
 
