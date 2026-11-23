@@ -2,7 +2,7 @@
   "requirement": "Repository validation MUST continue after a failed check and report every failed\ncheck it finds in one run, each as a {term}`requirements.ci.validation_error`.\nThis is a convention for every validation error; the requirement for each check\nstates which conditions that check reports. A file that cannot be parsed, such as\na malformed `habeas.toml`, `book.toml`, or evidence file, is one failed check:\nits error MAY report only the first parse or decoding problem in that file, and\nchecks that do not depend on its contents MUST still run.\n\nThe code that sequences the repository's checks carries out the first paragraph.\nA repository-validation function that collects validation errors MUST hold them\nin a parameter or local variable named `errors`, and a function with such a\nvariable is a site below; authoring code that collects errors only to abort is\nnot one. After one of its checks fails, a site MUST still run every later check\nthat does not depend on the failed check's result, including later checks in the\nsame loop iteration, and MUST NOT report one failure twice.\n\n::::{sites} error_accumulators\n```yaml\nlanguage: rust\npaths: [src, crates/habeas-sdk/src]\nexclude: [src/authoring/inputs.rs, src/authoring/tools.rs]\nrule:\n  kind: function_item\n  has:\n    stopBy: { kind: function_item }\n    any:\n      - kind: parameter\n        has: { field: pattern, regex: \"^errors$\" }\n      - kind: let_declaration\n        has: { field: pattern, regex: \"^errors$\" }\n  not:\n    inside:\n      stopBy: end\n      kind: mod_item\n      has: { field: name, regex: \"^tests$\" }\nmatch:\n  - \"fn check(value: &str, errors: &mut Vec<String>) {}\"\n  - |\n    fn run() {\n        let mut errors: BTreeSet<String> = BTreeSet::new();\n        check(\"\", &mut errors);\n    }\nno_match:\n  - \"fn check(value: &str, discovery_errors: &mut Vec<String>) {}\"\n  - |\n    fn run() {\n        let mut problems = Vec::new();\n        check(\"\", &mut problems);\n    }\n  - |\n    mod tests {\n        fn check(errors: &mut Vec<String>) {}\n    }\n```\n::::\n\n::::{violations} early_exits\n```yaml\nlanguage: rust\npaths: [src, crates/habeas-sdk/src]\nwithin: error_accumulators\nrule:\n  any:\n    - kind: try_expression\n    - kind: return_expression\n    - kind: continue_expression\n    - kind: break_expression\nmatch:\n  - |\n    fn check(v: &Value, errors: &mut Vec<String>) -> Option<u8> {\n        let n = v.as_u64()?;\n        if v.is_null() { errors.push(\"null\".into()); }\n        Some(n as u8)\n    }\n  - |\n    fn check(items: &[Value], errors: &mut Vec<String>) {\n        for item in items {\n            if !item.is_object() { errors.push(\"object\".into()); continue; }\n            if item.is_null() { errors.push(\"null\".into()); }\n        }\n    }\n  - |\n    fn check(v: &Value, errors: &mut Vec<String>) {\n        if !v.is_object() { errors.push(\"object\".into()); return; }\n        if v.is_null() { errors.push(\"null\".into()); }\n    }\n  - |\n    fn check(items: &[Value], errors: &mut Vec<String>) {\n        for item in items {\n            if !item.is_object() { errors.push(\"object\".into()); break; }\n        }\n        if items.is_empty() { errors.push(\"empty\".into()); }\n    }\nno_match:\n  - |\n    fn parse(v: &Value) -> Option<u8> {\n        let n = v.as_u64()?;\n        Some(n as u8)\n    }\n```\n::::",
   "determination": true,
   "rationale": "**Verdict:** I found no adequacy gap in the tests or the site query for `requirements.ci.errors`.\n\n**Obligations and where they are handled**\n- **Obligation 1:** Validation continues after a failed check and reports every failed check in one run.\n  - This is carried out by the sequencing code in `src/evidence.rs#fn[inspect_repository_with_progress]`.\n  - It is tested by `failed_checks_do_not_hide_later_independent_checks`. That test mixes invalid names, bad inputs, a missing file and misplaced `{fixme}` references, and asserts that every expected message appears.\n  - It is also tested by `collects_missing_orphan_format_false_and_changed_line_errors`, `configuration_and_dependency_failures_do_not_stop_later_checks`, `git_index_failure_is_reported_once_and_later_checks_still_run`, and `schema_rejects_each_malformed_field_and_input_form`.\n  - The `tests/references.rs` tests `unclosed_fences_still_report_unknown_names` and `malformed_citation_entries_do_not_hide_later_independent_errors` cover later independent checks within the references and citations phases.\n  - `src/execution_coverage/check.rs` has `accepted_exceptions_cannot_waive_invalid_measurement_and_checks_still_collect_errors`.\n  - In `src/sites.rs`, `failed_site_queries_do_not_repeat_errors_through_dependent_violations` covers site discovery. `a_violation_query_needs_a_site_query` and `within_cannot_name_another_violation_query` check query-placement errors.\n- **Obligation 2:** An unparseable file counts as one failed check, and checks that do not depend on its contents still run.\n  - Malformed `habeas.toml` and `book.toml` are exercised in `configuration_and_dependency_failures_do_not_stop_later_checks`. The test asserts that each is reported exactly once and that evidence-file, reference, and coverage-setup checks still report.\n  - `tests/commands.rs#fn[status_loads_nearest_workspace_file_without_validating_authoring]` covers the same case through `status` and `info`.\n  - A malformed evidence file (`broken.json`) appears in `collects_missing_orphan_format_false_and_changed_line_errors` and in `inspection_progress_preserves_validation_and_finishes_each_phase`. The latter also covers an unparseable Rust source file, and asserts that ordinary helpers add no annotation errors.\n  - An unparseable Rust source is also covered in the coverage test.\n  - \"MAY report only the first problem\" is optional, so it needs no test.\n- **Obligation 3:** A failure is never reported twice.\n  - Dedup assertions are in `failed_checks_do_not_hide_later_independent_checks`, `configuration_and_dependency_failures_do_not_stop_later_checks`, `git_index_failure_is_reported_once_and_later_checks_still_run`, `an_unlistable_review_directory_is_reported_once`, `an_unreadable_record_is_reported_once`, and the sdk test `every_review_kind_loads_both_formats_and_reports_each_application_failure_once`.\n- **Obligation 4:** Each site runs every later independent check and does not double-report.\n  - This is upheld by each site and checked in each site's own review, so I did not assess it here.\n- **Obligation 5:** Each failure is reported as a `requirements.ci.validation_error`.\n  - Message form is the subject of the diagnostics requirement and its own tests. I treat it as outside this task.\n\n**Site query `error_accumulators`**\n- I ran `requirements.ci.errors/error_accumulators` and read the matches. They are real accumulator functions, such as `DiscoverySources::files` and `walk` in the SDK crate, `validate_evidence_file` and `book_source_dir` in `src/evidence.rs`, `citations.rs#fn[validate]`, and `inspect_repository_with_progress`.\n- I also searched for other error-collecting constructs. The remaining collectors under other names are not repository-validation accumulators.\n  - `load_definitions` and `reference_set_digest_for` collect `failures` but abort on any failure. Source comments there say they are not validation sites.\n  - `execution_coverage/book.rs#fn[populate_in]` and `load_saved` hold `diagnostics` for reporting rather than as a validation error list. `load_saved` has an inner `errors` local and is matched.\n- Authoring-only collectors in `src/authoring/inputs.rs` and `src/authoring/tools.rs` are excluded, as the requirement's scope states.\n- Test modules named `tests` are excluded by the `not inside mod tests` clause. The other `cfg(test)` modules (`fixtures`, `ownership_tests`, `submission_description_tests`) contain no `errors` accumulators.\n- I found no place the query misses and no out-of-scope place it selects.\n\n**Query snippets**\n- Match snippets: an `errors` parameter, and a `let mut errors: BTreeSet` local.\n- No-match snippets: `discovery_errors`, `problems`, and a function inside `mod tests`.\n- The nested-function `stopBy` condition has no snippet of its own, which is not a gap by itself.\n- Violation query `early_exits`: its match snippets cover `?`, `continue`, `return`, and `break` inside accumulator functions. Its no_match snippet is a function with no accumulator. The query does not catch panics, `unwrap`, or `process::exit` as early exits. That is a limitation of the heuristic, not a gap.\n\n**Acknowledgments:** none, and none are needed.",
-  "references": "691fd6bd624b4c8f838b869bac71e20869976911a46320cec082c7f665ec6577",
+  "references": "98d05ae4d5521d1381d78bcdea7364f1a779f84110055e8ac19466ef7e59baed",
   "inputs": [
     {
       "requirements": "requirements.ci.errors",
@@ -215,12 +215,12 @@
       ]
     },
     {
-      "file": "crates/habeas-sdk/src/access.rs",
+      "file": "crates/trust-but-verify/src/access.rs",
       "item": "impl[DiscoverySources]/fn[files]",
       "hash": "c23d7be1e1f0c41c9a26b2ce1e4f98fc6aca2b1932c9e7f767babe3997084880"
     },
     {
-      "file": "crates/habeas-sdk/src/access.rs",
+      "file": "crates/trust-but-verify/src/access.rs",
       "item": "impl[DiscoverySources]/fn[walk]",
       "hash": "916d46df740d97d0e696c09c5958dd8adcb0905dfc6e058938c19a35a0323b4f"
     },
@@ -375,7 +375,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "691fd6bd624b4c8f838b869bac71e20869976911a46320cec082c7f665ec6577"
+          "value": "98d05ae4d5521d1381d78bcdea7364f1a779f84110055e8ac19466ef7e59baed"
         }
       ]
     },
@@ -708,14 +708,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/habeas-sdk/src/access.rs"
+              "location": "crates/trust-but-verify/src/access.rs"
             },
             "selector": "impl[DiscoverySources]/fn[files]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "cbaa82a27abd08924fc2ca23bdbf148fb8893a51cf314c1cf78d3fd8a423c29d"
+          "value": "ba97193ac9726981c19dea56478fd0c5aa3d57d5f0ef1ca525ab30b4eb01b341"
         }
       ]
     },
@@ -725,14 +725,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/habeas-sdk/src/access.rs"
+              "location": "crates/trust-but-verify/src/access.rs"
             },
             "selector": "impl[DiscoverySources]/fn[walk]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "cd14778bcb827819ec41c9553af5f9451ca75fa505cacf5fe2862e293b601d23"
+          "value": "090042cde03fe78059efd0fb42a2ab90c1db3177066cb89031a8c19f5ce71604"
         }
       ]
     },
