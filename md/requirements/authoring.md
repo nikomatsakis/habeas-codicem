@@ -2253,8 +2253,10 @@ usage records. Start with one concurrent assessment and a small subject set
 before increasing the experiment size. Specify each comparison model explicitly.
 
 Literal credentials are supported but not recommended, especially in a
-workspace file that might be committed. Prefer the profile and environment
-references above. If needed, this complete `habeas.toml` illustrates the fields;
+workspace file that might be committed. Prefer AWS profiles (`aws_profile`) or
+environment-variable references (`api_key_env`).
+Workspace files may be committed or read as source when explicitly allowed.
+If needed, this complete `habeas.toml` illustrates the fields;
 replace every uppercase placeholder with your own value and keep the resulting
 file out of version control. Omit `session_token` for credentials without one.
 

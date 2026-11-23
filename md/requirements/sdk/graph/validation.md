@@ -351,7 +351,8 @@ Ok(TestReview {
 ```
 
 In this example, HC's validation policy requires `adequate` to be `true`.
-HC reports the inadequate tests and `habeas status` returns an error, even when
-the saved answer is current. The SDK returns the completed answer;
-HC applies the judgment that makes this a validation failure.
+HC reports the inadequate tests and `habeas status` shows a failed determination,
+even when the saved answer is current. Repository validation rejects the negative
+assessment. The SDK returns the completed answer; HC applies the judgment that
+makes this a validation failure.
 :::
