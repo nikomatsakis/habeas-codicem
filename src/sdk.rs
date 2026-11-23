@@ -6,11 +6,14 @@ use crate::{
     inputs::{InputSelector, OutlineCache, ResolvedInput},
 };
 use std::{collections::BTreeMap, path::Path};
-use trust_but_verify::{
-    __habeas::resource::{OutlineId, ResourceId},
-    Domain, NodeContents,
-    graph::{CriterionPath, Fingerprint, InspectionContext, NodePath},
-};
+use trust_but_verify::domain::Domain;
+use trust_but_verify::domain::NodeContents;
+use trust_but_verify::graph::CriterionPath;
+use trust_but_verify::graph::Fingerprint;
+use trust_but_verify::graph::InspectionContext;
+use trust_but_verify::graph::NodePath;
+use trust_but_verify::resource::OutlineId;
+use trust_but_verify::resource::ResourceId;
 
 // {cite}`habeas:util`
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -463,7 +466,8 @@ pub(crate) fn resolve_input(
 mod tests {
     use super::*;
     use std::fs;
-    use trust_but_verify::graph::{Dependency, Record};
+    use trust_but_verify::graph::Dependency;
+    use trust_but_verify::graph::Record;
 
     // {test}`requirements.sdk.domain`
     // {test}`requirements.sdk.graph.agent-calls.judge.rendering`

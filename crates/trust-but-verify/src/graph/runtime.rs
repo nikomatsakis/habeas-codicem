@@ -8,7 +8,7 @@ pub struct Validator<D: Domain> {
     domain: D,
     agent: Option<Arc<dyn Agent<D>>>,
     agent_config: Option<crate::agent::AgentConfig>,
-    source_tools: Option<Arc<dyn crate::agent::ToolFactory<D>>>,
+    source_tools: Option<Arc<dyn crate::agent_runtime::ToolFactory<D>>>,
 }
 
 impl<D: Domain> Validator<D> {
@@ -32,12 +32,14 @@ impl<D: Domain> Validator<D> {
         D::Error: std::fmt::Display,
     {
         self.agent_config = Some(config.clone());
-        self.agent = Some(Arc::new(crate::agent::ConfiguredAgent::<D>::with_tools(
-            config,
-            self.source_tools
-                .clone()
-                .unwrap_or_else(|| Arc::new(crate::agent::NoTools)),
-        )));
+        self.agent = Some(Arc::new(
+            crate::agent_runtime::ConfiguredAgent::<D>::with_tools(
+                config,
+                self.source_tools
+                    .clone()
+                    .unwrap_or_else(|| Arc::new(crate::agent_runtime::NoTools)),
+            ),
+        ));
         self
     }
 
@@ -163,24 +165,23 @@ impl<D: Domain> Validator<D> {
     }
 }
 
-impl<D: crate::SourceNodes + 'static> Validator<D>
+impl<D: crate::domain::SourceNodes + 'static> Validator<D>
 where
     D::EdgeLabel: serde::de::DeserializeOwned + schemars::JsonSchema + PartialEq,
     D::Error: std::fmt::Display,
 {
     // {impl}`requirements.sdk.sources.provider.attachment`
-    pub fn with_sources(mut self, sources: crate::Sources) -> Self {
-        let tools: Arc<dyn crate::agent::ToolFactory<D>> =
-            Arc::new(crate::agent::project_sources::ProjectSources {
+    pub fn with_sources(mut self, sources: crate::sources::Sources) -> Self {
+        let tools: Arc<dyn crate::agent_runtime::ToolFactory<D>> =
+            Arc::new(crate::agent_runtime::project_sources::ProjectSources {
                 sources,
                 domain: self.domain.clone(),
             });
         self.source_tools = Some(tools.clone());
         if let Some(config) = &self.agent_config {
-            self.agent = Some(Arc::new(crate::agent::ConfiguredAgent::<D>::with_tools(
-                config.clone(),
-                tools,
-            )));
+            self.agent = Some(Arc::new(
+                crate::agent_runtime::ConfiguredAgent::<D>::with_tools(config.clone(), tools),
+            ));
         }
         self
     }

@@ -1,47 +1,32 @@
-//! Selectable source contents with retained text and structural fingerprints.
-//!
-//! [`OutlineContent`] loads a file or supplied snapshot, selects an item, and
-//! implements [`crate::NodeContents`]. [`OutlineLang`] supplies language rules;
-//! [`languages`] contains the bundled languages and plain-text fallback.
+//! Internal parser machinery for [`crate::outline::OutlineContent`].
+//! Bundled public language rules live in [`crate::outline::languages`].
 
-mod contents;
 mod hash;
-pub(crate) mod language;
-pub mod languages;
+#[doc(hidden)]
+pub mod language;
+pub(crate) use crate::outline::languages;
 mod markdown;
 pub(crate) mod plain;
-pub(crate) mod profile;
-mod selector;
-pub use contents::{Outline, OutlineContent, OutlineId, OutlineItem, OutlineLang};
-
-#[cfg(feature = "habeas-integration")]
 #[doc(hidden)]
-pub mod integration {
-    pub use super::language::{LanguageProvider, Profile, Registry};
-    pub use super::{
-        LegacyOutline as Outline, OutlineComment, OutlineError, OutlineNode, ResolveError,
-        comment_ranges, parse_redacted, parse_with,
-    };
-    #[cfg(feature = "default-languages")]
-    pub use super::{RUST_PROFILE, is_markdown_path, parse, profile_for_path};
-}
+pub mod profile;
+pub(crate) use crate::outline::OutlineError;
+pub(crate) use crate::outline::selector;
 
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 
 use tree_sitter::{Node, Parser, Tree};
 
-#[cfg(feature = "default-languages")]
-#[doc(hidden)]
-pub use crate::outline::languages::rust::PROFILE as RUST_PROFILE;
+#[cfg(all(feature = "default-languages", test))]
+use crate::outline::languages::rust::PROFILE as RUST_PROFILE;
 use crate::redaction::Redaction;
 use hash::Encoder;
-pub(crate) use profile::{LanguageProvider, Profile};
-use profile::{NameRule, text};
 #[cfg(feature = "default-languages")]
 #[doc(hidden)]
-pub use profile::{is_markdown_path, profile_for_path};
-pub use selector::{HASH_DIGITS, Label, Segment, SelectorError, parse_selector};
+use profile::profile_for_path;
+pub(crate) use profile::{LanguageProvider, Profile};
+use profile::{NameRule, text};
+pub(crate) use selector::{HASH_DIGITS, Label, Segment, SelectorError, parse_selector};
 
 /// One outline node. Line numbers are one-based and inclusive.
 #[derive(Clone, Debug)]

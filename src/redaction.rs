@@ -1,8 +1,10 @@
 use std::{fs, ops::Range, path::Path};
 
 use toml_edit::{Item, Value};
-use trust_but_verify::__habeas::redaction::{Redaction as SourceRedaction, Region};
-pub(crate) use trust_but_verify::__habeas::redaction::{redact_lines, redact_text};
+use trust_but_verify::redaction::Redaction as SourceRedaction;
+use trust_but_verify::redaction::Region;
+pub(crate) use trust_but_verify::redaction::redact_lines;
+pub(crate) use trust_but_verify::redaction::redact_text;
 
 /// HC's configuration recognition layered on the SDK's fixed secret rules.
 #[derive(Clone, Debug, Default)]

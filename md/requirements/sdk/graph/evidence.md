@@ -11,9 +11,9 @@ contents without replacing one another's answers.
 *Evidence* is a {term}`requirements.sdk.graph.validation.criterion`'s completed
 answer, its review-rule revision, and the recorded inputs used to produce it.
 It belongs to the criterion's source node and criterion path.
-[`Fingerprinted`](../../../rustdocs/trust_but_verify/struct.Fingerprinted.html)
+[`Fingerprinted`](../../../rustdocs/trust_but_verify/graph/struct.Fingerprinted.html)
 carries the typed answer and these observations;
-[`Record`](../../../rustdocs/trust_but_verify/struct.Record.html) holds the
+[`Record`](../../../rustdocs/trust_but_verify/graph/struct.Record.html) holds the
 encoded answer, revision, and dependencies for storage under that
 source/criterion key.
 :::
@@ -86,7 +86,7 @@ the criterion's answer type.
 
 :::{req} inputs
 ```rust,ignore
-// Defined in trust_but_verify.
+// Defined in trust_but_verify::graph.
 /// A completed answer and the inputs used to produce it.
 pub struct Fingerprinted<D: Domain, O> { /* private fields */ }
 
@@ -121,13 +121,13 @@ Its node identities and edge labels keep their domain-defined types.
 :::{req} evidence_storage
 {cite}`requirements.sdk.domain`
 
-`trust_but_verify::Domain` provides evidence persistence for the
+`trust_but_verify::domain::Domain` provides evidence persistence for the
 {term}`requirements.sdk.application_domain`:
 
 ```rust,ignore
 use std::future::Future;
 
-// Defined in trust_but_verify.
+// Defined in trust_but_verify::domain.
 pub trait Domain: Clone + Send + Sync {
     // ...
 
@@ -177,7 +177,7 @@ interface uses `Record` to hold its encoded answer and input trace.
 
 :::{req} record
 ```rust,ignore
-// Defined in trust_but_verify.
+// Defined in trust_but_verify::graph.
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct Record<N, L = ()> {
     /// Application-chosen revision of this criterion's review rules.
@@ -224,7 +224,7 @@ encoding and meaning.
 
 A *dependency* is a recorded observation of a node's contents or of the target
 set of a node's outgoing edges with a given label. Its
-[`Dependency`](../../../rustdocs/trust_but_verify/enum.Dependency.html) value
+[`Dependency`](../../../rustdocs/trust_but_verify/graph/enum.Dependency.html) value
 stores the node identity, the edge label when applicable, and the
 {term}`requirements.sdk.graph.observation_fingerprint` for
 later comparison.
@@ -256,7 +256,7 @@ or an awaited builder explicitly asks for that label.
 
 :::{req} dependencies
 ```rust,ignore
-// Defined in trust_but_verify.
+// Defined in trust_but_verify::graph.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Dependency<N, L = ()> {
     Node(N, Fingerprint),
@@ -384,7 +384,7 @@ A checked snapshot can be reused if it still represents the current state.
 
 :::{req} checking_records.procedure_match
 ```rust,ignore
-// Defined in trust_but_verify.
+// Defined in trust_but_verify::graph.
 /// Compare the saved review-rule revision with the currently requested revision.
 pub fn procedure_matches(stored: &str, requested: &str) -> bool;
 ```

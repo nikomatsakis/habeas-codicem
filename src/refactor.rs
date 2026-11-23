@@ -23,7 +23,7 @@ use crate::ReferenceKind;
 use crate::evidence::{Anchor, Declaration, SourceReference, display_path};
 use crate::inputs::{InputSelector, OutlineCache};
 use crate::sdk::{HabeasDomain, HabeasNode, RequirementId, input_fingerprint};
-use trust_but_verify::Domain;
+use trust_but_verify::domain::Domain;
 use trust_but_verify::graph::Dependency;
 
 // {impl}`requirements.refactor.invalid_mappings`
@@ -116,7 +116,7 @@ impl Mappings {
                 *value = mapped;
             }
         };
-        let source = |value: &mut trust_but_verify::__habeas::resource::OutlineId| {
+        let source = |value: &mut trust_but_verify::resource::OutlineId| {
             if value.resource.scheme == "repo" {
                 let mapped = if back {
                     self.node_back(&value.resource.location, &value.selector)

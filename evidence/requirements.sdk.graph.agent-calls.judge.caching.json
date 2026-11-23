@@ -1,7 +1,7 @@
 {
   "requirement": "The SDK's backend integration makes the rendered prefix available to its supported\nprompt-caching mechanism. The prefix includes all context, including the\nquestion, and precedes node contents. A cache hit is not guaranteed.\nThe prefix fingerprint follows\n{cite}`requirements.sdk.graph.agent-calls.agent_context`.",
   "determination": true,
-  "rationale": "The reviewed tests cover each obligation in `requirements.sdk.graph.agent-calls.judge.caching`, and I found no gap.\n\n**Prefix reaches the backend's caching mechanism, includes all context including the question, and precedes node contents**\n- The two backends are `crates/trust-but-verify/src/agent/tools.rs#impl[ToolAgent<P, T>/Agent<D>]` and `src/authoring/sdk.rs#impl[ReviewAgent<P>/Agent<ReviewGraph<'_>>]`. Both hand the prefix to the provider as its leading preamble or system text. Node inputs go in the later user message.\n- `crates/trust-but-verify/src/agent/tests.rs#fn[default_tool_accepts_scalar_results_and_keeps_the_exact_prefix]` asks with the context `\"Question é\"`, which is the question text. It asserts that `chat_history[0]` equals `Message::system(\"Question é\")`, so the prefix is exactly the provider's leading system message and is not changed (including non-ASCII). It also asserts that `chat_history[1]` contains the node content `\"source\"`, so node contents come after the prefix.\n- `src/authoring/sdk.rs#mod[tests]/fn[authoring_keeps_the_prepared_subject_snapshot_and_concrete_version]` asserts that the whole `CompletionRequest` sent by the Habeas review agent equals the expected prompt request. That request has its system text set to the prefix and the mandatory inputs in the user message. This checks the prefix-then-contents layout for the second backend.\n- `crates/trust-but-verify/tests/validation.rs#fn[contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text]` and `crates/trust-but-verify/tests/validation.rs#fn[string_and_str_contexts_deliver_identical_prefixes_and_fingerprints]` use a `MockAgent`. They assert that the delivered prefix contains every context and the question, in order and with repeats, for example `\"héllo\\n\\npolicy\\n\\nquestion\"`. They use several `.context` shapes: String, str, tuple, slice and Vec. They also cover node inputs from the current node and from successors, and they check the prefix is the same with and without node contents.\n\n**Fingerprint follows `agent_context`**\n- The fingerprint is checked against the exact delivered prefix in the same two `MockAgent` tests, via `context_fingerprint`. They cover the empty prefix, which matches an explicitly empty rendered prefix, and the prefix with a trailing question.\n- `crates/trust-but-verify/tests/validation.rs#fn[prefix_hashes_match_known_utf8_sha256_without_normalization]` pins the versioned scheme `context-prefix-sha256-v1` and known SHA-256 values for the empty string and for `\"héllo\"`. It also shows that Unicode normalization and whitespace changes produce different fingerprints.\n- The order-sensitivity assertion on `\"a\\n\\nb\"` and `\"b\\n\\na\"` in `contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text` covers order. The repeated element `(\"a\",\"a\")` rendering in the same test covers repetition.\n\n**Not tested**\n- \"A cache hit is not guaranteed\" is a statement, not a testable obligation.\n\nAll the tests that carry the `{test}` reference to this requirement assert concrete outcomes.",
+  "rationale": "**Obligations in `judge.caching`**\n1. The backend integration makes the rendered prefix available to the supported prompt-caching mechanism. In the code, that means the prefix is delivered as the leading system preamble.\n2. The prefix contains all context, including the question, and comes before node contents.\n3. A cache hit is not guaranteed. This imposes no behavior, so it needs no test.\n4. The prefix fingerprint follows `agent_context`. That requirement is cited, so I only checked that its application is covered.\n\n**Mapping to tests**\n- **Delivery and ordering in the generic agent.** `crates/trust-but-verify/src/agent/tests.rs#fn[default_tool_accepts_scalar_results_and_keeps_the_exact_prefix]` asks with `.context(\"Question é\")` plus `.contents_of_current_node()`.\n  - It asserts `requests[0].chat_history[0] == Message::system(\"Question é\")`. This shows the exact prefix, including the non-ASCII question, is the leading system message.\n  - It asserts that `chat_history[1]` contains \"formatted input: source\". This shows the node contents come after the prefix.\n  - It also asserts that the node's contents were read once and that the dependency was recorded.\n  - The implementation under test is `ToolAgent`'s `Agent::run`, which sets `request.prefix` as the `preamble` of the opening request.\n- **Prefix text, fingerprint and ordering.** `crates/trust-but-verify/tests/validation.rs#fn[contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text]` uses a mock agent that records `(prefix, fingerprint, inputs)`.\n  - It asserts that the delivered prefix is `\"héllo\\n\\npolicy\\n\\nquestion\"`. Here the question is the last context element, so it sits inside the prefix.\n  - It asserts that the fingerprint equals `context_fingerprint(prefix)`, and likewise for the empty prefix with no contexts or an empty `Vec`.\n  - It asserts that order matters: `context_fingerprint(\"a\\n\\nb\")` differs from `context_fingerprint(\"b\\n\\na\")`.\n  - It asserts that repeated elements are preserved and that tuples render correctly, including the 12-element tuple.\n  - It checks that a value changed after `.context` is not reflected and that the future is `Send`.\n- **Fingerprint and prefix for each context form.** `...#fn[string_and_str_contexts_deliver_identical_prefixes_and_fingerprints]` covers `String`, `&str`, tuples, slices and `Vec`.\n  - Each form is delivered with the same prefix and fingerprint.\n  - It also checks the combinations with node-content requests: current-node contents, successors, and a different node. It asserts that the prefix and fingerprint are unchanged, while the node inputs are separate and the node-input fingerprint differs.\n- **Hash scheme.** `...#fn[prefix_hashes_match_known_utf8_sha256_without_normalization]` checks versioned SHA-256 vectors, with the scheme name `context-prefix-sha256-v1`. It also checks that no Unicode or whitespace normalization is applied.\n- **Second backend.** `src/authoring/sdk.rs#mod[tests]/fn[authoring_keeps_the_prepared_subject_snapshot_and_concrete_version]` runs `ReviewAgent`. It compares the full serialized provider request to the expected prompt request. `ReviewAgent` replaces `prompt.system` with `request.prefix`. The prefix comes from `.context(&graph.system)`, which is seeded from `initial_prompt(...).system`. So the comparison fails unless the SDK-supplied prefix reaches the provider as the system prompt.\n\n**Gap checks**\n- **Tool-agent prefix could be dropped.** A violating `ToolAgent` that left out the prefix or put it after the node contents would fail the `chat_history[0]` and `chat_history[1]` assertions.\n- **Question could be left out.** The `validation.rs` tests would catch this, because the question is asserted to be part of the delivered prefix and its hash.\n- **Cache checkpoints.** Placement of Bedrock cache checkpoints is covered by the separate requirement `requirements.authoring.cache_checkpoints`, with its own test `providers.rs#mod[tests]/fn[cache_checkpoints_are_requested_for_caching_models]`. It is not a clause of this requirement.\n- **Verify path.** `ReviewAgent`'s `Verify` branch goes through the same `prompt.system = request.prefix` assignment. The requirement does not treat it as a distinct case.\n- **Cache-hit guarantee.** There is nothing to test for the non-guarantee of a cache hit.\n\nThere are no acknowledgments or FIXMEs. I found no unresolved ambiguities and no adequacy gaps.",
   "references": "15e992bd0bbc01d392fe8a118b7f576ced795cbb00451038bc028907b34b4eb3",
   "inputs": [
     {
@@ -64,7 +64,7 @@
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[default_tool_accepts_scalar_results_and_keeps_the_exact_prefix]",
-      "hash": "124b2ebd794cef7b4adce82c8038f58abdb37eb166ebaf11f4c2bad9c70bfa54"
+      "hash": "ba20efe37f25dbf0600694559a19e6626d0155a2baa5f2e364a96ec8943742dc"
     },
     {
       "file": "crates/trust-but-verify/tests/validation.rs",
@@ -98,6 +98,11 @@
     },
     {
       "file": "src/authoring/sdk.rs",
+      "item": "impl[Review/Criterion<ReviewGraph<'_>>]/fn[execute]",
+      "hash": "6d61e957b27c82dc440a72edbe0b2c6322d891ab55b6cc6c4c585bf322b5d568"
+    },
+    {
+      "file": "src/authoring/sdk.rs",
       "item": "impl[ReviewAgent<P>/Agent<ReviewGraph<'_>>]/fn[run]",
       "hash": "708d996b9ac4c05ca33dbc1ee6a1dba052669ae2e51bf362e079ceeee1fa8c28"
     },
@@ -105,16 +110,6 @@
       "file": "src/authoring/sdk.rs",
       "item": "fn[run]",
       "hash": "34572c7dc76e9849d612e502d21738add68dd714980c2edc3bc0bb82a4c2f705"
-    },
-    {
-      "file": "src/authoring/mod.rs",
-      "item": "impl[Prompt]/fn[request]",
-      "hash": "f9ffe120e04b612858150221d3adda1aaa7b5cf606a62ddabd7a7f0f6a7f66e9"
-    },
-    {
-      "file": "src/authoring/sdk.rs",
-      "item": "impl[Review/Criterion<ReviewGraph<'_>>]/fn[execute]",
-      "hash": "6d61e957b27c82dc440a72edbe0b2c6322d891ab55b6cc6c4c585bf322b5d568"
     }
   ],
   "format_version": 1,
@@ -178,7 +173,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "8d4954702d0dac478eead14fbd642e83d40a11652adb1def5aa30c1bd53e5a5d"
+          "value": "24c4b9e250b5e8291df7b07f9af489ae0ce94e240faf03b95b4d857831a3568c"
         }
       ]
     },
@@ -292,6 +287,23 @@
               "scheme": "repo",
               "location": "src/authoring/sdk.rs"
             },
+            "selector": "impl[Review/Criterion<ReviewGraph<'_>>]/fn[execute]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "c8dabea3a0e4415b74e876e284310ff5c9b9a73aa968cc22b9d2f9203d370d4e"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/authoring/sdk.rs"
+            },
             "selector": "impl[ReviewAgent<P>/Agent<ReviewGraph<'_>>]/fn[run]"
           }
         },
@@ -315,40 +327,6 @@
         {
           "scheme": "habeas-input-v1",
           "value": "ca2e4bdc9d1ee309c15ee9b9c8bce3b4296ad0d2df21cc8b60a8da42437ad3ec"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/authoring/mod.rs"
-            },
-            "selector": "impl[Prompt]/fn[request]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "7a9c85331c423e73d9012b3c96f460b72c545a088732732217212a5772f6dbcd"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/authoring/sdk.rs"
-            },
-            "selector": "impl[Review/Criterion<ReviewGraph<'_>>]/fn[execute]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "c8dabea3a0e4415b74e876e284310ff5c9b9a73aa968cc22b9d2f9203d370d4e"
         }
       ]
     }

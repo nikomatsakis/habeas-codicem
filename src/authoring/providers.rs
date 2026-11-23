@@ -4,12 +4,13 @@ use crate::config::BackendConfig;
 use rig_core::completion::{CompletionRequest, CompletionResponse};
 use std::io;
 
+pub(super) use trust_but_verify::agent_runtime::CompletionProvider;
 #[cfg(test)]
-pub(super) use trust_but_verify::__habeas::RETRY_LIMIT;
-pub(super) use trust_but_verify::__habeas::{CompletionProvider, failure_codes};
+pub(super) use trust_but_verify::agent_runtime::backoff::RETRY_LIMIT;
+pub(super) use trust_but_verify::agent_runtime::backoff::failure_codes;
 
 /// Habeas retains configuration resolution; TBV owns the supported transport.
-pub(super) struct RigProvider(trust_but_verify::__habeas::RigProvider);
+pub(super) struct RigProvider(trust_but_verify::agent_runtime::providers::RigProvider);
 
 impl RigProvider {
     // {impl}`requirements.authoring.provider`
@@ -17,7 +18,7 @@ impl RigProvider {
     pub(super) async fn connect(config: &BackendConfig) -> io::Result<Self> {
         let config = serde_json::to_value(config).map_err(io::Error::other)?;
         let config = serde_json::from_value(config).map_err(io::Error::other)?;
-        trust_but_verify::__habeas::RigProvider::connect(&config)
+        trust_but_verify::agent_runtime::providers::RigProvider::connect(&config)
             .await
             .map(Self)
     }

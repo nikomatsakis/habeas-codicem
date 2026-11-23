@@ -2,12 +2,12 @@
 
 Use an outline to select a function, requirement, configuration entry, or other
 item from a file.
-[`OutlineId`](../../rustdocs/trust_but_verify/struct.OutlineId.html)
+[`OutlineId`](../../rustdocs/trust_but_verify/outline/struct.OutlineId.html)
 identifies the item;
-[`OutlineContent`](../../rustdocs/trust_but_verify/struct.OutlineContent.html) loads its
+[`OutlineContent`](../../rustdocs/trust_but_verify/outline/struct.OutlineContent.html) loads its
 contents and supplies the text and structural fingerprint used in a review.
 The filename selects an
-[`OutlineLang`](../../rustdocs/trust_but_verify/trait.OutlineLang.html), or the
+[`OutlineLang`](../../rustdocs/trust_but_verify/outline/trait.OutlineLang.html), or the
 caller supplies one explicitly.
 
 :::{req} independent
@@ -34,7 +34,7 @@ items and how they are named and nested.
 An *item selector* identifies an item within a
 {term}`requirements.sdk.outlines.outline`, such as `mod[auth]/fn[check_token]`.
 The empty selector identifies the file root.
-[`OutlineId`](../../rustdocs/trust_but_verify/struct.OutlineId.html) pairs the
+[`OutlineId`](../../rustdocs/trust_but_verify/outline/struct.OutlineId.html) pairs the
 selector with the file's path.
 :::
 
@@ -71,7 +71,7 @@ let function_id = OutlineId {
 
 *Outline contents* are the prepared contents of one selected outline item,
 represented by
-[`OutlineContent`](../../rustdocs/trust_but_verify/struct.OutlineContent.html).
+[`OutlineContent`](../../rustdocs/trust_but_verify/outline/struct.OutlineContent.html).
 The value retains its source snapshot and the
 language's fingerprinting rules, so its text and fingerprint describe the same
 observation.
@@ -215,7 +215,7 @@ for item in &file.outline().items {
 :phrase: outline language
 
 An *outline language* is a cheaply cloneable implementation of
-[`OutlineLang`](../../rustdocs/trust_but_verify/trait.OutlineLang.html).
+[`OutlineLang`](../../rustdocs/trust_but_verify/outline/trait.OutlineLang.html).
 It claims filename extensions and defines the selectable items, their names,
 and their structural hashes. Each supplied language has its own implementation,
 such as `languages::Rust` or `languages::Markdown`.
@@ -317,7 +317,7 @@ impl OutlineContent {
 
 :::{req} node_contents
 `trust_but_verify::outline::OutlineContent` implements
-`trust_but_verify::NodeContents`, making it usable directly as
+`trust_but_verify::domain::NodeContents`, making it usable directly as
 `Domain::NodeContent` under
 {cite}`requirements.sdk.graph.node_content`.
 
@@ -331,7 +331,7 @@ Both operations describe the source snapshot retained by the value.
 :::
 
 ```rust,ignore
-use trust_but_verify::NodeContents;
+use trust_but_verify::domain::NodeContents;
 
 let contents = OutlineContent::from_id(&function_id)?;
 let fingerprint = contents.fingerprint();

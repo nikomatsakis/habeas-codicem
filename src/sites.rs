@@ -963,6 +963,71 @@ no_match:
 
     // {test}`requirements.references.distributed`
     #[test]
+    fn declared_queries_share_discovery_exclusions_and_filter_source_language() {
+        let chapter = r#"::::{req} rule
+Rust sentinel uses are sites.
+:::{sites} sentinels
+```yaml
+language: rust
+rule: {kind: identifier, regex: "^sentinel$"}
+match: ["fn check() { let sentinel = 1; }"]
+no_match: ["fn check() { let other = 1; }"]
+```
+:::
+::::
+"#;
+        let source = "fn check() { let sentinel = 1; }\n";
+        let temp = project(chapter, source);
+        let root = temp.path();
+        let git = |args: &[&str]| {
+            let result = std::process::Command::new("git")
+                .current_dir(root)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                result.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&result.stderr)
+            );
+        };
+        git(&["init", "-q"]);
+        fs::write(root.join("src/other.py"), "sentinel = 1\n").unwrap();
+        fs::write(root.join("src/untracked.rs"), source).unwrap();
+        for folder in ["target", "book", "evidence", ".git"] {
+            fs::create_dir_all(root.join(folder)).unwrap();
+            fs::write(root.join(folder).join("excluded.rs"), source).unwrap();
+        }
+        git(&[
+            "add",
+            "--",
+            "book.toml",
+            "md/requirements.md",
+            "src/lib.rs",
+            "src/other.py",
+        ]);
+        git(&[
+            "add",
+            "-f",
+            "--",
+            "target/excluded.rs",
+            "book/excluded.rs",
+            "evidence/excluded.rs",
+        ]);
+        let (errors, sites) = inspect(root);
+        assert!(
+            !errors.iter().any(|error| error.contains("query")),
+            "{errors:?}"
+        );
+        let found = &sites["requirements.rule"];
+        assert_eq!(found.len(), 1, "{found:#?}");
+        assert_eq!(found[0].file, "src/lib.rs");
+        assert_eq!(found[0].item, "fn[check]");
+        assert_eq!(found[0].queries(), ["sentinels"]);
+    }
+
+    // {test}`requirements.references.distributed`
+    #[test]
     // {test}`requirements.authoring.no_line_numbers`
     fn sites_are_the_innermost_nodes_of_site_matches_and_violations_within_them() {
         let temp = project(RULE, SOURCE);

@@ -1,3 +1,17 @@
+#[cfg(not(feature = "default-languages"))]
+use crate::outline_engine::language::Registry;
+use crate::resource::ResourceId;
+use crate::source_engine::LocalSources;
+use crate::source_engine::SourceAnalysis;
+use crate::source_engine::SourceProvider;
+use crate::source_engine::project_path_visible;
+use crate::source_engine::project_resource;
+use serde_json::{Map, Value};
+use std::{
+    path::{Component, Path, PathBuf},
+    sync::Arc,
+};
+
 pub type LanguageId = String;
 
 // {cite}`habeas:util`
@@ -119,7 +133,7 @@ impl Sources {
     /// Inspect the project directory with the SDK's built-in defaults.
     pub fn new(root: impl Into<PathBuf>) -> Self {
         #[cfg(feature = "default-languages")]
-        let languages = crate::outline::languages::registry();
+        let languages = crate::outline_engine::languages::registry();
         #[cfg(not(feature = "default-languages"))]
         let languages = Registry::new([]);
         Self {
@@ -176,4 +190,3 @@ impl Sources {
         self.analysis.search_structure(query).await
     }
 }
-

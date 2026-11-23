@@ -1,7 +1,7 @@
 {
   "requirement": "The SDK's source tools expose `search_structure` with a language\nand an ast-grep rule, plus an optional scope prefix and match limit. It uses\n`Sources::search_structure`; `StructuralQuery` holds the `language`,\n`rule`, `scope`, and `limit`. Each match contains its file path, item\nselector, and excerpt. The caller maps the path and selector to an\n`OutlineId` under {cite}`requirements.sdk.sources.source_nodes` when selecting\na tracked read. The result also states whether the search is complete, under\n{cite}`requirements.sdk.sources.provider_results.search_completeness`.",
   "determination": true,
-  "rationale": "The reviewed tests cover every obligation in `requirements.sdk.graph.context-tools.search_structure.behavior`. I did not read any implementation source. Two points rest on test design alone: the tool-level forwarding test uses a mock provider, and the real provider is only tested with `limit: None`.\n\n**Tool exposes `search_structure` with language, rule, optional prefix and limit, and forwards them into `StructuralQuery`**\n- `source_tools_forward_arguments_and_present_discovery_and_read_results` dispatches the `search_structure` tool twice.\n  - The first call omits the prefix and limit.\n  - The second call passes `prefix: \"src/\"` and `limit: 2`.\n- Its mock `SourceProvider::search_structure` records `query.language`, `query.rule`, `query.scope.prefix` and `query.limit`.\n- The test asserts the recorded values exactly:\n  - `{\"structure\":\"rust\",\"rule\":{...},\"prefix\":\"\",\"limit\":null}` for the call without a prefix or limit.\n  - `{\"structure\":\"rust\",\"rule\":{...},\"prefix\":\"src/\",\"limit\":2}` for the call with them.\n- This shows the defaults and the explicit values both reach `StructuralQuery`.\n\n**Each match contains path, selector and excerpt**\n- The same test asserts the full JSON result: `{\"complete\":..,\"matches\":[{\"node\":{\"path\":\"source\",\"selector\":\"fn[chosen]\"},\"excerpt\":\"structural excerpt\"}]}`.\n- The file path and item selector are therefore delivered in `node`, with the excerpt alongside.\n- The test also asserts that the `search_structure` delivery has no dependencies, so a search does not record a tracked read.\n\n**Result states completeness; operation failure is an error, not a complete empty result**\n- The mock returns `complete: query.limit.is_none()`. The test asserts `complete` is true without a limit and false with one, so both the complete and truncated states are shown to the caller.\n- A mock failure (`language: \"error\"`) must make dispatch return an error containing \"structural search failed\". This is asserted.\n- `empty_structural_search_results_remain_discovery` runs the real `LocalSources` with a pattern that has no match. It asserts exactly `{\"complete\":true,\"matches\":[]}`, no dependencies, and no observation callback. An empty result is thus distinguished from an error.\n\n**Uses `Sources::search_structure`**\n- `built_in_languages_and_structural_search_use_the_project_scope` calls `Sources::search_structure` directly. It asserts:\n  - a complete result with the correct path;\n  - empty complete results for ignored paths;\n  - a scoped prefix selecting `visible.rs`;\n  - an error for `..`;\n  - an error when default languages are disabled.\n- `empty_structural_search_results_remain_discovery` runs the tool over `LocalSources`.\n\n**Mapping the path and selector to `OutlineId` (cited `source_nodes`) and the completeness semantics (cited `search_completeness`)**\n- These are cited context. The match node is an `OutlineId`, and `cached_selected_source_reads_record_exact_delivered_contents_and_errors_add_no_input` also dispatches `search_structure` ahead of the tracked reads.\n- The follow-on read tests assert only the tool-level shape.\n\n**Possible gap**\n- The real provider's enforcement of `limit` is not exercised here.\n- That behavior is not stated in this requirement beyond \"optional match limit\" and the completeness flag. I treat it as belonging to the provider and `search_completeness` requirements.\n\nI found no unmet obligation.",
+  "rationale": "I found no test-adequacy gap for `search_structure.behavior`.\n\n**Obligations derived from the text**\n1. The tool exposes `search_structure` taking a language and an ast-grep rule, plus an optional scope prefix and an optional match limit.\n2. It calls `Sources::search_structure` through a `StructuralQuery` holding `language`, `rule`, `scope` and `limit`.\n3. Each match carries a file path, an item selector and an excerpt. The path and selector form the `OutlineId` the caller uses for a tracked read.\n4. The result states whether the search is complete.\n5. Under the cited `search_completeness`, a failure returns an error, not a complete empty result.\n6. A search is only discovery. It records no tracked read.\n\nThe cited `requirements.sdk.sources.source_nodes` and `requirements.sdk.sources.provider_results.search_completeness` are context only. I did not reassess their tests.\n\n**Test coverage**\n- **Forwarding and result shape:** `crates/trust-but-verify/src/agent/tests.rs#fn[source_tools_forward_arguments_and_present_discovery_and_read_results]` drives `search_structure` through a `SourceTools` session with and without `prefix` and `limit`.\n  - It asserts the `StructuralQuery` the provider receives. Without a prefix, the language is \"rust\", the rule is the same, the prefix is \"\" and the limit is null. With a prefix, the prefix is \"src/\" and the limit is 2.\n  - It asserts the full output JSON: `{\"complete\":…, \"matches\":[{\"node\":{\"path\":\"source\",\"selector\":\"fn[chosen]\"},\"excerpt\":…}]}`. This covers path, selector and excerpt, and the `OutlineId` shape.\n  - `complete` is asserted both true (no limit) and false (limit 2). The mock provider reports `complete` as `query.limit.is_none()`, so the test proves the flag is passed through. It also proves the limit reaches the provider.\n- **Errors:** the same test uses a provider that returns an error for language \"error\". It asserts that the dispatch returns an error containing \"structural search failed\", not an empty complete result.\n- **Discovery only:** the same test asserts `delivery.dependencies.is_empty()` for each search. It also asserts that large results page without invoking the observation callback.\n  - `empty_structural_search_results_remain_discovery` uses the real `LocalSources` and an absent pattern. It asserts `{\"complete\":true,\"matches\":[]}`, no dependencies and zero observation calls.\n  - `cached_selected_source_reads_record_exact_delivered_contents_and_errors_add_no_input` runs `search_structure` in a mixed sequence and asserts that only the later `read_source` adds a dependency.\n- **Real `Sources::search_structure`:** `crates/trust-but-verify/tests/source_defaults.rs#fn[built_in_languages_and_structural_search_use_the_project_scope]` runs it against a project directory.\n  - It asserts `complete` and one match with path `visible.rs`.\n  - It asserts that scope prefixes for ignored, `.git` and ignored-directory paths give complete, empty results.\n  - It asserts that prefix `..` is an error.\n  - It asserts an error when the default languages feature is off.\n\n**Implementation check**\nI read `crates/trust-but-verify/src/agent/sources.rs#impl[SourceSession<'_, P, F, D::NodeId, D::EdgeLabel>/ToolSession<D>]/fn[dispatch]` only to see how the result is built. It builds `{\"complete\",\"matches\":[{\"node\",\"excerpt\"}]}` from the provider's `StructuralMatches`, which is the shape the tests assert.\n\n**Remaining points**\nI found no untested obligation and no `{fixme}` to account for. Excerpt generation, limit truncation and error behavior in real providers are governed by provider-level requirements. Other tests, such as those in `sources/tests.rs`, cover those. The tool behavior here is a pass-through, and the tests above assert it.",
   "references": "6c53957d4b65fff3e2e4ef1bf7fa9c144a8616c6d26f096a707ab7541b7ff6db",
   "inputs": [
     {
@@ -35,7 +35,8 @@
         "node through the application's `Domain` interface.",
         "",
         "```rust,ignore",
-        "use trust_but_verify::{Domain, OutlineId};",
+        "use trust_but_verify::domain::Domain;",
+        "use trust_but_verify::outline::OutlineId;",
         "",
         "pub trait SourceNodes: Domain {",
         "    fn source_node(&self, item: &OutlineId) -> Result<Self::NodeId, Self::Error>;",
@@ -60,22 +61,27 @@
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[cached_selected_source_reads_record_exact_delivered_contents_and_errors_add_no_input]",
-      "hash": "7386be2ddbca9d88e14ca3125015ec4c1556961b55bb126db8cfea733add13f0"
+      "hash": "0eaa29f956726657d85a4867a93b68b106bbb1f80a1dbe55f55ca75e6e4d238e"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[source_tools_forward_arguments_and_present_discovery_and_read_results]",
-      "hash": "6ed6b592475158f6952de3c3182e2040ba0b5a1ca56d26c11cc39016f25002bd"
+      "hash": "54d471f993e52968acd47493cffd3664a6b953a5b3a09360bd6bbfef41efc4f7"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[empty_structural_search_results_remain_discovery]",
-      "hash": "04f971e94331ee890daa8aa14bbcc216a49330d5c23072b22543c41f34d18039"
+      "hash": "d8941ddd57b51bdb3b9666395fc5338deddead551b5ac0dc5106f8df3ca704e4"
     },
     {
       "file": "crates/trust-but-verify/tests/source_defaults.rs",
       "item": "fn[built_in_languages_and_structural_search_use_the_project_scope]",
       "hash": "f943f51b3b5aa64724b08b0b4e06b9acc685af1babc34adbb90b0cb8080ed39b"
+    },
+    {
+      "file": "crates/trust-but-verify/src/agent/sources.rs",
+      "item": "impl[SourceSession<'_,%20P,%20F,%20D::NodeId,%20D::EdgeLabel>/ToolSession<D>]/fn[dispatch]",
+      "hash": "9ae869eb6d0bf0aad5ce3004df88a667e79d3d153aaedcc7f31c7c9e69381425"
     }
   ],
   "format_version": 1,
@@ -122,7 +128,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "0c42fc08484cc28d4929b0729ede2dd6d014ce420f2638908846f382dcbad5be"
+          "value": "39e0ec471bde01eda8bdaaefe7a1b5ff09da162988459bf96bf18397df869a0f"
         }
       ]
     },
@@ -150,7 +156,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "459fe765ac36ea136c37db2d356326a88226d0cb994f175b9cf3cc401f3e03e2"
+          "value": "cfde946a395ab09dfc698f3fa076ad8ab83de89186550fccaffa0e9f67507d59"
         }
       ]
     },
@@ -167,7 +173,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "1df498b5eea4242771a65258440ccb38d5531bbb664caac0043e85c787773db4"
+          "value": "2916a8cbf2f7a64df2792ea0f6f38c1c1f7c6f6439eba0cf0b1ac3240b163fed"
         }
       ]
     },
@@ -184,7 +190,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "b855856ed96fe828be3fa7d7c2b7c56cec7bd3edde0b1f570465695c5349edd1"
+          "value": "92df8c305b1ab6f1378df2d043c76c9cbbb004f8e33a3fcfe195ed11a8c6cd96"
         }
       ]
     },
@@ -202,6 +208,23 @@
         {
           "scheme": "habeas-input-v1",
           "value": "7cfee2b45f845b089a314324becd87f7b56024ccf5d364ed9b0871b35b718aed"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/agent/sources.rs"
+            },
+            "selector": "impl[SourceSession<'_,%20P,%20F,%20D::NodeId,%20D::EdgeLabel>/ToolSession<D>]/fn[dispatch]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "79cff36f9276b3866e8e393528e990c53583748838d0646287b43469a4cb79ad"
         }
       ]
     }

@@ -1,6 +1,10 @@
 //! TypeScript and TSX outline profiles.
 
-use crate::outline::language::{KindRule, NameRule, Profile, kind_is_comment, never};
+use crate::outline_engine::language::KindRule;
+use crate::outline_engine::language::NameRule;
+use crate::outline_engine::language::Profile;
+use crate::outline_engine::language::kind_is_comment;
+use crate::outline_engine::language::never;
 
 const KINDS: &[KindRule] = &[
     KindRule::new("function_declaration", "function", NameRule::Field("name")),
@@ -43,7 +47,7 @@ const TYPESCRIPT: Profile = Profile {
     kinds: KINDS,
     is_comment: kind_is_comment,
     hashes_comment: never,
-    comment_prose: crate::outline::language::whole_comment,
+    comment_prose: crate::outline_engine::language::whole_comment,
     comment_binds_to_container: never,
     trailing_comments_outside: false,
     attaches: never,
@@ -65,7 +69,7 @@ pub static TSX_PROFILE: Profile = Profile {
 // {cite}`habeas:util`
 pub struct Provider;
 
-impl crate::outline::language::LanguageProvider for Provider {
+impl crate::outline_engine::language::LanguageProvider for Provider {
     // {cite}`habeas:util`
     fn profile(&'static self) -> &'static Profile {
         &PROFILE
@@ -80,7 +84,7 @@ impl crate::outline::language::LanguageProvider for Provider {
 // {cite}`habeas:util`
 pub struct TsxProvider;
 
-impl crate::outline::language::LanguageProvider for TsxProvider {
+impl crate::outline_engine::language::LanguageProvider for TsxProvider {
     // {cite}`habeas:util`
     fn profile(&'static self) -> &'static Profile {
         &TSX_PROFILE

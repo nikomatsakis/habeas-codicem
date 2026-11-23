@@ -23,7 +23,7 @@ and select related nodes through its validation context.
 
 :::{req} root_inputs
 ```rust,ignore
-// Defined in trust_but_verify.
+// Defined in trust_but_verify::request.
 /// Input selection and tracked observations for one criterion execution.
 pub struct ValidationContext<'cx, D: Domain> { /* private fields */ }
 

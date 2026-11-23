@@ -8,7 +8,10 @@ pub(crate) mod css;
 pub(crate) mod markdown;
 #[cfg(feature = "default-languages")]
 pub(crate) mod python;
-#[cfg(feature = "default-languages")]
+#[cfg(all(feature = "default-languages", feature = "habeas-integration"))]
+#[doc(hidden)]
+pub mod rust;
+#[cfg(all(feature = "default-languages", not(feature = "habeas-integration")))]
 pub(crate) mod rust;
 #[cfg(feature = "default-languages")]
 pub(crate) mod toml;
@@ -19,9 +22,9 @@ pub(crate) mod yaml;
 
 // {cite}`habeas:util`
 #[cfg(feature = "default-languages")]
-pub(crate) fn registry() -> crate::outline::language::Registry {
-    crate::outline::language::Registry::new([
-        &rust::Provider as &dyn crate::outline::language::LanguageProvider,
+pub(crate) fn registry() -> crate::outline_engine::language::Registry {
+    crate::outline_engine::language::Registry::new([
+        &rust::Provider as &dyn crate::outline_engine::language::LanguageProvider,
         &python::Provider,
         &typescript::Provider,
         &typescript::TsxProvider,
@@ -34,7 +37,7 @@ pub(crate) fn registry() -> crate::outline::language::Registry {
 
 // {cite}`habeas:util`
 #[cfg(feature = "default-languages")]
-pub(crate) fn profiles() -> [&'static crate::outline::language::Profile; 8] {
+pub(crate) fn profiles() -> [&'static crate::outline_engine::language::Profile; 8] {
     [
         &rust::PROFILE,
         &python::PROFILE,
@@ -83,7 +86,7 @@ macro_rules! language {
                         .map_err(|message| super::OutlineError { line: 1, message })?;
                     return Ok(rule.matches(_source));
                 }
-                Err(super::contents::unsupported_search(self.name()))
+                Err(super::unsupported_search(self.name()))
             }
         }
     };

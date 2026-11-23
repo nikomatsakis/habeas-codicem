@@ -1,5 +1,21 @@
-use super::{OutlineError, parse_selector};
-use crate::{Fingerprint, NodeContents};
+//! Selectable source contents with retained text and structural fingerprints.
+//!
+//! [`crate::outline::OutlineContent`] loads a file or supplied snapshot, selects an item, and
+//! implements [`crate::domain::NodeContents`]. [`crate::outline::OutlineLang`] supplies language
+//! rules; [`crate::outline::languages`] contains the bundled languages and plain-text fallback.
+
+#[path = "languages/mod.rs"]
+pub mod languages;
+#[path = "selector.rs"]
+pub mod selector;
+use crate::domain::NodeContents;
+use crate::graph::Fingerprint;
+pub(crate) use crate::outline_engine::LegacyOutline;
+pub(crate) use crate::outline_engine::parse_provider;
+pub(crate) use crate::outline_engine::parse_with;
+pub(crate) use crate::outline_engine::plain;
+use selector::parse_selector;
+use std::fmt;
 use std::{
     ops::Range,
     path::{Path, PathBuf},
@@ -126,16 +142,16 @@ impl OutlineContent {
         let filename = filename.as_ref();
         #[cfg(feature = "default-languages")]
         {
-            if let Some(profile) = super::languages::registry().for_path(filename) {
+            if let Some(profile) = languages::registry().for_path(filename) {
                 return Self::prepare(
                     filename,
                     source.clone(),
-                    Outline::from_legacy(&super::parse_provider(profile, &source)?),
+                    Outline::from_legacy(&parse_provider(profile, &source)?),
                     &format!("{}-structural-v1", profile.profile().name),
                 );
             }
         }
-        Self::from_source_with(&super::languages::PlainText, filename, source)
+        Self::from_source_with(&languages::PlainText, filename, source)
     }
 
     /// Read a file using explicit language rules.
@@ -282,7 +298,7 @@ impl NodeContents for OutlineContent {
 }
 
 impl Outline {
-    pub(crate) fn from_legacy(outline: &super::LegacyOutline) -> Self {
+    pub(crate) fn from_legacy(outline: &LegacyOutline) -> Self {
         Self {
             items: outline
                 .nodes
@@ -350,4 +366,3 @@ impl fmt::Display for OutlineError {
 }
 
 impl std::error::Error for OutlineError {}
-

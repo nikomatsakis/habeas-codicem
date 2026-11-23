@@ -9,7 +9,9 @@ use std::{
     io::{self, Write},
     path::Path,
 };
-use trust_but_verify::graph::{Dependency, Fingerprint, Record};
+use trust_but_verify::graph::Dependency;
+use trust_but_verify::graph::Fingerprint;
+use trust_but_verify::graph::Record;
 
 const SDK_FIELDS: [&str; 3] = ["format_version", "review_version", "dependencies"];
 
@@ -394,7 +396,7 @@ mod tests {
     use super::*;
     use crate::{authoring::AuthoringSubject, inputs::OutlineCache};
     use std::collections::BTreeMap;
-    use trust_but_verify::Domain;
+    use trust_but_verify::domain::Domain;
 
     fn legacy(subject: &AuthoringSubject) -> Value {
         let base = json!({"determination":{"FIXME":["example/project#7"]},

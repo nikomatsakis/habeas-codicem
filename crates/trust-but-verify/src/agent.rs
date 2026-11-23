@@ -18,29 +18,31 @@ pub(super) fn next_page_id() -> usize {
 }
 
 #[path = "agent/backoff.rs"]
-mod backoff;
-#[path = "agent/config.rs"]
-mod config;
+#[doc(hidden)]
+pub mod backoff;
+pub(crate) use crate::agent as config;
 #[path = "agent/configured.rs"]
 mod configured;
 #[path = "agent/project_sources.rs"]
 pub(crate) mod project_sources;
 #[path = "agent/providers.rs"]
-pub(crate) mod providers;
+#[doc(hidden)]
+pub mod providers;
 #[path = "agent/sources.rs"]
 #[cfg(test)]
 mod sources;
 #[path = "agent/tools.rs"]
 mod tools;
+use crate::agent::AgentConfig;
+#[cfg(test)]
+use crate::agent::{BedrockConfig, OllamaConfig, OptionValue};
 #[doc(hidden)]
-pub use backoff::{ProviderBackoff, RETRY_LIMIT, Retry, failure_codes};
-pub use config::{
-    AgentConfig, BedrockConfig, BedrockCredentials, OllamaConfig, OpenAiConfig, OptionValue,
-    SecretString,
-};
+use backoff::{ProviderBackoff, Retry};
+#[cfg(test)]
+use backoff::{RETRY_LIMIT, failure_codes};
 pub(crate) use configured::ConfiguredAgent;
 #[doc(hidden)]
-pub use tools::{NoTools, ToolAgent, ToolDelivery, ToolFactory, ToolSession};
+pub(crate) use tools::{NoTools, ToolAgent, ToolDelivery, ToolFactory, ToolSession};
 
 /// Built-in project source tools with an application graph-observation mapping.
 ///
@@ -49,7 +51,7 @@ pub use tools::{NoTools, ToolAgent, ToolDelivery, ToolFactory, ToolSession};
 #[doc(hidden)]
 #[cfg(test)]
 pub struct SourceTools<F> {
-    inner: sources::SourceTools<crate::sources::LocalSources, F>,
+    inner: sources::SourceTools<crate::source_engine::LocalSources, F>,
 }
 
 #[cfg(test)]
@@ -59,7 +61,7 @@ impl<F> SourceTools<F> {
     pub fn new(root: impl Into<std::path::PathBuf>, observation: F) -> Self {
         Self {
             inner: sources::SourceTools {
-                analysis: crate::Sources::new(root).analysis,
+                analysis: crate::sources::Sources::new(root).analysis,
                 observation,
             },
         }
@@ -72,7 +74,7 @@ where
     D: crate::domain::Domain,
     F: Fn(
             &crate::resource::OutlineId,
-            &crate::sources::ParsedSource,
+            &crate::source_engine::ParsedSource,
         ) -> Result<Option<crate::graph::Dependency<D::NodeId, D::EdgeLabel>>, String>
         + Send
         + Sync,

@@ -1,9 +1,8 @@
 //! Typed agent calls with reusable context followed by explicit node inputs.
 
-use crate::{
-    domain::{Domain, NodeContents},
-    graph::*,
-};
+use crate::domain::Domain;
+use crate::domain::NodeContents;
+use crate::graph::*;
 use futures::future::BoxFuture;
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
@@ -75,6 +74,7 @@ tuple_context!(A:0, B:1, C:2, D:3, E:4, F:5, G:6, H:7, I:8, J:9, K:10);
 tuple_context!(A:0, B:1, C:2, D:3, E:4, F:5, G:6, H:7, I:8, J:9, K:10, L:11);
 
 // {cite}`habeas:util`
+#[doc(hidden)]
 pub struct PreparedInput<N> {
     pub node: N,
     pub text: String,
@@ -84,6 +84,7 @@ pub struct PreparedInput<N> {
 // {cite}`habeas:util`
 /// A harness acknowledges delivered snapshots through `inspection.observe_read`,
 /// including snapshots delivered before a later conversation error.
+#[doc(hidden)]
 pub struct AgentRequest<N> {
     pub current_node: N,
     pub prefix: String,
@@ -94,6 +95,7 @@ pub struct AgentRequest<N> {
 }
 
 /// Returns one accepted structured tool submission; assistant text is an error.
+#[doc(hidden)]
 pub trait Agent<D: Domain>: Send + Sync {
     // {cite}`habeas:util`
     fn run<'a>(
@@ -183,14 +185,14 @@ pub struct ContextPhase;
 /// The reusable prefix is sealed after the first node insertion.
 ///
 /// ```compile_fail
-/// use trust_but_verify::{domain::Domain, procedure::ValidationContext};
+/// use trust_but_verify::{domain::Domain, request::ValidationContext};
 /// fn too_late<D: Domain>(ctx: &ValidationContext<'_, D>) {
 ///     ctx.ask::<bool>().contents_of_current_node().context(String::new());
 /// }
 /// ```
 ///
 /// ```compile_fail
-/// use trust_but_verify::{domain::Domain, procedure::ValidationContext};
+/// use trust_but_verify::{domain::Domain, request::ValidationContext};
 /// fn too_late<D: Domain>(ctx: &ValidationContext<'_, D>, label: D::EdgeLabel)
 /// where D::EdgeLabel: PartialEq {
 ///     ctx.ask::<bool>().contents_of_successors(label).context(String::new());
@@ -336,6 +338,7 @@ await_phase!(ContextPhase);
 await_phase!(NodePhase);
 
 // {impl}`requirements.sdk.graph.agent-calls.agent_context`
+#[doc(hidden)]
 pub fn context_fingerprint(prefix: &str) -> Fingerprint {
     Fingerprint {
         scheme: "context-prefix-sha256-v1".into(),

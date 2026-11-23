@@ -1,7 +1,7 @@
 {
   "requirement": "`InspectionContext::outgoing_edges` returns the target node identities and a\nfingerprint of their set of stable `NodePath`s, under\n{cite}`requirements.sdk.graph.context-tools.snapshot`. The returned vector\npreserves the graph's ordering and duplicates.\n\nThe SDK's `outgoing_edges` tool accepts a known source `NodePath` and a typed\nlabel argument and returns the target paths. The SDK obtains those identities through the\napplication's graph.",
   "determination": true,
-  "rationale": "I judge the tests adequate for `outgoing_edges.behavior`. I read the two marked tests, the production `edge_fingerprint`, the `contracts.rs` fingerprint test, and the two implementation sites to check what the assertions cover.\n\n**Obligations and the tests that check them**\n\n1. **`InspectionContext::outgoing_edges` returns the target identities in graph order, with duplicates.**\n   - `tests/validation.rs#fn[labeled_selections_track_only_target_membership_without_reading_contents]` sets edges `[(8,2),(7,5),(7,3),(7,5)]`.\n   - It then asserts `snapshot.content == [5,3,5]`, so order and the duplicate are preserved and the label-8 edge is excluded.\n\n2. **The fingerprint covers the set of stable `NodePath`s, per `snapshot`.**\n   - The same test asserts `snapshot.fingerprint == edge_fingerprint(&graph, &[3,5])`, which is the sorted, deduplicated set.\n   - It shows order and duplicates do not change the fingerprint: the recorded `Dependency::OutgoingEdges(1,7,fp[3,5])` still counts as current after the edges are reordered and an unrelated label-8 target is added.\n   - It shows a changed target set makes the record non-current.\n   - An empty selection is fingerprinted and then invalidated once edges appear.\n   - `edge_fingerprint` is the production function, so that test alone doesn't pin the digest. `tests/contracts.rs#fn[edge_fingerprints_preserve_path_boundaries_and_version_membership_encoding]` covers that. It asserts fixed digest values for the empty set and for a single path, and the scheme string `node-path-set-sha256-v1`. It checks that paths with different segment boundaries or Unicode produce distinct fingerprints. It also checks that permutation and duplication leave the fingerprint unchanged.\n   - That test is marked for `snapshot` rather than the subject. `snapshot` is cited context, so I counted it as supporting evidence and not as a marking gap.\n\n3. **The SDK `outgoing_edges` tool accepts a known source `NodePath` and a typed label and returns the target paths.**\n   - `src/agent/tests.rs#fn[agent_edge_tools_record_selections_without_validating_targets]` calls the tool with a known path `[\"1\"]` and label 7.\n   - It asserts the delivered tool result is `{\"targets\":[{\"segments\":[\"2\"]}]}` with `is_error` false.\n   - It asserts the recorded dependency is `OutgoingEdges(1,7,edge_fingerprint([2]))`.\n   - A second label (8) returns target 3 and records its own fingerprint.\n   - An unknown path is rejected with an error result and no graph lookup.\n   - A failed delivery records no dependency.\n\n4. **The SDK obtains identities through the application's graph, without another query.**\n   - The test's `Domain` implementation counts lookups.\n   - It asserts `lookups == 1` after the tool call, verify, store and reload. The graph errors on any second lookup of node 1.\n   - `node_content` panics, so any content read would fail the test.\n   - The `validation.rs` test asserts `reads.is_empty()`.\n   - A graph error propagates (`Err(\"edges\")`) and leaves the recorded dependencies unchanged.\n\n**Residual consideration**\n\nThe tool-level test uses single-target results, so it doesn't assert that the tool's JSON output keeps the order or duplicates of a multi-target graph result. The \"preserves ordering and duplicates\" sentence concerns the returned vector, and the vector test covers it. In the `dispatch` implementation the tool's output loop maps each snapshot target to its path with no conditional or transformation of its own. The `known` bookkeeping does not affect the output. That falls under the pass-through exemption, so I don't count it as a gap.\n\nI found no gap and no acknowledgments are needed.",
+  "rationale": "I judge the tests adequate for `requirements.sdk.graph.context-tools.outgoing_edges.behavior`. I did not read the implementation of `InspectionContext::outgoing_edges` beyond its reference markers, and I did not read the test body of `contracts.rs#fn[edge_fingerprints_preserve_path_boundaries_and_version_membership_encoding]`.\n\n**Context API: targets and fingerprint, preserving order and duplicates.** `tests/validation.rs#fn[labeled_selections_track_only_target_membership_without_reading_contents]` covers this.\n- The graph holds edges `(8,2),(7,5),(7,3),(7,5)`. The test asserts that `successors(&7)` returns `[5,3,5]`.\n- It asserts that `inspection().outgoing_edges(&1,7)` returns `snapshot.content == [5,3,5]`. That preserves order and duplicates.\n- It asserts that `snapshot.fingerprint == edge_fingerprint(&graph,&[3,5])`. The `NodePath` set is sorted and deduplicated, and other labels are excluded.\n- The recorded dependency is `Dependency::OutgoingEdges(1,7,edge_fingerprint(..[3,5]))`.\n- The test does not rely on the fingerprint helper alone as an oracle. Behavioral checks also pin the fingerprint properties, as the next two items show.\n\n**Fingerprint invariants from `snapshot`, which the subject cites.**\n- Reordering or deduplicating the edges to `(7,3),(7,5),(8,99)` and changing another label's edge leave `record_is_current` true.\n- Changing the target set to `(7,3),(7,6)` makes `record_is_current` false.\n- An empty target set is recorded. After unrelated label-8 edges are added, the empty record stays current. After a label-7 edge is added, it becomes stale.\n- Together these cover the empty-set case, order and duplicate insensitivity, and label isolation.\n- `tests/contracts.rs#fn[edge_fingerprints_preserve_path_boundaries_and_version_membership_encoding]` is a `snapshot`-marked test for the unambiguous encoding and versioning. It is a related test for the cited `snapshot` requirement, and I did not read its body.\n\n**No content reads and no re-query.** The validation test asserts `graph.state.reads.is_empty()`. In `agent/tests.rs#fn[agent_edge_tools_record_selections_without_validating_targets]`, `node_content` panics if it is called. The same test asserts that the graph is queried exactly once.\n\n**Graph failure.** In the validation test, a failing edge query returns `Err(\"edges\")`, the dependencies are unchanged, and `record_is_current` surfaces the same error.\n\n**Tool-level obligations.** `agent/tests.rs#fn[agent_edge_tools_record_selections_without_validating_targets]` covers these.\n- The `outgoing_edges` tool takes a known path `{\"segments\":[\"1\"]}` and a typed label (7, and separately 8). It returns `{\"targets\":[{\"segments\":[\"2\"]}]}` for label 7 and `[{\"segments\":[\"3\"]}]` for label 8.\n- The targets come from the application's `Domain::outgoing_edges`, and the dependency fingerprint is checked for each label.\n- An unknown path gives an error result, makes no graph query and records no dependency.\n- A failed delivery records no dependency.\n\n**Residual gap considered.** The tool-level test returns only single-target lists, so it does not exercise order or duplicates in the tool's JSON output. The subject states order and duplicate preservation for the returned vector, which the context API test covers. It states only that the tool \"returns the target paths\". I do not count this as a gap.\n\nNo {fixme} acknowledgments apply, and I found no unacknowledged gaps.",
   "references": "aacbd68d7368c7365fb461d269cc129e76874db223039516a738e7c7c6f2dcf4",
   "inputs": [
     {
@@ -62,7 +62,7 @@
         "",
         "A *snapshot* is the contents obtained by one observation, paired with the",
         "{term}`requirements.sdk.graph.observation_fingerprint` of those",
-        "same contents. [`Snapshot<T>`](../../rustdocs/trust_but_verify/struct.Snapshot.html)",
+        "same contents. [`Snapshot<T>`](../../rustdocs/trust_but_verify/graph/struct.Snapshot.html)",
         "represents that pair.",
         ":::"
       ]
@@ -75,7 +75,7 @@
         "",
         "A *fingerprint* is a digest together with the scheme identifying how it was",
         "computed, represented by",
-        "[`Fingerprint`](../../rustdocs/trust_but_verify/struct.Fingerprint.html).",
+        "[`Fingerprint`](../../rustdocs/trust_but_verify/graph/struct.Fingerprint.html).",
         "It describes an observation under those rules; it does not identify the node or",
         "say whether a criterion's answer is favorable.",
         "Both the scheme and digest participate in comparisons.",
@@ -83,9 +83,9 @@
       ]
     },
     {
-      "file": "crates/trust-but-verify/src/agent/tools.rs",
-      "item": "impl[GraphSession<'_,%20'_,%20D>/Conversation]/fn[dispatch]",
-      "hash": "8091396391bb6d353e90dfda5209adf0461759ea43af9438e597737f52794c1a"
+      "file": "crates/trust-but-verify/src/graph.rs",
+      "item": "fn[edge_fingerprint]",
+      "hash": "a8acf08ac9e9e98b8cd0bf17bc56e15e50a4c62822c4096970f0ef9cafade106"
     },
     {
       "file": "crates/trust-but-verify/src/graph.rs",
@@ -93,14 +93,14 @@
       "hash": "664f7b18d745ea1b4e5962c384c521546946ebd381b339054fefdb2539212436"
     },
     {
-      "file": "crates/trust-but-verify/tests/contracts.rs",
-      "item": "fn[edge_fingerprints_preserve_path_boundaries_and_version_membership_encoding]",
-      "hash": "0187a508798004b9df97f4f82777e80473ce658369aaafabf7740ba5c2e6bfae"
+      "file": "crates/trust-but-verify/src/procedure.rs",
+      "item": "impl[ValidationContext<'d,%20D>]#1/fn[successors]",
+      "hash": "7efe9e695e53a2b933bb6c31d3f2b290a1c694de461f5fd95e5fa7098b670243"
     },
     {
-      "file": "crates/trust-but-verify/src/graph.rs",
-      "item": "fn[edge_fingerprint]",
-      "hash": "a8acf08ac9e9e98b8cd0bf17bc56e15e50a4c62822c4096970f0ef9cafade106"
+      "file": "crates/trust-but-verify/src/agent/tools.rs",
+      "item": "impl[GraphSession<'_,%20'_,%20D>/Conversation]/fn[dispatch]",
+      "hash": "8091396391bb6d353e90dfda5209adf0461759ea43af9438e597737f52794c1a"
     }
   ],
   "format_version": 1,
@@ -192,7 +192,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "9b3d390d40fe2d60a62641283d6798a5e09029c289d25986e95fa69f92204a53"
+          "value": "5aa09b76d8d5a4ffd843a021acf83411382731309243404d5cdd8be670316897"
         }
       ]
     },
@@ -203,7 +203,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "812d49b0c43b7764782bc5c6f53b8183bacd5dd36693b87ebabea973d27e3205"
+          "value": "9fcff1854eb767707b8efdb4a3a1edb436b8e6992cf8da3f4ccfc486672a1cdd"
         }
       ]
     },
@@ -213,14 +213,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/tools.rs"
+              "location": "crates/trust-but-verify/src/graph.rs"
             },
-            "selector": "impl[GraphSession<'_,%20'_,%20D>/Conversation]/fn[dispatch]"
+            "selector": "fn[edge_fingerprint]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "cafd8b6e8c6edaaeb015891c93c468c230361b509ffa11f17606e18bba315e33"
+          "value": "cab53a4543a4d5ec1592b171799fc03844659659a2184b54dbe00d4c568a92ed"
         }
       ]
     },
@@ -247,14 +247,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/contracts.rs"
+              "location": "crates/trust-but-verify/src/procedure.rs"
             },
-            "selector": "fn[edge_fingerprints_preserve_path_boundaries_and_version_membership_encoding]"
+            "selector": "impl[ValidationContext<'d,%20D>]#1/fn[successors]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "f23ffaf4ee106b9c3198db8f6e8903a458ff1c63fc26976f0b67a01393e79007"
+          "value": "4b5dfafcab98d8e6c90b9b2809de302ecc626cf390304ba531f2a552c897d947"
         }
       ]
     },
@@ -264,14 +264,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/src/graph.rs"
+              "location": "crates/trust-but-verify/src/agent/tools.rs"
             },
-            "selector": "fn[edge_fingerprint]"
+            "selector": "impl[GraphSession<'_,%20'_,%20D>/Conversation]/fn[dispatch]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "cab53a4543a4d5ec1592b171799fc03844659659a2184b54dbe00d4c568a92ed"
+          "value": "cafd8b6e8c6edaaeb015891c93c468c230361b509ffa11f17606e18bba315e33"
         }
       ]
     }

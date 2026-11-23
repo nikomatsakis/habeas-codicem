@@ -4,8 +4,12 @@ use std::sync::{
     Arc, Barrier,
     atomic::{AtomicUsize, Ordering},
 };
-use trust_but_verify::{Domain, NodeContents};
-use trust_but_verify::{graph::*, storage::*};
+use trust_but_verify::domain::Domain;
+use trust_but_verify::domain::NodeContents;
+use trust_but_verify::graph::validator::Validator;
+use trust_but_verify::graph::*;
+use trust_but_verify::request::ValidationContext;
+use trust_but_verify::storage::*;
 
 fn criterion() -> CriterionPath {
     CriterionPath::new(vec![])

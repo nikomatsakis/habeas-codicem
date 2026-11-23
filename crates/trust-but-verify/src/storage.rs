@@ -1,6 +1,8 @@
 //! Atomic filesystem storage for graph evidence.
 
-use crate::graph::{CriterionPath, NodePath, Record};
+use crate::graph::CriterionPath;
+use crate::graph::NodePath;
+use crate::graph::Record;
 use serde::{Serialize, de::DeserializeOwned};
 use std::{
     io::Write,

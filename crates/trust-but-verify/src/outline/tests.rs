@@ -1402,12 +1402,14 @@ fn inner_and_outer_doc_comments_hash_in_separate_groups() {
 // {test}`requirements.sdk.outlines.language_provider`
 #[test]
 fn custom_provider_handles_generated_content_and_structural_search() {
-    use crate::outline::language::{LanguageProvider, Profile, Registry};
+    use crate::outline_engine::language::LanguageProvider;
+    use crate::outline_engine::language::Profile;
+    use crate::outline_engine::language::Registry;
     use crate::structural::StructuralRule;
     static CUSTOM_PROFILE: Profile = Profile {
         name: "application-rust",
         extensions: &["app"],
-        ..crate::outline::languages::rust::PROFILE
+        ..crate::outline_engine::languages::rust::PROFILE
     };
     struct Custom;
     impl LanguageProvider for Custom {
@@ -1415,7 +1417,9 @@ fn custom_provider_handles_generated_content_and_structural_search() {
             &CUSTOM_PROFILE
         }
         fn grammar(&self) -> fn() -> tree_sitter::Language {
-            crate::outline::languages::rust::PROFILE.language.unwrap()
+            crate::outline_engine::languages::rust::PROFILE
+                .language
+                .unwrap()
         }
     }
     let registry = Registry::new([&Custom as &dyn LanguageProvider]);

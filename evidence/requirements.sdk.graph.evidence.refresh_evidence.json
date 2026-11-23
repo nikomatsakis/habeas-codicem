@@ -1,7 +1,7 @@
 {
   "requirement": "```rust,ignore\nuse std::future::Future;\n\n// Method on Validator<D>.\n/// Reuse compatible, current evidence, or evaluate and save a new answer.\n/// Errors from loading, decoding, checking, execution, or saving propagate.\npub fn refresh_evidence<V: Criterion<D>>(\n    &self,\n    criterion: V,\n) -> impl Future<Output = Result<Fingerprinted<D, V::Ok>, ValidationError<D::Error>>> + Send {\n    async move {\n        if let Some(saved) = self.load_evidence(&criterion).await? {\n            if procedure_matches(saved.revision(), &criterion.revision())\n                && self.check_inputs(&saved).map_err(ValidationError::Graph)?\n            {\n                return Ok(saved);\n            }\n        }\n\n        let inputs = self.verify(criterion).await?;\n        self.store_evidence(&inputs).await?;\n        Ok(inputs)\n    }\n}\n```\n\nLoading and decoding follow {cite}`requirements.sdk.graph.evidence.check_node`\nand {cite}`requirements.sdk.graph.evidence.record.output`. Revision and input\ncomparison follow\n{cite}`requirements.sdk.graph.evidence.checking_records.procedure_match` and\n{cite}`requirements.sdk.graph.evidence.checking_records`. Evaluation follows\n{cite}`requirements.sdk.graph.validators.validate_node`; saving follows\n{cite}`requirements.sdk.graph.evidence.store_evidence`.",
   "determination": true,
-  "rationale": "The reviewed tests cover each obligation of `refresh_evidence`. I judged this from the supplied test source and did not request implementation source.\n\n**Reuse of compatible, current evidence**\n- `refresh_reuses_current_positive_negative_and_legacy_answers_without_saving` loops over satisfied and unsatisfied answers and over revisions `v1` and the wildcard `*`.\n  - The refresh uses a criterion configured to fail if executed. It still returns the saved output, dependencies, source id, criterion path and revision.\n  - It asserts that executions and writes both stay at 1, that inputs were re-read (`reads == [2, 2]`), and that the stored record is unchanged.\n- `validation_and_answer_need_send_without_sync` reuses a record with an empty trace. Executions and writes stay at 2 across a fresh refresh and a reuse.\n- `behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer` and `source_capable_validator_tracks_deterministic_reads_and_reuses_saved_results` also check reuse of a saved answer with a real dependency trace.\n\n**Evaluate and save when evidence is missing, incompatible or stale**\n- `refresh_evaluates_missing_incompatible_or_changed_evidence_with_a_fresh_trace` covers four causes: `missing`, `revision`, `contents` and `successors`.\n  - It asserts that the new answer is returned with a fresh trace containing only the new input.\n  - It asserts execution and write counts, and that the stored record equals the replacement in output, dependencies and revision.\n  - For `revision`, the obsolete input is removed, so the test also shows that a revision mismatch does not resolve old inputs.\n  - For `contents`, the read order `[2, 1]` shows that the old input was checked before the new execution.\n- `source_capable_validator_tracks_deterministic_reads_and_reuses_saved_results` shows that a changed domain state produces the new answer.\n\n**Error propagation**\n- `refresh_propagates_load_decode_check_execution_and_save_errors` covers seven stages:\n  - A load failure returns `Graph`.\n  - A decode failure with a matching revision returns `Output`.\n  - A decode failure with a stale revision returns `Output`.\n  - A node-read failure during the input check returns `Graph`.\n  - An edge-resolution failure during the input check returns `Graph`.\n  - An execution failure propagates.\n  - A save failure propagates.\n- For each stage it asserts that the stored record is unchanged. It also asserts the expected execution count and a write count of 1, so a failed refresh did not save over the old record.\n- `refresh_serialization_failure_preserves_the_saved_record` covers an encoding failure. It returns `ValidationError::Output` with no new write and the old record intact.\n\n**Other behavior**\n- `concurrent_refreshes_execute_independently_and_store_complete_records` checks that concurrent refreshes each execute and that the stored record is complete.\n- The `Send`-without-`Sync` shape is checked in `validation_and_answer_need_send_without_sync`.\n\nThe cited requirements (`check_node`, `record.output`, `procedure_match`, `checking_records`, `validate_node`, `store_evidence`) are context. Their tests are not reassessed here. The refresh tests apply them in the refresh workflow: the wildcard revision, a revision mismatch skipping the input check, and input comparison by contents and by successors.\n\nI found no uncovered obligation or boundary case that the text names. All the tests carry `{test}` references to the subject.",
+  "rationale": "I judged this from the supplied test source only. I did not request implementation source or run any searches. The reviewed tests cover every obligation in `requirements.sdk.graph.evidence.refresh_evidence`.\n\n**Reuse of compatible, current evidence**\n- `crates/trust-but-verify/tests/contracts.rs#fn[refresh_reuses_current_positive_negative_and_legacy_answers_without_saving]` runs a first refresh that saves a record. It covers both positive and negative answers, and stored revisions `v1` and the wildcard `*`.\n- A second refresh uses a criterion that would fail if executed (`failure = Some(\"must reuse\")`) and would give the opposite answer. The test asserts that:\n  - the output, dependencies, source id, criterion path and revision are all the saved ones;\n  - the counts are `executions == 1` and `writes == 1`;\n  - the stored record is unchanged.\n- This establishes reuse with no re-execution and no re-save.\n- The wildcard behavior is exercised through `*`. The detailed revision comparison belongs to the cited `procedure_match` requirement, so I did not reassess it.\n- `tests/contracts.rs#fn[validation_and_answer_need_send_without_sync]` also covers reuse. A second refresh with a different payload returns the saved answer `23`, and the counts show no extra execution.\n- The `agent/tests.rs` and `agent/project_sources.rs` tests also exercise reuse with real criteria. They check that the provider is called only once, and that a changed domain value yields a new answer.\n\n**Evaluate and save when evidence is missing, incompatible or changed**\n- `tests/contracts.rs#fn[refresh_evaluates_missing_incompatible_or_changed_evidence_with_a_fresh_trace]` covers four causes: `missing`, `revision`, `contents` and `successors`.\n- For each cause it asserts all of the following:\n  - the new output is returned;\n  - the dependency trace is fresh and contains only the new reads;\n  - `executions` and `writes` equal 1 for `missing` and 2 for the other causes;\n  - the stored record is replaced with the new output, dependencies and revision.\n- In the `revision` case the old input is deleted from the domain, and the asserted reads are `[1]`. This shows that an incompatible revision skips input checking.\n- In the `contents` case the asserted reads are `[2, 1]`. This shows that the old inputs are checked first and the new trace is separate.\n\n**Error propagation**\n- `tests/contracts.rs#fn[refresh_propagates_load_decode_check_execution_and_save_errors]` covers seven stages: `load`, `decode`, `stale decode`, `read`, `edges`, `execute` and `store`.\n- It asserts the error variant for each stage: `Output` for decode errors and `Graph` for the rest. It also asserts that the stored record is unchanged.\n- It asserts execution counts for each stage. The stages other than `execute` and `store` do not execute again.\n- `tests/contracts.rs#fn[refresh_serialization_failure_preserves_the_saved_record]` covers a saving (serialization) failure. It asserts `ValidationError::Output`, `writes == 0` and an unchanged record.\n\n**Independence and Send**\n- `tests/contracts.rs#fn[concurrent_refreshes_execute_independently_and_store_complete_records]` runs two refreshes concurrently. It asserts that each executes independently and that the stored record is complete and consistent.\n- `tests/contracts.rs#fn[validation_and_answer_need_send_without_sync]` checks the `Send` future with a non-`Sync` answer.\n\n**Delegated obligations and gaps**\n- Delegated to the cited requirements, so not re-tested here: the detailed input comparison (`checking_records`, including early return on mismatch), loading and decoding (`check_node`, `record.output`), execution (`validate_node`) and saving (`store_evidence`).\n- I found no gap. There are no {fixme} acknowledgments, and none are needed.",
   "references": "6bc6a958f62a2ba76c6f1f8863a7f39e8b8e6765da2f3c2eb68e7968f6c0bc6f",
   "inputs": [
     {
@@ -101,7 +101,7 @@
       "text": [
         ":::{req} checking_records.procedure_match",
         "```rust,ignore",
-        "// Defined in trust_but_verify.",
+        "// Defined in trust_but_verify::graph.",
         "/// Compare the saved review-rule revision with the currently requested revision.",
         "pub fn procedure_matches(stored: &str, requested: &str) -> bool;",
         "```",
@@ -196,7 +196,7 @@
     {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
       "item": "mod[tests]/fn[source_capable_validator_tracks_deterministic_reads_and_reuses_saved_results]",
-      "hash": "c787f70923af20cf2558977f5bf353488d9f5a04e1834db3be71ce5d13205cd2"
+      "hash": "529e1a24b9bcecd259a2c20d50826f55cd64f22108ad5d18de799ac02871b8b2"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
@@ -232,16 +232,6 @@
       "file": "crates/trust-but-verify/tests/contracts.rs",
       "item": "fn[concurrent_refreshes_execute_independently_and_store_complete_records]",
       "hash": "481f7383b7aa07120683e2621a499cb28ebfe9d6cdf38c6e8c08910fdbdca29e"
-    },
-    {
-      "file": "crates/trust-but-verify/src/graph.rs",
-      "item": "fn[procedure_matches]",
-      "hash": "56a326060bfbf98ea4b237c7aa0115094d922d729ed62130f8e7d98d483aa469"
-    },
-    {
-      "file": "crates/trust-but-verify/tests/validation.rs",
-      "item": "fn[wildcard_versions_still_check_inputs_and_errors]",
-      "hash": "1ebc05e3b28f2995651204da8584731d3cc2d919e762034b5445fe03525ecdab"
     }
   ],
   "format_version": 1,
@@ -310,7 +300,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "7c1921fecbe4005e4110d3bba8437e4fd07de498ed4c27aa9162de1ac4bbd12b"
+          "value": "0f7d87b406819f3dde5d7426c074ed0519db4d17b193aa6c28cd18c82187d7f7"
         }
       ]
     },
@@ -360,7 +350,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "ef149487803df9873d141a05ea1e71fb42c40b2f8835710906cb1978728ec713"
+          "value": "afc18d65d7c7f4427d89bae5a2f0fbcd77c78c0273356ca6c656f4bbf7d04421"
         }
       ]
     },
@@ -480,40 +470,6 @@
         {
           "scheme": "habeas-input-v1",
           "value": "baacba39780fa3ab272012bccf15cba4a27a96b8e6823b911240b65ad0a1873e"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/graph.rs"
-            },
-            "selector": "fn[procedure_matches]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "f11b43ebf14ebec8457a6791566254e4e5542b13bb236a7425ab365b1c8b63bd"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/validation.rs"
-            },
-            "selector": "fn[wildcard_versions_still_check_inputs_and_errors]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "ed2ec56dd000faf61c13189c992fb719d6404bb4707d8654487f16ddc5b6272b"
         }
       ]
     }

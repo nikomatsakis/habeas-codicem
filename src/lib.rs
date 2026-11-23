@@ -19,7 +19,17 @@ mod github;
 mod index;
 mod inputs;
 pub mod judgment;
-pub(crate) use trust_but_verify::outline::integration as outline;
+mod outline {
+    pub(crate) use trust_but_verify::outline::languages::rust::PROFILE as RUST_PROFILE;
+    pub(crate) use trust_but_verify::outline_engine::LegacyOutline as Outline;
+    pub(crate) use trust_but_verify::outline_engine::ResolveError;
+    pub(crate) use trust_but_verify::outline_engine::comment_ranges;
+    pub(crate) use trust_but_verify::outline_engine::parse;
+    pub(crate) use trust_but_verify::outline_engine::parse_redacted;
+    pub(crate) use trust_but_verify::outline_engine::parse_with;
+    pub(crate) use trust_but_verify::outline_engine::profile::is_markdown_path;
+    pub(crate) use trust_but_verify::outline_engine::profile::profile_for_path;
+}
 mod evidence_format;
 mod redaction;
 mod refactor;

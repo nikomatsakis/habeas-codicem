@@ -13,7 +13,8 @@ use ast_grep_core::tree_sitter::{LanguageExt, StrDoc, TSLanguage};
 use ast_grep_core::{Language, Pattern, PatternError};
 use serde_json::{Map, Value};
 
-use crate::outline::{LegacyOutline, Profile};
+use crate::outline_engine::LegacyOutline;
+use crate::outline_engine::Profile;
 
 // {cite}`habeas:util`
 /// An outline profile with a grammar, as an ast-grep language.
@@ -28,7 +29,7 @@ impl QueryLanguage {
     /// The language named by an outline profile with a grammar.
     #[cfg(feature = "default-languages")]
     pub fn named(name: &str) -> Result<Self, String> {
-        crate::outline::profile::profiles()
+        crate::outline_engine::profile::profiles()
             .into_iter()
             .find(|profile| profile.name == name)
             .and_then(|profile| profile.language.map(|grammar| Self { profile, grammar }))
@@ -44,7 +45,7 @@ impl QueryLanguage {
     /// The names of the outline profiles with a grammar.
     #[cfg(feature = "default-languages")]
     pub fn names() -> Vec<&'static str> {
-        crate::outline::profile::profiles()
+        crate::outline_engine::profile::profiles()
             .into_iter()
             .filter(|profile| profile.language.is_some())
             .map(|profile| profile.name)
@@ -140,7 +141,7 @@ impl StructuralRule {
     /// Compile using the application's provider, without a global language list.
     // {cite}`habeas:util`
     pub fn compile_with(
-        provider: &'static dyn crate::outline::LanguageProvider,
+        provider: &'static dyn crate::outline_engine::LanguageProvider,
         rule: &Map<String, Value>,
     ) -> Result<Self, String> {
         let profile = provider.profile();
@@ -343,7 +344,7 @@ mod tests {
     #[test]
     fn matches_belong_to_the_innermost_node_or_comment_owner() {
         let source = "mod outer {\n    /// Uses foo.\n    #[inline]\n    fn inner() {\n        foo(1);\n    }\n}\n";
-        let outline = crate::outline::parse(Path::new("lib.rs"), source).unwrap();
+        let outline = crate::outline_engine::parse(Path::new("lib.rs"), source).unwrap();
         let item = |text: &str| {
             let start = source.find(text).unwrap();
             let index = innermost_node(&outline, source, &(start..start + text.len()));

@@ -120,19 +120,19 @@ relevant.
 :::{cite} requirements.sdk.domain
 An *application domain* is the application's graph, node contents, and evidence
 storage, made available together for criterion execution. In the SDK, it
-implements [`Domain`](../rustdocs/trust_but_verify/trait.Domain.html) to supply
+implements [`Domain`](../rustdocs/trust_but_verify/domain/trait.Domain.html) to supply
 its shared types, node and edge operations, and evidence persistence.
 :::
 ::::
 
 :::{req} domain
 Every {term}`requirements.sdk.application_domain` implements
-`trust_but_verify::Domain`. A domain is cloneable and safe to share between
+`trust_but_verify::domain::Domain`. A domain is cloneable and safe to share between
 executions. The following chapters introduce its members one capability at a
 time:
 
 ```rust,ignore
-// Defined in trust_but_verify.
+// Defined in trust_but_verify::domain.
 /// Application data and operations used to evaluate criteria.
 pub trait Domain: Clone + Send + Sync {
     // ...
@@ -148,7 +148,7 @@ associated type on `Domain`. Node reads, edge queries, and evidence persistence
 use it to report internal errors:
 
 ```rust,ignore
-// Defined in trust_but_verify.
+// Defined in trust_but_verify::domain.
 pub trait Domain: Clone + Send + Sync {
     // ...
 
@@ -169,17 +169,17 @@ The chapters introduce each interface and the tools used with it:
 
 | Chapter | Purpose | Related traits and types |
 | --- | --- | --- |
-| [Graph nodes](sdk/graph.md) | Node identities, stable paths, contents, and fingerprints. | [`Domain`](../rustdocs/trust_but_verify/trait.Domain.html), [`NodeContents`](../rustdocs/trust_but_verify/trait.NodeContents.html) |
-| [Graph edges](sdk/graph-edges.md) | Relationship labels and successor lookup. | [`Domain`](../rustdocs/trust_but_verify/trait.Domain.html) |
-| [Criteria](sdk/graph/validation.md) | Criterion types, completed answers, identity, review rules, and execution. | [`Criterion`](../rustdocs/trust_but_verify/trait.Criterion.html) |
-| [Validators](sdk/graph/validators.md) | Constructing a validator and running criterion values. | [`Domain`](../rustdocs/trust_but_verify/trait.Domain.html), [`Validator`](../rustdocs/trust_but_verify/struct.Validator.html) |
-| [Agent calls](sdk/graph/agent-calls.md) | Prompt construction and typed answers. | [`Context`](../rustdocs/trust_but_verify/trait.Context.html), [`Ask`](../rustdocs/trust_but_verify/struct.Ask.html) |
-| [Context tools](sdk/graph/context-tools.md) | Source discovery, tracked content reads, and edge selections. | [`InspectionContext`](../rustdocs/trust_but_verify/struct.InspectionContext.html) |
-| [Agent harness](sdk/graph/agent-harness.md) | Agent configuration, fixed inspection tools, and structured submissions. | [`AgentConfig`](../rustdocs/trust_but_verify/enum.AgentConfig.html) |
-| [Storage](sdk/graph/evidence.md) | Where and how evidence is saved. | [`Domain`](../rustdocs/trust_but_verify/trait.Domain.html) |
-| [Filesystem evidence storage](sdk/filesystem-storage.md) | Filesystem persistence for SDK evidence records. | [`Domain`](../rustdocs/trust_but_verify/trait.Domain.html), [`FileEvidenceStorage`](../rustdocs/trust_but_verify/struct.FileEvidenceStorage.html) |
-| [Sources and inspection](sdk/sources.md) | Project files, discovery, and source-item-to-node mapping. | [`Sources`](../rustdocs/trust_but_verify/struct.Sources.html), [`SourceNodes`](../rustdocs/trust_but_verify/trait.SourceNodes.html) |
-| [Source outlines](sdk/outlines.md) | Default language selection and ready-to-use source contents. | [`OutlineId`](../rustdocs/trust_but_verify/struct.OutlineId.html), [`OutlineLang`](../rustdocs/trust_but_verify/trait.OutlineLang.html), [`OutlineContent`](../rustdocs/trust_but_verify/struct.OutlineContent.html) |
+| [Graph nodes](sdk/graph.md) | Node identities, stable paths, contents, and fingerprints. | [`Domain`](../rustdocs/trust_but_verify/domain/trait.Domain.html), [`NodeContents`](../rustdocs/trust_but_verify/domain/trait.NodeContents.html) |
+| [Graph edges](sdk/graph-edges.md) | Relationship labels and successor lookup. | [`Domain`](../rustdocs/trust_but_verify/domain/trait.Domain.html) |
+| [Criteria](sdk/graph/validation.md) | Criterion types, completed answers, identity, review rules, and execution. | [`Criterion`](../rustdocs/trust_but_verify/graph/trait.Criterion.html) |
+| [Validators](sdk/graph/validators.md) | Constructing a validator and running criterion values. | [`Domain`](../rustdocs/trust_but_verify/domain/trait.Domain.html), [`Validator`](../rustdocs/trust_but_verify/graph/validator/struct.Validator.html) |
+| [Agent calls](sdk/graph/agent-calls.md) | Prompt construction and typed answers. | [`Context`](../rustdocs/trust_but_verify/request/trait.Context.html), [`Ask`](../rustdocs/trust_but_verify/request/struct.Ask.html) |
+| [Context tools](sdk/graph/context-tools.md) | Source discovery, tracked content reads, and edge selections. | [`InspectionContext`](../rustdocs/trust_but_verify/graph/struct.InspectionContext.html) |
+| [Agent harness](sdk/graph/agent-harness.md) | Agent configuration, fixed inspection tools, and structured submissions. | [`AgentConfig`](../rustdocs/trust_but_verify/agent/enum.AgentConfig.html) |
+| [Storage](sdk/graph/evidence.md) | Where and how evidence is saved. | [`Domain`](../rustdocs/trust_but_verify/domain/trait.Domain.html) |
+| [Filesystem evidence storage](sdk/filesystem-storage.md) | Filesystem persistence for SDK evidence records. | [`Domain`](../rustdocs/trust_but_verify/domain/trait.Domain.html), [`FileEvidenceStorage`](../rustdocs/trust_but_verify/storage/struct.FileEvidenceStorage.html) |
+| [Sources and inspection](sdk/sources.md) | Project files, discovery, and source-item-to-node mapping. | [`Sources`](../rustdocs/trust_but_verify/sources/struct.Sources.html), [`SourceNodes`](../rustdocs/trust_but_verify/domain/trait.SourceNodes.html) |
+| [Source outlines](sdk/outlines.md) | Default language selection and ready-to-use source contents. | [`OutlineId`](../rustdocs/trust_but_verify/outline/struct.OutlineId.html), [`OutlineLang`](../rustdocs/trust_but_verify/outline/trait.OutlineLang.html), [`OutlineContent`](../rustdocs/trust_but_verify/outline/struct.OutlineContent.html) |
 
 ## Putting it all together
 

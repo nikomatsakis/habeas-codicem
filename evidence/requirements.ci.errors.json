@@ -1,7 +1,7 @@
 {
   "requirement": "Repository validation MUST continue after a failed check and report every failed\ncheck it finds in one run, each as a {term}`requirements.ci.validation_error`.\nThis is a convention for every validation error; the requirement for each check\nstates which conditions that check reports. A file that cannot be parsed, such as\na malformed `habeas.toml`, `book.toml`, or evidence file, is one failed check:\nits error MAY report only the first parse or decoding problem in that file, and\nchecks that do not depend on its contents MUST still run.\n\nThe code that sequences the repository's checks carries out the first paragraph.\nA repository-validation function that collects validation errors MUST hold them\nin a parameter or local variable named `errors`, and a function with such a\nvariable is a site below; authoring code that collects errors only to abort is\nnot one. After one of its checks fails, a site MUST still run every later check\nthat does not depend on the failed check's result, including later checks in the\nsame loop iteration, and MUST NOT report one failure twice.\n\n::::{sites} error_accumulators\n```yaml\nlanguage: rust\npaths: [src, crates/trust-but-verify/src]\nexclude: [src/authoring/inputs.rs, src/authoring/tools.rs]\nrule:\n  kind: function_item\n  has:\n    stopBy: { kind: function_item }\n    any:\n      - kind: parameter\n        has: { field: pattern, regex: \"^errors$\" }\n      - kind: let_declaration\n        has: { field: pattern, regex: \"^errors$\" }\n  not:\n    inside:\n      stopBy: end\n      kind: mod_item\n      has: { field: name, regex: \"^tests$\" }\nmatch:\n  - \"fn check(value: &str, errors: &mut Vec<String>) {}\"\n  - |\n    fn run() {\n        let mut errors: BTreeSet<String> = BTreeSet::new();\n        check(\"\", &mut errors);\n    }\nno_match:\n  - \"fn check(value: &str, discovery_errors: &mut Vec<String>) {}\"\n  - |\n    fn run() {\n        let mut problems = Vec::new();\n        check(\"\", &mut problems);\n    }\n  - |\n    mod tests {\n        fn check(errors: &mut Vec<String>) {}\n    }\n```\n::::\n\n::::{violations} early_exits\n```yaml\nlanguage: rust\npaths: [src, crates/trust-but-verify/src]\nwithin: error_accumulators\nrule:\n  any:\n    - kind: try_expression\n    - kind: return_expression\n    - kind: continue_expression\n    - kind: break_expression\nmatch:\n  - |\n    fn check(v: &Value, errors: &mut Vec<String>) -> Option<u8> {\n        let n = v.as_u64()?;\n        if v.is_null() { errors.push(\"null\".into()); }\n        Some(n as u8)\n    }\n  - |\n    fn check(items: &[Value], errors: &mut Vec<String>) {\n        for item in items {\n            if !item.is_object() { errors.push(\"object\".into()); continue; }\n            if item.is_null() { errors.push(\"null\".into()); }\n        }\n    }\n  - |\n    fn check(v: &Value, errors: &mut Vec<String>) {\n        if !v.is_object() { errors.push(\"object\".into()); return; }\n        if v.is_null() { errors.push(\"null\".into()); }\n    }\n  - |\n    fn check(items: &[Value], errors: &mut Vec<String>) {\n        for item in items {\n            if !item.is_object() { errors.push(\"object\".into()); break; }\n        }\n        if items.is_empty() { errors.push(\"empty\".into()); }\n    }\nno_match:\n  - |\n    fn parse(v: &Value) -> Option<u8> {\n        let n = v.as_u64()?;\n        Some(n as u8)\n    }\n```\n::::",
   "determination": true,
-  "rationale": "**Verdict:** I found no gap in the tests or the queries for `requirements.ci.errors`. No `{fixme}` acknowledges one.\n\n**Obligations and the tests that check them**\n\n1. **Validation continues after a failed check and reports every failure in one run.**\n   - `src/evidence.rs#mod[tests]/fn[failed_checks_do_not_hide_later_independent_checks]` combines invalid chapter names, bad evidence inputs and misplaced `{fixme}` references. It asserts that each independent error appears.\n   - `src/evidence.rs#mod[tests]/fn[collects_missing_orphan_format_false_and_changed_line_errors]` checks about 20 distinct errors from one `validate_repository` run.\n   - `src/evidence.rs#mod[tests]/fn[schema_rejects_each_malformed_field_and_input_form]` checks that every malformed field and input form is reported.\n   - `src/evidence.rs#mod[tests]/fn[configuration_and_dependency_failures_do_not_stop_later_checks]` covers the dependency, coverage-setup and `.config/nextest.toml` stages. It also checks that a failing `[coverage]` configuration does not stop evidence and reference checks.\n   - `src/evidence.rs#mod[tests]/fn[git_index_failure_is_reported_once_and_later_checks_still_run]` checks that a reference-discovery failure does not stop the later evidence checks.\n   - Several tests cover the sequencing code in other modules, for example `tests/references.rs#fn[unclosed_fences_still_report_unknown_names]`, `src/sites.rs#mod[tests]/fn[failed_site_queries_do_not_repeat_errors_through_dependent_violations]` and `src/execution_coverage/check.rs#mod[tests]/fn[accepted_exceptions_cannot_waive_invalid_measurement_and_checks_still_collect_errors]`.\n\n2. **An unparseable file is one failed check, and checks that do not depend on it still run.**\n   - A malformed `habeas.toml` is covered by `src/evidence.rs#mod[tests]/fn[configuration_and_dependency_failures_do_not_stop_later_checks]`. It writes `version = 2`, then asserts the single `habeas.toml` error and the later evidence and reference errors.\n   - `tests/commands.rs#fn[status_loads_nearest_workspace_file_without_validating_authoring]` covers the unparsable `version = [` case.\n   - A malformed `book.toml` (invalid TOML, and `book.src` not a string) and a malformed evidence JSON file are covered by the same two tests and by `src/execution_coverage/check.rs#mod[tests]/fn[accepted_exceptions_cannot_waive_invalid_measurement_and_checks_still_collect_errors]`.\n   - A malformed Rust source file with later checks still running is covered by `src/evidence.rs#mod[tests]/fn[inspection_progress_preserves_validation_and_finishes_each_phase]`.\n   - A malformed citation entry and a malformed site review are covered by `tests/references.rs#fn[malformed_citation_entries_do_not_hide_later_independent_errors]` and by `src/authoring/sdk.rs#mod[tests]/fn[every_review_kind_loads_both_formats_and_reports_each_application_failure_once]`.\n   - The MAY that allows reporting only the first parse problem imposes nothing to test.\n\n3. **No failure is reported twice.**\n   - The uniqueness assertions are in `src/evidence.rs#mod[tests]/fn[failed_checks_do_not_hide_later_independent_checks]` (sort and dedup), `src/evidence.rs#mod[tests]/fn[configuration_and_dependency_failures_do_not_stop_later_checks]` (counts of 1 and a unique-set comparison) and `src/evidence.rs#mod[tests]/fn[git_index_failure_is_reported_once_and_later_checks_still_run]` (one discovery error).\n   - They are also in `src/index.rs#mod[tests]/fn[an_unreadable_record_is_reported_once]`, `tests/evidence_boundaries.rs#fn[an_unlistable_review_directory_is_reported_once]`, `src/sites.rs#mod[tests]/fn[a_violation_query_needs_a_site_query]` and `src/execution_coverage/check.rs#mod[tests]/fn[accepted_exceptions_cannot_waive_invalid_measurement_and_checks_still_collect_errors]`.\n\n4. **The CLI does not stop on an invalid workspace file.** `tests/commands.rs#fn[status_loads_nearest_workspace_file_without_validating_authoring]` runs `status` and `info` and asserts the `habeas.toml` finding appears alongside the malformed-evidence finding. The matching implementation is the `{impl}` reference in `src/main.rs`.\n\n5. **Each site must keep running its later independent checks, including within the same loop iteration, and must not report a failure twice.** Each site has its own review, so I did not vet them. The tests above also exercise this for the main loops (`validate_input`, `text_field`, `parse_citation`).\n\n6. **The `{term}` `requirements.ci.validation_error` message format** is cited context. I did not reassess its tests.\n\n**Site query `error_accumulators`**\n- I ran it by name. It returns roughly 41 functions with an `errors` parameter or local. All are repository-validation code, for example `src/evidence.rs#fn[validate_references]`, `src/sites.rs#fn[validate_queries]`, `src/citations.rs#fn[validate_review]`, `src/rust_coverage.rs#fn[validate_rust_functions]`, `src/github.rs#fn[add_issue_findings]`, and the `src/structural.rs#fn[parse_queries]` accumulator.\n- `src/authoring/inputs.rs` and `src/authoring/tools.rs` are excluded as abort-only authoring code, and `mod tests` bodies are excluded.\n- `src/refactor/tests.rs` is the only file-module test file. It does not match, because its `let (errors, _)` is a tuple pattern.\n- I searched for accumulators with other names:\n  - `failures` in `src/evidence.rs#fn[load_definitions]`, which carries an in-source note that any failure aborts it.\n  - `problems` in `src/sites.rs#fn[validate_queries]`, `findings` in `src/execution_coverage/check.rs#fn[exceptions]` and `diagnostics` in `src/execution_coverage/book.rs#fn[populate_in]`. These are per-item or abort locals inside functions that already hold an `errors` accumulator.\n  - Throwaway sinks passed to helpers that need one.\n- Parameters of the form `mut errors: …` have no occurrences in the sources. I found no place the query misses and none it selects outside scope.\n- The match snippets show a parameter named `errors` and a local `errors` of a different collection type. The no_match snippets show `discovery_errors`, a differently named local `problems`, and an `errors` parameter inside `mod tests`. Together these cover each condition of the rule.\n\n**Violation query `early_exits`**\n- Its match snippets cover `?`, `return`, `continue` and `break` after an error has been pushed.\n- Its no_match snippet shows a function outside a site.\n- As a heuristic it will flag legitimate early exits, such as `return` after a failed read of a file. That is acceptable for a violation query and is not a gap.\n\nNo obligation is left without a test, and none falls outside both the site obligations and the code-and-test obligations.",
+  "rationale": "**Obligations**\n\n`requirements.ci.errors` has three kinds of obligation:\n- (a) Sequencing: validation continues after a failed check and reports every failure. Unparseable inputs (`habeas.toml`, `book.toml`, evidence files) count as one failed check each, and checks that don't depend on them still run. This is carried out by the sequencing code, `src/evidence.rs#fn[inspect_repository_with_progress]` and the callees it passes `errors` to.\n- (b) Each `errors`-collecting site runs later independent checks and never reports a failure twice. Per-site review covers this, so it is not assessed here.\n- (c) The site and violation queries.\n\n**Tests for (a)**\n- `src/evidence.rs#mod[tests]/fn[configuration_and_dependency_failures_do_not_stop_later_checks]`:\n  - An invalid `habeas.toml` and an invalid `book.toml` are each reported exactly once, using `matches(..).count() == 1`.\n  - The other checks still run: orphan evidence (`evidence/ghost.json: invalid JSON`) and an unknown `{impl}` name in `src/main.rs`.\n  - A bad nextest config and a bad `[coverage]` config are each reported while the later evidence and reference checks still run, and the error list has no duplicates.\n  - Unresolvable `{term}`s are reported alongside the record's other checks and other records' missing-evidence errors.\n- `src/evidence.rs#mod[tests]/fn[failed_checks_do_not_hide_later_independent_checks]`:\n  - Later checks in the same loop iteration still run after a failure. This covers an invalid or reserved name alongside the no-text check, and several `inputs[i]` failures within one record.\n  - A final check asserts that every error appears only once.\n- `src/evidence.rs#mod[tests]/fn[collects_missing_orphan_format_false_and_changed_line_errors]` and `fn[schema_rejects_each_malformed_field_and_input_form]` assert that many distinct failures are all reported in one run.\n- `src/evidence.rs#mod[tests]/fn[inspection_progress_preserves_validation_and_finishes_each_phase]`: malformed JSON evidence and an unparseable Rust source are both reported in the same run.\n- `src/evidence.rs#mod[tests]/fn[git_index_failure_is_reported_once_and_later_checks_still_run]`: a discovery failure appears once, and the later missing-evidence and invalid-JSON checks still run.\n- `tests/commands.rs#fn[status_loads_nearest_workspace_file_without_validating_authoring]`: an invalid or malformed `habeas.toml` is one finding, and `status` and `info` still report the malformed evidence.\n- Further coverage:\n  - `tests/evidence_boundaries.rs#fn[an_unlistable_review_directory_is_reported_once]`\n  - `tests/references.rs#fn[unclosed_fences_still_report_unknown_names]`\n  - `tests/references.rs#fn[malformed_citation_entries_do_not_hide_later_independent_errors]`\n  - `src/index.rs#mod[tests]/fn[an_unreadable_record_is_reported_once]`\n  - `src/sites.rs#mod[tests]/fn[failed_site_queries_do_not_repeat_errors_through_dependent_violations]`\n  - `src/execution_coverage/check.rs#mod[tests]/fn[accepted_exceptions_cannot_waive_invalid_measurement_and_checks_still_collect_errors]`\n  - `src/authoring/sdk.rs#mod[tests]/fn[every_review_kind_loads_both_formats_and_reports_each_application_failure_once]`\n\nTogether these assert the continue-after-failure, parse-failure-is-one-failed-check, and no-duplicate obligations, and they exercise each named configuration or evidence parse failure. The MAY on reporting only the first parse problem imposes nothing to check. I found no unacknowledged missing scenario.\n\n**Site query `error_accumulators`**\n\nI ran `requirements.ci.errors/error_accumulators` and read the matches. They are functions that take an `errors` parameter or declare `let errors`, such as `inspect_repository_with_progress`, `book_source_dir`, `collect_definitions`, `validate_evidence_file`, `validate_input`, `citations::validate`, `sites::discover`, `terms::validate_dependencies`, `structural::parse_queries` and `github::add_issue_findings`. These are validation collectors, which is the intended scope.\n\nExclusions:\n- `mod tests` functions are excluded by the `not inside mod_item tests` condition.\n- The authoring-only files `src/authoring/inputs.rs` and `src/authoring/tools.rs` are excluded, matching the text's carve-out for code that collects errors only to abort.\n\nMy text searches of `src` and `crates/trust-but-verify/src` for `errors` variables and parameters found no collector that the query misses. They also found no out-of-scope place it selects. For example, `let (errors, _) = ...` in `src/refactor/tests.rs` does not match `^errors$`, and `crates/.../src` contains no `errors` variables.\n\nThe snippets cover parameter and `let` forms, with a `BTreeSet` variant. The no_match snippets cover a near-name (`discovery_errors`), a differently named variable, and a `mod tests` function.\n\n**Violation query `early_exits`**\n\nIts match snippets cover `?`, `continue`, `return` and `break` after a pushed error. Its no_match snippet is a non-accumulator function with `?`. A violation query that misses constructs, such as `.unwrap()` panics, is not a gap.\n\n**Conclusion**\n\nEvery obligation assessed here has a test that both exercises it and asserts the outcome. The site query matches the described places, and the query snippets are adequate. I found no gap.",
   "references": "dd20f8da82496be36c29b330ae5a79b4902435b148f846b9f0ac46fe08864733",
   "inputs": [
     {
@@ -118,7 +118,7 @@
     {
       "file": "src/authoring/sdk.rs",
       "item": "mod[tests]/fn[every_review_kind_loads_both_formats_and_reports_each_application_failure_once]",
-      "hash": "b41b943084cb10204e0c3bc652479ab661095a06dfbbdfbc66630361a9b6ea92"
+      "hash": "5dd7ef2bab7e42c8cdb6afcbc2ce4de16704952f0db71451d67f766c6f8a567e"
     },
     {
       "file": "src/evidence.rs",
@@ -215,21 +215,6 @@
       ]
     },
     {
-      "file": "src/sites.rs",
-      "item": "fn[validate_queries]",
-      "hash": "c22721be34f2b8a9c6bd84185223d1471c27a734dcac5ca7e037ea2e4026544c"
-    },
-    {
-      "file": "src/execution_coverage/check.rs",
-      "item": "fn[exceptions]",
-      "hash": "d3faa51eb7a8bf53ef6a3c2a261c4ca072424c2d4f79a143c05bd325b6e54e72"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[load_definitions]",
-      "hash": "cfe575123d40406dab954b5425650cafaa4fb20bfdb4f8c809f9924e5fb7d6de"
-    },
-    {
       "file": "src/authoring/access/policy.rs",
       "item": "impl[DiscoverySources]/fn[files]",
       "hash": "c23d7be1e1f0c41c9a26b2ce1e4f98fc6aca2b1932c9e7f767babe3997084880"
@@ -258,56 +243,6 @@
       "file": "src/evidence.rs",
       "item": "fn[inspect_repository_with_progress]",
       "hash": "788e24af357372441e74b0823319d6b50ee4c071637fc9a47eb30d05e94d654d"
-    },
-    {
-      "file": "src/authoring/batch.rs",
-      "item": "fn[delete_orphaned_reviews]",
-      "hash": "96fb6ba4b0a09a49ded10ee373d24784b50ca62cfd966d9c21e1b888ca6de2e4"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[reference_set_digest_for]",
-      "hash": "28fa1b0cda51c2f4b0230473f69c65ccd49e9874921d37cc80eb69889c7babd2"
-    },
-    {
-      "file": "src/execution_coverage/book.rs",
-      "item": "fn[load_saved]",
-      "hash": "f0f891e3da40fc65f994190c73abed3e2d718af624f6e3cf8efda757fe582f68"
-    },
-    {
-      "file": "src/execution_coverage/book.rs",
-      "item": "fn[populate_in]",
-      "hash": "1c56feab3fa21687ab1c2e4ff3d1b8bebd9988d2e39830bafcb07d782a783ef7"
-    },
-    {
-      "file": "src/main.rs",
-      "item": "fn[main]/use@118842506675",
-      "hash": "1188425066753adbc843c210d52e91685623838c7019aff619a61ce6f920a749"
-    },
-    {
-      "file": "src/terms.rs",
-      "item": "fn[close_dependencies]",
-      "hash": "8e1f9f88b3acc193635629f6a4ebf2449b87db607cae79b5406d831a986bd0f1"
-    },
-    {
-      "file": "src/structural.rs",
-      "item": "fn[parse_queries]",
-      "hash": "96f1a821a28e2be27e0416fb500c36ea27fb5f46decab42bb51838046453e190"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[book_source_dir]",
-      "hash": "33a30a969160c640c89ec3b77e79f820241805f4eb9813279a89ebb9a8b7f4a8"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[collect_definitions]",
-      "hash": "61473bcdb7cfaa2f9a00fdf816a5995234a8e1a86063965cb6e0f4f0394361ec"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[validate_evidence_file]",
-      "hash": "a5b094bae2358675e9aecc733eb4ce8ebfd79a3a8a8af530eb394135b3aa8823"
     },
     {
       "file": "src/authoring/inputs.rs",
@@ -340,9 +275,44 @@
       "hash": "63c1997529ca8a2e8db58e9affc378fe01774e1058cbc75fdc6013638a934350"
     },
     {
-      "file": "src/execution_coverage/check.rs",
-      "item": "fn[check_saved]",
-      "hash": "2469d605b62e9297c997f8ae73c0c0c6ec83443bf50527c7ab33005012a23fd7"
+      "file": "src/evidence.rs",
+      "item": "fn[book_source_dir]",
+      "hash": "33a30a969160c640c89ec3b77e79f820241805f4eb9813279a89ebb9a8b7f4a8"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[collect_definitions]",
+      "hash": "61473bcdb7cfaa2f9a00fdf816a5995234a8e1a86063965cb6e0f4f0394361ec"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[files_with_extension]",
+      "hash": "4fab710823f8c96ba4bf9d890172091a4c3001a3c726298c099768d7c498073e"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[validate_evidence_file]",
+      "hash": "a5b094bae2358675e9aecc733eb4ce8ebfd79a3a8a8af530eb394135b3aa8823"
+    },
+    {
+      "file": "src/evidence.rs",
+      "item": "fn[validate_input]",
+      "hash": "ba071d68ab65d0a7893dd005cc03d35444c368ee68181a7835b3ed2806d2ebf0"
+    },
+    {
+      "file": "src/structural.rs",
+      "item": "fn[parse_queries]",
+      "hash": "96f1a821a28e2be27e0416fb500c36ea27fb5f46decab42bb51838046453e190"
+    },
+    {
+      "file": "src/terms.rs",
+      "item": "fn[close_dependencies]",
+      "hash": "8e1f9f88b3acc193635629f6a4ebf2449b87db607cae79b5406d831a986bd0f1"
+    },
+    {
+      "file": "src/terms.rs",
+      "item": "fn[validate_dependencies]",
+      "hash": "384460cdf651e0a04222f97e6b6f61287c7fc9cc42f7c5ac81b45e282d3cd216"
     },
     {
       "file": "src/github.rs",
@@ -365,19 +335,24 @@
       "hash": "8c73145f6f620f84b7ab00fef6090abdd5753308c5147510e2f22e07b961ee58"
     },
     {
-      "file": "src/evidence.rs",
-      "item": "mod[tests]/fn[without_citation_reviews]",
-      "hash": "2daf2d52bd3d1a3b7fc940ee7edc4e306aa2678ddd407a6d1bf0a5fdbbad3665"
+      "file": "src/redaction.rs",
+      "item": "mod[configuration_tests]",
+      "hash": "3fa7a0910a4c64c56a7923481e92edadda75b9bc709451b87c014a7211d7d83b"
+    },
+    {
+      "file": "src/refactor.rs",
+      "item": "mod[tests]",
+      "hash": "d4f588c5e797c2da513a2e099e5cbe1c8f2ea3ea01ab5e30a10833bab5c94f14"
+    },
+    {
+      "file": "src/execution_coverage/book.rs",
+      "item": "fn[load_saved]",
+      "hash": "f0f891e3da40fc65f994190c73abed3e2d718af624f6e3cf8efda757fe582f68"
     },
     {
       "file": "src/execution_coverage/check.rs",
-      "item": "mod[tests]/fn[reviews]",
-      "hash": "fa2999e672487c20e9ffe03e65043edbd54831df807f01f281ab1abb7d161498"
-    },
-    {
-      "file": "src/index.rs",
-      "item": "struct[LoadedDetailEvidence]",
-      "hash": "75cf2243573bee2624afbfa6895a134eeda5ad495d220c141593305423923e44"
+      "item": "fn[check_saved]",
+      "hash": "2469d605b62e9297c997f8ae73c0c0c6ec83443bf50527c7ab33005012a23fd7"
     }
   ],
   "format_version": 1,
@@ -430,7 +405,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "a1bc381b7c85538338109549520dc7f120fe6b32d3bd775b6af22806982c16af"
+          "value": "8f37825c24ef02dd3955c47b40f537ddf0455c5312978759c0099c1777bc9baa"
         }
       ]
     },
@@ -723,57 +698,6 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "src/sites.rs"
-            },
-            "selector": "fn[validate_queries]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "13a7d8436237977b1fe4c5dcc066db04ec9cf45ddbe20f7f8139fe86d0fb87a3"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/execution_coverage/check.rs"
-            },
-            "selector": "fn[exceptions]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "e64ab54c6c568125c1144d87ea16d2631e002b584967793409ac53f093bb4c2f"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/evidence.rs"
-            },
-            "selector": "fn[load_definitions]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "9074fff9414e08f2e779d484c046d1adb0ee44e8d2044d5dcc5e94b779e519d0"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
               "location": "src/authoring/access/policy.rs"
             },
             "selector": "impl[DiscoverySources]/fn[files]"
@@ -867,176 +791,6 @@
         {
           "scheme": "habeas-input-v1",
           "value": "23ba690443ef8b677e74fd463e1902a0be5879ed12c7145b3933a200b66071a1"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/authoring/batch.rs"
-            },
-            "selector": "fn[delete_orphaned_reviews]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "dbdc64181f1119c4c25151cb56fea42908ba7afbf3a27b887ea2cc16d9fbfd9f"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/evidence.rs"
-            },
-            "selector": "fn[reference_set_digest_for]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "89d719af6fea8da586fa08bcaaffa4ba022f9d1201d0b66f83d9911dd626e402"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/execution_coverage/book.rs"
-            },
-            "selector": "fn[load_saved]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "654b1b94ccd6586f09d97c4d87254cf3e7aa8d356ada49bf235bf844663a05bf"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/execution_coverage/book.rs"
-            },
-            "selector": "fn[populate_in]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "1d1757874f568d48052e0a9da811499d189c15d9cf8a33b6f3888dbb394b0ad8"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/main.rs"
-            },
-            "selector": "fn[main]/use@118842506675"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "6e12c1dab39821764b879616cc81986e3ce022447ebb73aac032b0e9918ed67e"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/terms.rs"
-            },
-            "selector": "fn[close_dependencies]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "6bfe982f16590ba88b4b7b7cb3829f4345ce606f06d86061460f2e8e3b70f855"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/structural.rs"
-            },
-            "selector": "fn[parse_queries]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "bb0f4fcbe1dde2ce7b606601d65316b47a2931b9e06c8a420c4cb932532befc7"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/evidence.rs"
-            },
-            "selector": "fn[book_source_dir]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "c9a91f0dcf7dba28f8394a1332fd387e7f9bbbe45e5ac390ed0b7480a0302486"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/evidence.rs"
-            },
-            "selector": "fn[collect_definitions]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "3ac8e9099cee1ef9fd69823838927a275422af393c7545c3f55b89a1ba185cd2"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/evidence.rs"
-            },
-            "selector": "fn[validate_evidence_file]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "55eea6fb8ecee1b2ebd8f1313d729718da07e61fd3b937ea000b3f41c3f67138"
         }
       ]
     },
@@ -1148,14 +902,133 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "src/execution_coverage/check.rs"
+              "location": "src/evidence.rs"
             },
-            "selector": "fn[check_saved]"
+            "selector": "fn[book_source_dir]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "76dd276e205121c6773535f91cfaf78478341aad439a74e8c0fa3433f80961d1"
+          "value": "c9a91f0dcf7dba28f8394a1332fd387e7f9bbbe45e5ac390ed0b7480a0302486"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/evidence.rs"
+            },
+            "selector": "fn[collect_definitions]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "3ac8e9099cee1ef9fd69823838927a275422af393c7545c3f55b89a1ba185cd2"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/evidence.rs"
+            },
+            "selector": "fn[files_with_extension]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "0674419d2719ce3f6c5d26baa59e86b249d36b88c54796788299c5cb1828e88d"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/evidence.rs"
+            },
+            "selector": "fn[validate_evidence_file]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "55eea6fb8ecee1b2ebd8f1313d729718da07e61fd3b937ea000b3f41c3f67138"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/evidence.rs"
+            },
+            "selector": "fn[validate_input]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "4e80f15d31fd56e66350112238409f919b984a0b6c1effa7cf29005cb9d004dd"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/structural.rs"
+            },
+            "selector": "fn[parse_queries]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "bb0f4fcbe1dde2ce7b606601d65316b47a2931b9e06c8a420c4cb932532befc7"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/terms.rs"
+            },
+            "selector": "fn[close_dependencies]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "6bfe982f16590ba88b4b7b7cb3829f4345ce606f06d86061460f2e8e3b70f855"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/terms.rs"
+            },
+            "selector": "fn[validate_dependencies]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "9f9f20d7e49769a19c0ecd1c642487c22710e51678776ab6875fba41e5279a63"
         }
       ]
     },
@@ -1233,14 +1106,48 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "src/evidence.rs"
+              "location": "src/redaction.rs"
             },
-            "selector": "mod[tests]/fn[without_citation_reviews]"
+            "selector": "mod[configuration_tests]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "113b7fb07be5c04df8b8eeb30d83da69fd56032cc47d4dab906b8ef49722e429"
+          "value": "18c99fbc6387959e47c13e4c754f7ce804af86ad805c6d4661c63b443b548ef3"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/refactor.rs"
+            },
+            "selector": "mod[tests]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "d60092eacd72d2eb222ee649e2772f52f3fd73880aa25a85110e1b48929a3a82"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/execution_coverage/book.rs"
+            },
+            "selector": "fn[load_saved]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "654b1b94ccd6586f09d97c4d87254cf3e7aa8d356ada49bf235bf844663a05bf"
         }
       ]
     },
@@ -1252,29 +1159,12 @@
               "scheme": "repo",
               "location": "src/execution_coverage/check.rs"
             },
-            "selector": "mod[tests]/fn[reviews]"
+            "selector": "fn[check_saved]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "d3b97c39ba281b523a8bfa449ebee6b5b7e837a98a99c152061acb4e37f3270f"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/index.rs"
-            },
-            "selector": "struct[LoadedDetailEvidence]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "a31615936f314121296b75e05fb0da14ac404abadb0737228780a508dac54129"
+          "value": "76dd276e205121c6773535f91cfaf78478341aad439a74e8c0fa3433f80961d1"
         }
       ]
     }

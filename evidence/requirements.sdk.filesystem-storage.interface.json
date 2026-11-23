@@ -1,7 +1,7 @@
 {
-  "requirement": "```rust,ignore\nuse std::path::PathBuf;\nuse serde::{Serialize, de::DeserializeOwned};\nuse trust_but_verify::{CriterionPath, NodePath, Record};\n\n/// A directory of JSON records. Send + Sync; load/store futures are Send.\n/// Defined in trust_but_verify::storage.\npub struct FileEvidenceStorage { /* private fields */ }\n\npub enum FileStorageError {\n    Io(std::io::Error),\n    Json(serde_json::Error),\n}\n\nimpl FileEvidenceStorage {\n    /// Retain the root directory without performing filesystem I/O.\n    pub fn new(root: impl Into<PathBuf>) -> Self;\n\n    /// Deserialize a record, or return None if its file is missing.\n    pub async fn load<N, L>(\n        &self,\n        path: &NodePath,\n        criterion: &CriterionPath,\n    ) -> Result<Option<Record<N, L>>, FileStorageError>\n    where\n        N: DeserializeOwned + Send,\n        L: DeserializeOwned + Send;\n\n    /// Atomically replace this source/criterion pair's record.\n    pub async fn store<N, L>(\n        &self,\n        path: &NodePath,\n        criterion: &CriterionPath,\n        record: &Record<N, L>,\n    ) -> Result<(), FileStorageError>\n    where\n        N: Serialize + Sync,\n        L: Serialize + Sync;\n}\n```\n\n`Record`, `Dependency`, and `Fingerprint` support Serde when their type\nparameters do. `Criterion::Ok` is always serializable; its JSON value is\nalready in the record. Serialization bounds on node identities and edge labels\napply when using this helper.",
+  "requirement": "```rust,ignore\nuse std::path::PathBuf;\nuse serde::{Serialize, de::DeserializeOwned};\nuse trust_but_verify::graph::CriterionPath;\nuse trust_but_verify::graph::NodePath;\nuse trust_but_verify::graph::Record;\n\n/// A directory of JSON records. Send + Sync; load/store futures are Send.\n/// Defined in trust_but_verify::storage.\npub struct FileEvidenceStorage { /* private fields */ }\n\npub enum FileStorageError {\n    Io(std::io::Error),\n    Json(serde_json::Error),\n}\n\nimpl FileEvidenceStorage {\n    /// Retain the root directory without performing filesystem I/O.\n    pub fn new(root: impl Into<PathBuf>) -> Self;\n\n    /// Deserialize a record, or return None if its file is missing.\n    pub async fn load<N, L>(\n        &self,\n        path: &NodePath,\n        criterion: &CriterionPath,\n    ) -> Result<Option<Record<N, L>>, FileStorageError>\n    where\n        N: DeserializeOwned + Send,\n        L: DeserializeOwned + Send;\n\n    /// Atomically replace this source/criterion pair's record.\n    pub async fn store<N, L>(\n        &self,\n        path: &NodePath,\n        criterion: &CriterionPath,\n        record: &Record<N, L>,\n    ) -> Result<(), FileStorageError>\n    where\n        N: Serialize + Sync,\n        L: Serialize + Sync;\n}\n```\n\n`Record`, `Dependency`, and `Fingerprint` support Serde when their type\nparameters do. `Criterion::Ok` is always serializable; its JSON value is\nalready in the record. Serialization bounds on node identities and edge labels\napply when using this helper.",
   "determination": true,
-  "rationale": "The reviewed tests adequately check `requirements.sdk.filesystem-storage.interface`. All of them are in `crates/trust-but-verify/tests/storage.rs`.\n\n- **`new` retains the root with no filesystem I/O.** In `paths_are_injective_and_loading_missing_records_has_no_side_effects`, the store is built over a non-existent root. After `new` and eleven `load` calls on missing records, the test asserts `!root.exists()`.\n- **`load` returns `None` for a missing file.** The same test asserts `load(...).is_none()` for every path case. `consumer_delegates_evidence_storage_using_only_the_requested_nodes_path` also asserts `None` for an unstored node.\n- **`load` deserializes a record.**\n  - `records_round_trip_and_malformed_or_incompatible_data_is_an_error` stores a record and loads it back. It asserts equality of `revision`, `dependencies` and `output`.\n  - It repeats the round trip with a `Dependency::OutgoingEdges` that has a `String` edge label (`\"tests/é\"`). That exercises the serde bounds on node identities and edge labels, and on `Fingerprint`.\n  - `Criterion::Ok`'s JSON output is checked through the round trip of `output`.\n- **`FileStorageError` has `Io` and `Json` variants.**\n  - Loading with the wrong node type `u8`, with the wrong label type `u8`, or from a file containing \"not JSON\" yields `Json`. The test also asserts that the error's `Display` text equals the cause's.\n  - A directory in place of the record file yields `Io`, again with the `Display` check.\n  - A 4096-character key component yields `Io` from both `load` and `store` in `send_futures_create_missing_roots_and_nested_paths_without_shortening_keys`.\n- **`store` writes a record and creates missing roots and nested paths.** The `send_futures_create_missing_roots_and_nested_paths_without_shortening_keys` test stores under a missing nested root and asserts the record file exists. A load of that record then returns the same output.\n- **`store` atomically replaces the record.** `concurrent_readers_only_observe_complete_records_from_competing_writes` has two writers repeatedly replacing the record while a reader loads it. The reader asserts every observation is a complete record, either the initial one or one writer's, with full padding and consistent dependencies. It also asserts the directory holds only one entry afterwards, so no temporary files are left.\n- **`Send`/`Sync` and `Send` futures.** `FileEvidenceStorage` is shared across scoped threads through `Arc` in the concurrency test, which needs `Send + Sync`. The `send()` helper requires the `load` and `store` futures to be `Send` at compile time.\n- **Consumer use.** `consumer_delegates_evidence_storage_using_only_the_requested_nodes_path` uses the interface through a graph consumer with the `FileStorageError` error type.\n\nEach of these tests carries a `{test}` reference to the subject. The tests only use an empty `CriterionPath`. The interface signature does not distinguish criterion contents, and key encoding belongs to the separate `keys` requirement. I found no unacknowledged gap.",
+  "rationale": "The reviewed tests in `crates/trust-but-verify/tests/storage.rs` adequately cover each obligation in `requirements.sdk.filesystem-storage.interface`. I did not read the implementation. I judged only from the requirement text and the supplied tests plus the helpers `record` and `criterion`.\n\n- **`new` retains the root without I/O.**\n  - `paths_are_injective_and_loading_missing_records_has_no_side_effects` builds the store on a nonexistent root and loads from it many times. It then asserts `!root.exists()`.\n  - `send_futures_create_missing_roots_and_nested_paths_without_shortening_keys` asserts `!root.exists()` right after `new`, before any store.\n  - Either would fail if `new` created the directory.\n- **`load` returns `Ok(None)` when the file is missing.** Every case in the injectivity test asserts `.is_none()`. `consumer_delegates_evidence_storage_using_only_the_requested_nodes_path` also checks `None` for a never-stored node and for a different node.\n- **`load` deserializes a record.**\n  - The round-trip test stores a record, loads it, and asserts `revision`, `dependencies` and `output`.\n  - It covers `Dependency::Node`, `Dependency::OutgoingEdges` and `Fingerprint` with unit labels. It repeats the check with `String` labels, which exercises the serialization bounds on edge labels.\n  - The `record` helper's `output` is a `serde_json::Value`, so the requirement's `Criterion::Ok` serializability and \"JSON value already in the record\" are exercised.\n- **`FileStorageError` has `Io` and `Json` variants, each in the right situation.**\n  - Loading with a mismatched `N` type (`u8`), a mismatched `L` type (`u8`), or the content `not JSON` yields `Err(FileStorageError::Json(_))`.\n  - A directory in place of the record file yields `Err(FileStorageError::Io(_))`, and the test checks that `to_string` matches the cause.\n  - A 4096-character key fails with `Io` on both load and store.\n- **`store` replaces the record and is atomic.**\n  - The round-trip test overwrites an existing record with `labeled` and reads the new value back.\n  - `concurrent_readers_only_observe_complete_records_from_competing_writes` has two writers racing and a reader that sees only complete records. It checks internal consistency of the revision, id, dependencies and an 8192-byte padding. It also asserts that the directory holds a single entry afterwards, so no temp files are left.\n- **Send and Sync.**\n  - The `send` helper in `send_futures_create_missing_roots_and_nested_paths_without_shortening_keys` forces both the `store` and `load` futures to be `Send` at compile time.\n  - The concurrent test shares an `Arc<FileEvidenceStorage>` across scoped threads, which requires `Send + Sync`.\n- **Signature shape.** The tests call `store(&path, &criterion, &record)` and `load::<N, L>(&path, &criterion)` with the required result types, and the delegated-consumer test goes through the storage trait. Together they check the declared interface.\n\nI found no unaddressed obligation or missing scenario, and no acknowledgments apply.",
   "references": "4fa7c0209cc8a47ded44aa43c8f5142920833c5dae546977ebf2d7b4b9910690",
   "inputs": [
     {
@@ -14,7 +14,9 @@
         "```rust,ignore",
         "use std::path::PathBuf;",
         "use serde::{Serialize, de::DeserializeOwned};",
-        "use trust_but_verify::{CriterionPath, NodePath, Record};",
+        "use trust_but_verify::graph::CriterionPath;",
+        "use trust_but_verify::graph::NodePath;",
+        "use trust_but_verify::graph::Record;",
         "",
         "/// A directory of JSON records. Send + Sync; load/store futures are Send.",
         "/// Defined in trust_but_verify::storage.",
@@ -86,21 +88,6 @@
     },
     {
       "file": "crates/trust-but-verify/tests/storage.rs",
-      "item": "fn[criterion]",
-      "hash": "cc7ba646f8791ffecfaa8c1dd78e656f6ace8421d1b90b9a87e1b34c29c64c3f"
-    },
-    {
-      "file": "crates/trust-but-verify/tests/storage.rs",
-      "item": "fn[record]",
-      "hash": "64c578fa47d7839fc3df8a22bd34720a4d30ba063ad4da2c4ac005ecb46c664e"
-    },
-    {
-      "file": "crates/trust-but-verify/tests/storage.rs",
-      "item": "struct[StoredGraph]",
-      "hash": "bc7b8c9a3662ab4e2891ece6dbeeb7ce8b5697fb4e05b019092245eab0560e5f"
-    },
-    {
-      "file": "crates/trust-but-verify/tests/storage.rs",
       "item": "use@063e1579d9b6",
       "hash": "063e1579d9b60201c8d957d25b1f07b34a7da6462a44b26a660b6a18ec137d39"
     },
@@ -116,18 +103,48 @@
     },
     {
       "file": "crates/trust-but-verify/tests/storage.rs",
-      "item": "use@83cf985c41c5",
-      "hash": "83cf985c41c5bc1a6d17f664075df0d0a722fd9c1a141a8fa2e822c1dfcd09d4"
+      "item": "use@1b4e8375f6e8",
+      "hash": "1b4e8375f6e8d8c1a2ffafe8697501d849509d8680386e08aa2f60187cb02b36"
     },
     {
       "file": "crates/trust-but-verify/tests/storage.rs",
-      "item": "use@111d951f98b4",
-      "hash": "111d951f98b42521512ed3b50aaf681a3486636f475409f63bc9dfbb842d8197"
+      "item": "use@1d1da4e5384f",
+      "hash": "1d1da4e5384fd8d876b7f6c387b9d325faccc4a22c2ce171c68b69427a039f4b"
     },
     {
       "file": "crates/trust-but-verify/tests/storage.rs",
-      "item": "fn[source_and_criterion_boundaries_preserve_independent_records]",
-      "hash": "1c3e7204f5bad56b73019830133a1de4f68da5c27c2c737d5ee12146c312b0a9"
+      "item": "use@616438f6884e",
+      "hash": "616438f6884e5c95064a37a6f67d0b9084c7468953e342406b9eb36bce5ef27f"
+    },
+    {
+      "file": "crates/trust-but-verify/tests/storage.rs",
+      "item": "use@2cd805e85626",
+      "hash": "2cd805e856269cd6c40996ee7d537fc93f775b238b8fe4431bfe71bdf1c88d53"
+    },
+    {
+      "file": "crates/trust-but-verify/tests/storage.rs",
+      "item": "use@275b62c08714",
+      "hash": "275b62c08714f970056fdaee16cca488257a436ba5a424ef284e9f8f961fb30d"
+    },
+    {
+      "file": "crates/trust-but-verify/tests/storage.rs",
+      "item": "use@58189479f7af",
+      "hash": "58189479f7afbd5793626218cb4c10d2e152ee3904acadd290d2efd7f121a6c3"
+    },
+    {
+      "file": "crates/trust-but-verify/tests/storage.rs",
+      "item": "fn[criterion]",
+      "hash": "cc7ba646f8791ffecfaa8c1dd78e656f6ace8421d1b90b9a87e1b34c29c64c3f"
+    },
+    {
+      "file": "crates/trust-but-verify/tests/storage.rs",
+      "item": "fn[record]",
+      "hash": "64c578fa47d7839fc3df8a22bd34720a4d30ba063ad4da2c4ac005ecb46c664e"
+    },
+    {
+      "file": "crates/trust-but-verify/tests/storage.rs",
+      "item": "fn[storage_preserves_completed_answers_containing_credential_shaped_text]",
+      "hash": "65b2cc456b455361beee9f63dcbd4f95ea69fbe2e005bff6f199f5c01ac6ee27"
     },
     {
       "file": "crates/trust-but-verify/src/graph.rs",
@@ -143,6 +160,21 @@
       "file": "crates/trust-but-verify/src/graph.rs",
       "item": "struct[Record]",
       "hash": "e497188246e72b8e5d087a5a4e6a73412a672a69619599706e509e2d2a1667cf"
+    },
+    {
+      "file": "crates/trust-but-verify/src/storage.rs",
+      "item": "enum[FileStorageError]",
+      "hash": "35a1b76d1128d29c424b9df196fe22ace091e4274a8ecf2973307204c94e7345"
+    },
+    {
+      "file": "crates/trust-but-verify/src/storage.rs",
+      "item": "struct[FileEvidenceStorage]",
+      "hash": "d096685ec94558a746d6241d96cd243551fbfba0be01a776feb0a667c76d25bd"
+    },
+    {
+      "file": "crates/trust-but-verify/tests/storage.rs",
+      "item": "struct[StoredGraph]",
+      "hash": "bc7b8c9a3662ab4e2891ece6dbeeb7ce8b5697fb4e05b019092245eab0560e5f"
     }
   ],
   "format_version": 1,
@@ -178,7 +210,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "c49eb1efc2b21aee09fa33a41ba5db438026bb5b7b47eeedd199d4f68ba051c7"
+          "value": "e7dbe7e4a82aaa49079b674a2ee4297dfcdcb191c443db8d3b684c60477fc593"
         }
       ]
     },
@@ -275,57 +307,6 @@
               "scheme": "repo",
               "location": "crates/trust-but-verify/tests/storage.rs"
             },
-            "selector": "fn[criterion]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "25dadcc9c5ac912cdaf1d8fdc9cead352a237bb47aaf4dbd309e6a1e4722678a"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/storage.rs"
-            },
-            "selector": "fn[record]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "37bffa09278529f8c36457bd04e2570d21ce62ac0f75ba95dc2fe98fbf1c60bf"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/storage.rs"
-            },
-            "selector": "struct[StoredGraph]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "ddae1495526df5035219fdcb6dce7cecd85dad08c4cc9589d71858a355d7a747"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/storage.rs"
-            },
             "selector": "use@063e1579d9b6"
           }
         },
@@ -377,12 +358,12 @@
               "scheme": "repo",
               "location": "crates/trust-but-verify/tests/storage.rs"
             },
-            "selector": "use@83cf985c41c5"
+            "selector": "use@1b4e8375f6e8"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "2a5450075969b33b092cf6b072426c2366ad20fe3a586c6d9d5c7e47ce8a0564"
+          "value": "5b24f6c3e9d186163399081135804f90f03589eaf1e43dcf6543c7ccb755dab3"
         }
       ]
     },
@@ -394,12 +375,12 @@
               "scheme": "repo",
               "location": "crates/trust-but-verify/tests/storage.rs"
             },
-            "selector": "use@111d951f98b4"
+            "selector": "use@1d1da4e5384f"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "485f911c0b5d34d739a4c9618e40aa6359928738f62018342222579b2ac16c83"
+          "value": "1631bc3e42ec96a63d8dfbecfc40b3209688dc11aff1560f8cce80b361ef02e5"
         }
       ]
     },
@@ -411,12 +392,114 @@
               "scheme": "repo",
               "location": "crates/trust-but-verify/tests/storage.rs"
             },
-            "selector": "fn[source_and_criterion_boundaries_preserve_independent_records]"
+            "selector": "use@616438f6884e"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "e0b69fb6d3951fd66e68ab0ab52198b466829d0c3c30ef2ff8c15d093a86dd0b"
+          "value": "866724c2f5376ee591de3a86d8d8163a289326623c10829fbc83b29c22ea2488"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/tests/storage.rs"
+            },
+            "selector": "use@2cd805e85626"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "9dbb95fa97b428928d53f6db4865a472007eed214f5ef78e68ccef0254212282"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/tests/storage.rs"
+            },
+            "selector": "use@275b62c08714"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "9d2c65be4da0f18ae5f1aeab4f1ced1d0dca7625250226ced1c478c67cfb3c8c"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/tests/storage.rs"
+            },
+            "selector": "use@58189479f7af"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "d4561eba58ccd5a6f5ec326b645296dcc983df46993193ef0a69068af222a347"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/tests/storage.rs"
+            },
+            "selector": "fn[criterion]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "25dadcc9c5ac912cdaf1d8fdc9cead352a237bb47aaf4dbd309e6a1e4722678a"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/tests/storage.rs"
+            },
+            "selector": "fn[record]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "37bffa09278529f8c36457bd04e2570d21ce62ac0f75ba95dc2fe98fbf1c60bf"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/tests/storage.rs"
+            },
+            "selector": "fn[storage_preserves_completed_answers_containing_credential_shaped_text]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "472bf06a70045e0a2380bb42b0582bc8450db588b72ecfef363a90352a6e4f91"
         }
       ]
     },
@@ -468,6 +551,57 @@
         {
           "scheme": "habeas-input-v1",
           "value": "c23e4389785b9e28d3444c74a23e04cfa3619d7777c9129ffdaae2572cf5a8dc"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/storage.rs"
+            },
+            "selector": "enum[FileStorageError]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "37bd0226e73dec6059223756e06a3a2df6724e9e2d8d74c9edb0597bc8788d7e"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/storage.rs"
+            },
+            "selector": "struct[FileEvidenceStorage]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "737d930a5c00a79e8b5c290a4d1ae79f20cd41e23cec3caf30ddd46d2f59e84e"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/tests/storage.rs"
+            },
+            "selector": "struct[StoredGraph]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "ddae1495526df5035219fdcb6dce7cecd85dad08c4cc9589d71858a355d7a747"
         }
       ]
     }

@@ -1,6 +1,9 @@
 //! Application data and operations used to evaluate criteria.
 
-use crate::graph::{CriterionPath, Fingerprint, NodePath, Record};
+use crate::graph::CriterionPath;
+use crate::graph::Fingerprint;
+use crate::graph::NodePath;
+use crate::graph::Record;
 use std::future::Future;
 
 /// The application's graph and evidence persistence.

@@ -1,7 +1,7 @@
 {
   "requirement": "```rust,ignore\nuse std::borrow::Cow;\n\n/// Reusable agent instructions, defined in trust_but_verify.\npub trait Context {\n    /// Supply reusable text for the beginning of the agent's prompt.\n    fn contents(&self) -> Cow<'_, String>;\n}\n```\n\nThe SDK implements this trait for the following combinations:\n\n| Value | Rendering |\n| --- | --- |\n| `String` | Use its text directly. |\n| `str` | Use its text directly; `&str` works through the reference implementation. |\n| `&C`, where `C: Context + ?Sized` | Forward to the referenced value. |\n| `[C]` and `Vec<C>`, where `C: Context` | Render elements in order, separated by two newlines. An empty collection renders an empty string. |\n| Heterogeneous tuples of 2 through 12 `Context` values | Render elements in order, separated by two newlines. |\n\nCombinations can nest and preserve repeated elements. Each `.context(value)`\ncall obtains the text once and retains it for both the prefix and its hash,\nwithout retaining a borrow of `value`. The value needs no `Hash`, `Serialize`,\n`Send`, or `Sync` implementation. Repeated calls use the same two-newline\nseparator as combinations. No context calls give the empty prefix and the\nsame fingerprint as an explicitly empty rendered prefix.\n\nThe cache fingerprint hashes the exact UTF-8 prefix delivered to the agent,\nusing a versioned scheme. It preserves order and repetition and uses neither\nobject addresses nor type identities. It identifies this prefix, including the\nquestion; node inputs, the result schema, and the rest of the request are outside\nthat fingerprint.",
   "determination": true,
-  "rationale": "The reviewed tests cover every obligation in `requirements.sdk.graph.agent-calls.agent_context`, and their assertions enforce the expected outcomes.\n\n**Trait impls and rendering**\n- `String` and `str` render their text directly. `string_and_str_contexts_deliver_identical_prefixes_and_fingerprints` passes `text.to_owned()` and `&str` for both `\"\"` and `\"héllo\\0\\n\\npolicy\"`. It asserts that the delivered prefix and the fingerprint are identical for each.\n- `&C` forwards to the referenced value. `contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text` and `every_heterogeneous_tuple_arity_renders_elements_in_order` pass `&custom` (a `CountingContext`) and assert its text.\n- `[C]` and `Vec<C>` are covered in four ways:\n  - `contexts.as_slice()` and `contexts.to_vec()` render `\"policy\\n\\nquestion\"`.\n  - `Vec::<String>::new()` delivers an empty prefix.\n  - `let empty: &[String] = &[]` renders `\"\"`.\n  - A nested `(vec![\"a\",\"a\"], \"b\")` renders `\"a\\n\\na\\n\\nb\"`, which also checks repetition and nesting.\n- Heterogeneous tuples of 2 through 12 are covered by `every_heterogeneous_tuple_arity_renders_elements_in_order`. It checks each arity from 2 to 12 with a custom context plus strings, so the order and separator are asserted. Its final `renders.get() == 11` assertion confirms the custom context is rendered once per arity. The 12-tuple of strings is checked again in the first test.\n\n**Builder behaviour**\n- Obtaining the text once: `renders.get() == 1` after the two `.context` calls.\n- No retained borrow: `context.text` is mutated after `.context(&context)`, and the prefix is still `\"héllo…\"`. In the other test, `temporary.clear()` runs after `.context(temporary.as_str())`, and that request still delivers `\"short-lived\"`.\n- No `Hash`, `Serialize`, `Send` or `Sync` needed: the `Rc`-based `CountingContext` is used, and the future is asserted `Send`.\n- Repeated `.context` calls use the same separator: `.context(\"policy\").context(\"question\")` gives the same prefix as the tuple, slice and Vec forms.\n- No context calls: the prefix is `\"\"`, and the fingerprint equals `context_fingerprint(\"\")`.\n\n**Fingerprint**\n- `prefix_hashes_match_known_utf8_sha256_without_normalization` asserts known SHA-256 vectors for `\"\"` and `\"héllo\"`. It also asserts the scheme string `context-prefix-sha256-v1` (versioned).\n- It asserts no normalization: `\"é\"` differs from `\"e\\u{301}\"`, and `\"a b\"` differs from `\"a  b\"`.\n- Order is preserved: `context_fingerprint(\"a\\n\\nb\")` differs from `context_fingerprint(\"b\\n\\na\")`.\n- Delivered requests are checked against the real `context_fingerprint` from `src/procedure.rs`, so the fingerprint matches the exact delivered prefix.\n- Repetition is preserved in the delivered `\"a\\n\\na\\n\\nb\"` text, which the fingerprint hashes verbatim.\n- Neither object addresses nor type identities affect it: `String` and `&str`, and different objects of the same text, give equal fingerprints.\n- Node inputs and schema are outside the fingerprint:\n  - The same context text gives equal fingerprints with no node inputs, with current-node contents, with successors, and on a different node.\n  - The `Value` request has a different `result_schema` from the `Answer` request (`requests[10].3` differs from `requests[9].3`), yet its fingerprint is the same.\n- The question is included in the identified prefix: the `\"question\"` context element appears in the delivered prefix and the hash.\n\n**Gaps**\nI found no test gap. Untested cases such as empty elements inside a collection or single-element collections are not named by the requirement.",
+  "rationale": "I judged the four supplied {test} items against the `agent_context` text. I did not request implementation source. Together they cover each obligation I derived from the text.\n\n**Trait implementations**\n- **`String` and `str`:** `string_and_str_contexts_deliver_identical_prefixes_and_fingerprints` sends `String` and `&str` contexts, both empty and non-empty. The non-empty case includes non-ASCII text and a NUL. It asserts identical prefixes and fingerprints for each pair.\n- **`&C` forwarding:** `every_heterogeneous_tuple_arity_renders_elements_in_order` uses `&custom` as a tuple element. `contexts_render_once_allow_non_send_values_and_hash_exact_prefix_text` calls `.context(&context)`.\n- **`[C]` and `Vec<C>`:** the `string_and_str_…` test uses `contexts.as_slice()` and `contexts.to_vec()`. Both must give `\"policy\\n\\nquestion\"`. The empty cases are `Vec::<String>::new()` through `.context(...)` and `&[String]` through `.contents()`. Both must render `\"\"`.\n- **Tuples of 2 through 12:** `every_heterogeneous_tuple_arity_renders_elements_in_order` asserts the exact `\\n\\n`-joined output for every arity from 2 to 12. It mixes a custom context with `String` values. The 12-tuple is also checked in `contexts_render_once_…`.\n- **Nesting and repetition:** the test with `(vec![\"a\",\"a\"], \"b\")` gives `\"a\\n\\na\\n\\nb\"`. The `(String, String)` tuple passed to `.context` is also a combination.\n\n**`.context(value)` semantics**\n- **Render once:** `contexts_render_once_…` asserts the render count is 1 after building the request. It then mutates the source value and shows the delivered prefix is still the original `\"héllo…\"`. That shows the text was obtained once and retained.\n- **No borrow retained:** `string_and_str_…` clears the temporary `String` after calling `.context(temporary.as_str())`. The delivered prefix is still `\"short-lived\"`.\n- **No `Hash`, `Serialize`, `Send` or `Sync` needed:** the `Rc<Cell>`-based `CountingContext` is used, and the resulting future is asserted `Send`.\n- **Repeated calls:** `.context(\"policy\").context(\"question\")` gives `\"policy\\n\\nquestion\"`. The builder chain with a `&context` call followed by a tuple call gives `\"héllo\\n\\npolicy\\n\\nquestion\"`.\n- **No context calls:** the prefix is `\"\"`, and its fingerprint equals `context_fingerprint(\"\")`. This is checked for a bare `ask` and for an empty `Vec`.\n\n**Fingerprint**\n- **Exact UTF-8, versioned scheme:** `prefix_hashes_match_known_utf8_sha256_without_normalization` pins the scheme string `context-prefix-sha256-v1` and known SHA-256 vectors for `\"\"` and `\"héllo\"`. It also checks that `\"é\"` differs from `\"e\\u{301}\"` and that `\"a b\"` differs from `\"a  b\"`, so there is no normalization.\n- **Order and repetition:** `contexts_render_once_…` asserts `context_fingerprint(\"a\\n\\nb\")` differs from `context_fingerprint(\"b\\n\\na\")`. Repetition is covered because the fingerprint is the hash of the delivered text, which is asserted to include repeats.\n- **No addresses or types:** `string_and_str_…` asserts that every request's fingerprint equals `context_fingerprint` of its delivered text. Here `String` and `&str` produce the same fingerprint, so the result does not depend on the value's type or address.\n- **Scope of the fingerprint:** the same context text goes through different node inputs and result schemas. Those are none, current node, successors, a different node, and `Answer` versus `Value`. The test asserts the delivered node contents differ and the schema-side field differs (`requests[10].3` against `requests[9].3`). It still asserts the same `context_fingerprint(\"short-lived\")` for all of them.\n\nI found no uncovered obligation. I found no marking gap: each test carries a `{test}` reference to `requirements.sdk.graph.agent-calls.agent_context`.",
   "references": "3c01330628d4c461357cca5a3dc63f98d779ba05d4531471c148c93ec4787d8b",
   "inputs": [
     {
@@ -65,16 +65,6 @@
       "file": "crates/trust-but-verify/tests/validation.rs",
       "item": "fn[prefix_hashes_match_known_utf8_sha256_without_normalization]",
       "hash": "175f5194a7ac6d7629cda1639647a3a44c86ef24cf8801fdb8a2abcbee3cd348"
-    },
-    {
-      "file": "crates/trust-but-verify/src/procedure.rs",
-      "item": "fn[context_fingerprint]",
-      "hash": "e2837292dbb5dbab5fc27750f37b14f30aae3dc12a5d444eb830aa6fc7ae1cd6"
-    },
-    {
-      "file": "crates/trust-but-verify/tests/validation.rs",
-      "item": "impl[MockAgent/Agent<Memory>]",
-      "hash": "3828096f5a8471bb28d94d231530219f76cda52a88a130f5ce51d16e8c022cd1"
     }
   ],
   "format_version": 1,
@@ -179,40 +169,6 @@
         {
           "scheme": "habeas-input-v1",
           "value": "7429515fcdd1bf5afbb161c7de3ea7fc113b79dceb22fe43c5e6bdd65efb5555"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/procedure.rs"
-            },
-            "selector": "fn[context_fingerprint]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "57d2a89428f13024975394949b9a353d370d71d8091a81e8bca403e338af6ee2"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/validation.rs"
-            },
-            "selector": "impl[MockAgent/Agent<Memory>]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "138f260c4ae09c45b10004ed4e6f28c2d04b79a75d8149f2f83093bf23c223ec"
         }
       ]
     }

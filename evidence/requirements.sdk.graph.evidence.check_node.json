@@ -1,7 +1,7 @@
 {
   "requirement": "```rust,ignore\n// Method on Validator<D>.\n/// Load this criterion's evidence and decode its answer as V::Ok.\n/// Ok(None) means no saved record exists.\npub fn load_evidence<V: Criterion<D>>(\n    &self,\n    criterion: &V,\n) -> impl Future<Output = Result<Option<Fingerprinted<D, V::Ok>>, ValidationError<D::Error>>> + Send;\n```\n\n`load_evidence` captures the source identity and criterion path while constructing\nits future. It retains no reference to the criterion value while storage is\npending, so the criterion needs no `Sync` bound. It loads the complete record and\ndecodes its output under {cite}`requirements.sdk.graph.evidence.record.output`.\nRevision and input comparison are separate steps.",
   "determination": true,
-  "rationale": "The reviewed tests cover every obligation in `check_node`.\n\n- **Missing record returns `Ok(None)`.** `criteria_keep_typed_answers_and_persist_only_when_requested` loads before any store and asserts `is_none()`. It also does this after `verify` without a store. `review_graph_persists_and_reuses_a_negative_validation_through_the_sdk` and `agent_edge_tools_record_selections_without_validating_targets` do the same.\n- **Source identity and criterion path select the record.**\n  - `wildcard_revision_does_not_supply_other_criteria_or_nodes` loads with a different criterion path (`new`) and with a different source node (`Node(2)`). Both return `None`.\n  - `caller_reuses_negative_answers_and_compares_revisions_explicitly` loads node 8 and gets `None`.\n  - `criteria_keep_typed_answers_and_persist_only_when_requested` loads the `text` path before it is stored and gets `None`.\n- **The complete record is loaded and the output decoded.** `criteria_keep_typed_answers_and_persist_only_when_requested` asserts the loaded output, source node, criterion path, revision and dependencies all equal the stored values. `changing_one_criteria_input_does_not_invalidate_another` and `dependency_resolution_failures_do_not_execute_or_replace_saved_answers` assert that loaded dependencies equal the saved ones. `agent_edge_tools_record_selections_without_validating_targets` does the same for edge dependencies.\n- **Decode failures return `ValidationError::Output`, including for stale records.**\n  - `typed_loading_reports_decode_errors_even_for_stale_evidence` loads a stale record with a changed revision (`v2`) and with changed dependencies. Both return `Output` and perform no reads.\n  - `malformed_records_are_storage_errors_and_bad_outputs_are_output_errors` stores an output of the wrong type with an obsolete revision. It asserts `Output` and that the file is unchanged.\n- **Malformed stored records and storage failures return `ValidationError::Graph`.**\n  - The malformed-record test writes \"not JSON\" and asserts `Graph(FileStorageError::Json)`.\n  - `loading_execution_resolution_and_saving_failures_do_not_publish_answers` and `resolution_storage_and_callback_errors_are_not_judgments` set `fail_load` and assert `Graph(\"load\")`.\n- **Revision and input comparison are separate steps.**\n  - `caller_reuses_negative_answers_and_compares_revisions_explicitly` loads a `v1` record when asked for `v2`.\n  - It then confirms `procedure_matches` is false, so the caller does the comparison.\n  - `dependency_resolution_failures_do_not_execute_or_replace_saved_answers` loads successfully while reads and edges fail. Only `check_inputs` reports the error.\n  - `wildcard_revision_does_not_supply_other_criteria_or_nodes` loads a record whose revision differs from the criterion's.\n- **No `Sync` bound and no retained criterion reference.** In `validation_and_answer_need_send_without_sync`, `send(validator.load_evidence(&descriptor))` requires the future to be `Send`. `Review` contains `Cell` fields (`descriptor_reads` and a `Cell` answer), so it is `Send` but not `Sync`. A future holding `&Review` would therefore fail to compile.\n- **Signature and typed return.** The same test, together with the typed loads elsewhere, exercises the `Result<Option<Fingerprinted<...>>>` form.\n\nI found no plausible requirement-violating behavior that these tests would accept.",
+  "rationale": "The reviewed tests cover each obligation in `requirements.sdk.graph.evidence.check_node`. I did not open the `send` helper or the `Review` fixture in `crates/trust-but-verify/tests/contracts.rs`. My reading of both comes from how the tests use them.\n\n**Missing record returns `Ok(None)`**\n- `criteria_keep_typed_answers_and_persist_only_when_requested` asserts `None` before any record exists and again after `verify` without `store_evidence`. It asserts `None` for a different criterion path (`text`).\n- `wildcard_revision_does_not_supply_other_criteria_or_nodes` asserts `None` for a different criterion path (`new`) and for a different source node (`Node(2)`). `caller_reuses_negative_answers_and_compares_revisions_explicitly` asserts `None` for node 8.\n- `agent_edge_tools_record_selections_without_validating_targets` also asserts `None` before storing.\n\n**Loads the complete record and decodes it as `V::Ok`**\n- `criteria_keep_typed_answers_and_persist_only_when_requested` compares the loaded `output`, `source_node_id`, `criterion_path`, `revision` and `dependencies` to the stored value.\n- `changing_one_criteria_input_does_not_invalidate_another` and `dependency_resolution_failures_do_not_execute_or_replace_saved_answers` assert that loaded dependencies equal the saved ones.\n- `agent_edge_tools_record_selections_without_validating_targets` and the SDK test `review_graph_persists_and_reuses_a_negative_validation_through_the_sdk` check typed round trips.\n\n**Failure mapping (cited `record.output` behavior)**\n- `malformed_records_are_storage_errors_and_bad_outputs_are_output_errors` asserts `ValidationError::Graph(Json)` for a malformed file and `ValidationError::Output` for an undecodable output. It also asserts the file is left unchanged.\n- `loading_execution_resolution_and_saving_failures_do_not_publish_answers` and `resolution_storage_and_callback_errors_are_not_judgments` assert that a storage load failure returns `Graph(\"load\")`.\n- `typed_loading_reports_decode_errors_even_for_stale_evidence` asserts `Output` errors even when the revision and dependencies are stale.\n\n**Revision and input comparison are separate steps**\n- `caller_reuses_negative_answers_and_compares_revisions_explicitly` loads a `v1` record through a `v2` descriptor. The record comes back with `revision()` equal to `v1`, and `procedure_matches` is false.\n- `typed_loading_reports_decode_errors_even_for_stale_evidence` loads with stale dependencies and `fail_read` set, and asserts that no reads occur.\n- `dependency_resolution_failures_do_not_execute_or_replace_saved_answers` loads successfully while input resolution fails. Only `check_inputs` reports the error.\n- `wildcard_revision_does_not_supply_other_criteria_or_nodes` loads a `*` revision record through a `future` descriptor.\n- `changing_one_criteria_input_does_not_invalidate_another` loads a record whose input changed. Only `check_inputs` reports it as stale.\n\n**No retained criterion reference, so no `Sync` bound**\n- `validation_and_answer_need_send_without_sync` passes the `load_evidence(&descriptor)` future through `send`. This requires the future to be `Send`.\n- `Review` holds `Cell` fields: `descriptor_reads` is a `Cell`, and the answer type here is `Cell<u32>`. `Review` is therefore not `Sync`, so a retained `&Review` would make the future non-`Send` and the test would not compile.\n- The test also asserts `descriptor_reads == 1`, which shows the descriptor is read exactly once.\n\nI found no gap.",
   "references": "d2c274df18f5ca1b544baf8695e9815f22ac41d025f4074583844ec7538b294d",
   "inputs": [
     {
@@ -108,27 +108,7 @@
     {
       "file": "src/authoring/sdk.rs",
       "item": "mod[tests]/fn[review_graph_persists_and_reuses_a_negative_validation_through_the_sdk]",
-      "hash": "9a0c88ce3acf7e7499eba3a48ce30f8047ecc3d172fe38190c46c4ab534f373e"
-    },
-    {
-      "file": "crates/trust-but-verify/tests/contracts.rs",
-      "item": "struct[Review]",
-      "hash": "f446c3b083932a8584c9e149398756f344f85189baccc05253e635e24644c7d4"
-    },
-    {
-      "file": "crates/trust-but-verify/tests/contracts.rs",
-      "item": "impl[Review<O>]/fn[new]",
-      "hash": "0d9b5bd44e4aea8dc1b7160f78e0b45e9612c2466952ee5ab718ad4bab241577"
-    },
-    {
-      "file": "crates/trust-but-verify/tests/contracts.rs",
-      "item": "impl[Review<O>/Criterion<Application>]/fn[source_node_id]",
-      "hash": "535e981a869f261457c6f27c290b9c961da07791d9cc63840cfc68753249695f"
-    },
-    {
-      "file": "crates/trust-but-verify/tests/contracts.rs",
-      "item": "fn[send]",
-      "hash": "8584e807e9abc79dc59d3352ed10789b3f88c34eaf2710718740786192bf2708"
+      "hash": "2f271a9af91b1f30053f1b3a8886b1c290f2900e48a3bcf986eafe35be759526"
     }
   ],
   "format_version": 1,
@@ -379,75 +359,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "cf2095a3d5072e8cc198265ca46a7cb40407c8bcf3b725f0f53f8a5ca11d6a9b"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/contracts.rs"
-            },
-            "selector": "struct[Review]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "e3287dd47cc2350d178fc1b8a59049eec4730ab8531a44938f7b100a6cc60501"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/contracts.rs"
-            },
-            "selector": "impl[Review<O>]/fn[new]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "018e35edbbc7f528b6b80f00ad004d5320581ac64d917532b24bada377d09bc5"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/contracts.rs"
-            },
-            "selector": "impl[Review<O>/Criterion<Application>]/fn[source_node_id]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "18ec25046d09f46c79f1b26526f8a7682b9e8054e450992f99195687ef86f69d"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/contracts.rs"
-            },
-            "selector": "fn[send]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "86bee7067ca39c280b68dadad8b407627bc90720b9cbf2702e8aa3e626a35880"
+          "value": "afa13da43157fb56e151586733cdad7aa077bdd8cf1289f8372bc54124abe12f"
         }
       ]
     }

@@ -1,14 +1,16 @@
 //! Source tools share provider operations; search results remain discovery-only.
 
 use super::{ToolDelivery, ToolFactory, ToolSession};
-use crate::{
-    domain::Domain,
-    graph::Dependency,
-    resource::{OutlineId, ResourceId},
-    sources::{
-        ParsedSource, SourceAnalysis, SourceProvider, SourceScope, StructuralQuery, TextQuery,
-    },
-};
+use crate::domain::Domain;
+use crate::graph::Dependency;
+use crate::resource::OutlineId;
+use crate::resource::ResourceId;
+use crate::source_engine::ParsedSource;
+use crate::source_engine::SourceAnalysis;
+use crate::source_engine::SourceProvider;
+use crate::sources::SourceScope;
+use crate::sources::StructuralQuery;
+use crate::sources::TextQuery;
 use futures::future::BoxFuture;
 use rig_core::completion::ToolDefinition;
 use serde_json::{Value, json};

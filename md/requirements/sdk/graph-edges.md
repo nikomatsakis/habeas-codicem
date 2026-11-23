@@ -11,7 +11,7 @@ labels to look up related nodes.
 
 A *labeled edge* is a directed relationship from one
 {term}`requirements.sdk.graph.node` to another, with an application-defined
-[`Domain::EdgeLabel`](../../rustdocs/trust_but_verify/trait.Domain.html#associatedtype.EdgeLabel)
+[`Domain::EdgeLabel`](../../rustdocs/trust_but_verify/domain/trait.Domain.html#associatedtype.EdgeLabel)
 describing the relationship.
 The targets of a node's outgoing edges with a given label are its successors
 for that label. In Habeas Codicem, labels can identify a requirement's
@@ -22,7 +22,7 @@ implementations or tests.
 {cite}`requirements.sdk.domain`
 
 The {term}`requirements.sdk.application_domain` uses
-`trust_but_verify::Domain::EdgeLabel` to describe relationships between its nodes:
+`trust_but_verify::domain::Domain::EdgeLabel` to describe relationships between its nodes:
 
 ```rust,ignore
 pub trait Domain: Clone + Send + Sync {
@@ -41,7 +41,7 @@ pub trait Domain: Clone + Send + Sync {
 :::{req} outgoing_edges
 {cite}`requirements.sdk.domain`
 
-The `trust_but_verify::Domain` trait includes a method for obtaining a node's
+The `trust_but_verify::domain::Domain` trait includes a method for obtaining a node's
 successors with a given label:
 
 ```rust,ignore

@@ -11,7 +11,7 @@ the SDK handles the model conversation and the inspection tools.
 An *agent harness* runs an agent request: it sends instructions and inputs to
 the configured model, executes requested tools, and obtains a structured answer.
 TBV supplies the harness and its tools. The application supplies
-[`Context` values](../../../rustdocs/trust_but_verify/trait.Context.html),
+[`Context` values](../../../rustdocs/trust_but_verify/request/trait.Context.html),
 node contents, and
 the answer type.
 :::
@@ -67,11 +67,13 @@ preserves its settings.
 
 :::{req} with_agent
 The SDK configures a validator's supplied agent from an application-provided
-[`AgentConfig`](../../../rustdocs/trust_but_verify/enum.AgentConfig.html).
+[`AgentConfig`](../../../rustdocs/trust_but_verify/agent/enum.AgentConfig.html).
 It does not persist the agent configuration.
 
 ```rust,ignore
-use trust_but_verify::{AgentConfig, Domain, Validator};
+use trust_but_verify::agent::AgentConfig;
+use trust_but_verify::domain::Domain;
+use trust_but_verify::graph::validator::Validator;
 
 impl<D: Domain> Validator<D> {
     // ...
@@ -103,7 +105,8 @@ Here `domain` supplies the application's graph, contents, and storage. This
 illustrative Bedrock configuration selects a model, AWS profile, and region:
 
 ```rust,ignore
-use trust_but_verify::{AgentConfig, agent::BedrockConfig};
+use trust_but_verify::agent::AgentConfig;
+use trust_but_verify::agent::BedrockConfig;
 
 let config = AgentConfig::Bedrock(BedrockConfig {
     model: "us.anthropic.claude-sonnet-5-5".into(),

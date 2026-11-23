@@ -12,7 +12,7 @@ criterion to `verify` to evaluate it and return its answer with the inputs used
 to produce it.
 
 ```rust,ignore
-// Defined in trust_but_verify.
+// Defined in trust_but_verify::graph::validator.
 /// Domain access and configuration shared by criterion executions.
 pub struct Validator<D: Domain> { /* private fields */ }
 

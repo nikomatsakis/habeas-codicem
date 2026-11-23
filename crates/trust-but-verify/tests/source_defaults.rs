@@ -1,5 +1,8 @@
 use std::{fs, path::Path, path::PathBuf, process::Command};
-use trust_but_verify::{SourceScope, Sources, StructuralQuery, TextQuery};
+use trust_but_verify::sources::SourceScope;
+use trust_but_verify::sources::Sources;
+use trust_but_verify::sources::StructuralQuery;
+use trust_but_verify::sources::TextQuery;
 
 fn file(location: &str) -> PathBuf {
     location.into()

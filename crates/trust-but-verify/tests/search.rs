@@ -1,6 +1,6 @@
-#[cfg(feature = "habeas-integration")]
-use trust_but_verify::__habeas::search::RegexSearch;
 use trust_but_verify::outline::OutlineId;
+#[cfg(feature = "habeas-integration")]
+use trust_but_verify::search::RegexSearch;
 
 // {test}`requirements.sdk.sources.source_addresses`
 // {test}`requirements.references.outline_selectors`

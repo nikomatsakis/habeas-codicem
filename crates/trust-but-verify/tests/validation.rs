@@ -13,11 +13,16 @@ use std::{
         atomic::{AtomicUsize, Ordering},
     },
 };
-use trust_but_verify::{
-    __habeas::procedure::{Agent, AgentRequest, Context, context_fingerprint},
-    graph::*,
-};
-use trust_but_verify::{Domain, NodeContents};
+use trust_but_verify::domain::Domain;
+use trust_but_verify::domain::NodeContents;
+use trust_but_verify::graph::pages::{PageError, PageId};
+use trust_but_verify::graph::validator::Validator;
+use trust_but_verify::graph::*;
+use trust_but_verify::request::Agent;
+use trust_but_verify::request::AgentRequest;
+use trust_but_verify::request::Context;
+use trust_but_verify::request::ValidationContext;
+use trust_but_verify::request::context_fingerprint;
 
 // The test application chooses its own completed-answer format.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -1569,6 +1574,8 @@ fn direct_paged_empty_failed_and_redacted_reads_keep_delivery_accounting() {
     );
 }
 
+// {test}`requirements.sdk.graph.hierarchical-paths`
+// {test}`requirements.sdk.graph.node_path_method`
 // {test}`requirements.sdk.graph.node-kinds`
 // {test}`requirements.sdk.graph.domain_types`
 #[tokio::test]
@@ -1649,6 +1656,15 @@ async fn enum_node_ids_distinguish_requirements_and_source_items_in_one_domain()
         selector: "fn[validate]".into(),
     };
     let domain = ReviewDomain::default();
+    let hierarchical = ReviewNodeId::Requirement(vec!["a".into(), "b".into(), "c".into()]);
+    let path = Domain::node_path(&domain, &hierarchical);
+    assert_eq!(path.segments(), ["requirement", "a", "b", "c"]);
+    assert_eq!(path, Domain::node_path(&domain, &hierarchical));
+    assert_eq!(
+        path,
+        Domain::node_path(&ReviewDomain::default(), &hierarchical)
+    );
+
     assert_ne!(requirement, source);
     assert_eq!(
         domain.node_path(&requirement).segments(),

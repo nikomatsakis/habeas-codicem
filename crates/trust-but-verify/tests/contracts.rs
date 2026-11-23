@@ -5,8 +5,11 @@ use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex},
 };
+use trust_but_verify::domain::Domain;
+use trust_but_verify::domain::NodeContents;
+use trust_but_verify::graph::validator::Validator;
 use trust_but_verify::graph::*;
-use trust_but_verify::{Domain, NodeContents};
+use trust_but_verify::request::ValidationContext;
 
 // Opaque graph identities and contents deliberately do not implement Serde,
 // Hash, or Display. Only completed answers need serialization.
@@ -1188,28 +1191,6 @@ async fn concurrent_same_criterion_executions_keep_complete_independent_records(
     assert_eq!(state.executions, 2);
     assert_eq!(state.writes, 2);
     assert_eq!(state.records.len(), 1);
-}
-
-// {test}`requirements.sdk.graph.hierarchical-paths`
-#[test]
-fn hierarchical_requirement_identity_maps_each_component_to_a_path_segment() {
-    // The chapter's illustrative domain, rather than Habeas's persisted IDs.
-    enum HabeasNodeId {
-        Requirement(Vec<String>),
-    }
-    let node_path = |node: &HabeasNodeId| match node {
-        HabeasNodeId::Requirement(parts) => NodePath::new(
-            std::iter::once("requirement".to_owned())
-                .chain(parts.iter().cloned())
-                .collect(),
-        ),
-    };
-    let requirement = HabeasNodeId::Requirement(vec!["a".into(), "b".into(), "c".into()]);
-    assert_eq!(
-        node_path(&requirement).segments(),
-        ["requirement", "a", "b", "c"]
-    );
-    assert_eq!(node_path(&requirement), node_path(&requirement));
 }
 
 // {test}`requirements.sdk.graph.node_path_method`

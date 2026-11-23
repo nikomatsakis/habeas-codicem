@@ -7,7 +7,7 @@ pub const HASH_DIGITS: usize = 12;
 
 /// Percent-encodes `%`, `[`, `]`, `/`, `#`, `@`, and whitespace as UTF-8 bytes.
 // {cite}`habeas:util`
-pub fn encode_name(name: &str) -> String {
+pub(crate) fn encode_name(name: &str) -> String {
     let mut encoded = String::with_capacity(name.len());
     for character in name.chars() {
         if matches!(character, '%' | '[' | ']' | '/' | '#' | '@') || character.is_whitespace() {
@@ -25,7 +25,7 @@ pub fn encode_name(name: &str) -> String {
 // {impl}`requirements.references.outline_selectors`
 /// Reverses [`encode_name`], rejecting malformed escapes and unescaped
 /// delimiters.
-pub fn decode_name(encoded: &str) -> Result<String, SelectorError> {
+pub(crate) fn decode_name(encoded: &str) -> Result<String, SelectorError> {
     let bytes = encoded.as_bytes();
     let mut decoded = Vec::with_capacity(bytes.len());
     let mut position = 0;

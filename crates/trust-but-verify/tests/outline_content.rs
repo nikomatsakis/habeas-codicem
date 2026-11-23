@@ -1,10 +1,12 @@
 use std::{ops::Range, sync::Arc};
-use trust_but_verify::{
-    NodeContents,
-    outline::{
-        Outline, OutlineContent, OutlineError, OutlineId, OutlineItem, OutlineLang, languages,
-    },
-};
+use trust_but_verify::domain::NodeContents;
+use trust_but_verify::outline::Outline;
+use trust_but_verify::outline::OutlineContent;
+use trust_but_verify::outline::OutlineError;
+use trust_but_verify::outline::OutlineId;
+use trust_but_verify::outline::OutlineItem;
+use trust_but_verify::outline::OutlineLang;
+use trust_but_verify::outline::languages;
 
 // {test}`requirements.sdk.outlines.address_identity`
 #[test]
@@ -914,7 +916,7 @@ fn structural_fingerprint_example_tracks_the_selected_function() {
 // {test}`requirements.sdk.sources.yaml.fingerprints`
 #[test]
 fn bundled_fingerprints_exclude_comments_and_preserve_word_boundaries() {
-    fn fingerprint(path: &str, text: &str, selector: &str) -> trust_but_verify::Fingerprint {
+    fn fingerprint(path: &str, text: &str, selector: &str) -> trust_but_verify::graph::Fingerprint {
         OutlineContent::from_source(path, text.into())
             .unwrap()
             .select(selector)
@@ -1140,7 +1142,7 @@ fn markdown_sections_include_setext_headings_and_anonymous_preamble() {
 // {test}`requirements.sdk.sources.plain-text.fingerprints`
 #[test]
 fn plain_line_fingerprints_use_sha256_words_without_losing_boundaries() {
-    fn line(text: &str) -> trust_but_verify::Fingerprint {
+    fn line(text: &str) -> trust_but_verify::graph::Fingerprint {
         let root = OutlineContent::from_source("note.txt", text.into()).unwrap();
         root.select(&root.outline().items[1].selector)
             .unwrap()
@@ -1176,4 +1178,44 @@ fn formatted_contents_redact_credentials_while_retaining_raw_text_and_spans() {
         .unwrap();
     assert!(selected.text().contains(&token));
     assert!(!selected.format().contains(&token));
+}
+
+#[cfg(feature = "default-languages")]
+// {test}`requirements.sdk.sources.python.items`
+#[test]
+fn python_nested_definitions_use_the_nearest_outline_ancestor() {
+    let source = "class Outer:\n    class Inner:\n        @decorate\n        def method(self):\n            if True:\n                def local():\n                    pass\ndef factory():\n    class Product:\n        def run(self):\n            pass\nasync def async_outer():\n    async def async_inner():\n        pass\n";
+    let contents = OutlineContent::from_source("nested.py", source.into()).unwrap();
+    assert_eq!(
+        contents
+            .outline()
+            .items
+            .iter()
+            .map(|item| item.selector.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "",
+            "class[Outer]",
+            "class[Outer]/class[Inner]",
+            "class[Outer]/class[Inner]/def[method]",
+            "class[Outer]/class[Inner]/def[method]/def[local]",
+            "def[factory]",
+            "def[factory]/class[Product]",
+            "def[factory]/class[Product]/def[run]",
+            "def[async_outer]",
+            "def[async_outer]/def[async_inner]"
+        ]
+    );
+    let method = contents
+        .select("class[Outer]/class[Inner]/def[method]")
+        .unwrap();
+    assert!(method.text().trim_start().starts_with("@decorate"));
+    assert!(
+        contents
+            .select("def[async_outer]/def[async_inner]")
+            .unwrap()
+            .text()
+            .trim_start()
+            .starts_with("async def async_inner")
+    );
 }

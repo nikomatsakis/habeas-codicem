@@ -1,9 +1,13 @@
 //! Fixed project tools; every delivered source read has a domain observation.
 use super::{ToolDelivery, ToolFactory, ToolSession};
-use crate::{
-    Dependency, NodeContents, SourceNodes, SourceScope, Sources, StructuralQuery, TextQuery,
-    outline::OutlineId,
-};
+use crate::domain::NodeContents;
+use crate::domain::SourceNodes;
+use crate::graph::Dependency;
+use crate::outline::OutlineId;
+use crate::sources::SourceScope;
+use crate::sources::Sources;
+use crate::sources::StructuralQuery;
+use crate::sources::TextQuery;
 use futures::future::BoxFuture;
 use rig_core::completion::ToolDefinition;
 use serde_json::{Value, json};
@@ -17,10 +21,15 @@ pub(crate) struct ProjectSources<D: SourceNodes> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        Criterion, CriterionPath, Domain, Fingerprint, NodePath, Record, ValidationContext,
-        ValidationError, Validator,
-    };
+    use crate::domain::Domain;
+    use crate::graph::Criterion;
+    use crate::graph::CriterionPath;
+    use crate::graph::Fingerprint;
+    use crate::graph::NodePath;
+    use crate::graph::Record;
+    use crate::graph::ValidationError;
+    use crate::graph::validator::Validator;
+    use crate::request::ValidationContext;
     use std::sync::{Arc, Mutex};
 
     struct State {
@@ -138,6 +147,7 @@ mod tests {
     // {test}`requirements.sdk.graph.context-tools.read_source.fn`
     // {test}`requirements.sdk.graph.context-tools.read_source.inputs`
     // {test}`requirements.sdk.graph.context-tools.list_sources.inputs`
+    // {test}`requirements.sdk.graph.context-tools.list_sources.behavior`
     // {test}`requirements.sdk.graph.context-tools.outline_source.inputs`
     // {test}`requirements.sdk.graph.context-tools.outline_source.behavior`
     // {test}`requirements.sdk.graph.context-tools.search_text.inputs`
@@ -146,6 +156,8 @@ mod tests {
     // {test}`requirements.sdk.graph.context-tools.pages.fn`
     // {test}`requirements.sdk.graph.context-tools.pages.behavior`
     // {test}`requirements.sdk.graph.agent-harness.fixed_tools`
+    // {test}`requirements.sdk.graph.context-tools.list_sources.fn`
+    // {test}`requirements.sdk.graph.context-tools.outline_source.fn`
     #[tokio::test]
     async fn fixed_tools_deliver_domain_contents_with_mandatory_snapshot_dependencies() {
         let root = tempfile::tempdir().unwrap();
@@ -377,7 +389,7 @@ mod tests {
     async fn source_capable_validator_tracks_deterministic_reads_and_reuses_saved_results() {
         let root = tempfile::tempdir().unwrap();
         let domain = project("first");
-        let config = crate::AgentConfig::OpenAi(crate::agent::OpenAiConfig {
+        let config = crate::agent::AgentConfig::OpenAi(crate::agent::OpenAiConfig {
             api_key_env: Some("TBV_NEVER_REQUIRED_BY_DETERMINISTIC_SOURCE_READS".into()),
             ..Default::default()
         });
@@ -415,7 +427,7 @@ mod tests {
     #[test]
     fn direct_source_reads_preserve_mapping_errors_and_record_only_successful_returns() {
         let domain = project("prepared contents");
-        let inspection = crate::InspectionContext::new(&domain);
+        let inspection = crate::graph::InspectionContext::new(&domain);
         let supported = OutlineId::new("source.txt", String::new()).unwrap();
         for address in [
             OutlineId::new("unknown.txt", String::new()).unwrap(),
@@ -578,6 +590,8 @@ impl<D: SourceNodes> ToolSession<D> for Session<'_, D>
 where
     D::Error: std::fmt::Display,
 {
+    // {impl}`requirements.sdk.graph.context-tools.list_sources.fn`
+    // {impl}`requirements.sdk.graph.context-tools.outline_source.fn`
     fn definitions(&self) -> io::Result<Vec<ToolDefinition>> {
         [
             json!({"name":"list_sources","description":"List available project files.",
@@ -598,6 +612,10 @@ where
         .collect()
     }
 
+    // {impl}`requirements.sdk.graph.context-tools.list_sources.behavior`
+    // {impl}`requirements.sdk.graph.context-tools.list_sources.inputs`
+    // {impl}`requirements.sdk.graph.context-tools.outline_source.behavior`
+    // {impl}`requirements.sdk.graph.context-tools.outline_source.inputs`
     // {impl}`requirements.sdk.sources.provider_observations`
     // {impl}`requirements.sdk.graph.context-tools.read_source.behavior`
     // {impl}`requirements.sdk.graph.context-tools.read_source.inputs`

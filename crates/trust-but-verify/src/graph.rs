@@ -1,15 +1,16 @@
 //! Consumer-defined graphs, tracked observations, and validation.
 
-use crate::domain::{Domain, NodeContents};
+use crate::domain::Domain;
+use crate::domain::NodeContents;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{future::Future, sync::Mutex};
 
-mod pages;
-mod runtime;
-pub use crate::procedure::ValidationContext;
-pub use pages::{PageError, PageId, PagedText};
-pub use runtime::Validator;
+pub mod pages;
+#[path = "graph/runtime.rs"]
+pub mod validator;
+use crate::request::ValidationContext;
+use pages::{PageError, PageId, PagedText};
 
 // {impl}`requirements.sdk.graph.fingerprint`
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -448,7 +449,7 @@ impl<'d, D: Domain> InspectionContext<'d, D> {
     }
 }
 
-impl<D: crate::SourceNodes> InspectionContext<'_, D> {
+impl<D: crate::domain::SourceNodes> InspectionContext<'_, D> {
     // {impl}`requirements.sdk.graph.context-tools.read_source.fn`
     // {impl}`requirements.sdk.sources.provider_observations`
     pub fn read_source(

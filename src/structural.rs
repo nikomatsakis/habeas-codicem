@@ -8,9 +8,9 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
-pub(crate) use trust_but_verify::__habeas::structural::{
-    QueryLanguage, StructuralRule, innermost_node,
-};
+pub(crate) use trust_but_verify::structural::QueryLanguage;
+pub(crate) use trust_but_verify::structural::StructuralRule;
+pub(crate) use trust_but_verify::structural::innermost_node;
 
 // {impl}`requirements.references.distributed`
 /// Which directive declares a query.
@@ -420,6 +420,16 @@ mod tests {
                 text,
             }
         };
+        for yaml in ["42", "[one, two]", "plain scalar"] {
+            let body = format!("```yaml\n{yaml}\n```");
+            let (queries, errors) = parse_queries(&declaration(&body));
+            assert!(queries.is_empty(), "accepted non-mapping {body:?}");
+            assert_eq!(errors.len(), 1, "{errors:?}");
+            assert!(
+                errors[0].contains("yaml block must be a mapping"),
+                "{errors:?}"
+            );
+        }
         for body in [
             format!("```yaml\n{yaml}\n```"),
             format!("\n\n~~~yaml\n{yaml}\n~~~\n\n"),

@@ -1,7 +1,7 @@
 {
   "example": "{cite}`requirements.sdk.graph.validators.validator`\n{cite}`requirements.sdk.graph.validators.validate_node`\n{cite}`requirements.sdk.graph.agent-harness.with_agent`\n{cite}`requirements.sdk.graph.evidence.refresh_evidence`\n{cite}`requirements.sdk.graph.evidence.inputs`\n\nWe can now instantiate `BehavioralAdequacy` and evaluate it with a `Validator`.\nHere `domain` supplies Habeas Codicem's graph, contents, and storage, and\n`agent_config` selects one of the\n[SDK-supplied agents](agent-harness.md#configure-the-validators-agent).\n[`with_agent`](agent-harness.md#configure-the-validators-agent) configures that\nagent for the criterion's requests.\nThe `refresh_evidence` helper reuses the previous answer when the review rules\nand inputs are current, or evaluates the criterion again:\n\n```rust,ignore\nlet validator = Validator::new(domain.clone())\n    .with_agent(agent_config.clone());\n\nlet inputs = validator.refresh_evidence(BehavioralAdequacy {\n    requirement: requirement.clone(),\n    review_policy: test_review_policy.clone(),\n}).await?;\n\nlet assessment: &TestReview = inputs.output();\nprintln!(\"{}: {}\", assessment.adequate, assessment.rationale);\n```",
   "determination": true,
-  "rationale": "The example `requirements.sdk.graph.validators.evaluate_criterion` describes a concrete case. A `Validator` is built over a domain and given an agent. `refresh_evidence` runs on a `BehavioralAdequacy` criterion. The caller then reads a `TestReview` with `adequate` and `rationale` from `inputs.output()`. Its stated outcomes are that the answer comes back with its inputs, and that a previous answer is reused when the review rules and inputs are current, with the criterion otherwise evaluated again.\n\nThe one `{test}` reference is `crates/trust-but-verify/src/agent/tests.rs#fn[behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer]`. Its assertions cover the outcomes as follows:\n\n- **Setup:** it builds `Validator::new(domain.clone())` and attaches a scripted agent. The agent returns a `TestReview` through `submit_result`.\n- **Typed answer:** `refresh_evidence(BehavioralAdequacy{requirement: Node(1), review_policy})` returns a value whose `output()` equals the expected `TestReview`. `criterion_path().segments()` equals `[\"behavior\"]`.\n- **Inputs used:** the domain read log is `[1, 2]`. `dependencies()` has three entries: node contents for 1 and 2 with their exact values, and an `OutgoingEdges` fingerprint for node 1 pointing to node 2.\n- **Evaluation on first call:** the provider receives exactly one request. The system message is the review policy plus the criterion text. The user message includes the requirement text before the tests text. The `submit_result` tool schema has a boolean `adequate`. One record is stored.\n- **Saved answer reloads:** `check_inputs` returns true and `load_evidence` restores the same output, source, path, revision and dependencies.\n- **Reuse:** a second `refresh_evidence` returns the same output and dependencies. There is still only one agent request and one stored record, so the previous answer was reused.\n- **Staleness:** after node 2's content changes, `check_inputs` returns false.\n\nThe test calls `with_agent_adapter` with a scripted provider, not `with_agent(AgentConfig)`. This is a reasonable test seam, since it still exercises the validator's agent path.\n\nOne thing is not tested here. After the inputs change, the test does not call `refresh_evidence` again to show re-evaluation. It only asserts that `check_inputs` turns false. That re-evaluation branch is covered by the `refresh_evidence` requirement's own tests, and the example's own scenario is covered here. The first call also shows evaluation happening when no saved answer exists. I treat this as no gap.",
+  "rationale": "The example `requirements.sdk.graph.validators.evaluate_criterion` gives a concrete case. It builds a `Validator` over a domain, configures an agent, calls `refresh_evidence(BehavioralAdequacy{requirement, review_policy})`, and reads `inputs.output()` as a `TestReview` with `adequate` and `rationale`. Its stated behavior is that `refresh_evidence` reuses the previous answer when the rules and inputs are current, and otherwise evaluates the criterion.\n\nThe one {test} reference is `crates/trust-but-verify/src/agent/tests.rs#fn[behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer]`. It covers the scenario as follows:\n\n- **Setup:** it uses a `Memory` domain with two node contents, a scripted provider that answers via `submit_result`, and `Validator::new(domain).with_agent_adapter(agent)`. `with_agent_adapter` is a test-only hook (`runtime.rs`, `impl[Validator<D>]#1/fn[with_agent_adapter]`) that injects a scripted agent. It replaces `with_agent(AgentConfig)` so the test doesn't need a real backend.\n- **Typed answer:** the first `refresh_evidence` call has no saved record, so it evaluates the criterion. The test asserts `inputs.output() == &expected`, which is the typed `TestReview` with `adequate: true` and the rationale. It also asserts the `criterion_path` segments are `[\"behavior\"]`.\n- **Inputs and dependencies:** it asserts the domain was read for nodes 1 and 2, and that there are exactly 3 dependencies. These are the two node-content fingerprints with the expected values and the outgoing-edges fingerprint for node 1. This matches the `inputs` requirement.\n- **Storage and restore:** it asserts one record was stored. It asserts `check_inputs` is true on the result. It asserts `load_evidence` restores equal output, source node, path, revision and dependencies.\n- **Reuse:** a second `refresh_evidence` returns the same output and dependencies. The record count stays at 1 and the provider request count stays at 1. This confirms the previous answer is reused rather than re-asked.\n- **Staleness:** after node 2's content is changed, `check_inputs` returns false, so the saved answer would no longer be current.\n- **Agent request:** it asserts the system message is the review policy followed by the criterion text, and that the user message lists the requirement before the tests. It asserts the `submit_result` tool schema has a boolean `adequate`. This shows the criterion's request is built from the supplied policy and domain contents.\n\nI found no unresolved gap. The test doesn't call `refresh_evidence` again after the input change, and it doesn't change the policy. Those re-evaluation paths belong to the cited `refresh_evidence` requirement, which is context here and carries its own tests. The initial call already shows evaluation, and the staleness check shows when it would be triggered. I found no assertion that contradicts the example, and no {fixme} acknowledgments apply.",
   "references": "27b698b8e512bddb3433e9bb966144ed83c60396fcc7b8817a2cf26ba6180ded",
   "inputs": [
     {
@@ -53,7 +53,7 @@
         "to produce it.",
         "",
         "```rust,ignore",
-        "// Defined in trust_but_verify.",
+        "// Defined in trust_but_verify::graph::validator.",
         "/// Domain access and configuration shared by criterion executions.",
         "pub struct Validator<D: Domain> { /* private fields */ }",
         "",
@@ -106,11 +106,13 @@
       "text": [
         ":::{req} with_agent",
         "The SDK configures a validator's supplied agent from an application-provided",
-        "[`AgentConfig`](../../../rustdocs/trust_but_verify/enum.AgentConfig.html).",
+        "[`AgentConfig`](../../../rustdocs/trust_but_verify/agent/enum.AgentConfig.html).",
         "It does not persist the agent configuration.",
         "",
         "```rust,ignore",
-        "use trust_but_verify::{AgentConfig, Domain, Validator};",
+        "use trust_but_verify::agent::AgentConfig;",
+        "use trust_but_verify::domain::Domain;",
+        "use trust_but_verify::graph::validator::Validator;",
         "",
         "impl<D: Domain> Validator<D> {",
         "    // ...",
@@ -185,7 +187,7 @@
       "text": [
         ":::{req} inputs",
         "```rust,ignore",
-        "// Defined in trust_but_verify.",
+        "// Defined in trust_but_verify::graph.",
         "/// A completed answer and the inputs used to produce it.",
         "pub struct Fingerprinted<D: Domain, O> { /* private fields */ }",
         "",
@@ -223,13 +225,13 @@
     },
     {
       "file": "crates/trust-but-verify/src/graph/runtime.rs",
-      "item": "impl[Validator<D>]#1/fn[with_agent]",
-      "hash": "59ee38eaf4aef041fbad7411c1c5e74a2d1302cca0960f6065df634dd640563b"
+      "item": "impl[Validator<D>]#1/fn[with_agent_adapter]",
+      "hash": "b72e8cbaeba7537df59493e966d267c0a388839125635f1f5b96a7dd7b3b347a"
     },
     {
       "file": "crates/trust-but-verify/src/graph/runtime.rs",
-      "item": "impl[Validator<D>]#1/fn[with_agent_adapter]",
-      "hash": "b72e8cbaeba7537df59493e966d267c0a388839125635f1f5b96a7dd7b3b347a"
+      "item": "impl[Validator<D>]#1/fn[with_agent]",
+      "hash": "cf491748eedd895dd3a737e77fbb1763a6739c8ab9ae85d573ad2d6cfd2dc36c"
     }
   ],
   "format_version": 1,
@@ -276,7 +278,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "4785a943ce9f22056f24b804b7eaae53bdca175d92ae8aef815c14dd3f021fa5"
+          "value": "5ecb9a63531cbe0207300e20e38bd7820808a3439a412064f667c95779ca7afe"
         }
       ]
     },
@@ -298,7 +300,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "3dcd3608cc07db4d16f3be872d76890e9854d9bba6f21d2af6d3d8b11d2b1295"
+          "value": "e54201dcc94874039fb9cc633033671f7b1b9447664e27209965ec3dd1ce707a"
         }
       ]
     },
@@ -320,7 +322,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "97d75614366c1ddb1d810d7bdc1e64336f4fc75b35528cb6bcec49d6b1d6c461"
+          "value": "c409d1161f88656a306e1fce36451f3ef6fb04f4bd0b54ac14c42ce997ce413a"
         }
       ]
     },
@@ -349,12 +351,12 @@
               "scheme": "repo",
               "location": "crates/trust-but-verify/src/graph/runtime.rs"
             },
-            "selector": "impl[Validator<D>]#1/fn[with_agent]"
+            "selector": "impl[Validator<D>]#1/fn[with_agent_adapter]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "61ba1d4b52e45b1a58c84320bae375c536668fea7f55ec8c4f8a4af0c3bf7369"
+          "value": "dab6b327094f8bf81e9b3f3340286522340d3bb64dfe0bf1834f5a1839bce37b"
         }
       ]
     },
@@ -366,12 +368,12 @@
               "scheme": "repo",
               "location": "crates/trust-but-verify/src/graph/runtime.rs"
             },
-            "selector": "impl[Validator<D>]#1/fn[with_agent_adapter]"
+            "selector": "impl[Validator<D>]#1/fn[with_agent]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "dab6b327094f8bf81e9b3f3340286522340d3bb64dfe0bf1834f5a1839bce37b"
+          "value": "34813072f30d8af6dfc50adb8a37905c64d7200f3af02123c2e250763745284f"
         }
       ]
     }

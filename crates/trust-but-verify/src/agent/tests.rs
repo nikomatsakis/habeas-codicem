@@ -1,6 +1,14 @@
 use super::sources::SourceTools;
-use crate::domain::{Domain, NodeContents};
-use crate::{agent::*, graph::*, procedure::Context, resource::*, sources::*};
+use crate::agent_runtime::*;
+use crate::domain::Domain;
+use crate::domain::NodeContents;
+use crate::graph::validator::Validator;
+use crate::graph::*;
+use crate::request::Context;
+use crate::request::ValidationContext;
+use crate::resource::*;
+use crate::source_engine::*;
+use crate::sources::*;
 use rig_core::{
     completion::{CompletionRequest, CompletionResponse, FinishReason, ToolDefinition, Usage},
     message::{
@@ -231,7 +239,8 @@ fn returned_node_page(request: &CompletionRequest, index: usize) -> u64 {
 // {test}`requirements.sdk.graph.agent-calls.judge.rendering`
 #[tokio::test]
 async fn default_tool_accepts_scalar_results_and_keeps_the_exact_prefix() {
-    let graph = Memory::new("source".into());
+    let mut graph = Memory::new("source".into());
+    graph.formatter = |_, contents| Ok(format!("formatted input: {}", contents.0));
     let agent = ToolAgent::new(Script::new(vec![Some(vec![(
         "submit_result",
         json!({"result":true}),
@@ -265,8 +274,9 @@ async fn default_tool_accepts_scalar_results_and_keeps_the_exact_prefix() {
     assert!(
         serde_json::to_string(&requests[0].chat_history[1])
             .unwrap()
-            .contains("source")
+            .contains("formatted input: source")
     );
+    assert_eq!(*graph.reads.lock().unwrap(), [1]);
     let schema = &requests[0]
         .tools
         .iter()
@@ -947,7 +957,7 @@ async fn source_reads_track_optional_dependencies_and_empty_searches_remain_disc
         let factory = SourceTools {
             analysis: SourceAnalysis::new(
                 LocalSources::new(root.path()),
-                crate::outline::language::Registry::new([]),
+                crate::outline_engine::language::Registry::new([]),
             ),
             observation: move |id: &OutlineId, parsed: &ParsedSource| {
                 assert_eq!(id.resource.location, "note.txt");
@@ -1243,6 +1253,7 @@ async fn queued_contents_and_graph_read_tools_redact_credentials_before_delivery
 // {test}`requirements.sdk.graph.context-tools.list_sources.behavior`
 // {test}`requirements.sdk.graph.context-tools.list_sources.inputs`
 // {test}`requirements.sdk.graph.context-tools.outline_source.behavior`
+// {test}`requirements.sdk.graph.context-tools.outline_source.fn`
 // {test}`requirements.sdk.graph.context-tools.outline_source.inputs`
 // {test}`requirements.sdk.graph.context-tools.search_text.behavior`
 // {test}`requirements.sdk.graph.context-tools.search_text.inputs`
@@ -1260,7 +1271,7 @@ async fn source_discovery_and_its_pages_do_not_register_reads() {
     let factory = SourceTools {
         analysis: SourceAnalysis::new(
             LocalSources::new(root.path()),
-            crate::outline::language::Registry::new([]),
+            crate::outline_engine::language::Registry::new([]),
         ),
         observation: move |_: &OutlineId, _: &ParsedSource| {
             *seen.lock().unwrap() += 1;
@@ -1274,6 +1285,22 @@ async fn source_discovery_and_its_pages_do_not_register_reads() {
         },
     };
     let mut session = <SourceTools<_, _> as ToolFactory<Memory>>::session(&factory);
+    assert_eq!(
+        session
+            .definitions()
+            .unwrap()
+            .iter()
+            .map(|tool| tool.name.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "list_sources",
+            "search_text",
+            "search_structure",
+            "outline_source",
+            "read_source",
+            "get_source_page"
+        ]
+    );
     for (name, args) in [
         ("list_sources", json!({})),
         ("search_text", json!({"pattern":"hit"})),
@@ -1325,7 +1352,7 @@ impl SourceProvider for CachedProvider {
     async fn parse(
         &self,
         resource: &ResourceId,
-        languages: &crate::outline::language::Registry,
+        languages: &crate::outline_engine::language::Registry,
     ) -> Result<ParsedSource, SourceError> {
         parse_snapshot(
             resource,
@@ -1604,7 +1631,7 @@ async fn generic_conversations_can_use_default_telemetry_through_retry_and_conti
 async fn cached_selected_source_reads_record_exact_delivered_contents_and_errors_add_no_input() {
     let graph = Memory::new("different current source".into());
     let factory = SourceTools {
-        analysis: SourceAnalysis::new(CachedProvider, crate::outline::languages::registry()),
+        analysis: SourceAnalysis::new(CachedProvider, crate::outline_engine::languages::registry()),
         observation: |id: &OutlineId, parsed: &ParsedSource| {
             let index = parsed
                 .outline
@@ -2075,7 +2102,7 @@ async fn source_read_pages_retain_text_and_dependencies_without_another_read() {
     let factory = SourceTools {
         analysis: SourceAnalysis::new(
             LocalSources::new(root.path()),
-            crate::outline::language::Registry::new([]),
+            crate::outline_engine::language::Registry::new([]),
         ),
         observation: move |id: &OutlineId, parsed: &ParsedSource| {
             assert_eq!(id.selector, "");
@@ -2230,7 +2257,7 @@ async fn source_tools_forward_arguments_and_present_discovery_and_read_results()
         async fn search_structure(
             &self,
             query: &StructuralQuery,
-            _: &crate::outline::language::Registry,
+            _: &crate::outline_engine::language::Registry,
         ) -> Result<StructuralMatches, SourceError> {
             self.0.lock().unwrap().push(json!({"structure":query.language,"rule":query.rule,"prefix":query.scope.prefix,"limit":query.limit}));
             if query.language == "error" {
@@ -2258,7 +2285,7 @@ async fn source_tools_forward_arguments_and_present_discovery_and_read_results()
     let factory = SourceTools {
         analysis: SourceAnalysis::new(
             Provider(calls.clone()),
-            crate::outline::languages::registry(),
+            crate::outline_engine::languages::registry(),
         ),
         observation: move |id: &OutlineId, parsed: &ParsedSource| {
             observed.lock().unwrap().push(id.clone());
@@ -2420,6 +2447,7 @@ async fn source_tools_forward_arguments_and_present_discovery_and_read_results()
 
 #[cfg(feature = "default-languages")]
 // {test}`requirements.sdk.graph.context-tools.outline_source.behavior`
+// {test}`requirements.sdk.sources.provider_results.parse_snapshot`
 #[tokio::test]
 async fn source_outlines_present_every_top_level_and_nested_item() {
     let root = tempfile::tempdir().unwrap();
@@ -2428,7 +2456,7 @@ async fn source_outlines_present_every_top_level_and_nested_item() {
     let factory = SourceTools {
         analysis: SourceAnalysis::new(
             LocalSources::new(root.path()),
-            crate::outline::languages::registry(),
+            crate::outline_engine::languages::registry(),
         ),
         observation: |_: &OutlineId,
                       _: &ParsedSource|
@@ -2480,7 +2508,7 @@ async fn empty_structural_search_results_remain_discovery() {
     let factory = SourceTools {
         analysis: SourceAnalysis::new(
             LocalSources::new(root.path()),
-            crate::outline::languages::registry(),
+            crate::outline_engine::languages::registry(),
         ),
         observation: move |_: &OutlineId,
                            _: &ParsedSource|

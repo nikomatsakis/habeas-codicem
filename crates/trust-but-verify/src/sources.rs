@@ -1,13 +1,13 @@
 //! Built-in project inspection and its internal source adapters.
 
-use crate::outline::language::Registry;
-use crate::{
-    outline::{self, LegacyOutline},
-    resource::ResourceId,
-    search::RegexSearch,
-    structural::{StructuralRule, innermost_node},
-};
-use serde_json::{Map, Value};
+use crate::outline_engine as outline;
+use crate::outline_engine::LegacyOutline;
+use crate::outline_engine::language::Registry;
+use crate::resource::ResourceId;
+use crate::search::RegexSearch;
+use crate::sources::*;
+use crate::structural::StructuralRule;
+use crate::structural::innermost_node;
 use std::{
     future::Future,
     path::{Component, Path, PathBuf},
@@ -85,7 +85,7 @@ pub fn parse_snapshot(
     })
 }
 
-fn project_resource(path: &Path) -> Result<ResourceId, SourceError> {
+pub(crate) fn project_resource(path: &Path) -> Result<ResourceId, SourceError> {
     let location = path
         .to_str()
         .ok_or_else(|| SourceError::Invalid("source path is not UTF-8".into()))?;
@@ -206,7 +206,7 @@ impl LocalSources {
         Self { root: root.into() }
     }
 
-    fn project_directory(&self) -> Result<PathBuf, SourceError> {
+    pub(crate) fn project_directory(&self) -> Result<PathBuf, SourceError> {
         let root = self.root.canonicalize()?;
         if !root.is_dir() {
             return Err(SourceError::Invalid(
@@ -216,7 +216,7 @@ impl LocalSources {
         Ok(root)
     }
 
-    fn path(&self, location: &str) -> Result<PathBuf, SourceError> {
+    pub(crate) fn path(&self, location: &str) -> Result<PathBuf, SourceError> {
         let root = self.project_directory()?;
         let mut relative = PathBuf::new();
         for component in Path::new(location).components() {
@@ -363,7 +363,7 @@ fn git_metadata(root: &Path, path: &Path) -> bool {
 
 /// Apply each directory's rules in precedence order, stopping at ignored
 /// directories so a nested exception cannot reopen an excluded parent.
-fn project_path_visible(root: &Path, path: &Path) -> Result<bool, SourceError> {
+pub(crate) fn project_path_visible(root: &Path, path: &Path) -> Result<bool, SourceError> {
     use ignore::gitignore::GitignoreBuilder;
 
     if git_metadata(root, path) {
@@ -440,4 +440,5 @@ impl<P: SourceProvider> SourceAnalysis<P> {
 }
 
 #[cfg(test)]
+#[path = "sources/tests.rs"]
 mod tests;

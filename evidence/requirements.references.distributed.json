@@ -1,8 +1,8 @@
 {
   "requirement": "A requirement MAY be distributed: it states obligations that each of many sites\nin the sources must uphold on its own, such as a convention every validation\nfunction follows, and MAY also state obligations that particular code carries\nout, which that code implements with `{impl}`. A `{req}` body declares a distributed requirement\nby containing one or more nested query directives: `:::{sites} <name>` for a\nsite query, which finds the places the obligation applies, or\n`:::{violations} <name>` for a violation query, which finds constructs likely to\nbreak it. A requirement with a violation query MUST also have a site query.\nQuery names MUST be single identifier segments under\n{cite}`requirements.ci.identifiers`, unique within the requirement. A query\ndirective outside a `{req}` body MUST be a validation error. Each query body\nMUST be one fenced `yaml` code block containing a mapping with only these keys:\n\n- `language`, required: the name of an outline profile with a grammar under\n  {cite}`requirements.references.outlines`: `rust`, `python`, `typescript`,\n  `tsx`, `css`, `markdown`, `toml`, or `yaml`.\n- `paths`, optional: project-relative files or directories. Only sources at or\n  under one of them are searched; without it, every source of the language is.\n- `exclude`, optional: project-relative files or directories whose sources are\n  not searched, even under `paths`.\n- `rule`, required, with optional `utils` and `constraints`: an ast-grep rule\n  core in the syntax of Habeas's pinned `ast-grep-config` version, matched\n  against the language's pinned grammar.\n- `within`, required for violation queries and not allowed for site queries:\n  the name of a site query in the same requirement.\n- `match` and `no_match`, required: nonempty lists of source snippets in the\n  query's language. Each `match` snippet MUST contain at least one match of the\n  query, and each `no_match` snippet none, where a violation query counts only matches inside a site of its `within` query in the same snippet.\n\nValidation MUST report a query whose body is not such a mapping, whose rule does\nnot compile, whose `within` names no site query of the requirement, a violation query without `within`, or one of whose snippets fails to parse or has the wrong match result, and a site query\nthat matches nothing in the project. Queries MUST search exactly the sources\nreference discovery considers under {cite}`requirements.references.discovery`, in\ntheir original text.\n\nA match's site MUST be the innermost outline node, under\n{cite}`requirements.references.outlines`, whose range contains the match; for a violation query, it MUST instead be the innermost site of its `within` query that contains the match, and a match inside none of that query's\nsites MUST be discarded. A requirement's sites MUST be the distinct sites of all\nits queries' matches. Each site MUST have a site review under\n{cite}`requirements.references.site_review`, and needs no reference to the\nrequirement.\nUpgrading `ast-grep-config` MAY change matches and MUST be treated as a\ndeliberate change. The book MUST render each query directive as a badge\nnaming its kind and name, followed by its code block.",
   "determination": true,
-  "rationale": "The tests adequately cover `requirements.references.distributed`. I found no obligation that is untested without an exemption.\n\n**Query declaration and validation** (`src/sites.rs`, `src/structural.rs`)\n- Name validity, uniqueness and placement:\n  - `mod[tests]/fn[malformed_queries_are_reported_each_on_its_own]` checks a name that is not a single identifier segment (`bad.name`).\n  - It checks a duplicate name (`twice`), and that only the first `twice` runs.\n  - It checks a query directive outside a `{req}` body.\n  - It checks that a directive inside literal code is not recognized.\n- Body shape:\n  - The same test checks an unknown key (`fix`), a missing code block (`prose`), a `within` on a site query, and a violation query without `within`.\n  - It checks that `within` names no site query, and an empty `no_match`.\n  - `mod[tests]/fn[query_bodies_require_exactly_one_yaml_fence_and_no_other_content]` accepts backtick and tilde fences with surrounding blank lines. It rejects `json`, `text` and `yml` fences, two blocks, prose before or after, an unclosed fence, a two-backtick fence, and unfenced YAML.\n  - Decoding is `serde` with `deny_unknown_fields`. The mapping, required-key and type checks therefore come from `serde` rather than hand-written conditionals. The unknown-key and empty-list tests exercise that path.\n- Violation and site queries:\n  - `mod[tests]/fn[a_violation_query_needs_a_site_query]` checks that a violation query without a site query is an error, and that `within` is required.\n  - `mod[tests]/fn[within_cannot_name_another_violation_query]` checks that `within` cannot name another violation query.\n- Rule compilation: an uncompilable rule is reported in `malformed_queries_are_reported_each_on_its_own` and `a_violation_query_needs_a_site_query`. `rules_compile_for_every_grammar_and_report_invalid_input` in `crates/trust-but-verify/src/structural.rs` compiles and matches a rule for each of the eight languages. It also rejects an unknown language and a missing `rule`, an unexpected key, an invalid kind and an invalid rule.\n- `utils` and `constraints`: `declared_queries_apply_their_utils_and_constraints` shows that the rule needs `utils` to compile and `constraints` to pass its `no_match` snippet.\n- Snippets: `snippets_must_have_the_expected_matches_counting_violations_within_sites` checks both a `match` snippet with no match and a `no_match` snippet with a match. A violation counts only inside a site of its `within` query. `malformed_queries_are_reported_each_on_its_own` checks a `no_match` snippet that does not parse.\n- Site query that matches nothing: this is reported in `malformed_queries_are_reported_each_on_its_own`. A failing violation query is not wrongly reported as matching nothing.\n\n**Search scope** (`src/authoring/tools.rs`)\n- `ast_grep_queries_run_declared_queries_and_return_their_sites` checks that `paths: [src]` and `exclude: [src/skip.rs]` are honored. It checks that `tests/outside.rs`, which is outside `paths`, is not searched.\n- `declared_queries_apply_their_utils_and_constraints` uses no `paths`, so it covers the unrestricted case.\n- \"Exactly the sources discovery considers\" is not tested with `target/` or `book/` content or a Git index. The file list is not computed by the query code. `inspect_repository_with_progress` calls `discovered_files` and passes the same `files` list unchanged to both `collect_references_with_progress` and `sites::discover`. `query_matches` only filters that list by language, `paths` and `exclude`, and reads the text from disk. That is pass-through. The discovery requirement's own tests cover the file set.\n\n**Site attribution**\n- `crates/trust-but-verify/src/structural.rs#mod[tests]/fn[matches_belong_to_the_innermost_node_or_comment_owner]` covers innermost-node ownership.\n- `sites_are_the_innermost_nodes_of_site_matches_and_violations_within_them` asserts:\n  - the exact list of sites, including a nested module site;\n  - the sorted query names per site;\n  - that a violation outside every site (`other`) is discarded;\n  - that the sites are the union of both queries' matches, with distinct sites and queries merged.\n- `violations_belong_to_the_innermost_containing_site` covers a nested site. The violation is attributed to the inner site, not the outer one.\n- `ast_grep_queries_run_declared_queries_and_return_their_sites` checks that a violation outside every site is dropped.\n\n**Rendering** (`src/lib.rs`)\n- `query_directives_render_as_badges_followed_by_their_code_blocks` checks the badge for both `sites` and `violations`, with name and kind, followed by the code block. It checks that the directive fences are removed and that a directive inside literal code stays as written.\n\n**Delegated or not testable here**\n- The site review of each site is covered by `requirements.references.site_review` and its tests.\n- That a site needs no reference is a statement, not behavior. Nothing requires references, and the site-review tests cover `{fixme}` handling.\n- Treating an `ast-grep-config` upgrade as deliberate is a process obligation with no testable behavior.",
-  "references": "f68272276b0338b12b8bd02cb9a628b5d4ab78d93e23a096af0cf4b0ac10d8c5",
+  "rationale": "The reviewed tests cover each testable obligation of `requirements.references.distributed`. I found no gap.\n\n- **Query names.** The name rules are checked in `src/sites.rs#mod[tests]/fn[malformed_queries_are_reported_each_on_its_own]`.\n  - The `bad.name` case checks the single-identifier-segment rule.\n  - The duplicate `twice` case checks that names are unique within the requirement.\n- **Directives outside a `{req}` body.** The same test covers `outside`, which MUST be a validation error, and the literal `literal` directive inside a code fence, which MUST NOT be.\n- **Violation queries.**\n  - `src/sites.rs#mod[tests]/fn[a_violation_query_needs_a_site_query]` checks that a violation query needs a site query. It also checks that a missing `within` is reported.\n  - `src/sites.rs#mod[tests]/fn[within_cannot_name_another_violation_query]` checks that `within` must name a site query.\n  - The `loose`, `astray` and `keyed` cases in `malformed_queries_are_reported_each_on_its_own` check that `within` is required for violation queries, that it must name a site query, and that site queries must not have it.\n- **Query body shape.** `src/structural.rs#mod[tests]/fn[query_bodies_require_exactly_one_yaml_fence_and_no_other_content]` has several checks.\n  - It rejects non-mapping YAML.\n  - It rejects wrong fence languages, multiple fences, surrounding prose, and bad fences.\n  - It accepts both backtick and tilde fences.\n  - `malformed_queries_are_reported_each_on_its_own` covers the unknown key `fix`, the empty `no_match` list, and the `prose` body.\n- **Rules and languages.**\n  - Uncompilable rules are checked in `malformed_queries_are_reported_each_on_its_own` and in `a_violation_query_needs_a_site_query`.\n  - `src/sites.rs#mod[tests]/fn[declared_queries_apply_their_utils_and_constraints]` checks `utils` and `constraints`.\n  - `crates/trust-but-verify/src/structural.rs#mod[tests]/fn[rules_compile_for_every_grammar_and_report_invalid_input]` compiles rules for all eight languages. It also checks that an unknown language is rejected, as are unknown keys, a missing `rule`, and an invalid rule.\n- **Snippets.**\n  - `src/sites.rs#mod[tests]/fn[snippets_must_have_the_expected_matches_counting_violations_within_sites]` checks that a `match` snippet with no match is reported.\n  - The same test checks that a `no_match` snippet with a match is reported.\n  - It also checks that violation matches count only inside a `within` site in the same snippet.\n  - The `nothing` case in `malformed_queries_are_reported_each_on_its_own` covers a snippet that fails to parse.\n- **Site queries that match nothing.** The `nothing` and `twice` cases in `malformed_queries_are_reported_each_on_its_own` cover this.\n- **Search scope.**\n  - `src/sites.rs#mod[tests]/fn[declared_queries_share_discovery_exclusions_and_filter_source_language]` sets up Git-indexed, untracked, `target`, `book`, `evidence` and `.git` files, plus a non-Rust file. It asserts that only the tracked Rust source is a site.\n  - `src/authoring/tools.rs#mod[tests]/fn[ast_grep_queries_run_declared_queries_and_return_their_sites]` covers `paths` and `exclude`. It includes a file outside `paths` and an excluded file.\n  - The `failed_site_queries_do_not_repeat_errors_through_dependent_violations` test in `src/sites.rs` also uses `paths`.\n- **Site attribution.**\n  - `src/sites.rs#mod[tests]/fn[sites_are_the_innermost_nodes_of_site_matches_and_violations_within_them]` checks that sites are the innermost outline nodes and that a site's queries are merged without duplicates. That includes a nested module function.\n  - `src/sites.rs#mod[tests]/fn[violations_belong_to_the_innermost_containing_site]` checks that a violation goes to the innermost containing site when sites are nested.\n  - The `exits` query in the `ast_grep_queries_run_declared_queries_and_return_their_sites` test discards a violation that falls inside no site.\n  - `crates/trust-but-verify/src/structural.rs#mod[tests]/fn[matches_belong_to_the_innermost_node_or_comment_owner]` checks the innermost-node rule directly.\n- **Site reviews.** The assertions in `sites_are_the_innermost_nodes_of_site_matches_and_violations_within_them` require a \"missing site review\" error for each site, and no reference to the requirement is needed. Site-review details belong to `requirements.references.site_review`.\n- **Book rendering.** `src/lib.rs#mod[tests]/fn[query_directives_render_as_badges_followed_by_their_code_blocks]` checks that `sites` and `violations` directives render as a badge followed by their code block. It also checks that a literal directive in a code fence is left alone.\n\nThe text says an `ast-grep-config` upgrade is a deliberate change. That is a process statement and has no testable behavior.",
+  "references": "fd5f4ac8bcfc7e825efce4312c63ec2636756f4597f5608df42ae4a79331b04d",
   "inputs": [
     {
       "requirements": "requirements.references.distributed",
@@ -183,7 +183,7 @@
     {
       "file": "crates/trust-but-verify/src/structural.rs",
       "item": "mod[tests]/fn[matches_belong_to_the_innermost_node_or_comment_owner]",
-      "hash": "a13f211fa495f174170f79b7065f9779f96a60d1d45f7c9b64d965ec2e41d94d"
+      "hash": "3726a202d9d31bdaa77e1e3bc0c5c2df8cf817d9f4aa8a5db0d409aa4317560c"
     },
     {
       "file": "src/authoring/tools.rs",
@@ -194,6 +194,11 @@
       "file": "src/lib.rs",
       "item": "mod[tests]/fn[query_directives_render_as_badges_followed_by_their_code_blocks]",
       "hash": "2e00f69fedd45928c4cfd5e86202477b5364d99a5397dff1dd7a51f56ecb0bd0"
+    },
+    {
+      "file": "src/sites.rs",
+      "item": "mod[tests]/fn[declared_queries_share_discovery_exclusions_and_filter_source_language]",
+      "hash": "40476d5ebe09c9e16b866d6326440edee161ed82fbdabc4f50ea1580b5cfe51f"
     },
     {
       "file": "src/sites.rs",
@@ -233,77 +238,22 @@
     {
       "file": "src/structural.rs",
       "item": "mod[tests]/fn[query_bodies_require_exactly_one_yaml_fence_and_no_other_content]",
-      "hash": "1848f1da00c3c8140399d01dd650ea89b2ceac24fcf58fa6edb41ec110e25958"
+      "hash": "999b185a07b29e06893f82165239032e6b15f62612bac63e415819a8db4117ba"
     },
     {
       "file": "src/sites.rs",
-      "item": "mod[tests]/fn[a_query_that_cannot_run_is_a_discovery_error]",
-      "hash": "8a9e4c43502165430e95202fa488e554c9915602fd1b96ec43f04cae35441c1d"
+      "item": "mod[tests]/const[RULE]",
+      "hash": "8c62cdf96b56f5b848f934ae06c318941ffa1b6927e8a4f5ccfff45000085a62"
     },
     {
       "file": "src/sites.rs",
-      "item": "fn[requirement_sites]",
-      "hash": "18566d630783ffaa288125cf6b83df9920778639aa4539d502e4fd91db2f3eff"
-    },
-    {
-      "file": "src/structural.rs",
-      "item": "fn[query_matches]",
-      "hash": "006c937727f056ef86629f0fecc139b75b90fef215ab8a233d0eae5edf824beb"
-    },
-    {
-      "file": "src/evidence.rs",
-      "item": "fn[inspect_repository_with_progress]",
-      "hash": "788e24af357372441e74b0823319d6b50ee4c071637fc9a47eb30d05e94d654d"
+      "item": "mod[tests]/fn[failed_site_queries_do_not_repeat_errors_through_dependent_violations]",
+      "hash": "bea98602821b56680995164c3868964a3c88ba57a4a334eb0ff8991e968ffde3"
     },
     {
       "file": "src/structural.rs",
       "item": "struct[QueryBody]",
       "hash": "b1af4fc1939c0cf0bcc1fd2615e288fa658e6cc6c0a871e2cd2ec1e69c208b10"
-    },
-    {
-      "file": "src/structural.rs",
-      "item": "impl[QueryBody]",
-      "hash": "870d237e83d62d87f2309699aeb77926c135125556f97f23666ce3a11941de0c"
-    },
-    {
-      "file": "src/structural.rs",
-      "item": "fn[parse_queries]",
-      "hash": "96f1a821a28e2be27e0416fb500c36ea27fb5f46decab42bb51838046453e190"
-    },
-    {
-      "file": "crates/trust-but-verify/Cargo.toml",
-      "item": "table[dependencies]/pair[ast-grep-config]",
-      "hash": "3e3990bf5deef9d8fe686ad7c01c7f48987f4a98d91453fd08f26050b63269ae"
-    },
-    {
-      "file": "crates/trust-but-verify/src/structural.rs",
-      "item": "impl[QueryLanguage]/fn[named]",
-      "hash": "175630e934ce51341d25d20024ff7a5a49f3654be9c5d7712aef7c2ef01ecd71"
-    },
-    {
-      "file": "crates/trust-but-verify/src/structural.rs",
-      "item": "impl[QueryLanguage]/fn[covers]",
-      "hash": "63a676cede6328a104de9f577282acdd56eaccd70e05dd0991d484c23050c622"
-    },
-    {
-      "file": "src/sites.rs",
-      "item": "fn[collect_sites]",
-      "hash": "d99e499b3b505f7c1a6e20e762c22f3650c080e81492383d760a805fb1898b8f"
-    },
-    {
-      "file": "src/sites.rs",
-      "item": "fn[validate_queries]",
-      "hash": "c22721be34f2b8a9c6bd84185223d1471c27a734dcac5ca7e037ea2e4026544c"
-    },
-    {
-      "file": "src/sites.rs",
-      "item": "fn[discover]",
-      "hash": "a76d477ddc4eeb1fe2bb043697eddf2dc29a645a915cb27bf62829f33445a9bd"
-    },
-    {
-      "file": "src/structural.rs",
-      "item": "fn[query_sites]",
-      "hash": "8b0d864241fab8934dc4c0c4c7d26f1c78de89d88e2f3608c39abf77bc7bd04c"
     }
   ],
   "format_version": 1,
@@ -316,7 +266,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "f68272276b0338b12b8bd02cb9a628b5d4ab78d93e23a096af0cf4b0ac10d8c5"
+          "value": "fd5f4ac8bcfc7e825efce4312c63ec2636756f4597f5608df42ae4a79331b04d"
         }
       ]
     },
@@ -328,7 +278,7 @@
         "Mandatory",
         {
           "scheme": "node-path-set-sha256-v1",
-          "value": "fb72b435f031d1dda868d7503a0b4fc624ca5cb4147a59d04dbe377161f3330c"
+          "value": "662585a54c5ce173ae9f04e7ac1ef0ebc4f8aa3546156f3d854f89fb0debd1c8"
         }
       ]
     },
@@ -417,7 +367,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "59e595876cdb14da23ccd488d58f5378ee02e744bfade919ce6b8ba929fe4c0d"
+          "value": "b56534d788637a44a8be1c51117b90d9ab74ccc9791ff6ce9473c00efc785247"
         }
       ]
     },
@@ -452,6 +402,23 @@
         {
           "scheme": "habeas-input-v1",
           "value": "7b78a9b8a340f65549e79010689ea50ebcaf0add9b2fce08adbc307ede42e5b2"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "src/sites.rs"
+            },
+            "selector": "mod[tests]/fn[declared_queries_share_discovery_exclusions_and_filter_source_language]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "f303816e222cdba390c28c10452f442c0a0c76c934dd8297e8acafadfef5b982"
         }
       ]
     },
@@ -587,7 +554,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "ed3033f1fb64ffa063e5c0505607997db74c01f7403e0d4c6187bcfc06252d34"
+          "value": "2d0677b58ca48304911bf3ee62a3b4553845af8ee3f871e66f86bf63a576718c"
         }
       ]
     },
@@ -599,12 +566,12 @@
               "scheme": "repo",
               "location": "src/sites.rs"
             },
-            "selector": "mod[tests]/fn[a_query_that_cannot_run_is_a_discovery_error]"
+            "selector": "mod[tests]/const[RULE]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "89a372b373fc3ad06c0536f97c8043aacc2498eb5cecb6f27c42457debb34143"
+          "value": "53df6363cd9ff86d4cda09496e2885984e252c290557af71825ac7819a70312e"
         }
       ]
     },
@@ -616,46 +583,12 @@
               "scheme": "repo",
               "location": "src/sites.rs"
             },
-            "selector": "fn[requirement_sites]"
+            "selector": "mod[tests]/fn[failed_site_queries_do_not_repeat_errors_through_dependent_violations]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "3d42b6c97f1f216fbd77bf5af171fb584ef91736ce86f49345c44d8d2e40fbba"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/structural.rs"
-            },
-            "selector": "fn[query_matches]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "9e78ae4d3f32f971e73585b587badbceaca5e125b726b4c570644b3f35f509ec"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/evidence.rs"
-            },
-            "selector": "fn[inspect_repository_with_progress]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "23ba690443ef8b677e74fd463e1902a0be5879ed12c7145b3933a200b66071a1"
+          "value": "6d17887758c7c7b0fd86335d4eb781b4269b0125f9b816207e0e1da1cce32922"
         }
       ]
     },
@@ -673,159 +606,6 @@
         {
           "scheme": "habeas-input-v1",
           "value": "2b1aa0171504d4dbcd66acc7f43fc11838054360984805da605e33947200fb67"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/structural.rs"
-            },
-            "selector": "impl[QueryBody]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "189bbb85bfbb205bd7110085fb3635980fdae65f44e823b6eaa90b7353099b14"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/structural.rs"
-            },
-            "selector": "fn[parse_queries]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "bb0f4fcbe1dde2ce7b606601d65316b47a2931b9e06c8a420c4cb932532befc7"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/Cargo.toml"
-            },
-            "selector": "table[dependencies]/pair[ast-grep-config]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "dcc4554ff2087958e2da1b46f4f7d17d8dddca62eb0459029ece2964a098e25d"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/structural.rs"
-            },
-            "selector": "impl[QueryLanguage]/fn[named]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "18bee1394b5f514dd29199e0459e4f56ef060b2ee1c098b2d0dca76d2794eb38"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/structural.rs"
-            },
-            "selector": "impl[QueryLanguage]/fn[covers]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "d7b09bbb72024e6adf497ddd181ceab06ee61901d5bc2c80152b7435aff2054b"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/sites.rs"
-            },
-            "selector": "fn[collect_sites]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "ffb8794f8255e2215d3db3a6d33a15d202271beb7430c0693546e43c7e87426a"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/sites.rs"
-            },
-            "selector": "fn[validate_queries]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "13a7d8436237977b1fe4c5dcc066db04ec9cf45ddbe20f7f8139fe86d0fb87a3"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/sites.rs"
-            },
-            "selector": "fn[discover]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "c6bdea5bd98a44aa2f958c98a8c2a560e2cb3d30d3e725fb84faba29773b2b89"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "src/structural.rs"
-            },
-            "selector": "fn[query_sites]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "aff5d32b0dcad6750e502e4fc7429d9f44f0314c59dfb964f236f04213e97eba"
         }
       ]
     }

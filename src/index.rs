@@ -1654,7 +1654,7 @@ mod tests {
     fn detail_pages_rebase_markdown_links_and_images_from_the_definition() {
         use pulldown_cmark::{Event, Parser, Tag};
 
-        let text = r##"Read [**typed**](../../../rustdocs/trust_but_verify/trait.Criterion.html?view=all#associatedtype.Ok "Typed API").
+        let text = r##"Read [**typed**](../../../rustdocs/trust_but_verify/graph/trait.Criterion.html?view=all#associatedtype.Ok "Typed API").
 
 [![diagram](../../assets/diagram.svg?theme=dark#node)](../validation.md#criterion)
 [Reference][sdk] and ![Reference diagram][picture].
@@ -1664,7 +1664,7 @@ mod tests {
 [Web](https://example.test/api?query=1#answer) [Mail](mailto:user@example.test)
 [Absolute](/shared/api.html) [Empty]() [Site](//example.test/api)
 
-[sdk]: ../../../rustdocs/trust_but_verify/trait.Domain.html#associatedtype.NodeId "Reference API"
+[sdk]: ../../../rustdocs/trust_but_verify/domain/trait.Domain.html#associatedtype.NodeId "Reference API"
 [picture]: <../../assets/picture.svg> "Reference picture"
 
 `[Literal](../../../rustdocs/not-a-link.html)`
@@ -1712,10 +1712,10 @@ mod tests {
             })
             .collect::<Vec<_>>();
         for expected in [
-            "../../rustdocs/trust_but_verify/trait.Criterion.html?view=all#associatedtype.Ok",
+            "../../rustdocs/trust_but_verify/graph/trait.Criterion.html?view=all#associatedtype.Ok",
             "../../requirements/assets/diagram.svg?theme=dark#node",
             "../../requirements/sdk/validation.md#criterion",
-            "../../rustdocs/trust_but_verify/trait.Domain.html#associatedtype.NodeId",
+            "../../rustdocs/trust_but_verify/domain/trait.Domain.html#associatedtype.NodeId",
             "../../requirements/assets/picture.svg",
             "../../requirements/sdk/graph/agent-harness.md#criterion",
             "../../requirements/sdk/graph/agent-harness.md?view=all#criterion",
@@ -1749,7 +1749,7 @@ mod tests {
             ),
             &sources,
         );
-        assert!(cli.contains("../../../rustdocs/trust_but_verify/trait.Criterion.html"));
+        assert!(cli.contains("../../../rustdocs/trust_but_verify/graph/trait.Criterion.html"));
     }
 
     // {test}`requirements.index.navigation`

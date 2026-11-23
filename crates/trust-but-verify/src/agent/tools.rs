@@ -1,9 +1,11 @@
 use super::*;
-use crate::{
-    domain::{Domain, NodeContents},
-    graph::{Dependency, InspectionContext, NodePath},
-    procedure::{Agent, AgentRequest},
-};
+use crate::domain::Domain;
+use crate::domain::NodeContents;
+use crate::graph::Dependency;
+use crate::graph::InspectionContext;
+use crate::graph::NodePath;
+use crate::procedure::Agent;
+use crate::procedure::AgentRequest;
 use futures::future::BoxFuture;
 use serde_json::json;
 

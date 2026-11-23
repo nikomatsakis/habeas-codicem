@@ -1405,7 +1405,8 @@ async fn converse_observed<T: Send>(
         pages: pages::ResultPages::default(),
         rejection: line_numbers::Rejection::default(),
     };
-    trust_but_verify::__habeas::converse(provider, &mut adapter, prompt.request(), submit).await
+    trust_but_verify::agent_runtime::converse(provider, &mut adapter, prompt.request(), submit)
+        .await
 }
 
 // {cite}`habeas:util`
@@ -1421,7 +1422,7 @@ struct HabeasConversation<'a, F> {
     rejection: line_numbers::Rejection,
 }
 
-impl<T: Send, F: Fn(&Value) -> io::Result<T> + Send> trust_but_verify::__habeas::Conversation
+impl<T: Send, F: Fn(&Value) -> io::Result<T> + Send> trust_but_verify::agent_runtime::Conversation
     for HabeasConversation<'_, F>
 {
     type Output = T;
@@ -1434,8 +1435,8 @@ impl<T: Send, F: Fn(&Value) -> io::Result<T> + Send> trust_but_verify::__habeas:
         &mut self,
         submit: &str,
         arguments: &Value,
-    ) -> io::Result<trust_but_verify::__habeas::Submission<T>> {
-        use trust_but_verify::__habeas::Submission;
+    ) -> io::Result<trust_but_verify::agent_runtime::Submission<T>> {
+        use trust_but_verify::agent_runtime::Submission;
         let resubmitted = self.rejection.resubmitted(arguments);
         let result = (self.parse)(resubmitted.as_ref().unwrap_or(arguments))?;
         let outstanding = self.pages.outstanding_searches();

@@ -1,89 +1,76 @@
 //! Typed graph observations, deterministic checks, and explicit model authoring.
 //!
 //! Consumers own domain meaning, source-node mappings, and evidence persistence.
-//! [`Sources`] inspects project files using `.gitignore` defaults. Source
+//! [`sources::Sources`] inspects project files using `.gitignore` defaults. Source
 //! outlines and their bundled languages live in [`outline`].
 //!
 //! {impl}`requirements.sdk.public_api`
 
-#[path = "outline/mod.rs"]
-mod outline_engine;
+/// Configure the SDK's supplied Bedrock, OpenAI, and Ollama agents.
+#[path = "agent/config.rs"]
+pub mod agent;
+pub mod domain;
+pub mod graph;
 /// Selectable source contents and bundled language rules.
-pub mod outline {
-    #[cfg(feature = "habeas-integration")]
-    #[doc(hidden)]
-    pub use crate::outline_engine::integration;
-    pub(crate) use crate::outline_engine::*;
-    #[doc(inline)]
-    pub use crate::outline_engine::{
-        HASH_DIGITS, Label, Outline, OutlineContent, OutlineError, OutlineId, OutlineItem,
-        OutlineLang, Segment, SelectorError, languages, parse_selector,
-    };
-}
-mod redaction;
-mod search;
-mod structural;
+#[path = "outline/contents.rs"]
+pub mod outline;
+/// Typed agent requests and their execution context.
+#[path = "procedure.rs"]
+pub mod request;
+/// Project inspection using the SDK's built-in defaults.
+#[path = "sources/public.rs"]
+pub mod sources;
+pub mod storage;
 
+#[path = "sources.rs"]
+mod source_engine;
+
+#[cfg(feature = "habeas-integration")]
+#[doc(hidden)]
+#[path = "agent.rs"]
+pub mod agent_runtime;
+#[cfg(not(feature = "habeas-integration"))]
 #[path = "agent.rs"]
 mod agent_runtime;
-/// Configure the SDK's supplied Bedrock, OpenAI, and Ollama agents.
-pub mod agent {
-    pub(crate) use crate::agent_runtime::*;
-    #[doc(inline)]
-    pub use crate::agent_runtime::{
-        AgentConfig, BedrockConfig, BedrockCredentials, OllamaConfig, OpenAiConfig, OptionValue,
-        SecretString,
-    };
-}
-mod domain;
-pub mod graph;
-mod procedure;
-mod sources;
-#[doc(inline)]
-pub use agent::AgentConfig;
-#[doc(inline)]
-pub use domain::{Domain, NodeContents, SourceNodes};
-#[doc(inline)]
-pub use graph::{
-    Criterion, CriterionPath, Dependency, Fingerprint, Fingerprinted, InspectionContext, NodePath,
-    PageError, PageId, PagedText, Record, Snapshot, ValidationError, Validator,
-};
-#[doc(inline)]
-pub use outline::{OutlineContent, OutlineId, OutlineLang};
-#[doc(inline)]
-pub use procedure::{Ask, Context, ContextPhase, NodePhase, ValidationContext};
-#[doc(inline)]
-pub use sources::{
-    LanguageId, SearchResults, SourceError, SourceFile, SourceScope, Sources, StructuralMatch,
-    StructuralMatches, StructuralQuery, TextMatch, TextMatches, TextQuery,
-};
-pub mod storage;
-#[doc(inline)]
-pub use storage::{FileEvidenceStorage, FileStorageError};
+
+#[cfg(feature = "habeas-integration")]
+#[doc(hidden)]
+#[path = "outline/mod.rs"]
+pub mod outline_engine;
+#[cfg(not(feature = "habeas-integration"))]
+#[path = "outline/mod.rs"]
+mod outline_engine;
+
+#[cfg(feature = "habeas-integration")]
+#[doc(hidden)]
+#[path = "redaction/mod.rs"]
+pub mod redaction;
+#[cfg(not(feature = "habeas-integration"))]
+#[path = "redaction/mod.rs"]
+mod redaction;
+
+#[cfg(feature = "habeas-integration")]
+#[doc(hidden)]
+#[path = "resource.rs"]
+pub mod resource;
+#[cfg(not(feature = "habeas-integration"))]
+#[path = "resource.rs"]
 mod resource;
 
-/// Internal interoperability for Habeas; not part of the supported SDK API.
-#[doc(hidden)]
 #[cfg(feature = "habeas-integration")]
-pub mod __habeas {
-    pub use crate::agent_runtime::providers::RigProvider;
-    pub use crate::agent_runtime::{
-        CompletionProvider, Conversation, RETRY_LIMIT, Submission, converse, failure_codes,
-    };
-    pub use crate::procedure::{Agent, AgentRequest};
-    pub mod procedure {
-        pub use crate::procedure::*;
-    }
-    pub mod resource {
-        pub use crate::resource::*;
-    }
-    pub mod redaction {
-        pub use crate::redaction::*;
-    }
-    pub mod structural {
-        pub use crate::structural::*;
-    }
-    pub mod search {
-        pub use crate::search::*;
-    }
-}
+#[doc(hidden)]
+#[path = "search.rs"]
+pub mod search;
+#[cfg(not(feature = "habeas-integration"))]
+#[path = "search.rs"]
+mod search;
+
+#[cfg(feature = "habeas-integration")]
+#[doc(hidden)]
+#[path = "structural.rs"]
+pub mod structural;
+#[cfg(not(feature = "habeas-integration"))]
+#[path = "structural.rs"]
+mod structural;
+
+use request as procedure;

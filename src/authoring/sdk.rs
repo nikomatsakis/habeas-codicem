@@ -6,14 +6,17 @@ use crate::{
     sdk::{HabeasDomain, HabeasEdgeLabel, HabeasNode, input_fingerprint},
 };
 use std::sync::{Arc, Mutex};
-use trust_but_verify::{
-    __habeas::procedure::{Agent, AgentRequest},
-    Domain, NodeContents,
-    graph::{
-        Criterion, CriterionPath, Fingerprint, InspectionContext, NodePath, ValidationContext,
-        ValidationError,
-    },
-};
+use trust_but_verify::domain::Domain;
+use trust_but_verify::domain::NodeContents;
+use trust_but_verify::graph::Criterion;
+use trust_but_verify::graph::CriterionPath;
+use trust_but_verify::graph::Fingerprint;
+use trust_but_verify::graph::InspectionContext;
+use trust_but_verify::graph::NodePath;
+use trust_but_verify::graph::ValidationError;
+use trust_but_verify::request::Agent;
+use trust_but_verify::request::AgentRequest;
+use trust_but_verify::request::ValidationContext;
 
 // {cite}`habeas:util`
 #[derive(serde::Deserialize, schemars::JsonSchema)]
@@ -587,7 +590,8 @@ mod tests {
     // {test}`requirements.sdk.habeas.evidence_format.loading`
     #[tokio::test]
     async fn review_graph_persists_and_reuses_a_negative_validation_through_the_sdk() {
-        use trust_but_verify::graph::{Validator, procedure_matches};
+        use trust_but_verify::graph::procedure_matches;
+        use trust_but_verify::graph::validator::Validator;
 
         let root = inputs::tests::project();
         let state = tempfile::tempdir().unwrap();
@@ -922,7 +926,7 @@ mod tests {
     // {test}`requirements.ci.requirement_text`
     #[tokio::test]
     async fn every_review_kind_loads_both_formats_and_reports_each_application_failure_once() {
-        use trust_but_verify::Domain;
+        use trust_but_verify::domain::Domain;
         let source = format!(
             "{}\n// {{cite}}`requirements.rule`\nfn helper() {{}}\n// {{test}}`requirements.sample`\n#[test]\nfn sample() {{}}\n",
             crate::sites::tests::SOURCE

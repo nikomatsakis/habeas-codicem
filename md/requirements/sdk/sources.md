@@ -28,12 +28,12 @@ An item within that file uses the path and selector in `OutlineId` under
 ## Select the project directory
 
 :::{req} provider
-[`Sources`](../../rustdocs/trust_but_verify/struct.Sources.html) supplies
+[`Sources`](../../rustdocs/trust_but_verify/sources/struct.Sources.html) supplies
 built-in filesystem listing, reading, outlining, text search, and structural
 search. Construct it with the project directory:
 
 ```rust,ignore
-use trust_but_verify::Sources;
+use trust_but_verify::sources::Sources;
 
 let sources = Sources::new(repository_root);
 ```
@@ -46,7 +46,9 @@ the validator; the domain supplies the mapping under
 {cite}`requirements.sdk.sources.source_nodes`.
 
 ```rust,ignore
-use trust_but_verify::{SourceNodes, Sources, Validator};
+use trust_but_verify::domain::SourceNodes;
+use trust_but_verify::sources::Sources;
+use trust_but_verify::graph::validator::Validator;
 
 impl<D: SourceNodes + 'static> Validator<D>
 where
@@ -123,7 +125,8 @@ an unsupported or invalid address returns an error. The SDK reads the mapped
 node through the application's `Domain` interface.
 
 ```rust,ignore
-use trust_but_verify::{Domain, OutlineId};
+use trust_but_verify::domain::Domain;
+use trust_but_verify::outline::OutlineId;
 
 pub trait SourceNodes: Domain {
     fn source_node(&self, item: &OutlineId) -> Result<Self::NodeId, Self::Error>;

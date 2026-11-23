@@ -1,5 +1,6 @@
-use crate::outline::language::Registry;
-use crate::{resource::ResourceId, sources::*};
+use crate::outline_engine::language::Registry;
+use crate::resource::ResourceId;
+use crate::source_engine::*;
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicUsize, Ordering},
@@ -14,7 +15,7 @@ fn id(location: &str) -> ResourceId {
 fn registry() -> Registry {
     #[cfg(feature = "default-languages")]
     {
-        crate::outline::languages::registry()
+        crate::outline_engine::languages::registry()
     }
     #[cfg(not(feature = "default-languages"))]
     {
@@ -106,8 +107,11 @@ async fn failed_provider_operations_never_become_successful_empty_results() {
 }
 impl SourceProvider for Memory {
     type Error = SourceError;
-    async fn list(&self, _: &SourceScope) -> Result<Vec<ResourceId>, SourceError> {
-        self.events.lock().unwrap().push("list".into());
+    async fn list(&self, scope: &SourceScope) -> Result<Vec<ResourceId>, SourceError> {
+        self.events
+            .lock()
+            .unwrap()
+            .push(format!("list:{}", scope.prefix));
         Ok(vec![id("src/one.txt"), id("other/two.txt")])
     }
     async fn read(&self, resource: &ResourceId) -> Result<SourceFile, SourceError> {
@@ -134,6 +138,7 @@ async fn defaults_use_provider_primitives_and_keep_one_parse_snapshot() {
         reads: AtomicUsize::new(0),
     };
     let parsed = memory.parse(&id("src/one.txt"), &registry()).await.unwrap();
+    assert_eq!(parsed.resource, id("src/one.txt"));
     assert!(parsed.source.text().unwrap().starts_with("version 0"));
     assert_eq!(memory.reads.load(Ordering::SeqCst), 1);
     let newer = memory.read(&id("src/one.txt")).await.unwrap();
@@ -164,7 +169,7 @@ async fn defaults_use_provider_primitives_and_keep_one_parse_snapshot() {
     assert_eq!(result.matches[0].excerpt, "version 2\nhit one\nhit two");
     assert_eq!(
         memory.events.lock().unwrap().as_slice(),
-        ["src/one.txt", "src/one.txt", "list", "src/one.txt"]
+        ["src/one.txt", "src/one.txt", "list:src", "src/one.txt"]
     );
 }
 
@@ -353,11 +358,13 @@ async fn local_provider_scopes_paths_and_rejects_resources_outside_its_root() {
 struct CachedParse {
     parses: AtomicUsize,
     wrong_resource: bool,
+    scopes: Mutex<Vec<String>>,
 }
 #[cfg(feature = "default-languages")]
 impl SourceProvider for CachedParse {
     type Error = SourceError;
-    async fn list(&self, _: &SourceScope) -> Result<Vec<ResourceId>, SourceError> {
+    async fn list(&self, scope: &SourceScope) -> Result<Vec<ResourceId>, SourceError> {
+        self.scopes.lock().unwrap().push(scope.prefix.clone());
         Ok(vec![id("src/one.rs"), id("other/two.rs")])
     }
     // :::{cite} habeas:coverage
@@ -437,6 +444,7 @@ async fn structural_search_uses_overridden_parses_their_snapshot_and_requested_s
     let provider = CachedParse {
         parses: AtomicUsize::new(0),
         wrong_resource: false,
+        scopes: Mutex::default(),
     };
     for (limit, count, complete) in [(None, 1, true), (Some(1), 1, true), (Some(0), 0, false)] {
         let matches = provider
@@ -465,6 +473,10 @@ async fn structural_search_uses_overridden_parses_their_snapshot_and_requested_s
         }
     }
     assert_eq!(provider.parses.load(Ordering::SeqCst), 3);
+    assert_eq!(
+        provider.scopes.lock().unwrap().as_slice(),
+        ["src", "src", "src"]
+    );
 }
 
 struct Primitives {
@@ -598,6 +610,7 @@ async fn list_read_only_provider_supports_selected_language_parse_and_structural
     let wrong = CachedParse {
         parses: AtomicUsize::new(0),
         wrong_resource: true,
+        scopes: Mutex::default(),
     };
     let error = wrong
         .search_structure(

@@ -1,7 +1,7 @@
 {
   "requirement": "The agent's `read_source` tool accepts a project-relative file path and an\noptional outline selector. An omitted or empty selector identifies the whole file.\nThe project-relative path and selector identify an `OutlineId` under\n{cite}`requirements.sdk.sources.source_nodes`. The Rust operation accepts the\n`OutlineId` directly. It maps that outline identity into the application's\ngraph, then obtains its node contents through `Domain::node_content`.\nThe selected file belongs to the project scope under\n{cite}`requirements.sdk.sources.local_provider`. Mapping and read failures\nreturn errors.\n\nThe Rust caller receives `D::NodeContent`; the agent receives those same\ncontents presented by `NodeContents::format` under\n{cite}`requirements.sdk.graph.node_content.format`.",
   "determination": true,
-  "rationale": "The reviewed tests cover every obligation in `read_source.behavior`.\n\n**Whole-file default.** `omitted_and_explicit_empty_selectors_deliver_the_same_whole_file` in `project_sources.rs` reads once with the selector omitted and once with `\"\"`. It asserts the same node address (`path` plus empty `selector`), the same text, and the same dependency each time.\n\n**Agent and Rust inputs map to an `OutlineId`.**\n- `fixed_tools_deliver_domain_contents_with_mandatory_snapshot_dependencies` dispatches `read_source` and checks the result. The text is the domain's \"prepared domain contents\", not the disk text \"disk text\".\n- It also checks that the dependency is `Node(\"source-node\", Content.fingerprint())`, which shows the read went through `Domain::node_content`.\n- `direct_source_reads_preserve_mapping_errors_and_record_only_successful_returns` calls `inspection.read_source(&OutlineId)` directly, so the Rust operation takes an `OutlineId`.\n- It returns the domain content, and `returned.format()` equals \"prepared contents\".\n- `read_nodes` records `source-node`, which shows the mapped node was read.\n\n**Selector forwarding.**\n- The test domain's `source_node` supports only `source.txt` with an empty selector.\n- The direct test passes `line[unknown]` and the unknown path `unknown.txt`. Both fail with \"unsupported source item\", and no read occurs (`reads == 0`).\n- The dispatch test passes selectors `line[unknown]` and `fn[unclosed`. Both return errors.\n- A non-empty selector is therefore passed to the mapping step. If it were dropped, those reads would succeed.\n\n**Project scope, from the cited `local_provider`.**\n- The dispatch test reads a `.gitignore`d `ignored.txt` and `../source.txt`. Both return errors, and the read count stays at 1.\n- `supplied_agent_uses_attached_project_tools_in_both_configuration_orders` in `configured.rs` goes through a real agent loop. It reads an ignored file, and the output contains \"excluded\".\n- It then reads a visible file and gets the domain snapshot, not the disk contents. It does this in both configuration orders and with a different decoy project attached.\n\n**Mapping and read failures return errors.** The direct test and `fixed_source_reads_redact_delivery_and_propagate_preparation_errors` set `fail_read` and assert the \"prepared source read failed\" error. The direct test also asserts that failed attempts record no dependencies.\n\n**The caller gets `D::NodeContent`; the agent gets `NodeContents::format` output.**\n- The direct test checks `returned.format()` and `returned.fingerprint()`.\n- The dispatch tests check the delivered text. A text file gives `mapped[\"text\"] == \"a source snapshot\"`.\n- The long-text case checks that the paged retained text is the formatted content, with \"é\" repeated 20,000 times.\n- The retained text is unchanged after the domain changes.\n- This also supports \"formatting uses the retained value without further reads\": the read count stays at 3 across the paged reads.\n\n**Gaps.**\n- I found none. Only a successful read with a non-empty selector against the domain is not exercised in the new `OutlineId` tests. Its mapping is the domain's responsibility under `source_nodes`, and selector forwarding is already shown by the failing cases.\n- Nested ignore exceptions and Git metadata exclusion belong to `local_provider`'s own tests. They are not reassessed here.",
+  "rationale": "I judge the tests adequate. They cover each obligation in `read_source.behavior`. I did not request implementation source. The tests' own assertions were enough to map each obligation.\n\n**Obligations and the tests that cover them**\n\n- **Path plus optional selector, with an omitted or empty selector meaning the whole file.**\n  - `project_sources.rs#mod[tests]/fn[omitted_and_explicit_empty_selectors_deliver_the_same_whole_file]` dispatches `read_source` once with only `path` and once with `selector:\"\"`.\n  - It asserts that both deliveries have the same node `{path, selector:\"\"}`, the same domain text and the same dependency. It also asserts that the domain was read twice.\n  - The `OutlineId` passed to the domain, with an empty selector, is asserted in `configured.rs#mod[tests]/fn[supplied_agent_uses_attached_project_tools_in_both_configuration_orders]`.\n- **The path and selector identify an `OutlineId`, and the Rust operation accepts it directly.**\n  - `project_sources.rs#mod[tests]/fn[direct_source_reads_preserve_mapping_errors_and_record_only_successful_returns]` calls `inspection.read_source(&OutlineId)` directly.\n  - It checks the success path and several failure paths.\n- **The `OutlineId` is mapped into the graph, and contents come from `Domain::node_content`.**\n  - `project_sources.rs#mod[tests]/fn[fixed_tools_deliver_domain_contents_with_mandatory_snapshot_dependencies]` writes \"disk text\" to the file, but the domain returns \"prepared domain contents\".\n  - The test asserts that the delivered text contains the domain text and does not contain \"disk text\". It also asserts that `read_nodes == [\"source-node\"]`.\n  - `configured.rs#mod[tests]/fn[supplied_agent_uses_attached_project_tools_in_both_configuration_orders]` repeats this through a real agent loop. The mapped result is \"a source snapshot\", and the disk contents are absent. It does this in both orders of `with_agent` and `with_sources`.\n- **The selected file must belong to the project scope.**\n  - The tests read a `.gitignore`-excluded file, and a `../source.txt` path outside the project. Both return errors.\n  - The domain's read counter does not change for those error cases.\n  - `configured.rs#mod[tests]/fn[supplied_agent_uses_attached_project_tools_in_both_configuration_orders]` asserts the ignored read is delivered as an \"excluded\" error. It also checks that the right project directory is used when the sources are configured in either order.\n- **Mapping and read failures return errors.**\n  - Unknown paths and unknown or invalid selectors (`line[unknown]`, `fn[unclosed`) fail with \"unsupported source item\" in the direct test and in the dispatch test.\n  - A `fail_read` domain failure surfaces as \"prepared source read failed\". This is asserted both in the direct test and in `fixed_source_reads_redact_delivery_and_propagate_preparation_errors`.\n  - No dependency is recorded for any of these failures.\n  - The invalid-selector case also guards against a selector being dropped on its way to the mapping. If the selector were dropped, `line[unknown]` would resolve to the whole file instead of erroring.\n- **The Rust caller receives `D::NodeContent`, and the agent receives the same contents presented by `format`.**\n  - The direct test asserts that `returned.format() == \"prepared contents\"` and that the recorded dependency uses `returned.fingerprint()`.\n  - The delivery tests assert the formatted text and the matching `Content(...).fingerprint()` dependency.\n  - The paging and redaction tests show the delivered text is derived from the retained, formatted contents. This text is not re-read from the domain after the contents change.\n\n**Cited requirements**\n\n`source_nodes`, `local_provider` and `node_content.format` are context only. The tests apply them as needed to this subject: the mapping error, scope exclusion, and delivery of the formatted text.\n\n**Other test items**\n\nThe `agent/tests.rs` tests use a different, resource-based `SourceTools` API. They are additional coverage and are not needed for adequacy.\n\nI found no untested obligation and no assertion that contradicts the requirement.",
   "references": "facfbc9a8f72079bd8775dedea4d4084dffc2a0b60f9abcebba6427de9fb0e98",
   "inputs": [
     {
@@ -40,7 +40,8 @@
         "node through the application's `Domain` interface.",
         "",
         "```rust,ignore",
-        "use trust_but_verify::{Domain, OutlineId};",
+        "use trust_but_verify::domain::Domain;",
+        "use trust_but_verify::outline::OutlineId;",
         "",
         "pub trait SourceNodes: Domain {",
         "    fn source_node(&self, item: &OutlineId) -> Result<Self::NodeId, Self::Error>;",
@@ -74,7 +75,7 @@
       ],
       "text": [
         ":::{req} node_content.format",
-        "`trust_but_verify::NodeContents::format` presents the retained",
+        "`trust_but_verify::domain::NodeContents::format` presents the retained",
         "{term}`requirements.sdk.graph.node_contents` as text for an agent:",
         "",
         "```rust,ignore",
@@ -98,7 +99,7 @@
     {
       "file": "crates/trust-but-verify/src/agent/configured.rs",
       "item": "mod[tests]/fn[supplied_agent_uses_attached_project_tools_in_both_configuration_orders]",
-      "hash": "0f79a2bae12944a0ea525269a2968607f3ab2e851bf954ab526dca0ba7d8a59a"
+      "hash": "435db2a5f463ceb6a60a5d96221c83f6753165222ff7bb97b6503aa9292693b1"
     },
     {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
@@ -113,12 +114,12 @@
     {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
       "item": "mod[tests]/fn[source_capable_validator_tracks_deterministic_reads_and_reuses_saved_results]",
-      "hash": "c787f70923af20cf2558977f5bf353488d9f5a04e1834db3be71ce5d13205cd2"
+      "hash": "529e1a24b9bcecd259a2c20d50826f55cd64f22108ad5d18de799ac02871b8b2"
     },
     {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
       "item": "mod[tests]/fn[direct_source_reads_preserve_mapping_errors_and_record_only_successful_returns]",
-      "hash": "74e7352dcaedd09a079419bd2e96b4e4680f1302833a8f7ba446162809005b62"
+      "hash": "0bf054a5f76a4ee6958fcaea1c45938b88de5d7d2288f5d53a0b9e855844284a"
     },
     {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
@@ -133,22 +134,22 @@
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[source_reads_track_optional_dependencies_and_empty_searches_remain_discovery]",
-      "hash": "fe46fc4d013a7fa8a42c6e3f2353e4e07df244f0224e223f1cd7b54d04666af1"
+      "hash": "7dd48d5184ef4efd1b954d3b523e39c8ddbfd90012e501e206193596c135723f"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[cached_selected_source_reads_record_exact_delivered_contents_and_errors_add_no_input]",
-      "hash": "7386be2ddbca9d88e14ca3125015ec4c1556961b55bb126db8cfea733add13f0"
+      "hash": "0eaa29f956726657d85a4867a93b68b106bbb1f80a1dbe55f55ca75e6e4d238e"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[source_read_pages_retain_text_and_dependencies_without_another_read]",
-      "hash": "535e1e48270a507a6434e1b2a1512d40a31218b7baea1378f607425dac83a056"
+      "hash": "f919b3440aa4cff8d25cf42bc7ed1f8b5ebe52a6a29474e5abddcbaaadaa801a"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[source_tools_forward_arguments_and_present_discovery_and_read_results]",
-      "hash": "6ed6b592475158f6952de3c3182e2040ba0b5a1ca56d26c11cc39016f25002bd"
+      "hash": "54d471f993e52968acd47493cffd3664a6b953a5b3a09360bd6bbfef41efc4f7"
     },
     {
       "definition": "requirements.sdk.application_domain",
@@ -159,7 +160,7 @@
         ":::{cite} requirements.sdk.domain",
         "An *application domain* is the application's graph, node contents, and evidence",
         "storage, made available together for criterion execution. In the SDK, it",
-        "implements [`Domain`](../rustdocs/trust_but_verify/trait.Domain.html) to supply",
+        "implements [`Domain`](../rustdocs/trust_but_verify/domain/trait.Domain.html) to supply",
         "its shared types, node and edge operations, and evidence persistence.",
         ":::",
         "::::"
@@ -173,7 +174,7 @@
         "",
         "A *graph node* is a thing identified in the application's graph, such as a",
         "requirement, a function, a test, or an issue. The application's",
-        "[`Domain::NodeId`](../../rustdocs/trust_but_verify/trait.Domain.html#associatedtype.NodeId)",
+        "[`Domain::NodeId`](../../rustdocs/trust_but_verify/domain/trait.Domain.html#associatedtype.NodeId)",
         "identifies it; its contents and the criteria evaluated on it are separate from",
         "that identity.",
         ":::"
@@ -190,11 +191,11 @@
         "{term}`requirements.sdk.graph.validation.criterion`. An agent uses these inputs",
         "to assess whether the criterion holds in the project. They can be source text,",
         "parsed code, issue data, or another structured value. In the SDK,",
-        "[`Domain::NodeContent`](../../rustdocs/trust_but_verify/trait.Domain.html#associatedtype.NodeContent)",
+        "[`Domain::NodeContent`](../../rustdocs/trust_but_verify/domain/trait.Domain.html#associatedtype.NodeContent)",
         "represents this value and",
-        "[`Domain::node_content`](../../rustdocs/trust_but_verify/trait.Domain.html#tymethod.node_content)",
+        "[`Domain::node_content`](../../rustdocs/trust_but_verify/domain/trait.Domain.html#tymethod.node_content)",
         "obtains it. The value implements",
-        "[`NodeContents`](../../rustdocs/trust_but_verify/trait.NodeContents.html)",
+        "[`NodeContents`](../../rustdocs/trust_but_verify/domain/trait.NodeContents.html)",
         "to supply its fingerprint and agent text.",
         ":::"
       ]
@@ -208,7 +209,7 @@
         "A *criterion* is a value describing a test to perform on a",
         "{term}`requirements.sdk.graph.node`.",
         "In the SDK, its type implements",
-        "[`Criterion<D>`](../../../rustdocs/trust_but_verify/trait.Criterion.html) for the",
+        "[`Criterion<D>`](../../../rustdocs/trust_but_verify/graph/trait.Criterion.html) for the",
         "{term}`requirements.sdk.application_domain`. Its",
         "members describe the question's answer, identity, review rules, and execution.",
         ":::"
@@ -264,7 +265,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "0c42fc08484cc28d4929b0729ede2dd6d014ce420f2638908846f382dcbad5be"
+          "value": "39e0ec471bde01eda8bdaaefe7a1b5ff09da162988459bf96bf18397df869a0f"
         }
       ]
     },
@@ -286,7 +287,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "12ac92a58b2b163e9bb3093f0e73ff3c8c8b233ce04e42f6e29a7847f43de16c"
+          "value": "37f05a40692385afdc94fefb4d513c06c0a3507ca6dfee6349d5a7da37b32846"
         }
       ]
     },
@@ -303,7 +304,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "1b4dadbf7c3ec0a7989e80d7634ec8e3104c297f027e0fcd53a1ed200e75d24d"
+          "value": "72026c2cf35fe0321ec38223494a54bcc2734fcaa3715799335a544812d48c79"
         }
       ]
     },
@@ -354,7 +355,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "ef149487803df9873d141a05ea1e71fb42c40b2f8835710906cb1978728ec713"
+          "value": "afc18d65d7c7f4427d89bae5a2f0fbcd77c78c0273356ca6c656f4bbf7d04421"
         }
       ]
     },
@@ -371,7 +372,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "fba2bcabd8bf11ae8f77346e187eb5591a70c67ec42959f6a0ea2812d06a3f15"
+          "value": "5769b8107bcf3be70f3d591319180975618ea6b17224d454f845411a55b99301"
         }
       ]
     },
@@ -422,7 +423,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "99114f4a7660355207491d3e0db46b8c6467a92309cde0c81d24f76263887a96"
+          "value": "9f92e163bdd2400f3f7b19b382168463909518a3b4eb6ffbb963c879f216fef3"
         }
       ]
     },
@@ -439,7 +440,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "459fe765ac36ea136c37db2d356326a88226d0cb994f175b9cf3cc401f3e03e2"
+          "value": "cfde946a395ab09dfc698f3fa076ad8ab83de89186550fccaffa0e9f67507d59"
         }
       ]
     },
@@ -456,7 +457,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "daf62c06685c0914c3aae31b5ff5a8e415eaae0ded3b23859385659053104bcb"
+          "value": "3c5788d66b8c9e220bb187cc2e5a3cb741aff1752ece55b1811bee216e696c12"
         }
       ]
     },
@@ -473,7 +474,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "1df498b5eea4242771a65258440ccb38d5531bbb664caac0043e85c787773db4"
+          "value": "2916a8cbf2f7a64df2792ea0f6f38c1c1f7c6f6439eba0cf0b1ac3240b163fed"
         }
       ]
     },
@@ -484,7 +485,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "80830e9acc805289affe81a67fab64654078e1a68c1eeff59f81ca5b85f589dc"
+          "value": "1f3d0d387ce356e5b4cc0cc22d20543142b5dcd7352c1eb5e4dd8dd73b058a34"
         }
       ]
     },
@@ -495,7 +496,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "52706959dc6b404c6fda63b917976cd313a4f845713b66a5a449530fee81af00"
+          "value": "862ef204d825c389978fbfbb82bcfdd34db5f70c0220c619d4b8503fd3c88cbb"
         }
       ]
     },
@@ -506,7 +507,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "db95d00e71614f3c62fc06bfc9566c120927d885cfdfa0ea3130ae2de287a240"
+          "value": "37780e81caf01bf21cef494d0bc2045a90dc6fdc1a92eb645fc53272b6d7e97f"
         }
       ]
     },
@@ -517,7 +518,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "485bb5c38250360c686b79475984964b88506afddab2d3ee54db9c7ac57187db"
+          "value": "410e461f5c2816d1e49a5cfa973481023091e2bf044978e81841852b0a72272b"
         }
       ]
     },

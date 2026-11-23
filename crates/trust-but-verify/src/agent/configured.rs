@@ -1,9 +1,8 @@
 use super::{AgentConfig, CompletionProvider, ToolAgent, ToolFactory, providers::RigProvider};
-use crate::{
-    Domain,
-    graph::InspectionContext,
-    procedure::{Agent, AgentRequest},
-};
+use crate::domain::Domain;
+use crate::graph::InspectionContext;
+use crate::procedure::Agent;
+use crate::procedure::AgentRequest;
 use futures::future::BoxFuture;
 use serde_json::Value;
 use std::{io, sync::Arc};
@@ -86,12 +85,15 @@ impl<D: Domain, T: ToolFactory<D> + ?Sized> ToolFactory<D> for Arc<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        NodeContents,
-        agent::OpenAiConfig,
-        graph::{Criterion, CriterionPath, Fingerprint, NodePath, Record, Validator},
-        procedure::ValidationContext,
-    };
+    use crate::agent::OpenAiConfig;
+    use crate::domain::NodeContents;
+    use crate::graph::Criterion;
+    use crate::graph::CriterionPath;
+    use crate::graph::Fingerprint;
+    use crate::graph::NodePath;
+    use crate::graph::Record;
+    use crate::graph::validator::Validator;
+    use crate::request::ValidationContext;
 
     #[derive(Clone, Default)]
     struct TestDomain(
@@ -150,7 +152,7 @@ mod tests {
         }
     }
 
-    impl crate::SourceNodes for TestDomain {
+    impl crate::domain::SourceNodes for TestDomain {
         fn source_node(&self, item: &crate::outline::OutlineId) -> Result<u32, String> {
             assert_eq!(item.path, std::path::Path::new("visible/selected.txt"));
             assert!(item.selector.is_empty());
@@ -520,6 +522,7 @@ mod tests {
     // {test}`requirements.sdk.sources.provider_observations`
     // {test}`requirements.sdk.graph.agent-harness.fixed_tools`
     // {test}`requirements.sdk.graph.context-tools.read_source.behavior`
+    // {test}`requirements.sdk.graph.context-tools.list_sources.behavior`
     #[tokio::test]
     async fn supplied_agent_uses_attached_project_tools_in_both_configuration_orders() {
         use std::{
@@ -630,13 +633,13 @@ mod tests {
         });
         for agent_first in [true, false] {
             let domain = TestDomain::default();
-            let base =
-                Validator::new(domain.clone()).with_sources(crate::Sources::new(wrong.path()));
+            let base = Validator::new(domain.clone())
+                .with_sources(crate::sources::Sources::new(wrong.path()));
             let validator = if agent_first {
                 base.with_agent(config.clone())
-                    .with_sources(crate::Sources::new(selected.path()))
+                    .with_sources(crate::sources::Sources::new(selected.path()))
             } else {
-                base.with_sources(crate::Sources::new(selected.path()))
+                base.with_sources(crate::sources::Sources::new(selected.path()))
                     .with_agent(config.clone())
             };
             let answer = validator.verify(Question(true)).await.unwrap();
@@ -644,8 +647,8 @@ mod tests {
             assert_eq!(
                 answer.dependencies(),
                 &[
-                    crate::Dependency::Node(1, Content.fingerprint()),
-                    crate::Dependency::Node(7, Content.fingerprint()),
+                    crate::graph::Dependency::Node(1, Content.fingerprint()),
+                    crate::graph::Dependency::Node(7, Content.fingerprint()),
                 ]
             );
             assert_eq!(
