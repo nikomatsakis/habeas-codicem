@@ -424,7 +424,15 @@ fn versioned_records_preserve_sdk_dependencies_across_verified_moves() {
         record
     };
 
-    for scenario in ["rename", "move", "file", "edit", "extra", "bad-extra"] {
+    for scenario in [
+        "rename",
+        "move",
+        "selector",
+        "file",
+        "edit",
+        "extra",
+        "bad-extra",
+    ] {
         let temp = project();
         let root = temp.path();
         author(root);
@@ -471,6 +479,18 @@ fn versioned_records_preserve_sdk_dependencies_across_verified_moves() {
                 .unwrap();
                 ("rules.load=rules.read", "rules.read")
             }
+            "selector" => {
+                move_load(root, "");
+                fs::write(
+                    root.join("src/config/load.rs"),
+                    format!("mod loading {{\n{LOAD_ALONE}}}\n"),
+                )
+                .unwrap();
+                (
+                    "src/config.rs#fn[load]=src/config/load.rs#mod[loading]/fn[load]",
+                    "rules.load",
+                )
+            }
             _ => {
                 move_load(root, if scenario == "edit" { " parse();" } else { "" });
                 (
@@ -485,6 +505,14 @@ fn versioned_records_preserve_sdk_dependencies_across_verified_moves() {
         assert_eq!(snapshot(root), before);
         let output = refactor(root, &["--map", mapping]);
         assert!(output.status.success(), "{output:?}");
+        assert_eq!(
+            stdout(&preview)
+                .replace("Would rewrite", "Rewrote")
+                .replace("Would change", "Changed")
+                .replace("Would leave", "Left"),
+            stdout(&output),
+            "{scenario}"
+        );
         if matches!(scenario, "edit" | "bad-extra") {
             assert_eq!(
                 fs::read(&old_path).unwrap(),
@@ -723,6 +751,7 @@ fn a_rename_rewrites_the_hash_of_a_node_whose_doc_comment_names_it() {
 // {test}`requirements.refactor.record_files`
 // {test}`requirements.refactor.record_fields`
 // {test}`requirements.refactor.equivalence`
+// {test}`requirements.refactor.command`
 #[test]
 fn a_citation_review_follows_its_item_and_the_name_it_cites() {
     let temp = project();
@@ -733,15 +762,15 @@ fn a_citation_review_follows_its_item_and_the_name_it_cites() {
     );
     fs::write(root.join("src/config.rs"), &cited).unwrap();
     author(root);
-    let review = |root: &Path, file: &str, name: &str, text: &[&str]| {
+    let review = |root: &Path, file: &str, item: &str, name: &str, text: &[&str]| {
         json!({
             "file": file,
-            "item": "fn[helper]",
+            "item": item,
             "citations": [{"role": "cite", "name": name, "commentary": ""}],
             "determination": true,
-            "rationale": format!("`{file}#fn[helper]` relies on `{name}`."),
+            "rationale": format!("`{file}#{item}` relies on `{name}`."),
             "inputs": [
-                habeas::outline_input(root, file, "fn[helper]").unwrap(),
+                habeas::outline_input(root, file, item).unwrap(),
                 requirements_input(name, &[name], text),
             ],
         })
@@ -749,16 +778,22 @@ fn a_citation_review_follows_its_item_and_the_name_it_cites() {
     fs::create_dir_all(root.join("evidence/citations/src/config.rs")).unwrap();
     fs::write(
         root.join("evidence/citations/src/config.rs/fn[helper].json"),
-        serde_json::to_string_pretty(&review(root, "src/config.rs", "rules.load", &LOAD_TEXT))
-            .unwrap(),
+        serde_json::to_string_pretty(&review(
+            root,
+            "src/config.rs",
+            "fn[helper]",
+            "rules.load",
+            &LOAD_TEXT,
+        ))
+        .unwrap(),
     )
     .unwrap();
     assert_eq!(errors(root), Vec::<String>::new());
-    // The helper moves to its own file, and `load` to the `core` chapter.
+    // The helper moves into a module in its own file, and `load` to the `core` chapter.
     fs::write(root.join("src/config.rs"), config_source("")).unwrap();
     fs::write(
         root.join("src/helper.rs"),
-        "// {cite}`rules.load`\nfn helper() {}\n",
+        "mod helpers {\n// {cite}`rules.load`\nfn helper() {}\n}\n",
     )
     .unwrap();
     fs::write(
@@ -775,7 +810,7 @@ fn a_citation_review_follows_its_item_and_the_name_it_cites() {
         root,
         &[
             "--map",
-            "src/config.rs#fn[helper]=src/helper.rs#fn[helper]",
+            "src/config.rs#fn[helper]=src/helper.rs#mod[helpers]/fn[helper]",
             "--map",
             "rules.load=core.load",
         ],
@@ -783,19 +818,28 @@ fn a_citation_review_follows_its_item_and_the_name_it_cites() {
     assert!(output.status.success(), "{output:?}");
     assert!(
         stdout(&output).contains(
-            "- evidence/citations/src/config.rs/fn[helper].json -> evidence/citations/src/helper.rs/fn[helper].json"
+            "- evidence/citations/src/config.rs/fn[helper].json -> evidence/citations/src/helper.rs/mod[helpers]%2Ffn[helper].json"
         ),
         "{}",
         stdout(&output)
     );
     assert!(!root.join("evidence/citations/src/config.rs").exists());
     let moved: Value = serde_json::from_str(
-        &fs::read_to_string(root.join("evidence/citations/src/helper.rs/fn[helper].json")).unwrap(),
+        &fs::read_to_string(
+            root.join("evidence/citations/src/helper.rs/mod[helpers]%2Ffn[helper].json"),
+        )
+        .unwrap(),
     )
     .unwrap();
     assert_eq!(
         moved,
-        review(root, "src/helper.rs", "core.load", &LOAD_TEXT)
+        review(
+            root,
+            "src/helper.rs",
+            "mod[helpers]/fn[helper]",
+            "core.load",
+            &LOAD_TEXT
+        )
     );
     let remaining = errors(root);
     assert!(

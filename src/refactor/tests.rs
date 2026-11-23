@@ -200,14 +200,17 @@ fn rationales_rewrite_exact_code_spans_and_list_other_mentions() {
     let (rewritten, mentions) = rewrite_rationale(
         &map,
         "`rules.cli.check` holds; `src/old/x.rs` and `src/a.rs#fn[f]` do it. \
-         `src/a.rs` stays, as does `src/a.rs:3`, rules.cli.check, and `rules.client`.",
+         `src/a.rs` stays, as does `src/a.rs:3`, `see src/old/x.rs`, rules.cli.check, and `rules.client`.",
     );
     assert_eq!(
         rewritten,
         "`rules.core.check` holds; `src/new/x.rs` and `src/b.rs#fn[f]` do it. \
-         `src/a.rs` stays, as does `src/a.rs:3`, rules.cli.check, and `rules.client`."
+         `src/a.rs` stays, as does `src/a.rs:3`, `see src/old/x.rs`, rules.cli.check, and `rules.client`."
     );
-    assert_eq!(mentions, ["`src/a.rs`", "`src/a.rs:3`"]);
+    assert_eq!(
+        mentions,
+        ["`src/a.rs`", "`src/a.rs:3`", "`see src/old/x.rs`"]
+    );
 }
 
 // {test}`requirements.refactor.definition_inputs`
@@ -282,7 +285,7 @@ fn site_reviews_follow_their_site_and_renamed_requirement() {
     };
     assert_eq!(site_errors(root), Vec::<String>::new());
     // The requirement moves to the `rules` chapter and `check_two` to its
-    // own file, both unchanged.
+    // own module and file, both unchanged.
     let chapter = fs::read_to_string(root.join("md/requirements.md")).unwrap();
     fs::remove_file(root.join("md/requirements.md")).unwrap();
     fs::write(root.join("md/rules.md"), chapter).unwrap();
@@ -291,30 +294,36 @@ fn site_reviews_follow_their_site_and_renamed_requirement() {
         SOURCE.replace("fn check_two() {}\n", ""),
     )
     .unwrap();
-    fs::write(root.join("src/other.rs"), "fn check_two() {}\n").unwrap();
+    fs::write(
+        root.join("src/other.rs"),
+        "mod checks {\nfn check_two() {}\n}\n",
+    )
+    .unwrap();
     let report = refactor(
         root,
         &[
             "requirements.rule=rules.rule".to_owned(),
-            "src/lib.rs#fn[check_two]=src/other.rs#fn[check_two]".to_owned(),
+            "src/lib.rs#fn[check_two]=src/other.rs#mod[checks]/fn[check_two]".to_owned(),
         ],
         false,
     )
     .unwrap();
     assert!(
         report.contains(
-            "- evidence/sites/requirements.rule/src/lib.rs/fn[check_two].json -> evidence/sites/rules.rule/src/other.rs/fn[check_two].json"
+            "- evidence/sites/requirements.rule/src/lib.rs/fn[check_two].json -> evidence/sites/rules.rule/src/other.rs/mod[checks]%2Ffn[check_two].json"
         ),
         "{report}"
     );
     let moved: Value = serde_json::from_str(
-        &fs::read_to_string(root.join("evidence/sites/rules.rule/src/other.rs/fn[check_two].json"))
-            .unwrap(),
+        &fs::read_to_string(
+            root.join("evidence/sites/rules.rule/src/other.rs/mod[checks]%2Ffn[check_two].json"),
+        )
+        .unwrap(),
     )
     .unwrap();
     assert_eq!(moved["requirement"], "rules.rule");
     assert_eq!(moved["file"], "src/other.rs");
-    assert_eq!(moved["item"], "fn[check_two]");
+    assert_eq!(moved["item"], "mod[checks]/fn[check_two]");
     assert!(!root.join("evidence/sites/requirements.rule").exists());
     assert_eq!(site_errors(root), Vec::<String>::new());
 }
