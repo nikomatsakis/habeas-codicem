@@ -202,6 +202,22 @@ mod tests {
         let empty: Value = serde_json::from_str(&empty.text).unwrap();
         let instructions = empty["instructions"].as_str().unwrap();
         assert!(instructions.contains("finish_search") && instructions.contains("used:[]"));
+        #[cfg(feature = "default-languages")]
+        {
+            let first = peer
+                .dispatch(
+                    "search_structure",
+                    &json!({"language":"rust","rule":{"rule":{"pattern":"absent()"}}}),
+                )
+                .await
+                .unwrap();
+            let page: Value = serde_json::from_str(&first.text).unwrap();
+            assert_eq!(page["matches"], json!([]));
+            assert_eq!(page["instructions"], instructions);
+            let later = peer.dispatch("search_text", &call("absent")).await.unwrap();
+            let page: Value = serde_json::from_str(&later.text).unwrap();
+            assert!(page.get("instructions").is_none());
+        }
         let finish = |page: &Value, used: Value| json!({"search_id":page["search_id"],"used":used});
         let closed = session
             .dispatch("finish_search", &finish(&empty, json!([])))
