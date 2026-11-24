@@ -1,7 +1,7 @@
 {
   "requirement": "`languages::PlainText` implements `OutlineLang` under\n{cite}`requirements.sdk.outlines.language_provider`. Its default value is\ncheaply cloneable and claims no extensions. The filename-based constructors\nselect it when no supplied language claims the extension, including filenames\nwithout an extension, under {cite}`requirements.sdk.outlines.defaults`.",
   "determination": true,
-  "rationale": "The structural check finds no gap. I did not independently assess runtime behavior or test adequacy.\n\n**`OutlineLang` implementation.** The `language!` invocation for `PlainText` in `crates/trust-but-verify/src/outline/languages/mod.rs` carries the `{impl}` reference. It expands to `impl super::OutlineLang for PlainText`. That impl supplies the three methods `requirements.sdk.outlines.language_provider` calls for:\n- `name()` returns `$profile.name`.\n- `extensions()` returns `$profile.extensions`.\n- `outline(&self, &str) -> Result<Outline, OutlineError>` calls `parse_with(&PROFILE, source)` and converts the result with `Outline::from_legacy`.\n\n**Default value, cloning and extensions.**\n- The macro declares `pub struct PlainText;` as a unit struct with `#[derive(Clone, Copy, Debug, Default)]`. It therefore has a default value, and cloning copies no configuration, so it is cheap.\n- `PlainText` uses `super::plain::PROFILE`, defined in `crates/trust-but-verify/src/outline/plain.rs` with `name: \"plain-text\"`, `extensions: &[]` and `language: None`. It claims no extensions.\n\n**Fallback selection.**\n- `OutlineContent::from_source` first asks `languages::registry().for_path(filename)`. When no registered provider claims the path, it falls through to `Self::from_source_with(&languages::PlainText, ...)`.\n- `OutlineContent::from_path` delegates to `from_source`.\n- A filename without an extension, or with an unclaimed one, therefore gets `PlainText`. This sits under `requirements.sdk.outlines.defaults`, which already has its own `{impl}` reference on `from_source`.\n\nI also saw tests that appear to check these points. They are `bundled_languages_claim_extensions_and_supply_the_same_public_outline` in `crates/trust-but-verify/tests/outline_content.rs`, which asserts the name `plain-text` and empty extensions, and `profiles_are_selected_by_extension_case_insensitively` in `crates/trust-but-verify/src/outline/tests.rs`, which maps `notes` and `notes.rs.txt` to plain text.",
+  "rationale": "The structural check finds no gap. The requirement's behavioral outcomes (the plain-text outline shape and the fallback result) were not independently assessed.\n\n- **`OutlineLang` implementation.** `crates/trust-but-verify/src/outline/languages/mod.rs` invokes `language!(PlainText, super::plain::PROFILE, \"plain-text-structural-v1\")`, and that invocation carries the `{impl}` reference. The `macro[language]` expands to `impl super::OutlineLang for PlainText`. It supplies all four required methods: `name`, `extensions`, `outline` (via `parse_with`) and `fingerprint_scheme`, plus `search_structure`. The `Clone + Send + Sync` bounds hold because the type is a unit struct.\n- **Default value, cheap clone, no extensions.**\n  - The macro declares `#[derive(Clone, Copy, Debug, Default)] pub struct PlainText;`, so it has a default value and clones trivially, with no configuration to rebuild or copy.\n  - `extensions()` returns `$profile.extensions`. In `crates/trust-but-verify/src/outline/plain.rs#static[PROFILE]` that is `&[]`, so no extensions are claimed.\n- **Filename-based fallback.**\n  - `crates/trust-but-verify/src/outline/contents.rs#impl[OutlineContent]/fn[from_source]` looks up `languages::registry().for_path(filename)`. When nothing matches, it calls `from_source_with(&languages::PlainText, ...)`.\n  - `Registry::for_path` in `language.rs` returns `None` when `path.extension()` is absent, and otherwise matches on the lowercased extension. Filenames without an extension therefore fall through to `PlainText`.\n  - `from_path` also reaches this fallback, though I did not read its body. `profile_for_path` in `profile.rs` has the same plain fallback.\n- **Delegated obligations.** The `defaults` and `language_provider` requirements are cited context only. The \"file root with one child per nonblank line\" outline shape belongs to `defaults` and the plain-text outline rules, so I did not assess it here.\n\nAll structural obligations are supported by the sources above, and there are no {fixme} acknowledgments to account for.",
   "references": "d364693a64f673cea5b31c5d57cc4436a3d085824fd398288e275ce0c804733a",
   "inputs": [
     {
@@ -26,26 +26,28 @@
       ],
       "text": [
         ":::{req} language_provider",
+        "",
         "`OutlineLang` defines the language interface. Each implementation supplies its",
         "name, claimed extensions, and outlining operation. Cloning a language shares",
         "its prepared configuration instead of rebuilding it or copying it in proportion",
         "to its size. Its result uses the public items, spans, and hashes under",
-        "{cite}`requirements.sdk.outlines.items`.",
+        "{cite}`requirements.sdk.outlines.items`. Filename extensions omit the leading dot.",
         "",
         "```rust,ignore",
-        "pub trait OutlineLang: Clone + Send + Sync {",
-        "    // ...",
-        "",
-        "    /// Stable name of this language implementation.",
+        "pub trait OutlineLang:",
+        "    Clone",
+        "    + Send",
+        "    + Sync {",
         "    fn name(&self) -> &str;",
-        "",
-        "    /// Claimed filename extensions, without their leading dots.",
         "    fn extensions(&self) -> &[&str];",
-        "",
-        "    /// Interpret supplied text into selectable items and structural hashes.",
         "    fn outline(&self, source: &str) -> Result<Outline, OutlineError>;",
+        "    fn fingerprint_scheme(&self) -> &str;",
         "",
-        "    // ...",
+        "    fn search_structure(",
+        "        &self,",
+        "        _source: &str,",
+        "        _rule: &Map<String, Value>,",
+        "    ) -> Result<Vec<Range<usize>>, OutlineError> { ... }",
         "}",
         "```",
         ":::"
@@ -84,9 +86,14 @@
       "hash": "27869f72ea624b9073e219506e128eed8805f4066d362f18ffc188900257e920"
     },
     {
-      "file": "crates/trust-but-verify/tests/outline_content.rs",
-      "item": "fn[bundled_languages_claim_extensions_and_supply_the_same_public_outline]",
-      "hash": "41e2c294159c4338485e06de8cb6a1f315e03674377f27154b9dc72d54ecf89a"
+      "file": "crates/trust-but-verify/src/outline/profile.rs",
+      "item": "fn[profile_for_path]",
+      "hash": "0def619306ca8e0489adfd671c4d60358d91a57ba362364828316a370b39c95a"
+    },
+    {
+      "file": "crates/trust-but-verify/src/sources.rs",
+      "item": "fn[parse_snapshot]",
+      "hash": "8a7cc77928841457ffe3ef77777e396e1fc81cacf8014403295db74bb0c7b8f1"
     },
     {
       "file": "crates/trust-but-verify/src/outline/plain.rs",
@@ -94,19 +101,9 @@
       "hash": "a1e038f3447fd8706f59b108319ea475d9bb71ebd2d70e1e548d4577a0388682"
     },
     {
-      "file": "crates/trust-but-verify/src/outline/tests.rs",
-      "item": "fn[profiles_are_selected_by_extension_case_insensitively]",
-      "hash": "373b0dab16a7a12573e583e5de66f627e35ff5869a65e98787c2c7b81937162d"
-    },
-    {
-      "file": "crates/trust-but-verify/src/outline/contents.rs",
-      "item": "impl[OutlineContent]/fn[from_path]",
-      "hash": "ff5512dacc0521ff1a0986a5a8b0265bb843dd1d91523b06716511ca278f1ef3"
-    },
-    {
-      "file": "crates/trust-but-verify/src/outline/profile.rs",
-      "item": "fn[profile_for_path]",
-      "hash": "0def619306ca8e0489adfd671c4d60358d91a57ba362364828316a370b39c95a"
+      "file": "crates/trust-but-verify/src/outline/languages/mod.rs",
+      "item": "macro[language]",
+      "hash": "9c566578ad73150bbc18dc47fce1bccb0ef33c8fa7010929cc481c6282b1580f"
     }
   ],
   "format_version": 1,
@@ -153,7 +150,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "36e4776f0b25487545c112d9c938f142523c633e33fa67c0f22163ecfedabf36"
+          "value": "88f8a75fefe5689e728a2d5aee8e1ddfae4845ed9de5fd41fe10efb216e020c5"
         }
       ]
     },
@@ -225,14 +222,31 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/outline_content.rs"
+              "location": "crates/trust-but-verify/src/outline/profile.rs"
             },
-            "selector": "fn[bundled_languages_claim_extensions_and_supply_the_same_public_outline]"
+            "selector": "fn[profile_for_path]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "ba67b1a4ae849b54b752f29f5ee70e494777af6abe58a8f62c89a75dcfc9232c"
+          "value": "15390e46b625aacf201290d884aaa09b9b7fed4c431fb4c5930bff3cdb7fc3ce"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/sources.rs"
+            },
+            "selector": "fn[parse_snapshot]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "a97e931a0cf22cec91ea5c6c1a754889377ca933840ac0c4dd9df7179c8ce29a"
         }
       ]
     },
@@ -259,48 +273,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/src/outline/tests.rs"
+              "location": "crates/trust-but-verify/src/outline/languages/mod.rs"
             },
-            "selector": "fn[profiles_are_selected_by_extension_case_insensitively]"
+            "selector": "macro[language]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "afea8872fc0537441add9b1a7576bf3569d2e01680c8e084b442ed4b98c665c9"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/outline/contents.rs"
-            },
-            "selector": "impl[OutlineContent]/fn[from_path]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "ec3659a01f47f0b4ab1501f8c0090a1da283a23868c85d7392ad65463f4f6b96"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/outline/profile.rs"
-            },
-            "selector": "fn[profile_for_path]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "15390e46b625aacf201290d884aaa09b9b7fed4c431fb4c5930bff3cdb7fc3ce"
+          "value": "296d6c82890c1d4e6a115a01877ed88e45385d61e14dac6515df5dd037e4a2ae"
         }
       ]
     }

@@ -1,7 +1,7 @@
 {
   "requirement": "{cite}`requirements.sdk.domain`\n\nThe `trust_but_verify::domain::Domain` trait includes a method for obtaining a node's\nsuccessors with a given label:\n\n```rust,ignore\npub trait Domain: Clone + Send + Sync {\n    // ...\n\n    /// Return the target node identities for this source and label.\n    fn outgoing_edges(\n        &self,\n        source_node: &Self::NodeId,\n        label: Self::EdgeLabel,\n    ) -> Result<Vec<Self::NodeId>, Self::Error>;\n\n    // ...\n}\n```",
   "determination": true,
-  "rationale": "The tests adequately check `requirements.sdk.graph-edges.outgoing_edges`. I judged this from the supplied test sources only. I did not request any implementation source.\n\n**Obligation.** `Domain` must include `fn outgoing_edges(&self, source_node: &Self::NodeId, label: Self::EdgeLabel) -> Result<Vec<Self::NodeId>, Self::Error>`. It returns the target node identities for a source and a label.\n\n**Signature.** `crates/trust-but-verify/tests/contracts.rs#fn[domain_relationships_accept_opaque_types_and_send_only_errors]` implements `Domain` for a fixture type. Its `outgoing_edges` has exactly the required shape. The generic helper `successors<G: Domain>` calls `graph.outgoing_edges(node, label)` through the trait and uses the result as a `Vec<G::NodeId>`. A different return type, argument form or receiver would stop the test from compiling.\n\n**Behavior.** The same test asserts these outcomes:\n- Duplicates and order are preserved: label 2 on node 1 gives `[3, 2, 3]`.\n- A different label on the same source gives different targets: label 3 gives `[4]`.\n- An unmatched label gives an empty vector.\n- A node with no edges gives an empty vector.\n- The error path works: node 255 returns `Err`, and the error is `Send`, with its payload checked as 255.\n\n**Further coverage.**\n- `src/sdk.rs#mod[tests]/fn[test_edges_select_only_tests_for_the_requested_requirement]` exercises a real `Domain` implementation, `HabeasDomain`. It checks that the `Tests` label returns only the matching test node. It also checks that `Implements` returns a different set and that a source node has no `Tests` edges.\n- `crates/trust-but-verify/tests/validation.rs#fn[labeled_selections_track_only_target_membership_without_reading_contents]` checks the labeled-successor results and the propagation of an edge error (`Err(\"edges\")`).\n- `crates/trust-but-verify/src/agent/tools.rs#mod[tests]/fn[nested_label_schema_references_resolve_from_the_tool_parameters_root]` is only loosely related, being a schema test. It is not needed for adequacy.\n\nI found no required behavior that these tests would let a violating implementation pass.",
+  "rationale": "The tests adequately check `requirements.sdk.graph-edges.outgoing_edges`. The requirement says `Domain` has a method `outgoing_edges(&self, source_node: &NodeId, label: EdgeLabel) -> Result<Vec<NodeId>, Error>`. That method returns the target node identities for a given source and label.\n\n**Signature and contract**\n- `crates/trust-but-verify/tests/contracts.rs#fn[domain_relationships_accept_opaque_types_and_send_only_errors]` implements `Domain` for an opaque fixture with exactly this signature.\n- It also calls the method through a generic consumer, `successors<G: Domain>`. That call fixes the parameter types, `&G::NodeId` and `G::EdgeLabel`, and the return type `Result<Vec<G::NodeId>, _>`.\n- A change to the trait signature would therefore fail to compile.\n\n**Behavior, with assertions**\n- The test asserts that source 1 with label 2 returns `[3, 2, 3]`. That checks that targets come back in order and that duplicates are kept.\n- It asserts that source 1 with label 3 returns `[4]`. Together with the first assertion, this shows the result depends on the label.\n- Source 1 with an unmatched label returns an empty list.\n- A different source, 2, with label 2 also returns an empty list. This shows the result depends on the source.\n- The `Err` path is covered by calling the method on node 255 and checking that the returned error carries the expected payload.\n\n**Other marked tests**\n- `src/sdk.rs#mod[tests]/fn[test_edges_select_only_tests_for_the_requested_requirement]` calls `outgoing_edges` on a real `HabeasDomain`. It checks that the `Tests` label returns only the test node for the requested requirement. It checks that the `Implements` label gives a different result. It also checks that the selected source node has no outgoing `Tests` edges.\n- `crates/trust-but-verify/tests/validation.rs#fn[labeled_selections_track_only_target_membership_without_reading_contents]` and `crates/trust-but-verify/src/agent/tools.rs#mod[tests]/fn[nested_label_schema_references_resolve_from_the_tool_parameters_root]` mainly serve other requirements. They also exercise `outgoing_edges` through consumers, including the error case.\n\n**Gaps**\n- The cited `requirements.sdk.domain` is context only, and I did not reassess it.\n- I found no unaddressed obligation and no gap.",
   "references": "2356f21efa24d5544b065c4a3c44f87410ec597d33265963c24cc992fbecdfae",
   "inputs": [
     {
@@ -40,16 +40,40 @@
       ],
       "text": [
         ":::{req} domain",
+        "",
         "Every {term}`requirements.sdk.application_domain` implements",
         "`trust_but_verify::domain::Domain`. A domain is cloneable and safe to share between",
         "executions. The following chapters introduce its members one capability at a",
-        "time:",
+        "time.",
         "",
         "```rust,ignore",
-        "// Defined in trust_but_verify::domain.",
-        "/// Application data and operations used to evaluate criteria.",
         "pub trait Domain: Clone + Send + Sync {",
-        "    // ...",
+        "    type Error: Send;",
+        "    type NodeId: Clone + Eq + Send + Sync;",
+        "    type NodeContent: NodeContents;",
+        "    type EdgeLabel: Clone + Send + Sync;",
+        "",
+        "    fn node_path(&self, node: &Self::NodeId) -> NodePath;",
+        "    fn node_content(",
+        "        &self,",
+        "        node: &Self::NodeId,",
+        "    ) -> Result<Self::NodeContent, Self::Error>;",
+        "    fn outgoing_edges(",
+        "        &self,",
+        "        node: &Self::NodeId,",
+        "        label: Self::EdgeLabel,",
+        "    ) -> Result<Vec<Self::NodeId>, Self::Error>;",
+        "    fn load_evidence(",
+        "        &self,",
+        "        node: &Self::NodeId,",
+        "        criterion: &CriterionPath,",
+        "    ) -> impl Future<Output = Result<Option<Record<Self::NodeId, Self::EdgeLabel>>, Self::Error>> + Send;",
+        "    fn store_evidence(",
+        "        &self,",
+        "        node: &Self::NodeId,",
+        "        criterion: &CriterionPath,",
+        "        record: &Record<Self::NodeId, Self::EdgeLabel>,",
+        "    ) -> impl Future<Output = Result<(), Self::Error>> + Send;",
         "}",
         "```",
         ":::"
@@ -63,12 +87,12 @@
     {
       "file": "crates/trust-but-verify/tests/contracts.rs",
       "item": "fn[domain_relationships_accept_opaque_types_and_send_only_errors]",
-      "hash": "41efd8a6fdf7e364703966fe00df7428a005e0e26c41f12860cdeee987741a9e"
+      "hash": "08c301667d5351dbec856e9e4a7ca5ea28ea55e2f5751c178725bce30822803e"
     },
     {
       "file": "crates/trust-but-verify/tests/validation.rs",
       "item": "fn[labeled_selections_track_only_target_membership_without_reading_contents]",
-      "hash": "8416597f011beef763e47a1110064ca4c3e3502459799dac35b41921bd20da8e"
+      "hash": "7c05f1f4c32e0493ba40603ec28208b2788ad1d522c08cb4dea60888ea4de04e"
     },
     {
       "file": "src/sdk.rs",
@@ -135,7 +159,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "99a6b87bf573dd2a534b60d556665293608eeae52f1fe300efc766a221edf28c"
+          "value": "877152da04beedf84fa17e2badad2ebaf956b8433bc2005fe585986cf7d0f146"
         }
       ]
     },
@@ -169,7 +193,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "209eee956103b197d83cfb07d4dc334d635b192487ccf843ab09612589f491ea"
+          "value": "82ea2b0a09f948766d729aba68721bac4156039e9ce4e715745c953541934eb9"
         }
       ]
     },
@@ -186,7 +210,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "b98f9ee3dd328d0d5ad1327cff4adceb1aac7b3988489859a1bb54afbff21b89"
+          "value": "e0714a1d548250e980f78b35f1c55e7b5b663f923b80145ec921db2942dc5636"
         }
       ]
     },

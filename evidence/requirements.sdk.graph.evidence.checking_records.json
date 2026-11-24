@@ -1,8 +1,8 @@
 {
   "requirement": "```rust,ignore\n// Method on Validator<D>.\n/// Compare each recorded input with the current domain state.\n/// Return true when every fingerprint still matches, including an empty trace.\npub fn check_inputs<O>(\n    &self,\n    inputs: &Fingerprinted<D, O>,\n) -> Result<bool, D::Error>;\n```\n\nThe method resolves the recorded dependencies through graph operations and\nfingerprinting, comparing each with its saved observation. A fingerprint\nmismatch returns `Ok(false)` and permits an early return; it need not resolve\nlater dependencies. An encountered dependency-resolution failure returns an\nerror.\n\nThe method observes the current state that the caller intends to inspect.\nFreshness checking has a separate observation scope from criterion execution.\nChecked observations enter the new trace when execution explicitly reads\nor delivers them.\nA checked snapshot can be reused if it still represents the current state.",
   "determination": true,
-  "rationale": "The reviewed tests cover each obligation in `requirements.sdk.graph.evidence.checking_records`. I did not request implementation source, because the supplied tests were enough to judge.\n\n**Matching fingerprints and the empty trace return true.**\n- `fn[criteria_keep_typed_answers_and_persist_only_when_requested]` asserts `check_inputs(&loaded)` is true for a record whose dependencies are empty.\n- `fn[changing_one_criteria_input_does_not_invalidate_another]` asserts true for an unchanged record that has a Node dependency.\n- `fn[absence_certification_is_invalidated_by_the_first_selected_root]` asserts true for an unchanged record that has an outgoing-edges dependency.\n- `fn[wildcard_versions_still_check_inputs_and_errors]` asserts `record_is_current` is true when the fingerprint matches.\n\n**A fingerprint mismatch returns `Ok(false)`.**\n- Content change: `fn[changing_one_criteria_input_does_not_invalidate_another]` asserts false for the changed record and true for the other record.\n- Fingerprint scheme change: `fn[wildcard_versions_still_check_inputs_and_errors]` asserts false.\n- Changed edges: `fn[labeled_selections_track_only_target_membership_without_reading_contents]` and `fn[absence_certification_is_invalidated_by_the_first_selected_root]` assert false for outgoing-edge changes.\n- A later changed dependency after a matching first one: `fn[a_matching_dependency_does_not_hide_a_later_changed_dependency]` asserts false for both Node and OutgoingEdges kinds.\n\nThe early-return permission is optional, so it needs no test.\n\n**A dependency-resolution failure returns an error.**\n- `fn[dependency_resolution_failures_do_not_execute_or_replace_saved_answers]` asserts `check_inputs` returns `Err(\"read\")` for a failing node read and `Err(\"edges\")` for a failing edge lookup. It also asserts the saved record is unchanged and nothing was executed.\n- `fn[wildcard_versions_still_check_inputs_and_errors]` asserts an `Err(\"read\")` outcome, and `fn[labeled_selections_track_only_target_membership_without_reading_contents]` asserts an `Err(\"edges\")` outcome.\n\n**Checking uses a separate observation scope from execution.**\n- `fn[input_checking_and_execution_keep_separate_observations]` shows that checking a stale record does not seed the new execution. The later execution does its own read (`reads == [2]`) and records the current \"after\" fingerprint.\n- `fn[historical_freshness_reads_do_not_enter_the_replacement_trace]` shows that reads made while checking (read 2) are not in the replacement trace, which holds only Node 1.\n- `fn[refresh_evaluates_missing_incompatible_or_changed_evidence_with_a_fresh_trace]` shows that a refreshed trace contains only the dependencies the new execution read.\n- `fn[typed_loading_reports_decode_errors_even_for_stale_evidence]` shows that a new execution performs no saved-input reads (`reads` stays empty).\n\n**Checked observations enter the new trace only when execution reads them.** This is covered by the same tests. `fn[source_reads_track_optional_dependencies_and_empty_searches_remain_discovery]` adds that a recorded dependency appears only when execution explicitly reads or records it, and that `record_is_current` follows it.\n\n**Snapshot reuse is optional.** The clause is permissive (\"can be reused\"), so it imposes nothing to check. The SDK test `fn[requirement_edges_and_input_freshness_use_the_sdk]` also checks `record_is_current` against a real domain, for both a fresh and a changed state.\n\nI found no unchecked obligation and no plausible violating behavior that these tests would accept.",
-  "references": "3389b1a0de81c372c3225bb679d26772c9b828b1a6e18d1d6a5e3719180d7dde",
+  "rationale": "The reviewed tests cover every obligation in `requirements.sdk.graph.evidence.checking_records`. I did not need implementation source.\n\n**Obligations and the tests that cover them**\n\n- **True when every fingerprint matches, including an empty trace.**\n  - `criteria_keep_typed_answers_and_persist_only_when_requested` asserts `check_inputs(&loaded)` is true for a record whose dependencies are empty.\n  - `changing_one_criteria_input_does_not_invalidate_another` asserts true for an unchanged `Node` dependency.\n  - `absence_certification_is_invalidated_by_the_first_selected_root` asserts true for an unchanged outgoing-edges dependency.\n- **A fingerprint mismatch returns `Ok(false)`.**\n  - `changing_one_criteria_input_does_not_invalidate_another` changes node 2's content and asserts `!check_inputs(&behavior)`, while the other record stays true.\n  - `input_checking_and_execution_keep_separate_observations` and `historical_freshness_reads_do_not_enter_the_replacement_trace` also assert false after content changes.\n  - `absence_certification_is_invalidated_by_the_first_selected_root` asserts false when the outgoing-edges set changes.\n  - `a_matching_dependency_does_not_hide_a_later_changed_dependency` covers a matching first dependency followed by a changed later one, for both `Node` and `OutgoingEdges`.\n  - `wildcard_versions_still_check_inputs_and_errors` covers a fingerprint with the wrong scheme, and a changed fingerprint.\n  - The last two go through `Record::is_current` rather than `check_inputs` directly.\n- **Early return is permitted but not required.** There is nothing to test.\n- **A dependency-resolution failure returns an error.**\n  - `dependency_resolution_failures_do_not_execute_or_replace_saved_answers` loads a record with a `Node` dependency and an `OutgoingEdges` dependency. It forces a read failure and an edge failure in turn, and asserts `check_inputs` returns `Err(\"read\")` and `Err(\"edges\")`. It also asserts the saved record is unchanged.\n  - `wildcard_versions_still_check_inputs_and_errors` and `labeled_selections_track_only_target_membership_without_reading_contents` assert errors through `is_current`.\n- **Freshness checking has a separate observation scope from criterion execution.**\n  - `historical_freshness_reads_do_not_enter_the_replacement_trace` runs `check_inputs`, which reads node 2. It then runs `verify`, which reads node 1. The stored dependencies contain only node 1.\n  - `input_checking_and_execution_keep_separate_observations` clears the read log after the check and asserts that the new trace contains only the explicitly read, current \"after\" fingerprint.\n  - `typed_loading_reports_decode_errors_even_for_stale_evidence` asserts that a new execution performs no saved-input resolution.\n- **Checked observations enter the new trace when execution explicitly reads or delivers them.**\n  - `source_reads_track_optional_dependencies_and_empty_searches_remain_discovery` checks that a delivered source read records a dependency.\n  - `input_checking_and_execution_keep_separate_observations` and `changing_one_criteria_input_does_not_invalidate_another` assert the dependencies recorded in the new trace.\n  - The `src/sdk.rs` test `requirement_edges_and_input_freshness_use_the_sdk` exercises a real domain.\n- **A checked snapshot can be reused if it still represents the current state.** This is permissive wording, so it imposes nothing to check. `requirement_edges_and_input_freshness_use_the_sdk` also shows that a retained snapshot keeps its fingerprint while the current state changes.\n\n**Conclusion:** No gap found. The tests exercise match, mismatch, empty trace, both dependency kinds, error propagation and observation-scope separation, and they assert the outcomes.",
+  "references": "ca0f517bb17a40e5c4e26e5110dca847d2d518b80fa578585d92cb1e77c20f4b",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.evidence.checking_records",
@@ -38,37 +38,37 @@
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[source_reads_track_optional_dependencies_and_empty_searches_remain_discovery]",
-      "hash": "7dd48d5184ef4efd1b954d3b523e39c8ddbfd90012e501e206193596c135723f"
+      "hash": "efb99585f72c1d13e327d6a410680fe2883208789deb1d334b57602f24493bf0"
     },
     {
       "file": "crates/trust-but-verify/tests/contracts.rs",
       "item": "fn[criteria_keep_typed_answers_and_persist_only_when_requested]",
-      "hash": "cb9ff0f749d3c4a516e1ca52aa298ca7e4868a36a4b64b2ed9f2f6158ab6d85d"
+      "hash": "dc7c8956d3d5681384322fad29d3bd3c4276c59bf1bf06d8e742ff1bc993ca3c"
     },
     {
       "file": "crates/trust-but-verify/tests/contracts.rs",
       "item": "fn[changing_one_criteria_input_does_not_invalidate_another]",
-      "hash": "077630166438e2dceb70495d25f1a27d233429f801f3423027ffd7f2f6d71f05"
+      "hash": "e2ace7faf72875c69a4a64c40fb79247892b1e47b17ead593dfd7ced6b963cce"
     },
     {
       "file": "crates/trust-but-verify/tests/contracts.rs",
       "item": "fn[typed_loading_reports_decode_errors_even_for_stale_evidence]",
-      "hash": "e3db2860f9bb6f9f4239d559da6f226053de7fe1cc46def2d1865852c799af76"
+      "hash": "4cf5e036a22700e170cae6eba1ee79a7d3caee688cdf39cc918b4a568064328d"
     },
     {
       "file": "crates/trust-but-verify/tests/contracts.rs",
       "item": "fn[input_checking_and_execution_keep_separate_observations]",
-      "hash": "0910aac8a6cdaed49b093f86629caf99653a189140e20857149b9c663afe44f2"
+      "hash": "d0327f7a62e7d7c48025532340cb37752d8a9aff3c88ee38c1101860d5c6c165"
     },
     {
       "file": "crates/trust-but-verify/tests/contracts.rs",
       "item": "fn[dependency_resolution_failures_do_not_execute_or_replace_saved_answers]",
-      "hash": "2628ebedbe683b3791c4e4d844a9d782fa976da9a5ac20886ff14b47f356725f"
+      "hash": "f6cd06dbea4306f6fd577713473a84dee41a84ef8a9307b4cd79eb514436acd0"
     },
     {
       "file": "crates/trust-but-verify/tests/contracts.rs",
       "item": "fn[refresh_evaluates_missing_incompatible_or_changed_evidence_with_a_fresh_trace]",
-      "hash": "fbe2c8561c5613a5cbf77472e32bf3c440bae98d1c32e0eb52e9ac4e910c9884"
+      "hash": "3a483ee72a2a831f2ef810099f9f914eb2598b4d5cbb810e8bf3ff73eb111e42"
     },
     {
       "file": "crates/trust-but-verify/tests/contracts.rs",
@@ -78,27 +78,27 @@
     {
       "file": "crates/trust-but-verify/tests/validation.rs",
       "item": "fn[historical_freshness_reads_do_not_enter_the_replacement_trace]",
-      "hash": "ac0050908588b1dfaa92f91df2a9f45b621e21a2851ef6718ce60c52b1673ca3"
+      "hash": "66cab669b47409e3fa967e8ee50f51722f767a4c8487ddcdd0accb0c604a51c7"
     },
     {
       "file": "crates/trust-but-verify/tests/validation.rs",
       "item": "fn[a_matching_dependency_does_not_hide_a_later_changed_dependency]",
-      "hash": "3b5eecf0cb7620e9e36f89a3888d17d3a92d3ea4262455c8965de1df17c6edc2"
+      "hash": "db5b5a862e6e969fe5a65bf4981175eea375ebc6f7969049682c3a6df992c273"
     },
     {
       "file": "crates/trust-but-verify/tests/validation.rs",
       "item": "fn[wildcard_versions_still_check_inputs_and_errors]",
-      "hash": "1ebc05e3b28f2995651204da8584731d3cc2d919e762034b5445fe03525ecdab"
+      "hash": "2056a24b49cd7a2e254e477383e8e262d4a4c200bafb15a6614318e928de6bfa"
     },
     {
       "file": "crates/trust-but-verify/tests/validation.rs",
       "item": "fn[labeled_selections_track_only_target_membership_without_reading_contents]",
-      "hash": "8416597f011beef763e47a1110064ca4c3e3502459799dac35b41921bd20da8e"
+      "hash": "7c05f1f4c32e0493ba40603ec28208b2788ad1d522c08cb4dea60888ea4de04e"
     },
     {
       "file": "src/sdk.rs",
       "item": "mod[tests]/fn[requirement_edges_and_input_freshness_use_the_sdk]",
-      "hash": "262dff4b5158c2533824662c60483343dbe3caa5be0dca66370245c04ba9c2e1"
+      "hash": "8c7767a3319874c082b7d4114dda121d857384a73fb31e4ba0093b3930581d66"
     }
   ],
   "format_version": 1,
@@ -111,7 +111,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "3389b1a0de81c372c3225bb679d26772c9b828b1a6e18d1d6a5e3719180d7dde"
+          "value": "ca0f517bb17a40e5c4e26e5110dca847d2d518b80fa578585d92cb1e77c20f4b"
         }
       ]
     },
@@ -151,7 +151,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "9f92e163bdd2400f3f7b19b382168463909518a3b4eb6ffbb963c879f216fef3"
+          "value": "eeb6c3cf239882089dd4b582445d15a2c7070d0d436098d85e57e1bcbea2cd43"
         }
       ]
     },
@@ -168,7 +168,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "9c25a9816c80f7dec85abbdfe9bd6a6ff7ee3366e9590e2facf2838bec9e39c9"
+          "value": "72e659479e2c7eb4b34bc1f0ca83f43697b5b388463c7865ebe7c2a8e08c5abf"
         }
       ]
     },
@@ -185,7 +185,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "6507a3b24fbffd3ff2f1d6be1b92f656cbd73319eac31312083f8845c3289899"
+          "value": "7d1edb0c7fc7aa55ded467176b9df7245927958fc2fcede823fe5d8cb07ebe26"
         }
       ]
     },
@@ -202,7 +202,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "ae8d4d6c6d639cce40a8397ba3360c0e06d3e08cb14661a5e4cac365a34770ca"
+          "value": "5bf5a3bcb3b7d60432495baaff8911b116cac69153182d2653caeec64d3171c5"
         }
       ]
     },
@@ -219,7 +219,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "b44c3331cd020eefbcae33467803b11ccc61e610af0863098e42060bbebe6bdb"
+          "value": "1948a57f991d6eb12e63d293d0bb0802d4213392ce8c80af3fd048a8b238b244"
         }
       ]
     },
@@ -236,7 +236,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "3bae2cb37a1728775f5c05202305cd370fbc8f5516962b5a4961c4e802724391"
+          "value": "8f522fef0f511f729e49c332681e03ef3e3b6553a98afb136aea65f025e1710a"
         }
       ]
     },
@@ -253,7 +253,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "4c45aee47e2361deba45ef37b1b022fdb7971509f2abd986b087c47f3e6b7377"
+          "value": "d1d9f6766c59c01947274ea659f32a421ad5a49cfc73929167f49b82d5901453"
         }
       ]
     },
@@ -287,7 +287,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "ec069795013e512114cb311070ab5ed6662a028b17d7bbdf624ea49e3af9e1c9"
+          "value": "eeaebe1bbf5b4aa2657a4f76c66cacb7afe8a9eadef0da846b3728d6debe1afc"
         }
       ]
     },
@@ -304,7 +304,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "344d6655821b1e230e6261c8ab815d808304db17c9dad214020d7ae0357fc79c"
+          "value": "8fcc883789ab531b4eb60f1cfeddb2179f293f1367973f33aed708696f1fddc6"
         }
       ]
     },
@@ -321,7 +321,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "ed2ec56dd000faf61c13189c992fb719d6404bb4707d8654487f16ddc5b6272b"
+          "value": "ee6db2c6ac9a4c08700c5c7ac320fb3d3463490b166cd26eebb141e7f6147f7f"
         }
       ]
     },
@@ -338,7 +338,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "b98f9ee3dd328d0d5ad1327cff4adceb1aac7b3988489859a1bb54afbff21b89"
+          "value": "e0714a1d548250e980f78b35f1c55e7b5b663f923b80145ec921db2942dc5636"
         }
       ]
     },
@@ -355,7 +355,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "e62e6ebf55e7e4d93d752a202cc4a769c7e06be56b124ba8457352bbc6547618"
+          "value": "c7ddcef507841329938721c6d30eb38ed121f88ae883eb04fffe285d3c614cf4"
         }
       ]
     }

@@ -1,8 +1,8 @@
 {
   "requirement": "The tracked source-read operation resolves the selected `OutlineId` through\nthe application's source-node mapping and reads that node through `Domain`.\nSuccessful reads delivered to the caller record that node's identity and the\nfingerprint of its supplied contents.\n\nThe graph's recording and freshness contracts apply under\n{cite}`requirements.sdk.graph.evidence.node_inputs` and\n{cite}`requirements.sdk.graph.evidence.checking_records`.",
   "determination": true,
-  "rationale": "I judged this from the supplied test source alone and did not request implementation source.\n\n**Obligations derived from `requirements.sdk.sources.provider_observations`:**\n1. The tracked source-read operation resolves the selected `OutlineId` through the application's source-node mapping.\n2. It reads the mapped node through `Domain`, so the delivered contents are the domain's contents and not the contents on disk.\n3. A successful read delivered to the caller records the node identity and the fingerprint of the contents actually supplied.\n4. Failures, whether from mapping or from the read, record nothing. This comes from the cited `node_inputs` text, \"a failed read returns an error without inventing a successful observation\". It is context here and not reassessed.\n\n**Coverage:**\n- `agent/project_sources.rs#mod[tests]/fn[direct_source_reads_preserve_mapping_errors_and_record_only_successful_returns]` is the core test. It calls the tracked `inspection.read_source` directly.\n  - Mapping: an unknown path and an unknown selector both return an \"unsupported source item\" error. Dependencies stay empty, and the domain's `reads` count and `read_nodes` list are untouched. The domain is therefore not called when mapping fails.\n  - Domain read failure: with `fail_read` set, the error propagates and no dependency is recorded.\n  - Success: the delivered contents are the domain's \"prepared contents\". The recorded dependency is exactly `Dependency::Node(\"source-node\", returned.fingerprint())`. That checks both the mapped node identity and the fingerprint of the supplied contents.\n  - Domain use: `read_nodes` equals `[\"source-node\", \"source-node\"]`, which shows the read goes through the domain with the mapped node.\n  - Freshness: the finished record is current, and it becomes stale when the domain text changes. That fits the cited `checking_records`.\n- `agent/project_sources.rs#mod[tests]/fn[fixed_tools_deliver_domain_contents_with_mandatory_snapshot_dependencies]` covers the model-tool path.\n  - `read_source` delivers \"prepared domain contents\" and not the disk text.\n  - The dependency is `Node(\"source-node\", Content(..).fingerprint())`.\n  - `read_nodes` is `[\"source-node\"]`.\n  - Discovery tools (list, outline and text search) read the domain zero times and record no dependencies.\n  - Failing reads (ignored file, path traversal, unknown selector, malformed selector) return errors and do not increase the domain read count.\n  - Paged re-delivery carries the same dependencies, built from the snapshot taken at the original read.\n- `agent/project_sources.rs#mod[tests]/fn[source_capable_validator_tracks_deterministic_reads_and_reuses_saved_results]` covers ordinary (non-model) code reads through a validator. `first.dependencies()` is the node plus the content fingerprint. A saved result is reused, and a changed domain text gives a refreshed result in both configuration orders.\n- `agent/configured.rs#mod[tests]/fn[supplied_agent_uses_attached_project_tools_in_both_configuration_orders]` is an end-to-end test with a supplied agent. Final dependencies are the node 1 and node 7 content fingerprints. The domain's read log holds only the selected `OutlineId`. The delivered text comes from the domain snapshot, not the disk, and the read of the ignored file is rejected.\n- `agent/tests.rs#fn[source_tools_keep_search_discovery_separate_from_delivered_source_reads]` and `fn[cached_selected_source_reads_record_exact_delivered_contents_and_errors_add_no_input]` cover the generic `SourceTools` path.\n  - Only delivered reads record an observation, and the recorded value is the delivered contents or selected node.\n  - A read with an unresolvable selector (`fn[missing]`) adds no input.\n- `agent/tests.rs#fn[source_discovery_and_its_pages_do_not_register_reads]` shows that discovery and its pages record nothing and never call the observation function.\n\n**Findings:** Each clause of the requirement has a test that exercises it and asserts the outcome. That holds for mapping resolution, the domain read, the identity and fingerprint recorded on success, and the no-record outcomes on failure. I found no plausible violating behavior that these tests would accept. A fingerprint taken from disk contents, a wrong node identity, or an observation recorded on a failed read would each fail one of the assertions above. I found no missing marking, and no gaps or acknowledgments need reporting.",
-  "references": "11cc78bac58fc5c4076bc114a6328c8612b74a49320b967a6c4e9c2953593350",
+  "rationale": "The reviewed tests cover every obligation in `requirements.sdk.sources.provider_observations`. I judged this from the supplied test source and did not request implementation source.\n\n**Obligation 1: resolve the `OutlineId` through the application's source-node mapping and read that node through `Domain`.**\n- `direct_source_reads_preserve_mapping_errors_and_record_only_successful_returns` (`crates/trust-but-verify/src/agent/project_sources.rs`) calls `read_source` with two unmapped ids: an unknown path, and a known path with an unknown selector. Both return an \"unsupported source item\" error. The test also asserts the domain saw zero reads, so a failed mapping never reaches `Domain`.\n- The same test reads a mapped id and checks `read_nodes == [\"source-node\", \"source-node\"]`. This shows the mapped node id, not the path, is what reaches `Domain`.\n- `fixed_tools_deliver_domain_contents_with_mandatory_snapshot_dependencies` (same file) reads `source.txt` through the `read_source` tool. The output contains \"prepared domain contents\" and not the on-disk \"disk text\", so the read goes through `Domain`. It also asserts `read_nodes == [\"source-node\"]`. Four bad requests (ignored file, `../` escape, unknown selector, malformed selector) all error, and the read count stays at 1.\n- `supplied_agent_uses_attached_project_tools_in_both_configuration_orders` (`crates/trust-but-verify/src/agent/configured.rs`) runs an agent with attached sources in both configuration orders. The mapped read returns the domain snapshot, not the disk contents, and the domain records exactly the one selected `OutlineId`.\n- `source_capable_validator_tracks_deterministic_reads_and_reuses_saved_results` covers the validator path in both attachment orders, and the domain's changed text is reflected in the output.\n\n**Obligation 2: successful delivered reads record the node identity and the fingerprint of the supplied contents.**\n- In `direct_source_reads_preserve_mapping_errors_and_record_only_successful_returns`, the dependencies equal `[Node(\"source-node\", returned.fingerprint())]`. The record's `is_current` check then holds before the domain text changes and fails after it.\n- The fixed-tools test asserts `read.dependencies` equals `Node(\"source-node\", Content(\"prepared domain contents\").fingerprint())`. This is an independently computed fingerprint of the supplied contents.\n- The same test checks that every `get_next_page` continuation carries the same dependencies. This holds even after the domain text is changed to \"replacement\", so the recorded observation is of what was actually delivered.\n- `cached_selected_source_reads_record_exact_delivered_contents_and_errors_add_no_input` (`crates/trust-but-verify/src/agent/tests.rs`) checks the recorded fingerprint value equals the selected node's delivered text exactly. A failing read of `fn[missing]` adds no observation.\n- `source_tools_keep_search_discovery_separate_from_delivered_source_reads` checks that only the delivered read is recorded, as `Node(7)` with the provider-supplied snapshot, and not the earlier search. `source_discovery_and_its_pages_do_not_register_reads` checks that list, search and outline calls and their pages register no observation.\n\n**Failure cases.**\n- The mapping error and the domain-read error both leave `inspection.dependencies()` empty. This is in the direct-read test, with `fail_read` toggled.\n- Tests of the cited `node_inputs` and `checking_records` contracts are not required here. Their obligations are assessed under those requirements.\n\nNo untested obligation or weak assertion remains. Each test is marked with a `{test}` reference to the subject.",
+  "references": "bdcd828976d0d7170c0cd25fde45ecad0fe1bfb35cb6778f0e155027aec2e5b3",
   "inputs": [
     {
       "requirements": "requirements.sdk.sources.provider_observations",
@@ -73,12 +73,12 @@
     {
       "file": "crates/trust-but-verify/src/agent/configured.rs",
       "item": "mod[tests]/fn[supplied_agent_uses_attached_project_tools_in_both_configuration_orders]",
-      "hash": "435db2a5f463ceb6a60a5d96221c83f6753165222ff7bb97b6503aa9292693b1"
+      "hash": "e6ecd2d9b1420224c8370ee1ea1a9e103148a8a605d3a8648afdc02bcaf44e22"
     },
     {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
       "item": "mod[tests]/fn[fixed_tools_deliver_domain_contents_with_mandatory_snapshot_dependencies]",
-      "hash": "283f01f5306b517d055960be8fd5ec8cf869a394c2e684f1d6f2d025e950d698"
+      "hash": "0643b397550aaf4ad2cb88164f43a54f6bf96b8866d6cd557aa5758827925d6a"
     },
     {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
@@ -88,22 +88,22 @@
     {
       "file": "crates/trust-but-verify/src/agent/project_sources.rs",
       "item": "mod[tests]/fn[direct_source_reads_preserve_mapping_errors_and_record_only_successful_returns]",
-      "hash": "0bf054a5f76a4ee6958fcaea1c45938b88de5d7d2288f5d53a0b9e855844284a"
+      "hash": "9ea0efbfffa092a472d2e96ed0f37c2d2ef38796edd753901205942ac72e3986"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[source_tools_keep_search_discovery_separate_from_delivered_source_reads]",
-      "hash": "e2c5ca55f33612a8327fd76444dfc72df073e6750366e5bbdef10a9c9d5143c0"
+      "hash": "46f318c5189995748f326bd9ace34b982f331b010d851438e8d786bb1f6ff56f"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[source_discovery_and_its_pages_do_not_register_reads]",
-      "hash": "63739955a76aa0f797261c0932f7910071d796578478189b381781a3d089c0cd"
+      "hash": "0130665e67adf913b0feb48ec91721519f077c3738f90e754f17afdcc508a5ec"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[cached_selected_source_reads_record_exact_delivered_contents_and_errors_add_no_input]",
-      "hash": "0eaa29f956726657d85a4867a93b68b106bbb1f80a1dbe55f55ca75e6e4d238e"
+      "hash": "2af393391e3e2167e4422b70b1b899ede932ca217020acc6005803007e986c7d"
     }
   ],
   "format_version": 1,
@@ -116,7 +116,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "11cc78bac58fc5c4076bc114a6328c8612b74a49320b967a6c4e9c2953593350"
+          "value": "bdcd828976d0d7170c0cd25fde45ecad0fe1bfb35cb6778f0e155027aec2e5b3"
         }
       ]
     },
@@ -178,7 +178,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "72026c2cf35fe0321ec38223494a54bcc2734fcaa3715799335a544812d48c79"
+          "value": "467913c7cc66e32119d121058d00ba59f2117e5869e13e10d57a1c60b6aeda9b"
         }
       ]
     },
@@ -195,7 +195,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "ce305a4430e03c8bcf296b8787556627a98f02ecf9d3b91d016eba2574125fc0"
+          "value": "c7c275851d98585a88c64f53d66e01f1008e02e2f779473f49dd7a545e217224"
         }
       ]
     },
@@ -229,7 +229,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "5769b8107bcf3be70f3d591319180975618ea6b17224d454f845411a55b99301"
+          "value": "abb74f6cd38690e11ccfd92cb7575e853c729fece5c8b2ab7b2bf6a2aa8a6699"
         }
       ]
     },
@@ -246,7 +246,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "1e8b9d27d51aae098bcbebe17aaf8aa044d4a2c2a2828e223905f251df2399b8"
+          "value": "bb0175ebc990406469e2f25a88c3740fde6057400b07c13789005178bd20df22"
         }
       ]
     },
@@ -263,7 +263,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "f520aabeab046e6187bdcb7aba6773c6457feaa600970be9f1ca35d9f43d681b"
+          "value": "9742196061780041afabd3f9aac79e1a1008167e4741f63ab8e19b2691c6a999"
         }
       ]
     },
@@ -280,7 +280,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "cfde946a395ab09dfc698f3fa076ad8ab83de89186550fccaffa0e9f67507d59"
+          "value": "aafa4c5caa04377e4614db9350d209f9808c1119f386e64a0758c6de49891ed2"
         }
       ]
     }

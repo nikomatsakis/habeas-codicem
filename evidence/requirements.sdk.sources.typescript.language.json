@@ -1,7 +1,7 @@
 {
   "requirement": "`languages::TypeScript` and `languages::Tsx` implement `OutlineLang` under\n{cite}`requirements.sdk.outlines.language_provider`. Their default values are\ncheaply cloneable language configurations. They claim `.ts`, `.mts`, and `.cts`\nfor TypeScript, and `.tsx` for TSX;\nfilename-based constructors select them under\n{cite}`requirements.sdk.outlines.defaults`.",
   "determination": true,
-  "rationale": "The reviewed test adequately checks `requirements.sdk.sources.typescript.language`. I did not request implementation source. I judged the test's assertions against the requirement text.\n\nThe marked test is `crates/trust-but-verify/tests/outline_content.rs#fn[bundled_languages_claim_extensions_and_supply_the_same_public_outline]`. It carries a `{test}` reference to the subject and runs a generic `check` helper for both `languages::TypeScript` and `languages::Tsx`.\n\nHow each obligation is covered:\n- **`OutlineLang` implemented.** `check` is bounded `L: OutlineLang + Default + Copy`, so both types must implement the trait. The test also calls `name()` (asserted non-empty), `extensions()`, `outline()` (through `OutlineContent`) and `search_structure()`.\n- **Default values.** `check` requires `Default`, and it asserts `L::default().fingerprint_scheme()` equals the expected scheme (`typescript-structural-v1` or `tsx-structural-v1`).\n- **Cheap cloning.** `check` asserts `std::mem::size_of::<L>() == 0`, so cloning has no owned allocation. The `Copy` bound and a `Clone::clone` call whose `extensions()` match the original reinforce this.\n- **Claimed extensions.** `check` asserts `language.extensions()` equals exactly `[\"ts\",\"mts\",\"cts\"]` for TypeScript and `[\"tsx\"]` for TSX. This enforces the stated sets and rules out extra or missing extensions.\n- **Filename-based selection.**\n  - `OutlineContent::from_source` is called with `a.MTS` (TypeScript) and `a.TSX` (TSX).\n  - Its fingerprint is compared with `from_source_with(&language, …)`, and its scheme is compared with the language's scheme.\n  - A loop over every claimed extension uses uppercase names such as `not-present.CTS`. It asserts the same fingerprint as the inferred one and that the expected selector (`function[check]`) can be selected. This covers `.ts`, `.mts`, `.cts` and `.tsx`, and it also covers case-insensitive matching.\n  - The scheme comparison shows that TypeScript and TSX are distinguished from each other. TSX input contains JSX (`<div />`).\n\nThe requirement does not describe any failure case or boundary that this test omits. Its references to `requirements.sdk.outlines.language_provider` and `requirements.sdk.outlines.defaults` are `{cite}` context, and I did not reassess them.",
+  "rationale": "The subject is covered by `crates/trust-but-verify/tests/outline_content.rs#fn[bundled_languages_claim_extensions_and_supply_the_same_public_outline]`, which carries a {test} reference to it. Its generic `check` helper runs once with `languages::TypeScript` and once with `languages::Tsx`.\n\n- **Implements `OutlineLang`:** the helper is bounded by `L: OutlineLang + Default + Copy`. It calls `name`, `extensions`, `fingerprint_scheme` and `search_structure` on both types, and it calls `L::default()`. So both implement the trait and have default values.\n- **Cheaply cloneable defaults:** the helper asserts `size_of::<L>() == 0`, so cloning allocates nothing and does not copy in proportion to size. It also clones the value and checks that the clone's extensions match the original's.\n- **Claimed extensions:** `language.extensions()` is compared exactly to `[\"ts\",\"mts\",\"cts\"]` for TypeScript and `[\"tsx\"]` for Tsx. An extra or missing extension fails the test. The extensions have no leading dot.\n- **Filename-based selection:**\n  - For each claimed extension, the helper builds `not-present.<EXT>` in upper case and calls `OutlineContent::from_source`. It asserts the fingerprint equals the one from the explicit-language path and that the expected selector `function[check]` resolves. Upper case also exercises the case-insensitive matching in `requirements.sdk.outlines.defaults`.\n  - I read `OutlineContent::from_source` in `crates/trust-but-verify/src/outline/contents.rs` to check one point: the fingerprint scheme comes from the matched profile name, as `{name}-structural-v1`. The fingerprint carries that scheme, so equality shows that `.ts`, `.mts` and `.cts` select TypeScript and `.tsx` selects Tsx. The test also asserts `inferred.fingerprint_scheme()` equals `typescript-structural-v1` or `tsx-structural-v1`.\n  - The Tsx source contains JSX (`<div />`), so it exercises the TSX grammar.\n- **Fallback for unclaimed extensions:** the helper does not test this, but it belongs to `requirements.sdk.outlines.defaults` (cited context, not assessed here).\n\nI found no plausible violation of the subject's text that these assertions would accept.",
   "references": "c8fa72bf7b415e40209e36bd6f3798e09af9e1978c0e50d306b32c1e3e643e5e",
   "inputs": [
     {
@@ -27,26 +27,28 @@
       ],
       "text": [
         ":::{req} language_provider",
+        "",
         "`OutlineLang` defines the language interface. Each implementation supplies its",
         "name, claimed extensions, and outlining operation. Cloning a language shares",
         "its prepared configuration instead of rebuilding it or copying it in proportion",
         "to its size. Its result uses the public items, spans, and hashes under",
-        "{cite}`requirements.sdk.outlines.items`.",
+        "{cite}`requirements.sdk.outlines.items`. Filename extensions omit the leading dot.",
         "",
         "```rust,ignore",
-        "pub trait OutlineLang: Clone + Send + Sync {",
-        "    // ...",
-        "",
-        "    /// Stable name of this language implementation.",
+        "pub trait OutlineLang:",
+        "    Clone",
+        "    + Send",
+        "    + Sync {",
         "    fn name(&self) -> &str;",
-        "",
-        "    /// Claimed filename extensions, without their leading dots.",
         "    fn extensions(&self) -> &[&str];",
-        "",
-        "    /// Interpret supplied text into selectable items and structural hashes.",
         "    fn outline(&self, source: &str) -> Result<Outline, OutlineError>;",
+        "    fn fingerprint_scheme(&self) -> &str;",
         "",
-        "    // ...",
+        "    fn search_structure(",
+        "        &self,",
+        "        _source: &str,",
+        "        _rule: &Map<String, Value>,",
+        "    ) -> Result<Vec<Range<usize>>, OutlineError> { ... }",
         "}",
         "```",
         ":::"
@@ -73,6 +75,21 @@
       "file": "crates/trust-but-verify/tests/outline_content.rs",
       "item": "fn[bundled_languages_claim_extensions_and_supply_the_same_public_outline]",
       "hash": "41e2c294159c4338485e06de8cb6a1f315e03674377f27154b9dc72d54ecf89a"
+    },
+    {
+      "file": "crates/trust-but-verify/src/outline/contents.rs",
+      "item": "impl[OutlineContent]/fn[from_source]",
+      "hash": "27869f72ea624b9073e219506e128eed8805f4066d362f18ffc188900257e920"
+    },
+    {
+      "file": "crates/trust-but-verify/src/outline/contents.rs",
+      "item": "impl[OutlineContent/NodeContents]/fn[fingerprint]",
+      "hash": "0fc7ec4c5bb9ab56e023385df134bca2481df0179fd874f0ea7341773b09b668"
+    },
+    {
+      "file": "crates/trust-but-verify/src/outline/languages/typescript.rs",
+      "item": "const[TYPESCRIPT]",
+      "hash": "7c027c172d67e5d7200cc3807d529804da90579fc504dd987ba0abdc05cafb22"
     }
   ],
   "format_version": 1,
@@ -119,7 +136,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "36e4776f0b25487545c112d9c938f142523c633e33fa67c0f22163ecfedabf36"
+          "value": "88f8a75fefe5689e728a2d5aee8e1ddfae4845ed9de5fd41fe10efb216e020c5"
         }
       ]
     },
@@ -148,6 +165,57 @@
         {
           "scheme": "habeas-input-v1",
           "value": "ba67b1a4ae849b54b752f29f5ee70e494777af6abe58a8f62c89a75dcfc9232c"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/outline/contents.rs"
+            },
+            "selector": "impl[OutlineContent]/fn[from_source]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "e457032177a64c8de97a3a22b0f01511e5bb8b1be49b3ffb9e9d8e4446acf71e"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/outline/contents.rs"
+            },
+            "selector": "impl[OutlineContent/NodeContents]/fn[fingerprint]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "79363f59b697845ce47803305848f9dee70d4622642a1ee5e973c5420f905e5e"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/outline/languages/typescript.rs"
+            },
+            "selector": "const[TYPESCRIPT]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "92e31bcff73647c8ab7208f85fa01b42a8862dd25e05d2ac69de55b89fc5526f"
         }
       ]
     }

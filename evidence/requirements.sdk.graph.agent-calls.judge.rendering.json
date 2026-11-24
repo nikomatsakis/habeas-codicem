@@ -1,7 +1,7 @@
 {
   "requirement": "The SDK presents node inputs using the returned value's `NodeContents::format`\nunder {cite}`requirements.sdk.graph.node_content.format`.\nIts text and fingerprint describe the same retained observation.\n\n```rust,ignore\nlet contents = domain.node_content(&node_id)?;\nlet text = contents.format();\n```\n\nLoading and fallible preparation occur in `Domain::node_content` under\n{cite}`requirements.sdk.graph.node_content`. For inputs queued on an ask\nbuilder, these failures return `ValidationError::Graph`. During a `read_node`\ntool call, they are returned to the agent as a tool error, so it can continue\nand recover.",
   "determination": true,
-  "rationale": "The reviewed tests cover each obligation of `requirements.sdk.graph.agent-calls.judge.rendering`.\n\n1. **Inputs are presented through the returned value's `format`.**\n   - `agent/tests.rs#fn[default_tool_accepts_scalar_results_and_keeps_the_exact_prefix]` installs a custom formatter. It asserts that the first user message sent to the agent contains \"formatted input: source\", and that the dependency fingerprint comes from the same read.\n   - `tests/validation.rs#fn[explicit_insertions_preserve_order_repetition_and_selection_snapshots]` asserts the formatted inputs in the agent request, in order and with repeats, along with the matching read order and dependencies.\n   - `agent/tests.rs#fn[behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer]` asserts the domain-supplied contents in the agent message, in order.\n   - `src/sdk.rs#mod[tests]/fn[domain_formats_supplied_contents_without_resolving_a_replacement]` asserts that `format` uses the supplied, already-read contents.\n\n2. **Text and fingerprint describe the same retained observation, and formatting needs no further reads.**\n   - `tests/contracts.rs#fn[identities_remain_stable_and_fingerprinting_uses_the_supplied_snapshot]` changes the underlying data after the read. It then asserts `format()` still returns \"before\", the fingerprint equals the snapshot fingerprint, and `reads` is still `[1]`.\n\n3. **Failures on queued ask-builder inputs return `ValidationError::Graph`.**\n   - `tests/validation.rs#fn[queued_reads_selection_and_rendering_fail_before_agent_invocation]` covers a loading failure (`fail_read`) and a preparation/rendering failure (`fail_prepare`). Both give `Err(ValidationError::Graph(..))`. It also asserts that no dependency is recorded and that no agent request is made.\n   - `tests/validation.rs#fn[runner_does_not_store_a_missing_agent_error_and_supports_intermediate_calls]` adds the no-agent case.\n\n4. **Failures during a `read_node` tool call go back to the agent as a tool error so it can recover.**\n   - `agent/tests.rs#fn[node_preparation_tool_errors_allow_recovery_without_recording_undelivered_contents]` makes `Domain::node_content` fail during a `read_node` call. It asserts that the next request carries a `ToolResult` with `is_error` set, tool name `read_node` and the error text. It also asserts that the agent then submits successfully and that no dependency is recorded.\n   - This test exercises a preparation failure. A loading failure inside `read_node` uses the same `Domain::node_content` error path, and the requirement describes both under one clause. Loading failures are tested on the queued path.\n\nI found no plausible violating behavior that these tests would accept, and I found no acknowledged gaps.",
+  "rationale": "The reviewed tests adequately cover `requirements.sdk.graph.agent-calls.judge.rendering`.\n\n**Obligations and the tests that cover them**\n\n1. **Inputs are presented through the returned value's `NodeContents::format`.**\n   - For inputs queued on an ask builder, `default_tool_accepts_scalar_results_and_keeps_the_exact_prefix` installs a custom formatter. It asserts that the first user message contains `formatted input: source`. This shows the output of `format` is what the agent sees. The raw content string is not.\n   - `explicit_insertions_preserve_order_repetition_and_selection_snapshots` checks that several queued inputs are rendered in order.\n   - For the `read_node` tool path, `validator_agent_executions_isolate_conversations_and_dependency_traces` uses the `distinct_pages` formatter. Its `ParallelConversations` provider asserts that each conversation's history contains its own formatted contents. It also asserts that the last delivered page contains them.\n   - `domain_formats_supplied_contents_without_resolving_a_replacement` in `src/sdk.rs` checks the habeas domain's `format` output: it contains the supplied text and the path.\n\n2. **Text and fingerprint describe the same retained observation.**\n   - `identities_remain_stable_and_fingerprinting_uses_the_supplied_snapshot` reads a snapshot, then changes the underlying contents.\n   - It asserts that `format()` still returns \"before\". It asserts that `fingerprint()` still equals the snapshot fingerprint. It asserts that the domain was read only once.\n   - So text and fingerprint come from the same retained read, with no re-read.\n   - `graph_read_pages_retain_the_prepared_snapshot_after_contents_change` is not marked for this requirement. It supports the same point.\n\n3. **Loading and preparation failures on ask-builder inputs return `ValidationError::Graph`.**\n   - `queued_reads_selection_and_rendering_fail_before_agent_invocation` sets `fail_read`. It asserts `Err(ValidationError::Graph(\"read\"))`.\n   - It then sets `fail_prepare`. It asserts `Err(ValidationError::Graph(\"render\"))`.\n   - It also asserts that no dependencies are recorded and that no agent request is made.\n\n4. **During a `read_node` call, failures go to the agent as a tool error so it can recover.**\n   - `node_preparation_tool_errors_allow_recovery_without_recording_undelivered_contents` makes preparation fail.\n   - It asserts that the next request carries a single `read_node` tool result with `is_error` set and the error text.\n   - It asserts that the conversation continues to a successful `submit_result`. It asserts that no dependency is recorded.\n\n**Remaining observation**\n\n- A loading failure during a `read_node` call is not tested separately from a preparation failure.\n- `Domain::node_content` returns one error type for both. The requirement does not distinguish the two paths for tool calls.\n- Preparation failure exercises the same tool-error path, so I do not count this as a gap.\n\n**Other requirements**\n\n- Loading and preparation (`requirements.sdk.graph.node_content`) and the `format` contract (`requirements.sdk.graph.node_content.format`) are cited context. Their own tests are not reassessed here.\n- The reviewed tests still exercise the \"no further reads\" property of `format`, in `identities_remain_stable_and_fingerprinting_uses_the_supplied_snapshot`.\n\nNo gaps were found, and there are no `{fixme}` acknowledgments.",
   "references": "e7f4eb67f320fdbe3324029052cd29b2da4b151db0ea7c22bb85c62a7c32b9ac",
   "inputs": [
     {
@@ -83,10 +83,6 @@
         "",
         "    // ...",
         "}",
-        "",
-        "pub trait NodeContents: Send + Sync {",
-        "    // ...",
-        "}",
         "```",
         ":::"
       ]
@@ -94,7 +90,7 @@
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[default_tool_accepts_scalar_results_and_keeps_the_exact_prefix]",
-      "hash": "ba20efe37f25dbf0600694559a19e6626d0155a2baa5f2e364a96ec8943742dc"
+      "hash": "b17c042c012909c7e85c97f9613f6b7435a264447298801e69893bbb1dee686c"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
@@ -104,17 +100,17 @@
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[node_preparation_tool_errors_allow_recovery_without_recording_undelivered_contents]",
-      "hash": "780a3e78a00800bcb04f1a2364be39b80d6e42346f543fa81fbe291519d4c5cd"
+      "hash": "f4bc7c66ea52782cefc6022f293fedc4fc96cea7d556bdb06bc06cf2fa227941"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer]",
-      "hash": "87908a78ad10049a36e89efcf82755bdb520fb6139272dc908d403f186bb281a"
+      "hash": "26e30cc009c5bbec23294c9d2310a58c20f27827342a93619d99ce6f936fac7a"
     },
     {
       "file": "crates/trust-but-verify/tests/contracts.rs",
       "item": "fn[identities_remain_stable_and_fingerprinting_uses_the_supplied_snapshot]",
-      "hash": "5b555ba404f2d41c5bdc2c21146317c227c55eccb1c51b9ba507b0a7493be76a"
+      "hash": "b674e4cebcb6efc83126680f2e192ff172ebfab167973b43544d48ae6528c0e7"
     },
     {
       "file": "crates/trust-but-verify/tests/validation.rs",
@@ -124,17 +120,17 @@
     {
       "file": "crates/trust-but-verify/tests/validation.rs",
       "item": "fn[explicit_insertions_preserve_order_repetition_and_selection_snapshots]",
-      "hash": "0610eb8340c13104b553c1cc7a312492818e7617c248a60fe259516c1976f252"
+      "hash": "9359c08e74a3d94de11ac4a169c18f28993284f182871b98d112f3a73c69dbb1"
     },
     {
       "file": "crates/trust-but-verify/tests/validation.rs",
       "item": "fn[queued_reads_selection_and_rendering_fail_before_agent_invocation]",
-      "hash": "d047c0d9cb4460688bc6c736c010d6d6a333f62c665d41e304d17ed21d3263ae"
+      "hash": "d87746a361dc0b25514fe633d10fa2512926e1ba51ffb2643755ea717b6fd42b"
     },
     {
       "file": "src/authoring/sdk.rs",
       "item": "mod[tests]/fn[authoring_keeps_the_prepared_subject_snapshot_and_concrete_version]",
-      "hash": "9494e6f6b8e3384d62802cf6828e9c9fc6ce96e560eef04bf55fe88a64e5eb76"
+      "hash": "94e021dc3a0f806e943a3ac49302b3223f6fb29e717302e0a20fa9b760ffaa07"
     },
     {
       "file": "src/sdk.rs",
@@ -154,6 +150,21 @@
         "its shared types, node and edge operations, and evidence persistence.",
         ":::",
         "::::"
+      ]
+    },
+    {
+      "definition": "requirements.sdk.graph.criteria.criterion",
+      "text": [
+        ":::{definition} criterion",
+        ":phrase: criterion",
+        "",
+        "A *criterion* is a value describing a test to perform on a",
+        "{term}`requirements.sdk.graph.node`.",
+        "In the SDK, its type implements",
+        "[`Criterion<D>`](../../../rustdocs/trust_but_verify/graph/trait.Criterion.html) for the",
+        "{term}`requirements.sdk.application_domain`. Its",
+        "members describe the question's answer, identity, review rules, and execution.",
+        ":::"
       ]
     },
     {
@@ -178,7 +189,7 @@
         "",
         "*Node contents* are the application-defined data read from a",
         "{term}`requirements.sdk.graph.node` as inputs when evaluating a",
-        "{term}`requirements.sdk.graph.validation.criterion`. An agent uses these inputs",
+        "{term}`requirements.sdk.graph.criteria.criterion`. An agent uses these inputs",
         "to assess whether the criterion holds in the project. They can be source text,",
         "parsed code, issue data, or another structured value. In the SDK,",
         "[`Domain::NodeContent`](../../rustdocs/trust_but_verify/domain/trait.Domain.html#associatedtype.NodeContent)",
@@ -191,59 +202,19 @@
       ]
     },
     {
-      "definition": "requirements.sdk.graph.validation.criterion",
-      "text": [
-        ":::{definition} criterion",
-        ":phrase: criterion",
-        "",
-        "A *criterion* is a value describing a test to perform on a",
-        "{term}`requirements.sdk.graph.node`.",
-        "In the SDK, its type implements",
-        "[`Criterion<D>`](../../../rustdocs/trust_but_verify/graph/trait.Criterion.html) for the",
-        "{term}`requirements.sdk.application_domain`. Its",
-        "members describe the question's answer, identity, review rules, and execution.",
-        ":::"
-      ]
-    },
-    {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "impl[Memory/Domain]/fn[node_content]",
       "hash": "fa846ed496bfbbf139d6226555032c70dc773fba2c5f494680f06576f7c13c10"
     },
     {
-      "file": "crates/trust-but-verify/tests/validation.rs",
-      "item": "impl[Memory/Domain]/fn[node_content]",
-      "hash": "48e6e232c127fbbe6657844de47a68192f416aa79b7b135d4ef2a13968cdd9b7"
-    },
-    {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
-      "item": "struct[Memory]",
-      "hash": "565c538114197abba5831912c0ce8485c97f2f89100d3647640517a9036c49e7"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/tests.rs",
-      "item": "impl[Memory]/fn[new]",
-      "hash": "63dc6af710c79845fe88bcbe7cbd88c72a328c14118db166d1d646aab00d1aa0"
+      "item": "impl[ParallelConversations/CompletionProvider]/fn[complete]",
+      "hash": "d35255a4fa408c338beaa85030f54382241b8638b22553c9ea14cba47078af16"
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[distinct_pages]",
       "hash": "71b30a6c494353acecdeadc53d2f250a6e34cb8a697572bfa3cde2d13c5970cc"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/tests.rs",
-      "item": "fn[concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads]",
-      "hash": "fafa2e8f5995a8c2c867d4cd32c42a224ab6e393e2d2238b20e023b5abecc89f"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/tests.rs",
-      "item": "impl[ParallelConversations/CompletionProvider]",
-      "hash": "c44c80ee05d2d02ef80a2ee89040d15cb380955b6cfd701a603f626ed4164c2d"
-    },
-    {
-      "file": "crates/trust-but-verify/src/agent/tests.rs",
-      "item": "impl[ParallelConversations/CompletionProvider]/fn[complete]",
-      "hash": "5067d824727844ade972c17a57e248d611faf5849f05d6e96bad222fb9e999da"
     }
   ],
   "format_version": 1,
@@ -268,7 +239,7 @@
         "Mandatory",
         {
           "scheme": "node-path-set-sha256-v1",
-          "value": "0ff844d7fe804e3d4c4839a59a800c5a0fa0094895b3dc3a22e208dc64acb41c"
+          "value": "2a8dd2d2911eeada522e966bf977c665d572b48333cc270639a1e6b58b1a8046"
         }
       ]
     },
@@ -301,7 +272,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "ee6a65a67818c77b92f59918366fead233220ea09f23ec0e2f0b4a001c4376f2"
+          "value": "08a38fc5202e5a4b3a0a0046e90139825c6e3baa93366a10619b8e7bcc6d7c92"
         }
       ]
     },
@@ -318,7 +289,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "24c4b9e250b5e8291df7b07f9af489ae0ce94e240faf03b95b4d857831a3568c"
+          "value": "f0ffb765a696ff55225e6014560e0b2996d544133d1f245b719577c0520120d3"
         }
       ]
     },
@@ -352,7 +323,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "9ea9353de98f89e7df9dafdec23764500873a1a6cf30b7c9e70f7d2208f931e9"
+          "value": "d4351cbc0ad2caf4dca87b22a4e502d212954e30e65ca0d63aa6b7158ba15e4d"
         }
       ]
     },
@@ -369,7 +340,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "910dcb3f2e1a4af7a165d371f6dec4fa27eb2045c159f995fdfd0187ba0c7963"
+          "value": "12dbd8defec755daa873a1281d8a872dd90862be35ef573c183aa700f3223049"
         }
       ]
     },
@@ -386,7 +357,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "3ddce9e1ff0aefbdb2249d2d88d6273e55e689c602e6ef96f8e583a64240e0fe"
+          "value": "5f1fcd0f1aa97ebb2ce3f9225cd48fc59e663e1215e4d4c801e434ad966d66f7"
         }
       ]
     },
@@ -420,7 +391,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "f4e468fd2c254908a3cc16264e4f476c7ab6ed212932eadf9329deaf796dc473"
+          "value": "a1c4ceae3a7595a1919676e26087c35cc300462f566cd27799498a5d0aa185f5"
         }
       ]
     },
@@ -437,7 +408,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "2d6335138ba82b8ca8b22e7ac1b09f712ea42a7c65d81c2ea215ab83b95ea8e3"
+          "value": "f600679868a81e3df3f2a309538cb211607328389902cad216efd03a50c58104"
         }
       ]
     },
@@ -454,7 +425,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "2689583ea14fa7c42bc679d70bfc24a010ebd99fc7c8bc152bb61a1cca474064"
+          "value": "321c68fb670f94be8ea07bc913435ea83bb2080422946f99dfcc342c52f42fd0"
         }
       ]
     },
@@ -489,6 +460,17 @@
     {
       "Node": [
         {
+          "Definition": "requirements.sdk.graph.criteria.criterion"
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "ce135060049411121ee9cf88ce6fd97b151985f68bb28824a43122d09c669145"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
           "Definition": "requirements.sdk.graph.node"
         },
         {
@@ -504,18 +486,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "37780e81caf01bf21cef494d0bc2045a90dc6fdc1a92eb645fc53272b6d7e97f"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Definition": "requirements.sdk.graph.validation.criterion"
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "410e461f5c2816d1e49a5cfa973481023091e2bf044978e81841852b0a72272b"
+          "value": "b7ec3137935a367ee4f775cd74fa8d6ef12acc4cdd38bb7dec496b1944700bf8"
         }
       ]
     },
@@ -542,48 +513,14 @@
           "Source": {
             "resource": {
               "scheme": "repo",
-              "location": "crates/trust-but-verify/tests/validation.rs"
-            },
-            "selector": "impl[Memory/Domain]/fn[node_content]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "87ddc07ac20720a9388e67ea932e3230debcd21c12e0fb72cc1636502ede6e82"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
               "location": "crates/trust-but-verify/src/agent/tests.rs"
             },
-            "selector": "struct[Memory]"
+            "selector": "impl[ParallelConversations/CompletionProvider]/fn[complete]"
           }
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "707a56812edb16192bf42a1230d3fca6f8b340ebc97f8e51552dec2acee8a10c"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/tests.rs"
-            },
-            "selector": "impl[Memory]/fn[new]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "3225db61a954ea96c54a30c343e75b70c625c39fa7c5182943bfae553e414f92"
+          "value": "18255575fbeca93b9a6e13a1cc86a94b6f2146c2974198b077a2fc0fc4f841e9"
         }
       ]
     },
@@ -601,57 +538,6 @@
         {
           "scheme": "habeas-input-v1",
           "value": "1a1384d6f8edf12cba153e6cc3e732699e7cb106e2b5e5ed3656e30135dd2a19"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/tests.rs"
-            },
-            "selector": "fn[concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "108b9bbb96be4e0299b66dd0f702c23e6eab0aef32e9a183e44d8d380e852708"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/tests.rs"
-            },
-            "selector": "impl[ParallelConversations/CompletionProvider]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "562066de1bdfef9f0f7bbb2217397c9664d4ad78a5dea3ea08d59c00ee8f25dd"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/agent/tests.rs"
-            },
-            "selector": "impl[ParallelConversations/CompletionProvider]/fn[complete]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "39340a2ff08132608abc42ed65e861a816c6e20859eeb8d2d24d6e704fb31d7e"
         }
       ]
     }

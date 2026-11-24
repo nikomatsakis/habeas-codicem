@@ -1,8 +1,8 @@
 {
-  "requirement": "```rust,ignore\n// Defined in trust_but_verify::graph.\n/// A completed answer and the inputs used to produce it.\npub struct Fingerprinted<D: Domain, O> { /* private fields */ }\n\nimpl<D: Domain, O> Fingerprinted<D, O> {\n    /// The source node this answer concerns.\n    pub fn source_node_id(&self) -> &D::NodeId;\n\n    /// The question's path relative to that source.\n    pub fn criterion_path(&self) -> &CriterionPath;\n\n    /// The review rules used to produce this answer.\n    pub fn revision(&self) -> &str;\n\n    /// Recorded node-content and successor-set observations.\n    pub fn dependencies(&self) -> &[Dependency<D::NodeId, D::EdgeLabel>];\n\n    /// Borrow the completed answer.\n    pub fn output(&self) -> &O;\n\n    /// Take ownership of the completed answer.\n    pub fn into_output(self) -> O;\n}\n```\n\n`verify` constructs this value from the criterion's completed answer and\nexecution trace. `load_evidence` reconstructs it from the selected saved record.\nIts node identities and edge labels keep their domain-defined types.",
+  "requirement": "Keeps a typed output with its source, criterion, version, and observed dependencies. `output` borrows the answer and `into_output` consumes the wrapper.\n\n`verify` constructs this value from the criterion's completed answer and\nexecution trace. `load_evidence` reconstructs it from the selected saved record.\nIts node identities and edge labels keep their domain-defined types.\n\n```rust,ignore\npub struct Fingerprinted<D: Domain, O> { /* private fields */ }\n\nimpl<D: Domain, O> Fingerprinted<D, O> {\n    pub fn source_node_id(&self) -> &D::NodeId;\n    pub fn criterion_path(&self) -> &CriterionPath;\n    pub fn version(&self) -> Option<&CriterionVersion>;\n    pub fn dependencies(&self) -> &[Dependency<D::NodeId, D::EdgeLabel>];\n    pub fn output(&self) -> &O;\n    pub fn into_output(self) -> O;\n}\n```",
   "determination": true,
-  "rationale": "The reviewed tests cover every obligation in `requirements.sdk.graph.evidence.inputs`. I did not read the `persist` helper or the `Review` type. I assumed `persist` verifies, stores, and returns the verified value.\n\n**Accessor obligations: `source_node_id`, `criterion_path`, `revision`, `dependencies`, `output`, `into_output`**\n- `tests/contracts.rs#fn[criteria_keep_typed_answers_and_persist_only_when_requested]` checks a value returned by `verify`.\n  - It asserts `output()`, `source_node_id()` equals `Node(1)`, `criterion_path()` equals `path([\"behavior\"])`, `revision()` equals \"v1\", and `dependencies()` is empty.\n  - It checks that `into_output()` returns the typed answer, for both a struct answer and a `()` answer.\n  - The record saved to the domain holds the expected output.\n- Non-empty dependencies are checked in two places.\n  - `tests/contracts.rs#fn[dependency_resolution_failures_do_not_execute_or_replace_saved_answers]` asserts the verified value's `dependencies()` equals a `Dependency::Node` entry plus a `Dependency::OutgoingEdges` entry, with fingerprints.\n  - `agent/tests.rs#fn[agent_edge_tools_record_selections_without_validating_targets]` asserts the dependencies of a verified result and of a saved record equal `Dependency::OutgoingEdges(1, 7, edge_fingerprint(..))`. It also checks the second label (8) and that an unknown path or a failed delivery adds no dependency.\n\n**`verify` constructs the value from the answer and trace**\n- The tests above call `verify` and assert that the trace-derived dependencies and the answer appear in the accessors.\n- The edge-tool test also checks that the saved dependencies equal the verified result's.\n\n**`load_evidence` reconstructs the value from the selected saved record**\n- The `criteria_keep_typed_answers_and_persist_only_when_requested` test compares each loaded accessor with the verified value's: output, source node, criterion path, revision, and dependencies.\n- The `dependency_resolution_failures_do_not_execute_or_replace_saved_answers` test checks that loaded dependencies equal the expected list.\n- `tests/validation.rs#fn[caller_reuses_negative_answers_and_compares_revisions_explicitly]` covers loaded values in several cases.\n  - It loads a saved record under a different criterion revision and checks that the loaded `revision()` reports the saved \"v1\", not the requested \"v2\".\n  - It checks that a legacy \"*\" revision is reconstructed.\n  - It checks that a record for a different node is not selected.\n  - It checks the empty dependencies of a loaded value.\n\n**Read-only accessors / private fields**\n- `graph.rs#struct[Fingerprinted]` carries five `compile_fail,E0616` doctests, one each for `revision`, `source`, `criterion`, `dependencies`, and `output`. Each shows that external code cannot assign to a field. The struct is marked with `{test}`.\n\n**Domain-defined types**\n- The tests use domain types `Node`, `u8` node ids, and `u8` edge labels. They compare accessor results against values of those types, such as `Node(1)` and `Dependency::OutgoingEdges(1, 7, ..)`, so the types are preserved at compile time and at run time.\n\nI found no plausible violating behavior that these tests would accept.",
-  "references": "6726b7a1ccdd40d42f99793be248ad0f2d3d7558c94b2b0fd068e03b5b9c2c69",
+  "rationale": "I found no test-adequacy gap for `requirements.sdk.graph.evidence.inputs`. I mapped each obligation to the supplied tests as follows.\n\n- **Accessors on a fresh `verify` result.** `criteria_keep_typed_answers_and_persist_only_when_requested` in `tests/contracts.rs` checks `output()` against the typed answer. It also checks `source_node_id()` equals `Node(1`), `criterion_path()` equals `[\"behavior\"]`, `version().as_str()` equals \"v1\", and `dependencies()` is empty.\n- **Reconstruction by `load_evidence`.** The same test compares every accessor of the loaded value with the verified value: output, source, criterion path, version and dependencies. It also covers a unit output (`()`) and a `Vec<String>` output.\n- **`into_output` consumes the wrapper.** The same test asserts `loaded.into_output()` equals the original answer. It also asserts the `into_output()` result of `persist(...)` on the structure review.\n- **`output` borrows.** After `output()` the same value is still used for `store_evidence` and later accessors. Borrowing is also fixed by the `&O` signature.\n- **Non-empty observed dependencies from the execution trace.**\n  - `dependency_resolution_failures_do_not_execute_or_replace_saved_answers` verifies a review that reads a node and lists labelled edges. It asserts `value.dependencies()` equals `[Dependency::Node(..), Dependency::OutgoingEdges(Node(1), 7, ..)]`. `persist` returns the value from `verify`, so this is a fresh result.\n  - The same test reloads the record and asserts the loaded dependencies equal that list, including after read and edge failures.\n  - `agent_edge_tools_record_selections_without_validating_targets` in `src/agent/tests.rs` asserts `saved.dependencies() == result.dependencies()` and the exact `OutgoingEdges` dependency. It uses `u8` node ids and edge labels.\n  - The domain types `Node` and `u8` flow through unchanged, which covers the \"domain-defined types\" clause.\n- **Optional version.** `caller_reuses_negative_answers_and_compares_revisions_explicitly` in `tests/validation.rs` loads a record with version \"v1\" and asserts `version().as_str()`. It then sets the stored version to `None`, loads it, and checks `is_compatible_with(legacy.version())`. This is not a direct `is_none` assertion on the accessor, but it exercises the `Option<&CriterionVersion>` form.\n- **Private fields.** `struct[Fingerprinted]` carries five `compile_fail,E0616` doctests, one for each field, and a `{test}` marker. These show the fields cannot be mutated from outside.\n\nTogether these tests cover every accessor on both construction paths (`verify` and `load_evidence`), with both empty and non-empty dependencies. I found no plausible violating behavior that they would accept.\n\n`public_exports_match_the_appendix` is only loosely related. I did not rely on it.",
+  "references": "e777bc3927ccde2845fd2bc49e3b6ca1d756638c76ab7645d78f25746ba43414",
   "inputs": [
     {
       "requirements": "requirements.sdk.graph.evidence.inputs",
@@ -11,62 +11,62 @@
       ],
       "text": [
         ":::{req} inputs",
-        "```rust,ignore",
-        "// Defined in trust_but_verify::graph.",
-        "/// A completed answer and the inputs used to produce it.",
-        "pub struct Fingerprinted<D: Domain, O> { /* private fields */ }",
         "",
-        "impl<D: Domain, O> Fingerprinted<D, O> {",
-        "    /// The source node this answer concerns.",
-        "    pub fn source_node_id(&self) -> &D::NodeId;",
-        "",
-        "    /// The question's path relative to that source.",
-        "    pub fn criterion_path(&self) -> &CriterionPath;",
-        "",
-        "    /// The review rules used to produce this answer.",
-        "    pub fn revision(&self) -> &str;",
-        "",
-        "    /// Recorded node-content and successor-set observations.",
-        "    pub fn dependencies(&self) -> &[Dependency<D::NodeId, D::EdgeLabel>];",
-        "",
-        "    /// Borrow the completed answer.",
-        "    pub fn output(&self) -> &O;",
-        "",
-        "    /// Take ownership of the completed answer.",
-        "    pub fn into_output(self) -> O;",
-        "}",
-        "```",
+        "Keeps a typed output with its source, criterion, version, and observed dependencies. `output` borrows the answer and `into_output` consumes the wrapper.",
         "",
         "`verify` constructs this value from the criterion's completed answer and",
         "execution trace. `load_evidence` reconstructs it from the selected saved record.",
         "Its node identities and edge labels keep their domain-defined types.",
+        "",
+        "```rust,ignore",
+        "pub struct Fingerprinted<D: Domain, O> { /* private fields */ }",
+        "",
+        "impl<D: Domain, O> Fingerprinted<D, O> {",
+        "    pub fn source_node_id(&self) -> &D::NodeId;",
+        "    pub fn criterion_path(&self) -> &CriterionPath;",
+        "    pub fn version(&self) -> Option<&CriterionVersion>;",
+        "    pub fn dependencies(&self) -> &[Dependency<D::NodeId, D::EdgeLabel>];",
+        "    pub fn output(&self) -> &O;",
+        "    pub fn into_output(self) -> O;",
+        "}",
+        "```",
         ":::"
       ]
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[agent_edge_tools_record_selections_without_validating_targets]",
-      "hash": "39a3d475cde697c642fabda78e23d50d97dc586c00d89c74cf3af1ad0e3898c7"
+      "hash": "36b214f59a72f8ede5df6efd55862feab3eb3b2a901b46420cfcc18398cde2dc"
     },
     {
       "file": "crates/trust-but-verify/src/graph.rs",
       "item": "struct[Fingerprinted]",
-      "hash": "89b99edff518e22a4bb6a8bfc32fa40cb95b8fec8767d05c26cc835efb886a19"
+      "hash": "212817e16dcccc12156632fd09b37a23e14d20674a09a09d997104385c1aabcb"
     },
     {
       "file": "crates/trust-but-verify/tests/contracts.rs",
       "item": "fn[criteria_keep_typed_answers_and_persist_only_when_requested]",
-      "hash": "cb9ff0f749d3c4a516e1ca52aa298ca7e4868a36a4b64b2ed9f2f6158ab6d85d"
+      "hash": "dc7c8956d3d5681384322fad29d3bd3c4276c59bf1bf06d8e742ff1bc993ca3c"
     },
     {
       "file": "crates/trust-but-verify/tests/contracts.rs",
       "item": "fn[dependency_resolution_failures_do_not_execute_or_replace_saved_answers]",
-      "hash": "2628ebedbe683b3791c4e4d844a9d782fa976da9a5ac20886ff14b47f356725f"
+      "hash": "f6cd06dbea4306f6fd577713473a84dee41a84ef8a9307b4cd79eb514436acd0"
     },
     {
       "file": "crates/trust-but-verify/tests/validation.rs",
       "item": "fn[caller_reuses_negative_answers_and_compares_revisions_explicitly]",
-      "hash": "e7e2db5ecf6df7409f9b32cf275f1d1ea45d5497fc96e47d477899e751c90a16"
+      "hash": "1fc8e4a212004565c63e4e7899e6662c3f326fb8963590b1f93e50f02d58be0a"
+    },
+    {
+      "file": "crates/trust-but-verify/tests/public_api.rs",
+      "item": "fn[public_exports_match_the_appendix]",
+      "hash": "4d6ce6161754fb9e88ad84ef64f9bb131b308298104915179b2c5d573ed2b087"
+    },
+    {
+      "file": "crates/trust-but-verify/tests/contracts.rs",
+      "item": "fn[persist]",
+      "hash": "61970bd7b7748fb28d017b949eddb96f07ade5b9af70ddb9a4cfa11e924d9387"
     }
   ],
   "format_version": 1,
@@ -79,7 +79,7 @@
         },
         {
           "scheme": "habeas-reference-set-v1",
-          "value": "6726b7a1ccdd40d42f99793be248ad0f2d3d7558c94b2b0fd068e03b5b9c2c69"
+          "value": "e777bc3927ccde2845fd2bc49e3b6ca1d756638c76ab7645d78f25746ba43414"
         }
       ]
     },
@@ -91,7 +91,7 @@
         "Mandatory",
         {
           "scheme": "node-path-set-sha256-v1",
-          "value": "9146ffd59a532e36db774abcc165fd053bccc1a23a76ec00945aeb4b5d18cb3a"
+          "value": "af7b7eac986a82756424e70d023ed937423cbca5699e13d5c3f5c0ecd1dce18e"
         }
       ]
     },
@@ -102,7 +102,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "c409d1161f88656a306e1fce36451f3ef6fb04f4bd0b54ac14c42ce997ce413a"
+          "value": "e4ee287921363fc62aee9b15a643d89cb5765b7c39fbb91dfbd952d319823260"
         }
       ]
     },
@@ -119,7 +119,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "4675a37f3b78331cbaf00ac32f9bb15f4d5289ca5eb9d2f9e9731f4cfeb3687c"
+          "value": "1a801b0c4f1cf101ca7385605a248ae1ac710fc2fc594df745d9273a8b077507"
         }
       ]
     },
@@ -136,7 +136,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "94cab71cd7a602fb62d3c513f7e1bd7c2a0b85e6bddb87c71fac9a7b1f4f032b"
+          "value": "e2b9614e21bfd7d3a5f7d2fb31c5d030108e1447b50d4da15d63e3dbb7b49521"
         }
       ]
     },
@@ -153,7 +153,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "9c25a9816c80f7dec85abbdfe9bd6a6ff7ee3366e9590e2facf2838bec9e39c9"
+          "value": "72e659479e2c7eb4b34bc1f0ca83f43697b5b388463c7865ebe7c2a8e08c5abf"
         }
       ]
     },
@@ -170,7 +170,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "3bae2cb37a1728775f5c05202305cd370fbc8f5516962b5a4961c4e802724391"
+          "value": "8f522fef0f511f729e49c332681e03ef3e3b6553a98afb136aea65f025e1710a"
         }
       ]
     },
@@ -187,7 +187,41 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "f1ec455d2849bc329594e457cff12bf5acb81b51e680c006089180d3f87e92f8"
+          "value": "32929bfee296947fbc8f86a5970986aabc82ea05ed0bc902d4a932831d7e8856"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/tests/public_api.rs"
+            },
+            "selector": "fn[public_exports_match_the_appendix]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "ae4819b6e5ac9cd22992cc4254e7868f438e101dbd53f1bd7d443a33ee96f61d"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/tests/contracts.rs"
+            },
+            "selector": "fn[persist]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "af39a832fd905aacc4b801f7f61ccc250246454347134304b157abe9a8b1d26c"
         }
       ]
     }

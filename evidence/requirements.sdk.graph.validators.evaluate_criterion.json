@@ -1,7 +1,7 @@
 {
   "example": "{cite}`requirements.sdk.graph.validators.validator`\n{cite}`requirements.sdk.graph.validators.validate_node`\n{cite}`requirements.sdk.graph.agent-harness.with_agent`\n{cite}`requirements.sdk.graph.evidence.refresh_evidence`\n{cite}`requirements.sdk.graph.evidence.inputs`\n\nWe can now instantiate `BehavioralAdequacy` and evaluate it with a `Validator`.\nHere `domain` supplies Habeas Codicem's graph, contents, and storage, and\n`agent_config` selects one of the\n[SDK-supplied agents](agent-harness.md#configure-the-validators-agent).\n[`with_agent`](agent-harness.md#configure-the-validators-agent) configures that\nagent for the criterion's requests.\nThe `refresh_evidence` helper reuses the previous answer when the review rules\nand inputs are current, or evaluates the criterion again:\n\n```rust,ignore\nlet validator = Validator::new(domain.clone())\n    .with_agent(agent_config.clone());\n\nlet inputs = validator.refresh_evidence(BehavioralAdequacy {\n    requirement: requirement.clone(),\n    review_policy: test_review_policy.clone(),\n}).await?;\n\nlet assessment: &TestReview = inputs.output();\nprintln!(\"{}: {}\", assessment.adequate, assessment.rationale);\n```",
   "determination": true,
-  "rationale": "The example `requirements.sdk.graph.validators.evaluate_criterion` gives a concrete case. It builds a `Validator` over a domain, configures an agent, calls `refresh_evidence(BehavioralAdequacy{requirement, review_policy})`, and reads `inputs.output()` as a `TestReview` with `adequate` and `rationale`. Its stated behavior is that `refresh_evidence` reuses the previous answer when the rules and inputs are current, and otherwise evaluates the criterion.\n\nThe one {test} reference is `crates/trust-but-verify/src/agent/tests.rs#fn[behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer]`. It covers the scenario as follows:\n\n- **Setup:** it uses a `Memory` domain with two node contents, a scripted provider that answers via `submit_result`, and `Validator::new(domain).with_agent_adapter(agent)`. `with_agent_adapter` is a test-only hook (`runtime.rs`, `impl[Validator<D>]#1/fn[with_agent_adapter]`) that injects a scripted agent. It replaces `with_agent(AgentConfig)` so the test doesn't need a real backend.\n- **Typed answer:** the first `refresh_evidence` call has no saved record, so it evaluates the criterion. The test asserts `inputs.output() == &expected`, which is the typed `TestReview` with `adequate: true` and the rationale. It also asserts the `criterion_path` segments are `[\"behavior\"]`.\n- **Inputs and dependencies:** it asserts the domain was read for nodes 1 and 2, and that there are exactly 3 dependencies. These are the two node-content fingerprints with the expected values and the outgoing-edges fingerprint for node 1. This matches the `inputs` requirement.\n- **Storage and restore:** it asserts one record was stored. It asserts `check_inputs` is true on the result. It asserts `load_evidence` restores equal output, source node, path, revision and dependencies.\n- **Reuse:** a second `refresh_evidence` returns the same output and dependencies. The record count stays at 1 and the provider request count stays at 1. This confirms the previous answer is reused rather than re-asked.\n- **Staleness:** after node 2's content is changed, `check_inputs` returns false, so the saved answer would no longer be current.\n- **Agent request:** it asserts the system message is the review policy followed by the criterion text, and that the user message lists the requirement before the tests. It asserts the `submit_result` tool schema has a boolean `adequate`. This shows the criterion's request is built from the supplied policy and domain contents.\n\nI found no unresolved gap. The test doesn't call `refresh_evidence` again after the input change, and it doesn't change the policy. Those re-evaluation paths belong to the cited `refresh_evidence` requirement, which is context here and carries its own tests. The initial call already shows evaluation, and the staleness check shows when it would be triggered. I found no assertion that contradicts the example, and no {fixme} acknowledgments apply.",
+  "rationale": "The example `requirements.sdk.graph.validators.evaluate_criterion` describes a concrete case. A `Validator` is built over a domain and given an agent. `refresh_evidence(BehavioralAdequacy{requirement, review_policy})` is called, and `inputs.output()` returns a typed `TestReview` with `adequate` and `rationale`. The helper reuses the saved answer when it is current and otherwise evaluates the criterion. Its one `{test}` reference is `crates/trust-but-verify/src/agent/tests.rs#fn[behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer]`.\n\nThat test covers the example's outcomes:\n- **Setup:** it builds a `Memory` domain with two node contents and a scripted `submit_result` provider. It creates `Validator::new(domain.clone()).with_agent_adapter(agent)` and calls `refresh_evidence(BehavioralAdequacy{requirement: Node(1), review_policy})`.\n- **Typed answer:** `inputs.output()` equals the expected `TestReview{adequate:true, rationale}`. The criterion path is `[\"behavior\"]`.\n- **Domain contents and dependencies:** the test asserts the reads were `[1, 2]`. It asserts three dependencies: both node fingerprints with their values, and the `OutgoingEdges` dependency with the expected edge fingerprint.\n- **Storage and restore:** one record is saved. `check_inputs` returns true. `load_evidence` restores the same output, source, path, version and dependencies.\n- **Reuse:** a second `refresh_evidence` returns the same output and dependencies. The record count stays at 1 and the provider receives only one request, so the previous answer was reused and the agent was not called again.\n- **Staleness:** after node 2's content changes, `check_inputs` returns false.\n- **Agent request:** the system message is the review policy plus the criterion's instructions. The user message lists the requirement before the tests. The `submit_result` tool schema has a boolean `adequate`.\n\nThe test uses `with_agent_adapter` instead of `with_agent(AgentConfig)`. This is a test-only hook (`#[cfg(any(test, feature = \"habeas-integration\"))]`) that injects a scripted provider, so no real backend is needed. It sets the same agent field that `with_agent` sets. I judge this an acceptable substitution.\n\nOne thing is only partly exercised: the \"evaluate again\" branch after stale inputs. The test shows staleness through `check_inputs` but does not call `refresh_evidence` again afterwards. The first call does exercise the evaluate-and-save path from no saved evidence. The stale-input comparison and the version-compatibility check belong to `refresh_evidence` and the evidence-checking requirements, which this example only cites. I treat this as not a gap in the example's tests.",
   "references": "27b698b8e512bddb3433e9bb966144ed83c60396fcc7b8817a2cf26ba6180ded",
   "inputs": [
     {
@@ -48,20 +48,10 @@
       ],
       "text": [
         ":::{req} validator",
+        "",
         "A `Validator<D>` owns a cloneable domain. Construct it with `new`, then submit a",
         "criterion to `verify` to evaluate it and return its answer with the inputs used",
         "to produce it.",
-        "",
-        "```rust,ignore",
-        "// Defined in trust_but_verify::graph::validator.",
-        "/// Domain access and configuration shared by criterion executions.",
-        "pub struct Validator<D: Domain> { /* private fields */ }",
-        "",
-        "impl<D: Domain> Validator<D> {",
-        "    /// Own the domain used to check and execute criteria.",
-        "    pub fn new(domain: D) -> Self;",
-        "}",
-        "```",
         "",
         "Independent verifications share a validator through `&self`. Cached observations",
         "can be reused when they still represent the state being checked. Each execution",
@@ -72,6 +62,10 @@
         "Concurrent verifications of the same source and criterion run independently,",
         "each with its own context and trace. [Storage](evidence.md#look-up-a-source-and-criterion)",
         "describes atomic replacement when results are saved.",
+        "",
+        "```rust,ignore",
+        "pub struct Validator<D: Domain> { /* private fields */ }",
+        "```",
         ":::"
       ]
     },
@@ -82,15 +76,6 @@
       ],
       "text": [
         ":::{req} validate_node",
-        "```rust,ignore",
-        "// Method on Validator<D>.",
-        "/// Execute the criterion and return its completed answer and observed inputs.",
-        "pub fn verify<V: Criterion<D>>(",
-        "    &self,",
-        "    criterion: V,",
-        ") -> impl Future<Output = Result<Fingerprinted<D, V::Ok>, ValidationError<D::Error>>> + Send;",
-        "```",
-        "",
         "Every call constructs a fresh `ValidationContext` identifying the source node",
         "and calls `Criterion::execute` with that context. Its completed answer, including",
         "a negative assessment, and captured dependencies form the returned `Fingerprinted`",
@@ -106,7 +91,7 @@
       "text": [
         ":::{req} with_agent",
         "The SDK configures a validator's supplied agent from an application-provided",
-        "[`AgentConfig`](../../../rustdocs/trust_but_verify/agent/enum.AgentConfig.html).",
+        "[`AgentConfig`](#habeas-req-requirements.sdk.graph.agent-harness.agent_config).",
         "It does not persist the agent configuration.",
         "",
         "```rust,ignore",
@@ -132,7 +117,7 @@
         "lets them report domain errors to the agent.",
         "Criteria obtain the configured agent through their `ValidationContext`.",
         "Constructing a validator without this configuration still permits deterministic",
-        "criteria under {cite}`requirements.sdk.graph.validation.deterministic_procedures`.",
+        "criteria under {cite}`requirements.sdk.graph.criteria.deterministic_procedures`.",
         ":::"
       ]
     },
@@ -155,7 +140,7 @@
         ") -> impl Future<Output = Result<Fingerprinted<D, V::Ok>, ValidationError<D::Error>>> + Send {",
         "    async move {",
         "        if let Some(saved) = self.load_evidence(&criterion).await? {",
-        "            if procedure_matches(saved.revision(), &criterion.revision())",
+        "            if criterion.version().is_compatible_with(saved.version())",
         "                && self.check_inputs(&saved).map_err(ValidationError::Graph)?",
         "            {",
         "                return Ok(saved);",
@@ -172,7 +157,7 @@
         "Loading and decoding follow {cite}`requirements.sdk.graph.evidence.check_node`",
         "and {cite}`requirements.sdk.graph.evidence.record.output`. Revision and input",
         "comparison follow",
-        "{cite}`requirements.sdk.graph.evidence.checking_records.procedure_match` and",
+        "{cite}`requirements.sdk.graph.evidence.checking_records.version_match` and",
         "{cite}`requirements.sdk.graph.evidence.checking_records`. Evaluation follows",
         "{cite}`requirements.sdk.graph.validators.validate_node`; saving follows",
         "{cite}`requirements.sdk.graph.evidence.store_evidence`.",
@@ -186,52 +171,42 @@
       ],
       "text": [
         ":::{req} inputs",
-        "```rust,ignore",
-        "// Defined in trust_but_verify::graph.",
-        "/// A completed answer and the inputs used to produce it.",
-        "pub struct Fingerprinted<D: Domain, O> { /* private fields */ }",
         "",
-        "impl<D: Domain, O> Fingerprinted<D, O> {",
-        "    /// The source node this answer concerns.",
-        "    pub fn source_node_id(&self) -> &D::NodeId;",
-        "",
-        "    /// The question's path relative to that source.",
-        "    pub fn criterion_path(&self) -> &CriterionPath;",
-        "",
-        "    /// The review rules used to produce this answer.",
-        "    pub fn revision(&self) -> &str;",
-        "",
-        "    /// Recorded node-content and successor-set observations.",
-        "    pub fn dependencies(&self) -> &[Dependency<D::NodeId, D::EdgeLabel>];",
-        "",
-        "    /// Borrow the completed answer.",
-        "    pub fn output(&self) -> &O;",
-        "",
-        "    /// Take ownership of the completed answer.",
-        "    pub fn into_output(self) -> O;",
-        "}",
-        "```",
+        "Keeps a typed output with its source, criterion, version, and observed dependencies. `output` borrows the answer and `into_output` consumes the wrapper.",
         "",
         "`verify` constructs this value from the criterion's completed answer and",
         "execution trace. `load_evidence` reconstructs it from the selected saved record.",
         "Its node identities and edge labels keep their domain-defined types.",
+        "",
+        "```rust,ignore",
+        "pub struct Fingerprinted<D: Domain, O> { /* private fields */ }",
+        "",
+        "impl<D: Domain, O> Fingerprinted<D, O> {",
+        "    pub fn source_node_id(&self) -> &D::NodeId;",
+        "    pub fn criterion_path(&self) -> &CriterionPath;",
+        "    pub fn version(&self) -> Option<&CriterionVersion>;",
+        "    pub fn dependencies(&self) -> &[Dependency<D::NodeId, D::EdgeLabel>];",
+        "    pub fn output(&self) -> &O;",
+        "    pub fn into_output(self) -> O;",
+        "}",
+        "```",
         ":::"
       ]
     },
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprinted_answer]",
-      "hash": "87908a78ad10049a36e89efcf82755bdb520fb6139272dc908d403f186bb281a"
-    },
-    {
-      "file": "crates/trust-but-verify/src/graph/runtime.rs",
-      "item": "impl[Validator<D>]#1/fn[with_agent_adapter]",
-      "hash": "b72e8cbaeba7537df59493e966d267c0a388839125635f1f5b96a7dd7b3b347a"
+      "hash": "26e30cc009c5bbec23294c9d2310a58c20f27827342a93619d99ce6f936fac7a"
     },
     {
       "file": "crates/trust-but-verify/src/graph/runtime.rs",
       "item": "impl[Validator<D>]#1/fn[with_agent]",
       "hash": "cf491748eedd895dd3a737e77fbb1763a6739c8ab9ae85d573ad2d6cfd2dc36c"
+    },
+    {
+      "file": "crates/trust-but-verify/src/graph/runtime.rs",
+      "item": "impl[Validator<D>]#1/fn[with_agent_adapter]",
+      "hash": "b72e8cbaeba7537df59493e966d267c0a388839125635f1f5b96a7dd7b3b347a"
     }
   ],
   "format_version": 1,
@@ -278,7 +253,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "5ecb9a63531cbe0207300e20e38bd7820808a3439a412064f667c95779ca7afe"
+          "value": "44e79be76a3da37d4e6e18b296c65bfff90d0114962a24736cbb8ac0af3e58dd"
         }
       ]
     },
@@ -289,7 +264,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "8873641e07ea268697528f5005c0e0cbc4389f01e97cebaf18abcb6c55102beb"
+          "value": "1be8539750cec84b761b1773e3f5415d1be5b2a628d9ea27d106f9982e067438"
         }
       ]
     },
@@ -300,7 +275,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "e54201dcc94874039fb9cc633033671f7b1b9447664e27209965ec3dd1ce707a"
+          "value": "42c1c37394d5e24d5f0604ceb330340287f1224ad0f0fe8976ff0f8b7641c53e"
         }
       ]
     },
@@ -311,7 +286,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "ca20322bdbab8533fe1ff4e87ff65a84aafc88cebf9c53da035b62eb19188463"
+          "value": "7792f0783d4cb80c9183ebedef3f55ec959f8b01b885b37727780dc2b463cc01"
         }
       ]
     },
@@ -322,7 +297,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "c409d1161f88656a306e1fce36451f3ef6fb04f4bd0b54ac14c42ce997ce413a"
+          "value": "e4ee287921363fc62aee9b15a643d89cb5765b7c39fbb91dfbd952d319823260"
         }
       ]
     },
@@ -339,24 +314,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "910dcb3f2e1a4af7a165d371f6dec4fa27eb2045c159f995fdfd0187ba0c7963"
-        }
-      ]
-    },
-    {
-      "Node": [
-        {
-          "Source": {
-            "resource": {
-              "scheme": "repo",
-              "location": "crates/trust-but-verify/src/graph/runtime.rs"
-            },
-            "selector": "impl[Validator<D>]#1/fn[with_agent_adapter]"
-          }
-        },
-        {
-          "scheme": "habeas-input-v1",
-          "value": "dab6b327094f8bf81e9b3f3340286522340d3bb64dfe0bf1834f5a1839bce37b"
+          "value": "12dbd8defec755daa873a1281d8a872dd90862be35ef573c183aa700f3223049"
         }
       ]
     },
@@ -374,6 +332,23 @@
         {
           "scheme": "habeas-input-v1",
           "value": "34813072f30d8af6dfc50adb8a37905c64d7200f3af02123c2e250763745284f"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/src/graph/runtime.rs"
+            },
+            "selector": "impl[Validator<D>]#1/fn[with_agent_adapter]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "dab6b327094f8bf81e9b3f3340286522340d3bb64dfe0bf1834f5a1839bce37b"
         }
       ]
     }

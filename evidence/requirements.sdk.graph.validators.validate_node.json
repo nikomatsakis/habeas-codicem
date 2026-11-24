@@ -1,7 +1,7 @@
 {
-  "requirement": "```rust,ignore\n// Method on Validator<D>.\n/// Execute the criterion and return its completed answer and observed inputs.\npub fn verify<V: Criterion<D>>(\n    &self,\n    criterion: V,\n) -> impl Future<Output = Result<Fingerprinted<D, V::Ok>, ValidationError<D::Error>>> + Send;\n```\n\nEvery call constructs a fresh `ValidationContext` identifying the source node\nand calls `Criterion::execute` with that context. Its completed answer, including\na negative assessment, and captured dependencies form the returned `Fingerprinted`\nunder {cite}`requirements.sdk.graph.evidence.inputs`.",
+  "requirement": "Every call constructs a fresh `ValidationContext` identifying the source node\nand calls `Criterion::execute` with that context. Its completed answer, including\na negative assessment, and captured dependencies form the returned `Fingerprinted`\nunder {cite}`requirements.sdk.graph.evidence.inputs`.",
   "determination": true,
-  "rationale": "I judged the tests adequate for `requirements.sdk.graph.validators.validate_node`. I did not request implementation source, because the supplied tests and helpers were enough to map each obligation.\n\nThe requirement has these obligations:\n1. Every `verify` call builds a fresh `ValidationContext` that identifies the source node.\n2. Every call runs `Criterion::execute` with that context.\n3. The returned `Fingerprinted` carries the criterion's completed answer, including a negative assessment.\n4. The returned `Fingerprinted` carries the dependencies captured during that execution (the cited `requirements.sdk.graph.evidence.inputs`).\n\nHow the tests cover them:\n- **Source node identification and `execute` called with the context**\n  - `tests/validation.rs#fn[concurrent_single_node_validations_keep_separate_traces]` verifies nodes 1, 2 and 3 concurrently. It asserts that the started nodes are exactly `[1,2,3]`. It asserts that each stored record holds that node's own `Node` and `OutgoingEdges` dependencies, so each context identified its own node.\n  - `src/agent/tests.rs#fn[validator_agent_executions_isolate_conversations_and_dependency_traces]` runs two concurrent verifications on one source node. Their dependency traces stay separate: the alpha trace has only the node dependency, and the beta trace has the edge dependency plus its target node.\n  - `agent_edge_tools_record_selections_without_validating_targets` exercises `ctx.node_id()` inside `execute`.\n- **Fresh context per call, with no leakage between calls**\n  - `fn[historical_freshness_reads_do_not_enter_the_replacement_trace]` runs `check_inputs`, which reads node 2, and then calls `verify` on the same validator. It asserts that the stored dependencies are only `[Node(1, \"root\")]`, so the earlier reads did not enter the new trace.\n  - `fn[input_checking_and_execution_keep_separate_observations]` does a similar check. It asserts that the second execution's dependencies come from its own reads, not from earlier checking.\n  - `criteria_keep_typed_answers_and_persist_only_when_requested` calls `verify` several times on the same validator. It asserts `executions` counts and that the replacement verification does not disturb saved records.\n- **Completed answer, including a negative assessment**\n  - `tests/contracts.rs#fn[criteria_keep_typed_answers_and_persist_only_when_requested]` verifies a negative answer (`satisfied: false`). It asserts that `output()` equals it and that the source node, path and revision are exposed.\n  - `tests/validation.rs#fn[caller_reuses_negative_answers_and_compares_revisions_explicitly]` asserts that `!value.output().result` and that the answer survives a save and load.\n  - `src/authoring/sdk.rs#mod[tests]/fn[review_graph_persists_and_reuses_a_negative_validation_through_the_sdk]` asserts `determination == false` through the SDK.\n- **Captured dependencies in the returned `Fingerprinted`**\n  - `fn[changing_one_criteria_input_does_not_invalidate_another]` asserts the exact `Dependency::Node` and fingerprint of the replacement value.\n  - The agent tests assert exact `Dependency::Node` and `Dependency::OutgoingEdges` lists.\n  - The no-dependency case is asserted in `criteria_keep_typed_answers_and_persist_only_when_requested`, where `dependencies()` is empty and no reads occurred.\n\nThe tests also check that `verify` does not persist anything on its own, which the requirement does not demand. The typed `Send` bound is covered by `validation_and_answer_need_send_without_sync`.\n\nI found no obligation without an asserting test, and no marking gaps. There are no acknowledgments to assess.",
+  "rationale": "I judge the tests adequate for `requirements.sdk.graph.validators.validate_node`. I did not request implementation source. The tests supplied were enough to map each obligation.\n\n**Obligations derived from the text**\n1. Every call builds a fresh `ValidationContext` that identifies the source node.\n2. Every call runs `Criterion::execute` with that context.\n3. The completed answer, including a negative assessment, goes into the returned `Fingerprinted`.\n4. The captured dependencies go into the returned `Fingerprinted` too. The `Fingerprinted` shape comes from the cited `requirements.sdk.graph.evidence.inputs`.\n\n**Coverage**\n- **Context identifies the source node and execute runs with it.**\n  - `concurrent_single_node_validations_keep_separate_traces` verifies nodes 1, 2 and 3. Each stored record's dependencies name the matching node (`Dependency::Node(*node, ...)` and `OutgoingEdges(*node, ...)`). The test also asserts `started` equals [1, 2, 3].\n  - `agent_edge_tools_record_selections_without_validating_targets` has a criterion that branches on `ctx.node_id() == 1`. Its saved record is for node 1.\n  - `criteria_keep_typed_answers_and_persist_only_when_requested` asserts `value.source_node_id()` is `Node(1)` and that `executions` is 1 after one `verify`.\n- **Fresh context per call.**\n  - `concurrent_single_node_validations_keep_separate_traces` runs three concurrent verifies with reads and edge lookups inside callbacks. The peak concurrency is 3, and each record holds only its own node's dependencies.\n  - `validator_agent_executions_isolate_conversations_and_dependency_traces` runs two concurrent agent-driven verifies. Alpha records only the node dependency. Beta records the outgoing-edge and node dependencies.\n  - `historical_freshness_reads_do_not_enter_the_replacement_trace` calls `check_inputs`, which reads node 2, and then `verify`. The new record contains only `Dependency::Node(1, ...)`, so earlier reads on the same validator do not leak into the new context.\n  - `changing_one_criteria_input_does_not_invalidate_another` runs a replacement `verify` after earlier persists that read nodes 2 and 3. The replacement's dependencies are exactly node 3.\n  - `input_checking_and_execution_keep_separate_observations` shows the replacement's dependency is the post-change `after` content only.\n- **Negative answer kept.**\n  - `criteria_keep_typed_answers_and_persist_only_when_requested` verifies an unsatisfied answer and asserts `value.output()` equals it.\n  - `caller_reuses_negative_answers_and_compares_revisions_explicitly` asserts a `result` of false comes back from `verify` and survives storing and loading.\n  - `review_graph_persists_and_reuses_a_negative_validation_through_the_sdk` asserts the negative determination is returned with its rationale.\n- **Dependencies captured and returned.**\n  - Empty dependencies are asserted in `criteria_keep_typed_answers_and_persist_only_when_requested` and `caller_reuses_negative_answers_and_compares_revisions_explicitly`.\n  - Node-content dependencies are asserted in `changing_one_criteria_input_does_not_invalidate_another` and `input_checking_and_execution_keep_separate_observations`.\n  - Edge dependencies are asserted in the agent tests and in `concurrent_single_node_validations_keep_separate_traces`.\n  - `review_graph_persists_and_reuses_a_negative_validation_through_the_sdk` asserts a non-empty dependency record.\n- `validation_and_answer_need_send_without_sync` covers `verify` with a non-`Sync` answer type.\n\n**Gaps**\nI found no gap. Each obligation has a test that exercises it and asserts the outcome.",
   "references": "a28e22e8a1b6fbe9c9c315789c197e249f196a7383e775fac5f4393db93eba21",
   "inputs": [
     {
@@ -11,15 +11,6 @@
       ],
       "text": [
         ":::{req} validate_node",
-        "```rust,ignore",
-        "// Method on Validator<D>.",
-        "/// Execute the criterion and return its completed answer and observed inputs.",
-        "pub fn verify<V: Criterion<D>>(",
-        "    &self,",
-        "    criterion: V,",
-        ") -> impl Future<Output = Result<Fingerprinted<D, V::Ok>, ValidationError<D::Error>>> + Send;",
-        "```",
-        "",
         "Every call constructs a fresh `ValidationContext` identifying the source node",
         "and calls `Criterion::execute` with that context. Its completed answer, including",
         "a negative assessment, and captured dependencies form the returned `Fingerprinted`",
@@ -34,35 +25,25 @@
       ],
       "text": [
         ":::{req} inputs",
-        "```rust,ignore",
-        "// Defined in trust_but_verify::graph.",
-        "/// A completed answer and the inputs used to produce it.",
-        "pub struct Fingerprinted<D: Domain, O> { /* private fields */ }",
         "",
-        "impl<D: Domain, O> Fingerprinted<D, O> {",
-        "    /// The source node this answer concerns.",
-        "    pub fn source_node_id(&self) -> &D::NodeId;",
-        "",
-        "    /// The question's path relative to that source.",
-        "    pub fn criterion_path(&self) -> &CriterionPath;",
-        "",
-        "    /// The review rules used to produce this answer.",
-        "    pub fn revision(&self) -> &str;",
-        "",
-        "    /// Recorded node-content and successor-set observations.",
-        "    pub fn dependencies(&self) -> &[Dependency<D::NodeId, D::EdgeLabel>];",
-        "",
-        "    /// Borrow the completed answer.",
-        "    pub fn output(&self) -> &O;",
-        "",
-        "    /// Take ownership of the completed answer.",
-        "    pub fn into_output(self) -> O;",
-        "}",
-        "```",
+        "Keeps a typed output with its source, criterion, version, and observed dependencies. `output` borrows the answer and `into_output` consumes the wrapper.",
         "",
         "`verify` constructs this value from the criterion's completed answer and",
         "execution trace. `load_evidence` reconstructs it from the selected saved record.",
         "Its node identities and edge labels keep their domain-defined types.",
+        "",
+        "```rust,ignore",
+        "pub struct Fingerprinted<D: Domain, O> { /* private fields */ }",
+        "",
+        "impl<D: Domain, O> Fingerprinted<D, O> {",
+        "    pub fn source_node_id(&self) -> &D::NodeId;",
+        "    pub fn criterion_path(&self) -> &CriterionPath;",
+        "    pub fn version(&self) -> Option<&CriterionVersion>;",
+        "    pub fn dependencies(&self) -> &[Dependency<D::NodeId, D::EdgeLabel>];",
+        "    pub fn output(&self) -> &O;",
+        "    pub fn into_output(self) -> O;",
+        "}",
+        "```",
         ":::"
       ]
     },
@@ -74,22 +55,22 @@
     {
       "file": "crates/trust-but-verify/src/agent/tests.rs",
       "item": "fn[agent_edge_tools_record_selections_without_validating_targets]",
-      "hash": "39a3d475cde697c642fabda78e23d50d97dc586c00d89c74cf3af1ad0e3898c7"
+      "hash": "36b214f59a72f8ede5df6efd55862feab3eb3b2a901b46420cfcc18398cde2dc"
     },
     {
       "file": "crates/trust-but-verify/tests/contracts.rs",
       "item": "fn[criteria_keep_typed_answers_and_persist_only_when_requested]",
-      "hash": "cb9ff0f749d3c4a516e1ca52aa298ca7e4868a36a4b64b2ed9f2f6158ab6d85d"
+      "hash": "dc7c8956d3d5681384322fad29d3bd3c4276c59bf1bf06d8e742ff1bc993ca3c"
     },
     {
       "file": "crates/trust-but-verify/tests/contracts.rs",
       "item": "fn[changing_one_criteria_input_does_not_invalidate_another]",
-      "hash": "077630166438e2dceb70495d25f1a27d233429f801f3423027ffd7f2f6d71f05"
+      "hash": "e2ace7faf72875c69a4a64c40fb79247892b1e47b17ead593dfd7ced6b963cce"
     },
     {
       "file": "crates/trust-but-verify/tests/contracts.rs",
       "item": "fn[input_checking_and_execution_keep_separate_observations]",
-      "hash": "0910aac8a6cdaed49b093f86629caf99653a189140e20857149b9c663afe44f2"
+      "hash": "d0327f7a62e7d7c48025532340cb37752d8a9aff3c88ee38c1101860d5c6c165"
     },
     {
       "file": "crates/trust-but-verify/tests/contracts.rs",
@@ -99,12 +80,12 @@
     {
       "file": "crates/trust-but-verify/tests/validation.rs",
       "item": "fn[historical_freshness_reads_do_not_enter_the_replacement_trace]",
-      "hash": "ac0050908588b1dfaa92f91df2a9f45b621e21a2851ef6718ce60c52b1673ca3"
+      "hash": "66cab669b47409e3fa967e8ee50f51722f767a4c8487ddcdd0accb0c604a51c7"
     },
     {
       "file": "crates/trust-but-verify/tests/validation.rs",
       "item": "fn[caller_reuses_negative_answers_and_compares_revisions_explicitly]",
-      "hash": "e7e2db5ecf6df7409f9b32cf275f1d1ea45d5497fc96e47d477899e751c90a16"
+      "hash": "1fc8e4a212004565c63e4e7899e6662c3f326fb8963590b1f93e50f02d58be0a"
     },
     {
       "file": "crates/trust-but-verify/tests/validation.rs",
@@ -114,7 +95,7 @@
     {
       "file": "src/authoring/sdk.rs",
       "item": "mod[tests]/fn[review_graph_persists_and_reuses_a_negative_validation_through_the_sdk]",
-      "hash": "2f271a9af91b1f30053f1b3a8886b1c290f2900e48a3bcf986eafe35be759526"
+      "hash": "26e9e91e533e13fad398db57fc7ced7159c2d03b1c1d690b1236b279ce49f7b0"
     }
   ],
   "format_version": 1,
@@ -150,7 +131,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "8873641e07ea268697528f5005c0e0cbc4389f01e97cebaf18abcb6c55102beb"
+          "value": "1be8539750cec84b761b1773e3f5415d1be5b2a628d9ea27d106f9982e067438"
         }
       ]
     },
@@ -161,7 +142,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "c409d1161f88656a306e1fce36451f3ef6fb04f4bd0b54ac14c42ce997ce413a"
+          "value": "e4ee287921363fc62aee9b15a643d89cb5765b7c39fbb91dfbd952d319823260"
         }
       ]
     },
@@ -195,7 +176,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "4675a37f3b78331cbaf00ac32f9bb15f4d5289ca5eb9d2f9e9731f4cfeb3687c"
+          "value": "1a801b0c4f1cf101ca7385605a248ae1ac710fc2fc594df745d9273a8b077507"
         }
       ]
     },
@@ -212,7 +193,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "9c25a9816c80f7dec85abbdfe9bd6a6ff7ee3366e9590e2facf2838bec9e39c9"
+          "value": "72e659479e2c7eb4b34bc1f0ca83f43697b5b388463c7865ebe7c2a8e08c5abf"
         }
       ]
     },
@@ -229,7 +210,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "6507a3b24fbffd3ff2f1d6be1b92f656cbd73319eac31312083f8845c3289899"
+          "value": "7d1edb0c7fc7aa55ded467176b9df7245927958fc2fcede823fe5d8cb07ebe26"
         }
       ]
     },
@@ -246,7 +227,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "b44c3331cd020eefbcae33467803b11ccc61e610af0863098e42060bbebe6bdb"
+          "value": "1948a57f991d6eb12e63d293d0bb0802d4213392ce8c80af3fd048a8b238b244"
         }
       ]
     },
@@ -280,7 +261,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "ec069795013e512114cb311070ab5ed6662a028b17d7bbdf624ea49e3af9e1c9"
+          "value": "eeaebe1bbf5b4aa2657a4f76c66cacb7afe8a9eadef0da846b3728d6debe1afc"
         }
       ]
     },
@@ -297,7 +278,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "f1ec455d2849bc329594e457cff12bf5acb81b51e680c006089180d3f87e92f8"
+          "value": "32929bfee296947fbc8f86a5970986aabc82ea05ed0bc902d4a932831d7e8856"
         }
       ]
     },
@@ -331,7 +312,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "afa13da43157fb56e151586733cdad7aa077bdd8cf1289f8372bc54124abe12f"
+          "value": "21aa9d089787f2634febdc5aa0cdb64838a0dea284403d6ff650f5aa19ca4900"
         }
       ]
     }

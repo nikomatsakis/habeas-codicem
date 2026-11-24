@@ -1,7 +1,7 @@
 {
-  "requirement": "{cite}`requirements.sdk.domain`\n\n`trust_but_verify::domain::Domain` reads an\n{term}`requirements.sdk.application_domain`'s nodes as values implementing\n`trust_but_verify::domain::NodeContents`. Reading includes the loading and preparation\nneeded to fingerprint and format the returned value; failures return the\ndomain's error:\n\n```rust,ignore\npub trait Domain: Clone + Send + Sync {\n    // ...\n\n    /// The application's representation of a node's contents.\n    type NodeContent: NodeContents;\n\n    /// Load and prepare this node's contents.\n    fn node_content(&self, node: &Self::NodeId) -> Result<Self::NodeContent, Self::Error>;\n\n    // ...\n}\n\npub trait NodeContents: Send + Sync {\n    // ...\n}\n```",
+  "requirement": "{cite}`requirements.sdk.domain`\n\n`trust_but_verify::domain::Domain` reads an\n{term}`requirements.sdk.application_domain`'s nodes as values implementing\n`trust_but_verify::domain::NodeContents`. Reading includes the loading and preparation\nneeded to fingerprint and format the returned value; failures return the\ndomain's error:\n\n```rust,ignore\npub trait Domain: Clone + Send + Sync {\n    // ...\n\n    /// The application's representation of a node's contents.\n    type NodeContent: NodeContents;\n\n    /// Load and prepare this node's contents.\n    fn node_content(&self, node: &Self::NodeId) -> Result<Self::NodeContent, Self::Error>;\n\n    // ...\n}\n```",
   "determination": true,
-  "rationale": "The tests adequately check `requirements.sdk.graph.node_content`. I did not read the implementation. I judged the obligations from the requirement text.\n\n**Obligations and the tests that cover them**\n\n1. **`Domain::node_content` returns the node's contents as a `NodeContents` value, with the loading and preparation needed to fingerprint and format it.**\n   - `tests/contracts.rs#fn[identities_remain_stable_and_fingerprinting_uses_the_supplied_snapshot]` reads a node through `InspectionContext::read_snapshot`. It asserts that `content.format()` returns \"before\" and that `content.fingerprint()` equals the snapshot fingerprint. It also asserts that the domain was read exactly once, and that later changes to the underlying data do not change the returned value.\n   - `src/sdk.rs#mod[tests]/fn[requirement_edges_and_input_freshness_use_the_sdk]` calls `HabeasDomain::node_content` directly on a real domain. It asserts the exact fingerprint value and scheme, the formatted input JSON, and that the content's fingerprint matches the retained one. It also asserts that fingerprints change when the underlying files change.\n\n2. **Failures return the domain's error.**\n   - `tests/validation.rs#fn[wildcard_versions_still_check_inputs_and_errors]` sets `fail_read` in the test `Memory` domain and asserts that `record_is_current` returns `Err(\"read\")`.\n   - `tests/validation.rs#fn[queued_reads_selection_and_rendering_fail_before_agent_invocation]` asserts `ValidationError::Graph(\"read\")` for a read failure. It then sets `fail_prepare`, which makes `Memory::node_content` return `Err(\"render\")`, and asserts `ValidationError::Graph(\"render\")`. It also asserts that no dependency is recorded and no agent request is made. This covers the \"preparation\" half of the failure clause, which is separate from the load failure.\n\n**Other points**\n- The cited `requirements.sdk.domain` is context only. Its Clone/Send/Sync bound is not part of this subject's obligations.\n- The `NodeContents` trait members are covered through the `fingerprint` and `format` sub-requirements, which are separate requirements.\n- All the reviewed tests carry `{test}` references to `requirements.sdk.graph.node_content`, so there is no marking gap.\n\nI found no plausible requirement-violating behavior that these tests would accept.",
+  "rationale": "The tests adequately check `requirements.sdk.graph.node_content`.\n\n**Obligations derived from the text**\n1. `Domain::node_content` returns a value implementing `NodeContents` for a node.\n2. Reading includes the loading and preparation needed to fingerprint and format the value.\n3. A failure at any point, including preparation, returns the domain's error.\n\n**Success path**\n- `crates/trust-but-verify/tests/contracts.rs#fn[identities_remain_stable_and_fingerprinting_uses_the_supplied_snapshot]` reads through `read_snapshot`, which calls `node_content`. It asserts that `format()` returns \"before\". After the underlying data changes, it asserts that `fingerprint()` and `format()` still match the supplied snapshot. This shows the returned value carries what is needed for both operations.\n- `src/sdk.rs#mod[tests]/fn[requirement_edges_and_input_freshness_use_the_sdk]` calls `HabeasDomain::node_content` directly. It asserts that the returned content's fingerprint equals the expected fingerprint, and that it changes after the source file changes.\n\n**Failure path**\n- `crates/trust-but-verify/tests/validation.rs#fn[wildcard_versions_still_check_inputs_and_errors]` sets `fail_read`. It asserts that the domain's `Err(\"read\")` is returned unchanged through `is_current`.\n- `crates/trust-but-verify/tests/validation.rs#fn[queued_reads_selection_and_rendering_fail_before_agent_invocation]` covers two failures. With `fail_read`, it asserts `ValidationError::Graph(\"read\")`. With `fail_prepare`, it asserts `Graph(\"render\")`. The `Memory` domain's `node_content` returns `Err(\"render\")` for `fail_prepare`, so this exercises a preparation failure. The test also asserts that no dependencies are recorded and that no agent call is made.\n\n**Conclusion**\nEach clause (value returned, fingerprint and format readiness, and the load and preparation failure modes) has a test with a relevant assertion. The test items carry {test} references to the subject.\n\nTwo obligations belong to refining requirements and are not assessed here: `requirements.sdk.graph.node_content.fingerprint` and `requirements.sdk.graph.node_content.format`.",
   "references": "2326e495846bebd6b2ea9ac4b84d377d4289bf66629e949a8634c3d4ced4b90f",
   "inputs": [
     {
@@ -31,10 +31,6 @@
         "",
         "    // ...",
         "}",
-        "",
-        "pub trait NodeContents: Send + Sync {",
-        "    // ...",
-        "}",
         "```",
         ":::"
       ]
@@ -46,16 +42,40 @@
       ],
       "text": [
         ":::{req} domain",
+        "",
         "Every {term}`requirements.sdk.application_domain` implements",
         "`trust_but_verify::domain::Domain`. A domain is cloneable and safe to share between",
         "executions. The following chapters introduce its members one capability at a",
-        "time:",
+        "time.",
         "",
         "```rust,ignore",
-        "// Defined in trust_but_verify::domain.",
-        "/// Application data and operations used to evaluate criteria.",
         "pub trait Domain: Clone + Send + Sync {",
-        "    // ...",
+        "    type Error: Send;",
+        "    type NodeId: Clone + Eq + Send + Sync;",
+        "    type NodeContent: NodeContents;",
+        "    type EdgeLabel: Clone + Send + Sync;",
+        "",
+        "    fn node_path(&self, node: &Self::NodeId) -> NodePath;",
+        "    fn node_content(",
+        "        &self,",
+        "        node: &Self::NodeId,",
+        "    ) -> Result<Self::NodeContent, Self::Error>;",
+        "    fn outgoing_edges(",
+        "        &self,",
+        "        node: &Self::NodeId,",
+        "        label: Self::EdgeLabel,",
+        "    ) -> Result<Vec<Self::NodeId>, Self::Error>;",
+        "    fn load_evidence(",
+        "        &self,",
+        "        node: &Self::NodeId,",
+        "        criterion: &CriterionPath,",
+        "    ) -> impl Future<Output = Result<Option<Record<Self::NodeId, Self::EdgeLabel>>, Self::Error>> + Send;",
+        "    fn store_evidence(",
+        "        &self,",
+        "        node: &Self::NodeId,",
+        "        criterion: &CriterionPath,",
+        "        record: &Record<Self::NodeId, Self::EdgeLabel>,",
+        "    ) -> impl Future<Output = Result<(), Self::Error>> + Send;",
         "}",
         "```",
         ":::"
@@ -64,22 +84,22 @@
     {
       "file": "crates/trust-but-verify/tests/contracts.rs",
       "item": "fn[identities_remain_stable_and_fingerprinting_uses_the_supplied_snapshot]",
-      "hash": "5b555ba404f2d41c5bdc2c21146317c227c55eccb1c51b9ba507b0a7493be76a"
+      "hash": "b674e4cebcb6efc83126680f2e192ff172ebfab167973b43544d48ae6528c0e7"
     },
     {
       "file": "crates/trust-but-verify/tests/validation.rs",
       "item": "fn[wildcard_versions_still_check_inputs_and_errors]",
-      "hash": "1ebc05e3b28f2995651204da8584731d3cc2d919e762034b5445fe03525ecdab"
+      "hash": "2056a24b49cd7a2e254e477383e8e262d4a4c200bafb15a6614318e928de6bfa"
     },
     {
       "file": "crates/trust-but-verify/tests/validation.rs",
       "item": "fn[queued_reads_selection_and_rendering_fail_before_agent_invocation]",
-      "hash": "d047c0d9cb4460688bc6c736c010d6d6a333f62c665d41e304d17ed21d3263ae"
+      "hash": "d87746a361dc0b25514fe633d10fa2512926e1ba51ffb2643755ea717b6fd42b"
     },
     {
       "file": "src/sdk.rs",
       "item": "mod[tests]/fn[requirement_edges_and_input_freshness_use_the_sdk]",
-      "hash": "262dff4b5158c2533824662c60483343dbe3caa5be0dca66370245c04ba9c2e1"
+      "hash": "8c7767a3319874c082b7d4114dda121d857384a73fb31e4ba0093b3930581d66"
     },
     {
       "definition": "requirements.sdk.application_domain",
@@ -100,6 +120,16 @@
       "file": "crates/trust-but-verify/tests/validation.rs",
       "item": "impl[Memory/Domain]/fn[node_content]",
       "hash": "48e6e232c127fbbe6657844de47a68192f416aa79b7b135d4ef2a13968cdd9b7"
+    },
+    {
+      "file": "crates/trust-but-verify/tests/validation.rs",
+      "item": "struct[State]",
+      "hash": "c2b2b883beeff88f0c7feaeaa4362cb6b2faf855b231dc13920e97bc709d4ff5"
+    },
+    {
+      "file": "crates/trust-but-verify/tests/contracts.rs",
+      "item": "impl[Application/Domain]/fn[node_content]",
+      "hash": "c77807454faabf74c875247623015bf81fbfc3b2806a52fe355758adc045a5a3"
     }
   ],
   "format_version": 1,
@@ -135,7 +165,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "ee6a65a67818c77b92f59918366fead233220ea09f23ec0e2f0b4a001c4376f2"
+          "value": "08a38fc5202e5a4b3a0a0046e90139825c6e3baa93366a10619b8e7bcc6d7c92"
         }
       ]
     },
@@ -146,7 +176,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "99a6b87bf573dd2a534b60d556665293608eeae52f1fe300efc766a221edf28c"
+          "value": "877152da04beedf84fa17e2badad2ebaf956b8433bc2005fe585986cf7d0f146"
         }
       ]
     },
@@ -163,7 +193,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "3ddce9e1ff0aefbdb2249d2d88d6273e55e689c602e6ef96f8e583a64240e0fe"
+          "value": "5f1fcd0f1aa97ebb2ce3f9225cd48fc59e663e1215e4d4c801e434ad966d66f7"
         }
       ]
     },
@@ -180,7 +210,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "ed2ec56dd000faf61c13189c992fb719d6404bb4707d8654487f16ddc5b6272b"
+          "value": "ee6db2c6ac9a4c08700c5c7ac320fb3d3463490b166cd26eebb141e7f6147f7f"
         }
       ]
     },
@@ -197,7 +227,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "2d6335138ba82b8ca8b22e7ac1b09f712ea42a7c65d81c2ea215ab83b95ea8e3"
+          "value": "f600679868a81e3df3f2a309538cb211607328389902cad216efd03a50c58104"
         }
       ]
     },
@@ -214,7 +244,7 @@
         },
         {
           "scheme": "habeas-input-v1",
-          "value": "e62e6ebf55e7e4d93d752a202cc4a769c7e06be56b124ba8457352bbc6547618"
+          "value": "c7ddcef507841329938721c6d30eb38ed121f88ae883eb04fffe285d3c614cf4"
         }
       ]
     },
@@ -243,6 +273,40 @@
         {
           "scheme": "habeas-input-v1",
           "value": "87ddc07ac20720a9388e67ea932e3230debcd21c12e0fb72cc1636502ede6e82"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/tests/validation.rs"
+            },
+            "selector": "struct[State]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "78cca401c9048c4415f81079e0aaa5a5f8db948a64062cd04fb6982cf28b9e6d"
+        }
+      ]
+    },
+    {
+      "Node": [
+        {
+          "Source": {
+            "resource": {
+              "scheme": "repo",
+              "location": "crates/trust-but-verify/tests/contracts.rs"
+            },
+            "selector": "impl[Application/Domain]/fn[node_content]"
+          }
+        },
+        {
+          "scheme": "habeas-input-v1",
+          "value": "bbbe0cc52d73001c4040793324d5f9fad5848b571341c41ad46a671a702e3b79"
         }
       ]
     }
