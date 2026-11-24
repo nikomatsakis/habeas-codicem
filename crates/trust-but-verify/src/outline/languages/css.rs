@@ -60,6 +60,7 @@ const KINDS: &[KindRule] = &[
 
 // {impl}`requirements.references.outline_comments`
 // {impl}`requirements.references.structural_hash`
+// {impl}`requirements.sdk.sources.css.attachments`
 pub static PROFILE: Profile = Profile {
     name: "css",
     expando_char: '_',

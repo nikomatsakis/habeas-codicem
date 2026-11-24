@@ -96,6 +96,7 @@ pub struct LegacyOutline {
     pub nodes: Vec<OutlineNode>,
     /// Comments in source order.
     pub comments: Vec<OutlineComment>,
+    pub(crate) annotations: Vec<(usize, std::ops::Range<usize>)>,
 }
 
 /// A selector that does not resolve.
@@ -289,6 +290,7 @@ impl LineIndex {
 
 /// The plain-text profile: one anonymous `line` node per non-blank line.
 // {impl}`requirements.references.outline_selectors`
+// {impl}`requirements.sdk.sources.plain-text.attachments`
 fn plain_text(
     profile: &'static Profile,
     source: &str,
@@ -337,6 +339,7 @@ fn plain_text(
         profile,
         nodes,
         comments: Vec::new(),
+        annotations: Vec::new(),
     }
 }
 
@@ -569,6 +572,7 @@ impl<'tree, 'source> Builder<'tree, 'source> {
         encoder.finish()
     }
 
+    // {impl}`requirements.sdk.outlines.attachments.fingerprint`
     fn encode(&self, encoder: &mut Encoder, node: Node<'_>, index: usize, identity: bool) {
         if identity
             && self
@@ -625,6 +629,7 @@ impl<'tree, 'source> Builder<'tree, 'source> {
     // {impl}`requirements.references.outline_selectors`
     fn finish(self, lines: &LineIndex) -> LegacyOutline {
         let mut nodes = Vec::with_capacity(self.drafts.len());
+        let mut annotations = Vec::new();
         nodes.push(root_node(
             self.source,
             lines,
@@ -632,6 +637,13 @@ impl<'tree, 'source> Builder<'tree, 'source> {
             self.hash(0, true),
         ));
         for (index, draft) in self.drafts.iter().enumerate().skip(1) {
+            annotations.extend(
+                draft
+                    .attached
+                    .iter()
+                    .filter(|node| !self.is_comment(**node))
+                    .map(|node| (index, node.byte_range())),
+            );
             let identity_hash = self.hash(index, true);
             let label = match &draft.name {
                 Some(parts) => Label::Named(parts.clone()),
@@ -675,6 +687,7 @@ impl<'tree, 'source> Builder<'tree, 'source> {
             profile: self.profile,
             nodes,
             comments,
+            annotations,
         }
     }
 }

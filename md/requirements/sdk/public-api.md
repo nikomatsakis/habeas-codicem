@@ -138,6 +138,7 @@ documented TBV public API.
     - `struct OutlineAttachment` — [Declaration](outlines.md#habeas-req-requirements.sdk.outlines.OutlineAttachment) · [Inspect attachments](outlines.md#inspect-attachments)
       - `kind`
       - `span`
+      - `new()`
     - `struct OutlineContent` — [Declaration](outlines.md#habeas-req-requirements.sdk.outlines.parser) · [Load outline contents](outlines.md#load-outline-contents) · [Select another item from the same snapshot](outlines.md#select-another-item-from-the-same-snapshot)
       - `from_path()`
       - `from_id()`
@@ -167,6 +168,7 @@ documented TBV public API.
       - `structural_hash`
       - `attachments`
       - `new()`
+      - `with_attachments()`
     - `trait OutlineLang` — [Declaration](outlines.md#habeas-req-requirements.sdk.outlines.language_provider) · [Choose an outline language](outlines.md#choose-an-outline-language)
       - `name()`
       - `extensions()`

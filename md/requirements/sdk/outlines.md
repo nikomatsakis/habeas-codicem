@@ -420,7 +420,7 @@ impl Debug for Outline;
 `selector` addresses the item and `kind` describes it. `span` is a half-open byte range in the retained source. `structural_hash` identifies the item’s outline-relevant contents.
 `attachments` lists the source constructs assigned to this item under
 {cite}`requirements.sdk.outlines.attachments`. `OutlineItem::new` initializes
-the list to empty.
+the list to empty. `with_attachments` sets it to the supplied list.
 
 ```rust,ignore
 #[non_exhaustive]
@@ -439,6 +439,7 @@ impl OutlineItem {
         span: Range<usize>,
         structural_hash: String,
     ) -> Self;
+    pub fn with_attachments(self, attachments: Vec<OutlineAttachment>) -> Self;
 }
 ```
 
@@ -509,9 +510,14 @@ contribute to the owning item's structural hash.
 construct an attachment from these two fields.
 
 ```rust,ignore
+#[non_exhaustive]
 pub struct OutlineAttachment {
     pub kind: AttachmentKind,
     pub span: Range<usize>,
+}
+
+impl OutlineAttachment {
+    pub fn new(kind: AttachmentKind, span: Range<usize>) -> Self;
 }
 ```
 

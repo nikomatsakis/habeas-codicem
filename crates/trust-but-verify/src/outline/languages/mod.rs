@@ -54,8 +54,7 @@ macro_rules! language {
             }
 
             fn outline(&self, source: &str) -> Result<super::Outline, super::OutlineError> {
-                super::parse_with(&$profile, source)
-                    .map(|outline| super::Outline::from_legacy(&outline))
+                super::parse_with(&$profile, source).map(super::Outline::from_legacy)
             }
 
             fn fingerprint_scheme(&self) -> &str {

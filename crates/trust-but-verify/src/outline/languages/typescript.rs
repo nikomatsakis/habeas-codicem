@@ -39,6 +39,7 @@ const KINDS: &[KindRule] = &[
 ];
 
 // {impl}`requirements.references.outline_comments`
+// {impl}`requirements.sdk.sources.typescript.attachments`
 const TYPESCRIPT: Profile = Profile {
     name: "typescript",
     expando_char: '$',

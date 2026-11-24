@@ -152,6 +152,7 @@ const KINDS: &[KindRule] = &[
 // {impl}`requirements.references.rust_item_selectors`
 // {impl}`requirements.references.outline_comments`
 // {impl}`requirements.references.structural_hash`
+// {impl}`requirements.sdk.sources.rust.attachments`
 pub static PROFILE: Profile = Profile {
     name: "rust",
     expando_char: 'µ',

@@ -83,9 +83,11 @@ pub struct OutlineItem {
     pub kind: String,
     pub span: Range<usize>,
     pub structural_hash: String,
+    pub attachments: Vec<OutlineAttachment>,
 }
 
 impl OutlineItem {
+    // {impl}`requirements.sdk.outlines.attachments.empty`
     pub fn new(
         selector: String,
         kind: String,
@@ -97,8 +99,40 @@ impl OutlineItem {
             kind,
             span,
             structural_hash,
+            attachments: Vec::new(),
         }
     }
+
+    /// Set the language-defined attachments in source order.
+    pub fn with_attachments(mut self, attachments: Vec<OutlineAttachment>) -> Self {
+        self.attachments = attachments;
+        self
+    }
+}
+
+/// A language-defined construct owned by an outline item.
+// {impl}`requirements.sdk.outlines.OutlineAttachment`
+#[derive(Clone, Debug)]
+#[non_exhaustive]
+pub struct OutlineAttachment {
+    pub kind: AttachmentKind,
+    pub span: Range<usize>,
+}
+
+impl OutlineAttachment {
+    pub fn new(kind: AttachmentKind, span: Range<usize>) -> Self {
+        Self { kind, span }
+    }
+}
+
+/// How the language classifies the attached source.
+// {impl}`requirements.sdk.outlines.AttachmentKind`
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum AttachmentKind {
+    Comment,
+    Annotation,
+    Other(String),
 }
 
 /// Language rules for producing selectable source items.
@@ -180,7 +214,7 @@ impl OutlineContent {
             return Self::prepare(
                 filename,
                 source.clone(),
-                Outline::from_legacy(&parse_provider(profile, &source)?),
+                Outline::from_legacy(parse_provider(profile, &source)?),
                 &format!("{}-structural-v1", profile.profile().name),
             );
         }
@@ -331,22 +365,43 @@ impl NodeContents for OutlineContent {
 }
 
 impl Outline {
-    pub(crate) fn from_legacy(outline: &LegacyOutline) -> Self {
-        Self {
-            items: outline
-                .nodes
-                .iter()
-                .map(|node| OutlineItem {
-                    selector: node.selector.clone(),
-                    kind: node.kind.to_owned(),
-                    span: node.source_start..node.byte_end,
-                    structural_hash: node.structural_hash.clone(),
-                })
-                .collect(),
+    // {impl}`requirements.sdk.outlines.attachments`
+    // {impl}`requirements.sdk.outlines.attachments.order`
+    // {impl}`requirements.sdk.outlines.attachments.comments`
+    pub(crate) fn from_legacy(outline: LegacyOutline) -> Self {
+        let mut items: Vec<_> = outline
+            .nodes
+            .into_iter()
+            .map(|node| {
+                OutlineItem::new(
+                    node.selector,
+                    node.kind.to_owned(),
+                    node.source_start..node.byte_end,
+                    node.structural_hash,
+                )
+            })
+            .collect();
+        for comment in outline.comments {
+            items[comment.owner].attachments.push(OutlineAttachment {
+                kind: AttachmentKind::Comment,
+                span: comment.byte_start..comment.byte_end,
+            });
         }
+        for (owner, span) in outline.annotations {
+            items[owner].attachments.push(OutlineAttachment {
+                kind: AttachmentKind::Annotation,
+                span,
+            });
+        }
+        for item in &mut items {
+            item.attachments
+                .sort_by_key(|attachment| attachment.span.start);
+        }
+        Self { items }
     }
 }
 
+// {impl}`requirements.sdk.outlines.attachments.span`
 fn validate_outline(outline: &Outline, source: &str) -> Result<(), OutlineError> {
     if outline
         .items
@@ -360,6 +415,19 @@ fn validate_outline(outline: &Outline, source: &str) -> Result<(), OutlineError>
     for item in &outline.items {
         if source.get(item.span.clone()).is_none() {
             return Err(selection_error("outline item has an invalid source span"));
+        }
+        if item
+            .attachments
+            .iter()
+            .any(|attachment| source.get(attachment.span.clone()).is_none())
+        {
+            return Err(selection_error("attachment has an invalid source span"));
+        }
+        if !item
+            .attachments
+            .is_sorted_by_key(|attachment| attachment.span.start)
+        {
+            return Err(selection_error("attachments must be in source order"));
         }
         parse_selector(&item.selector).map_err(selection_error)?;
     }

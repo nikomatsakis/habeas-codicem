@@ -931,6 +931,7 @@ fn structural_fingerprint_example_tracks_the_selected_function() {
 // {test}`requirements.sdk.sources.markdown.fingerprints`
 // {test}`requirements.sdk.sources.toml.fingerprints`
 // {test}`requirements.sdk.sources.yaml.fingerprints`
+// {test}`requirements.sdk.outlines.attachments.fingerprint`
 #[test]
 fn bundled_fingerprints_exclude_comments_and_preserve_word_boundaries() {
     fn fingerprint(path: &str, text: &str, selector: &str) -> trust_but_verify::graph::Fingerprint {
@@ -1245,4 +1246,160 @@ fn python_nested_definitions_use_the_nearest_outline_ancestor() {
             .trim_start()
             .starts_with("async def async_inner")
     );
+}
+
+// {test}`requirements.sdk.outlines.attachments`
+// {test}`requirements.sdk.outlines.attachments.span`
+// {test}`requirements.sdk.outlines.attachments.order`
+// {test}`requirements.sdk.outlines.attachments.comments`
+// {test}`requirements.sdk.sources.rust.attachments`
+#[test]
+fn rust_attachments_keep_the_owner_kind_and_original_bytes() {
+    use trust_but_verify::outline::AttachmentKind::{Annotation, Comment};
+    let source = "//! file docs\nmod m {\n    /// café\n    /// café\n    #[inline]\n    fn f() {} // trailing\n}\n";
+    let snapshot = OutlineContent::from_source("example.rs", source.into()).unwrap();
+    let selected = snapshot.select("mod[m]/fn[f]").unwrap();
+    let items = &selected.outline().items;
+    let records = |index: usize| {
+        items[index]
+            .attachments
+            .iter()
+            .map(|a| (a.kind.clone(), source[a.span.clone()].trim_end()))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(records(0), [(Comment, "//! file docs")]);
+    assert!(records(1).is_empty());
+    assert_eq!(
+        records(2),
+        [
+            (Comment, "/// café"),
+            (Comment, "/// café"),
+            (Annotation, "#[inline]"),
+            (Comment, "// trailing")
+        ]
+    );
+    assert!(items[2].attachments[0].span.end <= items[2].attachments[1].span.start);
+}
+
+// {test}`requirements.sdk.outlines.attachments.empty`
+// {test}`requirements.sdk.sources.python.attachments`
+// {test}`requirements.sdk.sources.markdown.attachments`
+// {test}`requirements.sdk.sources.typescript.attachments`
+// {test}`requirements.sdk.sources.css.attachments`
+// {test}`requirements.sdk.sources.yaml.attachments`
+// {test}`requirements.sdk.sources.toml.attachments`
+// {test}`requirements.sdk.sources.plain-text.attachments`
+#[test]
+fn bundled_languages_classify_only_their_attachment_syntax() {
+    use trust_but_verify::outline::AttachmentKind::{Annotation, Comment};
+    for (path, source, expected) in [
+        (
+            "test.py",
+            "# doc\n@a\n@b(1)\ndef f():\n    \"\"\"# literal\"\"\"\n",
+            vec![
+                (Comment, "# doc"),
+                (Annotation, "@a"),
+                (Annotation, "@b(1)"),
+            ],
+        ),
+        (
+            "test.ts",
+            "/** doc */\nconst s = '// string'; // trailing\n",
+            vec![(Comment, "/** doc */"), (Comment, "// trailing")],
+        ),
+        (
+            "test.tsx",
+            "/* doc */\nconst s = <p>// text</p>;\n",
+            vec![(Comment, "/* doc */")],
+        ),
+        (
+            "test.css",
+            "/* block */\na { color: red; }\n// line\n",
+            vec![(Comment, "/* block */"), (Comment, "// line")],
+        ),
+        (
+            "test.yaml",
+            "a: |\n  # literal\nb: 1 # real\n",
+            vec![(Comment, "# real")],
+        ),
+        (
+            "test.toml",
+            "a = '# literal' # real\n",
+            vec![(Comment, "# real")],
+        ),
+        (
+            "test.md",
+            "<!-- block -->\n\nA <!-- inline --> word.\n\n```html\n<!-- code -->\n```\n",
+            vec![(Comment, "<!-- block -->")],
+        ),
+        ("test.txt", "# just text\n", vec![]),
+    ] {
+        let snapshot = OutlineContent::from_source(path, source.into()).unwrap();
+        let mut found: Vec<_> = snapshot
+            .outline()
+            .items
+            .iter()
+            .flat_map(|i| &i.attachments)
+            .collect();
+        found.sort_by_key(|a| a.span.start);
+        assert_eq!(
+            found
+                .iter()
+                .map(|a| (a.kind.clone(), source[a.span.clone()].trim_end()))
+                .collect::<Vec<_>>(),
+            expected,
+            "{path}"
+        );
+        if path == "test.py" {
+            assert_eq!(
+                snapshot
+                    .outline()
+                    .items
+                    .iter()
+                    .find(|item| item.selector == "def[f]")
+                    .unwrap()
+                    .attachments
+                    .len(),
+                3
+            );
+        }
+    }
+}
+
+// {test}`requirements.sdk.outlines.OutlineAttachment`
+// {test}`requirements.sdk.outlines.AttachmentKind`
+// {test}`requirements.sdk.outlines.attachments.span`
+#[test]
+fn custom_attachment_spans_are_checked_against_the_original_snapshot() {
+    use trust_but_verify::outline::{AttachmentKind, OutlineAttachment};
+    #[derive(Clone)]
+    struct Custom {
+        span: Range<usize>,
+    }
+    impl OutlineLang for Custom {
+        fn name(&self) -> &str {
+            "custom"
+        }
+        fn extensions(&self) -> &[&str] {
+            &["custom"]
+        }
+        fn fingerprint_scheme(&self) -> &str {
+            "custom-v1"
+        }
+        fn outline(&self, source: &str) -> Result<Outline, OutlineError> {
+            let marker =
+                OutlineAttachment::new(AttachmentKind::Other("marker".into()), self.span.clone());
+            let item =
+                OutlineItem::new(String::new(), String::new(), 0..source.len(), "root".into())
+                    .with_attachments(vec![marker]);
+            Ok(Outline::new(vec![item]))
+        }
+    }
+    let load = |span| OutlineContent::from_source_with(&Custom { span }, "one.custom", "é".into());
+    let snapshot = load(0..2).unwrap();
+    let attachment = &snapshot.outline().items[0].attachments[0];
+    assert_eq!(attachment.kind, AttachmentKind::Other("marker".into()));
+    assert_eq!(&snapshot.text()[attachment.span.clone()], "é");
+    assert!(load(1..2).is_err());
+    assert!(load(0..3).is_err());
 }

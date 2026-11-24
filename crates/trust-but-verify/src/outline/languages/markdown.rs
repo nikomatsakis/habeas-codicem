@@ -44,6 +44,7 @@ const KINDS: &[KindRule] = &[
 
 // {impl}`requirements.references.outline_comments`
 // {impl}`requirements.references.structural_hash`
+// {impl}`requirements.sdk.sources.markdown.attachments`
 pub static PROFILE: Profile = Profile {
     name: "markdown",
     expando_char: '$',

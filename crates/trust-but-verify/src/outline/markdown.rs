@@ -210,6 +210,7 @@ pub(super) fn parse(
         profile,
         nodes: builder.nodes,
         comments,
+        annotations: Vec::new(),
     })
 }
 
