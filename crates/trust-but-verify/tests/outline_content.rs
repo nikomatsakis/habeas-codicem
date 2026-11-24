@@ -1510,7 +1510,12 @@ fn custom_attachment_spans_are_checked_against_the_original_snapshot() {
             Ok(Outline::new(vec![item]))
         }
     }
-    let load = |span| OutlineContent::from_source_with(&Custom { span }, "one.custom", "é".into());
+    let load = |span| {
+        let language = Custom { span };
+        assert_eq!(language.name(), "custom");
+        assert_eq!(language.extensions(), &["custom"]);
+        OutlineContent::from_source_with(&language, "one.custom", "é".into())
+    };
     let snapshot = load(Span::new(0, 2)).unwrap();
     let attachment = &snapshot.outline().items[0].attachments[0];
     assert_eq!(attachment.kind, AttachmentKind::Other("marker".into()));
