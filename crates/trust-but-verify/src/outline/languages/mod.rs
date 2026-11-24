@@ -67,7 +67,9 @@ macro_rules! language {
                 rule: &serde_json::Map<String, serde_json::Value>,
             ) -> Result<Vec<std::ops::Range<usize>>, super::OutlineError> {
                 if $profile.language.is_some() {
-                    super::parse_with(&$profile, source)?;
+                    if let Some(error) = super::parse_with(&$profile, source)?.diagnostic {
+                        return Err(error);
+                    }
                     let compiled = crate::structural::StructuralRule::compile($profile.name, rule)
                         .map_err(|message| super::OutlineError { line: 1, message })?;
                     return Ok(compiled.matches(source));

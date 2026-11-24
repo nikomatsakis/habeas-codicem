@@ -2012,7 +2012,7 @@ pub(crate) enum ReferenceContexts {
         items: crate::outline_items::OutlineItems,
         rust: bool,
     },
-    Recovered(Vec<std::ops::Range<usize>>),
+    Unavailable,
 }
 
 impl ReferenceContexts {
@@ -2028,11 +2028,7 @@ impl ReferenceContexts {
                 items,
                 rust: profile.name == "rust",
             },
-            // Invalid source has no public outline. Preserve grammar recovery
-            // for inline references in intact comments around a syntax error.
-            Err(_) => Self::Recovered(
-                crate::outline::comment_ranges(profile, content).unwrap_or_default(),
-            ),
+            Err(_) => Self::Unavailable,
         }
     }
 
@@ -2043,7 +2039,7 @@ impl ReferenceContexts {
                 .comments
                 .iter()
                 .any(|comment| comment.span.contains(&byte)),
-            Self::Recovered(ranges) => ranges.iter().any(|range| range.contains(&byte)),
+            Self::Unavailable => false,
         }
     }
 
@@ -2053,8 +2049,10 @@ impl ReferenceContexts {
         }
         match self {
             Self::Text { markdown } => crate::fenced::text_fences(content, *markdown),
-            Self::Parsed { items, rust } => crate::fenced::comment_fences(content, items, *rust),
-            Self::Recovered(_) => Vec::new(),
+            Self::Parsed { items, rust } if items.diagnostic.is_none() => {
+                crate::fenced::comment_fences(content, items, *rust)
+            }
+            Self::Parsed { .. } | Self::Unavailable => Vec::new(),
         }
     }
 }

@@ -295,9 +295,10 @@ impl OutlineContent {
 :::
 
 :::{req} errors
-File-read and parsing failures return errors, distinct from successful contents
-for an empty file. Selecting a language commits to that language's parsing
-rules; a parse failure is reported rather than interpreted as plain text.
+The outline API makes a best effort to recover from parse errors.
+File-read and unrecoverable parsing failures return errors, distinct from
+successful contents for an empty file. Selecting a language commits to that
+language's parsing rules.
 A malformed selector, a missing item, or an ambiguity not permitted by
 {cite}`requirements.sdk.outlines.selector_syntax` also returns an error.
 :::
@@ -394,11 +395,14 @@ source under the language's rules. The root has an empty selector and span
 :test: crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]
 
 Lists the selectable items from a single parse, including the root for the whole file.
+`diagnostic` holds the first syntax error reported during recovery, or `None` for a clean parse.
+`Outline::new` initializes it to `None`.
 
 ```rust,ignore
 #[non_exhaustive]
 pub struct Outline {
     pub items: Vec<OutlineItem>,
+    pub diagnostic: Option<OutlineError>,
 }
 
 impl Outline {

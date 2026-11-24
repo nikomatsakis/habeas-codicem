@@ -63,11 +63,16 @@ impl OutlineId {
 #[non_exhaustive]
 pub struct Outline {
     pub items: Vec<OutlineItem>,
+    /// The first syntax error reported while recovering this outline.
+    pub diagnostic: Option<OutlineError>,
 }
 
 impl Outline {
     pub fn new(items: Vec<OutlineItem>) -> Self {
-        Self { items }
+        Self {
+            items,
+            diagnostic: None,
+        }
     }
 }
 
@@ -397,7 +402,10 @@ impl Outline {
             item.attachments
                 .sort_by_key(|attachment| attachment.span.start);
         }
-        Self { items }
+        Self {
+            items,
+            diagnostic: outline.diagnostic,
+        }
     }
 }
 

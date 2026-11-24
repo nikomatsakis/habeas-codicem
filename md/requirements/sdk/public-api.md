@@ -133,6 +133,7 @@ documented TBV public API.
   - `mod outline` — [Source outlines](outlines.md)
     - `enum AttachmentKind` — [Declaration](outlines.md#habeas-req-requirements.sdk.outlines.AttachmentKind) · [Inspect attachments](outlines.md#inspect-attachments)
     - `struct Outline` — [Declaration](outlines.md#habeas-req-requirements.sdk.outlines.Outline) · [Inspect selectable items](outlines.md#inspect-selectable-items)
+      - `diagnostic`
       - `items`
       - `new()`
     - `struct OutlineAttachment` — [Declaration](outlines.md#habeas-req-requirements.sdk.outlines.OutlineAttachment) · [Inspect attachments](outlines.md#inspect-attachments)

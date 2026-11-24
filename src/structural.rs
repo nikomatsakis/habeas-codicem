@@ -376,6 +376,12 @@ pub(crate) fn snippet_matches(
     let filename = format!("snippet.{}", rule.language().profile.extensions[0]);
     let outline = crate::outline_items::for_file(Path::new(&filename), snippet)
         .map_err(|error| format!("does not parse as {}: {error}", query.body.language))?;
+    if let Some(error) = &outline.diagnostic {
+        return Err(format!(
+            "does not parse as {}: {error}",
+            query.body.language
+        ));
+    }
     let within = match within_query(queries, query)? {
         None => None,
         Some(target) => {

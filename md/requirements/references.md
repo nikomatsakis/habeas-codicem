@@ -385,8 +385,8 @@ spelling MUST be documented.
 :::{req} outlines
 Habeas MUST parse Rust, Python, TypeScript, CSS, Markdown, TOML, and YAML
 sources with pinned tree-sitter grammars, selected by file extension compared
-case-insensitively. A source with any syntax error MUST fail to parse, reporting
-the line of its first error. Every
+case-insensitively. When validating outline evidence inputs, Habeas MUST report
+the line of the first syntax error in a recovered outline. Every
 other text file MUST use a plain-text profile in which each line that is not
 blank is an anonymous outline node of kind `line`. Each supported language MUST
 have an outline profile that maps grammar node kinds to short outline kind names

@@ -87,6 +87,7 @@ pub(crate) struct OutlineComment {
 // {impl}`requirements.references.outlines`
 #[doc(hidden)]
 pub struct LegacyOutline {
+    pub(crate) diagnostic: Option<OutlineError>,
     pub profile: &'static Profile,
     /// Nodes in source pre-order; index 0 is the root.
     pub nodes: Vec<OutlineNode>,
@@ -162,8 +163,8 @@ fn parse_grammar(
         return markdown::parse(profile, language, source, redaction, &lines);
     }
     let tree = parse_tree(profile, language, source)?;
-    check_errors(&tree, &lines)?;
-    Ok(Builder::new(profile, source, redaction, &tree).finish(&lines))
+    let diagnostic = syntax_diagnostic(&tree, |byte| lines.line(byte));
+    Ok(Builder::new(profile, source, redaction, &tree).finish(&lines, diagnostic))
 }
 
 // {cite}`habeas:util`
@@ -185,43 +186,17 @@ fn parse_tree(
     })
 }
 
-/// Locate comment prose even when an unrelated syntax error prevents outlining.
-/// Recovery nodes do not make string literals or other data into comments.
-// {impl}`requirements.references.reference_contexts`
-#[doc(hidden)]
-pub fn comment_ranges(
-    profile: &'static Profile,
-    source: &str,
-) -> Result<Vec<std::ops::Range<usize>>, OutlineError> {
-    let Some(language) = profile.language else {
-        return Ok(Vec::new());
-    };
-    let tree = parse_tree(profile, language, source)?;
-    let mut pending = vec![tree.root_node()];
-    let mut ranges = Vec::new();
-    while let Some(node) = pending.pop() {
-        if (profile.is_comment)(node, source) {
-            ranges.push(node.byte_range());
-        } else {
-            let mut cursor = node.walk();
-            pending.extend(node.named_children(&mut cursor));
-        }
-    }
-    ranges.sort_by_key(|range| range.start);
-    Ok(ranges)
-}
-
-/// Reports the first syntax error in a tree.
-fn check_errors(tree: &Tree, lines: &LineIndex) -> Result<(), OutlineError> {
+/// Reports the first syntax error using the caller's source coordinates.
+fn syntax_diagnostic(tree: &Tree, line: impl Fn(usize) -> usize) -> Option<OutlineError> {
     let root = tree.root_node();
     if !root.has_error() {
-        return Ok(());
+        return None;
     }
     let mut stack = vec![root];
     while let Some(node) = stack.pop() {
         if node.is_error() || node.is_missing() {
-            return Err(OutlineError {
-                line: lines.line(node.start_byte()),
+            return Some(OutlineError {
+                line: line(node.start_byte()),
                 message: if node.is_missing() {
                     format!("syntax error: missing {}", node.kind())
                 } else {
@@ -236,8 +211,8 @@ fn check_errors(tree: &Tree, lines: &LineIndex) -> Result<(), OutlineError> {
             .collect::<Vec<_>>();
         stack.extend(children.into_iter().rev());
     }
-    Err(OutlineError {
-        line: 1,
+    Some(OutlineError {
+        line: line(root.start_byte()),
         message: "syntax error".to_owned(),
     })
 }
@@ -334,6 +309,7 @@ fn plain_text(
     nodes[0].structural_hash = root_hash.finish();
     nodes[0].identity_hash = Encoder::new().finish();
     LegacyOutline {
+        diagnostic: None,
         profile,
         nodes,
         comments: Vec::new(),
@@ -625,7 +601,7 @@ impl<'tree, 'source> Builder<'tree, 'source> {
     /// assigns hashes, selectors, line ranges including attached siblings,
     /// and comment owners.
     // {impl}`requirements.references.outline_selectors`
-    fn finish(self, lines: &LineIndex) -> LegacyOutline {
+    fn finish(self, lines: &LineIndex, diagnostic: Option<OutlineError>) -> LegacyOutline {
         let mut nodes = Vec::with_capacity(self.drafts.len());
         let mut annotations = Vec::new();
         nodes.push(root_node(
@@ -682,6 +658,7 @@ impl<'tree, 'source> Builder<'tree, 'source> {
         disambiguate(&mut nodes);
         let comments = assign_comments(&mut nodes, self.comments, self.source, lines);
         LegacyOutline {
+            diagnostic,
             profile: self.profile,
             nodes,
             comments,

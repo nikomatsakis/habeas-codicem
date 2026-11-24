@@ -222,12 +222,19 @@ impl OutlineCache {
                 crate::config::user_config_path().ok().as_deref(),
             );
             let profile = outline::profile_for_path(&path);
+            let items = crate::outline_items::for_file(&path, &source)?;
+            if let Some(error) = &items.diagnostic {
+                return Err(format!(
+                    "{file}: cannot parse {} source: {error}",
+                    profile.name
+                ));
+            }
             let outline =
                 outline::parse_redacted(profile, &source, &redaction).map_err(|error| {
                     format!("{file}: cannot parse {} source: {error}", profile.name)
                 })?;
             Ok(ParsedSource {
-                items: crate::outline_items::for_file(&path, &source)?,
+                items,
                 redacted: redaction.apply(&source).into_owned(),
                 path: fs::canonicalize(&path).unwrap_or(path),
                 source,

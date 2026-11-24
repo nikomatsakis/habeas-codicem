@@ -144,6 +144,9 @@ pub(crate) fn untested_tests(
 ) -> Result<Vec<(usize, usize, String)>, trust_but_verify::outline::OutlineError> {
     use trust_but_verify::outline::{AttachmentKind, OutlineLang, languages::Rust};
     let public = Rust.outline(source)?;
+    if let Some(error) = public.diagnostic {
+        return Err(error);
+    }
     let items = crate::outline_items::OutlineItems::new(&public, source);
     // Only an explicit, valid `{test}` reference supplies a test obligation.
     let counts = |kind: crate::ReferenceKind, name: &str| {

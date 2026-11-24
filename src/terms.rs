@@ -125,7 +125,7 @@ fn direct_references(
                     ) =>
                 {
                     // Selected evidence may be an incomplete Rust fragment. Keep the
-                    // existing lexical recovery for fragments the outline rejects.
+                    // lexical fallback for fragments without a usable outline.
                     let ranges = match crate::outline_items::for_file(Path::new(&file), &text) {
                         Ok(items) => items
                             .comments

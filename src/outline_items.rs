@@ -9,6 +9,7 @@ pub(crate) struct Comment {
 }
 
 pub(crate) struct OutlineItems {
+    pub(crate) diagnostic: Option<trust_but_verify::outline::OutlineError>,
     pub(crate) comments: Vec<Comment>,
     parents: Vec<Option<usize>>,
     children: Vec<Vec<usize>>,
@@ -60,6 +61,7 @@ impl OutlineItems {
         }
         comments.sort_by_key(|comment| comment.span.start);
         Self {
+            diagnostic: outline.diagnostic.clone(),
             comments,
             parents,
             children,

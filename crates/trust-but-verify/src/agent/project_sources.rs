@@ -1085,12 +1085,12 @@ mod tests {
             );
         }
         std::fs::write(root.path().join("invalid.rs"), "fn {").unwrap();
-        assert!(
-            session
-                .dispatch("outline_source", &json!({"path":"invalid.rs"}))
-                .await
-                .is_err()
-        );
+        let recovered = session
+            .dispatch("outline_source", &json!({"path":"invalid.rs"}))
+            .await
+            .unwrap();
+        let outline: Value = serde_json::from_str(&recovered.text).unwrap();
+        assert_eq!(outline["items"][0]["selector"], "");
         assert_eq!(domain.0.lock().unwrap().reads, 0);
     }
 }

@@ -899,7 +899,32 @@ fn rust_items_attach_documentation_and_preserve_structural_hashes() {
         .select("mod[auth]/fn[check]")
         .unwrap();
     assert_ne!(function.fingerprint(), changed.fingerprint());
-    assert!(OutlineContent::from_source("invalid.rs", "fn {".into()).is_err());
+    assert!(function.outline().diagnostic.is_none());
+}
+
+// {test}`requirements.sdk.outlines.errors`
+#[test]
+fn recovered_outlines_keep_the_diagnostic_and_intact_items() {
+    use trust_but_verify::outline::AttachmentKind;
+    let source = "// intact comment\nfn intact() {}\nfn broken( {\n";
+    let root = OutlineContent::from_source("broken.rs", source.into()).unwrap();
+    let intact = root.select("fn[intact]").unwrap();
+    let error = intact.outline().diagnostic.as_ref().unwrap();
+    assert_eq!(error.line, 3);
+    assert!(error.message.contains("syntax error"));
+    let comments: Vec<_> = root
+        .outline()
+        .items
+        .iter()
+        .flat_map(|item| &item.attachments)
+        .filter(|attachment| attachment.kind == AttachmentKind::Comment)
+        .map(|attachment| &source[attachment.span.clone()])
+        .collect();
+    assert_eq!(comments, ["// intact comment"]);
+    assert_eq!(
+        languages::Rust.outline(source).unwrap().diagnostic.as_ref(),
+        Some(error)
+    );
 }
 
 // {test}`requirements.sdk.graph.structural-fingerprint`

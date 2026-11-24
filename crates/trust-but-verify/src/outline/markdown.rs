@@ -10,8 +10,8 @@ use tree_sitter::Node;
 
 use super::{
     DraftComment, Encoder, HASH_DIGITS, Label, LegacyOutline, LineIndex, NameRule, OutlineError,
-    OutlineNode, Profile, Redaction, Segment, assign_comments, check_errors, disambiguate,
-    parse_tree, root_node,
+    OutlineNode, Profile, Redaction, Segment, assign_comments, disambiguate, parse_tree, root_node,
+    syntax_diagnostic,
 };
 
 /// A parsing view with a source offset for each byte boundary. Removing quote
@@ -162,6 +162,7 @@ struct Builder<'a> {
     nodes: Vec<OutlineNode>,
     cores: Vec<usize>,
     comments: Vec<DraftComment>,
+    diagnostic: Option<OutlineError>,
 }
 
 // {impl}`requirements.sdk.sources.markdown.paragraphs`
@@ -185,6 +186,7 @@ pub(super) fn parse(
         nodes: vec![root_node(source, lines, String::new(), String::new())],
         cores: vec![0],
         comments: Vec::new(),
+        diagnostic: None,
     };
     builder.context(View::original(source), 0)?;
     for index in 0..builder.nodes.len() {
@@ -207,6 +209,7 @@ pub(super) fn parse(
     disambiguate(&mut builder.nodes);
     let comments = assign_comments(&mut builder.nodes, builder.comments, source, lines);
     Ok(LegacyOutline {
+        diagnostic: builder.diagnostic,
         profile,
         nodes: builder.nodes,
         comments,
@@ -228,10 +231,10 @@ impl Builder<'_> {
         if !view.text.contains(":::") {
             if let Some(view) = setext_sections(&view, original.root_node()) {
                 let tree = parse_tree(self.profile, self.grammar, &view.text)?;
-                check_errors(&tree, &LineIndex::new(&view.text))?;
+                self.record_diagnostic(&tree, &view);
                 return self.copy(tree.root_node(), &view, &HashSet::new(), parent);
             }
-            check_errors(&original, &LineIndex::new(&view.text))?;
+            self.record_diagnostic(&original, &view);
             return self.copy(original.root_node(), &view, &HashSet::new(), parent);
         }
         let (view, directives) = fences(view, original.root_node());
@@ -242,12 +245,19 @@ impl Builder<'_> {
         } else {
             view
         };
-        check_errors(&tree, &LineIndex::new(&view.text)).map_err(|mut error| {
-            let local = LineIndex::new(&view.text).starts[error.line - 1];
-            error.line = self.lines.line(view.offsets[local]);
-            error
-        })?;
+        self.record_diagnostic(&tree, &view);
         self.copy(tree.root_node(), &view, &directives, parent)
+    }
+
+    fn record_diagnostic(&mut self, tree: &tree_sitter::Tree, view: &View) {
+        if let Some(error) = syntax_diagnostic(tree, |byte| self.lines.line(view.offsets[byte]))
+            && self
+                .diagnostic
+                .as_ref()
+                .is_none_or(|first| error.line < first.line)
+        {
+            self.diagnostic = Some(error);
+        }
     }
 
     // {cite}`habeas:util`
