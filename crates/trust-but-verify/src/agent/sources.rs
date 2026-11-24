@@ -1,6 +1,6 @@
 //! Source tools share provider operations; search results remain discovery-only.
 
-use super::{ToolDelivery, ToolFactory, ToolSession};
+use super::{Pages, ToolDelivery, ToolFactory, ToolSession};
 use crate::domain::Domain;
 use crate::graph::Dependency;
 use crate::resource::OutlineId;
@@ -39,20 +39,16 @@ where
         D::NodeId: 'a,
         D::EdgeLabel: 'a,
     {
-        Box::new(SourceSession {
-            tools: self,
-            pages: Vec::new(),
-        })
+        Box::new(SourceSession { tools: self })
     }
 }
 
 // {cite}`habeas:util`
-struct SourceSession<'a, P, F, N, L> {
+struct SourceSession<'a, P, F> {
     tools: &'a SourceTools<P, F>,
-    pages: Vec<ToolDelivery<N, L>>,
 }
 
-impl<D, P, F> ToolSession<D> for SourceSession<'_, P, F, D::NodeId, D::EdgeLabel>
+impl<D, P, F> ToolSession<D> for SourceSession<'_, P, F>
 where
     D: Domain,
     P: SourceProvider,
@@ -62,12 +58,6 @@ where
         + Sync,
 {
     // {cite}`habeas:util`
-    // {impl}`requirements.sdk.graph.context-tools.read_source.fn`
-    // {impl}`requirements.sdk.graph.context-tools.list_sources.fn`
-    // {impl}`requirements.sdk.graph.context-tools.outline_source.fn`
-    // {impl}`requirements.sdk.graph.context-tools.search_text.fn`
-    // {impl}`requirements.sdk.graph.context-tools.search_structure.fn`
-    // {impl}`requirements.sdk.graph.context-tools.pages.fn`
     fn definitions(&self) -> io::Result<Vec<ToolDefinition>> {
         let resource = json!({"type":"object","required":["scheme","location"],
             "properties":{"scheme":{"type":"string"},"location":{"type":"string"}}});
@@ -82,31 +72,30 @@ where
                 "parameters":{"type":"object","required":["resource"],"properties":{"resource":resource}}}),
             json!({"name":"read_source","description":"Read an outline node from a resource. selector is an outline selector, or empty for the whole file. Long contents have page IDs.",
                 "parameters":{"type":"object","required":["resource"],"properties":{"resource":resource,"selector":{"type":"string"}}}}),
-            json!({"name":"get_source_page","description":"Read another page from a previously prepared source result.",
-                "parameters":{"type":"object","required":["page"],"properties":{"page":{"type":"integer","minimum":0}}}}),
         ].into_iter().map(|value| serde_json::from_value(value).map_err(io::Error::other)).collect()
     }
-    // {impl}`requirements.sdk.graph.context-tools.read_source.behavior`
-    // {impl}`requirements.sdk.graph.context-tools.read_source.inputs`
-    // {impl}`requirements.sdk.graph.context-tools.list_sources.behavior`
-    // {impl}`requirements.sdk.graph.context-tools.list_sources.inputs`
-    // {impl}`requirements.sdk.graph.context-tools.outline_source.behavior`
-    // {impl}`requirements.sdk.graph.context-tools.outline_source.inputs`
-    // {impl}`requirements.sdk.graph.context-tools.search_text.behavior`
-    // {impl}`requirements.sdk.graph.context-tools.search_text.inputs`
-    // {impl}`requirements.sdk.graph.context-tools.search_structure.behavior`
-    // {impl}`requirements.sdk.graph.context-tools.search_structure.inputs`
-    // {impl}`requirements.sdk.graph.context-tools.pages.behavior`
-    // {impl}`requirements.sdk.graph.context-tools.pages.inputs`
+    // {impl}`requirements.sdk.graph.validation-context.read_source.behavior`
+    // {impl}`requirements.sdk.graph.validation-context.read_source.inputs`
+    // {impl}`requirements.sdk.graph.validation-context.list_sources.behavior`
+    // {impl}`requirements.sdk.graph.validation-context.list_sources.inputs`
+    // {impl}`requirements.sdk.graph.validation-context.outline_source.behavior`
+    // {impl}`requirements.sdk.graph.validation-context.outline_source.inputs`
+    // {impl}`requirements.sdk.graph.search.search_text.behavior`
+    // {impl}`requirements.sdk.graph.search.search_text.inputs`
+    // {impl}`requirements.sdk.graph.search.search_structure.behavior`
+    // {impl}`requirements.sdk.graph.search.search_structure.inputs`
+    // {impl}`requirements.sdk.graph.validation-context.pages.behavior`
+    // {impl}`requirements.sdk.graph.validation-context.pages.inputs`
     fn dispatch<'a>(
         &'a mut self,
         name: &'a str,
         arguments: &'a Value,
+        pages: &'a mut Pages<D::NodeId, D::EdgeLabel>,
     ) -> BoxFuture<'a, io::Result<ToolDelivery<D::NodeId, D::EdgeLabel>>> {
         Box::pin(async move {
             let invalid = |error: String| io::Error::other(error);
-            let scope = SourceScope {
-                prefix: arguments
+            let scope = SourceScope::under(
+                arguments
                     .get("prefix")
                     .map(|value| {
                         value
@@ -114,9 +103,8 @@ where
                             .ok_or_else(|| invalid("prefix must be a string".into()))
                     })
                     .transpose()?
-                    .unwrap_or("")
-                    .into(),
-            };
+                    .unwrap_or(""),
+            );
             let limit = arguments
                 .get("limit")
                 .map(|value| {
@@ -128,12 +116,16 @@ where
                 .transpose()?;
             let provider = &self.tools.analysis.provider;
             let mut dependencies = Vec::new();
-            let result = match name {
-                "list_sources" => json!(
-                    provider
-                        .list(&scope)
-                        .await
-                        .map_err(|error| invalid(error.to_string()))?
+            let (metadata, field, contents) = match name {
+                "list_sources" => (
+                    json!({}),
+                    "files",
+                    json!(
+                        provider
+                            .list(&scope)
+                            .await
+                            .map_err(|error| invalid(error.to_string()))?
+                    ),
                 ),
                 "search_text" => {
                     let pattern = arguments["pattern"]
@@ -160,9 +152,19 @@ where
                         })
                         .await
                         .map_err(|error| invalid(error.to_string()))?;
-                    json!({"complete":matches.complete,"matches":matches.matches.into_iter().map(|m| json!({
-                        "path":m.path,"line":m.line,"excerpt":m.excerpt
-                    })).collect::<Vec<_>>()})
+                    (
+                        json!({"complete":matches.complete}),
+                        "matches",
+                        json!(
+                            matches
+                                .matches
+                                .into_iter()
+                                .map(|m| json!({
+                                    "path":m.path,"line":m.line,"excerpt":m.excerpt
+                                }))
+                                .collect::<Vec<_>>()
+                        ),
+                    )
                 }
                 "search_structure" => {
                     let language = arguments["language"]
@@ -183,9 +185,19 @@ where
                         })
                         .await
                         .map_err(|error| invalid(error.to_string()))?;
-                    json!({"complete":matches.complete,"matches":matches.matches.into_iter().map(|m| json!({
-                        "node":m.node,"excerpt":m.excerpt
-                    })).collect::<Vec<_>>()})
+                    (
+                        json!({"complete":matches.complete}),
+                        "matches",
+                        json!(
+                            matches
+                                .matches
+                                .into_iter()
+                                .map(|m| json!({
+                                    "node":m.node,"excerpt":m.excerpt
+                                }))
+                                .collect::<Vec<_>>()
+                        ),
+                    )
                 }
                 "outline_source" | "read_source" => {
                     let resource: ResourceId =
@@ -226,47 +238,37 @@ where
                         }
                     }
                     if name == "outline_source" {
-                        json!({"resource":id.resource,"nodes":parsed.outline.nodes.iter().map(|node|
-                            json!({"selector":node.selector,"kind":node.kind})).collect::<Vec<_>>()})
+                        (
+                            json!({"resource":id.resource}),
+                            "nodes",
+                            json!(
+                                parsed
+                                    .outline
+                                    .nodes
+                                    .iter()
+                                    .map(|node| json!({"selector":node.selector,"kind":node.kind}))
+                                    .collect::<Vec<_>>()
+                            ),
+                        )
                     } else {
-                        json!({"node":id,"text":parsed.outline.node_lines(parsed.source.text().map_err(|error| invalid(error.to_string()))?,index)})
+                        (
+                            json!({"node":id}),
+                            "text",
+                            json!(
+                                parsed.outline.node_lines(
+                                    parsed
+                                        .source
+                                        .text()
+                                        .map_err(|error| invalid(error.to_string()))?,
+                                    index
+                                )
+                            ),
+                        )
                     }
-                }
-                "get_source_page" => {
-                    let page = arguments["page"]
-                        .as_u64()
-                        .and_then(|n| usize::try_from(n).ok())
-                        .ok_or_else(|| invalid("page must be an integer".into()))?;
-                    let page = self
-                        .pages
-                        .get(page)
-                        .ok_or_else(|| invalid("unknown source page".into()))?;
-                    return Ok(ToolDelivery {
-                        text: page.text.clone(),
-                        dependencies: page.dependencies.clone(),
-                    });
                 }
                 _ => return Err(invalid(format!("unknown source tool {name:?}"))),
             };
-            let text = serde_json::to_string(&result).map_err(io::Error::other)?;
-            let characters: Vec<char> = text.chars().collect();
-            if characters.len() <= 8_192 {
-                return Ok(ToolDelivery { text, dependencies });
-            }
-            let start = self.pages.len();
-            for chunk in characters.chunks(8_192) {
-                self.pages.push(ToolDelivery {
-                    text: chunk.iter().collect(),
-                    dependencies: dependencies.clone(),
-                });
-            }
-            let end = self.pages.len();
-            Ok(ToolDelivery {
-                text:
-                    json!({"text":self.pages[start].text,"pages":(start..end).collect::<Vec<_>>()})
-                        .to_string(),
-                dependencies,
-            })
+            Ok(pages.prepare(metadata, field, contents, dependencies))
         })
     }
 }

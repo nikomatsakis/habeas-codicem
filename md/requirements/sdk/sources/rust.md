@@ -12,6 +12,26 @@ cheaply cloneable and claims `.rs`. Filename-based constructors select it under
 {cite}`requirements.sdk.outlines.defaults`.
 :::
 
+:::{req} Rust
+:test: crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]
+
+The `Rust` implementation of `OutlineLang` supplies the extension, selection, and fingerprint rules described in this chapter.
+
+```rust,ignore
+pub struct Rust;
+```
+
+Trait implementations
+
+```rust,ignore
+impl Clone for Rust;
+impl Debug for Rust;
+impl Default for Rust;
+impl OutlineLang for Rust;
+impl Copy for Rust;
+```
+:::
+
 ## Select source items
 
 :::{req} items

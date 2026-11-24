@@ -13,6 +13,26 @@ select it when no supplied language claims the extension, including filenames
 without an extension, under {cite}`requirements.sdk.outlines.defaults`.
 :::
 
+:::{req} PlainText
+:test: crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]
+
+The `PlainText` implementation of `OutlineLang` supplies the extension, selection, and fingerprint rules described in this chapter.
+
+```rust,ignore
+pub struct PlainText;
+```
+
+Trait implementations
+
+```rust,ignore
+impl Clone for PlainText;
+impl Debug for PlainText;
+impl Default for PlainText;
+impl OutlineLang for PlainText;
+impl Copy for PlainText;
+```
+:::
+
 ## Select a nonblank line
 
 :::{req} items

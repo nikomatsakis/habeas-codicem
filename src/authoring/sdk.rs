@@ -10,8 +10,8 @@ use trust_but_verify::domain::Domain;
 use trust_but_verify::domain::NodeContents;
 use trust_but_verify::graph::Criterion;
 use trust_but_verify::graph::CriterionPath;
+use trust_but_verify::graph::CriterionVersion;
 use trust_but_verify::graph::Fingerprint;
-use trust_but_verify::graph::InspectionContext;
 use trust_but_verify::graph::NodePath;
 use trust_but_verify::graph::ValidationError;
 use trust_but_verify::request::Agent;
@@ -140,13 +140,13 @@ impl Domain for ReviewGraph<'_> {
             selector.to_model_input(&contents.resolved)
         };
         let fingerprint = if matches!(node, HabeasNode::ReferenceSet(_)) {
-            Fingerprint {
-                scheme: "habeas-reference-set-v1".into(),
-                value: model["reference_set"]
+            Fingerprint::new(
+                "habeas-reference-set-v1".into(),
+                model["reference_set"]
                     .as_str()
                     .expect("reference digest")
                     .into(),
-            }
+            )
         } else {
             input_fingerprint(&model_recorded_input(&model))
         };
@@ -175,7 +175,7 @@ fn model_recorded_input(value: &Value) -> Value {
     recorded_input(&value)
 }
 
-// {impl}`requirements.sdk.graph.validation.criterion_trait`
+// {impl}`requirements.sdk.graph.criteria.criterion_trait`
 // {impl}`requirements.sdk.graph.agent-calls.procedures`
 // {impl}`requirements.authoring.mandatory_inputs`
 struct Review {
@@ -193,8 +193,8 @@ impl Criterion<ReviewGraph<'_>> for Review {
         crate::sdk::review_criterion()
     }
 
-    fn revision(&self) -> String {
-        crate::sdk::REVIEW_VERSION.into()
+    fn version(&self) -> CriterionVersion {
+        crate::sdk::review_version()
     }
 
     // {cite}`habeas:util`
@@ -202,10 +202,9 @@ impl Criterion<ReviewGraph<'_>> for Review {
         self,
         ctx: &mut ValidationContext<'_, ReviewGraph<'_>>,
     ) -> Result<Self::Ok, ValidationError<io::Error>> {
-        let graph = ctx.inspection().graph();
+        let graph = ctx.graph();
         if let HabeasNode::Requirement(id) = ctx.node_id() {
-            ctx.inspection()
-                .read(&HabeasNode::ReferenceSet(id.clone()))
+            ctx.read(&HabeasNode::ReferenceSet(id.clone()))
                 .map_err(ValidationError::Graph)?;
         }
         match &graph.operation {
@@ -271,7 +270,7 @@ where
     fn run<'a>(
         &'a self,
         request: AgentRequest<HabeasNode>,
-        inspection: &'a InspectionContext<'_, ReviewGraph<'_>>,
+        inspection: &'a ValidationContext<'_, ReviewGraph<'_>>,
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<Value, std::io::Error>> + Send + 'a>,
     > {
@@ -484,7 +483,7 @@ async fn run(
     };
     let agent = ReviewAgent(provider);
     let review = Review { node: node.clone() };
-    let revision = review.revision();
+    let version = review.version();
     let mut ctx = ValidationContext::with_agent(&graph, node.clone(), &agent);
     let judgment = match review.execute(&mut ctx).await {
         Ok(judgment) => judgment,
@@ -502,9 +501,7 @@ async fn run(
         }
         Err(ValidationError::Output(error)) => return Err(io::Error::other(error)),
     };
-    ctx.inspection()
-        .finish(revision, judgment)
-        .map_err(io::Error::other)
+    ctx.finish(version, judgment).map_err(io::Error::other)
 }
 
 #[cfg(test)]
@@ -518,7 +515,7 @@ mod tests {
 
     // {test}`requirements.sdk.graph.node_path_method`
     // {test}`requirements.sdk.graph.domain_types`
-    // {test}`requirements.sdk.graph.context-tools.tracked_inspection`
+    // {test}`requirements.sdk.graph.validation-context.tracked_inspection`
     #[test]
     fn review_graph_delegates_unprepared_sources_and_paths_to_the_domain() {
         let root = inputs::tests::project();
@@ -550,7 +547,7 @@ mod tests {
             graph.node_path(&source).segments(),
             ["source", "repo", "src/lib.rs", "fn[helper]"]
         );
-        let inspection = InspectionContext::new(&graph);
+        let inspection = ValidationContext::new(&graph, subject.clone());
         assert!(inspection.dependencies().is_empty());
         let delivered = inspection.read(&source).unwrap();
         assert_eq!(
@@ -579,18 +576,17 @@ mod tests {
         assert_eq!(inspection.dependencies().len(), 1);
     }
 
-    // {test}`requirements.sdk.graph.validation.criterion_trait`
-    // {test}`requirements.sdk.graph.validation.criterion_trait.answer`
-    // {test}`requirements.sdk.graph.validation.criterion_trait.source_node_id`
-    // {test}`requirements.sdk.graph.validation.criterion_trait.revision`
-    // {test}`requirements.sdk.graph.validation.execute`
+    // {test}`requirements.sdk.graph.criteria.criterion_trait`
+    // {test}`requirements.sdk.graph.criteria.criterion_trait.answer`
+    // {test}`requirements.sdk.graph.criteria.criterion_trait.source_node_id`
+    // {test}`requirements.sdk.graph.criteria.criterion_trait.version`
+    // {test}`requirements.sdk.graph.criteria.execute`
     // {test}`requirements.sdk.graph.evidence.check_node`
     // {test}`requirements.sdk.graph.validators.validate_node`
     // {test}`requirements.sdk.graph.evidence.evidence_storage`
     // {test}`requirements.sdk.habeas.evidence_format.loading`
     #[tokio::test]
     async fn review_graph_persists_and_reuses_a_negative_validation_through_the_sdk() {
-        use trust_but_verify::graph::procedure_matches;
         use trust_but_verify::graph::validator::Validator;
 
         let root = inputs::tests::project();
@@ -627,7 +623,7 @@ mod tests {
         let path = node.evidence_path(root.path()).unwrap();
         assert_eq!(review().source_node_id(), node);
         assert_eq!(review().criterion_path().segments(), ["review"]);
-        assert_eq!(review().revision(), crate::sdk::REVIEW_VERSION);
+        assert_eq!(review().version().as_str(), crate::sdk::REVIEW_VERSION);
         assert!(validator.load_evidence(&review()).await.unwrap().is_none());
         assert!(!path.exists());
         assert!(provider.requests.lock().unwrap().is_empty());
@@ -646,11 +642,14 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(record.revision, crate::sdk::REVIEW_VERSION);
+        assert_eq!(
+            record.version.as_ref().unwrap().as_str(),
+            crate::sdk::REVIEW_VERSION
+        );
         assert_eq!(record.output, *answer);
         assert!(!record.dependencies.is_empty());
         let cached = validator.load_evidence(&review()).await.unwrap().unwrap();
-        assert!(procedure_matches(cached.revision(), &review().revision()));
+        assert!(review().version().is_compatible_with(cached.version()));
         assert!(validator.check_inputs(&cached).unwrap());
         assert_eq!(cached.output(), answer);
         assert_eq!(provider.requests.lock().unwrap().len(), 1);
@@ -791,12 +790,9 @@ mod tests {
             outlines: &outlines,
         };
         assert!(
-            !trust_but_verify::graph::record_is_current(
-                &graph,
-                crate::sdk::REVIEW_VERSION,
-                &record
-            )
-            .unwrap()
+            !record
+                .is_current(&graph, &crate::sdk::review_version())
+                .unwrap()
         );
     }
 
@@ -991,7 +987,7 @@ mod tests {
                     .await
                     .unwrap()
                     .unwrap();
-                assert_eq!(loaded.revision, version);
+                assert_eq!(loaded.version, CriterionVersion::from_recorded(version));
                 assert_eq!(loaded.dependencies, decoded.dependencies);
                 assert_eq!(loaded.output, decoded.output);
                 assert_eq!(fs::read(&path).unwrap(), before);
@@ -1163,7 +1159,7 @@ mod tests {
                 .await
                 .unwrap()
                 .unwrap();
-            assert_eq!(loaded.revision, "*");
+            assert_eq!(loaded.version, None);
             assert_eq!(loaded.output, decoded.output);
         }
     }

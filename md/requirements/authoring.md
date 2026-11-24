@@ -953,9 +953,15 @@ Repeated retrieval of the same search page MUST preserve its UUID and tags
 and MUST NOT reopen it if it has already been finished.
 :::
 
+:::{req} search_accounting.first_result
+Each assessment MUST include `instructions` on its first delivered search
+result, even when the result has no matches. `ripgrep` and `ast_grep` share
+this rule. A failed search leaves the instructions for the first delivered
+result. Subsequent searches and continuation pages MUST omit the field.
+:::
+
 :::{req} search_accounting.instructions
-The first delivered search result in each assessment MUST include an
-`instructions` field containing this text:
+The `instructions` field supplied under {cite}`requirements.authoring.search_accounting.first_result` MUST contain the following text.
 
 ```text
 Before submitting your assessment, close every delivered search with finish_search({search_id, used:[tags]}). Submission fails while any search remains open. Include a tag only when you used information in its snippet to justify your conclusion without an additional source read. Entries whose source you subsequently read with habeas may be omitted; including them is harmless. Use used:[] when no entries qualify, including for an empty search. finish_search records dependencies and does not request more source.
@@ -1777,48 +1783,16 @@ AuthoringConfig {
 
 AssessmentPolicy = Confirm | Once             // TOML: "confirm" or "once"
 
-BackendConfig = Bedrock(BedrockConfig) | Ollama(OllamaConfig) | Openai(OpenAiConfig)
-
-BedrockConfig {
-    model: ModelId,                           // model ID or inference-profile ID/ARN
-    aws_profile: Optional<String>,
-    region: Optional<String>,
-    credentials: Optional<BedrockCredentials>,
-    options: Map<String, OptionValue>,
-}
-
-BedrockCredentials {
-    access_key_id: SecretString,
-    secret_access_key: SecretString,
-    session_token: Optional<SecretString>,
-}
-
-OllamaConfig {
-    model: ModelId,                           // exact identifier, including tag
-    endpoint: Optional<String>,               // default: http://localhost:11434
-    api_key_env: Optional<EnvironmentVariableName>,
-    api_key: Optional<SecretString>,
-    options: Map<String, OptionValue>,
-}
-
-OpenAiConfig {
-    model: Optional<ModelId>,                 // default: gpt-6.1-sol
-    endpoint: Optional<String>,               // default: https://api.openai.com/v1
-    api_key_env: Optional<EnvironmentVariableName>, // default: OPENAI_API_KEY
-    api_key: Optional<SecretString>,
-    options: Map<String, OptionValue>,
-}
-
-OptionValue = String | Boolean | Integer | FiniteFloat
-            | Array<OptionValue> | Map<String, OptionValue>
-
-SecretString = String                         // serialized normally; redacted in Debug
-
 ModelRef {
     backend: BackendKind,                     // Bedrock, Ollama, or Openai
     model: ModelId,
 }
 ```
+
+`BackendConfig` uses the backend tags and fields in the TBV
+[backend settings and credentials](sdk/graph/agent-harness.md#backend-settings-and-credentials)
+under {cite}`requirements.sdk.graph.agent-harness.agent_config.settings`.
+Habeas flattens those fields into each named authoring configuration.
 
 `ModelRef` MUST be derived from the selected backend configuration and MUST
 preserve the exact model identifier. It MUST identify the model without replacing

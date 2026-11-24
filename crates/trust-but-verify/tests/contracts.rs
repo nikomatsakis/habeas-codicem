@@ -18,10 +18,7 @@ struct Node(u8);
 struct Content(String);
 impl NodeContents for Content {
     fn fingerprint(&self) -> Fingerprint {
-        Fingerprint {
-            scheme: "text-v1".into(),
-            value: self.0.clone(),
-        }
+        Fingerprint::new("text-v1".into(), self.0.clone())
     }
     fn format(&self) -> String {
         self.0.clone()
@@ -161,19 +158,19 @@ impl<O: Serialize + serde::de::DeserializeOwned + Send> Criterion<Application> f
     fn criterion_path(&self) -> CriterionPath {
         self.criterion.clone()
     }
-    fn revision(&self) -> String {
-        self.revision.clone()
+    fn version(&self) -> CriterionVersion {
+        CriterionVersion::new(self.revision.as_str())
     }
     async fn execute(
         self,
         cx: &mut ValidationContext<'_, Application>,
     ) -> Result<O, ValidationError<&'static str>> {
-        cx.inspection().graph().0.lock().unwrap().executions += 1;
+        cx.graph().0.lock().unwrap().executions += 1;
         if let Some(barrier) = self.barrier {
             barrier.wait().await;
         }
         for node in &self.reads {
-            cx.inspection().read(node).map_err(ValidationError::Graph)?;
+            cx.read(node).map_err(ValidationError::Graph)?;
         }
         if let Some(label) = self.label {
             cx.successors(&label).map_err(ValidationError::Graph)?;
@@ -299,11 +296,7 @@ async fn domain_relationships_accept_opaque_types_and_send_only_errors() {
             .unwrap()
             .is_none()
     );
-    let record = Record {
-        revision: "v1".into(),
-        dependencies: vec![],
-        output: json!(false),
-    };
+    let record = Record::new(Some(CriterionVersion::new("v1")), vec![], json!(false));
     assert!(
         send(graph.store_evidence(&Identity(1), &criterion, &record))
             .await
@@ -325,14 +318,14 @@ async fn domain_relationships_accept_opaque_types_and_send_only_errors() {
     assert_eq!(send(error).0.get(), 255);
 }
 
-// {test}`requirements.sdk.graph.validation.criterion_path`
-// {test}`requirements.sdk.graph.validation.criterion_trait`
-// {test}`requirements.sdk.graph.validation.criterion_trait.answer`
-// {test}`requirements.sdk.graph.validation.criterion_trait.source_node_id`
+// {test}`requirements.sdk.graph.criteria.criterion_path`
+// {test}`requirements.sdk.graph.criteria.criterion_trait`
+// {test}`requirements.sdk.graph.criteria.criterion_trait.answer`
+// {test}`requirements.sdk.graph.criteria.criterion_trait.source_node_id`
 // {test}`requirements.sdk.graph.validators.validate_node`
 // {test}`requirements.sdk.graph.evidence.procedure_identity`
 // {test}`requirements.sdk.graph.evidence.check_node`
-// {test}`requirements.sdk.graph.validation.deterministic_procedures`
+// {test}`requirements.sdk.graph.criteria.deterministic_procedures`
 // {test}`requirements.sdk.graph.evidence.record`
 // {test}`requirements.sdk.graph.evidence.store_evidence`
 // {test}`requirements.sdk.graph.evidence.record.output`
@@ -341,7 +334,7 @@ async fn domain_relationships_accept_opaque_types_and_send_only_errors() {
 // {test}`requirements.sdk.domain`
 // {test}`requirements.sdk.graph.evidence.inputs`
 // {test}`requirements.sdk.graph.evidence.checking_records`
-// {test}`requirements.sdk.graph.validation.output_policy`
+// {test}`requirements.sdk.graph.criteria.output_policy`
 #[tokio::test]
 async fn criteria_keep_typed_answers_and_persist_only_when_requested() {
     let domain = Application::default();
@@ -359,7 +352,7 @@ async fn criteria_keep_typed_answers_and_persist_only_when_requested() {
     assert_eq!(value.output(), &negative);
     assert_eq!(value.source_node_id(), &Node(1));
     assert_eq!(value.criterion_path(), &path(&["behavior"]));
-    assert_eq!(value.revision(), "v1");
+    assert_eq!(value.version().unwrap().as_str(), "v1");
     assert!(value.dependencies().is_empty());
     {
         let state = domain.0.lock().unwrap();
@@ -381,7 +374,7 @@ async fn criteria_keep_typed_answers_and_persist_only_when_requested() {
     assert_eq!(loaded.output(), &negative);
     assert_eq!(loaded.source_node_id(), value.source_node_id());
     assert_eq!(loaded.criterion_path(), value.criterion_path());
-    assert_eq!(loaded.revision(), value.revision());
+    assert_eq!(loaded.version(), value.version());
     assert_eq!(loaded.dependencies(), value.dependencies());
     assert!(validator.check_inputs(&loaded).unwrap());
     assert_eq!(loaded.into_output(), negative);
@@ -454,7 +447,7 @@ async fn criteria_keep_typed_answers_and_persist_only_when_requested() {
     );
 }
 
-// {test}`requirements.sdk.graph.validation.criterion_path`
+// {test}`requirements.sdk.graph.criteria.criterion_path`
 #[test]
 fn criterion_paths_preserve_hierarchy_empty_segments_order_and_unicode() {
     let paths = [
@@ -531,10 +524,7 @@ async fn changing_one_criteria_input_does_not_invalidate_another() {
         value.dependencies(),
         [Dependency::Node(
             Node(3),
-            Fingerprint {
-                scheme: "text-v1".into(),
-                value: "implementation".into()
-            }
+            Fingerprint::new("text-v1".into(), "implementation".into())
         )]
     );
     let saved = domain
@@ -560,10 +550,7 @@ async fn typed_loading_reports_decode_errors_even_for_stale_evidence() {
         let mut state = domain.0.lock().unwrap();
         state.records[0].2.dependencies = vec![Dependency::Node(
             Node(99),
-            Fingerprint {
-                scheme: "old".into(),
-                value: "old".into(),
-            },
+            Fingerprint::new("old".into(), "old".into()),
         )];
         state.fail_read = true;
     }
@@ -584,12 +571,12 @@ async fn typed_loading_reports_decode_errors_even_for_stale_evidence() {
     changed.output = "new answer".into();
     let value = validator.verify(changed).await.unwrap();
     assert_eq!(value.output(), "new answer");
-    assert_eq!(value.revision(), "v2");
+    assert_eq!(value.version().unwrap().as_str(), "v2");
     {
         let state = domain.0.lock().unwrap();
         assert_eq!((state.executions, state.writes), (2, 1));
         assert!(state.reads.is_empty());
-        assert_eq!(state.records[0].2.revision, "v1");
+        assert_eq!(state.records[0].2.version.as_ref().unwrap().as_str(), "v1");
     }
     validator.store_evidence(&value).await.unwrap();
     assert_eq!(domain.0.lock().unwrap().records.len(), 1);
@@ -637,10 +624,7 @@ async fn input_checking_and_execution_keep_separate_observations() {
         state.records[0].2.dependencies,
         [Dependency::Node(
             Node(2),
-            Fingerprint {
-                scheme: "text-v1".into(),
-                value: "after".into()
-            }
+            Fingerprint::new("text-v1".into(), "after".into())
         )]
     );
 }
@@ -658,13 +642,7 @@ async fn dependency_resolution_failures_do_not_execute_or_replace_saved_answers(
     review.label = Some(7);
     let value = persist(&validator, review).await;
     let expected = [
-        Dependency::Node(
-            Node(2),
-            Fingerprint {
-                scheme: "text-v1".into(),
-                value: "input".into(),
-            },
-        ),
+        Dependency::Node(Node(2), Fingerprint::new("text-v1".into(), "input".into())),
         Dependency::OutgoingEdges(Node(1), 7, edge_fingerprint(&domain, &[])),
     ];
     assert_eq!(value.dependencies(), expected);
@@ -689,21 +667,21 @@ async fn dependency_resolution_failures_do_not_execute_or_replace_saved_answers(
     }
 }
 
-// {test}`requirements.sdk.graph.evidence.checking_records.procedure_match`
+// {test}`requirements.sdk.graph.evidence.checking_records.version_match`
 // {test}`requirements.sdk.graph.evidence.check_node`
-// {test}`requirements.sdk.graph.validation.criterion_path`
+// {test}`requirements.sdk.graph.criteria.criterion_path`
 #[tokio::test]
 async fn wildcard_revision_does_not_supply_other_criteria_or_nodes() {
     let domain = Application::default();
     let validator = Validator::new(domain.clone());
     persist(&validator, Review::new(&[], false)).await;
-    domain.0.lock().unwrap().records[0].2.revision = "*".into();
+    domain.0.lock().unwrap().records[0].2.version = None;
     let mut future = Review::new(&[], true);
     future.revision = "future".into();
     let loaded = validator.load_evidence(&future).await.unwrap().unwrap();
     assert!(!loaded.output());
-    assert_eq!(loaded.revision(), "*");
-    assert!(procedure_matches(loaded.revision(), &future.revision()));
+    assert_eq!(loaded.version(), None);
+    assert!(future.version().is_compatible_with(loaded.version()));
     assert!(validator.check_inputs(&loaded).unwrap());
     assert!(
         validator
@@ -717,14 +695,14 @@ async fn wildcard_revision_does_not_supply_other_criteria_or_nodes() {
     assert_eq!(domain.0.lock().unwrap().executions, 1);
 }
 
-// {test}`requirements.sdk.graph.validation.criterion_trait`
+// {test}`requirements.sdk.graph.criteria.criterion_trait`
 // {test}`requirements.sdk.graph.evidence.check_node`
 // {test}`requirements.sdk.graph.validators.validate_node`
 // {test}`requirements.sdk.graph.validators.validator`
 // {test}`requirements.sdk.graph.evidence.store_evidence`
 // {test}`requirements.sdk.graph.evidence.refresh_evidence`
-// {test}`requirements.sdk.graph.validation.criterion_trait.answer`
-// {test}`requirements.sdk.graph.validation.execute`
+// {test}`requirements.sdk.graph.criteria.criterion_trait.answer`
+// {test}`requirements.sdk.graph.criteria.execute`
 #[tokio::test]
 async fn validation_and_answer_need_send_without_sync() {
     let domain = Application::default();
@@ -755,7 +733,7 @@ async fn validation_and_answer_need_send_without_sync() {
 }
 
 // {test}`requirements.sdk.graph.evidence.refresh_evidence`
-// {test}`requirements.sdk.graph.evidence.checking_records.procedure_match`
+// {test}`requirements.sdk.graph.evidence.checking_records.version_match`
 #[tokio::test]
 async fn refresh_reuses_current_positive_negative_and_legacy_answers_without_saving() {
     for satisfied in [true, false] {
@@ -766,7 +744,8 @@ async fn refresh_reuses_current_positive_negative_and_legacy_answers_without_sav
             let mut first = Review::new(&["behavior"], answer(satisfied, "saved answer"));
             first.reads = vec![Node(2)];
             let saved = validator.refresh_evidence(first).await.unwrap();
-            domain.0.lock().unwrap().records[0].2.revision = revision.into();
+            domain.0.lock().unwrap().records[0].2.version =
+                CriterionVersion::from_recorded(revision);
 
             let mut next = Review::new(&["behavior"], answer(!satisfied, "unused answer"));
             next.failure = Some("must reuse");
@@ -775,12 +754,18 @@ async fn refresh_reuses_current_positive_negative_and_legacy_answers_without_sav
             assert_eq!(reused.dependencies(), saved.dependencies());
             assert_eq!(reused.source_node_id(), saved.source_node_id());
             assert_eq!(reused.criterion_path(), saved.criterion_path());
-            assert_eq!(reused.revision(), revision);
+            assert_eq!(
+                reused.version(),
+                CriterionVersion::from_recorded(revision).as_ref()
+            );
             let state = domain.0.lock().unwrap();
             assert_eq!((state.executions, state.writes), (1, 1));
             assert_eq!(state.reads, [2, 2]);
             assert_eq!(state.records.len(), 1);
-            assert_eq!(state.records[0].2.revision, revision);
+            assert_eq!(
+                state.records[0].2.version,
+                CriterionVersion::from_recorded(revision)
+            );
             assert_eq!(
                 state.records[0].2.output,
                 serde_json::to_value(saved.output()).unwrap()
@@ -840,10 +825,7 @@ async fn refresh_evaluates_missing_incompatible_or_changed_evidence_with_a_fresh
             replacement.dependencies(),
             [Dependency::Node(
                 Node(1),
-                Fingerprint {
-                    scheme: "text-v1".into(),
-                    value: "current input".into(),
-                }
+                Fingerprint::new("text-v1".into(), "current input".into())
             )]
         );
         let state = domain.0.lock().unwrap();
@@ -863,7 +845,7 @@ async fn refresh_evaluates_missing_incompatible_or_changed_evidence_with_a_fresh
         assert_eq!(state.records.len(), 1);
         assert_eq!(state.records[0].2.output, json!("new answer"));
         assert_eq!(state.records[0].2.dependencies, replacement.dependencies());
-        assert_eq!(state.records[0].2.revision, replacement.revision());
+        assert_eq!(state.records[0].2.version.as_ref(), replacement.version());
     }
 }
 
@@ -926,7 +908,7 @@ async fn refresh_propagates_load_decode_check_execution_and_save_errors() {
         assert_eq!(state.records.len(), 1);
         let after = &state.records[0].2;
         assert_eq!(after.output, before.output);
-        assert_eq!(after.revision, before.revision);
+        assert_eq!(after.version, before.version);
         assert_eq!(after.dependencies, before.dependencies);
     }
 }
@@ -941,11 +923,7 @@ async fn refresh_serialization_failure_preserves_the_saved_record() {
     domain.0.lock().unwrap().records.push((
         Node(1),
         path(&[]),
-        Record {
-            revision: "v1".into(),
-            dependencies: vec![],
-            output: json!(null),
-        },
+        Record::new(Some(CriterionVersion::new("v1")), vec![], json!(null)),
     ));
     let mut next = Review::new(&[], Unencodable);
     next.revision = "v2".into();
@@ -956,7 +934,7 @@ async fn refresh_serialization_failure_preserves_the_saved_record() {
     let state = domain.0.lock().unwrap();
     assert_eq!((state.executions, state.writes), (1, 0));
     assert_eq!(state.records.len(), 1);
-    assert_eq!(state.records[0].2.revision, "v1");
+    assert_eq!(state.records[0].2.version.as_ref().unwrap().as_str(), "v1");
     assert_eq!(state.records[0].2.output, json!(null));
 }
 
@@ -1003,11 +981,11 @@ async fn concurrent_refreshes_execute_independently_and_store_complete_records()
         &b
     };
     assert_eq!(saved.output, serde_json::to_value(winner.output()).unwrap());
-    assert_eq!(saved.revision, winner.revision());
+    assert_eq!(saved.version.as_ref(), winner.version());
     assert_eq!(saved.dependencies, winner.dependencies());
 }
 
-// {test}`requirements.sdk.graph.context-tools.root_inputs`
+// {test}`requirements.sdk.graph.validation-context.root_inputs`
 // {test}`requirements.sdk.graph.evidence.checking_records`
 #[tokio::test]
 async fn absence_certification_is_invalidated_by_the_first_selected_root() {
@@ -1066,7 +1044,7 @@ async fn serialization_failure_leaves_the_existing_record_unchanged() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(before.revision, after.revision);
+    assert_eq!(before.version, after.version);
     assert_eq!(before.dependencies, after.dependencies);
     assert_eq!(before.output, after.output);
     assert_eq!(domain.0.lock().unwrap().writes, 1);
@@ -1160,28 +1138,22 @@ async fn concurrent_same_criterion_executions_keep_complete_independent_records(
         .unwrap();
     match saved.output.as_str().unwrap() {
         "first" => {
-            assert_eq!(saved.revision, "first-revision");
+            assert_eq!(saved.version.as_ref().unwrap().as_str(), "first-revision");
             assert_eq!(
                 saved.dependencies,
                 [Dependency::Node(
                     Node(2),
-                    Fingerprint {
-                        scheme: "text-v1".into(),
-                        value: "first input".into()
-                    }
+                    Fingerprint::new("text-v1".into(), "first input".into())
                 )]
             );
         }
         "second" => {
-            assert_eq!(saved.revision, "second-revision");
+            assert_eq!(saved.version.as_ref().unwrap().as_str(), "second-revision");
             assert_eq!(
                 saved.dependencies,
                 [Dependency::Node(
                     Node(3),
-                    Fingerprint {
-                        scheme: "text-v1".into(),
-                        value: "second input".into()
-                    }
+                    Fingerprint::new("text-v1".into(), "second input".into())
                 )]
             );
         }
@@ -1204,7 +1176,7 @@ async fn concurrent_same_criterion_executions_keep_complete_independent_records(
 fn identities_remain_stable_and_fingerprinting_uses_the_supplied_snapshot() {
     let graph = Application::default();
     graph.0.lock().unwrap().contents.insert(1, "before".into());
-    let snapshot = InspectionContext::new(&graph)
+    let snapshot = ValidationContext::new(&graph, Node(1))
         .read_snapshot(&Node(1))
         .unwrap();
     assert_eq!(snapshot.content.format(), "before");
@@ -1240,7 +1212,7 @@ fn identities_remain_stable_and_fingerprinting_uses_the_supplied_snapshot() {
     }
 }
 
-// {test}`requirements.sdk.graph.context-tools.snapshot`
+// {test}`requirements.sdk.graph.validation-context.snapshot`
 #[test]
 fn edge_fingerprints_preserve_path_boundaries_and_version_membership_encoding() {
     let mut domain = Application::default();
@@ -1266,10 +1238,10 @@ fn edge_fingerprints_preserve_path_boundaries_and_version_membership_encoding() 
     let empty = edge_fingerprint(&domain, &[]);
     assert_eq!(
         empty,
-        Fingerprint {
-            scheme: "node-path-set-sha256-v1".into(),
-            value: "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
-        }
+        Fingerprint::new(
+            "node-path-set-sha256-v1".into(),
+            "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into()
+        )
     );
     let fingerprints = (0..domain.1.len())
         .map(|index| edge_fingerprint(&domain, &[Node(index as u8)]))

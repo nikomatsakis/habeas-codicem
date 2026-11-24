@@ -20,15 +20,9 @@ Agent configuration selects the model; context supplies the question and
 instructions. Node inputs are selected through the tracked operations below.
 
 :::{req} agent_context
-```rust,ignore
-use std::borrow::Cow;
+:test: crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]
 
-/// Reusable agent instructions, defined in trust_but_verify.
-pub trait Context {
-    /// Supply reusable text for the beginning of the agent's prompt.
-    fn contents(&self) -> Cow<'_, String>;
-}
-```
+Supplies reusable prompt text for an agent request. `contents` may borrow or own the string.
 
 The SDK implements this trait for the following combinations:
 
@@ -52,6 +46,33 @@ using a versioned scheme. It preserves order and repetition and uses neither
 object addresses nor type identities. It identifies this prefix, including the
 question; node inputs, the result schema, and the rest of the request are outside
 that fingerprint.
+
+```rust,ignore
+pub trait Context {
+    fn contents(&self) -> Cow<'_, String>;
+}
+```
+
+Trait implementations
+
+```rust,ignore
+impl Context for str;
+impl Context for String;
+impl<A: Context, B: Context> Context for (A, B);
+impl<A: Context, B: Context, C: Context> Context for (A, B, C);
+impl<A: Context, B: Context, C: Context, D: Context> Context for (A, B, C, D);
+impl<A: Context, B: Context, C: Context, D: Context, E: Context> Context for (A, B, C, D, E);
+impl<A: Context, B: Context, C: Context, D: Context, E: Context, F: Context> Context for (A, B, C, D, E, F);
+impl<A: Context, B: Context, C: Context, D: Context, E: Context, F: Context, G: Context> Context for (A, B, C, D, E, F, G);
+impl<A: Context, B: Context, C: Context, D: Context, E: Context, F: Context, G: Context, H: Context> Context for (A, B, C, D, E, F, G, H);
+impl<A: Context, B: Context, C: Context, D: Context, E: Context, F: Context, G: Context, H: Context, I: Context> Context for (A, B, C, D, E, F, G, H, I);
+impl<A: Context, B: Context, C: Context, D: Context, E: Context, F: Context, G: Context, H: Context, I: Context, J: Context> Context for (A, B, C, D, E, F, G, H, I, J);
+impl<A: Context, B: Context, C: Context, D: Context, E: Context, F: Context, G: Context, H: Context, I: Context, J: Context, K: Context> Context for (A, B, C, D, E, F, G, H, I, J, K);
+impl<A: Context, B: Context, C: Context, D: Context, E: Context, F: Context, G: Context, H: Context, I: Context, J: Context, K: Context, L: Context> Context for (A, B, C, D, E, F, G, H, I, J, K, L);
+impl<C: Context + ?Sized> Context for &C;
+impl<C: Context> Context for [C];
+impl<C: Context> Context for Vec<C>;
+```
 :::
 
 ## Build a request
@@ -81,19 +102,27 @@ where
     R: serde::de::DeserializeOwned + schemars::JsonSchema + Send;
 ```
 
-Its operations are:
+Both states implement `std::future::IntoFuture` with
+`Output = Result<R, ValidationError<D::Error>>` and a `Send` future for
+`R: serde::de::DeserializeOwned + schemars::JsonSchema + Send`.
+Awaiting executes the assembled request, even with no contexts or node
+insertions. Building it does not invoke an agent.
+:::
+
+:::{req} Ask
+:test: crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]
+
+Builds a typed agent request. `context` is available in the context phase. Adding graph contents enters the node phase. Awaiting a request returns the decoded answer or a validation error.
 
 ```rust,ignore
+pub struct Ask<'a, 'd, D: Domain, R, P> { /* private fields */ }
+
 impl<'a, 'd, D: Domain, R> Ask<'a, 'd, D, R, ContextPhase> {
-    /// Append reusable text to the prefix.
     pub fn context(self, value: impl Context) -> Self;
 }
 
 impl<'a, 'd, D: Domain, R, P> Ask<'a, 'd, D, R, P> {
-    /// Queue the current node's contents and enter the node phase.
     pub fn contents_of_current_node(self) -> Ask<'a, 'd, D, R, NodePhase>;
-
-    /// Queue contents of successors with this label and enter the node phase.
     pub fn contents_of_successors(
         self,
         label: D::EdgeLabel,
@@ -103,11 +132,18 @@ impl<'a, 'd, D: Domain, R, P> Ask<'a, 'd, D, R, P> {
 }
 ```
 
-Both states implement `std::future::IntoFuture` with
-`Output = Result<R, ValidationError<D::Error>>` and a `Send` future for
-`R: serde::de::DeserializeOwned + schemars::JsonSchema + Send`.
-Awaiting executes the assembled request, even with no contexts or node
-insertions. Building it does not invoke an agent.
+Trait implementations
+
+```rust,ignore
+impl<'a, 'd, D: Domain, R> IntoFuture for Ask<'a, 'd, D, R, ContextPhase> where R: DeserializeOwned + JsonSchema + Send + 'a, 'd: 'a {
+    type Output = Result<R, ValidationError<<D as Domain>::Error>>;
+    type IntoFuture = Pin<Box<dyn Future<Output = <Ask<'a, 'd, D, R, ContextPhase> as IntoFuture>::Output> + Send + 'a>>;
+}
+impl<'a, 'd, D: Domain, R> IntoFuture for Ask<'a, 'd, D, R, NodePhase> where R: DeserializeOwned + JsonSchema + Send + 'a, 'd: 'a {
+    type Output = Result<R, ValidationError<<D as Domain>::Error>>;
+    type IntoFuture = Pin<Box<dyn Future<Output = <Ask<'a, 'd, D, R, NodePhase> as IntoFuture>::Output> + Send + 'a>>;
+}
+```
 :::
 
 :::{req} judge.phases
@@ -120,9 +156,29 @@ and awaiting, with no `context` method or transition back. The builder's types
 enforce the restriction.
 :::
 
+:::{req} ContextPhase
+:test: crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]
+
+Marks an agent request that can still accept reusable context before adding node contents.
+
+```rust,ignore
+pub struct ContextPhase;
+```
+:::
+
+:::{req} NodePhase
+:test: crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]
+
+Marks an agent request that has begun collecting node contents. Further node inputs can be added before awaiting the answer.
+
+```rust,ignore
+pub struct NodePhase;
+```
+:::
+
 ## Example: review a requirement's tests
 
-The `BehavioralAdequacy` criterion in [Criteria](validation.md) asks whether a
+The `BehavioralAdequacy` criterion in [Criteria](criteria.md) asks whether a
 requirement's tests cover its behavior and edge cases. This example shows its
 agent request and the answer type it expects.
 
@@ -292,7 +348,7 @@ Calls can run concurrently without holding an exclusive context borrow across
 an agent interaction or locking the whole context for the conversation.
 
 The same context supports deterministic criteria under
-{cite}`requirements.sdk.graph.validation.deterministic_procedures`.
+{cite}`requirements.sdk.graph.criteria.deterministic_procedures`.
 :::
 
 :::{req} procedures

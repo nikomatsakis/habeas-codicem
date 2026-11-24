@@ -12,6 +12,26 @@ cheaply cloneable and claims `.toml`. Filename-based constructors select it unde
 {cite}`requirements.sdk.outlines.defaults`.
 :::
 
+:::{req} Toml
+:test: crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]
+
+The `Toml` implementation of `OutlineLang` supplies the extension, selection, and fingerprint rules described in this chapter.
+
+```rust,ignore
+pub struct Toml;
+```
+
+Trait implementations
+
+```rust,ignore
+impl Clone for Toml;
+impl Debug for Toml;
+impl Default for Toml;
+impl OutlineLang for Toml;
+impl Copy for Toml;
+```
+:::
+
 ## Select source items
 
 :::{req} items

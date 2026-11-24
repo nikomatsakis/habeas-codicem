@@ -12,6 +12,26 @@ cheaply cloneable and claims `.css`. Filename-based constructors select it under
 {cite}`requirements.sdk.outlines.defaults`.
 :::
 
+:::{req} Css
+:test: crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]
+
+The `Css` implementation of `OutlineLang` supplies the extension, selection, and fingerprint rules described in this chapter.
+
+```rust,ignore
+pub struct Css;
+```
+
+Trait implementations
+
+```rust,ignore
+impl Clone for Css;
+impl Debug for Css;
+impl Default for Css;
+impl OutlineLang for Css;
+impl Copy for Css;
+```
+:::
+
 ## Select source items
 
 :::{req} items

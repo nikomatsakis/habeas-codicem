@@ -9,9 +9,11 @@ use std::{collections::BTreeMap, path::Path};
 use trust_but_verify::domain::Domain;
 use trust_but_verify::domain::NodeContents;
 use trust_but_verify::graph::CriterionPath;
+use trust_but_verify::graph::CriterionVersion;
 use trust_but_verify::graph::Fingerprint;
-use trust_but_verify::graph::InspectionContext;
 use trust_but_verify::graph::NodePath;
+#[cfg(test)]
+use trust_but_verify::request::ValidationContext;
 use trust_but_verify::resource::OutlineId;
 use trust_but_verify::resource::ResourceId;
 
@@ -151,10 +153,7 @@ impl HabeasNodeContent {
     fn prepare(node: &HabeasNode, resolved: ResolvedInput) -> std::io::Result<Self> {
         let (fingerprint, model) = if matches!(node, HabeasNode::ReferenceSet(_)) {
             (
-                Fingerprint {
-                    scheme: "habeas-reference-set-v1".into(),
-                    value: resolved.text[0].clone(),
-                },
+                Fingerprint::new("habeas-reference-set-v1".into(), resolved.text[0].clone()),
                 serde_json::json!({"reference_set": resolved.text[0]}),
             )
         } else {
@@ -425,7 +424,12 @@ impl HabeasNode {
 
 pub(crate) const REVIEW_VERSION: &str = "habeas-review-v1";
 
-// {impl}`requirements.sdk.graph.validation.criterion_path`
+// {impl}`requirements.sdk.graph.criteria.criterion_trait.version`
+pub(crate) fn review_version() -> CriterionVersion {
+    CriterionVersion::new(REVIEW_VERSION)
+}
+
+// {impl}`requirements.sdk.graph.criteria.criterion_path`
 pub(crate) fn review_criterion() -> CriterionPath {
     CriterionPath::new(vec!["review".into()])
 }
@@ -433,13 +437,13 @@ pub(crate) fn review_criterion() -> CriterionPath {
 // {cite}`habeas:util`
 pub(crate) fn input_fingerprint(input: &serde_json::Value) -> Fingerprint {
     use sha2::{Digest, Sha256};
-    Fingerprint {
-        scheme: "habeas-input-v1".into(),
-        value: Sha256::digest(serde_json::to_vec(input).expect("JSON input"))
+    Fingerprint::new(
+        "habeas-input-v1".into(),
+        Sha256::digest(serde_json::to_vec(input).expect("JSON input"))
             .iter()
             .map(|b| format!("{b:02x}"))
             .collect(),
-    }
+    )
 }
 
 // {cite}`habeas:util`
@@ -456,8 +460,8 @@ pub(crate) fn resolve_input(
         definitions,
         outlines,
     };
-    InspectionContext::new(&domain)
-        .read(&HabeasNode::from(selector))
+    domain
+        .node_content(&HabeasNode::from(selector))
         .map(|content| content.resolved)
         .map_err(|e| e.to_string())
 }
@@ -698,17 +702,14 @@ mod tests {
             for result in [false, true] {
                 metadata["determination"] = serde_json::json!(result);
                 metadata["rationale"] = serde_json::json!("fixture review");
-                let record = Record {
-                    revision: "test-review-v2".into(),
-                    dependencies: vec![Dependency::Node(
+                let record = Record::new(
+                    Some(CriterionVersion::new("test-review-v2")),
+                    vec![Dependency::Node(
                         requirement.clone(),
-                        Fingerprint {
-                            scheme: "fixture".into(),
-                            value: "retained".into(),
-                        },
+                        Fingerprint::new("fixture".into(), "retained".into()),
                     )],
-                    output: metadata.clone(),
-                };
+                    metadata.clone(),
+                );
                 domain
                     .store_evidence(&node, &crate::sdk::review_criterion(), &record)
                     .await
@@ -718,7 +719,7 @@ mod tests {
                     .await
                     .unwrap()
                     .unwrap();
-                assert_eq!(loaded.revision, record.revision);
+                assert_eq!(loaded.version, record.version);
                 assert_eq!(loaded.dependencies, record.dependencies);
                 assert_eq!(loaded.output, record.output);
                 let path = node.evidence_path(root.path()).unwrap();
@@ -772,14 +773,14 @@ mod tests {
         let path = requirement.evidence_path(root.path()).unwrap();
         fs::remove_file(&path).unwrap();
         fs::create_dir(&path).unwrap();
-        let record = Record {
-            revision: "test-review-v2".into(),
-            dependencies: vec![],
-            output: serde_json::json!({
+        let record = Record::new(
+            Some(CriterionVersion::new("test-review-v2")),
+            vec![],
+            serde_json::json!({
                 "requirement":"ready", "references":"0".repeat(64), "inputs":[],
                 "determination":true, "rationale":"fixture review"
             }),
-        };
+        );
         assert!(
             domain
                 .store_evidence(&requirement, &crate::sdk::review_criterion(), &record)
@@ -815,17 +816,17 @@ mod tests {
             outlines: &outlines,
         };
         let query = RequirementId("requirements.ready".into());
-        let ctx = InspectionContext::new(&domain);
         let subject = HabeasNode::Requirement(query.clone());
+        let ctx = ValidationContext::new(&domain, subject.clone());
         let references = HabeasNode::ReferenceSet(query.clone());
         let retained_references = ctx.read(&references).unwrap();
         let reference_fingerprint = retained_references.fingerprint();
         assert_eq!(
             reference_fingerprint,
-            Fingerprint {
-                scheme: "habeas-reference-set-v1".into(),
-                value: retained_references.resolved.text[0].clone(),
-            }
+            Fingerprint::new(
+                "habeas-reference-set-v1".into(),
+                retained_references.resolved.text[0].clone()
+            )
         );
         assert!(
             ctx.outgoing_edges(&subject, HabeasEdgeLabel::Implements)
@@ -847,10 +848,10 @@ mod tests {
         );
         assert_eq!(
             retained.fingerprint(),
-            Fingerprint {
-                scheme: "habeas-input-v1".into(),
-                value: "a60363aa2a9f4d79aff6d511c59e574752e36810da394f6087a72c164adabf7c".into(),
-            }
+            Fingerprint::new(
+                "habeas-input-v1".into(),
+                "a60363aa2a9f4d79aff6d511c59e574752e36810da394f6087a72c164adabf7c".into()
+            )
         );
         assert_eq!(
             domain
@@ -861,12 +862,14 @@ mod tests {
         );
         let record = ctx
             .finish(
-                "test-review-v1".into(),
+                CriterionVersion::new("test-review-v1"),
                 serde_json::json!({"determination": true, "rationale": "ready"}),
             )
             .unwrap();
         assert!(
-            trust_but_verify::graph::record_is_current(&domain, "test-review-v1", &record).unwrap()
+            record
+                .is_current(&domain, &CriterionVersion::new("test-review-v1"))
+                .unwrap()
         );
         let reference = format!("// {{{}}}`requirements.ready`\nfn ready() {{}}\n", "impl");
         fs::write(root.path().join("src/lib.rs"), reference).unwrap();
@@ -881,7 +884,8 @@ mod tests {
             reference_fingerprint
         );
         assert!(
-            !trust_but_verify::graph::record_is_current(&changed, "test-review-v1", &record)
+            !record
+                .is_current(&changed, &CriterionVersion::new("test-review-v1"))
                 .unwrap()
         );
         let snapshot = changed

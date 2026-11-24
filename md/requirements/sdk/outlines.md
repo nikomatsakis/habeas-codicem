@@ -39,30 +39,178 @@ selector with the file's path.
 :::
 
 :::{req} address_identity
+:test: crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]
+
 `OutlineId` identifies a file and an item within it. Its path and selector
 alone determine its identity; equivalent addresses compare equally when
-reconstructed in another process. Constructing an address performs no file read.
-Selectors follow {cite}`requirements.references.outline_selectors`.
+reconstructed in another process. Constructing an address performs no file read. `root(path)` selects the whole
+file. Both `new(path, selector)` and the `selector` builder validate the selector
+and return an error for invalid syntax.
+Selectors follow {cite}`requirements.sdk.outlines.selector_syntax`.
 
 ```rust,ignore
-use std::path::PathBuf;
-
-// Defined in trust_but_verify::outline.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct OutlineId {
     pub path: PathBuf,
-    /// Item within the file; an empty selector selects its root.
     pub selector: String,
 }
+
+impl OutlineId {
+    pub fn root(path: impl Into<PathBuf>) -> Self;
+    pub fn selector(self, selector: String) -> Result<Self, OutlineError>;
+    pub fn new(
+        path: impl Into<PathBuf>,
+        selector: String,
+    ) -> Result<Self, OutlineError>;
+}
+```
+
+Trait implementations
+
+```rust,ignore
+impl Clone for OutlineId;
+impl Debug for OutlineId;
+impl<'de> Deserialize<'de> for OutlineId;
+impl PartialEq for OutlineId;
+impl Serialize for OutlineId;
+impl Eq for OutlineId;
 ```
 :::
 
 ```rust,ignore
-let function_id = OutlineId {
-    path: "src/auth.rs".into(),
-    selector: "mod[auth]/fn[check_token]".into(),
-};
+let function_id = OutlineId::root("src/auth.rs").selector("mod[auth]/fn[check_token]".into())?;
 ```
+
+## Parse an outline selector
+
+:::{req} selector_syntax
+An outline selector MUST be a `/`-separated path of segments from the file's
+root node to an outline node; the empty selector MUST select the root node. A
+named node's segment MUST be `kind[name]`. An anonymous node's segment MUST be
+`kind@hash`, where `hash` is the first twelve hexadecimal digits of its identity
+hash under {cite}`requirements.references.structural_hash`. Siblings whose
+segments would otherwise be identical MUST be disambiguated by `#N`, their
+one-based position among those siblings in source order, except `line` nodes:
+identical lines are interchangeable, so a `line` selector MUST resolve when any
+line with that content exists in the file. In names, `%`, `[`, `]`, `/`, `#`,
+`@`, and whitespace MUST be percent-encoded as UTF-8 bytes, so selectors are
+reversible. Line numbers MUST NOT form part of a selector.
+:::
+
+:::{req} selector_parser
+`trust_but_verify::outline::selector::parse_selector(&str)` returns
+`Result<Vec<Segment>, SelectorError>`. It checks syntax without reading a file.
+The empty selector yields an empty vector. Each `Segment` exposes `kind`,
+`label`, and the optional one-based `ordinal`.
+
+For `impl[Thing/Trait]/fn[run]#2`, the first label is `Label::Named` with the
+decoded parts `Thing` and `Trait`. The second segment has kind `fn`, label
+`run`, and ordinal `Some(2)`. `Label::Hash` holds an anonymous item's
+`HASH_DIGITS` hexadecimal digits (12), normalized to lowercase. `SelectorError`
+carries the offending `selector` and a diagnostic `message`.
+:::
+
+:::{req} parse_selector
+:test: crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]
+
+Parses the selector into segments in root-to-item order. An empty selector yields an empty vector. Invalid syntax returns a diagnostic.
+
+```rust,ignore
+pub fn parse_selector(selector: &str) -> Result<Vec<Segment>, SelectorError>;
+```
+:::
+
+:::{req} Segment
+:test: crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]
+
+Describes one step from a selector’s root. `base` formats the kind and label. The optional one-based ordinal disambiguates siblings with the same base.
+
+```rust,ignore
+#[non_exhaustive]
+pub struct Segment {
+    pub kind: String,
+    pub label: Label,
+    pub ordinal: Option<usize>,
+}
+
+impl Segment {
+    pub fn new(kind: String, label: Label) -> Self;
+    pub fn ordinal(self, ordinal: usize) -> Self;
+    pub fn base(kind: &str, label: &Label) -> String;
+}
+```
+
+Trait implementations
+
+```rust,ignore
+impl Clone for Segment;
+impl Debug for Segment;
+impl Display for Segment;
+impl PartialEq for Segment;
+impl Eq for Segment;
+```
+:::
+
+:::{req} Label
+:test: crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]
+
+A named label carries decoded name parts. An anonymous label carries the hexadecimal identity hash.
+
+```rust,ignore
+pub enum Label {
+    Named(Vec<String>),
+    Hash(String),
+}
+```
+
+Trait implementations
+
+```rust,ignore
+impl Clone for Label;
+impl Debug for Label;
+impl PartialEq for Label;
+impl Eq for Label;
+```
+:::
+
+:::{req} HASH_DIGITS
+:test: crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]
+
+Number of hexadecimal digits in the identity hash of an anonymous selector segment.
+
+```rust,ignore
+pub const HASH_DIGITS: usize = 12;
+```
+:::
+
+:::{req} SelectorError
+:test: crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]
+
+Preserves the selector and a diagnostic explaining the syntax error.
+
+```rust,ignore
+#[non_exhaustive]
+pub struct SelectorError {
+    pub selector: String,
+    pub message: String,
+}
+
+impl SelectorError {
+    pub fn new(selector: &str, message: impl Into<String>) -> Self;
+}
+```
+
+Trait implementations
+
+```rust,ignore
+impl Clone for SelectorError;
+impl Debug for SelectorError;
+impl Display for SelectorError;
+impl Error for SelectorError;
+impl PartialEq for SelectorError;
+impl Eq for SelectorError;
+```
+:::
 
 ## Load outline contents
 
@@ -78,23 +226,47 @@ observation.
 :::
 
 :::{req} parser
+:test: crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]
+
 `OutlineContent::from_path` reads a file and returns its root contents.
 `from_id` reads the addressed file and selects the addressed item. Both infer
 the language from the filename under
 {cite}`requirements.sdk.outlines.defaults`.
 
 ```rust,ignore
-use std::path::Path;
-
 pub struct OutlineContent { /* private fields */ }
 
 impl OutlineContent {
-    /// Read and outline a file, selecting its root.
     pub fn from_path(path: impl AsRef<Path>) -> Result<Self, OutlineError>;
-
-    /// Read and outline the addressed file, then resolve its selector.
     pub fn from_id(id: &OutlineId) -> Result<Self, OutlineError>;
+    pub fn from_source(
+        filename: impl AsRef<Path>,
+        source: Arc<str>,
+    ) -> Result<Self, OutlineError>;
+    pub fn from_path_with<L: OutlineLang>(
+        language: &L,
+        path: impl AsRef<Path>,
+    ) -> Result<Self, OutlineError>;
+    pub fn from_source_with<L: OutlineLang>(
+        language: &L,
+        filename: impl AsRef<Path>,
+        source: Arc<str>,
+    ) -> Result<Self, OutlineError>;
+    pub fn select(&self, selector: &str) -> Result<Self, OutlineError>;
+    pub fn id(&self) -> &OutlineId;
+    pub fn text(&self) -> &str;
+    pub fn outline(&self) -> &Outline;
+    pub fn structural_hash(&self) -> &str;
+    pub fn fingerprint_scheme(&self) -> &str;
 }
+```
+
+Trait implementations
+
+```rust,ignore
+impl Clone for OutlineContent;
+impl Debug for OutlineContent;
+impl NodeContents for OutlineContent;
 ```
 :::
 
@@ -127,7 +299,36 @@ File-read and parsing failures return errors, distinct from successful contents
 for an empty file. Selecting a language commits to that language's parsing
 rules; a parse failure is reported rather than interpreted as plain text.
 A malformed selector, a missing item, or an ambiguity not permitted by
-{cite}`requirements.references.outline_selectors` also returns an error.
+{cite}`requirements.sdk.outlines.selector_syntax` also returns an error.
+:::
+
+:::{req} OutlineError
+:test: crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]
+
+Carries a diagnostic and the line reported by the outline operation.
+
+```rust,ignore
+#[non_exhaustive]
+pub struct OutlineError {
+    pub line: usize,
+    pub message: String,
+}
+
+impl OutlineError {
+    pub fn new(line: usize, message: String) -> Self;
+}
+```
+
+Trait implementations
+
+```rust,ignore
+impl Clone for OutlineError;
+impl Debug for OutlineError;
+impl Display for OutlineError;
+impl Error for OutlineError;
+impl PartialEq for OutlineError;
+impl Eq for OutlineError;
+```
 :::
 
 ## Select another item from the same snapshot
@@ -138,7 +339,7 @@ retained outline. It returns another owned `OutlineContent` for that item,
 sharing the original source snapshot and fingerprinting rules. Selection
 performs no additional file read and remains usable after the original handle
 is dropped. Resolution follows
-{cite}`requirements.references.outline_selectors`, including its rule that
+{cite}`requirements.sdk.outlines.selector_syntax`, including its rule that
 identical plain-text lines are interchangeable. Invalid, missing, or ambiguous
 selections return an error under {cite}`requirements.sdk.outlines.errors`.
 
@@ -175,22 +376,9 @@ these parts together; later file edits do not change the loaded value.
 `OutlineContent::outline` exposes the outline of its whole retained file,
 including when the content value selects one item. The outline lists the file
 root first, followed by its items in source preorder. Full selectors identify
-items and their ancestry under {cite}`requirements.references.outline_selectors`.
+items and their ancestry under {cite}`requirements.sdk.outlines.selector_syntax`.
 
 ```rust,ignore
-use std::ops::Range;
-
-pub struct Outline {
-    pub items: Vec<OutlineItem>,
-}
-
-pub struct OutlineItem {
-    pub selector: String,
-    pub kind: String,
-    pub span: Range<usize>,
-    pub structural_hash: String,
-}
-
 impl OutlineContent {
     pub fn outline(&self) -> &Outline;
 }
@@ -200,6 +388,62 @@ Each span uses byte offsets into the supplied source snapshot, with an exclusive
 end and boundaries valid for slicing that text. It includes the item's attached
 source under the language's rules. The root has an empty selector and span
 `0..source.len()`.
+:::
+
+:::{req} Outline
+:test: crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]
+
+Lists the selectable items from a single parse, including the root for the whole file.
+
+```rust,ignore
+#[non_exhaustive]
+pub struct Outline {
+    pub items: Vec<OutlineItem>,
+}
+
+impl Outline {
+    pub fn new(items: Vec<OutlineItem>) -> Self;
+}
+```
+
+Trait implementations
+
+```rust,ignore
+impl Clone for Outline;
+impl Debug for Outline;
+```
+:::
+
+:::{req} OutlineItem
+:test: crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]
+
+`selector` addresses the item and `kind` describes it. `span` is a half-open byte range in the retained source. `structural_hash` identifies the item’s outline-relevant contents.
+
+```rust,ignore
+#[non_exhaustive]
+pub struct OutlineItem {
+    pub selector: String,
+    pub kind: String,
+    pub span: Range<usize>,
+    pub structural_hash: String,
+}
+
+impl OutlineItem {
+    pub fn new(
+        selector: String,
+        kind: String,
+        span: Range<usize>,
+        structural_hash: String,
+    ) -> Self;
+}
+```
+
+Trait implementations
+
+```rust,ignore
+impl Clone for OutlineItem;
+impl Debug for OutlineItem;
+```
 :::
 
 ```rust,ignore
@@ -222,26 +466,29 @@ such as `languages::Rust` or `languages::Markdown`.
 :::
 
 :::{req} language_provider
+:test: crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]
+
 `OutlineLang` defines the language interface. Each implementation supplies its
 name, claimed extensions, and outlining operation. Cloning a language shares
 its prepared configuration instead of rebuilding it or copying it in proportion
 to its size. Its result uses the public items, spans, and hashes under
-{cite}`requirements.sdk.outlines.items`.
+{cite}`requirements.sdk.outlines.items`. Filename extensions omit the leading dot.
 
 ```rust,ignore
-pub trait OutlineLang: Clone + Send + Sync {
-    // ...
-
-    /// Stable name of this language implementation.
+pub trait OutlineLang:
+    Clone
+    + Send
+    + Sync {
     fn name(&self) -> &str;
-
-    /// Claimed filename extensions, without their leading dots.
     fn extensions(&self) -> &[&str];
-
-    /// Interpret supplied text into selectable items and structural hashes.
     fn outline(&self, source: &str) -> Result<Outline, OutlineError>;
+    fn fingerprint_scheme(&self) -> &str;
 
-    // ...
+    fn search_structure(
+        &self,
+        _source: &str,
+        _rule: &Map<String, Value>,
+    ) -> Result<Vec<Range<usize>>, OutlineError> { ... }
 }
 ```
 :::

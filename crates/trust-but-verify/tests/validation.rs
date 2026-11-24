@@ -59,10 +59,7 @@ struct Memory {
 }
 
 fn fp(value: impl Into<String>) -> Fingerprint {
-    Fingerprint {
-        scheme: "test-v1".into(),
-        value: value.into(),
-    }
+    Fingerprint::new("test-v1".into(), value.into())
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -159,14 +156,14 @@ impl Criterion<Memory> for Review {
     fn criterion_path(&self) -> CriterionPath {
         CriterionPath::new(vec![])
     }
-    fn revision(&self) -> String {
-        self.revision.into()
+    fn version(&self) -> CriterionVersion {
+        CriterionVersion::new(self.revision)
     }
     async fn execute(
         self,
         cx: &mut ValidationContext<'_, Memory>,
     ) -> Result<Self::Ok, ValidationError<&'static str>> {
-        cx.inspection().graph().run_review(cx).await
+        cx.graph().run_review(cx).await
     }
 }
 
@@ -186,9 +183,7 @@ impl Memory {
             tokio::time::sleep(std::time::Duration::from_millis(2)).await;
         }
         if self.read_in_callback {
-            ctx.inspection()
-                .read(&node)
-                .map_err(ValidationError::Graph)?;
+            ctx.read(&node).map_err(ValidationError::Graph)?;
         }
         if self.edges_in_callback {
             ctx.successors(&1).map_err(ValidationError::Graph)?;
@@ -225,16 +220,16 @@ async fn historical_freshness_reads_do_not_enter_the_replacement_trace() {
         state.contents.insert(2, "changed".into());
         state.records.insert(
             1,
-            Record {
-                revision: "v1".into(),
-                dependencies: vec![Dependency::Node(2, fp("old"))],
-                output: serde_json::to_value(Assessment {
+            Record::new(
+                Some(CriterionVersion::new("v1")),
+                vec![Dependency::Node(2, fp("old"))],
+                serde_json::to_value(Assessment {
                     result: true,
                     rationale: "historical".into(),
                     metadata: (),
                 })
                 .unwrap(),
-            },
+            ),
         );
     }
     let validator = Validator::new(graph.clone());
@@ -260,7 +255,7 @@ async fn historical_freshness_reads_do_not_enter_the_replacement_trace() {
 // {test}`requirements.sdk.graph.validators.validate_node.errors`
 // {test}`requirements.sdk.graph.agent-harness.with_agent`
 // {test}`requirements.sdk.graph.agent-calls.judge.rendering`
-// {test}`requirements.sdk.graph.validation.execute`
+// {test}`requirements.sdk.graph.criteria.execute`
 #[tokio::test]
 async fn runner_does_not_store_a_missing_agent_error_and_supports_intermediate_calls() {
     let graph = Memory {
@@ -322,7 +317,7 @@ impl Agent<Memory> for MockAgent {
     fn run<'a>(
         &'a self,
         request: AgentRequest<u8>,
-        inspection: &'a InspectionContext<'_, Memory>,
+        inspection: &'a ValidationContext<'_, Memory>,
     ) -> BoxFuture<'a, Result<Value, std::io::Error>> {
         Box::pin(async move {
             if let Some(barrier) = &self.barrier {
@@ -364,9 +359,9 @@ struct Answer {
 
 // {test}`requirements.sdk.graph.snapshot`
 // {test}`requirements.sdk.graph.evidence.node_inputs`
-// {test}`requirements.sdk.graph.context-tools.tracked_inspection`
-// {test}`requirements.sdk.graph.context-tools.read_node.behavior`
-// {test}`requirements.sdk.graph.context-tools.read_node.inputs`
+// {test}`requirements.sdk.graph.validation-context.tracked_inspection`
+// {test}`requirements.sdk.graph.validation-context.read_node.behavior`
+// {test}`requirements.sdk.graph.validation-context.read_node.inputs`
 #[test]
 fn snapshots_record_exact_reads_and_retain_distinct_versions() {
     let graph = Memory::default();
@@ -376,7 +371,7 @@ fn snapshots_record_exact_reads_and_retain_distinct_versions() {
         .unwrap()
         .contents
         .insert(1, "before".into());
-    let inspection = InspectionContext::new(&graph);
+    let inspection = ValidationContext::new(&graph, 1);
     assert_eq!(inspection.read(&1).unwrap().0, "before");
     assert_eq!(
         inspection.read_snapshot(&1).unwrap().fingerprint,
@@ -400,7 +395,7 @@ fn snapshots_record_exact_reads_and_retain_distinct_versions() {
     assert_eq!(graph.state.lock().unwrap().reads, vec![1, 1, 1, 2]);
     let record = inspection
         .finish(
-            "v1".into(),
+            CriterionVersion::new("v1"),
             Assessment {
                 result: true,
                 rationale: "ok".into(),
@@ -415,7 +410,11 @@ fn snapshots_record_exact_reads_and_retain_distinct_versions() {
             Dependency::Node(1, fp("after"))
         ]
     );
-    assert!(!record_is_current(&graph, "v1", &record).unwrap());
+    assert!(
+        !record
+            .is_current(&graph, &CriterionVersion::new("v1"))
+            .unwrap()
+    );
 }
 
 // {test}`requirements.sdk.graph.evidence.checking_records`
@@ -435,12 +434,16 @@ fn a_matching_dependency_does_not_hide_a_later_changed_dependency() {
         } else {
             Dependency::Node(2, fp("second"))
         };
-        let record = Record {
-            revision: "v1".into(),
-            dependencies: vec![Dependency::Node(1, fp("first")), later],
-            output: json!(false),
-        };
-        assert!(record_is_current(&graph, "v1", &record).unwrap());
+        let record = Record::new(
+            Some(CriterionVersion::new("v1")),
+            vec![Dependency::Node(1, fp("first")), later],
+            json!(false),
+        );
+        assert!(
+            record
+                .is_current(&graph, &CriterionVersion::new("v1"))
+                .unwrap()
+        );
         {
             let mut state = graph.state.lock().unwrap();
             if edge_dependency {
@@ -450,11 +453,22 @@ fn a_matching_dependency_does_not_hide_a_later_changed_dependency() {
             }
             assert_eq!(state.contents[&1], "first");
         }
-        assert!(!record_is_current(&graph, "v1", &record).unwrap());
+        assert!(
+            !record
+                .is_current(&graph, &CriterionVersion::new("v1"))
+                .unwrap()
+        );
     }
 }
 
-// {test}`requirements.sdk.graph.evidence.checking_records.procedure_match`
+// {test}`requirements.sdk.graph.criteria.criterion_version`
+#[test]
+#[should_panic(expected = "* is reserved for unversioned evidence")]
+fn concrete_criterion_version_rejects_the_legacy_marker() {
+    CriterionVersion::new("*");
+}
+
+// {test}`requirements.sdk.graph.evidence.checking_records.version_match`
 // {test}`requirements.sdk.graph.evidence.checking_records`
 // {test}`requirements.sdk.graph.fingerprint`
 // {test}`requirements.sdk.graph.node_content`
@@ -468,55 +482,79 @@ fn wildcard_versions_still_check_inputs_and_errors() {
         .unwrap()
         .contents
         .insert(1, "same".into());
-    let mut record = Record {
-        revision: "*".into(),
-        dependencies: vec![Dependency::Node(1, fp("same"))],
-        output: serde_json::to_value(Assessment {
+    let mut record = Record::new(
+        None,
+        vec![Dependency::Node(1, fp("same"))],
+        serde_json::to_value(Assessment {
             result: false,
             rationale: "negative".into(),
             metadata: (),
         })
         .unwrap(),
-    };
-    assert!(record_is_current(&graph, "v42", &record).unwrap());
+    );
+    assert!(
+        record
+            .is_current(&graph, &CriterionVersion::new("v42"))
+            .unwrap()
+    );
     assert!(!record.output["result"].as_bool().unwrap());
-    record.revision = "v*".into();
-    assert!(!record_is_current(&graph, "v42", &record).unwrap());
-    record.revision = "v42".into();
-    assert!(record_is_current(&graph, "v42", &record).unwrap());
+    record.version = Some(CriterionVersion::new("v*"));
+    assert!(
+        !record
+            .is_current(&graph, &CriterionVersion::new("v42"))
+            .unwrap()
+    );
+    record.version = Some(CriterionVersion::new("v42"));
+    assert!(
+        record
+            .is_current(&graph, &CriterionVersion::new("v42"))
+            .unwrap()
+    );
     record.dependencies = vec![Dependency::Node(
         1,
-        Fingerprint {
-            scheme: "other".into(),
-            value: "same".into(),
-        },
+        Fingerprint::new("other".into(), "same".into()),
     )];
-    assert!(!record_is_current(&graph, "v42", &record).unwrap());
-    record.revision = "*".into();
+    assert!(
+        !record
+            .is_current(&graph, &CriterionVersion::new("v42"))
+            .unwrap()
+    );
+    record.version = None;
     record.dependencies = vec![Dependency::Node(1, fp("changed"))];
-    assert!(!record_is_current(&graph, "v42", &record).unwrap());
+    assert!(
+        !record
+            .is_current(&graph, &CriterionVersion::new("v42"))
+            .unwrap()
+    );
     graph.state.lock().unwrap().fail_read = true;
-    assert_eq!(record_is_current(&graph, "v42", &record), Err("read"));
-    for (stored, requested) in [
-        ("v41", "v42"),
-        ("v42", "v420"),
-        ("V42", "v42"),
-        ("v42", "*"),
+    assert_eq!(
+        record.is_current(&graph, &CriterionVersion::new("v42")),
+        Err("read")
+    );
+    assert!(CriterionVersion::from_recorded("*").is_none());
+    for (stored, requested, expected) in [
+        ("v41", "v42", false),
+        ("v42", "v420", false),
+        ("V42", "v42", false),
+        ("v42", "v42", true),
+        ("v*", "v42", false),
+        ("", "v42", false),
+        ("*", "anything", true),
     ] {
-        assert!(!procedure_matches(stored, requested));
+        record.version = CriterionVersion::from_recorded(stored);
+        assert_eq!(
+            CriterionVersion::new(requested).is_compatible_with(record.version.as_ref()),
+            expected
+        );
     }
-    assert!(procedure_matches("v42", "v42"));
-    assert!(!procedure_matches("v*", "v42"));
-    assert!(!procedure_matches("", "v42"));
-    assert!(procedure_matches("*", "anything"));
 }
 
 // {test}`requirements.sdk.graph.evidence.checking_records`
-// {test}`requirements.sdk.graph.context-tools.root_inputs`
+// {test}`requirements.sdk.graph.validation-context.root_inputs`
 // {test}`requirements.sdk.graph-edges.outgoing_edges`
-// {test}`requirements.sdk.graph.context-tools.snapshot`
-// {test}`requirements.sdk.graph.context-tools.outgoing_edges.behavior`
-// {test}`requirements.sdk.graph.context-tools.outgoing_edges.inputs`
+// {test}`requirements.sdk.graph.validation-context.snapshot`
+// {test}`requirements.sdk.graph.validation-context.outgoing_edges.behavior`
+// {test}`requirements.sdk.graph.validation-context.outgoing_edges.inputs`
 #[test]
 fn labeled_selections_track_only_target_membership_without_reading_contents() {
     let graph = Memory::default();
@@ -529,25 +567,35 @@ fn labeled_selections_track_only_target_membership_without_reading_contents() {
         rationale: "selection".into(),
         metadata: (),
     };
-    let empty = ctx.inspection().finish("v1".into(), output()).unwrap();
+    let empty = ctx.finish(CriterionVersion::new("v1"), output()).unwrap();
     graph.state.lock().unwrap().edges.insert(1, vec![(8, 2)]);
-    assert!(record_is_current(&graph, "v1", &empty).unwrap());
+    assert!(
+        empty
+            .is_current(&graph, &CriterionVersion::new("v1"))
+            .unwrap()
+    );
     graph
         .state
         .lock()
         .unwrap()
         .edges
         .insert(1, vec![(8, 2), (7, 5), (7, 3), (7, 5)]);
-    assert!(!record_is_current(&graph, "v1", &empty).unwrap());
+    assert!(
+        !empty
+            .is_current(&graph, &CriterionVersion::new("v1"))
+            .unwrap()
+    );
     let selected = ValidationContext::new(&graph, 1);
     assert_eq!(selected.successors(&7).unwrap(), [5, 3, 5]);
     graph.state.lock().unwrap().selections.clear();
-    let snapshot = selected.inspection().outgoing_edges(&1, 7).unwrap();
+    let snapshot = selected.outgoing_edges(&1, 7).unwrap();
     assert_eq!(graph.state.lock().unwrap().selections, [1]);
     assert_eq!(snapshot.content, [5, 3, 5]);
     assert_eq!(snapshot.fingerprint, edge_fingerprint(&graph, &[3, 5]));
     selected.successors(&7).unwrap();
-    let record = selected.inspection().finish("v1".into(), output()).unwrap();
+    let record = selected
+        .finish(CriterionVersion::new("v1"), output())
+        .unwrap();
     assert_eq!(
         record.dependencies,
         [Dependency::OutgoingEdges(
@@ -562,30 +610,41 @@ fn labeled_selections_track_only_target_membership_without_reading_contents() {
         .unwrap()
         .edges
         .insert(1, vec![(7, 3), (7, 5), (8, 99)]);
-    assert!(record_is_current(&graph, "v1", &record).unwrap());
+    assert!(
+        record
+            .is_current(&graph, &CriterionVersion::new("v1"))
+            .unwrap()
+    );
     graph
         .state
         .lock()
         .unwrap()
         .edges
         .insert(1, vec![(7, 3), (7, 6), (8, 99)]);
-    assert!(!record_is_current(&graph, "v1", &record).unwrap());
+    assert!(
+        !record
+            .is_current(&graph, &CriterionVersion::new("v1"))
+            .unwrap()
+    );
     assert!(graph.state.lock().unwrap().reads.is_empty());
     graph.state.lock().unwrap().fail_edges = Some(1);
-    let before = selected.inspection().dependencies();
+    let before = selected.dependencies();
     assert_eq!(selected.successors(&7), Err("edges"));
-    assert_eq!(selected.inspection().dependencies(), before);
-    assert_eq!(record_is_current(&graph, "v1", &record), Err("edges"));
+    assert_eq!(selected.dependencies(), before);
+    assert_eq!(
+        record.is_current(&graph, &CriterionVersion::new("v1")),
+        Err("edges")
+    );
 }
 
 // {test}`requirements.sdk.graph.validators.validate_node`
 // {test}`requirements.sdk.graph.evidence.check_node`
 // {test}`requirements.sdk.graph.agent-calls.procedures`
-// {test}`requirements.sdk.graph.validation.criterion_trait`
-// {test}`requirements.sdk.graph.validation.deterministic_procedures`
+// {test}`requirements.sdk.graph.criteria.criterion_trait`
+// {test}`requirements.sdk.graph.criteria.deterministic_procedures`
 // {test}`requirements.sdk.graph.evidence.procedure_identity`
 // {test}`requirements.sdk.graph.evidence.inputs`
-// {test}`requirements.sdk.graph.validation.criterion_trait.revision`
+// {test}`requirements.sdk.graph.criteria.criterion_trait.version`
 #[tokio::test]
 async fn caller_reuses_negative_answers_and_compares_revisions_explicitly() {
     let graph = Memory::default();
@@ -600,7 +659,7 @@ async fn caller_reuses_negative_answers_and_compares_revisions_explicitly() {
     validator.store_evidence(&value).await.unwrap();
     let cached = validator.load_evidence(&review()).await.unwrap().unwrap();
     assert!(!cached.output().result);
-    assert!(procedure_matches(cached.revision(), &review().revision()));
+    assert!(review().version().is_compatible_with(cached.version()));
     assert!(validator.check_inputs(&cached).unwrap());
     {
         let state = graph.state.lock().unwrap();
@@ -624,12 +683,19 @@ async fn caller_reuses_negative_answers_and_compares_revisions_explicitly() {
         revision: "v2",
     };
     let old = validator.load_evidence(&v2).await.unwrap().unwrap();
-    assert_eq!(old.revision(), "v1");
+    assert_eq!(old.version().unwrap().as_str(), "v1");
     assert!(validator.check_inputs(&old).unwrap());
-    assert!(!procedure_matches(old.revision(), &v2.revision()));
+    assert!(!v2.version().is_compatible_with(old.version()));
     let replacement = validator.verify(v2).await.unwrap();
     validator.store_evidence(&replacement).await.unwrap();
-    assert_eq!(graph.state.lock().unwrap().records[&9].revision, "v2");
+    assert_eq!(
+        graph.state.lock().unwrap().records[&9]
+            .version
+            .as_ref()
+            .unwrap()
+            .as_str(),
+        "v2"
+    );
     graph
         .state
         .lock()
@@ -637,7 +703,7 @@ async fn caller_reuses_negative_answers_and_compares_revisions_explicitly() {
         .records
         .get_mut(&9)
         .unwrap()
-        .revision = "*".into();
+        .version = None;
     let legacy = validator
         .load_evidence(&Review {
             node: 9,
@@ -646,7 +712,7 @@ async fn caller_reuses_negative_answers_and_compares_revisions_explicitly() {
         .await
         .unwrap()
         .unwrap();
-    assert!(procedure_matches(legacy.revision(), "v2"));
+    assert!(CriterionVersion::new("v2").is_compatible_with(legacy.version()));
     assert!(!legacy.output().result);
     assert!(validator.check_inputs(&legacy).unwrap());
 }
@@ -656,7 +722,7 @@ async fn caller_reuses_negative_answers_and_compares_revisions_explicitly() {
 // {test}`requirements.sdk.graph.evidence.check_node`
 // {test}`requirements.sdk.graph.evidence.procedure_identity`
 // {test}`requirements.sdk.graph.evidence.record.output`
-// {test}`requirements.sdk.graph.validation.execute`
+// {test}`requirements.sdk.graph.criteria.execute`
 #[tokio::test]
 async fn resolution_storage_and_callback_errors_are_not_judgments() {
     let graph = Memory::default();
@@ -715,7 +781,7 @@ async fn dropped_builders_and_missing_agents_do_not_resolve_queued_inputs() {
             .contents_of_current_node()
             .contents_of_successors(7),
     );
-    assert!(ctx.inspection().dependencies().is_empty());
+    assert!(ctx.dependencies().is_empty());
     assert!(matches!(
         ctx.ask::<Answer>()
             .contents_of_successors(7)
@@ -734,7 +800,7 @@ async fn dropped_builders_and_missing_agents_do_not_resolve_queued_inputs() {
 // {test}`requirements.sdk.graph.agent-calls.judge.rendering`
 // {test}`requirements.sdk.graph.agent-calls.judge.submission`
 // {test}`requirements.sdk.graph.snapshot`
-// {test}`requirements.sdk.graph.context-tools.root_inputs`
+// {test}`requirements.sdk.graph.validation-context.root_inputs`
 #[tokio::test]
 async fn explicit_insertions_preserve_order_repetition_and_selection_snapshots() {
     let graph = Memory::default();
@@ -773,7 +839,7 @@ async fn explicit_insertions_preserve_order_repetition_and_selection_snapshots()
     assert_eq!(requests[0].3["properties"]["n"]["type"], "integer");
     assert_eq!(graph.state.lock().unwrap().reads, vec![1, 3, 2, 3, 1]);
     assert_eq!(
-        ctx.inspection().dependencies(),
+        ctx.dependencies(),
         vec![
             Dependency::OutgoingEdges(1, 7, edge_fingerprint(&graph, &[2, 3])),
             Dependency::Node(1, fp("subject")),
@@ -904,7 +970,7 @@ async fn string_and_str_contexts_deliver_identical_prefixes_and_fingerprints() {
     let request = ctx.ask::<Answer>().context(temporary.as_str());
     temporary.clear();
     request.await.unwrap();
-    assert!(ctx.inspection().dependencies().is_empty());
+    assert!(ctx.dependencies().is_empty());
 
     ctx.ask::<Answer>()
         .context("short-lived")
@@ -1140,10 +1206,7 @@ async fn shared_context_allows_independent_concurrent_agent_calls() {
     assert_eq!(first.unwrap().n, 7);
     assert_eq!(second.unwrap().n, 11);
     assert_eq!(agent.requests.lock().unwrap().len(), 2);
-    assert_eq!(
-        ctx.inspection().dependencies(),
-        vec![Dependency::Node(1, fp("subject"))]
-    );
+    assert_eq!(ctx.dependencies(), vec![Dependency::Node(1, fp("subject"))]);
 }
 
 // {test}`requirements.sdk.domain`
@@ -1161,15 +1224,15 @@ async fn later_lighter_agent_calls_preserve_the_contexts_existing_trace() {
     let ctx = ValidationContext::with_agent(&graph, 1, &agent);
     fn assert_send_sync<T: Send + Sync>(_: &T) {}
     assert_send_sync(&ctx);
-    assert_eq!(ctx.inspection().read(&2).unwrap().0, "direct before");
+    assert_eq!(ctx.read(&2).unwrap().0, "direct before");
     let _: Answer = ctx
         .ask()
         .contents_of_current_node()
         .contents_of_successors(7)
         .await
         .unwrap();
-    assert_eq!(ctx.inspection().read(&3).unwrap().0, "direct after");
-    let retained = ctx.inspection().dependencies();
+    assert_eq!(ctx.read(&3).unwrap().0, "direct after");
+    let retained = ctx.dependencies();
     assert_eq!(
         retained,
         vec![
@@ -1181,27 +1244,26 @@ async fn later_lighter_agent_calls_preserve_the_contexts_existing_trace() {
     );
     assert_eq!(graph.state.lock().unwrap().reads, [2, 1, 3]);
     let _: Answer = ctx.ask().context("lighter".to_owned()).await.unwrap();
-    assert_eq!(ctx.inspection().dependencies(), retained);
+    assert_eq!(ctx.dependencies(), retained);
     assert!(agent.requests.lock().unwrap()[1].2.is_empty());
     assert_eq!(
-        ctx.inspection()
-            .finish(
-                "v1".into(),
-                Assessment {
-                    result: true,
-                    rationale: "retained".into(),
-                    metadata: (),
-                }
-            )
-            .unwrap()
-            .dependencies,
+        ctx.finish(
+            CriterionVersion::new("v1"),
+            Assessment {
+                result: true,
+                rationale: "retained".into(),
+                metadata: (),
+            }
+        )
+        .unwrap()
+        .dependencies,
         retained
     );
 }
 
 // {test}`requirements.sdk.domain`
 // {test}`requirements.sdk.graph.validators.validate_node`
-// {test}`requirements.sdk.graph.context-tools.root_inputs`
+// {test}`requirements.sdk.graph.validation-context.root_inputs`
 // {test}`requirements.sdk.graph.evidence.node_inputs`
 #[tokio::test]
 async fn concurrent_single_node_validations_keep_separate_traces() {
@@ -1263,7 +1325,7 @@ async fn concurrent_single_node_validations_keep_separate_traces() {
 }
 
 // {test}`requirements.sdk.graph.agent-calls.judge.submission`
-// {test}`requirements.sdk.graph.validation.execute`
+// {test}`requirements.sdk.graph.criteria.execute`
 #[tokio::test]
 async fn invalid_typed_submission_is_an_agent_error() {
     let graph = Memory {
@@ -1300,8 +1362,8 @@ async fn invalid_typed_submission_is_an_agent_error() {
     assert!(state.records.is_empty());
 }
 
-// {test}`requirements.sdk.graph.validation.execute`
-// {test}`requirements.sdk.graph.validation.output_policy`
+// {test}`requirements.sdk.graph.criteria.execute`
+// {test}`requirements.sdk.graph.criteria.output_policy`
 // {test}`requirements.sdk.graph.validators.validate_node.errors`
 #[tokio::test]
 async fn criterion_decode_errors_are_execution_errors_and_false_is_a_completed_answer() {
@@ -1314,14 +1376,14 @@ async fn criterion_decode_errors_are_execution_errors_and_false_is_a_completed_a
         fn criterion_path(&self) -> CriterionPath {
             CriterionPath::new(vec!["parsed-answer".into()])
         }
-        fn revision(&self) -> String {
-            "json-boolean-v1".into()
+        fn version(&self) -> CriterionVersion {
+            CriterionVersion::new("json-boolean-v1")
         }
         async fn execute(
             self,
             cx: &mut ValidationContext<'_, Memory>,
         ) -> Result<bool, ValidationError<&'static str>> {
-            let contents = cx.inspection().read(&1).map_err(ValidationError::Graph)?;
+            let contents = cx.read(&1).map_err(ValidationError::Graph)?;
             serde_json::from_str(&contents.format()).map_err(ValidationError::Output)
         }
     }
@@ -1356,10 +1418,10 @@ async fn criterion_decode_errors_are_execution_errors_and_false_is_a_completed_a
 fn prefix_hashes_match_known_utf8_sha256_without_normalization() {
     assert_eq!(
         context_fingerprint(""),
-        Fingerprint {
-            scheme: "context-prefix-sha256-v1".into(),
-            value: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".into(),
-        }
+        Fingerprint::new(
+            "context-prefix-sha256-v1".into(),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".into()
+        )
     );
     assert_eq!(
         context_fingerprint("héllo").value,
@@ -1370,7 +1432,7 @@ fn prefix_hashes_match_known_utf8_sha256_without_normalization() {
     assert_ne!(context_fingerprint("a b"), context_fingerprint("a  b"));
 }
 
-// {test}`requirements.sdk.graph.validation.execute`
+// {test}`requirements.sdk.graph.criteria.execute`
 #[test]
 fn agent_errors_expose_the_agreed_string_payload() {
     use std::error::Error;
@@ -1404,7 +1466,7 @@ async fn queued_reads_selection_and_rendering_fail_before_agent_invocation() {
         ctx.ask::<Answer>().contents_of_successors(7).await.unwrap();
         assert!(graph.state.lock().unwrap().reads.is_empty());
         assert_eq!(
-            ctx.inspection().dependencies(),
+            ctx.dependencies(),
             vec![Dependency::OutgoingEdges(
                 1,
                 7,
@@ -1437,13 +1499,13 @@ async fn queued_reads_selection_and_rendering_fail_before_agent_invocation() {
         ctx.ask::<Answer>().contents_of_current_node().await,
         Err(ValidationError::Graph("render"))
     ));
-    assert!(ctx.inspection().dependencies().is_empty());
+    assert!(ctx.dependencies().is_empty());
     assert_eq!(agent.requests.lock().unwrap().len(), initial_calls);
 }
 
-// {test}`requirements.sdk.graph.context-tools.read_node.fn`
-// {test}`requirements.sdk.graph.context-tools.read_node.behavior`
-// {test}`requirements.sdk.graph.context-tools.read_node.inputs`
+// {test}`requirements.sdk.graph.validation-context.read_node.fn`
+// {test}`requirements.sdk.graph.validation-context.read_node.behavior`
+// {test}`requirements.sdk.graph.validation-context.read_node.inputs`
 // {test}`requirements.sdk.graph.evidence.node_inputs`
 // {test}`requirements.sdk.graph.snapshot`
 #[test]
@@ -1459,7 +1521,7 @@ fn direct_reads_return_complete_unicode_contents_and_snapshots() {
             .unwrap()
             .contents
             .insert(1, original.clone());
-        let inspection = InspectionContext::new(&graph);
+        let inspection = ValidationContext::new(&graph, 1);
         let contents = inspection.read(&1).unwrap();
         assert_eq!(contents.format(), original);
         let snapshot = inspection.read_snapshot(&1).unwrap();
@@ -1478,9 +1540,15 @@ fn direct_reads_return_complete_unicode_contents_and_snapshots() {
         assert_eq!(contents.format(), original);
         assert_eq!(snapshot.content.format(), original);
         assert_eq!(graph.state.lock().unwrap().reads, [1, 1]);
-        let record = inspection.finish("v1".into(), true).unwrap();
-        assert!(!record_is_current(&graph, "v1", &record).unwrap());
-        let failed = InspectionContext::new(&graph);
+        let record = inspection
+            .finish(CriterionVersion::new("v1"), true)
+            .unwrap();
+        assert!(
+            !record
+                .is_current(&graph, &CriterionVersion::new("v1"))
+                .unwrap()
+        );
+        let failed = ValidationContext::new(&graph, 1);
         assert_eq!(failed.read(&9).unwrap_err(), "missing");
         assert!(failed.dependencies().is_empty());
     }
@@ -1591,7 +1659,7 @@ async fn enum_node_ids_distinguish_requirements_and_source_items_in_one_domain()
         [source.clone()]
     );
     assert!(domain.outgoing_edges(&source, ()).unwrap().is_empty());
-    let inspection = InspectionContext::new(&domain);
+    let inspection = ValidationContext::new(&domain, requirement.clone());
     assert_eq!(
         inspection.read(&requirement).unwrap().format(),
         "The domain defines its shared error type."
@@ -1600,7 +1668,9 @@ async fn enum_node_ids_distinguish_requirements_and_source_items_in_one_domain()
         inspection.read(&source).unwrap().format(),
         "fn validate() {}"
     );
-    let record = inspection.finish("enum-v1".into(), true).unwrap();
+    let record = inspection
+        .finish(CriterionVersion::new("enum-v1"), true)
+        .unwrap();
     assert!(
         matches!(&record.dependencies[..], [Dependency::Node(first, _), Dependency::Node(second, _)]
             if first == &requirement && second == &source)

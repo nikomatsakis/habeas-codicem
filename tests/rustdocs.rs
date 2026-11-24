@@ -451,17 +451,55 @@ fn rustdocs_mdbook_build_publishes_native_site_and_prefix_safe_links() {
 
 // {test}`requirements.index.rustdocs.publication`
 #[test]
-fn rustdocs_ci_generates_workspace_site_before_building_the_published_book() {
+fn rustdocs_workspace_build_generates_and_refreshes_the_import() {
+    let root = TempDir::new().unwrap();
+    fs::create_dir(root.path().join("src")).unwrap();
+    fs::write(
+        root.path().join("Cargo.toml"),
+        "[package]\nname = 'trust-but-verify'\nversion = '0.1.0'\nedition = '2024'\n",
+    )
+    .unwrap();
+    let lib = root.path().join("src/lib.rs");
+    fs::write(&lib, "pub fn first() {}\n").unwrap();
+    assert!(
+        Command::new("cargo")
+            .args(["generate-lockfile", "--offline"])
+            .current_dir(root.path())
+            .status()
+            .unwrap()
+            .success()
+    );
+    let mut config = configuration();
+    config
+        .set("output.habeas.command", "habeas mdbook render")
+        .unwrap();
+    config
+        .set("preprocessor.habeas.rustdocs.build-workspace", true)
+        .unwrap();
+    config
+        .set("preprocessor.habeas.rustdocs.path", "custom/doc")
+        .unwrap();
+    let imported = root.path().join("md/rustdocs/trust_but_verify");
+    habeas::rustdocs::preprocess(&mut book(), root.path(), &config).unwrap();
+    assert!(imported.join("fn.first.html").is_file());
+    fs::write(&lib, "pub fn second() {}\n").unwrap();
+    habeas::rustdocs::preprocess(&mut book(), root.path(), &config).unwrap();
+    assert!(imported.join("fn.second.html").is_file());
+    fs::write(&lib, "pub fn").unwrap();
+    let error = habeas::rustdocs::preprocess(&mut book(), root.path(), &config).unwrap_err();
+    assert!(error.to_string().contains("cargo doc failed"), "{error}");
+    assert!(imported.join("fn.second.html").is_file());
+}
+
+// {test}`requirements.index.rustdocs.publication`
+#[test]
+fn rustdocs_ci_publishes_the_book_with_workspace_generation_enabled() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let workflow: serde_json::Value =
         serde_saphyr::from_str(&fs::read_to_string(root.join(".github/workflows/ci.yml")).unwrap())
             .unwrap();
     let steps = workflow["jobs"]["test-and-build"]["steps"]
         .as_array()
-        .unwrap();
-    let docs = steps
-        .iter()
-        .position(|step| step["run"] == "cargo doc --locked --workspace --no-deps")
         .unwrap();
     let build = steps
         .iter()
@@ -471,7 +509,7 @@ fn rustdocs_ci_generates_workspace_site_before_building_the_published_book() {
         .iter()
         .position(|step| step["uses"] == "actions/upload-pages-artifact@v4")
         .unwrap();
-    assert!(docs < build && build < upload);
+    assert!(build < upload);
     assert_eq!(steps[upload]["with"]["path"], "book");
     let summary = fs::read_to_string(root.join("md/SUMMARY.md")).unwrap();
     let appendix = summary.split_once("# Appendix").unwrap().1;
@@ -484,6 +522,10 @@ fn rustdocs_ci_generates_workspace_site_before_building_the_published_book() {
     );
     let config: toml::Value =
         toml::from_str(&fs::read_to_string(root.join("book.toml")).unwrap()).unwrap();
+    assert_eq!(
+        config["preprocessor"]["habeas"]["rustdocs"]["build-workspace"].as_bool(),
+        Some(true)
+    );
     assert_eq!(
         config["preprocessor"]["habeas"]["rustdocs"]["crate"].as_str(),
         Some("trust_but_verify")

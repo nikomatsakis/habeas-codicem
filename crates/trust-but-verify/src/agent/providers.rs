@@ -49,19 +49,19 @@ impl RigProvider {
                     .erase()
             }
             BackendConfig::OpenAi(config) => {
-                let key = config.api_key()?;
+                let key = config.resolved_api_key()?;
                 rig_core::providers::openai::OpenAIConfig::new(key)
-                    .with_base_url(config.endpoint())
+                    .with_base_url(config.resolved_endpoint())
                     .client()
-                    .responses(config.model())
+                    .responses(config.resolved_model())
                     .erase()
             }
             BackendConfig::Ollama(config) => {
                 // Rig's reqwest transport sends each request once; it has no
                 // hidden retry layer to disable.
                 let mut provider = rig_core::providers::ollama::OllamaConfig::new()
-                    .with_base_url(config.endpoint());
-                if let Some(key) = config.api_key()? {
+                    .with_base_url(config.resolved_endpoint());
+                if let Some(key) = config.resolved_api_key()? {
                     provider = provider.with_api_key(key);
                 }
                 provider.client().native_completion(&config.model).erase()

@@ -27,6 +27,14 @@ Capitalized requirement terms in these chapters use the meanings defined by BCP
 14 ([RFC 2119](https://www.rfc-editor.org/rfc/rfc2119) and
 [RFC 8174](https://www.rfc-editor.org/rfc/rfc8174)).
 
+## What needs human review
+
+The maintainer’s review goal is “I should not need to review any
+changes that do not require a change in requirements.” A committed public API
+is part of the requirements. Changing a public field type or a method signature
+should put that decision in the requirements diff. An implementation change
+that preserves the contract can instead be assessed by refreshing its evidence.
+
 ## Requirements as authoring inputs
 
 :::{req} authoring_input

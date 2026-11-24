@@ -19,8 +19,11 @@ live under `requirements.sdk.graph`, `requirements.sdk.sources`, and
 | `authoring.deterministic_validation` | Checking saved results without an agent capability | CI acceptance policy and reported errors |
 
 The identifiers in this table are abbreviated: each begins with `requirements.`.
-The SDK search tools use a fixed discovery policy for search result sets and
-record selected source nodes as separate inputs.
+The shared search policy requires the agent to close every delivered search
+page and select the excerpts it relied on under
+{cite}`requirements.sdk.graph.search.finish_search.behavior`. HC already enforces
+this policy in its assessment adapter. The SDK tool implementation still needs
+to adopt it.
 
 ## Individual outline definitions
 
@@ -73,6 +76,6 @@ freshness. That policy must reconcile `requirements.authoring.github_reads`,
 that the domain can supply; HC decides when network access is permitted and how
 an unavailable observation affects a command.
 
-New FIXME relevance checks need a new criterion identity or review revision.
+New FIXME relevance checks need a new criterion identity or review version.
 Evidence-format conversion preserves an existing judgment and does not perform
 a new assessment.

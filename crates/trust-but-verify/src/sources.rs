@@ -27,7 +27,7 @@ pub struct ParsedSource {
 pub trait SourceProvider: Send + Sync {
     type Error: From<SourceError> + Send;
 
-    // {impl}`requirements.sdk.graph.context-tools.list_sources.fn`
+    // {impl}`requirements.sdk.graph.validation-context.list_sources.fn`
     fn list(
         &self,
         scope: &SourceScope,
@@ -43,7 +43,7 @@ pub trait SourceProvider: Send + Sync {
     ) -> impl Future<Output = Result<ParsedSource, Self::Error>> + Send {
         defaults::parse(self, id, languages)
     }
-    // {impl}`requirements.sdk.graph.context-tools.search_text.fn`
+    // {impl}`requirements.sdk.graph.search.search_text.fn`
     fn search_text(
         &self,
         query: &TextQuery,
@@ -68,8 +68,8 @@ pub fn parse_snapshot(
 ) -> Result<ParsedSource, SourceError> {
     let text = source.text()?;
     let provider = match &source.language {
-        Some(language) => Some(languages.named(language).ok_or_else(|| {
-            SourceError::Invalid(format!("unknown source language {language:?}"))
+        Some(language) => Some(languages.named(language.as_str()).ok_or_else(|| {
+            SourceError::Invalid(format!("unknown source language {:?}", language.as_str()))
         })?),
         None => languages.for_path(Path::new(&id.location)),
     };
@@ -151,8 +151,11 @@ pub mod defaults {
         query: &StructuralQuery,
         languages: &Registry,
     ) -> Result<StructuralMatches, P::Error> {
-        let language = languages.named(&query.language).ok_or_else(|| {
-            SourceError::Invalid(format!("unknown source language {:?}", query.language))
+        let language = languages.named(query.language.as_str()).ok_or_else(|| {
+            SourceError::Invalid(format!(
+                "unknown source language {:?}",
+                query.language.as_str()
+            ))
         })?;
         let rule =
             StructuralRule::compile_with(language, &query.rule).map_err(SourceError::Invalid)?;
@@ -242,7 +245,7 @@ impl LocalSources {
 
     pub fn list_sync(&self, scope: &SourceScope) -> Result<Vec<ResourceId>, SourceError> {
         let root = self.project_directory()?;
-        let selected = self.path(&scope.prefix)?;
+        let selected = self.path(scope.path_prefix())?;
         let mut resources = Vec::new();
         let filter_root = root.clone();
         let filter_scope = selected.clone();
@@ -423,14 +426,14 @@ impl<P: SourceProvider> SourceAnalysis<P> {
         }
     }
     // {cite}`habeas:util`
-    // {impl}`requirements.sdk.graph.context-tools.read_source.fn`
-    // {impl}`requirements.sdk.graph.context-tools.outline_source.fn`
+    // {impl}`requirements.sdk.graph.validation-context.read_source.fn`
+    // {impl}`requirements.sdk.graph.validation-context.outline_source.fn`
     #[cfg(test)]
     pub async fn parse(&self, id: &ResourceId) -> Result<ParsedSource, P::Error> {
         self.provider.parse(id, &self.languages).await
     }
     // {cite}`habeas:util`
-    // {impl}`requirements.sdk.graph.context-tools.search_structure.fn`
+    // {impl}`requirements.sdk.graph.search.search_structure.fn`
     pub async fn search_structure(
         &self,
         query: &StructuralQuery,

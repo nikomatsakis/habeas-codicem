@@ -56,13 +56,19 @@ Rustdoc page in the same tab, with Rustdoc's own layout and navigation. Relative
 links from book chapters to imported item pages resolve when the publication is
 hosted under a URL prefix.
 
+Set `build-workspace = true` to run `cargo doc --locked --workspace --no-deps`
+from the book root before each import. In this mode `path` ends in `doc` and
+its parent is Cargo's target directory. Cargo reuses current build artifacts.
+Omitting the option imports an already generated site.
+
 The build reports a readable error if the directive has no import configuration, the
 configured directory, crate landing page, or any imported site file cannot be
 read, the import fails, or an imported file would overwrite a book output file.
 ::::
 
 :::{req} rustdocs.publication
-This project's CI generates Rustdoc for the workspace before building the book.
+This project's `mdbook build` and `mdbook serve` generate workspace Rustdoc
+as part of preprocessing, including on the first build in a fresh checkout.
 The published documentation includes both the book and that generated Rustdoc
 site in the same GitHub Pages deployment under
 {cite}`requirements.integration.ci`. The appendix contains a "Rustdocs" entry

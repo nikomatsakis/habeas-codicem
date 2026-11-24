@@ -14,6 +14,46 @@ filename-based constructors select them under
 {cite}`requirements.sdk.outlines.defaults`.
 :::
 
+:::{req} TypeScript
+:test: crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]
+
+The `TypeScript` implementation of `OutlineLang` supplies the extension, selection, and fingerprint rules described in this chapter.
+
+```rust,ignore
+pub struct TypeScript;
+```
+
+Trait implementations
+
+```rust,ignore
+impl Clone for TypeScript;
+impl Debug for TypeScript;
+impl Default for TypeScript;
+impl OutlineLang for TypeScript;
+impl Copy for TypeScript;
+```
+:::
+
+:::{req} Tsx
+:test: crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]
+
+The `Tsx` implementation of `OutlineLang` supplies the extension, selection, and fingerprint rules described in this chapter.
+
+```rust,ignore
+pub struct Tsx;
+```
+
+Trait implementations
+
+```rust,ignore
+impl Clone for Tsx;
+impl Debug for Tsx;
+impl Default for Tsx;
+impl OutlineLang for Tsx;
+impl Copy for Tsx;
+```
+:::
+
 ## Select source items
 
 :::{req} items

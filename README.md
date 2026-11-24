@@ -151,10 +151,13 @@ This repository's SDK chapter uses Mermaid diagrams. Before building this book,
 install the pinned tools used by CI:
 
 ```sh
-cargo install mdbook --locked --version 0.5.4 --no-default-features --features search
+cargo install mdbook --locked --version 0.5.4
 cargo install mdbook-mermaid --locked --version 0.17.1
 mdbook serve
 ```
+
+The book preprocessor runs `cargo doc` to build the workspace API reference on
+the first build and refresh it on rebuilds.
 
 The `mermaid.min.js` and `mermaid-init.js` assets are checked into Git, so fresh
 clones and worktrees need no `mdbook-mermaid install` step. The rendered book

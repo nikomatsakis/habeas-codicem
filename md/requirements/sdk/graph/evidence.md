@@ -8,13 +8,13 @@ contents without replacing one another's answers.
 :::{definition} verification_evidence
 :phrase: evidence
 
-*Evidence* is a {term}`requirements.sdk.graph.validation.criterion`'s completed
-answer, its review-rule revision, and the recorded inputs used to produce it.
+*Evidence* is a {term}`requirements.sdk.graph.criteria.criterion`'s completed
+answer, its criterion version, and the recorded inputs used to produce it.
 It belongs to the criterion's source node and criterion path.
 [`Fingerprinted`](../../../rustdocs/trust_but_verify/graph/struct.Fingerprinted.html)
 carries the typed answer and these observations;
 [`Record`](../../../rustdocs/trust_but_verify/graph/struct.Record.html) holds the
-encoded answer, revision, and dependencies for storage under that
+encoded answer, version, and dependencies for storage under that
 source/criterion key.
 :::
 
@@ -26,7 +26,7 @@ required domain capability; the application chooses its backend.
 ## Refresh evidence
 
 `Validator::refresh_evidence` implements the usual reuse workflow. It loads a
-previous answer, checks its review-rule revision and recorded inputs, and
+previous answer, checks its criterion version and recorded inputs, and
 returns it when both still match. Otherwise it evaluates the criterion and
 saves the new answer. Its definition uses the granular methods described below:
 
@@ -43,7 +43,7 @@ pub fn refresh_evidence<V: Criterion<D>>(
 ) -> impl Future<Output = Result<Fingerprinted<D, V::Ok>, ValidationError<D::Error>>> + Send {
     async move {
         if let Some(saved) = self.load_evidence(&criterion).await? {
-            if procedure_matches(saved.revision(), &criterion.revision())
+            if criterion.version().is_compatible_with(saved.version())
                 && self.check_inputs(&saved).map_err(ValidationError::Graph)?
             {
                 return Ok(saved);
@@ -60,14 +60,14 @@ pub fn refresh_evidence<V: Criterion<D>>(
 Loading and decoding follow {cite}`requirements.sdk.graph.evidence.check_node`
 and {cite}`requirements.sdk.graph.evidence.record.output`. Revision and input
 comparison follow
-{cite}`requirements.sdk.graph.evidence.checking_records.procedure_match` and
+{cite}`requirements.sdk.graph.evidence.checking_records.version_match` and
 {cite}`requirements.sdk.graph.evidence.checking_records`. Evaluation follows
 {cite}`requirements.sdk.graph.validators.validate_node`; saving follows
 {cite}`requirements.sdk.graph.evidence.store_evidence`.
 :::
 
 A current negative assessment is reused just like a positive one. A missing
-record, an incompatible revision, or changed inputs leads to a new evaluation.
+record, an incompatible version, or changed inputs leads to a new evaluation.
 A load or decoding failure is reported even when the stored evidence is stale,
 as required by the loading contract.
 
@@ -80,40 +80,38 @@ atomic record replacement.
 ## Keep the answer with its inputs
 
 `Fingerprinted<D, O>` keeps a criterion's answer together with the observations used to
-produce it. It also retains the source identity, criterion path, and revision
+produce it. It also retains the source identity, criterion path, and version
 needed to save the evidence. `D` supplies the node and edge-label types; `O` is
 the criterion's answer type.
 
+:::{req} recorded_criterion_version
+`verify` always captures `Some(criterion.version())`. When `load_evidence` loads
+an older answer with no known version, `Fingerprinted::version()` returns `None`.
+`Record::version` holds the same optional value. In the serialized `revision`
+field, a concrete string represents `Some(version)` and `"*"` represents `None`.
+:::
+
 :::{req} inputs
-```rust,ignore
-// Defined in trust_but_verify::graph.
-/// A completed answer and the inputs used to produce it.
-pub struct Fingerprinted<D: Domain, O> { /* private fields */ }
+:test: crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]
 
-impl<D: Domain, O> Fingerprinted<D, O> {
-    /// The source node this answer concerns.
-    pub fn source_node_id(&self) -> &D::NodeId;
-
-    /// The question's path relative to that source.
-    pub fn criterion_path(&self) -> &CriterionPath;
-
-    /// The review rules used to produce this answer.
-    pub fn revision(&self) -> &str;
-
-    /// Recorded node-content and successor-set observations.
-    pub fn dependencies(&self) -> &[Dependency<D::NodeId, D::EdgeLabel>];
-
-    /// Borrow the completed answer.
-    pub fn output(&self) -> &O;
-
-    /// Take ownership of the completed answer.
-    pub fn into_output(self) -> O;
-}
-```
+Keeps a typed output with its source, criterion, version, and observed dependencies. `output` borrows the answer and `into_output` consumes the wrapper.
 
 `verify` constructs this value from the criterion's completed answer and
 execution trace. `load_evidence` reconstructs it from the selected saved record.
 Its node identities and edge labels keep their domain-defined types.
+
+```rust,ignore
+pub struct Fingerprinted<D: Domain, O> { /* private fields */ }
+
+impl<D: Domain, O> Fingerprinted<D, O> {
+    pub fn source_node_id(&self) -> &D::NodeId;
+    pub fn criterion_path(&self) -> &CriterionPath;
+    pub fn version(&self) -> Option<&CriterionVersion>;
+    pub fn dependencies(&self) -> &[Dependency<D::NodeId, D::EdgeLabel>];
+    pub fn output(&self) -> &O;
+    pub fn into_output(self) -> O;
+}
+```
 :::
 
 ## Look up a source and criterion
@@ -158,12 +156,12 @@ key preserves both parts: source paths `["a"]` and `["a", "b"]` with criteria
 `["b", "c"]` and `["c"]` identify different records, even though flattening each
 pair would produce the same segments.
 
-Different criteria of a source have independent records. A revision change
+Different criteria of a source have independent records. A version change
 invalidates the same criterion's record rather than creating another key.
 
 Successful loads observe either an old or new complete record, or absence
 before the first save. Successful competing saves leave one complete record;
-its revision, dependencies, and output all belong to that save. No ordering
+its version, dependencies, and output all belong to that save. No ordering
 between competing saves is guaranteed.
 :::
 
@@ -176,18 +174,7 @@ The criterion's `Ok` type is serializable and deserializable. The storage
 interface uses `Record` to hold its encoded answer and input trace.
 
 :::{req} record
-```rust,ignore
-// Defined in trust_but_verify::graph.
-#[derive(serde::Serialize, serde::Deserialize)]
-pub struct Record<N, L = ()> {
-    /// Application-chosen revision of this criterion's review rules.
-    pub revision: String,
-    /// Observations captured by the SDK.
-    pub dependencies: Vec<Dependency<N, L>>,
-    /// Serialized Criterion::Ok; interpretation belongs to the application.
-    pub output: serde_json::Value,
-}
-```
+:test: crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]
 
 Saving encodes the completed result using its Serde JSON representation and
 preserves the dependencies captured in `Fingerprinted`.
@@ -195,6 +182,32 @@ preserves the dependencies captured in `Fingerprinted`.
 Serde when their type parameters do. The graph's node
 identities and edge labels need not implement Serde unless its storage backend
 requires those bounds.
+
+```rust,ignore
+#[non_exhaustive]
+pub struct Record<N, L = ()> {
+    pub version: Option<CriterionVersion>,
+    pub dependencies: Vec<Dependency<N, L>>,
+    pub output: Value,
+}
+
+impl<N, L> Record<N, L> {
+    pub fn new(
+        version: Option<CriterionVersion>,
+        dependencies: Vec<Dependency<N, L>>,
+        output: Value,
+    ) -> Self;
+}
+```
+
+Trait implementations
+
+```rust,ignore
+impl<N: Clone, L: Clone> Clone for Record<N, L>;
+impl<N: Debug, L: Debug> Debug for Record<N, L>;
+impl<'de, N, L> Deserialize<'de> for Record<N, L> where N: Deserialize<'de>, L: Deserialize<'de>;
+impl<N, L> Serialize for Record<N, L> where N: Serialize, L: Serialize;
+```
 :::
 
 ## Encode and decode the answer
@@ -207,14 +220,14 @@ failure returns `ValidationError::Graph`.
 
 `Validator::load_evidence` decodes a loaded record's output into the requested
 `Criterion::Ok`. An output that cannot decode returns `ValidationError::Output`,
-including when the saved revision or inputs are stale. Missing evidence returns
+including when the saved version or inputs are stale. Missing evidence returns
 `Ok(None)`; malformed stored records and storage failures return
-`ValidationError::Graph`. Revision and input comparison belong to the caller's
+`ValidationError::Graph`. Version and input comparison belong to the caller's
 reuse workflow under {cite}`requirements.sdk.graph.evidence.procedure_identity`.
 :::
 
 A completed negative assessment is saved and reused in the same way as a positive one.
-Applications sharing a source/criterion key and revision agree on its result
+Applications sharing a source/criterion key and version agree on its result
 encoding and meaning.
 
 ## Remember what a procedure actually reads
@@ -245,9 +258,8 @@ Calling `Domain::node_content` directly resolves a node. Reading through the
 context's inspection interface also records the observation:
 
 ```rust,ignore
-let inspection = cx.inspection();
-let requirement = inspection.read(&requirement_id)?;
-let helper = inspection.read(&helper_id)?;
+let requirement = cx.read(&requirement_id)?;
+let helper = cx.read(&helper_id)?;
 ```
 
 The caller receives contents while the context retains the source identity and
@@ -255,13 +267,27 @@ its fingerprint. An outgoing selection becomes an observation when the procedure
 or an awaited builder explicitly asks for that label.
 
 :::{req} dependencies
+:test: crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]
+
+A node dependency records a node and its content fingerprint. An outgoing-edge dependency records the source node, label, and target-set fingerprint.
+
 ```rust,ignore
-// Defined in trust_but_verify::graph.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Dependency<N, L = ()> {
     Node(N, Fingerprint),
     OutgoingEdges(N, L, Fingerprint),
 }
+```
+
+Trait implementations
+
+```rust,ignore
+impl<N: Clone, L: Clone> Clone for Dependency<N, L>;
+impl<N: Debug, L: Debug> Debug for Dependency<N, L>;
+impl<'de, N, L> Deserialize<'de> for Dependency<N, L> where N: Deserialize<'de>, L: Deserialize<'de>;
+impl<N: PartialEq, L: PartialEq> PartialEq for Dependency<N, L>;
+impl<N, L> Serialize for Dependency<N, L> where N: Serialize, L: Serialize;
+impl<N: Eq, L: Eq> Eq for Dependency<N, L>;
+impl<N, L> StructuralPartialEq for Dependency<N, L>;
 ```
 :::
 
@@ -287,20 +313,20 @@ checked against its own recorded dependencies.
 :::{req} procedure_identity
 `load_evidence` selects a saved record using the source node and criterion path
 from the supplied `Criterion`. `verify` captures those values and the criterion's
-revision in its returned `Fingerprinted`. The pair of source and criterion selects a
-record; its saved revision identifies the review rules used to produce it.
+version in its returned `Fingerprinted`. The pair of source and criterion selects a
+record; its saved version identifies the review rules used to produce it.
 
 Changing review instructions, deterministic rules, input-selection policy, or
 result encoding in a way that invalidates an old answer requires a changed
-revision. This is independent of model selection.
-A stored legacy revision `*` retains the matching behavior of
-{cite}`requirements.sdk.graph.evidence.checking_records.procedure_match`.
+version. This is independent of model selection.
+A stored legacy version `*` retains the matching behavior of
+{cite}`requirements.sdk.graph.evidence.checking_records.version_match`.
 :::
 
 ## Load and store evidence
 
 Loading returns the saved answer and its input trace, if a record exists.
-The caller can then compare the revision and inputs or inspect the answer.
+The caller can then compare the version and inputs or inspect the answer.
 
 :::{req} check_node
 ```rust,ignore
@@ -317,7 +343,7 @@ pub fn load_evidence<V: Criterion<D>>(
 its future. It retains no reference to the criterion value while storage is
 pending, so the criterion needs no `Sync` bound. It loads the complete record and
 decodes its output under {cite}`requirements.sdk.graph.evidence.record.output`.
-Revision and input comparison are separate steps.
+Version and input comparison are separate steps.
 :::
 
 :::{req} store_evidence
@@ -331,7 +357,7 @@ pub fn store_evidence<O: serde::Serialize>(
 ```
 
 The method saves under the source identity and criterion path captured in
-`Fingerprinted`, preserving its revision, input trace, and completed answer. Encoding follows
+`Fingerprinted`, preserving its version, input trace, and completed answer. Encoding follows
 {cite}`requirements.sdk.graph.evidence.record.output`; atomic replacement follows
 {cite}`requirements.sdk.graph.evidence.evidence_storage`. The result type needs
 no `Sync` bound: the method encodes the answer and captures the record and
@@ -348,7 +374,7 @@ storage key before constructing the storage future.
 produces a fingerprint matching its saved fingerprint. Fresh inputs do not
 imply a favorable answer. Reusing evidence
 also depends on compatibility with the criterion's current review-rule
-revision, which is checked separately.
+version, which is checked separately.
 :::
 
 `Validator::check_inputs` checks
@@ -382,22 +408,36 @@ or delivers them.
 A checked snapshot can be reused if it still represents the current state.
 :::
 
-:::{req} checking_records.procedure_match
-```rust,ignore
-// Defined in trust_but_verify::graph.
-/// Compare the saved review-rule revision with the currently requested revision.
-pub fn procedure_matches(stored: &str, requested: &str) -> bool;
-```
+:::{req} record.is_current
+:test: crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]
 
-The revision matches when the stored `Record::revision` is `*` or equals the
-requested revision exactly. Only the complete stored value `*` is a wildcard;
-other values compare literally. A wildcard leaves dependency comparison and
-result decoding unchanged. It matches revisions for the selected source and
-criterion only, and does not supply evidence for other criteria.
+`record.is_current(graph, version)` returns `Ok(false)` immediately if the criterion version is incompatible. For a compatible version, it checks each saved dependency against the graph, stopping at the first changed fingerprint or domain error. An empty dependency list passes.
+
+```rust,ignore
+impl<N, L> Record<N, L> {
+    pub fn is_current<D>(
+        &self,
+        graph: &D,
+        version: &CriterionVersion,
+    ) -> Result<bool, D::Error>
+    where
+        D: Domain<NodeId = N, EdgeLabel = L>;
+}
+```
+:::
+
+:::{req} checking_records.version_match
+Compare the saved version with the current criterion using
+`criterion.version().is_compatible_with(saved.version())` on a `Fingerprinted`,
+or `criterion.version().is_compatible_with(record.version.as_ref())` on a `Record`.
+A known saved version must match exactly. `None` passes the version check.
+For example, a saved `v*` matches only a requested `v*`.
+The wildcard applies only to the version of the selected source and criterion.
+Reusing the answer still requires decoding its output and checking its dependencies.
 :::
 
 The wildcard represents a supported legacy record that did not capture its
-review-rule version.
+criterion version.
 
 ## Reuse the filesystem storage helper
 

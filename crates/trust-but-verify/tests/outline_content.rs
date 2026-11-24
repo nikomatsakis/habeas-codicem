@@ -88,10 +88,7 @@ fn selected_contents_outlive_handles_and_later_file_edits() {
     let path = directory.path().join("notes.unknown");
     std::fs::write(&path, "first\nsecond\n").unwrap();
     let file = OutlineContent::from_path(&path).unwrap();
-    let id = OutlineId {
-        path: path.clone(),
-        selector: file.outline().items[2].selector.clone(),
-    };
+    let id = OutlineId::new(path.clone(), file.outline().items[2].selector.clone()).unwrap();
     let selected = OutlineContent::from_id(&id).unwrap();
     let selected_again = file.select(&id.selector).unwrap();
     assert_eq!(selected.id(), &id);
@@ -109,13 +106,7 @@ fn selected_contents_outlive_handles_and_later_file_edits() {
     assert_eq!(selected.format(), "second");
     assert!(OutlineContent::from_id(&id).is_err());
     let retained_root = selected.select("").unwrap();
-    assert_eq!(
-        retained_root.id(),
-        &OutlineId {
-            path,
-            selector: String::new()
-        }
-    );
+    assert_eq!(retained_root.id(), &OutlineId::root(path));
     assert_eq!(retained_root.text(), "first\nsecond\n");
     assert!(format!("{selected:?}").contains("OutlineContent"));
 }
@@ -149,27 +140,22 @@ impl OutlineLang for CustomLanguage {
 
     fn outline(&self, source: &str) -> Result<Outline, OutlineError> {
         if source == "fail" {
-            return Err(OutlineError {
-                line: 1,
-                message: "custom parse failure".into(),
-            });
+            return Err(OutlineError::new(1, "custom parse failure".into()));
         }
-        Ok(Outline {
-            items: vec![
-                OutlineItem {
-                    selector: String::new(),
-                    kind: String::new(),
-                    span: 0..source.len(),
-                    structural_hash: source.to_owned(),
-                },
-                OutlineItem {
-                    selector: "part[selected]".into(),
-                    kind: "part".into(),
-                    span: self.span.clone(),
-                    structural_hash: "selected-digest".into(),
-                },
-            ],
-        })
+        Ok(Outline::new(vec![
+            OutlineItem::new(
+                String::new(),
+                String::new(),
+                0..source.len(),
+                source.to_owned(),
+            ),
+            OutlineItem::new(
+                "part[selected]".into(),
+                "part".into(),
+                self.span.clone(),
+                "selected-digest".into(),
+            ),
+        ]))
     }
 
     fn fingerprint_scheme(&self) -> &str {
@@ -276,25 +262,25 @@ fn ambiguous_items_are_errors_except_for_identical_plain_text_lines() {
             "duplicates-v1"
         }
         fn outline(&self, source: &str) -> Result<Outline, OutlineError> {
-            let mut items = vec![OutlineItem {
-                selector: String::new(),
-                kind: String::new(),
-                span: 0..source.len(),
-                structural_hash: "root".into(),
-            }];
+            let mut items = vec![OutlineItem::new(
+                String::new(),
+                String::new(),
+                0..source.len(),
+                "root".into(),
+            )];
             for (index, span) in [0..4, 5..9].into_iter().enumerate() {
-                items.push(OutlineItem {
-                    selector: format!("{}[same]", self.kind),
-                    kind: self.kind.into(),
+                items.push(OutlineItem::new(
+                    format!("{}[same]", self.kind),
+                    self.kind.into(),
                     span,
-                    structural_hash: if self.different_hashes && index == 1 {
+                    if self.different_hashes && index == 1 {
                         "different".into()
                     } else {
                         "same".into()
                     },
-                });
+                ));
             }
-            Ok(Outline { items })
+            Ok(Outline::new(items))
         }
     }
     for language in [

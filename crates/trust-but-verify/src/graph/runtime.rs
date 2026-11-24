@@ -14,6 +14,7 @@ pub struct Validator<D: Domain> {
 impl<D: Domain> Validator<D> {
     // {impl}`requirements.sdk.graph.validators.validator`
     /// Own the domain used to check and execute criteria.
+    // {impl}`requirements.sdk.graph.validators.validator.new`
     pub fn new(domain: D) -> Self {
         Self {
             domain,
@@ -25,6 +26,7 @@ impl<D: Domain> Validator<D> {
 
     // {impl}`requirements.sdk.graph.agent-harness.with_agent`
     /// Configure the SDK's supplied harness. Backend setup happens when an ask is awaited.
+    // {impl}`requirements.sdk.graph.validators.validator.with_agent`
     pub fn with_agent(mut self, config: crate::agent::AgentConfig) -> Self
     where
         D: 'static,
@@ -54,6 +56,7 @@ impl<D: Domain> Validator<D> {
     // {impl}`requirements.sdk.graph.evidence.refresh_evidence`
     /// Reuse compatible, current evidence, or evaluate and save a new answer.
     /// Errors from loading, decoding, checking, execution, or saving propagate.
+    // {impl}`requirements.sdk.graph.validators.validator.refresh_evidence`
     pub fn refresh_evidence<V: Criterion<D>>(
         &self,
         criterion: V,
@@ -61,7 +64,7 @@ impl<D: Domain> Validator<D> {
     {
         async move {
             if let Some(saved) = self.load_evidence(&criterion).await? {
-                if procedure_matches(saved.revision(), &criterion.revision())
+                if criterion.version().is_compatible_with(saved.version())
                     && self.check_inputs(&saved).map_err(ValidationError::Graph)?
                 {
                     return Ok(saved);
@@ -79,6 +82,7 @@ impl<D: Domain> Validator<D> {
     // {impl}`requirements.sdk.graph.evidence.record.output`
     // {impl}`requirements.sdk.graph.evidence.inputs`
     /// Load this criterion's evidence and decode its answer.
+    // {impl}`requirements.sdk.graph.validators.validator.load_evidence`
     pub fn load_evidence<V: Criterion<D>>(
         &self,
         criterion: &V,
@@ -100,7 +104,7 @@ impl<D: Domain> Validator<D> {
             Ok(Some(Fingerprinted {
                 source: node,
                 criterion: criterion_path,
-                revision: record.revision,
+                version: record.version,
                 dependencies: record.dependencies,
                 output,
             }))
@@ -109,6 +113,7 @@ impl<D: Domain> Validator<D> {
 
     // {impl}`requirements.sdk.graph.evidence.checking_records`
     /// Compare recorded input fingerprints with the current domain state.
+    // {impl}`requirements.sdk.graph.validators.validator.check_inputs`
     pub fn check_inputs<O>(&self, inputs: &Fingerprinted<D, O>) -> Result<bool, D::Error> {
         dependencies_are_current(&self.domain, &inputs.dependencies)
     }
@@ -118,6 +123,7 @@ impl<D: Domain> Validator<D> {
     // {impl}`requirements.sdk.graph.evidence.procedure_identity`
     // {impl}`requirements.sdk.graph.evidence.inputs`
     /// Execute the criterion and return its completed answer and observed inputs.
+    // {impl}`requirements.sdk.graph.validators.validator.verify`
     pub fn verify<V: Criterion<D>>(
         &self,
         criterion: V,
@@ -126,15 +132,15 @@ impl<D: Domain> Validator<D> {
         async move {
             let node = criterion.source_node_id();
             let criterion_path = criterion.criterion_path();
-            let revision = criterion.revision();
+            let version = criterion.version();
             let mut ctx =
                 ValidationContext::configured(&self.domain, node.clone(), self.agent.as_deref());
             let answer = criterion.execute(&mut ctx).await?;
             Ok(Fingerprinted {
                 source: node,
                 criterion: criterion_path,
-                revision,
-                dependencies: ctx.inspection().dependencies(),
+                version: Some(version),
+                dependencies: ctx.dependencies(),
                 output: answer,
             })
         }
@@ -143,13 +149,14 @@ impl<D: Domain> Validator<D> {
     // {impl}`requirements.sdk.graph.evidence.store_evidence`
     // {impl}`requirements.sdk.graph.evidence.record.output`
     /// Encode the answer and atomically replace its source/criterion record.
+    // {impl}`requirements.sdk.graph.validators.validator.store_evidence`
     pub fn store_evidence<O: Serialize>(
         &self,
         inputs: &Fingerprinted<D, O>,
     ) -> impl Future<Output = Result<(), ValidationError<D::Error>>> + Send {
         // Encode before constructing the future: O needs no Sync or Clone.
         let encoded = serde_json::to_value(&inputs.output).map(|output| Record {
-            revision: inputs.revision.clone(),
+            version: inputs.version.clone(),
             dependencies: inputs.dependencies.clone(),
             output,
         });
@@ -171,6 +178,7 @@ where
     D::Error: std::fmt::Display,
 {
     // {impl}`requirements.sdk.sources.provider.attachment`
+    // {impl}`requirements.sdk.graph.validators.validator.with_sources`
     pub fn with_sources(mut self, sources: crate::sources::Sources) -> Self {
         let tools: Arc<dyn crate::agent_runtime::ToolFactory<D>> =
             Arc::new(crate::agent_runtime::project_sources::ProjectSources {

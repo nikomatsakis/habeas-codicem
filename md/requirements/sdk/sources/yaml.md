@@ -13,6 +13,26 @@ Filename-based constructors select it under
 {cite}`requirements.sdk.outlines.defaults`.
 :::
 
+:::{req} Yaml
+:test: crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]
+
+The `Yaml` implementation of `OutlineLang` supplies the extension, selection, and fingerprint rules described in this chapter.
+
+```rust,ignore
+pub struct Yaml;
+```
+
+Trait implementations
+
+```rust,ignore
+impl Clone for Yaml;
+impl Debug for Yaml;
+impl Default for Yaml;
+impl OutlineLang for Yaml;
+impl Copy for Yaml;
+```
+:::
+
 ## Select source items
 
 :::{req} items

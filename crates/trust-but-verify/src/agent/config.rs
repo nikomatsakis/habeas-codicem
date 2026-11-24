@@ -16,6 +16,7 @@ pub enum AgentConfig {
     Ollama(OllamaConfig),
 }
 
+// {impl}`requirements.sdk.graph.agent-harness.agent_config.settings`
 /// A credential whose Debug representation hides its value.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -45,9 +46,11 @@ impl fmt::Debug for SecretString {
     }
 }
 
+// {impl}`requirements.sdk.graph.agent-harness.agent_config.settings`
 /// Explicit AWS credentials. Omitted credentials use AWS's standard resolution.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct BedrockCredentials {
     pub access_key_id: SecretString,
     pub secret_access_key: SecretString,
@@ -55,9 +58,26 @@ pub struct BedrockCredentials {
     pub session_token: Option<SecretString>,
 }
 
+impl BedrockCredentials {
+    pub fn new(access_key_id: SecretString, secret_access_key: SecretString) -> Self {
+        Self {
+            access_key_id,
+            secret_access_key,
+            session_token: None,
+        }
+    }
+
+    pub fn session_token(mut self, session_token: SecretString) -> Self {
+        self.session_token = Some(session_token);
+        self
+    }
+}
+
+// {impl}`requirements.sdk.graph.agent-harness.agent_config.settings`
 /// Settings for an Amazon Bedrock model.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct BedrockConfig {
     pub model: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -70,9 +90,43 @@ pub struct BedrockConfig {
     pub options: BTreeMap<String, OptionValue>,
 }
 
+impl BedrockConfig {
+    pub fn new(model: String) -> Self {
+        Self {
+            model,
+            aws_profile: None,
+            region: None,
+            credentials: None,
+            options: BTreeMap::new(),
+        }
+    }
+
+    pub fn aws_profile(mut self, aws_profile: String) -> Self {
+        self.aws_profile = Some(aws_profile);
+        self
+    }
+
+    pub fn region(mut self, region: String) -> Self {
+        self.region = Some(region);
+        self
+    }
+
+    pub fn credentials(mut self, credentials: BedrockCredentials) -> Self {
+        self.credentials = Some(credentials);
+        self
+    }
+
+    pub fn option(mut self, key: String, value: OptionValue) -> Self {
+        self.options.insert(key, value);
+        self
+    }
+}
+
+// {impl}`requirements.sdk.graph.agent-harness.agent_config.settings`
 /// Settings for an OpenAI Responses model.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct OpenAiConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
@@ -86,9 +140,42 @@ pub struct OpenAiConfig {
     pub options: BTreeMap<String, OptionValue>,
 }
 
+impl OpenAiConfig {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn model(mut self, model: String) -> Self {
+        self.model = Some(model);
+        self
+    }
+
+    pub fn endpoint(mut self, endpoint: String) -> Self {
+        self.endpoint = Some(endpoint);
+        self
+    }
+
+    pub fn api_key_env(mut self, api_key_env: String) -> Self {
+        self.api_key_env = Some(api_key_env);
+        self
+    }
+
+    pub fn api_key(mut self, api_key: SecretString) -> Self {
+        self.api_key = Some(api_key);
+        self
+    }
+
+    pub fn option(mut self, key: String, value: OptionValue) -> Self {
+        self.options.insert(key, value);
+        self
+    }
+}
+
+// {impl}`requirements.sdk.graph.agent-harness.agent_config.settings`
 /// Settings for an Ollama model and server.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct OllamaConfig {
     pub model: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -101,9 +188,43 @@ pub struct OllamaConfig {
     pub options: BTreeMap<String, OptionValue>,
 }
 
+impl OllamaConfig {
+    pub fn new(model: String) -> Self {
+        Self {
+            model,
+            endpoint: None,
+            api_key_env: None,
+            api_key: None,
+            options: BTreeMap::new(),
+        }
+    }
+
+    pub fn endpoint(mut self, endpoint: String) -> Self {
+        self.endpoint = Some(endpoint);
+        self
+    }
+
+    pub fn api_key_env(mut self, api_key_env: String) -> Self {
+        self.api_key_env = Some(api_key_env);
+        self
+    }
+
+    pub fn api_key(mut self, api_key: SecretString) -> Self {
+        self.api_key = Some(api_key);
+        self
+    }
+
+    pub fn option(mut self, key: String, value: OptionValue) -> Self {
+        self.options.insert(key, value);
+        self
+    }
+}
+
+// {impl}`requirements.sdk.graph.agent-harness.agent_config.settings`
 /// A backend inference setting, preserving nested maps and arrays.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
+#[non_exhaustive]
 pub enum OptionValue {
     String(String),
     Boolean(bool),
@@ -176,17 +297,17 @@ fn credential(
 }
 
 impl OpenAiConfig {
-    pub(crate) fn model(&self) -> &str {
+    pub(crate) fn resolved_model(&self) -> &str {
         self.model.as_deref().unwrap_or("gpt-6.1-sol")
     }
 
-    pub(crate) fn endpoint(&self) -> &str {
+    pub(crate) fn resolved_endpoint(&self) -> &str {
         self.endpoint
             .as_deref()
             .unwrap_or("https://api.openai.com/v1")
     }
 
-    pub(crate) fn api_key(&self) -> io::Result<String> {
+    pub(crate) fn resolved_api_key(&self) -> io::Result<String> {
         credential(
             &self.api_key,
             self.api_key_env.as_deref().unwrap_or("OPENAI_API_KEY"),
@@ -196,11 +317,11 @@ impl OpenAiConfig {
 }
 
 impl OllamaConfig {
-    pub(crate) fn endpoint(&self) -> &str {
+    pub(crate) fn resolved_endpoint(&self) -> &str {
         self.endpoint.as_deref().unwrap_or("http://localhost:11434")
     }
 
-    pub(crate) fn api_key(&self) -> io::Result<Option<String>> {
+    pub(crate) fn resolved_api_key(&self) -> io::Result<Option<String>> {
         if let Some(key) = &self.api_key {
             return Ok(Some(key.expose_secret().to_owned()));
         }
@@ -215,6 +336,63 @@ impl OllamaConfig {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    // {test}`requirements.sdk.graph.agent-harness.agent_config.settings`
+    #[test]
+    fn backend_builders_set_only_the_requested_fields() {
+        let bedrock = BedrockConfig::new("bedrock-model".into());
+        let openai = OpenAiConfig::new();
+        let ollama = OllamaConfig::new("ollama-model".into());
+        assert_eq!(
+            serde_json::to_value(&bedrock).unwrap(),
+            json!({"model": "bedrock-model"})
+        );
+        assert_eq!(serde_json::to_value(&openai).unwrap(), json!({}));
+        assert_eq!(
+            serde_json::to_value(&ollama).unwrap(),
+            json!({"model": "ollama-model"})
+        );
+
+        let credentials =
+            BedrockCredentials::new("id".into(), "secret".into()).session_token("token".into());
+        let bedrock = bedrock
+            .aws_profile("dev".into())
+            .region("region".into())
+            .credentials(credentials)
+            .option("a".into(), OptionValue::Integer(1))
+            .option("b".into(), OptionValue::Boolean(true))
+            .option("a".into(), OptionValue::Integer(2));
+        assert_eq!(
+            serde_json::to_value(bedrock).unwrap(),
+            json!({
+                "model": "bedrock-model", "aws_profile": "dev", "region": "region",
+                "credentials": {"access_key_id": "id", "secret_access_key": "secret", "session_token": "token"},
+                "options": {"a": 2, "b": true}
+            })
+        );
+        let openai = openai
+            .model("model".into())
+            .endpoint("endpoint".into())
+            .api_key_env("KEY".into())
+            .api_key("key".into())
+            .option("a".into(), OptionValue::Integer(2));
+        let ollama = ollama
+            .endpoint("endpoint".into())
+            .api_key_env("KEY".into())
+            .api_key("key".into())
+            .option("a".into(), OptionValue::Integer(2));
+        for (config, model) in [
+            (serde_json::to_value(openai), "model"),
+            (serde_json::to_value(ollama), "ollama-model"),
+        ] {
+            assert_eq!(
+                config.unwrap(),
+                json!({
+                    "model": model, "endpoint": "endpoint", "api_key_env": "KEY", "api_key": "key", "options": {"a": 2}
+                })
+            );
+        }
+    }
 
     // {test}`requirements.sdk.graph.agent-harness.agent_config`
     // {test}`requirements.sdk.graph.agent-harness.agent_config.serialization`
@@ -261,8 +439,8 @@ mod tests {
     #[test]
     fn option_defaults_and_credential_resolution_are_deterministic() {
         let config = OpenAiConfig::default();
-        assert_eq!(config.model(), "gpt-6.1-sol");
-        assert_eq!(config.endpoint(), "https://api.openai.com/v1");
+        assert_eq!(config.resolved_model(), "gpt-6.1-sol");
+        assert_eq!(config.resolved_endpoint(), "https://api.openai.com/v1");
         let options = AgentConfig::OpenAi(config).options_json().unwrap();
         assert_eq!(options["max_output_tokens"], 16_384);
         assert_eq!(options["reasoning"]["effort"], "low");

@@ -1,8 +1,8 @@
 use super::{AgentConfig, CompletionProvider, ToolAgent, ToolFactory, providers::RigProvider};
 use crate::domain::Domain;
-use crate::graph::InspectionContext;
 use crate::procedure::Agent;
 use crate::procedure::AgentRequest;
+use crate::request::ValidationContext;
 use futures::future::BoxFuture;
 use serde_json::Value;
 use std::{io, sync::Arc};
@@ -42,7 +42,7 @@ where
     fn run<'a>(
         &'a self,
         request: AgentRequest<D::NodeId>,
-        inspection: &'a InspectionContext<'_, D>,
+        inspection: &'a ValidationContext<'_, D>,
     ) -> BoxFuture<'a, Result<Value, io::Error>> {
         Box::pin(async move {
             let provider = self
@@ -89,6 +89,7 @@ mod tests {
     use crate::domain::NodeContents;
     use crate::graph::Criterion;
     use crate::graph::CriterionPath;
+    use crate::graph::CriterionVersion;
     use crate::graph::Fingerprint;
     use crate::graph::NodePath;
     use crate::graph::Record;
@@ -174,8 +175,8 @@ mod tests {
             CriterionPath::new(vec!["answer".into()])
         }
 
-        fn revision(&self) -> String {
-            "v1".into()
+        fn version(&self) -> CriterionVersion {
+            CriterionVersion::new("v1")
         }
 
         async fn execute(
@@ -195,7 +196,7 @@ mod tests {
 
     // {test}`requirements.sdk.graph.agent-harness.with_agent`
     // {test}`requirements.sdk.graph.agent-harness.tool_agent.provider_failure`
-    // {test}`requirements.sdk.graph.validation.deterministic_procedures`
+    // {test}`requirements.sdk.graph.criteria.deterministic_procedures`
     #[tokio::test]
     async fn configured_agents_initialize_only_when_asked_and_report_setup_errors() {
         // An explicitly empty credential fails before any request is sent.
@@ -246,6 +247,7 @@ mod tests {
     // {test}`requirements.sdk.graph.agent-harness.tool_agent`
     // {test}`requirements.sdk.graph.agent-harness.tool_agent.isolation`
     // {test}`requirements.sdk.graph.agent-harness.submission`
+    // {test}`requirements.sdk.graph.agent-harness.submission.mcp`
     // {test}`requirements.sdk.graph.agent-harness.submission.acceptance`
     // {test}`requirements.sdk.graph.agent-harness.fixed_tools`
     #[tokio::test]
@@ -355,7 +357,7 @@ mod tests {
                 [
                     "read_node",
                     "outgoing_edges",
-                    "get_node_page",
+                    "get_next_page",
                     "submit_result"
                 ]
             );
@@ -387,6 +389,7 @@ mod tests {
     // {test}`requirements.sdk.graph.agent-harness.tool_agent`
     // {test}`requirements.sdk.graph.agent-harness.with_agent`
     // {test}`requirements.sdk.graph.agent-harness.submission`
+    // {test}`requirements.sdk.graph.agent-harness.submission.mcp`
     #[tokio::test]
     async fn supplied_ollama_backend_delivers_tools_and_results_over_native_chat() {
         use std::{
@@ -521,8 +524,8 @@ mod tests {
     // {test}`requirements.sdk.sources.source_nodes`
     // {test}`requirements.sdk.sources.provider_observations`
     // {test}`requirements.sdk.graph.agent-harness.fixed_tools`
-    // {test}`requirements.sdk.graph.context-tools.read_source.behavior`
-    // {test}`requirements.sdk.graph.context-tools.list_sources.behavior`
+    // {test}`requirements.sdk.graph.validation-context.read_source.behavior`
+    // {test}`requirements.sdk.graph.validation-context.list_sources.behavior`
     #[tokio::test]
     async fn supplied_agent_uses_attached_project_tools_in_both_configuration_orders() {
         use std::{
@@ -671,14 +674,13 @@ mod tests {
                 [
                     "read_node",
                     "outgoing_edges",
-                    "get_node_page",
+                    "get_next_page",
                     "submit_result",
                     "list_sources",
                     "outline_source",
                     "read_source",
                     "search_text",
-                    "search_structure",
-                    "get_source_page"
+                    "search_structure"
                 ]
             );
             let output = |request: &Value, name: &str| -> String {

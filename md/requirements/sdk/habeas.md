@@ -115,7 +115,7 @@ can have their own node contents.
 
 Inside an ask request, the SDK records inputs actually delivered to the agent.
 It records a prepared page when its contents are delivered. Deterministic criterion
-code reads through `ValidationContext::inspection()` and records the contents
+code reads through `ValidationContext::read` and records the contents
 returned to it. Both paths contribute to the enclosing criterion's trace.
 
 ## Interpret the completed answer
@@ -128,7 +128,7 @@ determination rules under {cite}`requirements.ci.outcomes` and
 returning `Ok(value)` constitutes a passing application review.
 
 The SDK's `Criterion::Ok` is an application-defined completed answer under
-{cite}`requirements.sdk.graph.validation.output_policy`. An execution error
+{cite}`requirements.sdk.graph.criteria.output_policy`. An execution error
 is distinct from a completed negative assessment.
 :::
 
@@ -138,7 +138,7 @@ validation finding, independently of whether other records are current.
 
 ```mermaid
 flowchart TD
-    Saved["Saved answer and dependencies"] --> Check["SDK: compare criterion revision and input fingerprints"]
+    Saved["Saved answer and dependencies"] --> Check["SDK: compare criterion version and input fingerprints"]
     Current["HC domain: current contents"] --> Check
     Check --> State["Freshness result"]
     State --> Policy["HC: required reviews and acceptable answers"]
@@ -224,17 +224,16 @@ Converting an already-upgraded record leaves the file unchanged.
 :::
 
 :::{req} evidence_conversion.legacy_freshness
-When loading a supported legacy evidence record that did not capture its
-procedure version, Habeas Codicem represents that missing version as `*`.
-In-place conversion preserves this wildcard rather than assigning the current
-version. The wildcard matches any
-requested review revision under
-{cite}`requirements.sdk.graph.evidence.checking_records.procedure_match`.
+When Habeas loads legacy evidence with an unknown criterion version, the SDK
+record holds `None`. In-place conversion writes `"*"` in `review_version` so
+the converted file preserves that history. An unknown version passes the
+version check under
+{cite}`requirements.sdk.graph.evidence.checking_records.version_match`.
 The record is current when its recorded inputs and all existing application
 freshness checks still match. Version matching leaves the subject, reference-set,
 input, determination, citation, and site checks intact.
 
-For new assessments, Habeas Codicem's validation value supplies a concrete review revision
+For new assessments, Habeas Codicem's validation value supplies a concrete review version
 other than `*`, and the assessment records it.
 :::
 
@@ -328,10 +327,10 @@ check.
 :::
 
 The two questions have different criterion identities. The following execution
-sketch omits those identity and revision methods:
+sketch omits those identity and version methods:
 
 ```rust,ignore
-let issue = cx.inspection().read(&issue_id)?;
+let issue = cx.read(&issue_id)?;
 let open = match issue {
     HcNodeContent::GithubIssue(issue) => matches!(issue.status, IssueStatus::Open),
     _ => return Err(unexpected_node_contents()),

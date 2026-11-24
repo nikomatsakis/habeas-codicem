@@ -2,15 +2,16 @@ use super::*;
 use crate::domain::Domain;
 use crate::domain::NodeContents;
 use crate::graph::Dependency;
-use crate::graph::InspectionContext;
 use crate::graph::NodePath;
 use crate::procedure::Agent;
 use crate::procedure::AgentRequest;
+use crate::request::ValidationContext;
 use futures::future::BoxFuture;
 use serde_json::json;
 
 // {cite}`habeas:util`
 /// A result and the exact observations acknowledged when it is delivered.
+#[derive(Clone)]
 pub struct ToolDelivery<N, L = ()> {
     pub text: String,
     pub dependencies: Vec<Dependency<N, L>>,
@@ -20,12 +21,37 @@ pub trait ToolSession<D: Domain>: Send {
     // {cite}`habeas:util`
     fn definitions(&self) -> io::Result<Vec<ToolDefinition>>;
     // {cite}`habeas:util`
-    // {impl}`requirements.sdk.graph.context-tools.pages.fn`
     fn dispatch<'a>(
         &'a mut self,
         name: &'a str,
         arguments: &'a Value,
+        pages: &'a mut Pages<D::NodeId, D::EdgeLabel>,
     ) -> BoxFuture<'a, io::Result<ToolDelivery<D::NodeId, D::EdgeLabel>>>;
+}
+
+pub(super) struct SessionTools<'a, D: Domain> {
+    pub(super) extra: Box<dyn ToolSession<D> + 'a>,
+    pages: Pages<D::NodeId, D::EdgeLabel>,
+}
+
+impl<'a, D: Domain> SessionTools<'a, D> {
+    pub(super) fn new(extra: Box<dyn ToolSession<D> + 'a>) -> Self {
+        Self {
+            extra,
+            pages: Pages::new(),
+        }
+    }
+
+    pub(super) async fn dispatch(
+        &mut self,
+        name: &str,
+        args: &Value,
+    ) -> io::Result<ToolDelivery<D::NodeId, D::EdgeLabel>> {
+        if name == "get_next_page" {
+            return self.pages.get(args);
+        }
+        self.extra.dispatch(name, args, &mut self.pages).await
+    }
 }
 
 /// Each agent call gets fresh tool state, including its own result pages.
@@ -59,6 +85,7 @@ impl<D: Domain> ToolSession<D> for NoTools {
         &'a mut self,
         name: &'a str,
         _: &'a Value,
+        _: &'a mut Pages<D::NodeId, D::EdgeLabel>,
     ) -> BoxFuture<'a, io::Result<ToolDelivery<D::NodeId, D::EdgeLabel>>> {
         Box::pin(async move { Err(io::Error::other(format!("unknown tool {name:?}"))) })
     }
@@ -103,11 +130,12 @@ where
     P: CompletionProvider,
     T: ToolFactory<D>,
 {
-    // {impl}`requirements.sdk.graph.context-tools.shared_context`
+    // {impl}`requirements.sdk.graph.validation-context.shared_context`
+    // {impl}`requirements.sdk.graph.agent-harness.submission`
     fn run<'a>(
         &'a self,
         request: AgentRequest<D::NodeId>,
-        inspection: &'a InspectionContext<'_, D>,
+        inspection: &'a ValidationContext<'_, D>,
     ) -> BoxFuture<'a, Result<Value, std::io::Error>> {
         Box::pin(async move {
             let submit = request.submission_name.clone();
@@ -139,11 +167,10 @@ where
             }
             let mut session = GraphSession {
                 inspection,
-                tools: self.tools.session(),
+                tools: SessionTools::new(self.tools.session()),
                 known,
                 pending,
                 parameters,
-                pages: std::collections::BTreeMap::new(),
             };
             // The exact reusable prefix is the provider's leading preamble.
             let mut opening = CompletionRequest::new(Message::user(subject));
@@ -156,14 +183,13 @@ where
 }
 
 // {cite}`habeas:util`
-// {impl}`requirements.sdk.graph.context-tools.shared_context`
+// {impl}`requirements.sdk.graph.validation-context.shared_context`
 struct GraphSession<'a, 'd, D: Domain> {
-    inspection: &'a InspectionContext<'d, D>,
-    tools: Box<dyn ToolSession<D> + 'a>,
+    inspection: &'a ValidationContext<'d, D>,
+    tools: SessionTools<'a, D>,
     known: Vec<D::NodeId>,
     pending: Vec<Dependency<D::NodeId, D::EdgeLabel>>,
     parameters: Value,
-    pages: std::collections::BTreeMap<usize, (String, Dependency<D::NodeId, D::EdgeLabel>)>,
 }
 
 impl<D> GraphSession<'_, '_, D>
@@ -184,15 +210,6 @@ where
                 io::Error::other("unknown node path; inspect outgoing_edges of a known node first")
             })
     }
-    // {cite}`habeas:util`
-    fn deliver_page(&mut self, page: usize) -> io::Result<String> {
-        let (text, dependency) = self
-            .pages
-            .get(&page)
-            .ok_or_else(|| io::Error::other("unknown page"))?;
-        self.pending.push(dependency.clone());
-        Ok(json!({"page":page,"text":text}).to_string())
-    }
 }
 
 impl<D> Conversation for GraphSession<'_, '_, D>
@@ -203,24 +220,28 @@ where
 {
     type Output = Value;
     // {cite}`habeas:util`
-    // {impl}`requirements.sdk.graph.context-tools.read_node.fn`
-    // {impl}`requirements.sdk.graph.context-tools.outgoing_edges.fn`
-    // {impl}`requirements.sdk.graph.context-tools.pages.fn`
-    // {impl}`requirements.sdk.graph.agent-harness.submission`
+    // {impl}`requirements.sdk.graph.validation-context.read_node.mcp`
+    // {impl}`requirements.sdk.graph.validation-context.read_node.mcp.description`
+    // {impl}`requirements.sdk.graph.validation-context.outgoing_edges.mcp`
+    // {impl}`requirements.sdk.graph.validation-context.outgoing_edges.mcp.description`
+    // {impl}`requirements.sdk.graph.validation-context.pages.mcp`
+    // {impl}`requirements.sdk.graph.validation-context.pages.mcp.description`
+    // {impl}`requirements.sdk.graph.agent-harness.submission.mcp`
+    // {impl}`requirements.sdk.graph.agent-harness.submission.mcp.description`
     // {impl}`requirements.sdk.graph.agent-harness.fixed_tools`
     fn tools(&self) -> io::Result<Vec<ToolDefinition>> {
         let path = json!({"type":"object","required":["segments"],"properties":{"segments":{"type":"array","items":{"type":"string"}}}});
         let mut tools: Vec<ToolDefinition> = [
-            json!({"name":"read_node","description":"Read a known graph node. Returns text and page IDs when long. A delivered page records its enclosing node.",
+            json!({"name":"read_node","description":"Read a known graph node. Returns text and, when more remains, a next UUID. A delivered page records its enclosing node.",
                 "parameters":{"type":"object","required":["path"],"properties":{"path":path}}}),
             json!({"name":"outgoing_edges","description":"Inspect a known node's outgoing targets for the requested label, making those targets available to read_node.",
                 "parameters":edge_parameters::<D::EdgeLabel>(&path)}),
-            json!({"name":"get_node_page","description":"Read another prepared node page by its page ID.",
-                "parameters":{"type":"object","required":["page"],"properties":{"page":{"type":"integer","minimum":0}}}}),
+            json!({"name":"get_next_page","description":"Pass the UUID from next to read the next page in the same format. When next is absent, this is the last page.",
+                "parameters":{"type":"object","required":["uuid"],"properties":{"uuid":{"type":"string","format":"uuid"}}}}),
             json!({"name":"submit_result","description":"Finish by submitting your structured result in result. Exactly one accepted submission ends this call.",
                 "parameters":self.parameters}),
         ].into_iter().map(|tool| serde_json::from_value(tool).map_err(io::Error::other)).collect::<io::Result<_>>()?;
-        tools.extend(self.tools.definitions()?);
+        tools.extend(self.tools.extra.definitions()?);
         Ok(tools)
     }
     // {cite}`habeas:util`
@@ -230,13 +251,13 @@ where
     }
     // {cite}`habeas:util`
     // {impl}`requirements.sdk.graph.agent-calls.judge.rendering`
-    // {impl}`requirements.sdk.graph.context-tools.shared_context`
-    // {impl}`requirements.sdk.graph.context-tools.read_node.behavior`
-    // {impl}`requirements.sdk.graph.context-tools.read_node.inputs`
-    // {impl}`requirements.sdk.graph.context-tools.outgoing_edges.behavior`
-    // {impl}`requirements.sdk.graph.context-tools.outgoing_edges.inputs`
-    // {impl}`requirements.sdk.graph.context-tools.pages.behavior`
-    // {impl}`requirements.sdk.graph.context-tools.pages.inputs`
+    // {impl}`requirements.sdk.graph.validation-context.shared_context`
+    // {impl}`requirements.sdk.graph.validation-context.read_node.behavior`
+    // {impl}`requirements.sdk.graph.validation-context.read_node.inputs`
+    // {impl}`requirements.sdk.graph.validation-context.outgoing_edges.behavior`
+    // {impl}`requirements.sdk.graph.validation-context.outgoing_edges.inputs`
+    // {impl}`requirements.sdk.graph.validation-context.pages.behavior`
+    // {impl}`requirements.sdk.graph.validation-context.pages.inputs`
     async fn dispatch(&mut self, name: &str, arguments: &Value) -> io::Result<String> {
         match name {
             "read_node" => {
@@ -247,29 +268,14 @@ where
                     .map_err(|error| io::Error::other(error.to_string()))?;
                 let text = crate::redaction::redact_text(&snapshot.content.format()).into_owned();
                 let observation = Dependency::Node(node, snapshot.fingerprint);
-                // Split on character boundaries; every page retains the same snapshot.
-                let chars: Vec<char> = text.chars().collect();
-                let mut ids = Vec::new();
-                for chunk in chars.chunks(8_192) {
-                    let id = next_page_id();
-                    self.pages
-                        .insert(id, (chunk.iter().collect(), observation.clone()));
-                    ids.push(id);
-                }
-                if chars.is_empty() {
-                    let id = next_page_id();
-                    self.pages.insert(id, (String::new(), observation));
-                    ids.push(id);
-                }
-                let first = self.deliver_page(ids[0])?;
-                Ok(json!({"first":serde_json::from_str::<Value>(&first).expect("page"),"pages":ids}).to_string())
-            }
-            "get_node_page" => {
-                let page = arguments["page"]
-                    .as_u64()
-                    .and_then(|page| usize::try_from(page).ok())
-                    .ok_or_else(|| io::Error::other("page must be a nonnegative page ID"))?;
-                self.deliver_page(page)
+                let delivery = self.tools.pages.prepare(
+                    json!({}),
+                    "text",
+                    Value::String(text),
+                    vec![observation],
+                );
+                self.pending.extend(delivery.dependencies);
+                Ok(delivery.text)
             }
             "outgoing_edges" => {
                 let node = self.node(arguments)?;
@@ -297,10 +303,10 @@ where
             }
         }
     }
-    // {impl}`requirements.sdk.graph.context-tools.shared_context`
-    // {impl}`requirements.sdk.graph.context-tools.read_node.inputs`
-    // {impl}`requirements.sdk.graph.context-tools.outgoing_edges.inputs`
-    // {impl}`requirements.sdk.graph.context-tools.pages.inputs`
+    // {impl}`requirements.sdk.graph.validation-context.shared_context`
+    // {impl}`requirements.sdk.graph.validation-context.read_node.inputs`
+    // {impl}`requirements.sdk.graph.validation-context.outgoing_edges.inputs`
+    // {impl}`requirements.sdk.graph.validation-context.pages.inputs`
     fn delivered(&mut self) -> io::Result<()> {
         for observation in self.pending.drain(..) {
             match observation {
@@ -389,6 +395,7 @@ mod tests {
     use super::*;
 
     // {test}`requirements.sdk.graph-edges.outgoing_edges`
+    // {test}`requirements.sdk.graph.validation-context.outgoing_edges.mcp`
     #[test]
     fn nested_label_schema_references_resolve_from_the_tool_parameters_root() {
         #[derive(schemars::JsonSchema)]

@@ -410,17 +410,8 @@ treated as a deliberate change.
 :::
 
 :::{req} outline_selectors
-An outline selector MUST be a `/`-separated path of segments from the file's
-root node to an outline node; the empty selector MUST select the root node. A
-named node's segment MUST be `kind[name]`. An anonymous node's segment MUST be
-`kind@hash`, where `hash` is the first twelve hexadecimal digits of its identity
-hash under {cite}`requirements.references.structural_hash`. Siblings whose
-segments would otherwise be identical MUST be disambiguated by `#N`, their
-one-based position among those siblings in source order, except `line` nodes:
-identical lines are interchangeable, so a `line` selector MUST resolve when any
-line with that content exists in the file. In names, `%`, `[`, `]`, `/`, `#`,
-`@`, and whitespace MUST be percent-encoded as UTF-8 bytes, so selectors are
-reversible. Line numbers MUST NOT form part of a selector.
+Habeas uses the TBV [outline selector grammar](sdk/outlines.md#parse-an-outline-selector)
+under {cite}`requirements.sdk.outlines.selector_syntax` for source addresses.
 :::
 
 :::{req} structural_hash

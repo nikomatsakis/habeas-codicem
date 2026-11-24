@@ -111,7 +111,7 @@ impl SourceProvider for Memory {
         self.events
             .lock()
             .unwrap()
-            .push(format!("list:{}", scope.prefix));
+            .push(format!("list:{}", scope.path_prefix()));
         Ok(vec![id("src/one.txt"), id("other/two.txt")])
     }
     async fn read(&self, resource: &ResourceId) -> Result<SourceFile, SourceError> {
@@ -153,14 +153,11 @@ async fn defaults_use_provider_primitives_and_keep_one_parse_snapshot() {
         true
     );
     let result = memory
-        .search_text(&TextQuery {
-            scope: SourceScope {
-                prefix: "src".into(),
-            },
-            pattern: "hit".into(),
-            context_lines: 1,
-            limit: None,
-        })
+        .search_text(
+            &TextQuery::new("hit".into())
+                .scope(SourceScope::under("src"))
+                .context_lines(1),
+        )
         .await
         .unwrap();
     assert!(result.complete);
@@ -190,9 +187,7 @@ async fn completeness_is_false_only_when_a_match_is_omitted_and_errors_propagate
     ] {
         let result = memory
             .search_text(&TextQuery {
-                scope: SourceScope {
-                    prefix: "src".into(),
-                },
+                scope: SourceScope::under("src"),
                 pattern: "hit".into(),
                 context_lines: 0,
                 limit,
@@ -224,15 +219,10 @@ async fn completeness_is_false_only_when_a_match_is_omitted_and_errors_propagate
             .await
             .is_err()
     );
-    let bad = SourceFile {
-        bytes: Arc::from([0xff]),
-        language: None,
-    };
+    let bad = SourceFile::new(Arc::from([0xff]));
     assert!(parse_snapshot(&id("file"), bad, &registry()).is_err());
-    let unknown = SourceFile {
-        bytes: Arc::from(b"text".as_slice()),
-        language: Some("unknown-language".into()),
-    };
+    let unknown =
+        SourceFile::new(Arc::from(b"text".as_slice())).language("unknown-language".into());
     assert!(parse_snapshot(&id("file"), unknown, &registry()).is_err());
 }
 
@@ -254,12 +244,7 @@ async fn local_provider_scopes_paths_and_rejects_resources_outside_its_root() {
             .collect::<Vec<_>>(),
         ["other/two.txt", "src/one.txt"]
     );
-    let selected = sources
-        .list(&SourceScope {
-            prefix: "src".into(),
-        })
-        .await
-        .unwrap();
+    let selected = sources.list(&SourceScope::under("src")).await.unwrap();
     assert_eq!(selected.len(), 1);
     assert_eq!(
         sources.read(&selected[0]).await.unwrap().text().unwrap(),
@@ -267,7 +252,7 @@ async fn local_provider_scopes_paths_and_rejects_resources_outside_its_root() {
     );
     let matches = sources
         .search_text(&TextQuery {
-            scope: SourceScope { prefix: ".".into() },
+            scope: SourceScope::under("."),
             pattern: "hit".into(),
             context_lines: 0,
             limit: None,
@@ -301,9 +286,7 @@ async fn local_provider_scopes_paths_and_rejects_resources_outside_its_root() {
     ] {
         assert!(
             sources
-                .list(&SourceScope {
-                    prefix: prefix.clone()
-                })
+                .list(&SourceScope::under(prefix.clone()))
                 .await
                 .is_err(),
             "listing {prefix:?} must not return a successful empty result or outside files"
@@ -332,14 +315,7 @@ async fn local_provider_scopes_paths_and_rejects_resources_outside_its_root() {
     #[cfg(unix)]
     {
         std::os::unix::fs::symlink(outside.path(), root.path().join("outside")).unwrap();
-        assert!(
-            sources
-                .list(&SourceScope {
-                    prefix: "outside".into()
-                })
-                .await
-                .is_err()
-        );
+        assert!(sources.list(&SourceScope::under("outside")).await.is_err());
         std::os::unix::fs::symlink(&secret, root.path().join("alias.txt")).unwrap();
         assert!(
             sources
@@ -364,7 +340,10 @@ struct CachedParse {
 impl SourceProvider for CachedParse {
     type Error = SourceError;
     async fn list(&self, scope: &SourceScope) -> Result<Vec<ResourceId>, SourceError> {
-        self.scopes.lock().unwrap().push(scope.prefix.clone());
+        self.scopes
+            .lock()
+            .unwrap()
+            .push(scope.path_prefix().to_owned());
         Ok(vec![id("src/one.rs"), id("other/two.rs")])
     }
     // :::{cite} habeas:coverage
@@ -450,9 +429,7 @@ async fn structural_search_uses_overridden_parses_their_snapshot_and_requested_s
         let matches = provider
             .search_structure(
                 &StructuralQuery {
-                    scope: SourceScope {
-                        prefix: "src".into(),
-                    },
+                    scope: SourceScope::under("src"),
                     language: "rust".into(),
                     rule: serde_json::json!({"rule":{"pattern":"call()"}})
                         .as_object()
@@ -495,7 +472,7 @@ impl SourceProvider for Primitives {
     async fn read(&self, _: &ResourceId) -> Result<SourceFile, SourceError> {
         Ok(SourceFile {
             bytes: self.text.as_bytes().into(),
-            language: self.language.map(str::to_owned),
+            language: self.language.map(Into::into),
         })
     }
     type Error = SourceError;

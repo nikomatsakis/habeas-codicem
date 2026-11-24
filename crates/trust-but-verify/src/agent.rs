@@ -11,12 +11,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-// {impl}`requirements.sdk.graph.context-tools.pages.behavior`
-pub(super) fn next_page_id() -> usize {
-    static NEXT_PAGE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-    NEXT_PAGE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-}
-
+#[path = "agent/pages.rs"]
+mod pages;
+use pages::Pages;
 #[path = "agent/backoff.rs"]
 #[doc(hidden)]
 pub mod backoff;
@@ -123,7 +120,6 @@ pub trait Conversation: Send {
     // {cite}`habeas:util`
     fn submit(&mut self, name: &str, arguments: &Value) -> io::Result<Submission<Self::Output>>;
     // {cite}`habeas:util`
-    // {impl}`requirements.sdk.graph.context-tools.pages.fn`
     fn dispatch(
         &mut self,
         name: &str,

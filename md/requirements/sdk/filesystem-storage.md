@@ -9,27 +9,26 @@ saved {term}`requirements.sdk.graph.evidence.verification_evidence`.
 ## Configure the store
 
 :::{req} interface
-```rust,ignore
-use std::path::PathBuf;
-use serde::{Serialize, de::DeserializeOwned};
-use trust_but_verify::graph::CriterionPath;
-use trust_but_verify::graph::NodePath;
-use trust_but_verify::graph::Record;
+`FileEvidenceStorage::new` retains the root directory without touching the filesystem.
+The store implements `Send` and `Sync`. Its `load` and `store` futures are `Send`.
 
-/// A directory of JSON records. Send + Sync; load/store futures are Send.
-/// Defined in trust_but_verify::storage.
+`Record`, `Dependency`, and `Fingerprint` support Serde when their type
+parameters do. `Criterion::Ok` is always serializable; its JSON value is
+already in the record. Serialization bounds on node identities and edge labels
+apply when using this helper.
+:::
+
+:::{req} FileEvidenceStorage
+:test: crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]
+
+Maps node and criterion paths to a record under the configured root. `load` returns `None` for a missing record. `store` atomically replaces the record.
+
+```rust,ignore
 pub struct FileEvidenceStorage { /* private fields */ }
 
-pub enum FileStorageError {
-    Io(std::io::Error),
-    Json(serde_json::Error),
-}
-
 impl FileEvidenceStorage {
-    /// Retain the root directory without performing filesystem I/O.
     pub fn new(root: impl Into<PathBuf>) -> Self;
-
-    /// Deserialize a record, or return None if its file is missing.
+    pub fn record_path(&self, path: &NodePath, criterion: &CriterionPath) -> PathBuf;
     pub async fn load<N, L>(
         &self,
         path: &NodePath,
@@ -38,8 +37,6 @@ impl FileEvidenceStorage {
     where
         N: DeserializeOwned + Send,
         L: DeserializeOwned + Send;
-
-    /// Atomically replace this source/criterion pair's record.
     pub async fn store<N, L>(
         &self,
         path: &NodePath,
@@ -52,10 +49,11 @@ impl FileEvidenceStorage {
 }
 ```
 
-`Record`, `Dependency`, and `Fingerprint` support Serde when their type
-parameters do. `Criterion::Ok` is always serializable; its JSON value is
-already in the record. Serialization bounds on node identities and edge labels
-apply when using this helper.
+Trait implementations
+
+```rust,ignore
+impl Clone for FileEvidenceStorage;
+```
 :::
 
 An application holds a store alongside its graph data. Its `load_evidence`
@@ -108,6 +106,27 @@ decode it as a validation's result type.
 
 Errors do not count as absent evidence. Loading creates no directories and
 invokes no validation.
+:::
+
+:::{req} FileStorageError
+:test: crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]
+
+Distinguishes a filesystem I/O error from a JSON encoding or decoding error.
+
+```rust,ignore
+pub enum FileStorageError {
+    Io(std::io::Error),
+    Json(serde_json::Error),
+}
+```
+
+Trait implementations
+
+```rust,ignore
+impl Debug for FileStorageError;
+impl Display for FileStorageError;
+impl Error for FileStorageError;
+```
 :::
 
 :::{req} store

@@ -22,7 +22,7 @@ pub(crate) fn encode_name(name: &str) -> String {
     encoded
 }
 
-// {impl}`requirements.references.outline_selectors`
+// {impl}`requirements.sdk.outlines.selector_syntax`
 /// Reverses [`encode_name`], rejecting malformed escapes and unescaped
 /// delimiters.
 pub(crate) fn decode_name(encoded: &str) -> Result<String, SelectorError> {
@@ -61,7 +61,7 @@ pub(crate) fn decode_name(encoded: &str) -> Result<String, SelectorError> {
         .map_err(|_| SelectorError::new(encoded, "percent escapes are not UTF-8"))
 }
 
-// {impl}`requirements.references.outline_selectors`
+// {impl}`requirements.sdk.outlines.selector_syntax`
 /// A segment's label: a name, made of `/`-joined parts, or an identity hash.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Label {
@@ -71,7 +71,8 @@ pub enum Label {
 
 /// One parsed selector segment.
 #[derive(Clone, Debug, PartialEq, Eq)]
-// {impl}`requirements.references.outline_selectors`
+// {impl}`requirements.sdk.outlines.selector_syntax`
+#[non_exhaustive]
 pub struct Segment {
     pub kind: String,
     pub label: Label,
@@ -79,6 +80,19 @@ pub struct Segment {
 }
 
 impl Segment {
+    pub fn new(kind: String, label: Label) -> Self {
+        Self {
+            kind,
+            label,
+            ordinal: None,
+        }
+    }
+
+    pub fn ordinal(mut self, ordinal: usize) -> Self {
+        self.ordinal = Some(ordinal);
+        self
+    }
+
     /// The segment without its `#N` ordinal.
     // {cite}`habeas:util`
     pub fn base(kind: &str, label: &Label) -> String {
@@ -110,6 +124,7 @@ impl fmt::Display for Segment {
 // {cite}`habeas:util`
 /// An invalid selector.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct SelectorError {
     pub selector: String,
     pub message: String,
@@ -138,7 +153,7 @@ impl fmt::Display for SelectorError {
 
 impl std::error::Error for SelectorError {}
 
-// {impl}`requirements.references.outline_selectors`
+// {impl}`requirements.sdk.outlines.selector_syntax`
 /// Splits a selector at `/` outside brackets.
 fn split_segments(selector: &str) -> Result<Vec<&str>, SelectorError> {
     let mut segments = Vec::new();
@@ -231,7 +246,8 @@ fn parse_segment(selector: &str, segment: &str) -> Result<Segment, SelectorError
 }
 
 /// Parses a selector; the empty selector has no segments and selects the root.
-// {impl}`requirements.references.outline_selectors`
+// {impl}`requirements.sdk.outlines.selector_syntax`
+// {impl}`requirements.sdk.outlines.selector_parser`
 pub fn parse_selector(selector: &str) -> Result<Vec<Segment>, SelectorError> {
     if selector.is_empty() {
         return Ok(Vec::new());
@@ -246,7 +262,7 @@ pub fn parse_selector(selector: &str) -> Result<Vec<Segment>, SelectorError> {
 mod tests {
     use super::{Label, decode_name, encode_name, parse_selector};
 
-    // {test}`requirements.references.outline_selectors`
+    // {test}`requirements.sdk.outlines.selector_syntax`
     #[test]
     fn names_round_trip_through_percent_encoding() {
         let name = "a b/c[d]#e@f%g\té\u{a0}\u{3000}";
@@ -258,7 +274,7 @@ mod tests {
         assert!(decode_name("a b").is_err());
     }
 
-    // {test}`requirements.references.outline_selectors`
+    // {test}`requirements.sdk.outlines.selector_syntax`
     #[test]
     fn parses_named_anonymous_and_ordinal_segments() {
         assert!(parse_selector("").unwrap().is_empty());

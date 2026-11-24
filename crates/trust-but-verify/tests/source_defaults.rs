@@ -27,9 +27,10 @@ fn git(root: &Path, args: &[&str]) {
 // {test}`requirements.sdk.sources.source_addresses`
 // {test}`requirements.sdk.sources.provider_defaults.composition`
 // {test}`requirements.sdk.sources.provider_results`
-// {test}`requirements.sdk.graph.context-tools.list_sources.behavior`
-// {test}`requirements.sdk.graph.context-tools.search_text.fn`
-// {test}`requirements.sdk.graph.context-tools.search_text.behavior`
+// {test}`requirements.sdk.graph.validation-context.list_sources.behavior`
+// {test}`requirements.sdk.graph.search.search_text.fn`
+// {test}`requirements.sdk.graph.search.search_text.behavior`
+// {test}`requirements.sdk.graph.search.source_scope`
 #[tokio::test]
 async fn gitignore_is_shared_by_all_operations_with_or_without_a_git_repository() {
     for repository in [false, true] {
@@ -54,7 +55,8 @@ async fn gitignore_is_shared_by_all_operations_with_or_without_a_git_repository(
             git(root.path(), &["add", "--force", "ignored.txt"]);
         }
         let sources = Sources::new(root.path());
-        let listed = sources.list(&SourceScope::default()).await.unwrap();
+        let listed = sources.list(&SourceScope::all()).await.unwrap();
+        assert_eq!(listed, sources.list(&SourceScope::default()).await.unwrap());
         let paths: Vec<_> = listed.iter().map(|id| id.to_str().unwrap()).collect();
         assert!(paths.contains(&"keep.txt")); // Untracked and not ignored.
         assert!(paths.contains(&"src/nested.txt")); // Nested exception.
@@ -72,9 +74,7 @@ async fn gitignore_is_shared_by_all_operations_with_or_without_a_git_repository(
             assert!(sources.parse(&file(name)).await.is_err(), "{name}");
             assert!(
                 sources
-                    .list(&SourceScope {
-                        prefix: name.into()
-                    })
+                    .list(&SourceScope::under(name))
                     .await
                     .unwrap()
                     .is_empty()
@@ -82,9 +82,7 @@ async fn gitignore_is_shared_by_all_operations_with_or_without_a_git_repository(
         }
         assert!(
             sources
-                .list(&SourceScope {
-                    prefix: "skip".into()
-                })
+                .list(&SourceScope::under("skip"))
                 .await
                 .unwrap()
                 .is_empty()
@@ -94,36 +92,19 @@ async fn gitignore_is_shared_by_all_operations_with_or_without_a_git_repository(
             assert!(sources.read(&file(".git/config")).await.is_err());
         }
         let found = sources
-            .search_text(&TextQuery {
-                scope: SourceScope::default(),
-                pattern: "needle".into(),
-                context_lines: 0,
-                limit: None,
-            })
+            .search_text(&TextQuery::new("needle".into()))
             .await
             .unwrap();
         assert!(found.complete);
         assert_eq!(found.matches.len(), 3);
         let regex = sources
-            .search_text(&TextQuery {
-                scope: SourceScope::default(),
-                pattern: "^n[e]{2}dle$".into(),
-                context_lines: 0,
-                limit: None,
-            })
+            .search_text(&TextQuery::new("^n[e]{2}dle$".into()))
             .await
             .unwrap();
         assert_eq!(regex.matches.len(), 3);
         for prefix in ["ignored.txt", "src/ignored.txt", "skip"] {
             let excluded = sources
-                .search_text(&TextQuery {
-                    scope: SourceScope {
-                        prefix: prefix.into(),
-                    },
-                    pattern: "needle".into(),
-                    context_lines: 0,
-                    limit: None,
-                })
+                .search_text(&TextQuery::new("needle".into()).scope(SourceScope::under(prefix)))
                 .await
                 .unwrap();
             assert!(excluded.complete);
@@ -132,14 +113,7 @@ async fn gitignore_is_shared_by_all_operations_with_or_without_a_git_repository(
         if repository {
             assert!(
                 sources
-                    .search_text(&TextQuery {
-                        scope: SourceScope {
-                            prefix: ".git".into()
-                        },
-                        pattern: ".".into(),
-                        context_lines: 0,
-                        limit: None,
-                    })
+                    .search_text(&TextQuery::new(".".into()).scope(SourceScope::under(".git")))
                     .await
                     .unwrap()
                     .matches
@@ -148,26 +122,14 @@ async fn gitignore_is_shared_by_all_operations_with_or_without_a_git_repository(
         }
         assert!(
             sources
-                .search_text(&TextQuery {
-                    scope: SourceScope {
-                        prefix: "..".into()
-                    },
-                    pattern: ".".into(),
-                    context_lines: 0,
-                    limit: None,
-                })
+                .search_text(&TextQuery::new(".".into()).scope(SourceScope::under("..")))
                 .await
                 .is_err()
         );
+        fs::create_dir(root.path().join("src-old")).unwrap();
+        fs::write(root.path().join("src-old/other.rs"), "needle\n").unwrap();
         let scoped = sources
-            .search_text(&TextQuery {
-                scope: SourceScope {
-                    prefix: "./src/../src".into(),
-                },
-                pattern: "needle".into(),
-                context_lines: 0,
-                limit: None,
-            })
+            .search_text(&TextQuery::new("needle".into()).scope(SourceScope::under("./src/../src")))
             .await
             .unwrap();
         assert_eq!(scoped.matches.len(), 1);
@@ -233,14 +195,7 @@ async fn empty_sources_errors_and_retained_snapshots_remain_distinct() {
             .is_err()
     );
     assert!(sources.read(&PathBuf::from("../note.txt")).await.is_err());
-    assert!(
-        sources
-            .list(&SourceScope {
-                prefix: "missing".into()
-            })
-            .await
-            .is_err()
-    );
+    assert!(sources.list(&SourceScope::under("missing")).await.is_err());
     assert!(
         Sources::new(root.path().join("missing"))
             .list(&SourceScope::default())
@@ -248,19 +203,11 @@ async fn empty_sources_errors_and_retained_snapshots_remain_distinct() {
             .is_err()
     );
     fs::write(root.path().join("note.txt"), "needle\nneedle\n").unwrap();
-    let query = TextQuery {
-        scope: SourceScope::default(),
-        pattern: "needle".into(),
-        context_lines: 0,
-        limit: Some(1),
-    };
+    let query = TextQuery::new("needle".into()).limit(1);
     let result = sources.search_text(&query).await.unwrap();
     assert_eq!(result.matches.len(), 1);
     assert!(!result.complete);
-    let invalid = TextQuery {
-        pattern: "[".into(),
-        ..query
-    };
+    let invalid = TextQuery::new("[".into()).limit(1);
     assert!(sources.search_text(&invalid).await.is_err());
 }
 
@@ -269,7 +216,7 @@ async fn empty_sources_errors_and_retained_snapshots_remain_distinct() {
 // {test}`requirements.sdk.sources.provider_defaults.composition`
 // {test}`requirements.sdk.sources.local_provider`
 // {test}`requirements.sdk.sources.source_addresses`
-// {test}`requirements.sdk.graph.context-tools.search_structure.behavior`
+// {test}`requirements.sdk.graph.search.search_structure.behavior`
 #[tokio::test]
 async fn built_in_languages_and_structural_search_use_the_project_scope() {
     let root = tempfile::tempdir().unwrap();
@@ -294,15 +241,13 @@ async fn built_in_languages_and_structural_search_use_the_project_scope() {
     assert_eq!(plain.fingerprint_scheme(), "plain-text-structural-v1");
     assert_eq!(plain.outline().items.len(), 3); // Root and two nonblank lines.
     let rust = sources.parse(&file("visible.rs")).await.unwrap();
-    let query = StructuralQuery {
-        scope: SourceScope::default(),
-        language: "rust".into(),
-        rule: serde_json::json!({"rule":{"pattern":"call()"}})
+    let query = StructuralQuery::new(
+        "rust".into(),
+        serde_json::json!({"rule":{"pattern":"call()"}})
             .as_object()
             .unwrap()
             .clone(),
-        limit: None,
-    };
+    );
     #[cfg(feature = "default-languages")]
     {
         assert_eq!(rust.fingerprint_scheme(), "rust-structural-v1");
@@ -312,41 +257,29 @@ async fn built_in_languages_and_structural_search_use_the_project_scope() {
         assert_eq!(found.matches[0].node.path, Path::new("visible.rs"));
         for prefix in ["hidden.rs", "skip", ".git"] {
             let scoped = sources
-                .search_structure(&StructuralQuery {
-                    scope: SourceScope {
-                        prefix: prefix.into(),
-                    },
-                    language: query.language.clone(),
-                    rule: query.rule.clone(),
-                    limit: query.limit,
-                })
+                .search_structure(
+                    &StructuralQuery::new(query.language.clone(), query.rule.clone())
+                        .scope(SourceScope::under(prefix)),
+                )
                 .await
                 .unwrap();
             assert!(scoped.complete);
             assert!(scoped.matches.is_empty(), "{prefix}");
         }
         let visible = sources
-            .search_structure(&StructuralQuery {
-                scope: SourceScope {
-                    prefix: "visible.rs".into(),
-                },
-                language: query.language.clone(),
-                rule: query.rule.clone(),
-                limit: query.limit,
-            })
+            .search_structure(
+                &StructuralQuery::new(query.language.clone(), query.rule.clone())
+                    .scope(SourceScope::under("visible.rs")),
+            )
             .await
             .unwrap();
         assert_eq!(visible.matches[0].node.path, Path::new("visible.rs"));
         assert!(
             sources
-                .search_structure(&StructuralQuery {
-                    scope: SourceScope {
-                        prefix: "..".into()
-                    },
-                    language: query.language.clone(),
-                    rule: query.rule.clone(),
-                    limit: query.limit,
-                })
+                .search_structure(
+                    &StructuralQuery::new(query.language.clone(), query.rule.clone())
+                        .scope(SourceScope::under(".."))
+                )
                 .await
                 .is_err()
         );
@@ -400,14 +333,7 @@ async fn symlinks_cannot_reopen_ignored_files_or_leave_the_project() {
     );
     assert!(sources.read(&file("alias.txt")).await.is_err());
     assert!(sources.read(&file("external/file.txt")).await.is_err());
-    assert!(
-        sources
-            .list(&SourceScope {
-                prefix: "external".into()
-            })
-            .await
-            .is_err()
-    );
+    assert!(sources.list(&SourceScope::under("external")).await.is_err());
 }
 
 // {test}`requirements.sdk.sources.provider.errors`
@@ -422,9 +348,7 @@ async fn scoped_inspection_skips_unrelated_directories_and_reports_relevant_igno
     fs::write(root.path().join("broken/target.txt"), "target").unwrap();
     fs::write(root.path().join("broken/.gitignore"), "{a,b\n").unwrap();
     let sources = Sources::new(root.path());
-    let scope = SourceScope {
-        prefix: "src".into(),
-    };
+    let scope = SourceScope::under("src");
     let listed = sources.list(&scope).await.unwrap();
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0], Path::new("src/one.txt"));

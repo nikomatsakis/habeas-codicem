@@ -3,6 +3,7 @@
 use std::{
     fs, io,
     path::{Component, Path, PathBuf},
+    process::{Command, Stdio},
 };
 
 use mdbook_preprocessor::{
@@ -22,6 +23,8 @@ struct Import {
     path: PathBuf,
     #[serde(rename = "crate")]
     crate_name: String,
+    #[serde(default, rename = "build-workspace")]
+    build_workspace: bool,
 }
 
 /// Prepare the Rustdoc static assets before mdBook's HTML renderer copies them.
@@ -53,6 +56,32 @@ pub fn preprocess(book: &mut Book, root: &Path, config: &Config) -> io::Result<(
         return Err(io::Error::other(
             "Rustdoc path must be relative to the project root and crate must name a Rust crate",
         ));
+    }
+    if import.build_workspace {
+        if !import.path.ends_with("doc") {
+            return Err(io::Error::other(
+                "building workspace Rustdoc requires a path ending in doc",
+            ));
+        }
+        let target = root.join(&import.path);
+        let status = Command::new("cargo")
+            .current_dir(root)
+            .args([
+                "doc",
+                "--locked",
+                "--workspace",
+                "--no-deps",
+                "--target-dir",
+            ])
+            .arg(target.parent().expect("doc has a parent directory"))
+            .stdin(Stdio::null())
+            // mdBook reads the preprocessed book as JSON from our stdout.
+            .stdout(Stdio::from(io::stderr()))
+            .status()
+            .map_err(|error| diagnostic("run cargo doc in", root, error))?;
+        if !status.success() {
+            return Err(io::Error::other(format!("cargo doc failed with {status}")));
+        }
     }
     let source = root
         .join(&import.path)

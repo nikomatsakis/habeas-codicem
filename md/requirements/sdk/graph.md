@@ -79,22 +79,29 @@ contents.
 :::
 
 :::{req} node_path_struct
-`trust_but_verify::graph::NodePath` describes the logical structure of a node identity:
+:test: crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]
+
+`trust_but_verify::graph::NodePath` describes a node identity as an ordered sequence of path segments.
 
 ```rust,ignore
-/// Defines the logical structure of a node-id.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct NodePath {
-    segments: Vec<String>,
-}
+pub struct NodePath { /* private fields */ }
 
 impl NodePath {
-    /// Construct a node path, preserving segment order and boundaries.
     pub fn new(segments: Vec<String>) -> Self;
-
-    /// Read the ordered path segments.
     pub fn segments(&self) -> &[String];
 }
+```
+
+Trait implementations
+
+```rust,ignore
+impl Clone for NodePath;
+impl Debug for NodePath;
+impl<'de> Deserialize<'de> for NodePath;
+impl Hash for NodePath;
+impl PartialEq for NodePath;
+impl Serialize for NodePath;
+impl Eq for NodePath;
 ```
 :::
 
@@ -136,7 +143,7 @@ Its `node_path` implementation maps that identity to
 
 *Node contents* are the application-defined data read from a
 {term}`requirements.sdk.graph.node` as inputs when evaluating a
-{term}`requirements.sdk.graph.validation.criterion`. An agent uses these inputs
+{term}`requirements.sdk.graph.criteria.criterion`. An agent uses these inputs
 to assess whether the criterion holds in the project. They can be source text,
 parsed code, issue data, or another structured value. In the SDK,
 [`Domain::NodeContent`](../../rustdocs/trust_but_verify/domain/trait.Domain.html#associatedtype.NodeContent)
@@ -168,9 +175,18 @@ pub trait Domain: Clone + Send + Sync {
 
     // ...
 }
+```
+:::
 
+:::{req} NodeContents
+:test: crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]
+
+`fingerprint` identifies the version of the contents. `format` renders that same value for the agent.
+
+```rust,ignore
 pub trait NodeContents: Send + Sync {
-    // ...
+    fn fingerprint(&self) -> Fingerprint;
+    fn format(&self) -> String;
 }
 ```
 :::
@@ -221,18 +237,33 @@ represents that pair.
 :::
 
 :::{req} fingerprint
+:test: crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]
+
+`Fingerprint` pairs a digest with the scheme used to compute it. Each `NodeContents`
+implementation chooses the scheme. Freshness checks compare both fields as opaque values.
+
 ```rust,ignore
-/// A digest and the rules used to compute it.
-/// Tracking and freshness checks compare both fields as opaque values.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct Fingerprint {
     pub scheme: String,
     pub value: String,
 }
+
+impl Fingerprint {
+    pub fn new(scheme: String, value: String) -> Self;
+}
 ```
 
-This type lives in `trust_but_verify::graph`. Each `NodeContents` implementation
-supplies the rules used to describe its contents.
+Trait implementations
+
+```rust,ignore
+impl Clone for Fingerprint;
+impl Debug for Fingerprint;
+impl<'de> Deserialize<'de> for Fingerprint;
+impl PartialEq for Fingerprint;
+impl Serialize for Fingerprint;
+impl Eq for Fingerprint;
+```
 :::
 
 :::{req} node_content.fingerprint
@@ -259,19 +290,31 @@ pub trait NodeContents: Send + Sync {
 :::
 
 :::{req} snapshot
+:test: crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]
+
+For node reads, the SDK constructs a `Snapshot` from
+the contents returned by `Domain::node_content` and their
+`NodeContents::fingerprint` under
+{cite}`requirements.sdk.graph.node_content.fingerprint`, without another read.
+
 ```rust,ignore
-/// Contents paired with the fingerprint of that same observation.
-#[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct Snapshot<T> {
     pub content: T,
     pub fingerprint: Fingerprint,
 }
+
+impl<T> Snapshot<T> {
+    pub fn new(content: T, fingerprint: Fingerprint) -> Self;
+}
 ```
 
-This type lives in `trust_but_verify::graph`. For node reads, the SDK constructs it from
-the contents returned by `Domain::node_content` and their
-`NodeContents::fingerprint` under
-{cite}`requirements.sdk.graph.node_content.fingerprint`, without another read.
+Trait implementations
+
+```rust,ignore
+impl<T: Clone> Clone for Snapshot<T>;
+impl<T: Debug> Debug for Snapshot<T>;
+```
 :::
 
 To read `check_token`, the SDK calls `Domain::node_content`, fingerprints the
@@ -283,7 +326,7 @@ check freshness later. Conceptually, the tracked context does this:
 ```rust,ignore
 let content = domain.node_content(&check_token_id)?;
 let fingerprint = content.fingerprint();
-let snapshot = Snapshot { content, fingerprint };
+let snapshot = Snapshot::new(content, fingerprint);
 ```
 
 The fingerprint describes the observation the procedure examines, even if the

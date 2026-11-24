@@ -4,7 +4,7 @@ use crate::domain::Domain;
 use crate::domain::NodeContents;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::{future::Future, sync::Mutex};
+use std::future::Future;
 
 #[path = "graph/runtime.rs"]
 pub mod validator;
@@ -12,16 +12,33 @@ use crate::request::ValidationContext;
 
 // {impl}`requirements.sdk.graph.fingerprint`
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct Fingerprint {
     pub scheme: String,
     pub value: String,
 }
 
+impl Fingerprint {
+    pub fn new(scheme: String, value: String) -> Self {
+        Self { scheme, value }
+    }
+}
+
 // {impl}`requirements.sdk.graph.snapshot`
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct Snapshot<T> {
     pub content: T,
     pub fingerprint: Fingerprint,
+}
+
+impl<T> Snapshot<T> {
+    pub fn new(content: T, fingerprint: Fingerprint) -> Self {
+        Self {
+            content,
+            fingerprint,
+        }
+    }
 }
 
 /// An ordered path with read-only access to its segments.
@@ -59,8 +76,8 @@ impl NodePath {
 /// let mut path = CriterionPath::new(vec!["part".into()]);
 /// path.segments.clear();
 /// ```
-// {test}`requirements.sdk.graph.validation.criterion_path`
-// {impl}`requirements.sdk.graph.validation.criterion_path`
+// {test}`requirements.sdk.graph.criteria.criterion_path`
+// {impl}`requirements.sdk.graph.criteria.criterion_path`
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct CriterionPath {
     segments: Vec<String>,
@@ -68,13 +85,13 @@ pub struct CriterionPath {
 
 impl CriterionPath {
     /// Construct a path, preserving segment order and boundaries.
-    // {impl}`requirements.sdk.graph.validation.criterion_path`
+    // {impl}`requirements.sdk.graph.criteria.criterion_path`
     pub fn new(segments: Vec<String>) -> Self {
         Self { segments }
     }
 
     /// Read the ordered path segments.
-    // {impl}`requirements.sdk.graph.validation.criterion_path`
+    // {impl}`requirements.sdk.graph.criteria.criterion_path`
     pub fn segments(&self) -> &[String] {
         &self.segments
     }
@@ -87,12 +104,98 @@ pub enum Dependency<N, L = ()> {
     OutgoingEdges(N, L, Fingerprint),
 }
 
+/// The application-defined version of a criterion's check and answer encoding.
+// {impl}`requirements.sdk.graph.criteria.criterion_version`
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+pub struct CriterionVersion(String);
+
+impl CriterionVersion {
+    /// Construct a version for the current criterion. Panics if `value` is `"*"`.
+    pub fn new(value: impl Into<String>) -> Self {
+        Self::from_recorded(value).expect("* is reserved for unversioned evidence")
+    }
+
+    /// Decode a saved version string, where `"*"` stands for an unknown version.
+    pub fn from_recorded(value: impl Into<String>) -> Option<Self> {
+        let value = value.into();
+        (value != "*").then_some(Self(value))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// An unversioned legacy record passes this check. A known version must match exactly.
+    // {impl}`requirements.sdk.graph.evidence.checking_records.version_match`
+    pub fn is_compatible_with(&self, saved: Option<&Self>) -> bool {
+        saved.is_none_or(|version| version == self)
+    }
+}
+
+impl<'de> Deserialize<'de> for CriterionVersion {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Self::from_recorded(String::deserialize(deserializer)?)
+            .ok_or_else(|| serde::de::Error::custom("expected a concrete criterion version"))
+    }
+}
+
+// {impl}`requirements.sdk.graph.evidence.recorded_criterion_version`
+mod stored_version {
+    use super::CriterionVersion;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub(super) fn serialize<S: Serializer>(
+        version: &Option<CriterionVersion>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(version.as_ref().map_or("*", CriterionVersion::as_str))
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<CriterionVersion>, D::Error> {
+        Ok(CriterionVersion::from_recorded(String::deserialize(
+            deserializer,
+        )?))
+    }
+}
+
 // {impl}`requirements.sdk.graph.evidence.record`
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct Record<N, L = ()> {
-    pub revision: String,
+    #[serde(rename = "revision", with = "stored_version")]
+    pub version: Option<CriterionVersion>,
     pub dependencies: Vec<Dependency<N, L>>,
     pub output: serde_json::Value,
+}
+
+impl<N, L> Record<N, L> {
+    pub fn new(
+        version: Option<CriterionVersion>,
+        dependencies: Vec<Dependency<N, L>>,
+        output: serde_json::Value,
+    ) -> Self {
+        Self {
+            version,
+            dependencies,
+            output,
+        }
+    }
+
+    /// Check the criterion version and the current fingerprints of the saved inputs.
+    // {impl}`requirements.sdk.graph.evidence.record.is_current`
+    // {impl}`requirements.sdk.graph.evidence.checking_records`
+    pub fn is_current<D>(&self, graph: &D, version: &CriterionVersion) -> Result<bool, D::Error>
+    where
+        D: Domain<NodeId = N, EdgeLabel = L>,
+    {
+        if !version.is_compatible_with(self.version.as_ref()) {
+            return Ok(false);
+        }
+        dependencies_are_current(graph, &self.dependencies)
+    }
 }
 
 /// A computed value and the fingerprints of its dependencies.
@@ -102,7 +205,7 @@ pub struct Record<N, L = ()> {
 /// ```compile_fail,E0616
 /// use trust_but_verify::{domain::Domain, graph::Fingerprinted};
 /// fn change_revision<D: Domain>(answer: &mut Fingerprinted<D, bool>) {
-///     answer.revision = "different rules".into();
+///     answer.version = Some(trust_but_verify::graph::CriterionVersion::new("different rules"));
 /// }
 /// ```
 ///
@@ -138,7 +241,7 @@ pub struct Record<N, L = ()> {
 pub struct Fingerprinted<D: Domain, O> {
     source: D::NodeId,
     criterion: CriterionPath,
-    revision: String,
+    version: Option<CriterionVersion>,
     dependencies: Vec<Dependency<D::NodeId, D::EdgeLabel>>,
     output: O,
 }
@@ -156,8 +259,8 @@ impl<D: Domain, O> Fingerprinted<D, O> {
     }
 
     /// The review rules used to produce this answer.
-    pub fn revision(&self) -> &str {
-        &self.revision
+    pub fn version(&self) -> Option<&CriterionVersion> {
+        self.version.as_ref()
     }
 
     /// Recorded node-content and successor-set observations.
@@ -207,7 +310,7 @@ impl<T: PartialEq> Trace<T> {
     }
 }
 
-// {impl}`requirements.sdk.graph.validation.execute`
+// {impl}`requirements.sdk.graph.criteria.execute`
 #[derive(Debug)]
 pub enum ValidationError<E> {
     Graph(E),
@@ -239,211 +342,29 @@ impl<E: std::error::Error + 'static> std::error::Error for ValidationError<E> {
     }
 }
 
-// {impl}`requirements.sdk.graph.validation.criterion_trait`
+// {impl}`requirements.sdk.graph.criteria.criterion_trait`
 pub trait Criterion<D: Domain>: Send + Sized {
     /// The completed answer, serialized for storage and reconstructed on reuse.
-    // {impl}`requirements.sdk.graph.validation.criterion_trait.answer`
+    // {impl}`requirements.sdk.graph.criteria.criterion_trait.answer`
     type Ok: Serialize + serde::de::DeserializeOwned + Send;
 
     /// The node this question is about.
-    // {impl}`requirements.sdk.graph.validation.criterion_trait.source_node_id`
+    // {impl}`requirements.sdk.graph.criteria.criterion_trait.source_node_id`
     fn source_node_id(&self) -> D::NodeId;
     /// Identify this question within the source node's saved evidence.
-    // {impl}`requirements.sdk.graph.validation.criterion_path`
+    // {impl}`requirements.sdk.graph.criteria.criterion_path`
     fn criterion_path(&self) -> CriterionPath;
     /// Version of the review rules and output encoding.
     /// Change it when an old answer should no longer be reused.
-    // {impl}`requirements.sdk.graph.validation.criterion_trait.revision`
-    fn revision(&self) -> String;
+    // {impl}`requirements.sdk.graph.criteria.criterion_trait.version`
+    fn version(&self) -> CriterionVersion;
 
     /// Select inputs through the context and compute the completed answer.
-    // {impl}`requirements.sdk.graph.validation.execute`
+    // {impl}`requirements.sdk.graph.criteria.execute`
     fn execute(
         self,
         ctx: &mut ValidationContext<'_, D>,
     ) -> impl Future<Output = Result<Self::Ok, ValidationError<D::Error>>> + Send;
-}
-
-/// The trace lock only protects observations, never graph or agent operations.
-// {impl}`requirements.sdk.graph.context-tools.tracked_inspection`
-pub struct InspectionContext<'d, D: Domain> {
-    graph: &'d D,
-    observations: Mutex<Vec<Dependency<D::NodeId, D::EdgeLabel>>>,
-}
-
-impl<'d, D: Domain> InspectionContext<'d, D> {
-    // {cite}`habeas:util`
-    pub fn new(graph: &'d D) -> Self {
-        Self {
-            graph,
-            observations: Mutex::new(Vec::new()),
-        }
-    }
-
-    // {cite}`habeas:util`
-    pub fn graph(&self) -> &'d D {
-        self.graph
-    }
-
-    // {cite}`habeas:util`
-    // {impl}`requirements.sdk.graph.context-tools.read_node.behavior`
-    // {impl}`requirements.sdk.graph.context-tools.read_node.fn`
-    // {impl}`requirements.sdk.graph.context-tools.read_node.inputs`
-    pub fn read(&self, node: &D::NodeId) -> Result<D::NodeContent, D::Error> {
-        Ok(self.read_snapshot(node)?.content)
-    }
-
-    // {impl}`requirements.sdk.graph.evidence.node_inputs`
-    // {impl}`requirements.sdk.graph.snapshot`
-    pub fn read_snapshot(&self, node: &D::NodeId) -> Result<Snapshot<D::NodeContent>, D::Error> {
-        let snapshot = self.prepare_read(node)?;
-        self.record_read(node.clone(), snapshot.fingerprint.clone());
-        Ok(snapshot)
-    }
-
-    /// Prepare a retained node observation without claiming its delivery.
-    pub(crate) fn prepare_read(
-        &self,
-        node: &D::NodeId,
-    ) -> Result<Snapshot<D::NodeContent>, D::Error> {
-        let content = self.graph.node_content(node)?;
-        let fingerprint = content.fingerprint();
-        Ok(Snapshot {
-            content,
-            fingerprint,
-        })
-    }
-
-    // {impl}`requirements.sdk.graph.context-tools.outgoing_edges.behavior`
-    // {impl}`requirements.sdk.graph.context-tools.outgoing_edges.fn`
-    // {impl}`requirements.sdk.graph.context-tools.outgoing_edges.inputs`
-    // {impl}`requirements.sdk.graph.context-tools.snapshot`
-    pub fn outgoing_edges(
-        &self,
-        node: &D::NodeId,
-        label: D::EdgeLabel,
-    ) -> Result<Snapshot<Vec<D::NodeId>>, D::Error>
-    where
-        D::EdgeLabel: PartialEq,
-    {
-        let snapshot = self.prepare_edges(node, label.clone())?;
-        self.observe_edges(node.clone(), label, snapshot.fingerprint.clone());
-        Ok(snapshot)
-    }
-
-    /// Prepare a relationship result without claiming delivery.
-    // {cite}`habeas:util`
-    pub(crate) fn prepare_edges(
-        &self,
-        node: &D::NodeId,
-        label: D::EdgeLabel,
-    ) -> Result<Snapshot<Vec<D::NodeId>>, D::Error> {
-        let content = self.graph.outgoing_edges(node, label)?;
-        let fingerprint = edge_fingerprint(self.graph, &content);
-        Ok(Snapshot {
-            content,
-            fingerprint,
-        })
-    }
-
-    /// Import the fingerprint of the exact snapshot delivered to the caller.
-    pub(crate) fn record_read(&self, node: D::NodeId, fingerprint: Fingerprint) {
-        let mut observations = self.observations.lock().expect("dependency trace poisoned");
-        if !observations.iter().any(|dependency| {
-            matches!(dependency,
-            Dependency::Node(previous, hash) if previous == &node && hash == &fingerprint)
-        }) {
-            observations.push(Dependency::Node(node, fingerprint));
-        }
-    }
-
-    /// Habeas adapter hook for a delivered, retained observation.
-    #[doc(hidden)]
-    #[cfg(feature = "habeas-integration")]
-    pub fn observe_read(&self, node: D::NodeId, fingerprint: Fingerprint) {
-        self.record_read(node, fingerprint);
-    }
-
-    // {cite}`habeas:util`
-    pub(crate) fn observe_edges(
-        &self,
-        node: D::NodeId,
-        label: D::EdgeLabel,
-        fingerprint: Fingerprint,
-    ) where
-        D::EdgeLabel: PartialEq,
-    {
-        self.observe_edges_by(node, label, fingerprint, |a, b| a == b);
-    }
-
-    // {cite}`habeas:util`
-    pub(crate) fn observe_edges_by(
-        &self,
-        node: D::NodeId,
-        label: D::EdgeLabel,
-        fingerprint: Fingerprint,
-        matches: fn(&D::EdgeLabel, &D::EdgeLabel) -> bool,
-    ) {
-        let mut observations = self.observations.lock().expect("dependency trace poisoned");
-        if !observations.iter().any(|dependency| {
-            matches!(dependency,
-            Dependency::OutgoingEdges(previous, previous_label, hash)
-            if previous == &node && matches(previous_label, &label) && hash == &fingerprint)
-        }) {
-            observations.push(Dependency::OutgoingEdges(node, label, fingerprint));
-        }
-    }
-
-    // {cite}`habeas:util`
-    pub fn dependencies(&self) -> Vec<Dependency<D::NodeId, D::EdgeLabel>> {
-        self.observations
-            .lock()
-            .expect("dependency trace poisoned")
-            .clone()
-    }
-
-    // {impl}`requirements.sdk.graph.evidence.record`
-    pub fn finish(
-        &self,
-        revision: String,
-        output: impl Serialize,
-    ) -> Result<Record<D::NodeId, D::EdgeLabel>, serde_json::Error> {
-        Ok(Record {
-            revision,
-            dependencies: self.dependencies(),
-            output: serde_json::to_value(output)?,
-        })
-    }
-}
-
-impl<D: crate::domain::SourceNodes> InspectionContext<'_, D> {
-    // {impl}`requirements.sdk.graph.context-tools.read_source.fn`
-    // {impl}`requirements.sdk.sources.provider_observations`
-    pub fn read_source(
-        &self,
-        item: &crate::outline::OutlineId,
-    ) -> Result<D::NodeContent, D::Error> {
-        let node = self.graph.source_node(item)?;
-        self.read(&node)
-    }
-}
-
-// {impl}`requirements.sdk.graph.evidence.checking_records.procedure_match`
-pub fn procedure_matches(stored: &str, requested: &str) -> bool {
-    stored == "*" || stored == requested
-}
-
-/// Freshness-only reads do not enter a new assessment's trace.
-// {impl}`requirements.sdk.graph.evidence.checking_records`
-pub fn record_is_current<D: Domain>(
-    graph: &D,
-    revision: &str,
-    record: &Record<D::NodeId, D::EdgeLabel>,
-) -> Result<bool, D::Error> {
-    if !procedure_matches(&record.revision, revision) {
-        return Ok(false);
-    }
-    dependencies_are_current(graph, &record.dependencies)
 }
 
 fn dependencies_are_current<D: Domain>(
@@ -471,7 +392,7 @@ fn dependencies_are_current<D: Domain>(
 /// Hash the target set without requiring serialization or hashing of opaque IDs.
 /// JSON encodes segment boundaries and Unicode unambiguously; ordering and
 /// duplicate edges do not affect membership. Empty selections have a digest too.
-// {impl}`requirements.sdk.graph.context-tools.snapshot`
+// {impl}`requirements.sdk.graph.validation-context.snapshot`
 pub fn edge_fingerprint<D: Domain>(graph: &D, targets: &[D::NodeId]) -> Fingerprint {
     let mut paths = targets
         .iter()

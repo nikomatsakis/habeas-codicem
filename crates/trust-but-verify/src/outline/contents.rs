@@ -28,12 +28,24 @@ use std::{
 /// not read the file.
 // {impl}`requirements.sdk.outlines.address_identity`
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct OutlineId {
     pub path: PathBuf,
     pub selector: String,
 }
 
 impl OutlineId {
+    pub fn root(path: impl Into<PathBuf>) -> Self {
+        Self {
+            path: path.into(),
+            selector: String::new(),
+        }
+    }
+
+    pub fn selector(self, selector: String) -> Result<Self, OutlineError> {
+        Self::new(self.path, selector)
+    }
+
     /// Construct an address after checking its selector syntax.
     // {impl}`requirements.sdk.outlines.address_identity`
     pub fn new(path: impl Into<PathBuf>, selector: String) -> Result<Self, OutlineError> {
@@ -48,8 +60,15 @@ impl OutlineId {
 /// Selectable items in a single source snapshot, in source preorder.
 // {impl}`requirements.sdk.outlines.items`
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct Outline {
     pub items: Vec<OutlineItem>,
+}
+
+impl Outline {
+    pub fn new(items: Vec<OutlineItem>) -> Self {
+        Self { items }
+    }
 }
 
 /// A selectable item and its structural digest.
@@ -58,11 +77,28 @@ pub struct Outline {
 /// source. Its end is exclusive.
 // {impl}`requirements.sdk.outlines.items`
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct OutlineItem {
     pub selector: String,
     pub kind: String,
     pub span: Range<usize>,
     pub structural_hash: String,
+}
+
+impl OutlineItem {
+    pub fn new(
+        selector: String,
+        kind: String,
+        span: Range<usize>,
+        structural_hash: String,
+    ) -> Self {
+        Self {
+            selector,
+            kind,
+            span,
+            structural_hash,
+        }
+    }
 }
 
 /// Language rules for producing selectable source items.
@@ -353,9 +389,16 @@ pub(super) fn unsupported_search(language: &str) -> OutlineError {
 /// A source that its grammar cannot parse.
 #[derive(Clone, Debug, PartialEq, Eq)]
 // {cite}`habeas:util`
+#[non_exhaustive]
 pub struct OutlineError {
     pub line: usize,
     pub message: String,
+}
+
+impl OutlineError {
+    pub fn new(line: usize, message: String) -> Self {
+        Self { line, message }
+    }
 }
 
 impl fmt::Display for OutlineError {

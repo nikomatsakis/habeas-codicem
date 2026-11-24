@@ -1,11 +1,11 @@
 # Criteria
 
 An application defines a
-{term}`requirements.sdk.graph.validation.criterion` to ask a question about a
+{term}`requirements.sdk.graph.criteria.criterion` to ask a question about a
 graph node. This chapter introduces the criterion's answer, identity, review
 rules, and execution method. [Validators](validators.md) explains how to run
 criterion values. [Agent calls](agent-calls.md) and
-[Context tools](context-tools.md) describe the context available during execution.
+[Validation context](validation-context.md) describe the context available during execution.
 
 ## Define a criterion
 
@@ -21,14 +21,23 @@ members describe the question's answer, identity, review rules, and execution.
 :::
 
 :::{req} criterion_trait
-Every {term}`requirements.sdk.graph.validation.criterion` type implements
+:test: crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]
+
+Every {term}`requirements.sdk.graph.criteria.criterion` type implements
 `trust_but_verify::graph::Criterion<D>` for its
-{term}`requirements.sdk.application_domain`:
+{term}`requirements.sdk.application_domain`.
 
 ```rust,ignore
-// Defined in trust_but_verify::graph.
 pub trait Criterion<D: Domain>: Send + Sized {
-    // ...
+    type Ok: Serialize + DeserializeOwned + Send;
+
+    fn source_node_id(&self) -> D::NodeId;
+    fn criterion_path(&self) -> CriterionPath;
+    fn version(&self) -> CriterionVersion;
+    fn execute(
+        self,
+        ctx: &mut ValidationContext<'_, D>,
+    ) -> impl Future<Output = Result<Self::Ok, ValidationError<D::Error>>> + Send;
 }
 ```
 :::
@@ -36,7 +45,7 @@ pub trait Criterion<D: Domain>: Send + Sized {
 ## Define the completed answer
 
 :::{req} criterion_trait.answer
-{cite}`requirements.sdk.graph.validation.criterion_trait`
+{cite}`requirements.sdk.graph.criteria.criterion_trait`
 
 [`Criterion::Ok`](../../../rustdocs/trust_but_verify/graph/trait.Criterion.html#associatedtype.Ok)
 defines the criterion's completed answer:
@@ -57,8 +66,8 @@ pub trait Criterion<D: Domain>: Send + Sized {
 :::
 
 :::{example} criterion_definition
-{cite}`requirements.sdk.graph.validation.criterion_trait`
-{cite}`requirements.sdk.graph.validation.criterion_trait.answer`
+{cite}`requirements.sdk.graph.criteria.criterion_trait`
+{cite}`requirements.sdk.graph.criteria.criterion_trait.answer`
 
 As an example, consider how Habeas Codicem reviews requirements for behavioral adequacy:
 whether their tests cover the required observable behavior and edge cases.
@@ -96,17 +105,17 @@ impl Criterion<HabeasDomain> for BehavioralAdequacy {
 :phrase: source node
 
 A *source node* is the {term}`requirements.sdk.graph.node` on which a
-{term}`requirements.sdk.graph.validation.criterion` is evaluated, identified by
+{term}`requirements.sdk.graph.criteria.criterion` is evaluated, identified by
 [`Criterion::source_node_id`](../../../rustdocs/trust_but_verify/graph/trait.Criterion.html#tymethod.source_node_id).
 Tracked reads of its own contents or those of other nodes can supply inputs
 without changing the criterion's source node.
 :::
 
 :::{req} criterion_trait.source_node_id
-{cite}`requirements.sdk.graph.validation.criterion_trait`
+{cite}`requirements.sdk.graph.criteria.criterion_trait`
 
 `Criterion::source_node_id` identifies the criterion's
-{term}`requirements.sdk.graph.validation.source_node`:
+{term}`requirements.sdk.graph.criteria.source_node`:
 
 ```rust,ignore
 pub trait Criterion<D: Domain>: Send + Sized {
@@ -126,8 +135,8 @@ pub trait Criterion<D: Domain>: Send + Sized {
 :phrase: criterion path
 
 A *criterion path* is an ordered sequence of string segments identifying a
-{term}`requirements.sdk.graph.validation.criterion`'s question relative to its
-{term}`requirements.sdk.graph.validation.source_node`.
+{term}`requirements.sdk.graph.criteria.criterion`'s question relative to its
+{term}`requirements.sdk.graph.criteria.source_node`.
 [`CriterionPath`](../../../rustdocs/trust_but_verify/graph/struct.CriterionPath.html)
 represents this path, while
 [`NodeId`](../../../rustdocs/trust_but_verify/domain/trait.Domain.html#associatedtype.NodeId)
@@ -139,27 +148,12 @@ For example, a requirement might use `["text"]`, `["behavior"]`, and
 :::
 
 :::{req} criterion_path
-{cite}`requirements.sdk.graph.validation.criterion_trait`
+{cite}`requirements.sdk.graph.criteria.criterion_trait`
 
-`trust_but_verify::graph::CriterionPath` represents a
-{term}`requirements.sdk.graph.validation.question_path`:
+`Criterion::criterion_path` identifies the question relative to its source. The
+path preserves segment order and boundaries. Empty paths and empty segments are valid.
 
 ```rust,ignore
-// Defined in trust_but_verify::graph.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-pub struct CriterionPath {
-    segments: Vec<String>,
-}
-
-impl CriterionPath {
-    /// Construct a question's path, preserving segment order and boundaries.
-    /// Empty paths and empty segments are valid.
-    pub fn new(segments: Vec<String>) -> Self;
-
-    /// Read the ordered path segments.
-    pub fn segments(&self) -> &[String];
-}
-
 pub trait Criterion<D: Domain>: Send + Sized {
     // ...
 
@@ -177,12 +171,81 @@ can distinguish several questions within one area.
 The complete identity is the pair of source node and criterion path.
 :::
 
+:::{req} CriterionPath
+:test: crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]
+
+An ordered sequence of strings identifying a criterion. `new` preserves segment boundaries and `segments` borrows the sequence.
+
+```rust,ignore
+pub struct CriterionPath { /* private fields */ }
+
+impl CriterionPath {
+    pub fn new(segments: Vec<String>) -> Self;
+    pub fn segments(&self) -> &[String];
+}
+```
+
+Trait implementations
+
+```rust,ignore
+impl Clone for CriterionPath;
+impl Debug for CriterionPath;
+impl<'de> Deserialize<'de> for CriterionPath;
+impl Hash for CriterionPath;
+impl PartialEq for CriterionPath;
+impl Serialize for CriterionPath;
+impl Eq for CriterionPath;
+```
+:::
+
 ## Version the criterion's rules
 
-:::{req} criterion_trait.revision
-{cite}`requirements.sdk.graph.validation.criterion_trait`
+:::{definition} check_version
+:phrase: criterion version
 
-`Criterion::revision` identifies the version of the review rules and the
+A *criterion version* is an application-chosen identifier for the rules used to
+check a {term}`requirements.sdk.graph.criteria.criterion` and encode its answer.
+Change the version when an answer produced under the old rules can no longer be reused.
+:::
+
+:::{req} criterion_version
+:test: crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]
+
+`CriterionVersion::new` constructs a {term}`requirements.sdk.graph.criteria.check_version`
+from the supplied string. It panics on `"*"`, which is reserved for unversioned
+legacy evidence. When reading a saved version, use `from_recorded` to interpret
+`"*"` as `None` and any other string as `Some(version)`.
+`as_str()` borrows the original string. Compare this version with the optional
+version from a saved record using
+{cite}`requirements.sdk.graph.evidence.checking_records.version_match`.
+
+```rust,ignore
+pub struct CriterionVersion(/* private fields */);
+
+impl CriterionVersion {
+    pub fn new(value: impl Into<String>) -> Self;
+    pub fn from_recorded(value: impl Into<String>) -> Option<Self>;
+    pub fn as_str(&self) -> &str;
+    pub fn is_compatible_with(&self, saved: Option<&Self>) -> bool;
+}
+```
+
+Trait implementations
+
+```rust,ignore
+impl Clone for CriterionVersion;
+impl Debug for CriterionVersion;
+impl<'de> Deserialize<'de> for CriterionVersion;
+impl Serialize for CriterionVersion;
+impl PartialEq for CriterionVersion;
+impl Eq for CriterionVersion;
+```
+:::
+
+:::{req} criterion_trait.version
+{cite}`requirements.sdk.graph.criteria.criterion_trait`
+
+`Criterion::version` identifies the version of the review rules and the
 completed answer's encoding:
 
 ```rust,ignore
@@ -191,40 +254,32 @@ pub trait Criterion<D: Domain>: Send + Sized {
 
     /// Version of these review rules and the result's encoding.
     /// Change it when an old answer should no longer be reused.
-    fn revision(&self) -> String;
+    fn version(&self) -> CriterionVersion;
 
     // ...
 }
 ```
 
-The {term}`requirements.sdk.graph.validation.source_node`,
-{term}`requirements.sdk.graph.validation.question_path`, and revision identify
+The {term}`requirements.sdk.graph.criteria.source_node`,
+{term}`requirements.sdk.graph.criteria.question_path`, and version identify
 the same question for checking and execution. Parameters that change which
-question is being asked belong in its identity or revision.
+question is being asked belong in its identity or version.
 
 [Storage](evidence.md#identify-the-saved-assessment) explains how the source node
-and criterion path identify a saved answer and how its revision is recorded.
+and criterion path identify a saved answer and how its version is recorded.
 :::
 
 ## Execute the criterion with a context
 
 :::{req} execute
-{cite}`requirements.sdk.graph.validation.criterion_trait`
+{cite}`requirements.sdk.graph.criteria.criterion_trait`
 
 `Criterion::execute` receives a context for its
-{term}`requirements.sdk.graph.validation.source_node` and computes its
+{term}`requirements.sdk.graph.criteria.source_node` and computes its
 completed answer:
 
 ```rust,ignore
 use std::future::Future;
-
-// Defined in trust_but_verify::graph.
-pub enum ValidationError<E> {
-    Graph(E),
-    NoAgentConfigured,
-    Agent(String),
-    Output(serde_json::Error),
-}
 
 pub trait Criterion<D: Domain>: Send + Sized {
     // ...
@@ -240,14 +295,13 @@ pub trait Criterion<D: Domain>: Send + Sized {
 ```
 
 An `Ok` value is the answer defined by
-{cite}`requirements.sdk.graph.validation.criterion_trait.answer`.
-An `Err` value reports an execution error.
+{cite}`requirements.sdk.graph.criteria.criterion_trait.answer`.
+An `Err` value reports a [validation error](validators.md#habeas-req-requirements.sdk.graph.validators.ValidationError).
 :::
 
-The supplied `ValidationContext` records the inputs used to answer the question.
-Its [`ask` method](agent-calls.md#build-a-request) starts a typed agent request;
-its [inspection operations](context-tools.md) let criterion code read tracked
-inputs directly. The linked chapters introduce those interfaces in detail.
+`ValidationContext` supplies the tools `execute` can use to decide whether the
+criterion is satisfied. See [Validation context](validation-context.md) for tracked
+reads, source discovery, and agent requests.
 
 The `BehavioralAdequacy` criterion asks the agent to examine
 the requirement and its tests and submit a `TestReview`. Its `execute` method is
@@ -288,7 +342,7 @@ the [configured agent](agent-harness.md#configure-the-validators-agent):
   here, the requirement's tests.
 
 For any additional information the answer relies on, use
-[tracked context tools](context-tools.md), including for filesystem or network
+[tracked context tools](validation-context.md), including for filesystem or network
 inputs.
 
 :::
@@ -312,18 +366,18 @@ A criterion can compute its answer directly using tracked inputs; deterministic
 execution needs no configured agent.
 :::
 
-:::{cite} requirements.sdk.graph.validation.deterministic_procedures
+:::{cite} requirements.sdk.graph.criteria.deterministic_procedures
 A criterion can also compute its answer with deterministic Rust code.
-Its `ValidationContext` exposes the [inspection operations](context-tools.md)
+Its `ValidationContext` exposes the [inspection operations](validation-context.md)
 used by the agent's graph tools.
-[Searches and outlines](context-tools.md#find-a-node-then-read-its-contents)
+[Searches and outlines](validation-context.md#find-a-node-then-read-its-contents)
 help locate code to inspect; tracked reads and edge selections record input
 identities and fingerprints, so changes to those inputs can invalidate the
 resulting evidence.
 
-{cite}`requirements.sdk.graph.context-tools.shared_context`
-{cite}`requirements.sdk.graph.context-tools.search_text.behavior`
-{cite}`requirements.sdk.graph.context-tools.outline_source.behavior`
+{cite}`requirements.sdk.graph.validation-context.shared_context`
+{cite}`requirements.sdk.graph.search.search_text.behavior`
+{cite}`requirements.sdk.graph.validation-context.outline_source.behavior`
 {cite}`requirements.sdk.graph.evidence.inputs`
 {cite}`requirements.sdk.graph.evidence.checking_records`
 :::
@@ -338,7 +392,7 @@ can be returned as `Ok(value)`; `Err` represents an execution error instead.
 :::
 
 :::{example} result_interpretation
-{cite}`requirements.sdk.graph.validation.output_policy`
+{cite}`requirements.sdk.graph.criteria.output_policy`
 {cite}`requirements.sdk.habeas.assessment_policy`
 
 Suppose the `BehavioralAdequacy` criterion above returns this completed answer:

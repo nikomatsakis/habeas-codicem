@@ -1057,7 +1057,7 @@ fn negative_assessment_records_additional_reads_and_fails_validation() {
 
 // {test}`requirements.authoring.negative_assessment`
 // {test}`requirements.sdk.habeas.assessment_policy`
-// {test}`requirements.sdk.graph.validation.result_interpretation`
+// {test}`requirements.sdk.graph.criteria.result_interpretation`
 // {test}`requirements.cli.status`
 #[test]
 fn completed_inadequate_expiration_review_is_current_and_reported_by_status() {

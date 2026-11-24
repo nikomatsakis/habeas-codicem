@@ -141,17 +141,14 @@ impl Criterion<Memory> for Review {
     fn criterion_path(&self) -> CriterionPath {
         CriterionPath::new(vec![])
     }
-    fn revision(&self) -> String {
-        "v1".into()
+    fn version(&self) -> CriterionVersion {
+        CriterionVersion::new("v1")
     }
     async fn execute(
         self,
         ctx: &mut ValidationContext<'_, Memory>,
     ) -> Result<Assessment<Metadata>, ValidationError<io::Error>> {
-        let text = ctx
-            .inspection()
-            .read(ctx.node_id())
-            .map_err(ValidationError::Graph)?;
+        let text = ctx.read(ctx.node_id()).map_err(ValidationError::Graph)?;
         Ok(Assessment {
             result: false,
             rationale: text.0,
@@ -190,9 +187,9 @@ impl CompletionProvider for Script {
             .into_iter()
             .enumerate()
             .map(|(index, (name, mut args))| {
-                if name == "get_node_page" {
-                    if let Some(index) = args["prepared_page"].as_u64() {
-                        args = json!({"page":returned_node_page(&request, index as usize)});
+                if name == "get_next_page" {
+                    if args.get("use_next").is_some() {
+                        args = json!({"uuid":returned_node_page(&request).to_string()});
                     }
                 }
                 AssistantContent::ToolCall(ToolCall::from_wire(
@@ -212,7 +209,7 @@ impl CompletionProvider for Script {
 }
 
 // {cite}`habeas:util`
-fn returned_node_page(request: &CompletionRequest, index: usize) -> u64 {
+fn returned_node_page(request: &CompletionRequest) -> uuid::Uuid {
     for message in request.chat_history.iter().rev() {
         if let Message::User { content } = message {
             for item in content {
@@ -222,7 +219,7 @@ fn returned_node_page(request: &CompletionRequest, index: usize) -> u64 {
                             panic!("expected node-read result text");
                         };
                         let value: Value = serde_json::from_str(&text.text).unwrap();
-                        return value["pages"][index].as_u64().unwrap();
+                        return uuid::Uuid::parse_str(value["next"].as_str().unwrap()).unwrap();
                     }
                 }
             }
@@ -233,11 +230,11 @@ fn returned_node_page(request: &CompletionRequest, index: usize) -> u64 {
 
 // {test}`requirements.sdk.graph.agent-calls.judge.submission`
 // {test}`requirements.sdk.graph.agent-harness.submission`
+// {test}`requirements.sdk.graph.agent-harness.submission.mcp`
 // {test}`requirements.sdk.graph.agent-harness.fixed_tools`
 // {test}`requirements.sdk.graph.agent-calls.judge.caching`
 // {test}`requirements.sdk.graph.domain_types`
 // {test}`requirements.sdk.graph.agent-calls.judge.rendering`
-// {test}`requirements.sdk.graph.context-tools.read_node.fn`
 #[tokio::test]
 async fn default_tool_accepts_scalar_results_and_keeps_the_exact_prefix() {
     let mut graph = Memory::new("source".into());
@@ -255,7 +252,7 @@ async fn default_tool_accepts_scalar_results_and_keeps_the_exact_prefix() {
             .unwrap()
     );
     assert!(
-        matches!(&ctx.inspection().dependencies()[0], Dependency::Node(Node(1), fingerprint) if fingerprint.value == "source")
+        matches!(&ctx.dependencies()[0], Dependency::Node(Node(1), fingerprint) if fingerprint.value == "source")
     );
     let requests = agent.provider.requests.lock().unwrap();
     assert_eq!(
@@ -267,7 +264,7 @@ async fn default_tool_accepts_scalar_results_and_keeps_the_exact_prefix() {
         [
             "read_node",
             "outgoing_edges",
-            "get_node_page",
+            "get_next_page",
             "submit_result"
         ]
     );
@@ -334,8 +331,8 @@ impl CompletionProvider for ParallelConversations {
         let (name, arguments) = match turn {
             0 => ("read_node", json!({"path":{"segments":[node]}})),
             1 => (
-                "get_node_page",
-                json!({"page":returned_node_page(&request, 1)}),
+                "get_next_page",
+                json!({"uuid":returned_node_page(&request).to_string()}),
             ),
             2 => ("submit_result", json!({"result":prefix})),
             _ => panic!("unexpected conversation turn {turn}"),
@@ -355,11 +352,11 @@ impl CompletionProvider for ParallelConversations {
 
 // {test}`requirements.sdk.domain`
 // {test}`requirements.sdk.graph.agent-calls.author_procedure`
-// {test}`requirements.sdk.graph.context-tools.tracked_inspection`
+// {test}`requirements.sdk.graph.validation-context.tracked_inspection`
 // {test}`requirements.sdk.graph.agent-harness.tool_agent`
 // {test}`requirements.sdk.graph.agent-harness.tool_agent.isolation`
-// {test}`requirements.sdk.graph.context-tools.read_node.behavior`
-// {test}`requirements.sdk.graph.context-tools.read_node.inputs`
+// {test}`requirements.sdk.graph.validation-context.read_node.behavior`
+// {test}`requirements.sdk.graph.validation-context.read_node.inputs`
 #[tokio::test]
 async fn concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads() {
     use std::future::IntoFuture;
@@ -389,7 +386,7 @@ async fn concurrent_tool_agents_isolate_histories_pages_and_submissions_and_shar
     let calls = agent.provider.calls.lock().unwrap();
     assert_eq!(calls["alpha"], 3);
     assert_eq!(calls["beta"], 3);
-    let dependencies = ctx.inspection().dependencies();
+    let dependencies = ctx.dependencies();
     assert_eq!(dependencies.len(), 3);
     for expected in [
         Dependency::OutgoingEdges(Node(1), Label, edge_fingerprint(&graph, &[Node(2)])),
@@ -411,17 +408,16 @@ async fn concurrent_tool_agents_isolate_histories_pages_and_submissions_and_shar
         assert!(dependencies.contains(&expected));
     }
     assert!(
-        ctx.inspection()
-            .finish(
-                "v1".into(),
-                Assessment {
-                    result: true,
-                    rationale: "both calls".into(),
-                    metadata: Metadata,
-                }
-            )
-            .unwrap()
-            .dependencies
+        ctx.finish(
+            CriterionVersion::new("v1"),
+            Assessment {
+                result: true,
+                rationale: "both calls".into(),
+                metadata: Metadata,
+            }
+        )
+        .unwrap()
+        .dependencies
             == dependencies
     );
 }
@@ -438,8 +434,8 @@ impl Criterion<Memory> for Question {
     fn criterion_path(&self) -> CriterionPath {
         CriterionPath::new(vec![self.name.clone()])
     }
-    fn revision(&self) -> String {
-        "v1".into()
+    fn version(&self) -> CriterionVersion {
+        CriterionVersion::new("v1")
     }
     async fn execute(
         self,
@@ -537,14 +533,14 @@ async fn validator_agent_executions_isolate_conversations_and_dependency_traces(
     assert_eq!(agent.provider.calls.lock().unwrap()["alpha"], 3);
 }
 
-// {test}`requirements.sdk.graph.context-tools.tracked_inspection`
+// {test}`requirements.sdk.graph.validation-context.tracked_inspection`
 // {test}`requirements.sdk.graph.snapshot`
 // {test}`requirements.sdk.graph.validators.validate_node`
 // {test}`requirements.sdk.graph.evidence.check_node`
 // {test}`requirements.sdk.graph.evidence.store_evidence`
 // {test}`requirements.sdk.graph.evidence.inputs`
-// {test}`requirements.sdk.graph.context-tools.outgoing_edges.behavior`
-// {test}`requirements.sdk.graph.context-tools.outgoing_edges.inputs`
+// {test}`requirements.sdk.graph.validation-context.outgoing_edges.behavior`
+// {test}`requirements.sdk.graph.validation-context.outgoing_edges.inputs`
 // {test}`requirements.sdk.graph.agent-harness.fixed_tools`
 #[tokio::test]
 async fn agent_edge_tools_record_selections_without_validating_targets() {
@@ -620,8 +616,8 @@ async fn agent_edge_tools_record_selections_without_validating_targets() {
         fn criterion_path(&self) -> CriterionPath {
             CriterionPath::new(vec![])
         }
-        fn revision(&self) -> String {
-            "v1".into()
+        fn version(&self) -> CriterionVersion {
+            CriterionVersion::new("v1")
         }
         async fn execute(
             self,
@@ -717,7 +713,7 @@ async fn agent_edge_tools_record_selections_without_validating_targets() {
     ]));
     let ctx = ValidationContext::with_agent(&graph, 1, &agent);
     assert!(ctx.ask::<bool>().await.unwrap());
-    assert!(ctx.inspection().dependencies().is_empty());
+    assert!(ctx.dependencies().is_empty());
     assert_eq!(graph.lookups.load(Ordering::SeqCst), 0);
     let requests = agent.provider.requests.lock().unwrap();
     let Message::User { content } = requests[1].chat_history.last().unwrap() else {
@@ -745,7 +741,7 @@ async fn agent_edge_tools_record_selections_without_validating_targets() {
     let ctx = ValidationContext::with_agent(&graph, 1, &failed);
     assert!(ctx.ask::<bool>().await.is_err());
     assert_eq!(graph.lookups.load(Ordering::SeqCst), 1);
-    assert!(ctx.inspection().dependencies().is_empty());
+    assert!(ctx.dependencies().is_empty());
     let graph = GraphWithChangingEdges {
         lookups: Arc::default(),
         records: Arc::default(),
@@ -760,7 +756,7 @@ async fn agent_edge_tools_record_selections_without_validating_targets() {
     let ctx = ValidationContext::with_agent(&graph, 1, &agent);
     assert!(ctx.ask::<bool>().await.unwrap());
     assert_eq!(
-        ctx.inspection().dependencies(),
+        ctx.dependencies(),
         vec![Dependency::OutgoingEdges(
             1,
             8,
@@ -797,6 +793,7 @@ enum Decision {
 // {test}`requirements.sdk.graph.agent-calls.judge.submission`
 // {test}`requirements.sdk.graph.agent-calls.judge.submission.decoding`
 // {test}`requirements.sdk.graph.agent-harness.submission`
+// {test}`requirements.sdk.graph.agent-harness.submission.mcp`
 // {test}`requirements.sdk.graph.agent-harness.submission.invalid`
 #[tokio::test]
 async fn typed_submission_references_resolve_and_invalid_results_are_agent_errors() {
@@ -842,15 +839,14 @@ async fn typed_submission_references_resolve_and_invalid_results_are_agent_error
     }
 }
 
-// {test}`requirements.sdk.graph.context-tools.tracked_inspection`
+// {test}`requirements.sdk.graph.validation-context.tracked_inspection`
 // {test}`requirements.sdk.graph.agent-calls.author_procedure`
 // {test}`requirements.sdk.graph.evidence.node_inputs`
 // {test}`requirements.sdk.graph.snapshot`
-// {test}`requirements.sdk.graph.context-tools.read_node.fn`
-// {test}`requirements.sdk.graph.context-tools.read_node.behavior`
-// {test}`requirements.sdk.graph.context-tools.read_node.inputs`
-// {test}`requirements.sdk.graph.context-tools.pages.behavior`
-// {test}`requirements.sdk.graph.context-tools.pages.inputs`
+// {test}`requirements.sdk.graph.validation-context.read_node.behavior`
+// {test}`requirements.sdk.graph.validation-context.read_node.inputs`
+// {test}`requirements.sdk.graph.validation-context.pages.behavior`
+// {test}`requirements.sdk.graph.validation-context.pages.inputs`
 // {test}`requirements.sdk.graph.agent-harness.fixed_tools`
 #[tokio::test]
 async fn graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record_delivery() {
@@ -861,12 +857,12 @@ async fn graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record
             json!({"path":{"segments":["1"]},"label":null}),
         )]),
         Some(vec![("read_node", json!({"path":{"segments":["2"]}}))]),
-        Some(vec![("get_node_page", json!({"prepared_page":1}))]),
+        Some(vec![("get_next_page", json!({"use_next":true}))]),
         Some(vec![("submit_result", json!({"result":true}))]),
     ]));
     let ctx = ValidationContext::with_agent(&graph, Node(1), &agent);
     assert!(ctx.ask::<bool>().await.unwrap());
-    let observations = ctx.inspection().dependencies();
+    let observations = ctx.dependencies();
     assert_eq!(observations.len(), 2);
     assert!(
         matches!(&observations[0],Dependency::OutgoingEdges(Node(1), Label, fingerprint) if *fingerprint == edge_fingerprint(&graph, &[Node(2)]))
@@ -875,9 +871,8 @@ async fn graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record
         matches!(&observations[1],Dependency::Node(Node(2),fingerprint) if fingerprint.value == "x".repeat(18_000))
     );
     let record = ctx
-        .inspection()
         .finish(
-            "v1".into(),
+            CriterionVersion::new("v1"),
             Assessment {
                 result: true,
                 rationale: "read".into(),
@@ -892,24 +887,24 @@ async fn graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record
     ]));
     let ctx = ValidationContext::with_agent(&graph, Node(1), &failed);
     assert!(ctx.ask::<bool>().await.is_err());
-    assert!(ctx.inspection().dependencies().is_empty());
+    assert!(ctx.dependencies().is_empty());
     let failed = ToolAgent::new(Script::new(vec![
         Some(vec![("read_node", json!({"path":{"segments":["1"]}}))]),
         None,
     ]));
     let ctx = ValidationContext::with_agent(&graph, Node(1), &failed);
     assert!(ctx.ask::<bool>().contents_of_current_node().await.is_err());
-    assert_eq!(ctx.inspection().dependencies().len(), 1);
+    assert_eq!(ctx.dependencies().len(), 1);
 }
 
 // {test}`requirements.sdk.sources.provider_observations`
 // {test}`requirements.sdk.sources.provider_defaults`
-// {test}`requirements.sdk.graph.context-tools.tracked_inspection`
+// {test}`requirements.sdk.graph.validation-context.tracked_inspection`
 // {test}`requirements.sdk.graph.agent-harness.tool_agent`
-// {test}`requirements.sdk.graph.context-tools.read_source.behavior`
-// {test}`requirements.sdk.graph.context-tools.read_source.inputs`
-// {test}`requirements.sdk.graph.context-tools.search_text.behavior`
-// {test}`requirements.sdk.graph.context-tools.search_text.inputs`
+// {test}`requirements.sdk.graph.validation-context.read_source.behavior`
+// {test}`requirements.sdk.graph.validation-context.read_source.inputs`
+// {test}`requirements.sdk.graph.search.search_text.behavior`
+// {test}`requirements.sdk.graph.search.search_text.inputs`
 #[tokio::test]
 async fn source_tools_keep_search_discovery_separate_from_delivered_source_reads() {
     let root = tempfile::tempdir().unwrap();
@@ -935,17 +930,17 @@ async fn source_tools_keep_search_discovery_separate_from_delivered_source_reads
     .with_tools(factory);
     let ctx = ValidationContext::with_agent(&graph, Node(1), &agent);
     assert!(ctx.ask::<bool>().await.unwrap());
-    let observations = ctx.inspection().dependencies();
+    let observations = ctx.dependencies();
     assert_eq!(observations.len(), 1);
     assert!(
         matches!(&observations[0],Dependency::Node(Node(7),fingerprint) if fingerprint.value == "observed source\n")
     );
 }
 
-// {test}`requirements.sdk.graph.context-tools.read_source.behavior`
-// {test}`requirements.sdk.graph.context-tools.read_source.inputs`
-// {test}`requirements.sdk.graph.context-tools.search_text.behavior`
-// {test}`requirements.sdk.graph.context-tools.search_text.inputs`
+// {test}`requirements.sdk.graph.validation-context.read_source.behavior`
+// {test}`requirements.sdk.graph.validation-context.read_source.inputs`
+// {test}`requirements.sdk.graph.search.search_text.behavior`
+// {test}`requirements.sdk.graph.search.search_text.inputs`
 // {test}`requirements.sdk.graph.evidence.checking_records`
 #[tokio::test]
 async fn source_reads_track_optional_dependencies_and_empty_searches_remain_discovery() {
@@ -986,7 +981,7 @@ async fn source_reads_track_optional_dependencies_and_empty_searches_remain_disc
             .await
             .unwrap();
         assert_eq!(parsed.source.text().unwrap(), original);
-        assert!(ctx.inspection().dependencies().is_empty());
+        assert!(ctx.dependencies().is_empty());
         assert_eq!(*observed.lock().unwrap(), 0);
 
         let agent = ToolAgent::new(Script::new(vec![
@@ -1024,7 +1019,7 @@ async fn source_reads_track_optional_dependencies_and_empty_searches_remain_disc
         }
         drop(requests);
 
-        let record = ctx.inspection().finish("v1".into(), true).unwrap();
+        let record = ctx.finish(CriterionVersion::new("v1"), true).unwrap();
         if record_dependency {
             assert!(
                 matches!(&record.dependencies[..], [Dependency::Node(Node(7), fingerprint)]
@@ -1033,21 +1028,27 @@ async fn source_reads_track_optional_dependencies_and_empty_searches_remain_disc
         } else {
             assert!(record.dependencies.is_empty());
         }
-        assert!(record_is_current(&graph, "v1", &record).unwrap());
+        assert!(
+            record
+                .is_current(&graph, &CriterionVersion::new("v1"))
+                .unwrap()
+        );
         *graph.contents.lock().unwrap() = "changed source".into();
         assert_eq!(
-            record_is_current(&graph, "v1", &record).unwrap(),
+            record
+                .is_current(&graph, &CriterionVersion::new("v1"))
+                .unwrap(),
             !record_dependency
         );
     }
 }
 
-// {test}`requirements.sdk.graph.validation.criterion_trait`
+// {test}`requirements.sdk.graph.criteria.criterion_trait`
 // {test}`requirements.sdk.graph.domain_types`
 // {test}`requirements.sdk.domain`
 // {test}`requirements.sdk.graph.agent-calls.author_procedure`
-// {test}`requirements.sdk.graph.validation.deterministic_procedures`
-// {test}`requirements.sdk.graph.validation.execute`
+// {test}`requirements.sdk.graph.criteria.deterministic_procedures`
+// {test}`requirements.sdk.graph.criteria.execute`
 #[tokio::test]
 async fn deterministic_validation_uses_required_storage_without_an_agent() {
     let graph = Memory::new("ordinary computation".into());
@@ -1110,7 +1111,7 @@ async fn assistant_text_and_provider_failure_cannot_become_typed_results() {
     assert!(
         matches!(ctx.ask::<bool>().await,Err(ValidationError::Agent(error)) if error.to_string().contains("permanent provider failure"))
     );
-    assert!(ctx.inspection().dependencies().is_empty());
+    assert!(ctx.dependencies().is_empty());
 }
 
 // {test}`requirements.sdk.graph.agent-harness.submission.acceptance`
@@ -1131,7 +1132,7 @@ async fn one_submission_accepts_only_its_value_and_skips_other_calls_and_prose()
     let ctx = ValidationContext::with_agent(&graph, Node(1), &agent);
     assert!(!ctx.ask::<bool>().await.unwrap());
     assert!(graph.reads.lock().unwrap().is_empty());
-    assert!(ctx.inspection().dependencies().is_empty());
+    assert!(ctx.dependencies().is_empty());
     assert_eq!(agent.provider.requests.lock().unwrap().len(), 1);
 }
 
@@ -1152,7 +1153,7 @@ async fn count_is_checked_before_arguments_and_one_reminder_allows_recovery() {
     let ctx = ValidationContext::with_agent(&graph, Node(1), &agent);
     assert!(ctx.ask::<bool>().await.unwrap());
     assert_eq!(*graph.reads.lock().unwrap(), [1]);
-    assert_eq!(ctx.inspection().dependencies().len(), 1);
+    assert_eq!(ctx.dependencies().len(), 1);
     let requests = agent.provider.requests.lock().unwrap();
     assert_eq!(requests.len(), 3);
     let history = &requests[2].chat_history;
@@ -1201,7 +1202,7 @@ async fn zero_and_multiple_submissions_share_one_reminder_and_a_second_violation
                     if error.to_string().contains("exactly once, even after a reminder"))
             );
             assert!(graph.reads.lock().unwrap().is_empty());
-            assert!(ctx.inspection().dependencies().is_empty());
+            assert!(ctx.dependencies().is_empty());
             let requests = agent.provider.requests.lock().unwrap();
             assert_eq!(requests.len(), 2);
             assert_eq!(
@@ -1244,24 +1245,24 @@ async fn queued_contents_and_graph_read_tools_redact_credentials_before_delivery
         assert!(visible.contains("[REDACTED:GitHub Token]"), "{visible}");
     }
     assert!(
-        matches!(&ctx.inspection().dependencies()[..], [Dependency::Node(Node(1), fingerprint)]
+        matches!(&ctx.dependencies()[..], [Dependency::Node(Node(1), fingerprint)]
             if fingerprint.value == original)
     );
     assert_eq!(*graph.contents.lock().unwrap(), original);
 }
 
-// {test}`requirements.sdk.graph.context-tools.tracked_inspection`
+// {test}`requirements.sdk.graph.validation-context.tracked_inspection`
 // {test}`requirements.sdk.sources.provider_observations`
-// {test}`requirements.sdk.graph.context-tools.list_sources.behavior`
-// {test}`requirements.sdk.graph.context-tools.list_sources.inputs`
-// {test}`requirements.sdk.graph.context-tools.outline_source.behavior`
-// {test}`requirements.sdk.graph.context-tools.outline_source.fn`
-// {test}`requirements.sdk.graph.context-tools.outline_source.inputs`
-// {test}`requirements.sdk.graph.context-tools.search_text.fn`
-// {test}`requirements.sdk.graph.context-tools.search_text.behavior`
-// {test}`requirements.sdk.graph.context-tools.search_text.inputs`
-// {test}`requirements.sdk.graph.context-tools.pages.behavior`
-// {test}`requirements.sdk.graph.context-tools.pages.inputs`
+// {test}`requirements.sdk.graph.validation-context.list_sources.behavior`
+// {test}`requirements.sdk.graph.validation-context.list_sources.inputs`
+// {test}`requirements.sdk.graph.validation-context.outline_source.behavior`
+// {test}`requirements.sdk.graph.validation-context.outline_source.fn`
+// {test}`requirements.sdk.graph.validation-context.outline_source.inputs`
+// {test}`requirements.sdk.graph.search.search_text.fn`
+// {test}`requirements.sdk.graph.search.search_text.behavior`
+// {test}`requirements.sdk.graph.search.search_text.inputs`
+// {test}`requirements.sdk.graph.validation-context.pages.behavior`
+// {test}`requirements.sdk.graph.validation-context.pages.inputs`
 #[tokio::test]
 async fn source_discovery_and_its_pages_do_not_register_reads() {
     let root = tempfile::tempdir().unwrap();
@@ -1287,9 +1288,12 @@ async fn source_discovery_and_its_pages_do_not_register_reads() {
             )))
         },
     };
-    let mut session = <SourceTools<_, _> as ToolFactory<Memory>>::session(&factory);
+    let mut session = super::tools::SessionTools::new(
+        <SourceTools<_, _> as ToolFactory<Memory>>::session(&factory),
+    );
     assert_eq!(
         session
+            .extra
             .definitions()
             .unwrap()
             .iter()
@@ -1300,8 +1304,7 @@ async fn source_discovery_and_its_pages_do_not_register_reads() {
             "search_text",
             "search_structure",
             "outline_source",
-            "read_source",
-            "get_source_page"
+            "read_source"
         ]
     );
     for (name, args) in [
@@ -1314,19 +1317,14 @@ async fn source_discovery_and_its_pages_do_not_register_reads() {
     ] {
         let delivery = session.dispatch(name, &args).await.unwrap();
         assert!(delivery.dependencies.is_empty());
-        if let Some(pages) =
-            serde_json::from_str::<Value>(&delivery.text).unwrap()["pages"].as_array()
-        {
-            for page in pages {
-                assert!(
-                    session
-                        .dispatch("get_source_page", &json!({"page":page}))
-                        .await
-                        .unwrap()
-                        .dependencies
-                        .is_empty()
-                );
-            }
+        let mut page: Value = serde_json::from_str(&delivery.text).unwrap();
+        while let Some(next) = page.get("next") {
+            let delivery = session
+                .dispatch("get_next_page", &json!({"uuid":next}))
+                .await
+                .unwrap();
+            assert!(delivery.dependencies.is_empty());
+            page = serde_json::from_str(&delivery.text).unwrap();
         }
     }
     assert_eq!(*calls.lock().unwrap(), 0);
@@ -1428,7 +1426,7 @@ fn throttled() -> io::Error {
 }
 
 // {test}`requirements.sdk.graph.agent-calls.judge.submission`
-// {test}`requirements.sdk.graph.context-tools.tracked_inspection`
+// {test}`requirements.sdk.graph.validation-context.tracked_inspection`
 #[tokio::test]
 async fn unknown_tools_return_errors_without_creating_inputs_or_preventing_submission() {
     let graph = Memory::new("source".into());
@@ -1438,7 +1436,7 @@ async fn unknown_tools_return_errors_without_creating_inputs_or_preventing_submi
     ]));
     let ctx = ValidationContext::with_agent(&graph, Node(1), &agent);
     assert!(ctx.ask::<bool>().await.unwrap());
-    assert!(ctx.inspection().dependencies().is_empty());
+    assert!(ctx.dependencies().is_empty());
     let requests = agent.provider.requests.lock().unwrap();
     assert_eq!(requests.len(), 2);
     let delivered = serde_json::to_string(requests[1].chat_history.last().unwrap()).unwrap();
@@ -1446,10 +1444,10 @@ async fn unknown_tools_return_errors_without_creating_inputs_or_preventing_submi
 }
 
 // {test}`requirements.sdk.graph.agent-calls.judge.rendering`
-// {test}`requirements.sdk.graph.context-tools.tracked_inspection`
+// {test}`requirements.sdk.graph.validation-context.tracked_inspection`
 // {test}`requirements.sdk.graph.agent-calls.author_procedure`
-// {test}`requirements.sdk.graph.context-tools.read_node.behavior`
-// {test}`requirements.sdk.graph.context-tools.read_node.inputs`
+// {test}`requirements.sdk.graph.validation-context.read_node.behavior`
+// {test}`requirements.sdk.graph.validation-context.read_node.inputs`
 #[tokio::test]
 async fn node_preparation_tool_errors_allow_recovery_without_recording_undelivered_contents() {
     let mut graph = Memory::new("source".into());
@@ -1460,7 +1458,7 @@ async fn node_preparation_tool_errors_allow_recovery_without_recording_undeliver
     ]));
     let ctx = ValidationContext::with_agent(&graph, Node(1), &agent);
     assert!(ctx.ask::<bool>().await.unwrap());
-    assert!(ctx.inspection().dependencies().is_empty());
+    assert!(ctx.dependencies().is_empty());
     let requests = agent.provider.requests.lock().unwrap();
     assert_eq!(requests.len(), 2);
     let Message::User { content } = requests[1].chat_history.last().unwrap() else {
@@ -1480,7 +1478,7 @@ async fn node_preparation_tool_errors_allow_recovery_without_recording_undeliver
 // {test}`requirements.authoring.output_limit`
 // {test}`requirements.authoring.provider_backoff`
 // {test}`requirements.authoring.submission_count`
-// {test}`requirements.sdk.graph.context-tools.tracked_inspection`
+// {test}`requirements.sdk.graph.validation-context.tracked_inspection`
 #[tokio::test(start_paused = true)]
 async fn retries_and_cut_off_tools_preserve_inputs_and_submission_skips_other_reads() {
     let graph = Memory::new("source".into());
@@ -1509,7 +1507,7 @@ async fn retries_and_cut_off_tools_preserve_inputs_and_submission_skips_other_re
             .await
             .unwrap()
     );
-    assert!(matches!(&ctx.inspection().dependencies()[..],
+    assert!(matches!(&ctx.dependencies()[..],
         [Dependency::Node(Node(1), fingerprint)] if fingerprint.value == "source"));
     let requests = agent.provider.requests.lock().unwrap();
     assert_eq!(requests.len(), 3);
@@ -1620,16 +1618,16 @@ async fn generic_conversations_can_use_default_telemetry_through_retry_and_conti
 }
 
 // {test}`requirements.sdk.sources.provider_observations`
-// {test}`requirements.sdk.graph.context-tools.tracked_inspection`
+// {test}`requirements.sdk.graph.validation-context.tracked_inspection`
 // {test}`requirements.sdk.sources.provider_results.parse_snapshot`
 #[cfg(feature = "default-languages")]
 // {test}`requirements.sdk.graph.evidence.node_inputs`
-// {test}`requirements.sdk.graph.context-tools.read_source.behavior`
-// {test}`requirements.sdk.graph.context-tools.read_source.inputs`
-// {test}`requirements.sdk.graph.context-tools.search_structure.behavior`
-// {test}`requirements.sdk.graph.context-tools.search_structure.inputs`
-// {test}`requirements.sdk.graph.context-tools.outline_source.behavior`
-// {test}`requirements.sdk.graph.context-tools.outline_source.inputs`
+// {test}`requirements.sdk.graph.validation-context.read_source.behavior`
+// {test}`requirements.sdk.graph.validation-context.read_source.inputs`
+// {test}`requirements.sdk.graph.search.search_structure.behavior`
+// {test}`requirements.sdk.graph.search.search_structure.inputs`
+// {test}`requirements.sdk.graph.validation-context.outline_source.behavior`
+// {test}`requirements.sdk.graph.validation-context.outline_source.inputs`
 #[tokio::test]
 async fn cached_selected_source_reads_record_exact_delivered_contents_and_errors_add_no_input() {
     let graph = Memory::new("different current source".into());
@@ -1662,7 +1660,7 @@ async fn cached_selected_source_reads_record_exact_delivered_contents_and_errors
     let ctx = ValidationContext::with_agent(&graph, Node(1), &agent);
     assert!(ctx.ask::<bool>().await.unwrap());
     assert!(
-        matches!(&ctx.inspection().dependencies()[..],[Dependency::Node(Node(7),fingerprint)] if fingerprint.value=="fn observed() { call(); }" && fingerprint.scheme=="selected-content")
+        matches!(&ctx.dependencies()[..],[Dependency::Node(Node(7),fingerprint)] if fingerprint.value=="fn observed() { call(); }" && fingerprint.scheme=="selected-content")
     );
 }
 
@@ -1684,8 +1682,8 @@ impl Criterion<Memory> for BehavioralAdequacy {
     fn criterion_path(&self) -> CriterionPath {
         CriterionPath::new(vec!["behavior".into()])
     }
-    fn revision(&self) -> String {
-        "test-review-v1".into()
+    fn version(&self) -> CriterionVersion {
+        CriterionVersion::new("test-review-v1")
     }
     async fn execute(
         self,
@@ -1700,8 +1698,8 @@ impl Criterion<Memory> for BehavioralAdequacy {
     }
 }
 
-// {test}`requirements.sdk.graph.validation.behavioral_adequacy`
-// {test}`requirements.sdk.graph.validation.criterion_definition`
+// {test}`requirements.sdk.graph.criteria.behavioral_adequacy`
+// {test}`requirements.sdk.graph.criteria.criterion_definition`
 // {test}`requirements.sdk.graph.validators.evaluate_criterion`
 // {test}`requirements.sdk.graph.evidence.refresh_evidence`
 // {test}`requirements.sdk.graph.evidence.store_evidence`
@@ -1758,7 +1756,7 @@ async fn behavioral_adequacy_uses_domain_contents_and_returns_a_typed_fingerprin
     assert_eq!(restored.output(), &expected);
     assert!(restored.source_node_id() == inputs.source_node_id());
     assert_eq!(restored.criterion_path(), inputs.criterion_path());
-    assert_eq!(restored.revision(), inputs.revision());
+    assert_eq!(restored.version(), inputs.version());
     assert!(restored.dependencies() == inputs.dependencies());
     let reused = validator
         .refresh_evidence(BehavioralAdequacy {
@@ -1872,7 +1870,7 @@ async fn test_review_example_combines_instructions_before_requirement_and_test_c
     assert_eq!(slice, expected);
     assert_eq!(answer, expected);
     assert_eq!(repeated, expected);
-    assert_eq!(cx.inspection().dependencies().len(), 3);
+    assert_eq!(cx.dependencies().len(), 3);
     let requests = agent.provider.requests.lock().unwrap();
     assert_eq!(requests.len(), 4);
     assert!(
@@ -1912,6 +1910,7 @@ impl ToolSession<Memory> for CounterSession {
         &'a mut self,
         name: &'a str,
         _: &'a Value,
+        _: &'a mut super::Pages<Node, Label>,
     ) -> futures::future::BoxFuture<'a, io::Result<ToolDelivery<Node, Label>>> {
         Box::pin(async move {
             assert_eq!(name, "increment");
@@ -1959,11 +1958,13 @@ async fn application_tool_factories_create_fresh_state_for_each_agent_call() {
                 .any(|tool| tool.name == "increment")
         );
     }
-    assert!(ctx.inspection().dependencies().is_empty());
+    assert!(ctx.dependencies().is_empty());
 }
 
 // {test}`requirements.sdk.graph.agent-harness.tool_agent`
-// {test}`requirements.sdk.graph.context-tools.pages.fn`
+// {test}`requirements.sdk.graph.validation-context.read_node.mcp`
+// {test}`requirements.sdk.graph.validation-context.outgoing_edges.mcp`
+// {test}`requirements.sdk.graph.validation-context.pages.mcp`
 #[tokio::test]
 async fn application_tools_preserve_graph_tools_in_the_same_conversation() {
     let contents = "x".repeat(18_000);
@@ -1981,7 +1982,7 @@ async fn application_tools_preserve_graph_tools_in_the_same_conversation() {
             ("read_node", json!({"path":{"segments":["2"]}})),
             ("increment", json!({})),
         ]),
-        Some(vec![("get_node_page", json!({"prepared_page":1}))]),
+        Some(vec![("get_next_page", json!({"use_next":true}))]),
         Some(vec![("submit_result", json!({"result":true}))]),
     ]))
     .with_tools(CounterTools(created));
@@ -1994,7 +1995,7 @@ async fn application_tools_preserve_graph_tools_in_the_same_conversation() {
         for name in [
             "outgoing_edges",
             "read_node",
-            "get_node_page",
+            "get_next_page",
             "increment",
             "submit_result",
         ] {
@@ -2029,15 +2030,17 @@ async fn application_tools_preserve_graph_tools_in_the_same_conversation() {
     assert_eq!(deliveries[0][1], "counter=1");
     assert_eq!(
         serde_json::from_str::<Value>(&deliveries[1][0]).unwrap(),
-        json!({"first":{"page":returned_node_page(&requests[2],0),"text":"x".repeat(8_192)},
-            "pages":[returned_node_page(&requests[2],0),returned_node_page(&requests[2],1),returned_node_page(&requests[2],2)]})
+        json!({"text":"x".repeat(8_192), "next":returned_node_page(&requests[2]).to_string()})
     );
     assert_eq!(deliveries[1][1], "counter=2");
-    assert_eq!(
-        serde_json::from_str::<Value>(&deliveries[2][0]).unwrap(),
-        json!({"page":returned_node_page(&requests[2],1),"text":"x".repeat(8_192)})
+    let following: Value = serde_json::from_str(&deliveries[2][0]).unwrap();
+    assert_eq!(following["text"], "x".repeat(8_192));
+    assert_ne!(
+        following["next"],
+        returned_node_page(&requests[2]).to_string()
     );
-    let observations = ctx.inspection().dependencies();
+    assert!(uuid::Uuid::parse_str(following["next"].as_str().unwrap()).is_ok());
+    let observations = ctx.dependencies();
     assert_eq!(observations.len(), 2);
     assert!(
         matches!(&observations[0], Dependency::OutgoingEdges(Node(1), Label, fingerprint)
@@ -2049,10 +2052,9 @@ async fn application_tools_preserve_graph_tools_in_the_same_conversation() {
     );
 }
 
-// {test}`requirements.sdk.graph.context-tools.pages.behavior`
-// {test}`requirements.sdk.graph.context-tools.pages.inputs`
-// {test}`requirements.sdk.graph.context-tools.pages.fn`
-// {test}`requirements.sdk.graph.context-tools.read_node.inputs`
+// {test}`requirements.sdk.graph.validation-context.pages.behavior`
+// {test}`requirements.sdk.graph.validation-context.pages.inputs`
+// {test}`requirements.sdk.graph.validation-context.read_node.inputs`
 // {test}`requirements.sdk.graph.evidence.node_inputs`
 #[tokio::test]
 async fn graph_read_pages_retain_the_prepared_snapshot_after_contents_change() {
@@ -2074,7 +2076,7 @@ async fn graph_read_pages_retain_the_prepared_snapshot_after_contents_change() {
         graph: graph.clone(),
         script: Script::new(vec![
             Some(vec![("read_node", json!({"path":{"segments":["1"]}}))]),
-            Some(vec![("get_node_page", json!({"prepared_page":1}))]),
+            Some(vec![("get_next_page", json!({"use_next":true}))]),
             Some(vec![("submit_result", json!({"result":true}))]),
         ]),
     });
@@ -2082,7 +2084,7 @@ async fn graph_read_pages_retain_the_prepared_snapshot_after_contents_change() {
     assert!(ctx.ask::<bool>().await.unwrap());
     assert_eq!(*graph.reads.lock().unwrap(), [1]);
     assert!(
-        matches!(&ctx.inspection().dependencies()[..], [Dependency::Node(Node(1), fingerprint)] if fingerprint.value == original)
+        matches!(&ctx.dependencies()[..], [Dependency::Node(Node(1), fingerprint)] if fingerprint.value == original)
     );
     let requests = agent.provider.script.requests.lock().unwrap();
     let page = serde_json::to_string(requests[2].chat_history.last().unwrap()).unwrap();
@@ -2090,11 +2092,10 @@ async fn graph_read_pages_retain_the_prepared_snapshot_after_contents_change() {
     assert!(!page.contains("replacement contents"), "{page}");
 }
 
-// {test}`requirements.sdk.graph.context-tools.pages.behavior`
-// {test}`requirements.sdk.graph.context-tools.pages.inputs`
-// {test}`requirements.sdk.graph.context-tools.pages.fn`
-// {test}`requirements.sdk.graph.context-tools.read_source.behavior`
-// {test}`requirements.sdk.graph.context-tools.read_source.inputs`
+// {test}`requirements.sdk.graph.validation-context.pages.behavior`
+// {test}`requirements.sdk.graph.validation-context.pages.inputs`
+// {test}`requirements.sdk.graph.validation-context.read_source.behavior`
+// {test}`requirements.sdk.graph.validation-context.read_source.inputs`
 #[tokio::test]
 async fn source_read_pages_retain_text_and_dependencies_without_another_read() {
     let root = tempfile::tempdir().unwrap();
@@ -2120,7 +2121,9 @@ async fn source_read_pages_retain_text_and_dependencies_without_another_read() {
             )))
         },
     };
-    let mut session = <SourceTools<_, _> as ToolFactory<Memory>>::session(&factory);
+    let mut session = super::tools::SessionTools::new(
+        <SourceTools<_, _> as ToolFactory<Memory>>::session(&factory),
+    );
     let first = session
         .dispatch(
             "read_source",
@@ -2130,25 +2133,25 @@ async fn source_read_pages_retain_text_and_dependencies_without_another_read() {
         .unwrap();
     let prepared: Value = serde_json::from_str(&first.text).unwrap();
     std::fs::write(&path, "replacement contents\n").unwrap();
-    let mut text = String::new();
-    for page in prepared["pages"].as_array().unwrap() {
-        let next = session
-            .dispatch("get_source_page", &json!({"page":page}))
+    let mut page = prepared;
+    let mut lines = page["text"].as_array().unwrap().clone();
+    assert!(page["next"].is_string());
+    while let Some(next) = page.get("next") {
+        let delivery = session
+            .dispatch("get_next_page", &json!({"uuid":next}))
             .await
             .unwrap();
         assert!(
-            matches!(&next.dependencies[..], [Dependency::Node(Node(7), fingerprint)] if fingerprint.value == original)
+            matches!(&delivery.dependencies[..], [Dependency::Node(Node(7), fingerprint)] if fingerprint.value == original)
         );
-        text.push_str(&next.text);
+        page = serde_json::from_str(&delivery.text).unwrap();
+        assert_eq!(page["node"]["selector"], "");
+        lines.extend_from_slice(page["text"].as_array().unwrap());
     }
-    let complete: Value = serde_json::from_str(&text).unwrap();
-    assert_eq!(complete["node"]["selector"], "");
     assert_eq!(
-        complete["text"]
-            .as_array()
-            .unwrap()
+        lines
             .iter()
-            .map(|line| line.as_str().unwrap())
+            .map(|v| v.as_str().unwrap())
             .collect::<Vec<_>>()
             .join("\n"),
         original.trim_end()
@@ -2156,12 +2159,12 @@ async fn source_read_pages_retain_text_and_dependencies_without_another_read() {
     assert_eq!(*observed.lock().unwrap(), 1);
 }
 
-// {test}`requirements.sdk.graph.context-tools.pages.behavior`
+// {test}`requirements.sdk.graph.validation-context.pages.behavior`
 // {test}`requirements.sdk.graph.agent-harness.tool_agent.isolation`
 #[tokio::test]
 async fn graph_page_ids_from_a_populated_peer_conversation_are_rejected() {
     struct ForeignPage {
-        state: Mutex<(usize, Option<u64>)>,
+        state: Mutex<(usize, Option<uuid::Uuid>)>,
     }
     impl CompletionProvider for ForeignPage {
         async fn complete(&self, request: CompletionRequest) -> io::Result<CompletionResponse> {
@@ -2169,14 +2172,14 @@ async fn graph_page_ids_from_a_populated_peer_conversation_are_rejected() {
             let call = match state.0 {
                 0 | 2 => ("read_node", json!({"path":{"segments":["1"]}})),
                 1 => {
-                    state.1 = Some(returned_node_page(&request, 1));
+                    state.1 = Some(returned_node_page(&request));
                     ("submit_result", json!({"result":true}))
                 }
                 3 => {
-                    let local = returned_node_page(&request, 1);
+                    let local = returned_node_page(&request);
                     let foreign = state.1.unwrap();
                     assert_ne!(local, foreign);
-                    ("get_node_page", json!({"page":foreign}))
+                    ("get_next_page", json!({"uuid":foreign.to_string()}))
                 }
                 4 => {
                     let Message::User { content } = request.chat_history.last().unwrap() else {
@@ -2211,25 +2214,28 @@ async fn graph_page_ids_from_a_populated_peer_conversation_are_rejected() {
 }
 
 #[cfg(feature = "default-languages")]
-// {test}`requirements.sdk.graph.context-tools.read_source.behavior`
-// {test}`requirements.sdk.graph.context-tools.read_source.inputs`
-// {test}`requirements.sdk.graph.context-tools.list_sources.behavior`
-// {test}`requirements.sdk.graph.context-tools.list_sources.inputs`
-// {test}`requirements.sdk.graph.context-tools.outline_source.behavior`
-// {test}`requirements.sdk.graph.context-tools.outline_source.inputs`
-// {test}`requirements.sdk.graph.context-tools.search_text.behavior`
-// {test}`requirements.sdk.graph.context-tools.search_text.inputs`
-// {test}`requirements.sdk.graph.context-tools.search_structure.behavior`
-// {test}`requirements.sdk.graph.context-tools.search_structure.inputs`
-// {test}`requirements.sdk.graph.context-tools.pages.behavior`
-// {test}`requirements.sdk.graph.context-tools.pages.inputs`
+// {test}`requirements.sdk.graph.validation-context.read_source.behavior`
+// {test}`requirements.sdk.graph.validation-context.read_source.inputs`
+// {test}`requirements.sdk.graph.validation-context.list_sources.behavior`
+// {test}`requirements.sdk.graph.validation-context.list_sources.inputs`
+// {test}`requirements.sdk.graph.validation-context.outline_source.behavior`
+// {test}`requirements.sdk.graph.validation-context.outline_source.inputs`
+// {test}`requirements.sdk.graph.search.search_text.behavior`
+// {test}`requirements.sdk.graph.search.search_text.inputs`
+// {test}`requirements.sdk.graph.search.search_structure.behavior`
+// {test}`requirements.sdk.graph.search.search_structure.inputs`
+// {test}`requirements.sdk.graph.validation-context.pages.behavior`
+// {test}`requirements.sdk.graph.validation-context.pages.inputs`
 #[tokio::test]
 async fn source_tools_forward_arguments_and_present_discovery_and_read_results() {
     struct Provider(Arc<Mutex<Vec<Value>>>);
     impl SourceProvider for Provider {
         type Error = SourceError;
         async fn list(&self, scope: &SourceScope) -> Result<Vec<ResourceId>, SourceError> {
-            self.0.lock().unwrap().push(json!({"list":scope.prefix}));
+            self.0
+                .lock()
+                .unwrap()
+                .push(json!({"list":scope.path_prefix()}));
             Ok(vec![ResourceId {
                 scheme: "generated".into(),
                 location: "source".into(),
@@ -2245,7 +2251,7 @@ async fn source_tools_forward_arguments_and_present_discovery_and_read_results()
             })
         }
         async fn search_text(&self, query: &TextQuery) -> Result<TextMatches, SourceError> {
-            self.0.lock().unwrap().push(json!({"text":query.pattern,"prefix":query.scope.prefix,"context":query.context_lines,"limit":query.limit}));
+            self.0.lock().unwrap().push(json!({"text":query.pattern,"prefix":query.scope.path_prefix(),"context":query.context_lines,"limit":query.limit}));
             if query.pattern == "error" {
                 return Err(SourceError::Invalid("text search failed".into()));
             }
@@ -2263,8 +2269,8 @@ async fn source_tools_forward_arguments_and_present_discovery_and_read_results()
             query: &StructuralQuery,
             _: &crate::outline_engine::language::Registry,
         ) -> Result<StructuralMatches, SourceError> {
-            self.0.lock().unwrap().push(json!({"structure":query.language,"rule":query.rule,"prefix":query.scope.prefix,"limit":query.limit}));
-            if query.language == "error" {
+            self.0.lock().unwrap().push(json!({"structure":query.language,"rule":query.rule,"prefix":query.scope.path_prefix(),"limit":query.limit}));
+            if query.language.as_str() == "error" {
                 return Err(SourceError::Invalid("structural search failed".into()));
             }
             Ok(StructuralMatches {
@@ -2274,7 +2280,7 @@ async fn source_tools_forward_arguments_and_present_discovery_and_read_results()
                         path: "source".into(),
                         selector: "fn[chosen]".into(),
                     },
-                    excerpt: if query.scope.prefix == "paged" {
+                    excerpt: if query.scope.path_prefix() == "paged" {
                         "structural excerpt".repeat(800)
                     } else {
                         "structural excerpt".into()
@@ -2306,7 +2312,9 @@ async fn source_tools_forward_arguments_and_present_discovery_and_read_results()
             )))
         },
     };
-    let mut session = <SourceTools<_, _> as ToolFactory<Memory>>::session(&factory);
+    let mut session = super::tools::SessionTools::new(
+        <SourceTools<_, _> as ToolFactory<Memory>>::session(&factory),
+    );
     let resource = json!({"scheme":"generated","location":"source"});
     for prefix in [None, Some("src/")] {
         let mut args = json!({});
@@ -2316,7 +2324,7 @@ async fn source_tools_forward_arguments_and_present_discovery_and_read_results()
         let delivery = session.dispatch("list_sources", &args).await.unwrap();
         assert_eq!(
             serde_json::from_str::<Value>(&delivery.text).unwrap(),
-            json!([resource])
+            json!({"files":[resource]})
         );
         assert!(delivery.dependencies.is_empty());
         args["pattern"] = json!("call.*");
@@ -2426,18 +2434,8 @@ async fn source_tools_forward_arguments_and_present_discovery_and_read_results()
         .await
         .unwrap();
     assert!(delivered.dependencies.is_empty());
-    let pages: Value = serde_json::from_str(&delivered.text).unwrap();
-    assert!(pages["pages"].as_array().unwrap().len() > 1);
-    let mut assembled = String::new();
-    for page in pages["pages"].as_array().unwrap() {
-        let delivered = session
-            .dispatch("get_source_page", &json!({"page":page}))
-            .await
-            .unwrap();
-        assert!(delivered.dependencies.is_empty());
-        assembled.push_str(&delivered.text);
-    }
-    let result: Value = serde_json::from_str(&assembled).unwrap();
+    let result: Value = serde_json::from_str(&delivered.text).unwrap();
+    assert!(result.get("next").is_none());
     assert_eq!(
         result["matches"][0]["excerpt"],
         "structural excerpt".repeat(800)
@@ -2450,7 +2448,7 @@ async fn source_tools_forward_arguments_and_present_discovery_and_read_results()
 }
 
 #[cfg(feature = "default-languages")]
-// {test}`requirements.sdk.graph.context-tools.outline_source.behavior`
+// {test}`requirements.sdk.graph.validation-context.outline_source.behavior`
 // {test}`requirements.sdk.sources.provider_results.parse_snapshot`
 #[tokio::test]
 async fn source_outlines_present_every_top_level_and_nested_item() {
@@ -2475,7 +2473,9 @@ async fn source_outlines_present_every_top_level_and_nested_item() {
     let parsed = factory.analysis.parse(&id).await.unwrap();
     assert_eq!(parsed.resource, id);
     assert_eq!(parsed.source.text().unwrap(), text);
-    let mut session = <SourceTools<_, _> as ToolFactory<Memory>>::session(&factory);
+    let mut session = super::tools::SessionTools::new(
+        <SourceTools<_, _> as ToolFactory<Memory>>::session(&factory),
+    );
     let delivery = session
         .dispatch("outline_source", &json!({"resource":id}))
         .await
@@ -2497,8 +2497,8 @@ async fn source_outlines_present_every_top_level_and_nested_item() {
 }
 
 #[cfg(feature = "default-languages")]
-// {test}`requirements.sdk.graph.context-tools.search_structure.behavior`
-// {test}`requirements.sdk.graph.context-tools.search_structure.inputs`
+// {test}`requirements.sdk.graph.search.search_structure.behavior`
+// {test}`requirements.sdk.graph.search.search_structure.inputs`
 #[tokio::test]
 async fn empty_structural_search_results_remain_discovery() {
     let root = tempfile::tempdir().unwrap();
@@ -2521,7 +2521,9 @@ async fn empty_structural_search_results_remain_discovery() {
             Ok(None)
         },
     };
-    let mut session = <SourceTools<_, _> as ToolFactory<Memory>>::session(&factory);
+    let mut session = super::tools::SessionTools::new(
+        <SourceTools<_, _> as ToolFactory<Memory>>::session(&factory),
+    );
     let delivery = session
         .dispatch(
             "search_structure",

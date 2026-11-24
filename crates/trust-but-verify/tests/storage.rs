@@ -16,26 +16,35 @@ fn criterion() -> CriterionPath {
 }
 
 fn record(id: &str) -> Record<String> {
-    Record {
-        revision: "v1".into(),
-        dependencies: vec![
+    Record::new(
+        Some(CriterionVersion::new("v1")),
+        vec![
             Dependency::Node(
                 "source".into(),
-                Fingerprint {
-                    scheme: "sha-v1".into(),
-                    value: "a".repeat(64),
-                },
+                Fingerprint::new("sha-v1".into(), "a".repeat(64)),
             ),
             Dependency::OutgoingEdges(
                 "subject".into(),
                 (),
-                Fingerprint {
-                    scheme: "edges-v1".into(),
-                    value: "ordered targets".into(),
-                },
+                Fingerprint::new("edges-v1".into(), "ordered targets".into()),
             ),
         ],
-        output: json!({"result": false, "rationale": "a negative review", "metadata": {"id": id, "padding": "x".repeat(8192)}}),
+        json!({"result": false, "rationale": "a negative review", "metadata": {"id": id, "padding": "x".repeat(8192)}}),
+    )
+}
+
+// {test}`requirements.sdk.graph.evidence.recorded_criterion_version`
+#[test]
+fn record_preserves_the_stored_version_encoding() {
+    assert!(serde_json::from_value::<CriterionVersion>(json!("*")).is_err());
+    for (stored, expected) in [("review-v1", Some("review-v1")), ("*", None)] {
+        let wire = json!({"revision": stored, "dependencies": [], "output": true});
+        let record: Record<String> = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(
+            record.version.as_ref().map(CriterionVersion::as_str),
+            expected
+        );
+        assert_eq!(serde_json::to_value(record).unwrap(), wire);
     }
 }
 
@@ -99,7 +108,7 @@ async fn paths_are_injective_and_loading_missing_records_has_no_side_effects() {
 }
 
 // {test}`requirements.sdk.graph.evidence.evidence_storage.filesystem`
-// {test}`requirements.sdk.graph.validation.criterion_path`
+// {test}`requirements.sdk.graph.criteria.criterion_path`
 // {test}`requirements.sdk.graph.evidence.evidence_storage`
 // {test}`requirements.sdk.filesystem-storage.keys`
 // {test}`requirements.sdk.filesystem-storage.store`
@@ -201,32 +210,29 @@ async fn records_round_trip_and_malformed_or_incompatible_data_is_an_error() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(saved.revision, "v1");
+    assert_eq!(saved.version.as_ref().unwrap().as_str(), "v1");
     assert_eq!(saved.dependencies, record("A").dependencies);
     assert_eq!(saved.output, record("A").output);
     assert!(matches!(
         store.load::<u8, ()>(&path, &criterion()).await,
         Err(FileStorageError::Json(_))
     ));
-    let labeled = Record {
-        revision: saved.revision.clone(),
-        dependencies: vec![Dependency::OutgoingEdges(
+    let labeled = Record::new(
+        saved.version.clone(),
+        vec![Dependency::OutgoingEdges(
             "subject".to_owned(),
             "tests/é".to_owned(),
-            Fingerprint {
-                scheme: "targets-v1".into(),
-                value: "preserved".into(),
-            },
+            Fingerprint::new("targets-v1".into(), "preserved".into()),
         )],
-        output: saved.output.clone(),
-    };
+        saved.output.clone(),
+    );
     store.store(&path, &criterion(), &labeled).await.unwrap();
     let loaded = store
         .load::<String, String>(&path, &criterion())
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(loaded.revision, labeled.revision);
+    assert_eq!(loaded.version, labeled.version);
     assert_eq!(loaded.dependencies, labeled.dependencies);
     assert_eq!(loaded.output, labeled.output);
     assert!(matches!(
@@ -318,17 +324,14 @@ async fn failed_serialization_preserves_records_and_failed_replacement_cleans_up
         .await
         .unwrap();
     let before = std::fs::read(store.record_path(&path, &criterion())).unwrap();
-    let bad: Record<BadNode> = Record {
-        revision: "v2".into(),
-        dependencies: vec![Dependency::Node(
+    let bad: Record<BadNode> = Record::new(
+        Some(CriterionVersion::new("v2")),
+        vec![Dependency::Node(
             BadNode,
-            Fingerprint {
-                scheme: "fail".into(),
-                value: "fail".into(),
-            },
+            Fingerprint::new("fail".into(), "fail".into()),
         )],
-        output: json!("new"),
-    };
+        json!("new"),
+    );
     assert!(matches!(
         store.store(&path, &criterion(), &bad).await,
         Err(FileStorageError::Json(_))
@@ -373,13 +376,10 @@ fn concurrent_readers_only_observe_complete_records_from_competing_writes() {
                 barrier.wait();
                 for _ in 0..30 {
                     let mut value = record(id);
-                    value.revision = id.into();
+                    value.version = CriterionVersion::from_recorded(id);
                     value.dependencies = vec![Dependency::Node(
                         id.into(),
-                        Fingerprint {
-                            scheme: id.into(),
-                            value: id.repeat(1024),
-                        },
+                        Fingerprint::new(id.into(), id.repeat(1024)),
                     )];
                     futures::executor::block_on(store.store(path, &criterion(), &value)).unwrap();
                 }
@@ -399,16 +399,13 @@ fn concurrent_readers_only_observe_complete_records_from_competing_writes() {
             );
             let id = saved.output["metadata"]["id"].as_str().unwrap();
             // The initial record can still be observed before either writer.
-            if saved.revision != "v1" {
-                assert_eq!(saved.revision, id);
+            if saved.version.as_ref().unwrap().as_str() != "v1" {
+                assert_eq!(saved.version.as_ref().unwrap().as_str(), id);
                 assert_eq!(
                     saved.dependencies,
                     [Dependency::Node(
                         id.into(),
-                        Fingerprint {
-                            scheme: id.into(),
-                            value: id.repeat(1024),
-                        }
+                        Fingerprint::new(id.into(), id.repeat(1024))
                     )]
                 );
             } else {
@@ -502,8 +499,8 @@ impl Criterion<StoredGraph> for StoredReview<'_> {
     fn criterion_path(&self) -> CriterionPath {
         CriterionPath::new(vec!["review".into()])
     }
-    fn revision(&self) -> String {
-        "v1".into()
+    fn version(&self) -> CriterionVersion {
+        CriterionVersion::new("v1")
     }
     async fn execute(
         self,
@@ -543,7 +540,7 @@ async fn malformed_records_are_storage_errors_and_bad_outputs_are_output_errors(
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "not JSON");
     assert_eq!(executions.load(Ordering::SeqCst), 1);
     saved.output = json!({"not":"a String"});
-    saved.revision = "obsolete".into();
+    saved.version = Some(CriterionVersion::new("obsolete"));
     graph
         .store_evidence(&source, &criterion, &saved)
         .await

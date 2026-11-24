@@ -9,6 +9,7 @@ use std::{
     io::{self, Write},
     path::Path,
 };
+use trust_but_verify::graph::CriterionVersion;
 use trust_but_verify::graph::Dependency;
 use trust_but_verify::graph::Fingerprint;
 use trust_but_verify::graph::Record;
@@ -23,7 +24,10 @@ pub(crate) fn is_versioned(value: &Value) -> bool {
 // {cite}`habeas:util`
 pub(crate) fn versioned_fields(
     value: &Value,
-) -> io::Result<(String, Vec<Dependency<HabeasNode, HabeasEdgeLabel>>)> {
+) -> io::Result<(
+    Option<CriterionVersion>,
+    Vec<Dependency<HabeasNode, HabeasEdgeLabel>>,
+)> {
     if value["format_version"].as_u64() != Some(1) {
         return Err(io::Error::other(format!(
             "unsupported evidence format version {:?}",
@@ -40,7 +44,7 @@ pub(crate) fn versioned_fields(
         .ok_or_else(|| io::Error::other("versioned evidence requires dependencies"))?;
     normalize_dependencies(&mut wire_dependencies)?;
     let dependencies = serde_json::from_value(wire_dependencies).map_err(io::Error::other)?;
-    Ok((version.into(), dependencies))
+    Ok((CriterionVersion::from_recorded(version), dependencies))
 }
 
 // {cite}`habeas:util`
@@ -107,7 +111,7 @@ pub(crate) fn decode(
         .as_str()
         .filter(|rationale| !rationale.trim().is_empty())
         .ok_or_else(|| io::Error::other("evidence rationale must be nonempty"))?;
-    let (procedure, dependencies) = if is_versioned(value) {
+    let (version, dependencies) = if is_versioned(value) {
         versioned_fields(value)?
     } else {
         let inputs = metadata["inputs"]
@@ -131,19 +135,12 @@ pub(crate) fn decode(
                     HabeasNode::Requirement(id) => HabeasNode::ReferenceSet(id.clone()),
                     _ => unreachable!(),
                 },
-                Fingerprint {
-                    scheme: "habeas-reference-set-v1".into(),
-                    value: digest.into(),
-                },
+                Fingerprint::new("habeas-reference-set-v1".into(), digest.into()),
             ));
         }
-        ("*".into(), dependencies)
+        (None, dependencies)
     };
-    Ok(Record {
-        revision: procedure,
-        dependencies,
-        output: metadata,
-    })
+    Ok(Record::new(version, dependencies, metadata))
 }
 
 /// Validate stored forms without consulting current sources or review policy.
@@ -277,7 +274,15 @@ pub(crate) fn encode(record: &Record<HabeasNode, HabeasEdgeLabel>) -> io::Result
         .filter(|rationale| !rationale.trim().is_empty())
         .ok_or_else(|| io::Error::other("evidence rationale must be nonempty"))?;
     object.insert("format_version".into(), json!(1));
-    object.insert("review_version".into(), json!(record.revision));
+    object.insert(
+        "review_version".into(),
+        json!(
+            record
+                .version
+                .as_ref()
+                .map_or("*", CriterionVersion::as_str)
+        ),
+    );
     object.insert(
         "dependencies".into(),
         serde_json::to_value(&record.dependencies).map_err(io::Error::other)?,
@@ -335,11 +340,8 @@ pub(crate) fn check_native(
     }
     // The application validators report application fields individually.
     // Freshness needs only the SDK header, not a second strict application decode.
-    let record = versioned_fields(value).map(|(procedure, dependencies)| Record {
-        revision: procedure,
-        dependencies,
-        output: value.clone(),
-    });
+    let record = versioned_fields(value)
+        .map(|(version, dependencies)| Record::new(version, dependencies, value.clone()));
     match record.and_then(|mut record| {
             let reference_set_changed = match subject {
                 HabeasNode::Requirement(id)
@@ -383,7 +385,7 @@ pub(crate) fn check_native(
                                     == Some(&fingerprint.value))))
                 }
             });
-            trust_but_verify::graph::record_is_current(domain, crate::sdk::REVIEW_VERSION, &record)
+            record.is_current(domain, &crate::sdk::review_version())
     }) {
         Ok(true) => {}
         Ok(false) => errors.push(format!("{label}: review version or SDK dependency changed")),
@@ -466,7 +468,7 @@ mod tests {
             }
             let node = HabeasNode::review_subject(&subject);
             let record = decode(&old, &node).unwrap();
-            assert_eq!(record.revision, "*");
+            assert_eq!(record.version, None);
             assert_eq!(record.output, old);
             assert_eq!(record.output["rationale"], "Historical rationale.");
             assert_eq!(
@@ -591,7 +593,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(record.revision, "*");
+        assert_eq!(record.version, None);
         assert_eq!(std::fs::read(&path).unwrap(), before);
         convert_file(&path, &node).unwrap();
         let after = std::fs::read(&path).unwrap();
@@ -653,19 +655,17 @@ mod tests {
             .dependencies
             .retain(|dependency| matches!(dependency, Dependency::Node(node, _) if !matches!(node, HabeasNode::ReferenceSet(_))));
         assert!(
-            trust_but_verify::graph::record_is_current(&graph, "future-review-version", &record)
+            record
+                .is_current(&graph, &CriterionVersion::new("future-review-version"))
                 .unwrap()
         );
-        record.revision = "old-concrete-version".into();
+        record.version = Some(CriterionVersion::new("old-concrete-version"));
         assert!(
-            !trust_but_verify::graph::record_is_current(
-                &graph,
-                crate::sdk::REVIEW_VERSION,
-                &record
-            )
-            .unwrap()
+            !record
+                .is_current(&graph, &crate::sdk::review_version())
+                .unwrap()
         );
-        record.revision = "*".into();
+        record.version = None;
         std::fs::write(
             root.path().join("md/rules.md"),
             ":::{req} ready\nChanged MUST work.\n:::\n",
@@ -676,7 +676,11 @@ mod tests {
             definitions: &changed_definitions,
             ..graph
         };
-        assert!(!trust_but_verify::graph::record_is_current(&changed, "any", &record).unwrap());
+        assert!(
+            !record
+                .is_current(&changed, &CriterionVersion::new("any"))
+                .unwrap()
+        );
     }
     // {test}`requirements.sdk.habeas.evidence_conversion.atomic`
     #[test]

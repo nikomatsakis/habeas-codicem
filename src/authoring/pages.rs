@@ -88,6 +88,7 @@ impl Listing {
     }
 
     /// The result, or one page of it, holding `entries` with `definitions`.
+    // {impl}`requirements.authoring.search_accounting.instructions`
     fn render(
         &self,
         entries: &[&Value],
@@ -664,6 +665,7 @@ mod tests {
     // {test}`requirements.authoring.search_accounting.outstanding`
     // {test}`requirements.authoring.search_accounting.entry_tags`
     // {test}`requirements.authoring.search_accounting.result_ids`
+    // {test}`requirements.authoring.search_accounting.first_result`
     // {test}`requirements.authoring.search_accounting.instructions`
     // {test}`requirements.authoring.finish_search.completion`
     // {test}`requirements.authoring.finish_search.invalid`

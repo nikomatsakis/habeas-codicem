@@ -2,7 +2,18 @@
 
 :::{req} public_api
 Each public SDK item has one defining module path. The SDK exposes no public
-re-exports. Its public modules follow the interfaces introduced in these chapters:
+re-exports. The chapter that introduces each supported type or free function owns its declaration.
+The [public API inventory](sdk/public-api.md) links each item to that requirement,
+which describes its purpose
+and declares its public Rust interface, including fields, enum variants, trait
+members, and inherent methods. A change to that interface requires a change to
+the owning requirement. Every supported struct with public fields is
+`#[non_exhaustive]`. Its constructor accepts the values needed to create it.
+Additional fields have consuming builder methods that accept a concrete value.
+Optional fields start as `None`. Backend inference options start empty and can
+be added one key at a time.
+
+The SDK’s public modules follow the interfaces introduced in these chapters.
 
 - `domain`: application data and the `Domain`, `NodeContents`, and `SourceNodes` traits.
 - `graph`: criterion definitions, graph observations, and evidence; `graph::validator`
@@ -23,7 +34,7 @@ configured agents for an application-defined graph. Habeas Codicem (HC), the
 mdBook and requirements tooling, is one application of it.
 A node identifies a thing: a requirement, a function, a test, or a GitHub issue.
 The application can ask several questions about the same node. Each
-{term}`requirements.sdk.graph.validation.criterion`
+{term}`requirements.sdk.graph.criteria.criterion`
 value identifies a test to perform and supplies its execution procedure. The SDK
 tracks each criterion's answer independently and supplies operations for loading,
 checking, executing, and saving evidence. The application decides when to reuse
@@ -126,16 +137,41 @@ its shared types, node and edge operations, and evidence persistence.
 ::::
 
 :::{req} domain
+:test: crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]
+
 Every {term}`requirements.sdk.application_domain` implements
 `trust_but_verify::domain::Domain`. A domain is cloneable and safe to share between
 executions. The following chapters introduce its members one capability at a
-time:
+time.
 
 ```rust,ignore
-// Defined in trust_but_verify::domain.
-/// Application data and operations used to evaluate criteria.
 pub trait Domain: Clone + Send + Sync {
-    // ...
+    type Error: Send;
+    type NodeId: Clone + Eq + Send + Sync;
+    type NodeContent: NodeContents;
+    type EdgeLabel: Clone + Send + Sync;
+
+    fn node_path(&self, node: &Self::NodeId) -> NodePath;
+    fn node_content(
+        &self,
+        node: &Self::NodeId,
+    ) -> Result<Self::NodeContent, Self::Error>;
+    fn outgoing_edges(
+        &self,
+        node: &Self::NodeId,
+        label: Self::EdgeLabel,
+    ) -> Result<Vec<Self::NodeId>, Self::Error>;
+    fn load_evidence(
+        &self,
+        node: &Self::NodeId,
+        criterion: &CriterionPath,
+    ) -> impl Future<Output = Result<Option<Record<Self::NodeId, Self::EdgeLabel>>, Self::Error>> + Send;
+    fn store_evidence(
+        &self,
+        node: &Self::NodeId,
+        criterion: &CriterionPath,
+        record: &Record<Self::NodeId, Self::EdgeLabel>,
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send;
 }
 ```
 :::
@@ -171,10 +207,10 @@ The chapters introduce each interface and the tools used with it:
 | --- | --- | --- |
 | [Graph nodes](sdk/graph.md) | Node identities, stable paths, contents, and fingerprints. | [`Domain`](../rustdocs/trust_but_verify/domain/trait.Domain.html), [`NodeContents`](../rustdocs/trust_but_verify/domain/trait.NodeContents.html) |
 | [Graph edges](sdk/graph-edges.md) | Relationship labels and successor lookup. | [`Domain`](../rustdocs/trust_but_verify/domain/trait.Domain.html) |
-| [Criteria](sdk/graph/validation.md) | Criterion types, completed answers, identity, review rules, and execution. | [`Criterion`](../rustdocs/trust_but_verify/graph/trait.Criterion.html) |
+| [Criteria](sdk/graph/criteria.md) | Criterion types, completed answers, identity, review rules, and execution. | [`Criterion`](../rustdocs/trust_but_verify/graph/trait.Criterion.html) |
 | [Validators](sdk/graph/validators.md) | Constructing a validator and running criterion values. | [`Domain`](../rustdocs/trust_but_verify/domain/trait.Domain.html), [`Validator`](../rustdocs/trust_but_verify/graph/validator/struct.Validator.html) |
+| [Validation context](sdk/graph/validation-context.md) | Tools for evaluating a criterion and recording its inputs. | [`ValidationContext`](../rustdocs/trust_but_verify/request/struct.ValidationContext.html) |
 | [Agent calls](sdk/graph/agent-calls.md) | Prompt construction and typed answers. | [`Context`](../rustdocs/trust_but_verify/request/trait.Context.html), [`Ask`](../rustdocs/trust_but_verify/request/struct.Ask.html) |
-| [Context tools](sdk/graph/context-tools.md) | Source discovery, tracked content reads, and edge selections. | [`InspectionContext`](../rustdocs/trust_but_verify/graph/struct.InspectionContext.html) |
 | [Agent harness](sdk/graph/agent-harness.md) | Agent configuration, fixed inspection tools, and structured submissions. | [`AgentConfig`](../rustdocs/trust_but_verify/agent/enum.AgentConfig.html) |
 | [Storage](sdk/graph/evidence.md) | Where and how evidence is saved. | [`Domain`](../rustdocs/trust_but_verify/domain/trait.Domain.html) |
 | [Filesystem evidence storage](sdk/filesystem-storage.md) | Filesystem persistence for SDK evidence records. | [`Domain`](../rustdocs/trust_but_verify/domain/trait.Domain.html), [`FileEvidenceStorage`](../rustdocs/trust_but_verify/storage/struct.FileEvidenceStorage.html) |

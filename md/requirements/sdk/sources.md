@@ -39,6 +39,40 @@ let sources = Sources::new(repository_root);
 ```
 :::
 
+:::{req} Sources
+:test: crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]
+
+Create a filesystem inspection rooted at a project directory. Listing, reading, outlining, and both kinds of search use that directory’s visibility rules.
+
+```rust,ignore
+pub struct Sources { /* private fields */ }
+
+impl Sources {
+    pub fn new(root: impl Into<PathBuf>) -> Self;
+    pub async fn list(
+        &self,
+        scope: &SourceScope,
+    ) -> Result<Vec<PathBuf>, SourceError>;
+    pub async fn read(
+        &self,
+        path: impl AsRef<Path>,
+    ) -> Result<SourceFile, SourceError>;
+    pub async fn parse(
+        &self,
+        path: impl AsRef<Path>,
+    ) -> Result<OutlineContent, SourceError>;
+    pub async fn search_text(
+        &self,
+        query: &TextQuery,
+    ) -> Result<TextMatches, SourceError>;
+    pub async fn search_structure(
+        &self,
+        query: &StructuralQuery,
+    ) -> Result<StructuralMatches, SourceError>;
+}
+```
+:::
+
 :::{req} provider.attachment
 A validator for a source-capable domain uses the supplied project directory
 for its fixed source inspection tools. Attach `Sources` once when constructing
@@ -80,6 +114,98 @@ Listing and reading failures return errors, distinct from successful empty
 listings and successful reads of empty files.
 :::
 
+:::{req} SourceError
+:test: crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]
+
+Carries an I/O failure or a diagnostic for invalid source input, such as an unknown language or invalid UTF-8 in a request for text.
+
+```rust,ignore
+pub enum SourceError {
+    Io(std::io::Error),
+    Invalid(String),
+}
+```
+
+Trait implementations
+
+```rust,ignore
+impl Debug for SourceError;
+impl Display for SourceError;
+impl Error for SourceError;
+impl From<std::io::Error> for SourceError;
+```
+:::
+
+## Read a project file
+
+:::{req} read_file
+:test: crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]
+
+`Sources::read` reads the bytes of one visible project-relative file. Its public
+Rust signature is `pub async fn read(&self, path: impl AsRef<Path>) -> Result<SourceFile, SourceError>`.
+`SourceFile::bytes` is an `Arc<[u8]>`. An empty file yields an empty byte slice.
+`SourceFile::text()` borrows those bytes as `&str` when they are valid UTF-8 and
+returns `SourceError` for invalid UTF-8. `SourceFile::language` is an
+`Option<LanguageId>`. The built-in filesystem reader leaves it `None`.
+
+```rust,ignore
+#[non_exhaustive]
+pub struct SourceFile {
+    pub bytes: Arc<[u8]>,
+    pub language: Option<LanguageId>,
+}
+
+impl SourceFile {
+    pub fn new(bytes: Arc<[u8]>) -> Self;
+    pub fn language(self, language: LanguageId) -> Self;
+    pub fn text(&self) -> Result<&str, SourceError>;
+}
+```
+
+Trait implementations
+
+```rust,ignore
+impl Clone for SourceFile;
+impl Debug for SourceFile;
+```
+:::
+
+## Identify a source language
+
+:::{req} language_id
+:test: crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]
+
+`LanguageId` is a public struct with a private string. Construct one from `&str`
+or `String`, for example `LanguageId::from("rust")`. `as_str()` borrows the
+original name. Serde represents the identifier as a string.
+
+`StructuralQuery::language` takes a `LanguageId`. Construction preserves the
+spelling. Structural search looks up the name among the configured languages
+and returns an error for an unknown name.
+
+```rust,ignore
+pub struct LanguageId(/* private fields */);
+
+impl LanguageId {
+    pub fn as_str(&self) -> &str;
+}
+```
+
+Trait implementations
+
+```rust,ignore
+impl Clone for LanguageId;
+impl Debug for LanguageId;
+impl<'de> Deserialize<'de> for LanguageId;
+impl From<&str> for LanguageId;
+impl From<String> for LanguageId;
+impl Hash for LanguageId;
+impl PartialEq for LanguageId;
+impl Serialize for LanguageId;
+impl Eq for LanguageId;
+```
+:::
+
 ## Outline and search the available files
 
 :::{req} provider_defaults
@@ -119,15 +245,14 @@ The application maps discovered source items to its graph. For HC,
 `src/auth.rs` with selector `fn[check_token]` identifies a source node.
 
 :::{req} source_nodes
+:test: crates/trust-but-verify/tests/public_api.rs#fn[public_exports_match_the_appendix]
+
 An application supporting tracked source inspection maps `OutlineId` to its
 graph's `NodeId`. The mapped node represents the requested path and selector;
 an unsupported or invalid address returns an error. The SDK reads the mapped
 node through the application's `Domain` interface.
 
 ```rust,ignore
-use trust_but_verify::domain::Domain;
-use trust_but_verify::outline::OutlineId;
-
 pub trait SourceNodes: Domain {
     fn source_node(&self, item: &OutlineId) -> Result<Self::NodeId, Self::Error>;
 }
@@ -184,8 +309,9 @@ flowchart TD
 
 Listing, outlining, and searching help choose nodes to read. A subsequent
 tracked read records the selected node.
-[Context tools](graph/context-tools.md) describes each operation's results
-and recording semantics.
+[Validation context](graph/validation-context.md) describes tracked reads and file discovery.
+[Searching project sources](graph/search.md) explains how an agent can record
+an excerpt it used directly.
 
 [Source outlines](outlines.md) introduces `OutlineId`, `OutlineContent`, and
 `OutlineLang`. Its [language chapters](outlines.md#language-specific-rules)
