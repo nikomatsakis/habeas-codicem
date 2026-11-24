@@ -2715,6 +2715,33 @@ fn assert_unrecorded_failure(output: &Output, expected: &str) {
     assert!(!stdout.contains("1 authored"), "{stdout}");
 }
 
+// {test}`requirements.configuration.user_location`
+#[test]
+fn authoring_uses_the_same_user_config_path_in_different_projects() {
+    let server = Server::start(Vec::new());
+    let first = Fixture::new(&server.endpoint);
+    let second = Fixture::new(&server.endpoint);
+    let path = first.config.join("habeas/config.toml");
+    fs::write(&path, "invalid toml = [").unwrap();
+    fs::write(second.project.join("habeas.toml"), "version = 1\n").unwrap();
+    for fixture in [&first, &second] {
+        let mut command = fixture.command();
+        command
+            .env("XDG_CONFIG_HOME", &first.config)
+            .env("APPDATA", &first.config)
+            .args(["author", SUBJECT]);
+        let result = command.output().unwrap();
+        assert_unrecorded_failure(&result, path.to_str().unwrap());
+        let result = command
+            .env_remove("HOME")
+            .env_remove("APPDATA")
+            .env_remove("XDG_CONFIG_HOME")
+            .output()
+            .unwrap();
+        assert_unrecorded_failure(&result, if cfg!(windows) { "APPDATA" } else { "HOME" });
+    }
+}
+
 // {test}`requirements.configuration.state_location`
 #[cfg(unix)]
 #[test]
@@ -4572,6 +4599,7 @@ fn the_review_prompt_gives_a_report_template() {
             "### Revised text",
             "as complete directives ready to paste, including new split requirements",
             "### Edits outside the group",
+            "revised text of other requirements your changes make stale",
             "### Mechanical changes",
             "list new full names and added examples",
             "### Design questions",

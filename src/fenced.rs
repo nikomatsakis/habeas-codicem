@@ -320,6 +320,11 @@ mod tests {
     // {test}`requirements.ci.fence_lengths`
     #[test]
     fn markdown_fences_close_with_enough_colons_and_skip_code() {
+        let source = ":::{cite} a.b\n::: trailing\n    :::\n   :::::  \nafter\n";
+        let parsed = markdown_fences(source, true);
+        assert_eq!(parsed.len(), 1);
+        assert!(parsed[0].closed);
+        assert_eq!(&source[parsed[0].body.clone()], "::: trailing\n    :::\n");
         let content = "::::{cite} a.b\nouter\n:::{impl} c.d\ninner\n:::\n::::\n```text\n:::{cite} e.f\n```\n:::{test} g.h\nnever closed\n".to_owned();
         let fences = markdown_fences(&content, true);
         assert_eq!(fences.len(), 3);

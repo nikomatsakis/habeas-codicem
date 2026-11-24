@@ -71,8 +71,11 @@ fn outline_errors_preserve_diagnostic_and_line() {
 // {test}`requirements.sdk.sources.plain-text.items`
 // {test}`requirements.sdk.sources.plain-text.fingerprints`
 // {test}`requirements.sdk.sources.plain-text.PlainText`
+// {test}`requirements.sdk.outlines.HASH_DIGITS`
 #[test]
 fn unknown_extensions_keep_nonblank_lines_and_content_selectors() {
+    use trust_but_verify::outline::selector::HASH_DIGITS;
+    assert_eq!(HASH_DIGITS, 12);
     let first =
         OutlineContent::from_source("missing.unclaimed", "alpha\n\nbeta\nalpha\n".into()).unwrap();
     assert_eq!(first.id().selector, "");
@@ -92,7 +95,7 @@ fn unknown_extensions_keep_nonblank_lines_and_content_selectors() {
     for item in &first.outline().items[1..] {
         assert_eq!(item.kind, "line");
         let prefix = item.selector.strip_prefix("line@").unwrap();
-        assert_eq!(prefix.len(), 12);
+        assert_eq!(prefix.len(), HASH_DIGITS);
         assert!(prefix.bytes().all(|byte| byte.is_ascii_hexdigit()));
         assert_eq!(prefix, &item.structural_hash[..12]);
     }
@@ -866,6 +869,7 @@ fn bundled_structural_search_returns_matches_and_rejects_bad_rules_and_source() 
 // {test}`requirements.sdk.sources.rust.fingerprints`
 // {test}`requirements.sdk.sources.rust.Rust`
 // {test}`requirements.sdk.outlines.Outline`
+// {test}`requirements.references.rust_item_selectors`
 #[test]
 fn rust_items_attach_documentation_and_preserve_structural_hashes() {
     let qualified = OutlineContent::from_source(

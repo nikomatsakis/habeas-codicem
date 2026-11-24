@@ -193,6 +193,22 @@ mod tests {
             domain: project("unrelated domain text"),
         };
         let mut session = SessionTools::new(tools.session());
+        let finish = session
+            .extra
+            .definitions()
+            .unwrap()
+            .into_iter()
+            .find(|tool| tool.name == "finish_search")
+            .unwrap();
+        assert_eq!(finish.parameters["required"], json!(["search_id", "used"]));
+        assert_eq!(
+            finish.parameters["properties"]["search_id"],
+            json!({"type":"string","format":"uuid"})
+        );
+        assert_eq!(
+            finish.parameters["properties"]["used"],
+            json!({"type":"array","items":{"type":"string"}})
+        );
         let mut peer = SessionTools::new(tools.session());
         assert!(
             session
@@ -844,6 +860,7 @@ mod tests {
     // {test}`requirements.sdk.sources.source_nodes`
     // {test}`requirements.sdk.sources.provider_observations`
     // {test}`requirements.sdk.graph.validation-context.ValidationContext.read_source`
+    // {test}`requirements.sdk.graph.validation-context.ValidationContext`
     #[test]
     fn direct_source_reads_preserve_mapping_errors_and_record_only_successful_returns() {
         let domain = project("prepared contents");

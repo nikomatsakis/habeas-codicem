@@ -371,6 +371,7 @@ struct Answer {
 // {test}`requirements.sdk.graph.validation-context.ValidationContext.finish`
 // {test}`requirements.sdk.graph.validation-context.ValidationContext.dependencies`
 // {test}`requirements.sdk.graph.validation-context.ValidationContext.graph`
+// {test}`requirements.sdk.graph.validation-context.ValidationContext`
 #[test]
 fn snapshots_record_exact_reads_and_retain_distinct_versions() {
     let graph = Memory::default();
@@ -1348,6 +1349,8 @@ async fn later_lighter_agent_calls_preserve_the_contexts_existing_trace() {
 // {test}`requirements.sdk.graph.validation-context.root_inputs`
 // {test}`requirements.sdk.graph.evidence.node_inputs`
 // {test}`requirements.sdk.graph.validation-context.ValidationContext.new`
+// {test}`requirements.sdk.graph.validators.validator.verify`
+// {test}`requirements.sdk.graph.validation-context.ValidationContext`
 #[tokio::test]
 async fn concurrent_single_node_validations_keep_separate_traces() {
     let graph = Memory {

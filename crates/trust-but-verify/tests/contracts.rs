@@ -750,6 +750,7 @@ async fn wildcard_revision_does_not_supply_other_criteria_or_nodes() {
 // {test}`requirements.sdk.graph.evidence.refresh_evidence`
 // {test}`requirements.sdk.graph.criteria.criterion_trait.answer`
 // {test}`requirements.sdk.graph.criteria.execute`
+// {test}`requirements.sdk.graph.validators.validator.verify`
 #[tokio::test]
 async fn validation_and_answer_need_send_without_sync() {
     let domain = Application::default();

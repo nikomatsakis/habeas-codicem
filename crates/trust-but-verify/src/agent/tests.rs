@@ -357,6 +357,7 @@ impl CompletionProvider for ParallelConversations {
 // {test}`requirements.sdk.graph.agent-harness.tool_agent.isolation`
 // {test}`requirements.sdk.graph.validation-context.read_node.behavior`
 // {test}`requirements.sdk.graph.validation-context.read_node.inputs`
+// {test}`requirements.sdk.graph.validation-context.ValidationContext`
 #[tokio::test]
 async fn concurrent_tool_agents_isolate_histories_pages_and_submissions_and_share_reads() {
     use std::future::IntoFuture;
@@ -542,6 +543,8 @@ async fn validator_agent_executions_isolate_conversations_and_dependency_traces(
 // {test}`requirements.sdk.graph.validation-context.outgoing_edges.behavior`
 // {test}`requirements.sdk.graph.validation-context.outgoing_edges.inputs`
 // {test}`requirements.sdk.graph.agent-harness.fixed_tools`
+// {test}`requirements.sdk.graph.validation-context.outgoing_edges.mcp`
+// {test}`requirements.sdk.graph.validation-context.ValidationContext`
 #[tokio::test]
 async fn agent_edge_tools_record_selections_without_validating_targets() {
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -909,6 +912,7 @@ async fn graph_tools_record_delivered_snapshots_and_prepared_pages_do_not_record
 // {test}`requirements.sdk.graph.validation-context.read_source.inputs`
 // {test}`requirements.sdk.graph.search.search_text.behavior`
 // {test}`requirements.sdk.graph.search.search_text.inputs`
+// {test}`requirements.sdk.graph.validation-context.ValidationContext`
 #[tokio::test]
 async fn source_tools_keep_search_discovery_separate_from_delivered_source_reads() {
     let root = tempfile::tempdir().unwrap();

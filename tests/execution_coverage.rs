@@ -1407,6 +1407,45 @@ fn selection_discovery_failure_preserves_existing_results_and_configuration() {
     assert_eq!(attempts(&before[0].0), measurements);
 }
 
+// {test}`requirements.test-coverage.storage.replace`
+#[test]
+fn default_coverage_and_test_replace_removed_tests() {
+    let temp = fixture();
+    let root = temp.path();
+    fs::write(root.join("tests/processes.rs"), "").unwrap();
+    for full in [false, true] {
+        let source = root.join("src/lib.rs");
+        fs::write(
+            &source,
+            "#[test] fn obsolete() { assert!(std::hint::black_box(true)); }",
+        )
+        .unwrap();
+        assert_success(&coverage(root, &["-E", "test(obsolete)"]));
+        let prior = runs(root)
+            .into_iter()
+            .find(|(run, _)| attempts(run).iter().any(|a| a["test"] == "obsolete"))
+            .unwrap()
+            .0;
+        fs::write(
+            &source,
+            "#[test] fn current() { assert!(std::hint::black_box(true)); }",
+        )
+        .unwrap();
+        let output = if full {
+            full_flow(root)
+        } else {
+            coverage(root, &[])
+        };
+        assert_success(&output);
+        assert!(!prior.exists());
+        let saved = runs(root);
+        assert_eq!(saved.len(), 1);
+        let current = attempts(&saved[0].0);
+        assert_eq!(current.len(), 1);
+        assert_eq!(current[0]["test"], "current");
+    }
+}
+
 // {test}`requirements.test-coverage.storage.cleanup`
 // {test}`requirements.test-coverage.failures`
 // {test}`requirements.test-coverage.failures.profiles`
@@ -1433,6 +1472,74 @@ fn cleanup_failure_is_reported_and_next_collection_removes_orphans() {
     assert_eq!(attempts(&before[0].0), original);
     assert_success(&coverage(root, &["-E", "test(second)"]));
     assert!(!orphan.exists());
+}
+
+// {test}`requirements.test-coverage.storage.cleanup`
+#[cfg(unix)]
+#[test]
+fn cleanup_failures_before_and_after_execution_invalidate_the_run() {
+    use std::os::unix::fs::PermissionsExt;
+    let temp = fixture();
+    let root = temp.path();
+    assert_success(&coverage(root, &["-E", "test(second)"]));
+    let old = &runs(root)[0].0;
+    let attempt = &attempts(old)[0];
+    // The first cleanup retains current attempts. Replacement retires this one.
+    let blocked = old
+        .join("attempts")
+        .join(attempt["id"].as_str().unwrap())
+        .join("blocked");
+    fs::create_dir(&blocked).unwrap();
+    fs::write(blocked.join("old.profraw"), b"obsolete").unwrap();
+    fs::set_permissions(&blocked, fs::Permissions::from_mode(0o000)).unwrap();
+    let failed = coverage(root, &["-E", "test(second)"]);
+    fs::set_permissions(&blocked, fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(!failed.status.success());
+    assert!(String::from_utf8_lossy(&failed.stderr).contains("Permission denied"));
+    let saved = runs(root);
+    assert_eq!(saved.len(), 1);
+    assert_ne!(saved[0].0, *old);
+    assert_eq!(saved[0].1["outcome"], "failed");
+    assert!(
+        saved[0].1["diagnostics"]
+            .to_string()
+            .contains("cleanup failed before test execution")
+    );
+    assert!(
+        attempts(&saved[0].0)[0]["processes"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+
+    // A test can create an orphan only after the pre-execution cleanup has finished.
+    fs::write(root.join("tests/processes.rs"), "").unwrap();
+    fs::write(root.join("src/lib.rs"), r#"
+#[test] fn create_orphan() {
+    use std::os::unix::fs::PermissionsExt;
+    let orphan = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/habeas/coverage/orphan");
+    std::fs::create_dir(&orphan).unwrap();
+    std::fs::write(orphan.join("obsolete.profraw"), b"obsolete").unwrap();
+    std::fs::set_permissions(orphan, std::fs::Permissions::from_mode(0o000)).unwrap();
+}
+"#).unwrap();
+    let failed = coverage(root, &[]);
+    let orphan = root.join("target/habeas/coverage/orphan");
+    fs::set_permissions(&orphan, fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(!failed.status.success());
+    assert!(String::from_utf8_lossy(&failed.stderr).contains("Coverage cleanup failed: "));
+    let saved = runs(root);
+    assert_eq!(saved.len(), 1);
+    assert_eq!(saved[0].1["outcome"], "failed");
+    assert!(
+        saved[0].1["diagnostics"]
+            .to_string()
+            .contains("Coverage cleanup failed: ")
+    );
+    let current = attempts(&saved[0].0);
+    assert_eq!(current.len(), 1);
+    assert_eq!(current[0]["test"], "create_orphan");
+    assert_eq!(current[0]["outcome"], "success");
 }
 
 // {test}`requirements.test-coverage.failures`
@@ -2039,7 +2146,9 @@ fn unavailable_and_unsupported_tools_explain_installation() {
     fs::set_permissions(bin.join("cargo"), fs::Permissions::from_mode(0o755)).unwrap();
     let old = invoke();
     assert!(!old.status.success());
-    assert!(String::from_utf8_lossy(&old.stderr).contains(">= 0.9.116"));
+    let diagnostic = String::from_utf8_lossy(&old.stderr);
+    assert!(diagnostic.contains(">= 0.9.116"));
+    assert!(diagnostic.contains("cargo install cargo-nextest --locked"));
     fs::write(
         bin.join("cargo"),
         "#!/bin/sh\nprintf 'cargo-nextest 0.9.116\\n'\n",

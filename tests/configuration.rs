@@ -61,7 +61,18 @@ fn locations_use_absolute_xdg_values_and_platform_fallbacks() {
         state_root_from(ConfigPlatform::Windows, windows).unwrap(),
         state.join("habeas/state")
     );
-    assert!(user_config_path_from(ConfigPlatform::Unix, |_| None).is_err());
+    let home_only = |key: &str| (key == "HOME").then(|| home.as_os_str().to_owned());
+    assert_eq!(
+        user_config_path_from(ConfigPlatform::Unix, home_only).unwrap(),
+        home.join(".config/habeas/config.toml")
+    );
+    for (platform, variable) in [
+        (ConfigPlatform::Unix, "HOME"),
+        (ConfigPlatform::Windows, "APPDATA"),
+    ] {
+        let error = user_config_path_from(platform, |_| None).unwrap_err();
+        assert!(error.to_string().contains(variable), "{error}");
+    }
     assert!(state_root_from(ConfigPlatform::Windows, |_| None).is_err());
 }
 

@@ -1366,6 +1366,7 @@ mod tests {
     // {test}`requirements.test-coverage.check.exceptions.reviews`
     // {test}`requirements.test-coverage.check.report`
     // {test}`requirements.test-coverage.check.threshold`
+    // {test}`requirements.test-coverage.check.exceptions.binding`
     #[test]
     fn missing_and_stale_explanations_fail_the_report() {
         let source = "//! :::{cite} habeas:coverage\n//! File rationale.\n//! :::\n// :::{cite} habeas:coverage\n// Function rationale.\n// :::\nfn a() {}\n";

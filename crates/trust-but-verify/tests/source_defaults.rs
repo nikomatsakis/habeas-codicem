@@ -13,7 +13,8 @@ fn file(location: &str) -> PathBuf {
 fn invalid_source_errors_display_the_diagnostic() {
     use trust_but_verify::sources::SourceError;
     let error = SourceError::Invalid("unsupported source language".into());
-    assert_eq!(error.to_string(), "unsupported source language");
+    let diagnostic: &dyn std::error::Error = &error;
+    assert_eq!(diagnostic.to_string(), "unsupported source language");
 }
 
 // {test}`requirements.sdk.sources.SourceError`
@@ -32,7 +33,8 @@ async fn source_bytes_error_kinds_and_language_names_round_trip() {
     assert!(matches!(binary.text(), Err(SourceError::Invalid(message)) if !message.is_empty()));
     let io = SourceError::from(std::io::Error::other("unreadable source"));
     assert!(matches!(io, SourceError::Io(_)));
-    assert_eq!(io.to_string(), "unreadable source");
+    let diagnostic: &dyn std::error::Error = &io;
+    assert_eq!(diagnostic.to_string(), "unreadable source");
     let name = LanguageId::from("CustomLang");
     assert_eq!(name.as_str(), "CustomLang");
     assert_eq!(LanguageId::from(String::from("CustomLang")), name);

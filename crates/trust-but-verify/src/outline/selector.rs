@@ -289,6 +289,12 @@ mod tests {
             segments[0].label,
             Label::Named(vec!["Thing".into(), "Trait<T>".into()])
         );
+        let label = Label::Named(vec!["a/b".into(), "c d".into()]);
+        assert_eq!(Segment::base("impl", &label), "impl[a%2Fb/c%20d]");
+        assert_eq!(
+            segments[2].clone().ordinal(3).to_string(),
+            "use@0123456789ab#3"
+        );
         assert_eq!(segments[1].ordinal, Some(2));
         let plain = Segment::new("fn".into(), Label::Named(vec!["run".into()]));
         assert_eq!(plain.ordinal, None);
