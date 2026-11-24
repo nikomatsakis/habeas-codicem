@@ -40,6 +40,12 @@ async fn scoped_text_results_keep_line_numbers_context_and_completeness() {
     let all = sources.search_text(&query).await.unwrap();
     assert!(all.complete);
     assert_eq!(all.matches.len(), 3);
+    let bounded = sources
+        .search_text(&TextQuery::new(query.pattern.clone()).limit(2))
+        .await
+        .unwrap();
+    assert_eq!(bounded.matches.len(), 2);
+    assert!(!bounded.complete);
     assert!(
         all.matches
             .iter()

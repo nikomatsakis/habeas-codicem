@@ -448,6 +448,7 @@ async fn criteria_keep_typed_answers_and_persist_only_when_requested() {
 }
 
 // {test}`requirements.sdk.graph.criteria.criterion_path`
+// {test}`requirements.sdk.graph.criteria.CriterionPath`
 #[test]
 fn criterion_paths_preserve_hierarchy_empty_segments_order_and_unicode() {
     let paths = [
@@ -459,6 +460,8 @@ fn criterion_paths_preserve_hierarchy_empty_segments_order_and_unicode() {
         path(&["é"]),
         path(&["e\u{301}"]),
     ];
+    assert_eq!(paths[2].clone().segments(), ["a", "b"]);
+    assert_ne!(format!("{:?}", paths[2]), format!("{:?}", paths[3]));
     for (i, criterion) in paths.iter().enumerate() {
         let bytes = serde_json::to_vec(criterion).unwrap();
         assert_eq!(

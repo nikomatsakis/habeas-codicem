@@ -474,6 +474,7 @@ fn concrete_criterion_version_rejects_the_legacy_marker() {
 // {test}`requirements.sdk.graph.fingerprint`
 // {test}`requirements.sdk.graph.node_content`
 // {test}`requirements.sdk.graph.node_content.fingerprint`
+// {test}`requirements.sdk.graph.criteria.criterion_version`
 #[test]
 fn wildcard_versions_still_check_inputs_and_errors() {
     let graph = Memory::default();

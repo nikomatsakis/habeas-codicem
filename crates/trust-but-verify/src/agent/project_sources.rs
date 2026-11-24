@@ -174,6 +174,7 @@ mod tests {
     // {test}`requirements.sdk.graph.search.finish_search.behavior`
     // {test}`requirements.sdk.graph.search.finish_search.inputs`
     // {test}`requirements.sdk.graph.search.search_text.inputs`
+    // {test}`requirements.sdk.graph.search.search_text.behavior`
     #[tokio::test]
     async fn search_obligations_follow_delivery_and_keep_the_original_snapshot() {
         let root = tempfile::tempdir().unwrap();
@@ -215,6 +216,25 @@ mod tests {
         let hits = fresh.dispatch("search_text", &call("hit")).await.unwrap();
         let hits: Value = serde_json::from_str(&hits.text).unwrap();
         assert!(!hits["matches"].as_array().unwrap().is_empty());
+        assert_eq!(hits["complete"], true);
+        let capped = fresh
+            .dispatch("search_text", &json!({"pattern":"hit","limit":1}))
+            .await
+            .unwrap();
+        let capped: Value = serde_json::from_str(&capped.text).unwrap();
+        assert_eq!(capped["matches"].as_array().unwrap().len(), 1);
+        assert_eq!(capped["complete"], false);
+        fresh
+            .dispatch(
+                "finish_search",
+                &json!({"search_id":capped["search_id"],"used":[]}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            fresh.outstanding_searches(),
+            [hits["search_id"].as_str().unwrap()]
+        );
         assert_eq!(hits["instructions"], instructions);
         let rest = fresh
             .dispatch("get_next_page", &json!({"uuid":hits["next"]}))
@@ -234,6 +254,14 @@ mod tests {
             let page: Value = serde_json::from_str(&first.text).unwrap();
             assert_eq!(page["matches"], json!([]));
             assert_eq!(page["instructions"], instructions);
+            let closed = peer
+                .dispatch(
+                    "finish_search",
+                    &json!({"search_id": page["search_id"], "used": []}),
+                )
+                .await
+                .unwrap();
+            assert!(closed.dependencies.is_empty());
             let later = peer.dispatch("search_text", &call("absent")).await.unwrap();
             let page: Value = serde_json::from_str(&later.text).unwrap();
             assert!(page.get("instructions").is_none());

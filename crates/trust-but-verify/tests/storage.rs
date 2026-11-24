@@ -34,6 +34,7 @@ fn record(id: &str) -> Record<String> {
 }
 
 // {test}`requirements.sdk.graph.evidence.recorded_criterion_version`
+// {test}`requirements.sdk.graph.criteria.criterion_version`
 #[test]
 fn record_preserves_the_stored_version_encoding() {
     assert!(serde_json::from_value::<CriterionVersion>(json!("*")).is_err());
@@ -114,6 +115,7 @@ async fn paths_are_injective_and_loading_missing_records_has_no_side_effects() {
 // {test}`requirements.sdk.filesystem-storage.keys`
 // {test}`requirements.sdk.filesystem-storage.store`
 // {test}`requirements.sdk.filesystem-storage.load`
+// {test}`requirements.sdk.filesystem-storage.FileEvidenceStorage`
 #[tokio::test]
 async fn source_and_criterion_boundaries_preserve_independent_records() {
     let temp = tempfile::tempdir().unwrap();
@@ -319,6 +321,7 @@ impl Serialize for BadNode {
 }
 
 // {test}`requirements.sdk.filesystem-storage.store`
+// {test}`requirements.sdk.filesystem-storage.FileStorageError`
 #[tokio::test]
 async fn failed_serialization_preserves_records_and_failed_replacement_cleans_up() {
     let temp = tempfile::tempdir().unwrap();

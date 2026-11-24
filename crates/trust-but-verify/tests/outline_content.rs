@@ -873,6 +873,7 @@ fn rust_items_attach_documentation_and_preserve_structural_hashes() {
 
 #[cfg(feature = "default-languages")]
 // {test}`requirements.sdk.graph.structural-fingerprint`
+// {test}`requirements.sdk.graph.NodeContents`
 #[test]
 fn structural_fingerprint_example_tracks_the_selected_function() {
     let original = OutlineContent::from_source("auth.rs", "fn check_token() { allow(); }".into())

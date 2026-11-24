@@ -526,6 +526,7 @@ mod tests {
 
     // {test}`requirements.sdk.graph.search.finish_search.behavior`
     // {test}`requirements.sdk.graph.search.finish_search.inputs`
+    // {test}`requirements.sdk.graph.agent-harness.submission.acceptance`
     // {test}`requirements.sdk.graph.search.search_text.inputs`
     // {test}`requirements.sdk.sources.provider.attachment`
     // {test}`requirements.sdk.sources.local_provider`
@@ -641,6 +642,19 @@ mod tests {
                         assert!(page["instructions"].is_string());
                         let retry = requests[turn]["input"].to_string();
                         assert!(retry.contains("Call finish_search for every open search_id"));
+                        let output = requests[turn]["input"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .rev()
+                            .find(|item| item["type"] == "function_call_output")
+                            .unwrap();
+                        assert!(
+                            output["output"]
+                                .as_str()
+                                .unwrap()
+                                .contains(page["search_id"].as_str().unwrap())
+                        );
                         (
                             "finish_search",
                             serde_json::json!({"search_id":page["search_id"],"used":[]}),

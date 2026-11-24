@@ -338,6 +338,10 @@ mod tests {
     use serde_json::json;
 
     // {test}`requirements.sdk.graph.agent-harness.agent_config.settings`
+    // {test}`requirements.sdk.graph.agent-harness.BedrockConfig`
+    // {test}`requirements.sdk.graph.agent-harness.BedrockCredentials`
+    // {test}`requirements.sdk.graph.agent-harness.OpenAiConfig`
+    // {test}`requirements.sdk.graph.agent-harness.OllamaConfig`
     #[test]
     fn backend_builders_set_only_the_requested_fields() {
         let bedrock = BedrockConfig::new("bedrock-model".into());
@@ -396,6 +400,11 @@ mod tests {
 
     // {test}`requirements.sdk.graph.agent-harness.agent_config`
     // {test}`requirements.sdk.graph.agent-harness.agent_config.serialization`
+    // {test}`requirements.sdk.graph.agent-harness.BedrockConfig`
+    // {test}`requirements.sdk.graph.agent-harness.BedrockCredentials`
+    // {test}`requirements.sdk.graph.agent-harness.OpenAiConfig`
+    // {test}`requirements.sdk.graph.agent-harness.OllamaConfig`
+    // {test}`requirements.sdk.graph.agent-harness.OptionValue`
     #[test]
     fn all_backends_preserve_nested_settings_and_credentials() {
         for value in [
@@ -417,6 +426,7 @@ mod tests {
     }
 
     // {test}`requirements.sdk.graph.agent-harness.agent_config.serialization`
+    // {test}`requirements.sdk.graph.agent-harness.SecretString`
     #[test]
     fn configuration_debug_hides_credentials() {
         let secret: SecretString = "an-explicit-secret".into();
@@ -426,6 +436,11 @@ mod tests {
             "owned-secret"
         );
         assert_eq!(format!("{secret:?}"), "<redacted>");
+        assert_eq!(
+            serde_json::from_value::<SecretString>(json!("an-explicit-secret")).unwrap(),
+            secret.clone()
+        );
+        assert_ne!(secret, SecretString::from("another value"));
         assert_eq!(serde_json::to_value(secret).unwrap(), "an-explicit-secret");
         assert!(
             serde_json::from_value::<AgentConfig>(
@@ -436,6 +451,7 @@ mod tests {
     }
 
     // {test}`requirements.sdk.graph.agent-harness.agent_config`
+    // {test}`requirements.sdk.graph.agent-harness.OptionValue`
     #[test]
     fn option_defaults_and_credential_resolution_are_deterministic() {
         let config = OpenAiConfig::default();
@@ -446,6 +462,22 @@ mod tests {
         assert_eq!(options["reasoning"]["effort"], "low");
         assert!(credential(&None, "MISSING", |_| None).is_err());
         assert!(credential(&None, "EMPTY", |_| Some("".into())).is_err());
+        assert!(
+            OptionValue::Map(BTreeMap::from([(
+                "nested".into(),
+                OptionValue::Float(f64::INFINITY)
+            )]))
+            .validate()
+            .is_err()
+        );
+        assert_eq!(
+            serde_json::from_value::<OptionValue>(json!(1)).unwrap(),
+            OptionValue::Integer(1)
+        );
+        assert_eq!(
+            serde_json::from_value::<OptionValue>(json!(1.0)).unwrap(),
+            OptionValue::Float(1.0)
+        );
         assert_eq!(
             credential(&None, "PRESENT", |_| Some("environment-value".into())).unwrap(),
             "environment-value"
